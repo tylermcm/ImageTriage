@@ -1,0 +1,35 @@
+2026-03-27 19:44:24,185 | INFO | app.data.image_scanner | Discovered 6 supported files, 6 readable and 0 skipped.
+2026-03-27 19:44:27,011 | INFO | timm.models._builder | Loading pretrained weights from local directory (C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m)
+2026-03-27 19:44:27,012 | INFO | root | Found preferred checkpoint: model.safetensors
+2026-03-27 19:44:27,613 | INFO | app.models.dinov2_extractor | Loaded local-dir:C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m on cuda with feature_dim=768 and input_size=518x518.
+2026-03-27 19:44:43,765 | INFO | app.pipelines.embedding_pipeline | Saved 6 embeddings with dimension 768 to C:\Users\user0\OneDrive\Documents\Playground\_ai_smoke_input2\.image_triage_ai\artifacts\embeddings.npy.
+2026-03-27 19:45:37,409 | INFO | app.data.image_scanner | Discovered 6 supported files, 6 readable and 0 skipped.
+2026-03-27 19:45:39,870 | INFO | timm.models._builder | Loading pretrained weights from local directory (C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m)
+2026-03-27 19:45:39,870 | INFO | root | Found preferred checkpoint: model.safetensors
+2026-03-27 19:45:40,468 | INFO | app.models.dinov2_extractor | Loaded local-dir:C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m on cuda with feature_dim=768 and input_size=518x518.
+2026-03-27 19:45:57,098 | INFO | app.pipelines.embedding_pipeline | Saved 6 embeddings with dimension 768 to C:\Users\user0\OneDrive\Documents\Playground\_ai_smoke_input2\.image_triage_ai\artifacts\embeddings.npy.
+2026-03-27 19:46:50,662 | INFO | app.data.image_scanner | Discovered 6 supported files, 6 readable and 0 skipped.
+2026-03-27 19:46:53,344 | INFO | timm.models._builder | Loading pretrained weights from local directory (C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m)
+2026-03-27 19:46:53,344 | INFO | root | Found preferred checkpoint: model.safetensors
+2026-03-27 19:46:53,928 | INFO | app.models.dinov2_extractor | Loaded local-dir:C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m on cuda with feature_dim=768 and input_size=518x518.
+2026-03-27 19:47:10,056 | INFO | app.pipelines.embedding_pipeline | Saved 6 embeddings with dimension 768 to C:\Users\user0\OneDrive\Documents\Playground\_ai_smoke_input2\.image_triage_ai\artifacts\embeddings.npy.
+2026-03-27 19:48:42,564 | INFO | app.data.image_scanner | Discovered 6 supported files, 6 readable and 0 skipped.
+2026-03-27 19:48:45,165 | INFO | timm.models._builder | Loading pretrained weights from local directory (C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m)
+2026-03-27 19:48:45,165 | INFO | root | Found preferred checkpoint: model.safetensors
+2026-03-27 19:48:45,740 | INFO | app.models.dinov2_extractor | Loaded local-dir:C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m on cuda with feature_dim=768 and input_size=518x518.
+2026-03-27 19:49:01,658 | INFO | app.pipelines.embedding_pipeline | Saved 6 embeddings with dimension 768 to C:\Users\user0\OneDrive\Documents\Playground\_ai_smoke_input2\.image_triage_ai\artifacts\embeddings.npy.
+2026-03-28 00:00:28,359 | INFO | app.data.image_scanner | Discovered 6 supported files, 6 readable and 0 skipped.
+2026-03-28 00:00:31,346 | INFO | timm.models._builder | Loading pretrained weights from local directory (C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m)
+2026-03-28 00:00:31,347 | INFO | root | Found preferred checkpoint: model.safetensors
+2026-03-28 00:00:32,185 | INFO | app.models.dinov2_extractor | Loaded local-dir:C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m on cuda with feature_dim=768 and input_size=518x518.
+2026-03-28 00:00:49,426 | INFO | app.pipelines.embedding_pipeline | Saved 6 embeddings with dimension 768 to C:\Users\user0\OneDrive\Documents\Playground\_ai_smoke_input2\.image_triage_ai\artifacts\embeddings.npy.
+2026-03-28 00:10:21,462 | INFO | app.data.image_scanner | Discovered 6 supported files, 6 readable and 0 skipped.
+2026-03-28 00:10:24,031 | INFO | timm.models._builder | Loading pretrained weights from local directory (C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m)
+2026-03-28 00:10:24,031 | INFO | root | Found preferred checkpoint: model.safetensors
+2026-03-28 00:10:24,596 | INFO | app.models.dinov2_extractor | Loaded local-dir:C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m on cuda with feature_dim=768 and input_size=518x518.
+2026-03-28 00:10:37,042 | INFO | app.pipelines.embedding_pipeline | Saved 6 embeddings with dimension 768 to C:\Users\user0\OneDrive\Documents\Playground\_ai_smoke_input2\.image_triage_ai\artifacts\embeddings.npy.
+2026-03-28 00:11:25,546 | INFO | app.data.image_scanner | Discovered 6 supported files, 6 readable and 0 skipped.
+2026-03-28 00:11:28,121 | INFO | timm.models._builder | Loading pretrained weights from local directory (C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m)
+2026-03-28 00:11:28,122 | INFO | root | Found preferred checkpoint: model.safetensors
+2026-03-28 00:11:28,685 | INFO | app.models.dinov2_extractor | Loaded local-dir:C:\Users\user0\Documents\GitHub\AICullingPipeline\vit_base_patch14_dinov2.lvd142m on cuda with feature_dim=768 and input_size=518x518.
+2026-03-28 00:11:41,255 | INFO | app.pipelines.embedding_pipeline | Saved 6 embeddings with dimension 768 to C:\Users\user0\OneDrive\Documents\Playground\_ai_smoke_input2\.image_triage_ai\artifacts\embeddings.npy.
