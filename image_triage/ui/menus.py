@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from PySide6.QtGui import QAction
+
 from .actions import MainWindowActions
 from .theme import AppearanceMode
 
 
-def build_main_menu_bar(window, actions: MainWindowActions) -> None:
+def build_main_menu_bar(window, actions: MainWindowActions, dock_actions: Mapping[str, QAction] | None = None) -> None:
     menu_bar = window.menuBar()
     menu_bar.clear()
 
@@ -75,6 +79,12 @@ def build_main_menu_bar(window, actions: MainWindowActions) -> None:
     ai_menu.addAction(actions.compare_ai_group)
 
     window_menu = menu_bar.addMenu("&Window")
+    if dock_actions:
+        for key in ("library", "inspector"):
+            action = dock_actions.get(key)
+            if action is not None:
+                window_menu.addAction(action)
+        window_menu.addSeparator()
     window_menu.addAction(actions.manual_mode)
     window_menu.addAction(actions.ai_mode)
     window_menu.addSeparator()

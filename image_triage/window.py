@@ -7,8 +7,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QDir, QFile, QModelIndex, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QCloseEvent, QCursor, QFont
+from PySide6.QtCore import QDir, QFile, QModelIndex, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer
+from PySide6.QtGui import QCloseEvent, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QSizePolicy,
-    QSplitter,
     QStackedWidget,
     QStatusBar,
     QTabBar,
@@ -50,15 +49,21 @@ from .shell_actions import detect_photoshop_executable, open_in_file_explorer, o
 from .thumbnails import ThumbnailManager
 from .ui import (
     AppearanceMode,
+    InspectorPanel,
     MainWindowActions,
+    WorkspaceDocks,
     build_app_palette,
     build_app_stylesheet,
     build_main_menu_bar,
     build_main_window_actions,
     build_primary_toolbar,
+    build_workspace_docks,
     build_undo_icon,
+    clear_window_layout,
     parse_appearance_mode,
+    restore_window_layout,
     resolve_theme,
+    save_window_layout,
 )
 
 
@@ -105,6 +110,8 @@ class MainWindow(QMainWindow):
         self._theme = None
         self.actions: MainWindowActions | None = None
         self.primary_toolbar: QToolBar | None = None
+        self.workspace_docks: WorkspaceDocks | None = None
+        self.inspector_panel: InspectorPanel | None = None
 
         self.thumbnail_manager = ThumbnailManager()
         self._decision_store = DecisionStore()
@@ -187,15 +194,12 @@ class MainWindow(QMainWindow):
         self.favorites_divider.setFrameShape(QFrame.Shape.HLine)
         self.favorites_divider.setObjectName("sectionDivider")
 
-        self.library_label = QLabel("Library")
-        self.library_label.setObjectName("paneTitle")
-        library_font = QFont("Segoe UI Variable Display")
-        library_font.setPointSize(max(self.font().pointSize() + 2, 12))
-        library_font.setWeight(QFont.Weight.DemiBold)
-        self.library_label.setFont(library_font)
+        self.library_label = QLabel("Folders")
+        self.library_label.setObjectName("sectionLabel")
 
         self.left_panel = QWidget()
-        self.left_panel.setObjectName("libraryPanel")
+        self.left_panel.setObjectName("libraryPanelContent")
+        self.left_panel.setMinimumWidth(280)
         left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(10)
@@ -230,9 +234,10 @@ class MainWindow(QMainWindow):
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
         self.actions = build_main_window_actions(self)
-        build_main_menu_bar(self, self.actions)
         self.primary_toolbar = build_primary_toolbar(self, self.actions)
         self.primary_toolbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.inspector_panel = InspectorPanel()
+        self.inspector_panel.setMinimumWidth(260)
 
         self.manual_toolbar = QWidget()
         self.manual_toolbar.setObjectName("workspaceControls")
@@ -296,6 +301,18 @@ class MainWindow(QMainWindow):
         workspace_bar_layout.addWidget(self.mode_tabs, 0, Qt.AlignmentFlag.AlignVCenter)
         workspace_bar_layout.addWidget(self.toolbar_stack, 1)
 
+        center_column = QWidget()
+        center_column.setObjectName("workspaceCenterColumn")
+        center_layout = QVBoxLayout(center_column)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(8)
+        center_layout.addWidget(self.primary_toolbar)
+        center_layout.addWidget(self.workspace_bar)
+        center_layout.addWidget(self.grid, 1)
+
+        self.workspace_docks = build_workspace_docks(self, self.left_panel, self.inspector_panel, center_column)
+        build_main_menu_bar(self, self.actions, self.workspace_docks.toggle_actions)
+
         self.summary_strip = QWidget()
         self.summary_strip.setObjectName("summaryStrip")
         summary_layout = QHBoxLayout(self.summary_strip)
@@ -320,23 +337,15 @@ class MainWindow(QMainWindow):
             summary_layout.addWidget(label)
         summary_layout.addStretch(1)
 
-        self.main_splitter = QSplitter()
-        self.main_splitter.addWidget(self.left_panel)
-        self.main_splitter.addWidget(self.grid)
-        self.main_splitter.setStretchFactor(0, 0)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([320, 1180])
-
         container = QWidget()
         container.setObjectName("centralContainer")
         layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(8)
-        layout.addWidget(self.primary_toolbar)
-        layout.addWidget(self.workspace_bar)
-        layout.addWidget(self.main_splitter, 1)
+        layout.addWidget(self.workspace_docks.shell, 1)
         self.setCentralWidget(container)
         self.summary_strip.hide()
+        self._apply_default_workspace()
 
         status = QStatusBar()
         status.showMessage("Ready")
@@ -401,6 +410,8 @@ class MainWindow(QMainWindow):
         app.setPalette(build_app_palette(self._theme))
         app.setStyleSheet(build_app_stylesheet(self._theme))
         self._update_dynamic_action_icons()
+        if self.workspace_docks is not None:
+            self.workspace_docks.apply_theme(self._theme)
         self.grid.apply_theme(self._theme)
         self.preview.apply_theme(self._theme)
         self._update_action_states()
@@ -416,6 +427,11 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _apply_default_workspace(self) -> None:
+        if self.workspace_docks is None:
+            return
+        self.workspace_docks.reset_layout()
+
     def _set_appearance_mode(self, mode: AppearanceMode) -> None:
         normalized = mode if isinstance(mode, AppearanceMode) else parse_appearance_mode(mode)
         if self._appearance_mode == normalized:
@@ -426,16 +442,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Appearance set to {normalized.value}")
 
     def _restore_window_state(self) -> None:
-        geometry = self._settings.value(self.GEOMETRY_KEY, QByteArray(), QByteArray)
-        state = self._settings.value(self.STATE_KEY, QByteArray(), QByteArray)
-        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
-            self.restoreGeometry(geometry)
-        if isinstance(state, QByteArray) and not state.isEmpty():
-            self.restoreState(state)
+        restored = restore_window_layout(self, self._settings, self.GEOMETRY_KEY, self.STATE_KEY, self.workspace_docks)
+        if not restored:
+            self._apply_default_workspace()
 
     def _save_window_state(self) -> None:
-        self._settings.setValue(self.GEOMETRY_KEY, self.saveGeometry())
-        self._settings.setValue(self.STATE_KEY, self.saveState())
+        save_window_layout(self, self._settings, self.GEOMETRY_KEY, self.STATE_KEY, self.workspace_docks)
 
     def _finish_startup_restore(self) -> None:
         self._load_start_folder()
@@ -1466,6 +1478,31 @@ class MainWindow(QMainWindow):
         preferred_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else record.path
         return self._ai_result_for_record(record, preferred_path=preferred_path)
 
+    def _update_inspector_context(self, index: int | None = None) -> None:
+        if self.inspector_panel is None:
+            return
+        if index is None:
+            index = self.grid.current_index()
+
+        current_record = self._record_at(index)
+        display_path = ""
+        annotation = None
+        ai_result = None
+        if current_record is not None and index >= 0:
+            display_path = self.grid.displayed_variant_path(index) or current_record.path
+            annotation = self._annotations.get(current_record.path, SessionAnnotation())
+            ai_result = self._ai_result_for_record(current_record, preferred_path=display_path)
+
+        self.inspector_panel.set_context(
+            folder=self._current_folder,
+            mode_label="AI Culling" if self._ui_mode == "ai" else "Manual Review",
+            selected_count=self.grid.selected_count() if self._records else 0,
+            current_record=current_record,
+            display_path=display_path,
+            annotation=annotation,
+            ai_result=ai_result,
+        )
+
     def _is_unreviewed_record(self, record: ImageRecord) -> bool:
         annotation = self._annotations.get(record.path, SessionAnnotation())
         return not annotation.winner and not annotation.reject
@@ -1614,6 +1651,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Opened AI group compare: {current_ai.group_id}")
 
     def _update_status(self, index: int | None = None) -> None:
+        if index is None:
+            index = self.grid.current_index()
+        self._update_inspector_context(index)
+
         if self._scan_in_progress and not self._all_records and not self._records:
             self.summary_total.setText("Total: scanning...")
             self.summary_selected.setText("Selected: 0")
@@ -1623,9 +1664,6 @@ class MainWindow(QMainWindow):
             self._update_ai_summary()
             self.statusBar().showMessage(f"Scanning {self._current_folder}...")
             return
-
-        if index is None:
-            index = self.grid.current_index()
 
         count = len(self._records)
         accepted = sum(1 for record in self._all_records if self._annotations.get(record.path, SessionAnnotation()).winner)
@@ -1748,13 +1786,9 @@ class MainWindow(QMainWindow):
         )
 
     def _reset_window_layout(self) -> None:
-        self._settings.remove(self.GEOMETRY_KEY)
-        self._settings.remove(self.STATE_KEY)
-        if self.primary_toolbar is not None:
-            self.removeToolBar(self.primary_toolbar)
-            self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.primary_toolbar)
+        clear_window_layout(self._settings, self.GEOMETRY_KEY, self.STATE_KEY)
         self.resize(1600, 960)
-        self.main_splitter.setSizes([320, 1180])
+        self._apply_default_workspace()
         self.statusBar().showMessage("Reset window layout")
 
     def _show_settings(self) -> None:

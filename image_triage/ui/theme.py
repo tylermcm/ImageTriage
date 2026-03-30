@@ -372,10 +372,39 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             alternate-background-color: {theme.panel_alt_bg.css};
             outline: none;
         }}
-        QWidget#libraryPanel {{
+        QWidget#workspaceCenterColumn {{
+            background-color: transparent;
+            border: none;
+        }}
+        QWidget#libraryWorkspacePanel {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 14px;
+        }}
+        QWidget#inspectorWorkspacePanel {{
+            background-color: {theme.chrome_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 14px;
+        }}
+        QWidget#libraryPanelHeader {{
+            background-color: transparent;
+            border: none;
+        }}
+        QWidget#inspectorPanelHeader {{
+            background-color: transparent;
+            border: none;
+        }}
+        QWidget#libraryPanelViewport {{
+            background-color: transparent;
+            border: none;
+        }}
+        QWidget#inspectorPanelViewport {{
+            background-color: transparent;
+            border: none;
+        }}
+        QWidget#libraryPanelContent, QWidget#inspectorPanelContent {{
+            background-color: transparent;
+            border: none;
         }}
         QTreeView#folderTree, QListWidget#favoritesList {{
             background-color: transparent;
@@ -413,16 +442,52 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLabel#paneTitle {{
             color: {theme.text_primary.css};
             font-family: "Segoe UI Variable Display", "Segoe UI";
-            font-size: 15px;
+            font-size: 18px;
             font-weight: 700;
             letter-spacing: 0.4px;
-            padding: 2px 2px 4px 2px;
+            padding: 0 1px 2px 1px;
+        }}
+        QLabel#panelHeaderSubtitle {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 0 1px;
+        }}
+        QToolButton#workspacePanelButton, QToolButton#workspacePanelCloseButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            color: {theme.text_secondary.css};
+            font-family: "Segoe UI Symbol", "Segoe UI Variable Display", "Segoe UI";
+            font-size: 13px;
+            font-weight: 600;
+            padding: 0px;
+        }}
+        QToolButton#workspacePanelButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#workspacePanelCloseButton:hover {{
+            background-color: {theme.danger_soft.css};
+            border-color: {theme.danger.css};
+            color: {theme.text_primary.css};
         }}
         QLabel#sectionLabel {{
             color: {theme.text_muted.css};
             font-size: 11px;
             font-weight: 600;
             padding: 0 2px;
+        }}
+        QLabel#inspectorValue {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            padding: 0 2px;
+        }}
+        QLabel#inspectorHint {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            padding: 4px 2px 0 2px;
         }}
         QFrame#sectionDivider {{
             background-color: {theme.border_muted.css};
@@ -489,13 +554,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             height: 0px;
         }}
         QSplitter::handle {{
-            background-color: {theme.window_bg.css};
+            background-color: transparent;
         }}
         QSplitter::handle:horizontal {{
-            width: 8px;
+            width: 4px;
         }}
         QSplitter::handle:vertical {{
-            height: 8px;
+            height: 4px;
         }}
         QSplitter::handle:hover {{
             background-color: {theme.accent_soft.css};

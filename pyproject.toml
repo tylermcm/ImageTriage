@@ -7,7 +7,10 @@ requires-python = ">=3.11"
 dependencies = [
     "exifread>=3.0",
     "numpy>=1.26",
+    "Pillow>=10.4",
     "PySide6>=6.8",
+    "pillow-heif>=0.18",
+    "psd-tools>=1.10",
     "rawpy>=0.20",
 ]
 

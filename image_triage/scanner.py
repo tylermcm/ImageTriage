@@ -7,7 +7,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .models import EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ImageRecord, ImageVariant, SortMode, sort_records
+from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ROOT_PRIMARY_PRIORITY
+from .models import ImageRecord, ImageVariant, SortMode, sort_records
 from .scan_cache import FolderScanCache
 
 
@@ -251,40 +252,19 @@ def edit_stem_matches(primary_stem: str, candidate_stem: str) -> bool:
 
 
 def edited_candidate_sort_key(primary_stem: str, item: ScannedFile) -> tuple[int, int, int, str]:
-    suffix_priority = {
-        ".jpg": 0,
-        ".jpeg": 1,
-        ".png": 2,
-        ".tif": 3,
-        ".tiff": 4,
-        ".dng": 5,
-        ".psd": 6,
-        ".psb": 7,
-    }
     variant_priority = 0 if item.stem_key != primary_stem else 1
     return (
         variant_priority,
-        suffix_priority.get(item.suffix, 99),
+        EDIT_PRIORITY.get(item.suffix, 99),
         -item.modified_ns,
         item.path.casefold(),
     )
 
 
 def root_primary_sort_key(family_stem: str, item: ScannedFile) -> tuple[int, int, int, str]:
-    suffix_priority = {
-        ".jpg": 0,
-        ".jpeg": 1,
-        ".png": 2,
-        ".tif": 3,
-        ".tiff": 4,
-        ".webp": 5,
-        ".bmp": 6,
-        ".gif": 7,
-        ".heic": 8,
-    }
     return (
         0 if item.stem_key == family_stem else 1,
-        suffix_priority.get(item.suffix, 99),
+        ROOT_PRIMARY_PRIORITY.get(item.suffix, 99),
         -item.modified_ns,
         item.path.casefold(),
     )

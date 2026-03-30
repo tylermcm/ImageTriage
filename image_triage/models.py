@@ -5,40 +5,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-
-IMAGE_SUFFIXES = {
-    ".bmp",
-    ".gif",
-    ".heic",
-    ".jpeg",
-    ".jpg",
-    ".nef",
-    ".png",
-    ".tif",
-    ".tiff",
-    ".webp",
-}
-
-EDIT_SUFFIXES = {
-    ".dng",
-    ".jpeg",
-    ".jpg",
-    ".png",
-    ".psb",
-    ".psd",
-    ".tif",
-    ".tiff",
-}
-
-JPEG_SUFFIXES = {
-    ".jpeg",
-    ".jpg",
-}
-
-RAW_SUFFIXES = {
-    ".dng",
-    ".nef",
-}
+from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES
 
 
 @dataclass(slots=True, frozen=True)
@@ -119,18 +86,9 @@ class ImageRecord:
     def preferred_edit_path(self) -> str:
         if not self.edited_paths:
             return ""
-        priority = {
-            ".tif": 0,
-            ".tiff": 1,
-            ".png": 2,
-            ".jpg": 3,
-            ".jpeg": 4,
-            ".psd": 5,
-            ".psb": 6,
-        }
         return sorted(
             self.edited_paths,
-            key=lambda path: (priority.get(os.path.splitext(path)[1].lower(), 99), path.casefold()),
+            key=lambda path: (EDIT_PRIORITY.get(os.path.splitext(path)[1].lower(), 99), path.casefold()),
         )[0]
 
 
