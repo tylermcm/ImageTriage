@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from textwrap import dedent
@@ -293,6 +294,9 @@ class AnnotationHydrationSignals(QObject):
 
 
 class AnnotationHydrationTask(QRunnable):
+    PRIORITY_BATCH_SIZE = 96
+    BACKGROUND_BATCH_SIZE = 240
+
     def __init__(
         self,
         *,
@@ -309,37 +313,152 @@ class AnnotationHydrationTask(QRunnable):
         self.records = records
         self.prioritized_paths = prioritized_paths
         self.signals = AnnotationHydrationSignals()
+        self._cancelled = False
         self.setAutoDelete(True)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @staticmethod
+    def _record_batches(records: list[ImageRecord], batch_size: int) -> list[list[ImageRecord]]:
+        return [records[index : index + batch_size] for index in range(0, len(records), batch_size)]
+
+    def _partition_records(self) -> tuple[list[ImageRecord], list[ImageRecord]]:
+        if not self.records:
+            return [], []
+        record_by_key = {normalized_path_key(record.path): record for record in self.records}
+        prioritized_records: list[ImageRecord] = []
+        seen_keys: set[str] = set()
+        for path in self.prioritized_paths:
+            if not path:
+                continue
+            key = normalized_path_key(path)
+            if key in seen_keys:
+                continue
+            record = record_by_key.get(key)
+            if record is None:
+                continue
+            prioritized_records.append(record)
+            seen_keys.add(key)
+        remaining_records = [record for record in self.records if normalized_path_key(record.path) not in seen_keys]
+        return prioritized_records, remaining_records
+
+    def _hydrate_records_batch(
+        self,
+        store: DecisionStore,
+        records: list[ImageRecord],
+    ) -> dict[str, SessionAnnotation]:
+        if not records or self._cancelled:
+            return {}
+        records_by_path = {record.path: record for record in records}
+        persisted = store.load_annotations_for_paths(
+            self.session_id,
+            records_by_path,
+            list(records_by_path),
+        )
+        hydrated: dict[str, SessionAnnotation] = {}
+        for record in records:
+            if self._cancelled:
+                return {}
+            sidecar = load_sidecar_annotation(record.path)
+            if not sidecar.is_empty:
+                hydrated[record.path] = sidecar
+            persisted_annotation = persisted.get(record.path)
+            if persisted_annotation is not None and not persisted_annotation.is_empty:
+                hydrated[record.path] = persisted_annotation
+        return hydrated
 
     def run(self) -> None:
         try:
+            if self._cancelled:
+                return
             store = DecisionStore()
-            persisted = store.load_annotations(self.session_id, list(self.records))
-            prioritized_keys = {normalized_path_key(path) for path in self.prioritized_paths if path}
-            prioritized_records: list[ImageRecord] = []
-            remaining_records: list[ImageRecord] = []
-            for record in self.records:
-                if normalized_path_key(record.path) in prioritized_keys:
-                    prioritized_records.append(record)
-                else:
-                    remaining_records.append(record)
-            ordered_records = [*prioritized_records, *remaining_records]
+            prioritized_records, remaining_records = self._partition_records()
 
-            chunk: dict[str, SessionAnnotation] = {}
-            for index, record in enumerate(ordered_records, start=1):
-                sidecar = load_sidecar_annotation(record.path)
-                if not sidecar.is_empty:
-                    chunk[record.path] = sidecar
-                persisted_annotation = persisted.get(record.path)
-                if persisted_annotation is not None and not persisted_annotation.is_empty:
-                    chunk[record.path] = persisted_annotation
-                if chunk and (index % 120 == 0):
+            for batch in self._record_batches(prioritized_records, self.PRIORITY_BATCH_SIZE):
+                if self._cancelled:
+                    return
+                chunk = self._hydrate_records_batch(store, batch)
+                if chunk:
                     self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
-                    chunk.clear()
 
-            if chunk:
-                self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
+            for batch in self._record_batches(remaining_records, self.BACKGROUND_BATCH_SIZE):
+                if self._cancelled:
+                    return
+                chunk = self._hydrate_records_batch(store, batch)
+                if chunk:
+                    self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
+
+            if self._cancelled:
+                return
             self.signals.finished.emit(self.scope_key, self.token)
+        except Exception as exc:  # pragma: no cover - desktop/runtime path
+            self.signals.failed.emit(self.scope_key, self.token, str(exc))
+
+
+class ScopeEnrichmentSignals(QObject):
+    finished = Signal(str, int, object, object, object)
+    failed = Signal(str, int, str)
+
+
+class ScopeEnrichmentTask(QRunnable):
+    def __init__(
+        self,
+        *,
+        scope_key: str,
+        token: int,
+        session_id: str,
+        folder_path: str,
+        include_all_scope_events: bool,
+        records: tuple[ImageRecord, ...],
+        ai_bundle: AIBundle | None,
+        review_bundle: ReviewIntelligenceBundle | None,
+    ) -> None:
+        super().__init__()
+        self.scope_key = scope_key
+        self.token = token
+        self.session_id = session_id
+        self.folder_path = folder_path
+        self.include_all_scope_events = include_all_scope_events
+        self.records = records
+        self.ai_bundle = ai_bundle
+        self.review_bundle = review_bundle
+        self.signals = ScopeEnrichmentSignals()
+        self._cancelled = False
+        self.setAutoDelete(True)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        try:
+            if self._cancelled:
+                return
+            store = DecisionStore()
+            if self.folder_path:
+                correction_events = store.load_correction_events(self.session_id, self.folder_path)
+            elif self.include_all_scope_events and self.records:
+                correction_events = store.load_correction_events(self.session_id)
+            else:
+                correction_events = []
+            if self._cancelled:
+                return
+            taste_profile, recommendations = build_burst_recommendations(
+                list(self.records),
+                ai_bundle=self.ai_bundle,
+                review_bundle=self.review_bundle,
+                correction_events=correction_events,
+                should_cancel=lambda: self._cancelled,
+            )
+            if self._cancelled:
+                return
+            self.signals.finished.emit(
+                self.scope_key,
+                self.token,
+                correction_events,
+                taste_profile,
+                recommendations,
+            )
         except Exception as exc:  # pragma: no cover - desktop/runtime path
             self.signals.failed.emit(self.scope_key, self.token, str(exc))
 
@@ -365,6 +484,7 @@ class MainWindow(QMainWindow):
     AI_REFERENCE_BANK_KEY = "ai/reference_bank_path"
     BURST_GROUPS_KEY = "view/burst_groups"
     BURST_STACKS_KEY = "view/burst_stacks"
+    AUTO_REVIEW_INTELLIGENCE_MAX_RECORDS = 2400
 
     def __init__(self) -> None:
         super().__init__()
@@ -418,6 +538,8 @@ class MainWindow(QMainWindow):
         self._catalog_pool.setMaxThreadCount(1)
         self._review_intelligence_pool = QThreadPool(self)
         self._review_intelligence_pool.setMaxThreadCount(1)
+        self._scope_enrichment_pool = QThreadPool(self)
+        self._scope_enrichment_pool.setMaxThreadCount(1)
         self._annotation_hydration_pool = QThreadPool(self)
         self._annotation_hydration_pool.setMaxThreadCount(1)
         self._scan_token = 0
@@ -425,6 +547,8 @@ class MainWindow(QMainWindow):
         self._active_scan_tasks: dict[int, FolderScanTask] = {}
         self._active_ai_task: AIRunTask | None = None
         self._active_review_intelligence_task: BuildReviewIntelligenceTask | None = None
+        self._active_scope_enrichment_task: ScopeEnrichmentTask | None = None
+        self._scope_enrichment_token = 0
         self._review_intelligence_token = 0
         self._active_annotation_hydration_task: AnnotationHydrationTask | None = None
         self._annotation_hydration_token = 0
@@ -434,6 +558,19 @@ class MainWindow(QMainWindow):
         self._annotation_reapply_timer.setSingleShot(True)
         self._annotation_reapply_timer.setInterval(90)
         self._annotation_reapply_timer.timeout.connect(self._flush_annotation_hydration_updates)
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scheduled = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
+        self._review_chunk_dirty_paths: set[str] = set()
+        self._review_chunk_flush_timer = QTimer(self)
+        self._review_chunk_flush_timer.setSingleShot(True)
+        self._review_chunk_flush_timer.setInterval(120)
+        self._review_chunk_flush_timer.timeout.connect(self._flush_review_chunk_updates)
+        self._scope_enrichment_debounce_timer = QTimer(self)
+        self._scope_enrichment_debounce_timer.setSingleShot(True)
+        self._scope_enrichment_debounce_timer.setInterval(220)
+        self._scope_enrichment_debounce_timer.timeout.connect(self._run_scope_enrichment_debounced)
         self._active_ai_training_task: object | None = None
         self._ai_training_context: AITrainingExecutionContext | None = None
         self._ai_training_pipeline: AITrainingPipelineState | None = None
@@ -547,7 +684,15 @@ class MainWindow(QMainWindow):
         self._filter_metadata_record_paths: set[str] = set()
         self._filter_metadata_loaded_paths: set[str] = set()
         self._filter_metadata_requested_paths: set[str] = set()
-        self._filter_metadata_queue: list[str] = []
+        self._filter_metadata_queue: deque[str] = deque()
+        self._filter_metadata_queue_limit = 720
+        self._metadata_membership_dirty_paths: set[str] = set()
+        self._metadata_scroll_last_value = 0
+        self._metadata_scroll_direction = 1
+        self._metadata_scroll_prefetch_timer = QTimer(self)
+        self._metadata_scroll_prefetch_timer.setSingleShot(True)
+        self._metadata_scroll_prefetch_timer.setInterval(80)
+        self._metadata_scroll_prefetch_timer.timeout.connect(self._run_metadata_scroll_prefetch)
         self._metadata_request_timer = QTimer(self)
         self._metadata_request_timer.setInterval(45)
         self._metadata_request_timer.timeout.connect(self._drain_filter_metadata_requests)
@@ -847,6 +992,7 @@ class MainWindow(QMainWindow):
         self.grid.reject_requested.connect(self._toggle_reject)
         self.grid.context_menu_requested.connect(self._show_grid_context_menu)
         self.grid.selection_changed.connect(self._handle_grid_selection_changed)
+        self.grid.verticalScrollBar().valueChanged.connect(self._schedule_metadata_scroll_prefetch)
         self.preview.compare_mode_changed.connect(self._handle_preview_compare_mode_changed)
         self.preview.auto_bracket_mode_changed.connect(self._handle_preview_auto_bracket_mode_changed)
         self.preview.compare_count_changed.connect(self._handle_preview_compare_count_changed)
@@ -2753,9 +2899,13 @@ class MainWindow(QMainWindow):
 
     def _handle_workflow_export_progress(self, current: int, total: int, message: str) -> None:
         dialog = self._show_workflow_progress_dialog(total)
-        dialog.setRange(0, max(1, total))
-        dialog.setValue(min(max(current, 0), max(1, total)))
-        dialog.setLabelText(message or "Saving workflow outputs...")
+        self._update_progress_dialog(
+            dialog,
+            current=current,
+            total=total,
+            message=message,
+            default_label="Saving workflow outputs...",
+        )
 
     def _handle_workflow_export_finished(self, written_paths: object) -> None:
         context = self._workflow_context
@@ -2838,9 +2988,13 @@ class MainWindow(QMainWindow):
 
     def _handle_catalog_refresh_progress(self, current: int, total: int, message: str) -> None:
         dialog = self._show_catalog_progress_dialog(total)
-        dialog.setRange(0, max(1, total))
-        dialog.setValue(min(max(current, 0), max(1, total)))
-        dialog.setLabelText(message or "Refreshing global catalog...")
+        self._update_progress_dialog(
+            dialog,
+            current=current,
+            total=total,
+            message=message,
+            default_label="Refreshing global catalog...",
+        )
 
     def _handle_catalog_refresh_finished(self, result: object) -> None:
         summary = result if isinstance(result, CatalogRefreshSummary) else None
@@ -2868,9 +3022,13 @@ class MainWindow(QMainWindow):
 
     def _handle_batch_rename_progress(self, current: int, total: int, message: str) -> None:
         dialog = self._show_batch_rename_progress_dialog(total)
-        dialog.setRange(0, max(1, total))
-        dialog.setValue(min(max(current, 0), max(1, total)))
-        dialog.setLabelText(message or "Applying batch rename...")
+        self._update_progress_dialog(
+            dialog,
+            current=current,
+            total=total,
+            message=message,
+            default_label="Applying batch rename...",
+        )
 
     def _handle_batch_rename_finished(self, _applied_moves: object) -> None:
         context = self._batch_rename_context
@@ -2919,9 +3077,13 @@ class MainWindow(QMainWindow):
 
     def _handle_resize_progress(self, current: int, total: int, message: str) -> None:
         dialog = self._show_resize_progress_dialog(total)
-        dialog.setRange(0, max(1, total))
-        dialog.setValue(min(max(current, 0), max(1, total)))
-        dialog.setLabelText(message or "Saving resized images...")
+        self._update_progress_dialog(
+            dialog,
+            current=current,
+            total=total,
+            message=message,
+            default_label="Saving resized images...",
+        )
 
     def _handle_resize_finished(self, written_paths: object) -> None:
         context = self._resize_context
@@ -2956,9 +3118,13 @@ class MainWindow(QMainWindow):
 
     def _handle_convert_progress(self, current: int, total: int, message: str) -> None:
         dialog = self._show_convert_progress_dialog(total)
-        dialog.setRange(0, max(1, total))
-        dialog.setValue(min(max(current, 0), max(1, total)))
-        dialog.setLabelText(message or "Saving converted images...")
+        self._update_progress_dialog(
+            dialog,
+            current=current,
+            total=total,
+            message=message,
+            default_label="Saving converted images...",
+        )
 
     def _handle_convert_finished(self, written_paths: object) -> None:
         context = self._convert_context
@@ -2995,12 +3161,22 @@ class MainWindow(QMainWindow):
     def _handle_archive_progress(self, current: int, total: int, message: str) -> None:
         context = self._archive_context
         dialog = self._show_archive_progress_dialog(total, title="Extract Archive" if context and context.mode == "extract" else "Create Archive")
-        dialog.setRange(0, max(1, total))
-        dialog.setValue(min(max(current, 0), max(1, total)))
         if context is not None and context.mode == "extract":
-            dialog.setLabelText(message or "Extracting archive...")
+            self._update_progress_dialog(
+                dialog,
+                current=current,
+                total=total,
+                message=message,
+                default_label="Extracting archive...",
+            )
         else:
-            dialog.setLabelText(message or "Creating archive...")
+            self._update_progress_dialog(
+                dialog,
+                current=current,
+                total=total,
+                message=message,
+                default_label="Creating archive...",
+            )
 
     def _handle_archive_finished(self, result: object) -> None:
         context = self._archive_context
@@ -3259,6 +3435,20 @@ class MainWindow(QMainWindow):
         if controller is None:
             return
         controller.close()
+
+    def _update_progress_dialog(
+        self,
+        dialog: QProgressDialog,
+        *,
+        current: int,
+        total: int,
+        message: str,
+        default_label: str,
+    ) -> None:
+        upper = max(1, int(total))
+        dialog.setRange(0, upper)
+        dialog.setValue(min(max(int(current), 0), upper))
+        dialog.setLabelText(message or default_label)
 
     def _show_resize_progress_dialog(self, total_steps: int) -> QProgressDialog:
         dialog = self._show_job_progress_dialog(
@@ -3576,6 +3766,13 @@ class MainWindow(QMainWindow):
         self._sync_record_filter_controls()
         self._ensure_filter_metadata_index()
         self._refresh_filter_toolbar_menu()
+        if (
+            self._all_records
+            and self._review_intelligence is None
+            and self._active_review_intelligence_task is None
+            and self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
+        ):
+            self._start_review_intelligence_analysis(force=True)
         self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
         self._apply_records_view(current_path=current_path)
         if not self._records:
@@ -6134,12 +6331,17 @@ class MainWindow(QMainWindow):
         token = self._scan_token
         self._scan_showed_cached = False
         self._scan_in_progress = True
+        self._cancel_scope_enrichment_task()
         self._annotation_hydration_token += 1
+        if self._active_annotation_hydration_task is not None:
+            self._active_annotation_hydration_task.cancel()
         self._active_annotation_hydration_task = None
         self._annotation_hydration_dirty_paths.clear()
         self._annotation_hydration_pending_clear_paths.clear()
         self._annotation_reapply_timer.stop()
         self._review_intelligence_token += 1
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
         if self._active_review_intelligence_task is not None:
             self._active_review_intelligence_task.cancel()
             self._active_review_intelligence_task = None
@@ -6167,6 +6369,11 @@ class MainWindow(QMainWindow):
             self._filter_metadata_by_path = {}
             self._filter_metadata_record_paths = set()
             self._filter_metadata_loaded_paths = set()
+            self._filter_metadata_requested_paths = set()
+            self._filter_metadata_queue = deque()
+            self._metadata_membership_dirty_paths = set()
+            self._metadata_scroll_prefetch_timer.stop()
+            self._metadata_request_timer.stop()
             self.grid.set_empty_message(f"Scanning {Path(folder).name}...")
             self.grid.set_items([])
             self._set_annotation_views()
@@ -6197,12 +6404,17 @@ class MainWindow(QMainWindow):
             self._cancel_tool_mode(show_message=False)
         self._scan_in_progress = False
         self._scan_token += 1
+        self._cancel_scope_enrichment_task()
         self._annotation_hydration_token += 1
+        if self._active_annotation_hydration_task is not None:
+            self._active_annotation_hydration_task.cancel()
         self._active_annotation_hydration_task = None
         self._annotation_hydration_dirty_paths.clear()
         self._annotation_hydration_pending_clear_paths.clear()
         self._annotation_reapply_timer.stop()
         self._review_intelligence_token += 1
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
         if self._active_review_intelligence_task is not None:
             self._active_review_intelligence_task.cancel()
             self._active_review_intelligence_task = None
@@ -6214,11 +6426,15 @@ class MainWindow(QMainWindow):
         self._apply_loaded_records(records)
         self.statusBar().showMessage(f"Loaded {scope_label} ({len(records)} image bundle(s))")
 
-    def _apply_loaded_records(self, records: list[ImageRecord]) -> None:
+    def _apply_loaded_records(self, records: list[ImageRecord], *, defer_enrichment: bool = False) -> None:
         self._all_records = records
         self._all_records_by_path = {record.path: record for record in records}
         self._edited_candidates_cache = {}
         self._review_intelligence = None
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scheduled = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
         self._records_view_cache.mark(ViewInvalidationReason.LOAD_CHANGED)
         self._reset_filter_metadata_index(records)
         current_paths = {record.path for record in records}
@@ -6227,15 +6443,129 @@ class MainWindow(QMainWindow):
             for path, annotation in self._annotations.items()
             if path in current_paths
         }
-        self._load_correction_events_for_current_folder()
-        self._refresh_taste_and_burst_recommendations()
+        if defer_enrichment:
+            self._correction_events = []
+            self._taste_profile = TasteProfile()
+            self._burst_recommendations = {}
+            self._workflow_insights_by_path = {}
+            self._apply_records_view()
+            self._deferred_enrichment_pending = True
+            self._deferred_enrichment_scope_key = self._current_scope_key()
+            self._deferred_enrichment_token = self._scan_token
+            return
+        self._correction_events = []
+        self._taste_profile = TasteProfile()
+        self._burst_recommendations = {}
+        self._workflow_insights_by_path = {}
         self._apply_records_view()
+        self._start_scope_enrichment_task(records)
         self._start_annotation_hydration(records)
         self._start_review_intelligence_analysis()
+
+    def _schedule_loaded_records_enrichment(self) -> None:
+        if not self._deferred_enrichment_pending or self._deferred_enrichment_scheduled:
+            return
+        self._deferred_enrichment_scheduled = True
+        QTimer.singleShot(0, self._run_loaded_records_enrichment)
+
+    def _run_loaded_records_enrichment(self) -> None:
+        self._deferred_enrichment_scheduled = False
+        if not self._deferred_enrichment_pending:
+            return
+        if (
+            self._deferred_enrichment_token != self._scan_token
+            or self._deferred_enrichment_scope_key != self._current_scope_key()
+        ):
+            self._deferred_enrichment_pending = False
+            self._deferred_enrichment_scope_key = ""
+            self._deferred_enrichment_token = 0
+            return
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
+        records = list(self._all_records)
+        self._start_scope_enrichment_task(records)
+        self._start_annotation_hydration(records)
+        self._start_review_intelligence_analysis()
+
+    def _cancel_scope_enrichment_task(self) -> None:
+        self._scope_enrichment_debounce_timer.stop()
+        task = self._active_scope_enrichment_task
+        if task is None:
+            return
+        task.cancel()
+        self._active_scope_enrichment_task = None
+
+    def _schedule_scope_enrichment_refresh(self) -> None:
+        if not self._all_records:
+            return
+        self._scope_enrichment_debounce_timer.start()
+
+    def _run_scope_enrichment_debounced(self) -> None:
+        self._start_scope_enrichment_task()
+
+    def _start_scope_enrichment_task(self, records: list[ImageRecord] | None = None) -> None:
+        active_records = list(records) if records is not None else list(self._all_records)
+        if not active_records:
+            self._cancel_scope_enrichment_task()
+            self._correction_events = []
+            self._taste_profile = TasteProfile()
+            self._burst_recommendations = {}
+            self._workflow_insights_by_path = {}
+            return
+
+        self._cancel_scope_enrichment_task()
+        self._scope_enrichment_token += 1
+        token = self._scope_enrichment_token
+        scope_key = self._current_scope_key()
+        task = ScopeEnrichmentTask(
+            scope_key=scope_key,
+            token=token,
+            session_id=self._session_id,
+            folder_path=self._current_folder,
+            include_all_scope_events=(not self._current_folder and self._scope_kind != "folder"),
+            records=tuple(active_records),
+            ai_bundle=self._ai_bundle,
+            review_bundle=self._review_intelligence,
+        )
+        task.signals.finished.connect(self._handle_scope_enrichment_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_scope_enrichment_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_scope_enrichment_task = task
+        self._scope_enrichment_pool.start(task)
+
+    def _handle_scope_enrichment_finished(
+        self,
+        scope_key: str,
+        token: int,
+        correction_events: object,
+        taste_profile: object,
+        recommendations: object,
+    ) -> None:
+        if token != self._scope_enrichment_token or scope_key != self._current_scope_key():
+            return
+        self._active_scope_enrichment_task = None
+        self._correction_events = list(correction_events) if isinstance(correction_events, list) else []
+        self._taste_profile = taste_profile if isinstance(taste_profile, TasteProfile) else TasteProfile()
+        if isinstance(recommendations, dict):
+            self._burst_recommendations = {str(path): value for path, value in recommendations.items() if isinstance(path, str)}
+        else:
+            self._burst_recommendations = {}
+        self._refresh_workflow_insights_cache(force_full=True)
+        current_path = self._current_visible_record_path()
+        self._apply_records_view(current_path=current_path)
+
+    def _handle_scope_enrichment_failed(self, scope_key: str, token: int, message: str) -> None:
+        if token != self._scope_enrichment_token or scope_key != self._current_scope_key():
+            return
+        self._active_scope_enrichment_task = None
+        self.statusBar().showMessage(f"Workflow enrichment fallback active: {message}")
 
     def _start_annotation_hydration(self, records: list[ImageRecord]) -> None:
         self._annotation_hydration_token += 1
         token = self._annotation_hydration_token
+        previous_task = self._active_annotation_hydration_task
+        if previous_task is not None:
+            previous_task.cancel()
         self._active_annotation_hydration_task = None
         self._annotation_hydration_dirty_paths.clear()
         self._annotation_hydration_pending_clear_paths = {record.path for record in records if record.path in self._annotations}
@@ -6303,13 +6633,25 @@ class MainWindow(QMainWindow):
         self._annotation_hydration_pending_clear_paths.clear()
         self.statusBar().showMessage(f"Loaded folder, but annotation hydration failed: {message}")
 
-    def _start_review_intelligence_analysis(self) -> None:
+    def _start_review_intelligence_analysis(self, *, force: bool = False) -> None:
         if not self._all_records:
             self._review_intelligence = None
+            self._review_chunk_flush_timer.stop()
+            self._review_chunk_dirty_paths.clear()
+            return
+        if not force and len(self._all_records) > self.AUTO_REVIEW_INTELLIGENCE_MAX_RECORDS:
+            self._review_intelligence = None
+            self._review_chunk_flush_timer.stop()
+            self._review_chunk_dirty_paths.clear()
+            self.statusBar().showMessage(
+                f"Loaded {len(self._all_records)} image bundle(s). Smart groups are deferred until requested."
+            )
             return
         previous_task = self._active_review_intelligence_task
         if previous_task is not None:
             previous_task.cancel()
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
         self._review_intelligence_token += 1
         token = self._review_intelligence_token
         scope_key = self._current_scope_key()
@@ -6320,6 +6662,7 @@ class MainWindow(QMainWindow):
         )
         task.signals.started.connect(self._handle_review_intelligence_started, Qt.ConnectionType.QueuedConnection)
         task.signals.progress.connect(self._handle_review_intelligence_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.chunk.connect(self._handle_review_intelligence_chunk, Qt.ConnectionType.QueuedConnection)
         task.signals.cancelled.connect(self._handle_review_intelligence_cancelled, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(self._handle_review_intelligence_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_review_intelligence_failed, Qt.ConnectionType.QueuedConnection)
@@ -6340,19 +6683,90 @@ class MainWindow(QMainWindow):
         if current in {0, 1, total} or current % 80 == 0:
             self.statusBar().showMessage(f"Building smart groups ({current}/{total})...")
 
+    def _handle_review_intelligence_chunk(self, folder: str, token: int, payload: object) -> None:
+        if token != self._review_intelligence_token or folder != self._current_scope_key():
+            return
+        if not isinstance(payload, dict):
+            return
+        groups_payload = payload.get("groups")
+        insights_payload = payload.get("insights")
+        groups = tuple(group for group in groups_payload if hasattr(group, "id")) if isinstance(groups_payload, (list, tuple)) else ()
+        if not isinstance(insights_payload, dict):
+            return
+        if self._review_intelligence is None:
+            merged_groups: dict[str, object] = {}
+            merged_insights: dict[str, object] = {}
+        else:
+            merged_groups = {group.id: group for group in self._review_intelligence.groups}
+            merged_insights = dict(self._review_intelligence.insights_by_path)
+        changed_paths: set[str] = set()
+        for group in groups:
+            merged_groups[group.id] = group
+            changed_paths.update(path for path in getattr(group, "member_paths", ()) if isinstance(path, str) and path)
+        for path, insight in insights_payload.items():
+            if isinstance(path, str) and path:
+                merged_insights[path] = insight
+        if not changed_paths:
+            changed_paths.update(
+                path
+                for path in insights_payload
+                if isinstance(path, str) and path in self._record_index_by_path
+            )
+        self._review_intelligence = ReviewIntelligenceBundle(
+            groups=tuple(merged_groups.values()),
+            insights_by_path=merged_insights,
+        )
+        self._review_chunk_dirty_paths.update(path for path in changed_paths if path)
+        self._review_chunk_flush_timer.start()
+
+    def _flush_review_chunk_updates(self) -> None:
+        if not self._review_chunk_dirty_paths:
+            return
+        changed_paths = sorted(self._review_chunk_dirty_paths)
+        self._review_chunk_dirty_paths.clear()
+        current_path = self._current_visible_record_path()
+        if self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}:
+            self._records_view_cache.mark(ViewInvalidationReason.REVIEW_CHANGED, paths=changed_paths)
+            self._apply_records_view(current_path=current_path)
+            return
+        changed_visible_paths = tuple(path for path in changed_paths if path in self._record_index_by_path)
+        self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
+        if changed_visible_paths:
+            self.grid.update_items(
+                GridDeltaUpdate(
+                    changed_paths=changed_visible_paths,
+                    selection_anchor=self.grid.current_index(),
+                    preserve_pixmap_cache=True,
+                )
+            )
+        self._rebuild_visible_preview_group_indexes()
+        self._refresh_burst_group_view()
+        if current_path:
+            index = self._record_index_by_path.get(current_path)
+            if index is not None:
+                self.grid.set_current_index(index)
+        self._update_filter_summary()
+        self._update_action_states()
+        self._update_status()
+
     def _handle_review_intelligence_cancelled(self, folder: str, token: int) -> None:
         if token != self._review_intelligence_token or folder != self._current_scope_key():
             return
         self._active_review_intelligence_task = None
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
 
     def _handle_review_intelligence_finished(self, folder: str, token: int, bundle: ReviewIntelligenceBundle) -> None:
         if token != self._review_intelligence_token or folder != self._current_scope_key():
             return
         self._active_review_intelligence_task = None
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
         self._review_intelligence = bundle
         current_path = self._current_visible_record_path()
-        self._refresh_taste_and_burst_recommendations()
+        self._records_view_cache.mark(ViewInvalidationReason.REVIEW_CHANGED)
         self._apply_records_view(current_path=current_path)
+        self._start_scope_enrichment_task()
         if self.preview.isVisible():
             index = self.grid.current_index()
             if index >= 0:
@@ -6362,6 +6776,8 @@ class MainWindow(QMainWindow):
         if token != self._review_intelligence_token or folder != self._current_scope_key():
             return
         self._active_review_intelligence_task = None
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
         self._review_intelligence = None
         self.statusBar().showMessage(f"Smart grouping fallback active: {message}")
 
@@ -6369,7 +6785,11 @@ class MainWindow(QMainWindow):
         self._filter_metadata_by_path = {}
         self._filter_metadata_loaded_paths = set()
         self._filter_metadata_requested_paths = set()
-        self._filter_metadata_queue = []
+        self._filter_metadata_queue = deque()
+        self._metadata_membership_dirty_paths = set()
+        self._metadata_scroll_last_value = self.grid.verticalScrollBar().value()
+        self._metadata_scroll_direction = 1
+        self._metadata_scroll_prefetch_timer.stop()
         self._metadata_request_timer.stop()
         self._filter_metadata_record_paths = {record.path for record in records}
         for record in records:
@@ -6378,7 +6798,7 @@ class MainWindow(QMainWindow):
                 self._filter_metadata_by_path[record.path] = cached
                 self._filter_metadata_loaded_paths.add(record.path)
         if records:
-            self._enqueue_filter_metadata_paths([record.path for record in records[:180]])
+            self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
 
     def _handle_filter_metadata_ready(self, key, metadata) -> None:
         record = self._all_records_by_path.get(key.path)
@@ -6387,8 +6807,12 @@ class MainWindow(QMainWindow):
         self._filter_metadata_requested_paths.discard(record.path)
         self._filter_metadata_by_path[record.path] = metadata
         self._filter_metadata_loaded_paths.add(record.path)
-        if self._filter_query.requires_metadata or self._burst_groups_enabled or self._burst_stacks_enabled:
-            self._metadata_reapply_timer.start()
+        if self._filter_query.requires_metadata:
+            if self._metadata_changes_filter_membership(record, metadata):
+                self._metadata_membership_dirty_paths.add(record.path)
+                self._metadata_reapply_timer.start()
+            else:
+                self._update_filter_summary()
         else:
             self._update_filter_summary()
         if self._filter_metadata_queue and not self._metadata_request_timer.isActive():
@@ -6397,10 +6821,46 @@ class MainWindow(QMainWindow):
     def _handle_metadata_filter_batch_update(self) -> None:
         current_path = self._current_visible_record_path()
         if self._filter_query.requires_metadata:
+            if not self._metadata_membership_dirty_paths:
+                return
+            self._metadata_membership_dirty_paths.clear()
             self._apply_records_view(current_path=current_path)
             return
         if self._burst_groups_enabled or self._burst_stacks_enabled:
             self._refresh_burst_group_view()
+
+    def _metadata_prefetch_seed_paths(self, *, lookahead: int = 120) -> list[str]:
+        visible_paths = self.grid.visible_item_paths(limit=220)
+        if not visible_paths:
+            return [record.path for record in self._all_records[: max(80, lookahead)]]
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for path in visible_paths:
+            if path and path not in seen:
+                ordered.append(path)
+                seen.add(path)
+
+        visible_indexes = [self._record_index_by_path[path] for path in visible_paths if path in self._record_index_by_path]
+        if not visible_indexes:
+            return ordered
+        min_visible = min(visible_indexes)
+        max_visible = max(visible_indexes)
+        direction = 1 if self._metadata_scroll_direction >= 0 else -1
+        if direction >= 0:
+            start = max_visible + 1
+            end = min(len(self._records), start + max(0, lookahead))
+            candidate_paths = [self._records[index].path for index in range(start, end)]
+        else:
+            end = min_visible
+            start = max(0, end - max(0, lookahead))
+            candidate_paths = [self._records[index].path for index in range(end - 1, start - 1, -1)]
+
+        for path in candidate_paths:
+            if path and path not in seen:
+                ordered.append(path)
+                seen.add(path)
+        return ordered
 
     def _enqueue_filter_metadata_paths(
         self,
@@ -6427,11 +6887,65 @@ class MainWindow(QMainWindow):
         if not additions:
             return
         if front:
-            self._filter_metadata_queue = [*additions, *self._filter_metadata_queue]
+            for path in reversed(additions):
+                self._filter_metadata_queue.appendleft(path)
         else:
             self._filter_metadata_queue.extend(additions)
+        if len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
+            while len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
+                self._filter_metadata_queue.pop()
         if not self._metadata_request_timer.isActive():
             self._metadata_request_timer.start()
+
+    def _schedule_metadata_scroll_prefetch(self, value: int) -> None:
+        if not self._records:
+            return
+        if value != self._metadata_scroll_last_value:
+            self._metadata_scroll_direction = 1 if value > self._metadata_scroll_last_value else -1
+            self._metadata_scroll_last_value = value
+        self._metadata_scroll_prefetch_timer.start()
+
+    def _run_metadata_scroll_prefetch(self) -> None:
+        if not self._records:
+            return
+        self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
+
+    def _metadata_changes_filter_membership(self, record: ImageRecord, metadata: CaptureMetadata) -> bool:
+        if not self._filter_query.requires_metadata:
+            return False
+        annotation = self._annotations.get(record.path, SessionAnnotation())
+        needs_ai = (
+            self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
+            or self._filter_query.ai_state != AIStateFilter.ALL
+        )
+        needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
+        needs_workflow = (
+            self._filter_query.quick_filter in {FilterMode.AI_DISAGREEMENTS, FilterMode.REVIEW_ROUNDS}
+            or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
+            or bool(normalize_review_round(self._filter_query.review_round))
+        )
+        ai_result = self._ai_result_for_record(record) if needs_ai else None
+        review_insight = self._review_insight_for_record(record) if needs_review else None
+        workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
+        old_match = matches_record_query(
+            record,
+            self._filter_query,
+            annotation=annotation,
+            ai_result=ai_result,
+            metadata=EMPTY_METADATA,
+            review_insight=review_insight,
+            workflow_insight=workflow_insight,
+        )
+        new_match = matches_record_query(
+            record,
+            self._filter_query,
+            annotation=annotation,
+            ai_result=ai_result,
+            metadata=metadata,
+            review_insight=review_insight,
+            workflow_insight=workflow_insight,
+        )
+        return old_match != new_match
 
     def _drain_filter_metadata_requests(self) -> None:
         if not self._filter_metadata_queue:
@@ -6439,7 +6953,7 @@ class MainWindow(QMainWindow):
             return
         requested = 0
         while self._filter_metadata_queue and requested < 20:
-            path = self._filter_metadata_queue.pop(0)
+            path = self._filter_metadata_queue.popleft()
             if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
                 continue
             record = self._all_records_by_path.get(path)
@@ -6457,7 +6971,7 @@ class MainWindow(QMainWindow):
             return
         self._scan_showed_cached = True
         self.grid.set_empty_message("Choose a folder to start triaging images.")
-        self._apply_loaded_records(records)
+        self._apply_loaded_records(records, defer_enrichment=True)
         if self._ui_mode == "ai":
             self._load_hidden_ai_results_for_current_folder(show_message=False)
         self.statusBar().showMessage(f"Loaded cached folder index for {self._current_folder}, refreshing from disk...")
@@ -6469,6 +6983,12 @@ class MainWindow(QMainWindow):
 
         self._scan_in_progress = False
         self.grid.set_empty_message("Choose a folder to start triaging images.")
+        if self._scan_showed_cached and self._records_match_for_refresh(self._all_records, records):
+            self._schedule_loaded_records_enrichment()
+            if self._ui_mode == "ai":
+                self._load_hidden_ai_results_for_current_folder(show_message=False)
+            self.statusBar().showMessage(f"Refreshed {self._current_folder}")
+            return
         self._apply_loaded_records(records)
         if self._ui_mode == "ai":
             self._load_hidden_ai_results_for_current_folder(show_message=False)
@@ -6480,11 +7000,18 @@ class MainWindow(QMainWindow):
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
             return
         self._scan_in_progress = False
+        self._cancel_scope_enrichment_task()
         self._annotation_hydration_token += 1
         self._active_annotation_hydration_task = None
         self._annotation_hydration_dirty_paths.clear()
         self._annotation_hydration_pending_clear_paths.clear()
         self._annotation_reapply_timer.stop()
+        self._deferred_enrichment_pending = False
+        self._deferred_enrichment_scheduled = False
+        self._deferred_enrichment_scope_key = ""
+        self._deferred_enrichment_token = 0
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
         self._all_records = []
         self._all_records_by_path = {}
         self._records = []
@@ -6506,7 +7033,9 @@ class MainWindow(QMainWindow):
         self._filter_metadata_record_paths = set()
         self._filter_metadata_loaded_paths = set()
         self._filter_metadata_requested_paths = set()
-        self._filter_metadata_queue = []
+        self._filter_metadata_queue = deque()
+        self._metadata_membership_dirty_paths = set()
+        self._metadata_scroll_prefetch_timer.stop()
         self.grid.set_empty_message("Could not scan this folder.")
         self.grid.set_items([])
         self._refresh_recycle_button()
@@ -6523,6 +7052,7 @@ class MainWindow(QMainWindow):
     def _handle_grid_selection_changed(self) -> None:
         self._update_action_states()
         self._update_status()
+        self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(lookahead=100), front=True)
 
     def _show_ai_menu(self) -> None:
         if self.actions is None:
@@ -6595,6 +7125,29 @@ class MainWindow(QMainWindow):
             return False
         return self._load_ai_results(report_dir, show_message=show_message)
 
+    @staticmethod
+    def _records_match_for_refresh(existing: list[ImageRecord], incoming: list[ImageRecord]) -> bool:
+        if len(existing) != len(incoming):
+            return False
+        for left_record, right_record in zip(existing, incoming):
+            if (
+                left_record.path != right_record.path
+                or left_record.size != right_record.size
+                or left_record.modified_ns != right_record.modified_ns
+                or left_record.companion_paths != right_record.companion_paths
+                or left_record.edited_paths != right_record.edited_paths
+                or len(left_record.variants) != len(right_record.variants)
+            ):
+                return False
+            for left_variant, right_variant in zip(left_record.variants, right_record.variants):
+                if (
+                    left_variant.path != right_variant.path
+                    or left_variant.size != right_variant.size
+                    or left_variant.modified_ns != right_variant.modified_ns
+                ):
+                    return False
+        return True
+
     def _load_ai_results(self, path: str | Path, *, show_message: bool = True) -> bool:
         try:
             bundle = load_ai_bundle(path)
@@ -6641,7 +7194,7 @@ class MainWindow(QMainWindow):
     def _refresh_ai_state(self) -> None:
         ai_results = self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {}
         self.grid.set_ai_results(ai_results)
-        self._refresh_taste_and_burst_recommendations()
+        self._start_scope_enrichment_task()
         current_path = self._current_visible_record_path()
         if self._all_records:
             self._apply_records_view(current_path=current_path)
@@ -7105,7 +7658,7 @@ class MainWindow(QMainWindow):
         changed_paths: set[str] | None = None,
         force_full: bool = False,
     ) -> None:
-        if force_full or not self._workflow_insights_by_path:
+        if force_full:
             insights: dict[str, RecordWorkflowInsight] = {}
             for record in self._all_records:
                 annotation = self._annotations.get(record.path, SessionAnnotation())
@@ -7124,6 +7677,9 @@ class MainWindow(QMainWindow):
 
         if not changed_paths:
             return
+
+        if not self._workflow_insights_by_path:
+            self._workflow_insights_by_path = {}
 
         for path in changed_paths:
             record = self._record_for_path(path)
@@ -7253,8 +7809,7 @@ class MainWindow(QMainWindow):
             review_round=preferred_annotation.review_round,
             payload=payload,
         )
-        self._load_correction_events_for_current_folder()
-        self._refresh_taste_and_burst_recommendations()
+        self._schedule_scope_enrichment_refresh()
 
     def _record_annotation_feedback_event(
         self,
@@ -7283,7 +7838,6 @@ class MainWindow(QMainWindow):
             review_round=annotation.review_round,
             payload=payload,
         )
-        self._load_correction_events_for_current_folder()
 
     def _capture_annotation_feedback(
         self,
@@ -7913,6 +8467,7 @@ class MainWindow(QMainWindow):
             self._update_action_states()
             self._annotations = self._decision_store.load_annotations(self._session_id, self._all_records)
             self._apply_records_view()
+            self._start_scope_enrichment_task()
 
         if winner_changed:
             self.statusBar().showMessage(f"Accepted handling set to {self._winner_mode.value}")
@@ -8271,7 +8826,6 @@ class MainWindow(QMainWindow):
         self._set_annotation_views(paths)
         self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
         self._recalculate_review_counts()
-        self._refresh_ai_summary_cache()
         self._update_filter_summary()
         if current_path:
             next_index = self._record_index_by_path.get(current_path)
@@ -9339,17 +9893,10 @@ class MainWindow(QMainWindow):
 
     def _apply_records_view(self, current_path: str | None = None) -> None:
         reasons, dirty_paths = self._records_view_cache.consume()
-        force_workflow_rebuild = not self._workflow_insights_by_path and bool(self._all_records)
-        if reasons.intersection(
-            {
-                ViewInvalidationReason.SORT_CHANGED,
-                ViewInvalidationReason.FILTER_CHANGED,
-                ViewInvalidationReason.AI_CHANGED,
-                ViewInvalidationReason.REVIEW_CHANGED,
-                ViewInvalidationReason.LOAD_CHANGED,
-            }
-        ):
-            force_workflow_rebuild = True
+        force_workflow_rebuild = (
+            ViewInvalidationReason.AI_CHANGED in reasons
+            and bool(self._all_records)
+        )
         if force_workflow_rebuild or dirty_paths:
             self._refresh_workflow_insights_cache(
                 changed_paths=set(dirty_paths) if dirty_paths else None,
@@ -9389,7 +9936,8 @@ class MainWindow(QMainWindow):
         self._records = records
         self._record_index_by_path = {record.path: index for index, record in enumerate(records)}
         self._recalculate_review_counts()
-        self._refresh_ai_summary_cache()
+        if reasons.intersection({ViewInvalidationReason.LOAD_CHANGED, ViewInvalidationReason.AI_CHANGED}):
+            self._refresh_ai_summary_cache()
         if structural_changed:
             self.grid.set_items(records)
             self._set_annotation_views()
@@ -9429,7 +9977,7 @@ class MainWindow(QMainWindow):
         if records and not restored_current and structural_changed:
             self.grid.set_current_index(0)
         self._last_view_record_paths = next_record_paths
-        self._enqueue_filter_metadata_paths(self.grid.visible_item_paths(limit=240), front=True)
+        self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
         self._refresh_viewport_mode()
         self._update_action_states()
         self._update_status()

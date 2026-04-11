@@ -117,6 +117,7 @@ class _RecordFingerprint:
 class ReviewIntelligenceSignals(QObject):
     started = Signal(str, int, int)
     progress = Signal(str, int, int, int)
+    chunk = Signal(str, int, object)
     finished = Signal(str, int, object)
     failed = Signal(str, int, str)
     cancelled = Signal(str, int)
@@ -148,6 +149,14 @@ class BuildReviewIntelligenceTask(QRunnable):
                     current,
                     total_records,
                 ),
+                chunk_callback=lambda groups, insights: self.signals.chunk.emit(
+                    self.folder,
+                    self.token,
+                    {
+                        "groups": tuple(groups),
+                        "insights": dict(insights),
+                    },
+                ),
             )
         except ReviewIntelligenceCancelled:
             self.signals.cancelled.emit(self.folder, self.token)
@@ -167,6 +176,7 @@ def build_review_intelligence(
     *,
     should_cancel: Callable[[], bool] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    chunk_callback: Callable[[tuple[ReviewGroup, ...], dict[str, ReviewInsight]], None] | None = None,
 ) -> ReviewIntelligenceBundle:
     if not records:
         return ReviewIntelligenceBundle(groups=(), insights_by_path={})
@@ -238,6 +248,8 @@ def build_review_intelligence(
 
     groups: list[ReviewGroup] = []
     insights_by_path: dict[str, ReviewInsight] = {}
+    pending_groups: list[ReviewGroup] = []
+    pending_insights: dict[str, ReviewInsight] = {}
     for component_index, member_paths in enumerate(
         sorted(
             (sorted(paths, key=lambda path: _record_sort_key(path_to_fingerprint[path].record)) for paths in members_by_root.values()),
@@ -264,15 +276,15 @@ def build_review_intelligence(
                 if reason not in reason_set:
                     reason_set.append(reason)
         group_id = f"review-{component_index}"
-        groups.append(
-            ReviewGroup(
-                id=group_id,
-                kind=kind,
-                label=label,
-                member_paths=tuple(member_paths),
-                reasons=tuple(reason_set[:3]),
-            )
+        review_group = ReviewGroup(
+            id=group_id,
+            kind=kind,
+            label=label,
+            member_paths=tuple(member_paths),
+            reasons=tuple(reason_set[:3]),
         )
+        groups.append(review_group)
+        pending_groups.append(review_group)
         for rank, path in enumerate(member_paths, start=1):
             _raise_if_cancelled(should_cancel)
             fingerprint = path_to_fingerprint[path]
@@ -289,6 +301,15 @@ def build_review_intelligence(
             )
             insights_by_path[path] = insight
             insights_by_path[normalized_path_key(path)] = insight
+            pending_insights[path] = insight
+            pending_insights[normalized_path_key(path)] = insight
+        if chunk_callback is not None and pending_groups and len(pending_groups) >= 6:
+            chunk_callback(tuple(pending_groups), dict(pending_insights))
+            pending_groups.clear()
+            pending_insights.clear()
+
+    if chunk_callback is not None and (pending_groups or pending_insights):
+        chunk_callback(tuple(pending_groups), dict(pending_insights))
 
     return ReviewIntelligenceBundle(groups=tuple(groups), insights_by_path=insights_by_path)
 

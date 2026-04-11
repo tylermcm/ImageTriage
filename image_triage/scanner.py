@@ -47,6 +47,7 @@ def _path_key_fast(path: str) -> str:
 @dataclass(slots=True, frozen=True)
 class ScannedFile:
     path: str
+    path_key: str
     name: str
     suffix: str
     size: int
@@ -67,6 +68,7 @@ def scan_folder_quick(folder: str) -> list[ImageRecord]:
 
 def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     folder = normalize_filesystem_path(folder)
+    folder_key = _path_key_fast(folder)
     root_files: list[ScannedFile] = []
     paired_jpegs: dict[str, list[ScannedFile]] = {}
     nested_edit_files: list[ScannedFile] = []
@@ -100,65 +102,84 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     root_files_by_family: dict[str, list[ScannedFile]] = {}
     exact_stems = {scanned.stem_key for scanned in root_files}
     nested_edit_files_by_family: dict[str, list[ScannedFile]] = {}
+    family_by_stem: dict[str, str] = {}
+
+    def _family_for_stem(stem_key: str) -> str:
+        cached_family = family_by_stem.get(stem_key)
+        if cached_family is not None:
+            return cached_family
+        resolved_family = variant_family_key(stem_key, exact_stems)
+        family_by_stem[stem_key] = resolved_family
+        return resolved_family
+
     for scanned in root_files:
-        family = variant_family_key(scanned.stem_key, exact_stems)
+        family = _family_for_stem(scanned.stem_key)
         root_files_by_family.setdefault(family, []).append(scanned)
         if scanned.suffix in RAW_SUFFIXES:
             raws_by_stem.setdefault(scanned.stem_key, []).append(scanned)
         elif scanned.suffix in JPEG_SUFFIXES:
             root_jpegs_by_stem.setdefault(scanned.stem_key, []).append(scanned)
     for scanned in nested_edit_files:
-        family = variant_family_key(scanned.stem_key, exact_stems)
+        family = _family_for_stem(scanned.stem_key)
         nested_edit_files_by_family.setdefault(family, []).append(scanned)
 
-    root_variant_cache: dict[tuple[str, str], list[ScannedFile]] = {}
-    nested_variant_cache: dict[tuple[str, str], list[ScannedFile]] = {}
+    raw_family_by_stem = {stem_key: _family_for_stem(stem_key) for stem_key in raws_by_stem}
 
-    def _sorted_variants_for_family(family: str, stem_key: str) -> tuple[list[ScannedFile], list[ScannedFile]]:
-        cache_key = (family, stem_key)
-        root_cached = root_variant_cache.get(cache_key)
-        nested_cached = nested_variant_cache.get(cache_key)
-        if root_cached is not None and nested_cached is not None:
-            return root_cached, nested_cached
+    remaining_by_family: dict[str, list[ScannedFile]] = {}
+    for scanned in root_files:
+        if scanned.suffix in RAW_SUFFIXES:
+            continue
+        family = _family_for_stem(scanned.stem_key)
+        remaining_by_family.setdefault(family, []).append(scanned)
 
-        root_candidates = [
-            item
-            for item in root_files_by_family.get(family, [])
-            if edit_stem_matches(stem_key, item.stem_key)
-        ]
-        nested_candidates = [
-            item
-            for item in nested_edit_files_by_family.get(family, [])
-            if edit_stem_matches(stem_key, item.stem_key)
-        ]
-        root_cached = sorted(root_candidates, key=lambda item: edited_candidate_sort_key(stem_key, item))
-        nested_cached = sorted(nested_candidates, key=lambda item: edited_candidate_sort_key(stem_key, item))
-        root_variant_cache[cache_key] = root_cached
-        nested_variant_cache[cache_key] = nested_cached
-        return root_cached, nested_cached
+    primary_by_family: dict[str, ScannedFile] = {}
+    for family, family_files in remaining_by_family.items():
+        primary_by_family[family] = sorted(family_files, key=lambda item: root_primary_sort_key(family, item))[0]
+
+    variant_targets_by_family: dict[str, set[str]] = {}
+    for stem_key, family in raw_family_by_stem.items():
+        variant_targets_by_family.setdefault(family, set()).add(stem_key)
+    for family, primary in primary_by_family.items():
+        variant_targets_by_family.setdefault(family, set()).add(primary.stem_key)
+
+    sorted_variants_by_key: dict[tuple[str, str], tuple[list[ScannedFile], list[ScannedFile]]] = {}
+    for family, stems in variant_targets_by_family.items():
+        root_family_files = root_files_by_family.get(family, [])
+        nested_family_files = nested_edit_files_by_family.get(family, [])
+        for stem_key in stems:
+            root_candidates = [item for item in root_family_files if edit_stem_matches(stem_key, item.stem_key)]
+            nested_candidates = [item for item in nested_family_files if edit_stem_matches(stem_key, item.stem_key)]
+            sorted_variants_by_key[(family, stem_key)] = (
+                sorted(root_candidates, key=lambda item, _stem=stem_key: edited_candidate_sort_key(_stem, item)),
+                sorted(nested_candidates, key=lambda item, _stem=stem_key: edited_candidate_sort_key(_stem, item)),
+            )
 
     records: list[ImageRecord] = []
-    consumed_root_paths: set[str] = set()
+    consumed_root_keys: set[str] = set()
 
     for raw_files in raws_by_stem.values():
         for raw in raw_files:
-            family = variant_family_key(raw.stem_key, exact_stems)
+            family = raw_family_by_stem.get(raw.stem_key, _family_for_stem(raw.stem_key))
             companion_files = dedupe_scanned([*root_jpegs_by_stem.get(raw.stem_key, []), *paired_jpegs.get(raw.stem_key, [])])
             companions = tuple(item.path for item in companion_files)
-            consumed_root_paths.update(path for path in companions if os.path.normpath(os.path.dirname(path)) == folder)
-            excluded = {_path_key_fast(raw.path), *[_path_key_fast(item.path) for item in companion_files]}
-            sorted_root_variants, sorted_nested_variants = _sorted_variants_for_family(family, raw.stem_key)
-            root_variant_files = [item for item in sorted_root_variants if _path_key_fast(item.path) not in excluded]
+            consumed_root_keys.update(
+                item.path_key
+                for item in companion_files
+                if _path_key_fast(os.path.dirname(item.path)) == folder_key
+            )
+            excluded = {raw.path_key, *[item.path_key for item in companion_files]}
+            sorted_root_variants, sorted_nested_variants = sorted_variants_by_key.get((family, raw.stem_key), ([], []))
+            root_variant_files = [item for item in sorted_root_variants if item.path_key not in excluded]
             nested_variant_files = list(sorted_nested_variants)
             edit_files = dedupe_scanned([*root_variant_files, *nested_variant_files])
             stack_base = preferred_stack_base(raw, companion_files)
             if edit_files:
                 stack_variants = tuple(to_variant(item) for item in dedupe_scanned([stack_base, *edit_files]))
-            elif _path_key_fast(stack_base.path) != _path_key_fast(raw.path):
+            elif stack_base.path_key != raw.path_key:
                 stack_variants = (to_variant(stack_base),)
             else:
                 stack_variants = ()
-            consumed_root_paths.update(item.path for item in root_variant_files)
+            consumed_root_keys.update(item.path_key for item in root_variant_files)
             variant_sizes = [raw.size, *[item.size for item in companion_files], *[item.size for item in edit_files]]
             variant_modified = [raw.modified_ns, *[item.modified_ns for item in companion_files], *[item.modified_ns for item in edit_files]]
             records.append(
@@ -173,24 +194,26 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 )
             )
 
-    remaining_by_family: dict[str, list[ScannedFile]] = {}
-    consumed_keys = {_path_key_fast(path) for path in consumed_root_paths}
+    consumed_keys = set(consumed_root_keys)
+    remaining_by_family = {}
     for scanned in root_files:
-        if _path_key_fast(scanned.path) in consumed_keys or scanned.suffix in RAW_SUFFIXES:
+        if scanned.path_key in consumed_keys or scanned.suffix in RAW_SUFFIXES:
             continue
-        family = variant_family_key(scanned.stem_key, exact_stems)
+        family = _family_for_stem(scanned.stem_key)
         remaining_by_family.setdefault(family, []).append(scanned)
 
     for family, family_files in remaining_by_family.items():
-        primary = sorted(family_files, key=lambda item: root_primary_sort_key(family, item))[0]
-        sorted_root_variants, sorted_nested_variants = _sorted_variants_for_family(family, primary.stem_key)
-        root_variant_files = [item for item in sorted_root_variants if _path_key_fast(item.path) != _path_key_fast(primary.path)]
+        primary = primary_by_family.get(family)
+        if primary is None or primary.path_key in consumed_keys:
+            primary = sorted(family_files, key=lambda item: root_primary_sort_key(family, item))[0]
+        sorted_root_variants, sorted_nested_variants = sorted_variants_by_key.get((family, primary.stem_key), ([], []))
+        root_variant_files = [item for item in sorted_root_variants if item.path_key != primary.path_key]
         nested_variant_files = list(sorted_nested_variants)
         edit_files = dedupe_scanned([*root_variant_files, *nested_variant_files])
         stack_variants = ()
         if edit_files:
             stack_variants = tuple(to_variant(item) for item in dedupe_scanned([primary, *edit_files]))
-        consumed_root_paths.update(item.path for item in family_files)
+        consumed_root_keys.update(item.path_key for item in family_files)
         records.append(
             ImageRecord(
                 path=primary.path,
@@ -208,14 +231,14 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
     primary = Path(normalize_filesystem_path(record.path))
     folder = primary.parent
     stem_key = primary.stem.casefold()
-    excluded = {os.path.normpath(path) for path in record.stack_paths}
+    excluded = {_path_key_fast(path) for path in record.stack_paths}
     candidates: list[ScannedFile] = []
 
     def add_candidate(entry: os.DirEntry[str]) -> None:
         scanned = to_scanned_file(entry, EDIT_SUFFIXES)
         if scanned is None or not edit_stem_matches(stem_key, scanned.stem_key):
             return
-        if os.path.normpath(scanned.path) in excluded:
+        if scanned.path_key in excluded:
             return
         candidates.append(scanned)
 
@@ -292,10 +315,9 @@ def dedupe_scanned(items: list[ScannedFile]) -> list[ScannedFile]:
     ordered: list[ScannedFile] = []
     seen: set[str] = set()
     for item in items:
-        key = _path_key_fast(item.path)
-        if key in seen:
+        if item.path_key in seen:
             continue
-        seen.add(key)
+        seen.add(item.path_key)
         ordered.append(item)
     return ordered
 
@@ -327,6 +349,7 @@ def to_scanned_file(
     path = os.path.normpath(os.path.join(parent_folder, entry.name)) if parent_folder else normalize_filesystem_path(entry.path)
     return ScannedFile(
         path=path,
+        path_key=_path_key_fast(path),
         name=entry.name,
         suffix=suffix,
         size=size,

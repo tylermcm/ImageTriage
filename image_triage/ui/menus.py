@@ -25,6 +25,17 @@ def _add_ai_training_management_actions(menu: QMenu, actions: MainWindowActions)
     menu.addAction(actions.run_full_ai_training_pipeline)
 
 
+def _add_selection_actions(menu: QMenu, actions: MainWindowActions) -> None:
+    menu.addAction(actions.rename_selection)
+    menu.addAction(actions.accept_selection)
+    menu.addAction(actions.reject_selection)
+    menu.addAction(actions.keep_selection)
+    menu.addAction(actions.move_selection)
+    menu.addAction(actions.move_selection_to_new_folder)
+    menu.addAction(actions.delete_selection)
+    menu.addAction(actions.restore_selection)
+
+
 def build_main_menu_bar(
     window,
     actions: MainWindowActions,
@@ -51,14 +62,7 @@ def build_main_menu_bar(
     edit_menu = menu_bar.addMenu("&Edit")
     edit_menu.addAction(actions.undo)
     edit_menu.addSeparator()
-    edit_menu.addAction(actions.rename_selection)
-    edit_menu.addAction(actions.accept_selection)
-    edit_menu.addAction(actions.reject_selection)
-    edit_menu.addAction(actions.keep_selection)
-    edit_menu.addAction(actions.move_selection)
-    edit_menu.addAction(actions.move_selection_to_new_folder)
-    edit_menu.addAction(actions.delete_selection)
-    edit_menu.addAction(actions.restore_selection)
+    _add_selection_actions(edit_menu, actions)
 
     view_menu = menu_bar.addMenu("&View")
     appearance_menu = view_menu.addMenu("Appearance")
@@ -95,14 +99,7 @@ def build_main_menu_bar(
     review_menu.addAction(actions.open_preview)
     review_menu.addAction(actions.winner_ladder_mode)
     review_menu.addSeparator()
-    review_menu.addAction(actions.rename_selection)
-    review_menu.addAction(actions.accept_selection)
-    review_menu.addAction(actions.reject_selection)
-    review_menu.addAction(actions.keep_selection)
-    review_menu.addAction(actions.move_selection)
-    review_menu.addAction(actions.move_selection_to_new_folder)
-    review_menu.addAction(actions.delete_selection)
-    review_menu.addAction(actions.restore_selection)
+    _add_selection_actions(review_menu, actions)
     review_menu.addSeparator()
     rounds_menu = review_menu.addMenu("Review Rounds")
     rounds_menu.addAction(actions.assign_review_round_first_pass)

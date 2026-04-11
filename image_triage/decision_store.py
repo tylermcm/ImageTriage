@@ -23,14 +23,35 @@ class DecisionStore:
     def load_annotations(self, session_id: str, records: list[ImageRecord]) -> dict[str, SessionAnnotation]:
         if not records:
             return {}
+        records_by_path = {record.path: record for record in records if record.path}
+        return self.load_annotations_for_paths(session_id, records_by_path, list(records_by_path))
+
+    def load_annotations_for_paths(
+        self,
+        session_id: str,
+        records_by_path: dict[str, ImageRecord],
+        paths: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, SessionAnnotation]:
+        if not records_by_path or not paths:
+            return {}
 
         normalized_session = self._normalize_session_id(session_id)
         loaded: dict[str, SessionAnnotation] = {}
+        ordered_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for path in paths:
+            if not path or path in seen_paths:
+                continue
+            if path not in records_by_path:
+                continue
+            seen_paths.add(path)
+            ordered_paths.append(path)
+        if not ordered_paths:
+            return loaded
         with sqlite3.connect(self._db_path) as connection:
             connection.row_factory = sqlite3.Row
-            for chunk in _chunked(records, 400):
-                placeholders = ",".join("?" for _ in chunk)
-                paths = [record.path for record in chunk]
+            for chunk_paths in _chunked_values(ordered_paths, 400):
+                placeholders = ",".join("?" for _ in chunk_paths)
                 rows = connection.execute(
                     f"""
                     SELECT path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json, review_round
@@ -38,10 +59,13 @@ class DecisionStore:
                     WHERE session_id = ?
                       AND path IN ({placeholders})
                     """,
-                    [normalized_session, *paths],
+                    [normalized_session, *chunk_paths],
                 ).fetchall()
                 row_map = {row["path"]: row for row in rows}
-                for record in chunk:
+                for path in chunk_paths:
+                    record = records_by_path.get(path)
+                    if record is None:
+                        continue
                     row = row_map.get(record.path)
                     if row is None:
                         continue
@@ -606,5 +630,5 @@ class DecisionStore:
         return value or self.DEFAULT_SESSION
 
 
-def _chunked(records: list[ImageRecord], size: int) -> list[list[ImageRecord]]:
-    return [records[index : index + size] for index in range(0, len(records), size)]
+def _chunked_values(values: list[str], size: int) -> list[list[str]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]

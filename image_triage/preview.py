@@ -482,8 +482,14 @@ class FullScreenPreview(QDialog):
         self._refresh_timer.timeout.connect(self._poll_source_updates)
         self._refresh_interval_active_ms = 1200
         self._refresh_interval_idle_ms = 3200
+        self._refresh_interval_background_ms = 8400
         self._stable_poll_cycles = 0
+        self._poll_round_robin_slot = 0
         self._next_edited_discovery_at = 0.0
+        self._edited_discovery_requested = False
+        self._edited_discovery_interval_found_s = 8.5
+        self._edited_discovery_interval_missing_s = 17.0
+        self._edited_discovery_interval_with_candidates_s = 12.0
         self._panes: list[PreviewPane] = []
         self._watched_widgets: dict[object, int] = {}
         self._inspection_stats_cache: dict[tuple[str, tuple[int, int] | None, int, int], InspectionStats] = {}
@@ -1131,6 +1137,8 @@ class FullScreenPreview(QDialog):
         if len(entries) < 2:
             self._winner_ladder_mode = False
         self._stable_poll_cycles = 0
+        self._poll_round_robin_slot = 0
+        self._edited_discovery_requested = True
         self._next_edited_discovery_at = time.monotonic() + 1.8
         self._refresh_timer.setInterval(self._refresh_interval_active_ms)
         self._focused_slot = 0
@@ -1207,6 +1215,8 @@ class FullScreenPreview(QDialog):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._refresh_timer.stop()
         self._stable_poll_cycles = 0
+        self._poll_round_robin_slot = 0
+        self._edited_discovery_requested = False
         self._zoom_request_timer.stop()
         self.closed.emit()
         super().closeEvent(event)
@@ -1761,6 +1771,10 @@ class FullScreenPreview(QDialog):
     def _poll_source_updates(self) -> None:
         if not self.isVisible() or not self._entries or self._pending_requests > 0:
             return
+        if not self.isActiveWindow():
+            if self._refresh_timer.interval() != self._refresh_interval_background_ms:
+                self._refresh_timer.setInterval(self._refresh_interval_background_ms)
+            return
 
         now = time.monotonic()
         if (
@@ -1769,18 +1783,31 @@ class FullScreenPreview(QDialog):
             and now >= self._next_edited_discovery_at
         ):
             source_entry = self._source_entries[0]
-            if not self._edited_candidates_for_entry(source_entry):
+            has_candidates = bool(self._edited_candidates_for_entry(source_entry))
+            if self._edited_discovery_requested or not has_candidates:
                 discovered = discover_edited_paths(source_entry.record)
                 if discovered:
                     self.set_edited_candidates(source_entry.record.path, tuple(discovered))
-                    self._next_edited_discovery_at = now + 2.0
+                    self._next_edited_discovery_at = now + self._edited_discovery_interval_found_s
                 else:
-                    self._next_edited_discovery_at = now + 6.5
+                    self._next_edited_discovery_at = now + self._edited_discovery_interval_missing_s
+                self._edited_discovery_requested = False
             else:
-                self._next_edited_discovery_at = now + 7.0
+                self._next_edited_discovery_at = now + self._edited_discovery_interval_with_candidates_s
 
         changed_slots: list[int] = []
-        for slot, entry in enumerate(self._entries):
+        total_slots = len(self._entries)
+        slots_to_check: list[int] = list(range(total_slots))
+        if total_slots > 2 and self._stable_poll_cycles >= 4:
+            focused = max(0, min(self._focused_slot, total_slots - 1))
+            self._poll_round_robin_slot = (self._poll_round_robin_slot + 1) % total_slots
+            secondary = self._poll_round_robin_slot
+            slots_to_check = [focused]
+            if secondary != focused:
+                slots_to_check.append(secondary)
+
+        for slot in slots_to_check:
+            entry = self._entries[slot]
             current_signature = self._source_versions[slot] if slot < len(self._source_versions) else None
             latest_signature = _file_signature(entry.source_path)
             if latest_signature is None or latest_signature == current_signature:
@@ -1791,6 +1818,7 @@ class FullScreenPreview(QDialog):
 
         if changed_slots:
             self._stable_poll_cycles = 0
+            self._poll_round_robin_slot = 0
             self._refresh_timer.setInterval(900)
             self._request_preview_loads(changed_slots, force_metadata=True)
             return

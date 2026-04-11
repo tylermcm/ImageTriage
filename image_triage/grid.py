@@ -278,16 +278,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             for item in items
         }
         self._failed_paths.clear()
-        self._meta_cache = {
-            variant.path: self._format_meta_line(item, variant)
-            for item in items
-            for variant in item.display_variants
-        }
-        self._capture_cache = {
-            variant.path: self._format_capture_line(self.metadata_manager.get_cached(variant))
-            for item in items
-            for variant in item.display_variants
-        }
+        # Keep folder-open fast for large lists by priming only visible rows.
+        self._meta_cache.clear()
+        self._capture_cache.clear()
         self._ai_result_cache.clear()
         self._normalized_path_cache.clear()
         self._meta_with_ai_cache.clear()
@@ -298,6 +291,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._reset_pointer_interaction(clear_marquee=True)
         self._rebuild_visible_items()
         self._update_scrollbar()
+        self._prime_visible_text_caches()
         self.viewport().update()
         self._schedule_visible_thumbnail_requests(immediate=True)
         self.current_changed.emit(self._current_index)
@@ -387,6 +381,22 @@ class ThumbnailGridView(QAbstractScrollArea):
         if limit is not None and limit >= 0:
             return paths[:limit]
         return paths
+
+    def _prime_visible_text_caches(self, *, limit: int = 240) -> None:
+        if not self._items:
+            return
+        for path in self.visible_item_paths(limit=limit):
+            index = self._path_to_index.get(path)
+            if index is None or not 0 <= index < len(self._items):
+                continue
+            record = self._items[index]
+            variant = self._current_variant(record)
+            if variant.path not in self._meta_cache:
+                self._meta_cache[variant.path] = self._format_meta_line(record, variant)
+            if variant.path not in self._capture_cache:
+                self._capture_cache[variant.path] = self._format_capture_line(self.metadata_manager.get_cached(variant))
+            if variant.path != record.path and record.path not in self._capture_cache:
+                self._capture_cache[record.path] = self._format_capture_line(self.metadata_manager.get_cached(record))
 
     def set_burst_groups(
         self,
@@ -1316,10 +1326,17 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _capture_line(self, record: ImageRecord) -> str:
         variant = self._current_variant(record)
-        capture = self._capture_cache.get(variant.path, "")
+        capture = self._capture_cache.get(variant.path)
+        if capture is None:
+            capture = self._format_capture_line(self.metadata_manager.get_cached(variant))
+            self._capture_cache[variant.path] = capture
         if capture or variant.path == record.path:
             return capture
-        return self._capture_cache.get(record.path, "")
+        base_capture = self._capture_cache.get(record.path)
+        if base_capture is None:
+            base_capture = self._format_capture_line(self.metadata_manager.get_cached(record))
+            self._capture_cache[record.path] = base_capture
+        return base_capture
 
     def _format_capture_line(self, metadata: CaptureMetadata | None) -> str:
         if metadata is None:

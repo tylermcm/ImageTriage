@@ -165,6 +165,49 @@ class ReviewIntelligenceTests(unittest.TestCase):
         with self.assertRaises(ReviewIntelligenceCancelled):
             build_review_intelligence(records, should_cancel=_should_cancel)
 
+    def test_build_review_intelligence_emits_chunk_payloads(self) -> None:
+        records = [
+            ImageRecord(path="C:/shots/frame_01.jpg", name="frame_01.jpg", size=1500, modified_ns=1),
+            ImageRecord(path="C:/shots/frame_02.jpg", name="frame_02.jpg", size=1510, modified_ns=2),
+        ]
+        fingerprints = {
+            records[0].path: _RecordFingerprint(
+                record=records[0],
+                source_path=records[0].path,
+                metadata=CaptureMetadata(path=records[0].path, width=4000, height=3000),
+                dhash=0b1111000011110000,
+                avg_luma=92.0,
+                width=4000,
+                height=3000,
+                sha1_digest="a",
+            ),
+            records[1].path: _RecordFingerprint(
+                record=records[1],
+                source_path=records[1].path,
+                metadata=CaptureMetadata(path=records[1].path, width=4000, height=3000),
+                dhash=0b1111000011110001,
+                avg_luma=95.0,
+                width=4000,
+                height=3000,
+                sha1_digest="b",
+            ),
+        }
+        emitted_chunks: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        with patch(
+            "image_triage.review_intelligence._build_fingerprint",
+            side_effect=lambda record, _metadata_cache: fingerprints[record.path],
+        ):
+            build_review_intelligence(
+                records,
+                chunk_callback=lambda groups, insights: emitted_chunks.append((groups, insights)),
+            )
+
+        self.assertTrue(emitted_chunks)
+        groups, insights = emitted_chunks[-1]
+        self.assertTrue(groups)
+        self.assertIn(records[0].path, insights)
+        self.assertIn(records[1].path, insights)
+
     def test_build_review_task_emits_cancelled_signal(self) -> None:
         task = BuildReviewIntelligenceTask(
             folder="C:/shots",

@@ -104,6 +104,8 @@ def _load_standard_image(path: str, target_size: QSize, *, auto_transform: bool 
     reader = QImageReader(path)
     reader.setAutoTransform(auto_transform)
     source_size = reader.size()
+    if source_size.isValid() and _qt_decode_likely_exceeds_allocation_limit(source_size):
+        return QImage(), "Qt image decoder skipped due allocation limit."
     if source_size.isValid() and _has_target(target_size):
         scaled = source_size.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
         if scaled.isValid():
@@ -174,6 +176,23 @@ def _qimage_from_pillow_image(image, target_size: QSize, *, auto_transform: bool
         QImage.Format.Format_RGBA8888,
     )
     return qimage.copy()
+
+
+def _qt_decode_likely_exceeds_allocation_limit(source_size: QSize) -> bool:
+    if not source_size.isValid():
+        return False
+    try:
+        limit_mb = int(QImageReader.allocationLimit())
+    except Exception:
+        return False
+    if limit_mb <= 0:
+        return False
+    width = max(0, int(source_size.width()))
+    height = max(0, int(source_size.height()))
+    if width <= 0 or height <= 0:
+        return False
+    estimated_bytes = width * height * 4
+    return estimated_bytes > (limit_mb * 1024 * 1024)
 
 
 def _pillow_lanczos():

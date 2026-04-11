@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 
 from image_triage.ai_workflow import _parse_tqdm_progress, _run_command_with_live_output
 from image_triage.library_store import LibraryStore
+from image_triage.scanner import scan_folder, scan_folder_quick
 from image_triage.window import MainWindow
 
 
@@ -120,11 +121,35 @@ def _quiesce_background(window: MainWindow) -> None:
         active_review_task.cancel()
     window._active_review_intelligence_task = None
     window._review_intelligence_token += 1
+    active_scope_task = window._active_scope_enrichment_task
+    if active_scope_task is not None:
+        active_scope_task.cancel()
+    window._active_scope_enrichment_task = None
+    window._scope_enrichment_token += 1
+    window._scope_enrichment_debounce_timer.stop()
     window._annotation_hydration_token += 1
+    active_hydration_task = window._active_annotation_hydration_task
+    if active_hydration_task is not None:
+        active_hydration_task.cancel()
     window._active_annotation_hydration_task = None
     window._annotation_reapply_timer.stop()
+    window._review_chunk_flush_timer.stop()
+    window._review_chunk_dirty_paths.clear()
     window._metadata_request_timer.stop()
+    window._metadata_scroll_prefetch_timer.stop()
     window._annotation_persistence_queue.flush_blocking()
+    # Keep benchmark samples isolated by waiting for canceled workers to settle.
+    for pool_name in (
+        "_review_intelligence_pool",
+        "_scope_enrichment_pool",
+        "_annotation_hydration_pool",
+    ):
+        pool = getattr(window, pool_name, None)
+        if pool is not None and hasattr(pool, "waitForDone"):
+            try:
+                pool.waitForDone(8_000)
+            except Exception:
+                pass
     QApplication.processEvents()
 
 
@@ -160,6 +185,22 @@ def _benchmark_folder_open(
         "cold_open": _summary(cold_samples),
         "warm_open_cached_first_view": _summary(warm_cached_view_samples),
         "warm_open_cached_full_refresh": _summary(warm_full_refresh_samples),
+    }
+
+
+def _benchmark_scanner_core(
+    folder: Path,
+    *,
+    sample_runs: int,
+) -> dict[str, MetricSummary]:
+    quick_samples: list[float] = []
+    full_samples: list[float] = []
+    for _ in range(max(1, sample_runs)):
+        quick_samples.append(_time_call_ms(lambda: scan_folder_quick(str(folder))))
+        full_samples.append(_time_call_ms(lambda: scan_folder(str(folder))))
+    return {
+        "scan_folder_quick": _summary(quick_samples),
+        "scan_folder_full": _summary(full_samples),
     }
 
 
@@ -312,6 +353,7 @@ def run_baseline(
     *,
     record_counts: list[int],
     open_warm_runs: int,
+    scanner_runs: int,
     toggle_iterations: int,
     batch_size: int,
     batch_runs: int,
@@ -337,6 +379,7 @@ def run_baseline(
                 "platform": platform.platform(),
                 "record_counts": record_counts,
             },
+            "scanner_core": {},
             "folder_open": {},
             "annotation_toggle": {},
             "batch_accept_100": {},
@@ -347,6 +390,11 @@ def run_baseline(
         try:
             for folder in dataset_roots:
                 key = folder.name
+                scanner_metrics = _benchmark_scanner_core(
+                    folder,
+                    sample_runs=scanner_runs,
+                )
+                results["scanner_core"][key] = {name: asdict(metric) for name, metric in scanner_metrics.items()}
                 open_metrics = _benchmark_folder_open(
                     window,
                     folder,
@@ -393,6 +441,15 @@ def run_baseline(
 
 def _print_results(payload: dict[str, object]) -> None:
     print("\n=== Baseline Results ===")
+    scanner_core = payload.get("scanner_core", {})
+    if isinstance(scanner_core, dict):
+        for dataset, metrics in scanner_core.items():
+            print(f"\n[{dataset} scanner_core]")
+            if isinstance(metrics, dict):
+                for metric_name, metric_payload in metrics.items():
+                    if isinstance(metric_payload, dict):
+                        _print_summary(metric_name, MetricSummary(**metric_payload))
+
     folder_open = payload.get("folder_open", {})
     if isinstance(folder_open, dict):
         for dataset, metrics in folder_open.items():
@@ -445,6 +502,12 @@ def _parse_args() -> argparse.Namespace:
         help="Number of warm/cached folder-open and catalog refresh runs per dataset.",
     )
     parser.add_argument(
+        "--scanner-runs",
+        type=int,
+        default=3,
+        help="Number of direct scanner-core benchmark samples per dataset.",
+    )
+    parser.add_argument(
         "--toggle-iterations",
         type=int,
         default=120,
@@ -488,6 +551,7 @@ def main() -> int:
     results = run_baseline(
         record_counts=[max(1, int(value)) for value in args.record_counts],
         open_warm_runs=max(1, int(args.open_warm_runs)),
+        scanner_runs=max(1, int(args.scanner_runs)),
         toggle_iterations=max(1, int(args.toggle_iterations)),
         batch_size=max(1, int(args.batch_size)),
         batch_runs=max(1, int(args.batch_runs)),

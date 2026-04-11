@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from hashlib import sha1
 from pathlib import Path
 from statistics import mean
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable
 from uuid import uuid4
 
 from .ai_results import AIBundle, AIConfidenceBucket, AIImageResult, find_ai_result_for_record
@@ -176,7 +176,10 @@ def build_burst_recommendations(
     ai_bundle: AIBundle | None,
     review_bundle: "ReviewIntelligenceBundle | None",
     correction_events: Iterable[dict[str, object]],
+    should_cancel: Callable[[], bool] | None = None,
 ) -> tuple[TasteProfile, dict[str, BurstRecommendation]]:
+    if should_cancel is not None and should_cancel():
+        return TasteProfile(), {}
     taste_profile = build_taste_profile(correction_events)
     if review_bundle is None or not records:
         return taste_profile, {}
@@ -185,6 +188,8 @@ def build_burst_recommendations(
     recommendations: dict[str, BurstRecommendation] = {}
 
     for group in review_bundle.groups:
+        if should_cancel is not None and should_cancel():
+            return taste_profile, recommendations
         if group.kind not in {"burst", "similar"} or len(group.member_paths) < 2:
             continue
 
@@ -201,6 +206,8 @@ def build_burst_recommendations(
 
         center = (len(member_paths) - 1) / 2.0
         for index, path in enumerate(member_paths):
+            if should_cancel is not None and should_cancel():
+                return taste_profile, recommendations
             review_insight = review_bundle.insight_for_path(path)
             ai_result = find_ai_result_for_record(ai_bundle, records_by_path[path]) if ai_bundle is not None else None
             insights.append(review_insight)
