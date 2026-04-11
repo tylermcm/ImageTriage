@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRunnable, QSize, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -20,10 +22,24 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .ai_results import AIImageResult
+from .ai_results import AIImageResult, build_ai_explanation_lines
 from .imaging import load_image_for_display
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord, JPEG_SUFFIXES
+from .review_tools import (
+    DEFAULT_FOCUS_ASSIST_COLOR_ID,
+    DEFAULT_FOCUS_ASSIST_STRENGTH_ID,
+    EMPTY_INSPECTION_STATS,
+    FOCUS_ASSIST_COLORS,
+    FOCUS_ASSIST_STRENGTHS,
+    FocusAssistColor,
+    FocusAssistStrength,
+    InspectionStats,
+    build_focus_assist_image,
+    build_inspection_stats,
+    focus_assist_color_by_id,
+    focus_assist_strength_by_id,
+)
 from .scanner import discover_edited_paths
 from .ui.theme import ThemePalette, default_theme
 
@@ -36,8 +52,10 @@ class PreviewRequest:
     token: int
     slot: int
     target_size: QSize
+    source_signature: tuple[int, int] | None = None
     prefer_embedded: bool = False
     load_metadata: bool = True
+    cache_only: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,6 +69,10 @@ class PreviewEntry:
     edited_candidates: tuple[str, ...] = ()
     label: str = ""
     ai_result: AIImageResult | None = None
+    review_summary: str = ""
+    workflow_summary: str = ""
+    workflow_details: tuple[str, ...] = ()
+    placeholder_image: QImage | None = None
 
 
 class PreviewTask(QRunnable):
@@ -67,12 +89,10 @@ class PreviewTask(QRunnable):
             prefer_embedded=self.request.prefer_embedded,
         )
         if image.isNull():
-            self.result_queue.put(
-                ("failed", self.request.token, self.request.slot, self.request.path, error or "Could not decode image.")
-            )
+            self.result_queue.put(("failed", self.request, error or "Could not decode image."))
             return
         metadata = load_capture_metadata(self.request.path) if self.request.load_metadata else None
-        self.result_queue.put(("ready", self.request.token, self.request.slot, self.request.path, image, metadata))
+        self.result_queue.put(("ready", self.request, image, metadata))
 
 
 class PreviewPane(QWidget):
@@ -82,13 +102,15 @@ class PreviewPane(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._active = False
+        self._frame_visible = True
         self.setObjectName("previewPane")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._theme = default_theme()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
-        self._apply_style(False)
+        self._apply_style()
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(False)
@@ -109,8 +131,8 @@ class PreviewPane(QWidget):
         self.scroll_area.setWidget(self.image_label)
         self.loupe_overlay = LoupeOverlay(self)
 
-        footer = QWidget()
-        footer_layout = QHBoxLayout(footer)
+        self.footer = QWidget()
+        footer_layout = QHBoxLayout(self.footer)
         footer_layout.setContentsMargins(0, 0, 0, 0)
         footer_layout.setSpacing(8)
 
@@ -192,7 +214,7 @@ class PreviewPane(QWidget):
         footer_layout.addWidget(self.reject_button)
 
         layout.addWidget(self.scroll_area, 1)
-        layout.addWidget(footer)
+        layout.addWidget(self.footer)
         self.apply_theme(self._theme)
 
     def apply_theme(self, theme: ThemePalette) -> None:
@@ -203,7 +225,7 @@ class PreviewPane(QWidget):
         self.metadata_label.setStyleSheet(f"font-size: 11px; color: {theme.text_secondary.css};")
         self.heart_button.setStyleSheet(self._badge_button_style(theme, theme.danger))
         self.reject_button.setStyleSheet(self._badge_button_style(theme, theme.danger))
-        self._apply_style(False)
+        self._apply_style()
 
     @staticmethod
     def _badge_button_style(theme: ThemePalette, accent) -> str:
@@ -231,10 +253,29 @@ class PreviewPane(QWidget):
         """
 
     def set_active(self, active: bool) -> None:
-        self._apply_style(active)
+        self._active = active
+        self._apply_style()
 
-    def _apply_style(self, active: bool) -> None:
-        if active:
+    def set_frame_visible(self, visible: bool) -> None:
+        self._frame_visible = visible
+        self._apply_style()
+
+    def set_minimal(self, minimal: bool) -> None:
+        self.footer.setVisible(not minimal)
+
+    def _apply_style(self) -> None:
+        if not self._frame_visible:
+            self.setStyleSheet(
+                """
+                QWidget#previewPane {
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 0px;
+                }
+                """
+            )
+            return
+        if self._active:
             self.setStyleSheet(
                 f"""
                 QWidget#previewPane {{
@@ -294,11 +335,75 @@ class LoupeOverlay(QWidget):
         painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, self._label)
 
 
+class HistogramWidget(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._theme = default_theme()
+        self._stats = EMPTY_INSPECTION_STATS
+        self.setMinimumHeight(148)
+        self.setMaximumHeight(168)
+
+    def apply_theme(self, theme: ThemePalette) -> None:
+        self._theme = theme
+        self.update()
+
+    def set_stats(self, stats: InspectionStats) -> None:
+        self._stats = stats
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        panel_rect = self.rect().adjusted(2, 2, -2, -2)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._theme.image_bg.qcolor())
+        painter.drawRoundedRect(panel_rect, 12, 12)
+
+        plot_rect = panel_rect.adjusted(12, 12, -12, -14)
+        if self._stats.width <= 0 or plot_rect.width() <= 0 or plot_rect.height() <= 0:
+            painter.setPen(self._theme.text_secondary.qcolor())
+            painter.drawText(plot_rect, Qt.AlignmentFlag.AlignCenter, "Load an image to inspect")
+            return
+
+        painter.setPen(QPen(self._theme.border_muted.qcolor(), 1))
+        for step in range(1, 4):
+            x = plot_rect.left() + (plot_rect.width() * step // 4)
+            painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
+        for step in range(1, 3):
+            y = plot_rect.bottom() - (plot_rect.height() * step // 3)
+            painter.drawLine(plot_rect.left(), y, plot_rect.right(), y)
+
+        max_value = max(
+            max(self._stats.histogram_luma),
+            max(self._stats.histogram_red),
+            max(self._stats.histogram_green),
+            max(self._stats.histogram_blue),
+            1,
+        )
+
+        luma_path = _histogram_path(self._stats.histogram_luma, plot_rect, max_value, closed=True)
+        painter.fillPath(luma_path, self._theme.accent_soft.qcolor())
+
+        painter.setPen(QPen(QColor(255, 96, 96, 176), 1.4))
+        painter.drawPath(_histogram_path(self._stats.histogram_red, plot_rect, max_value))
+        painter.setPen(QPen(QColor(103, 211, 137, 176), 1.4))
+        painter.drawPath(_histogram_path(self._stats.histogram_green, plot_rect, max_value))
+        painter.setPen(QPen(QColor(97, 177, 255, 184), 1.4))
+        painter.drawPath(_histogram_path(self._stats.histogram_blue, plot_rect, max_value))
+        painter.setPen(QPen(self._theme.text_primary.qcolor(), 1.5))
+        painter.drawPath(_histogram_path(self._stats.histogram_luma, plot_rect, max_value))
+
+
 class FullScreenPreview(QDialog):
+    FOCUS_ASSIST_COLOR_KEY = "preview/focus_assist_color"
+    FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
+    FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
     navigation_requested = Signal(int)
     compare_mode_changed = Signal(bool)
     auto_bracket_mode_changed = Signal(bool)
     compare_count_changed = Signal(int)
+    command_palette_requested = Signal()
     photoshop_requested = Signal(str)
     winner_requested = Signal(str)
     reject_requested = Signal(str)
@@ -307,6 +412,9 @@ class FullScreenPreview(QDialog):
     move_requested = Signal(str)
     rate_requested = Signal(str, int)
     tag_requested = Signal(str)
+    winner_ladder_choice_requested = Signal(str)
+    winner_ladder_skip_requested = Signal()
+    closed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -318,14 +426,28 @@ class FullScreenPreview(QDialog):
         self._metadata_cache: dict[str, CaptureMetadata] = {}
         self._load_token = 0
         self._pending_requests = 0
+        self._pending_zoom_refresh_slots: list[int] = []
         self._compare_mode = False
         self._before_after_enabled = False
         self._compare_count = 3
         self._edited_variant_index = 0
         self._focused_slot = 0
         self._photoshop_available = False
+        self._settings = QSettings()
         self._manual_zoom = False
         self._zoom_scale = 1.0
+        self._focus_assist_enabled = False
+        self._focus_assist_color = focus_assist_color_by_id(
+            self._settings.value(self.FOCUS_ASSIST_COLOR_KEY, DEFAULT_FOCUS_ASSIST_COLOR_ID, str)
+        )
+        self._focus_assist_strength = focus_assist_strength_by_id(
+            self._settings.value(self.FOCUS_ASSIST_STRENGTH_KEY, DEFAULT_FOCUS_ASSIST_STRENGTH_ID, str)
+        )
+        self._focus_assist_dim_background = self._settings.value(
+            self.FOCUS_ASSIST_DIM_BACKGROUND_KEY,
+            True,
+            bool,
+        )
         self._loupe_enabled = False
         self._loupe_zoom_levels = (1.25, 1.5, 2.0, 3.0)
         self._loupe_zoom_index = 1
@@ -336,17 +458,31 @@ class FullScreenPreview(QDialog):
         self._drag_start_global_pos = QPoint()
         self._drag_start_scrolls: list[QPoint] = []
         self._pending_right_close = False
+        self._auto_advance_enabled = True
+        self._winner_ladder_mode = False
         self._pool = QThreadPool(self)
-        self._pool.setMaxThreadCount(3)
+        self._pool.setMaxThreadCount(4)
         self._result_queue: SimpleQueue = SimpleQueue()
+        self._preview_cache: OrderedDict[tuple[str, tuple[int, int] | None, int, int, bool], tuple[QImage, int]] = OrderedDict()
+        self._preview_cache_bytes = 0
+        self._preview_cache_limit = 320 * 1024 * 1024
+        self._pending_cache_keys: set[tuple[str, tuple[int, int] | None, int, int, bool]] = set()
+        self._current_placeholder_flags: list[bool] = []
+        self._rendered_display_keys: list[tuple[object, ...] | None] = []
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(12)
         self._drain_timer.timeout.connect(self._drain_results)
+        self._zoom_request_timer = QTimer(self)
+        self._zoom_request_timer.setSingleShot(True)
+        self._zoom_request_timer.setInterval(90)
+        self._zoom_request_timer.timeout.connect(self._request_zoom_resolution_refresh)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(1200)
         self._refresh_timer.timeout.connect(self._poll_source_updates)
         self._panes: list[PreviewPane] = []
         self._watched_widgets: dict[object, int] = {}
+        self._inspection_stats_cache: dict[tuple[str, tuple[int, int] | None, int, int], InspectionStats] = {}
+        self._focus_assist_cache: dict[tuple[str, tuple[int, int] | None, int, int, str, str, bool], QImage] = {}
         self._theme = default_theme()
 
         self.setWindowTitle("Preview")
@@ -359,9 +495,10 @@ class FullScreenPreview(QDialog):
         root_layout.setSpacing(12)
 
         self.header_widget = QWidget()
+        self.header_widget.setObjectName("previewHeaderBar")
         header_layout = QHBoxLayout(self.header_widget)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
+        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_layout.setSpacing(10)
 
         self.compare_toggle_button = QPushButton("Compare")
         self.compare_toggle_button.setCheckable(True)
@@ -426,10 +563,11 @@ class FullScreenPreview(QDialog):
             self.compare_count_combo.addItem(f"{count}-Up", count)
         self.compare_count_combo.setCurrentText("3-Up")
         self.compare_count_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.compare_count_combo.setMinimumWidth(92)
         self.compare_count_combo.currentIndexChanged.connect(self._handle_compare_count_changed)
         self.compare_count_combo.setEnabled(False)
 
-        self.photoshop_button = QPushButton("Open In Photoshop")
+        self.photoshop_button = QPushButton("Photoshop")
         self.photoshop_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.photoshop_button.clicked.connect(self._handle_photoshop_button_clicked)
         self.photoshop_button.setStyleSheet(
@@ -475,6 +613,77 @@ class FullScreenPreview(QDialog):
             """
         )
 
+        self.focus_assist_button = QPushButton("Off")
+        self.focus_assist_button.setCheckable(True)
+        self.focus_assist_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.focus_assist_button.setMinimumWidth(68)
+        self.focus_assist_button.toggled.connect(self._handle_focus_assist_button_toggled)
+        self.focus_assist_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #4a5568;
+                border-radius: 6px;
+                color: #f2f5f8;
+                padding: 4px 12px;
+            }
+            QPushButton:checked {
+                background-color: #2563eb;
+                border-color: #2563eb;
+                color: #ffffff;
+            }
+            QPushButton:hover {
+                border-color: #6f7f95;
+            }
+            """
+        )
+
+        self.focus_assist_background_button = QPushButton("Dimmed" if self._focus_assist_dim_background else "Original")
+        self.focus_assist_background_button.setCheckable(True)
+        self.focus_assist_background_button.setChecked(self._focus_assist_dim_background)
+        self.focus_assist_background_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.focus_assist_background_button.setMinimumWidth(88)
+        self.focus_assist_background_button.toggled.connect(self._handle_focus_assist_background_toggled)
+        self.focus_assist_background_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #4a5568;
+                border-radius: 6px;
+                color: #f2f5f8;
+                padding: 4px 12px;
+            }
+            QPushButton:checked {
+                background-color: #2563eb;
+                border-color: #2563eb;
+                color: #ffffff;
+            }
+            QPushButton:hover {
+                border-color: #6f7f95;
+            }
+            """
+        )
+
+        self.focus_assist_color_combo = QComboBox()
+        self.focus_assist_color_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.focus_assist_color_combo.setMinimumWidth(96)
+        for color in FOCUS_ASSIST_COLORS:
+            self.focus_assist_color_combo.addItem(color.label, color.id)
+        color_index = self.focus_assist_color_combo.findData(self._focus_assist_color.id)
+        if color_index >= 0:
+            self.focus_assist_color_combo.setCurrentIndex(color_index)
+        self.focus_assist_color_combo.currentIndexChanged.connect(self._handle_focus_assist_color_changed)
+
+        self.focus_assist_strength_combo = QComboBox()
+        self.focus_assist_strength_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.focus_assist_strength_combo.setMinimumWidth(104)
+        for strength in FOCUS_ASSIST_STRENGTHS:
+            self.focus_assist_strength_combo.addItem(strength.label, strength.id)
+        strength_index = self.focus_assist_strength_combo.findData(self._focus_assist_strength.id)
+        if strength_index >= 0:
+            self.focus_assist_strength_combo.setCurrentIndex(strength_index)
+        self.focus_assist_strength_combo.currentIndexChanged.connect(self._handle_focus_assist_strength_changed)
+
         self.next_edit_button = QPushButton("Edit 1/1")
         self.next_edit_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.next_edit_button.clicked.connect(self._cycle_edited_variant)
@@ -498,13 +707,43 @@ class FullScreenPreview(QDialog):
             """
         )
 
+        self.review_group = QWidget()
+        self.review_group.setObjectName("previewToolbarGroup")
+        review_group_layout = QHBoxLayout(self.review_group)
+        review_group_layout.setContentsMargins(0, 0, 0, 0)
+        review_group_layout.setSpacing(8)
+        self.review_group_label = QLabel("Review")
+        self.review_group_label.setObjectName("previewHeaderLabel")
+        review_group_layout.addWidget(self.review_group_label)
+        review_group_layout.addWidget(self.compare_toggle_button)
+        review_group_layout.addWidget(self.auto_bracket_button)
+        review_group_layout.addWidget(self.before_after_button)
+
+        self.edit_group = QWidget()
+        self.edit_group.setObjectName("previewToolbarGroup")
+        edit_group_layout = QHBoxLayout(self.edit_group)
+        edit_group_layout.setContentsMargins(0, 0, 0, 0)
+        edit_group_layout.setSpacing(8)
+        self.edit_group_label = QLabel("Edit")
+        self.edit_group_label.setObjectName("previewHeaderLabel")
+        edit_group_layout.addWidget(self.edit_group_label)
+        edit_group_layout.addWidget(self.next_edit_button)
+        edit_group_layout.addWidget(self.photoshop_button)
+
+        self.layout_group = QWidget()
+        self.layout_group.setObjectName("previewToolbarGroup")
+        layout_group_layout = QHBoxLayout(self.layout_group)
+        layout_group_layout.setContentsMargins(0, 0, 0, 0)
+        layout_group_layout.setSpacing(8)
+        self.layout_group_label = QLabel("Layout")
+        self.layout_group_label.setObjectName("previewHeaderLabel")
+        layout_group_layout.addWidget(self.layout_group_label)
+        layout_group_layout.addWidget(self.compare_count_combo)
+
         header_layout.addStretch(1)
-        header_layout.addWidget(self.compare_toggle_button)
-        header_layout.addWidget(self.auto_bracket_button)
-        header_layout.addWidget(self.before_after_button)
-        header_layout.addWidget(self.next_edit_button)
-        header_layout.addWidget(self.photoshop_button)
-        header_layout.addWidget(self.compare_count_combo)
+        header_layout.addWidget(self.review_group)
+        header_layout.addWidget(self.edit_group)
+        header_layout.addWidget(self.layout_group)
 
         self.content_widget = QWidget()
         self._content_layout = QHBoxLayout(self.content_widget)
@@ -518,6 +757,122 @@ class FullScreenPreview(QDialog):
         self.panes_layout.setVerticalSpacing(12)
         self._content_layout.addWidget(self.panes_widget, 1)
 
+        self.analysis_panel = QFrame()
+        self.analysis_panel.setObjectName("previewAnalysisPanel")
+        self.analysis_panel.setMinimumWidth(260)
+        self.analysis_panel.setMaximumWidth(304)
+        analysis_layout = QVBoxLayout(self.analysis_panel)
+        analysis_layout.setContentsMargins(14, 14, 14, 14)
+        analysis_layout.setSpacing(8)
+
+        self.analysis_title_label = QLabel("Inspection")
+        self.analysis_title_label.setObjectName("previewAnalysisTitle")
+        self.analysis_subtitle_label = QLabel("Focused image analysis")
+        self.analysis_subtitle_label.setObjectName("previewAnalysisSubtitle")
+        self.analysis_subtitle_label.setWordWrap(True)
+
+        self.focus_controls_card = QFrame()
+        self.focus_controls_card.setObjectName("previewControlsCard")
+        focus_controls_layout = QVBoxLayout(self.focus_controls_card)
+        focus_controls_layout.setContentsMargins(12, 12, 12, 12)
+        focus_controls_layout.setSpacing(8)
+
+        self.focus_controls_title_label = QLabel("Focus Peaking")
+        self.focus_controls_title_label.setObjectName("previewControlsTitle")
+        self.focus_controls_summary_label = QLabel("Off")
+        self.focus_controls_summary_label.setObjectName("previewControlsSummary")
+
+        self.focus_enable_row = QWidget()
+        focus_enable_layout = QHBoxLayout(self.focus_enable_row)
+        focus_enable_layout.setContentsMargins(0, 0, 0, 0)
+        focus_enable_layout.setSpacing(10)
+        self.focus_enable_label = QLabel("Enabled")
+        self.focus_enable_label.setObjectName("previewControlLabel")
+        focus_enable_layout.addWidget(self.focus_enable_label)
+        focus_enable_layout.addStretch(1)
+        focus_enable_layout.addWidget(self.focus_assist_button)
+
+        self.focus_color_row = QWidget()
+        focus_color_layout = QHBoxLayout(self.focus_color_row)
+        focus_color_layout.setContentsMargins(0, 0, 0, 0)
+        focus_color_layout.setSpacing(10)
+        self.focus_color_label = QLabel("Color")
+        self.focus_color_label.setObjectName("previewControlLabel")
+        focus_color_layout.addWidget(self.focus_color_label)
+        focus_color_layout.addStretch(1)
+        focus_color_layout.addWidget(self.focus_assist_color_combo)
+
+        self.focus_strength_row = QWidget()
+        focus_strength_layout = QHBoxLayout(self.focus_strength_row)
+        focus_strength_layout.setContentsMargins(0, 0, 0, 0)
+        focus_strength_layout.setSpacing(10)
+        self.focus_strength_label = QLabel("Sensitivity")
+        self.focus_strength_label.setObjectName("previewControlLabel")
+        focus_strength_layout.addWidget(self.focus_strength_label)
+        focus_strength_layout.addStretch(1)
+        focus_strength_layout.addWidget(self.focus_assist_strength_combo)
+
+        self.focus_background_row = QWidget()
+        focus_background_layout = QHBoxLayout(self.focus_background_row)
+        focus_background_layout.setContentsMargins(0, 0, 0, 0)
+        focus_background_layout.setSpacing(10)
+        self.focus_background_label = QLabel("Background")
+        self.focus_background_label.setObjectName("previewControlLabel")
+        focus_background_layout.addWidget(self.focus_background_label)
+        focus_background_layout.addStretch(1)
+        focus_background_layout.addWidget(self.focus_assist_background_button)
+
+        focus_controls_layout.addWidget(self.focus_controls_title_label)
+        focus_controls_layout.addWidget(self.focus_controls_summary_label)
+        focus_controls_layout.addWidget(self.focus_enable_row)
+        focus_controls_layout.addWidget(self.focus_color_row)
+        focus_controls_layout.addWidget(self.focus_strength_row)
+        focus_controls_layout.addWidget(self.focus_background_row)
+
+        self.histogram_widget = HistogramWidget(self.analysis_panel)
+        self.inspection_dimensions_label = QLabel("Size: --")
+        self.inspection_dimensions_label.setObjectName("previewAnalysisValue")
+        self.inspection_exposure_label = QLabel("Exposure: --")
+        self.inspection_exposure_label.setObjectName("previewAnalysisValue")
+        self.inspection_clipping_label = QLabel("Clipping: --")
+        self.inspection_clipping_label.setObjectName("previewAnalysisValue")
+        self.inspection_detail_label = QLabel("Detail: --")
+        self.inspection_detail_label.setObjectName("previewAnalysisValue")
+        self.ai_explanation_card = QFrame()
+        self.ai_explanation_card.setObjectName("previewControlsCard")
+        explanation_layout = QVBoxLayout(self.ai_explanation_card)
+        explanation_layout.setContentsMargins(12, 12, 12, 12)
+        explanation_layout.setSpacing(6)
+        self.ai_explanation_title_label = QLabel("Why AI Picked This")
+        self.ai_explanation_title_label.setObjectName("previewControlsTitle")
+        self.ai_confidence_label = QLabel("Confidence: --")
+        self.ai_confidence_label.setObjectName("previewControlsSummary")
+        self.ai_explanation_label = QLabel("Load an AI-scored image to see ranking rationale.")
+        self.ai_explanation_label.setObjectName("previewAnalysisHint")
+        self.ai_explanation_label.setWordWrap(True)
+        explanation_layout.addWidget(self.ai_explanation_title_label)
+        explanation_layout.addWidget(self.ai_confidence_label)
+        explanation_layout.addWidget(self.ai_explanation_label)
+        self.inspection_hint_label = QLabel(
+            "Histogram follows the focused pane. Focus Peaking settings live in the inspection card."
+        )
+        self.inspection_hint_label.setObjectName("previewAnalysisHint")
+        self.inspection_hint_label.setWordWrap(True)
+
+        analysis_layout.addWidget(self.analysis_title_label)
+        analysis_layout.addWidget(self.analysis_subtitle_label)
+        analysis_layout.addWidget(self.focus_controls_card)
+        analysis_layout.addWidget(self.histogram_widget)
+        analysis_layout.addWidget(self.inspection_dimensions_label)
+        analysis_layout.addWidget(self.inspection_exposure_label)
+        analysis_layout.addWidget(self.inspection_clipping_label)
+        analysis_layout.addWidget(self.inspection_detail_label)
+        analysis_layout.addWidget(self.ai_explanation_card)
+        analysis_layout.addStretch(1)
+        analysis_layout.addWidget(self.inspection_hint_label)
+
+        self._content_layout.addWidget(self.analysis_panel, 0)
+
         self.info_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.info_label.setStyleSheet("font-size: 14px; color: #ddd;")
         self.info_label.setWordWrap(True)
@@ -525,6 +880,7 @@ class FullScreenPreview(QDialog):
         root_layout.addWidget(self.header_widget)
         root_layout.addWidget(self.content_widget, 1)
         root_layout.addWidget(self.info_label)
+        self._sync_preview_controls()
         self.apply_theme(self._theme)
 
     def _toggle_button_style(self) -> str:
@@ -571,33 +927,141 @@ class FullScreenPreview(QDialog):
             }}
         """
 
+    def _combo_box_style(self) -> str:
+        return f"""
+            QComboBox {{
+                background-color: {self._theme.input_bg.css};
+                border: 1px solid {self._theme.border.css};
+                border-radius: 8px;
+                color: {self._theme.text_primary.css};
+                padding: 4px 8px;
+            }}
+            QComboBox:hover {{
+                border-color: {self._theme.selection_outline.css};
+            }}
+            QComboBox:disabled {{
+                color: {self._theme.text_disabled.css};
+                border-color: {self._theme.border_muted.css};
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {self._theme.panel_bg.css};
+                border: 1px solid {self._theme.border.css};
+                color: {self._theme.text_primary.css};
+                selection-background-color: {self._theme.selection_fill.css};
+                selection-color: {self._theme.text_primary.css};
+            }}
+        """
+
+    def _sync_preview_controls(self) -> None:
+        edited_candidates = self._edited_candidates_for_entry(self._source_entries[0]) if self._source_entries else ()
+        before_after_visible = (not self._compare_mode) and len(self._source_entries) == 1 and bool(edited_candidates)
+        self.before_after_button.setVisible(before_after_visible)
+        self.layout_group.setVisible(self._compare_mode)
+        self.compare_count_combo.setVisible(self._compare_mode)
+        self.focus_assist_button.setText("On" if self._focus_assist_enabled else "Off")
+        self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
+        advanced_focus_visible = self._focus_assist_enabled
+        self.focus_color_row.setVisible(advanced_focus_visible)
+        self.focus_strength_row.setVisible(advanced_focus_visible)
+        self.focus_background_row.setVisible(advanced_focus_visible)
+
+        if not self._focus_assist_enabled:
+            summary = "Off"
+        else:
+            summary = (
+                f"{self._focus_assist_color.label} | "
+                f"{self._focus_assist_strength.label} | "
+                f"{'Dimmed' if self._focus_assist_dim_background else 'Original'} background"
+            )
+        self.focus_controls_summary_label.setText(summary)
+        self.header_widget.setVisible(True)
+        self.analysis_panel.setVisible(True)
+        for pane in self._panes[: len(self._entries)]:
+            pane.set_minimal(False)
+
     def apply_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
         self.setStyleSheet(f"background-color: {theme.image_bg.css}; color: {theme.text_primary.css};")
         self.header_widget.setStyleSheet(
-            f"background-color: {theme.panel_bg.css}; border: 1px solid {theme.border.css}; border-radius: 12px;"
+            f"""
+            QWidget#previewHeaderBar {{
+                background-color: {theme.toolbar_bg.css};
+                border: 1px solid {theme.border.css};
+                border-radius: 12px;
+            }}
+            QWidget#previewToolbarGroup {{
+                background-color: transparent;
+                border: none;
+            }}
+            QLabel#previewHeaderLabel {{
+                color: {theme.text_muted.css};
+                font-size: 11px;
+                font-weight: 600;
+                background-color: transparent;
+                padding: 0 2px 0 0;
+            }}
+            """
         )
         self.content_widget.setStyleSheet("background-color: transparent;")
         self.info_label.setStyleSheet(f"font-size: 14px; color: {theme.text_secondary.css};")
         self.compare_toggle_button.setStyleSheet(self._toggle_button_style())
         self.auto_bracket_button.setStyleSheet(self._toggle_button_style())
         self.before_after_button.setStyleSheet(self._toggle_button_style())
+        self.focus_assist_button.setStyleSheet(self._toggle_button_style())
+        self.focus_assist_background_button.setStyleSheet(self._toggle_button_style())
         self.photoshop_button.setStyleSheet(self._action_button_style())
         self.next_edit_button.setStyleSheet(self._action_button_style())
-        self.compare_count_combo.setStyleSheet(
+        combo_style = self._combo_box_style()
+        self.focus_assist_color_combo.setStyleSheet(combo_style)
+        self.focus_assist_strength_combo.setStyleSheet(combo_style)
+        self.compare_count_combo.setStyleSheet(combo_style)
+        self.analysis_panel.setStyleSheet(
             f"""
-            QComboBox {{
-                background-color: {theme.input_bg.css};
+            QFrame#previewAnalysisPanel {{
+                background-color: {theme.panel_bg.css};
                 border: 1px solid {theme.border.css};
-                border-radius: 8px;
-                color: {theme.text_primary.css};
-                padding: 4px 8px;
+                border-radius: 14px;
             }}
-            QComboBox:disabled {{
-                color: {theme.text_disabled.css};
+            QLabel#previewAnalysisTitle {{
+                color: {theme.text_primary.css};
+                font-size: 18px;
+                font-weight: 700;
+            }}
+            QLabel#previewAnalysisSubtitle {{
+                color: {theme.text_secondary.css};
+                font-size: 12px;
+            }}
+            QFrame#previewControlsCard {{
+                background-color: {theme.panel_alt_bg.css};
+                border: 1px solid {theme.border.css};
+                border-radius: 12px;
+            }}
+            QLabel#previewControlsTitle {{
+                color: {theme.text_primary.css};
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            QLabel#previewControlsSummary {{
+                color: {theme.text_secondary.css};
+                font-size: 11px;
+                padding-bottom: 2px;
+            }}
+            QLabel#previewControlLabel {{
+                color: {theme.text_muted.css};
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#previewAnalysisValue {{
+                color: {theme.text_primary.css};
+                font-size: 12px;
+            }}
+            QLabel#previewAnalysisHint {{
+                color: {theme.text_secondary.css};
+                font-size: 11px;
             }}
             """
         )
+        self.histogram_widget.apply_theme(theme)
         for pane in self._panes:
             pane.apply_theme(theme)
 
@@ -618,6 +1082,8 @@ class FullScreenPreview(QDialog):
         if self._compare_mode == enabled:
             return
         self._compare_mode = enabled
+        if not enabled:
+            self._winner_ladder_mode = False
         if enabled and self._before_after_enabled:
             self._before_after_enabled = False
             with QSignalBlocker(self.before_after_button):
@@ -626,6 +1092,7 @@ class FullScreenPreview(QDialog):
         with QSignalBlocker(self.compare_toggle_button):
             self.compare_toggle_button.setChecked(enabled)
         self._rebuild_entries()
+        self._sync_preview_controls()
         self._update_layout()
         self._update_info_label()
 
@@ -643,16 +1110,21 @@ class FullScreenPreview(QDialog):
         with QSignalBlocker(self.auto_bracket_button):
             self.auto_bracket_button.setChecked(enabled)
 
+    def set_auto_advance_enabled(self, enabled: bool) -> None:
+        self._auto_advance_enabled = bool(enabled)
+
     def set_photoshop_available(self, available: bool) -> None:
         self._photoshop_available = available
         self.photoshop_button.setEnabled(available)
         if available:
-            self.photoshop_button.setText("Open In Photoshop")
+            self.photoshop_button.setText("Photoshop")
         else:
             self.photoshop_button.setText("Photoshop Not Found")
 
     def show_entries(self, entries: list[PreviewEntry]) -> None:
         self._source_entries = list(entries)
+        if len(entries) < 2:
+            self._winner_ladder_mode = False
         self._focused_slot = 0
         self._manual_zoom = False
         self._zoom_scale = 1.0
@@ -660,12 +1132,13 @@ class FullScreenPreview(QDialog):
         self._pending_right_close = False
         self._edited_variant_index = 0
         self._rebuild_entries()
+        self._sync_preview_controls()
         self.showFullScreen()
         self.raise_()
         self.activateWindow()
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
-        QTimer.singleShot(25, self._request_preview_loads)
+        QTimer.singleShot(0, self._request_preview_loads)
 
     def eventFilter(self, watched, event) -> bool:
         pane_index = self._watched_widgets.get(watched)
@@ -725,19 +1198,49 @@ class FullScreenPreview(QDialog):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._refresh_timer.stop()
+        self._zoom_request_timer.stop()
+        self.closed.emit()
         super().closeEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
+        modifiers = event.modifiers()
+        review_shortcut_allowed = not bool(
+            modifiers
+            & (
+                Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier
+            )
+        )
         if key in (Qt.Key.Key_Escape, Qt.Key.Key_Space):
             self.close()
             event.accept()
             return
         if key == Qt.Key.Key_Tab and self._compare_mode and len(self._entries) > 1:
-            step = -1 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            step = -1 if modifiers & Qt.KeyboardModifier.ShiftModifier else 1
             self._set_focused_slot((self._focused_slot + step) % len(self._entries))
             event.accept()
             return
+        if self._winner_ladder_mode:
+            if key in (Qt.Key.Key_Left, Qt.Key.Key_A) and self._entries:
+                self.winner_ladder_choice_requested.emit(self._entries[0].record.path)
+                event.accept()
+                return
+            if key in (Qt.Key.Key_Right, Qt.Key.Key_D) and len(self._entries) > 1:
+                self.winner_ladder_choice_requested.emit(self._entries[1].record.path)
+                event.accept()
+                return
+            if key == Qt.Key.Key_W and review_shortcut_allowed:
+                path = self._focused_path()
+                if path:
+                    self.winner_ladder_choice_requested.emit(path)
+                    event.accept()
+                    return
+            if key == Qt.Key.Key_N and review_shortcut_allowed:
+                self.winner_ladder_skip_requested.emit()
+                event.accept()
+                return
         if self._compare_mode:
             if key in (Qt.Key.Key_Left, Qt.Key.Key_PageUp):
                 self.navigation_requested.emit(-max(1, self._compare_count))
@@ -776,57 +1279,86 @@ class FullScreenPreview(QDialog):
             self._toggle_loupe()
             event.accept()
             return
+        if key == Qt.Key.Key_F and not bool(
+            modifiers
+            & (
+                Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier
+            )
+        ):
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                self.cycle_focus_assist_color()
+            else:
+                self.toggle_focus_assist_command()
+            event.accept()
+            return
         if key == Qt.Key.Key_0:
             self._set_fit_mode()
             event.accept()
             return
-        if key == Qt.Key.Key_W:
+        if key == Qt.Key.Key_W and review_shortcut_allowed:
             path = self._focused_path()
             if path:
                 self.winner_requested.emit(path)
+                if self._should_auto_advance_after_review():
+                    self.navigation_requested.emit(1)
                 event.accept()
                 return
-        if key == Qt.Key.Key_X:
+        if key == Qt.Key.Key_X and review_shortcut_allowed:
             path = self._focused_path()
             if path:
                 self.reject_requested.emit(path)
+                if self._should_auto_advance_after_review():
+                    self.navigation_requested.emit(1)
                 event.accept()
                 return
-        if key == Qt.Key.Key_K:
+        if key == Qt.Key.Key_K and review_shortcut_allowed:
             path = self._focused_path()
             if path:
                 self.keep_requested.emit(path)
                 event.accept()
                 return
-        if key == Qt.Key.Key_Delete:
+        if key == Qt.Key.Key_Delete and review_shortcut_allowed:
             path = self._focused_path()
             if path:
                 self.delete_requested.emit(path)
                 event.accept()
                 return
-        if key == Qt.Key.Key_M:
+        if key == Qt.Key.Key_M and review_shortcut_allowed:
             path = self._focused_path()
             if path:
                 self.move_requested.emit(path)
                 event.accept()
                 return
-        if Qt.Key.Key_0 <= key <= Qt.Key.Key_5:
+        if Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
             path = self._focused_path()
             if path:
                 self.rate_requested.emit(path, key - Qt.Key.Key_0)
+                if self._should_auto_advance_after_review():
+                    self.navigation_requested.emit(1)
                 event.accept()
                 return
-        if key == Qt.Key.Key_T:
+        if key == Qt.Key.Key_T and review_shortcut_allowed:
             path = self._focused_path()
             if path:
                 self.tag_requested.emit(path)
                 event.accept()
                 return
-        if key == Qt.Key.Key_C:
+        if key == Qt.Key.Key_C and review_shortcut_allowed:
             self.compare_mode_changed.emit(not self._compare_mode)
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _should_auto_advance_after_review(self) -> bool:
+        return (
+            self._auto_advance_enabled
+            and not self._compare_mode
+            and not self._before_after_enabled
+            and not self._winner_ladder_mode
+            and len(self._entries) == 1
+        )
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -855,7 +1387,53 @@ class FullScreenPreview(QDialog):
         if checked:
             self._edited_variant_index = 0
         self._rebuild_entries()
+        self._sync_preview_controls()
         self._request_preview_loads()
+
+    def _handle_focus_assist_button_toggled(self, checked: bool) -> None:
+        self._focus_assist_enabled = checked
+        self._hide_all_loupes()
+        self._sync_preview_controls()
+        self._render_all()
+
+    def _handle_focus_assist_background_toggled(self, checked: bool) -> None:
+        self._focus_assist_dim_background = checked
+        self._settings.setValue(self.FOCUS_ASSIST_DIM_BACKGROUND_KEY, checked)
+        self._focus_assist_cache.clear()
+        self._sync_preview_controls()
+        self._update_analysis_panel()
+        if self._focus_assist_enabled:
+            self._render_all()
+
+    def _handle_focus_assist_color_changed(self) -> None:
+        selected = self.focus_assist_color_combo.currentData()
+        if not isinstance(selected, str):
+            return
+        color = focus_assist_color_by_id(selected)
+        if color.id == self._focus_assist_color.id:
+            return
+        self._focus_assist_color = color
+        self._settings.setValue(self.FOCUS_ASSIST_COLOR_KEY, color.id)
+        self._focus_assist_cache.clear()
+        self._sync_preview_controls()
+        self._update_analysis_panel()
+        if self._focus_assist_enabled:
+            self._render_all()
+
+    def _handle_focus_assist_strength_changed(self) -> None:
+        selected = self.focus_assist_strength_combo.currentData()
+        if not isinstance(selected, str):
+            return
+        strength = focus_assist_strength_by_id(selected)
+        if strength.id == self._focus_assist_strength.id:
+            return
+        self._focus_assist_strength = strength
+        self._settings.setValue(self.FOCUS_ASSIST_STRENGTH_KEY, strength.id)
+        self._focus_assist_cache.clear()
+        self._sync_preview_controls()
+        self._update_analysis_panel()
+        if self._focus_assist_enabled:
+            self._render_all()
 
     def _ensure_panes(self, count: int) -> None:
         while len(self._panes) < count:
@@ -875,13 +1453,24 @@ class FullScreenPreview(QDialog):
             self._entries = before_after_entries
         else:
             self._entries = list(self._source_entries)
+        current_paths = {entry.source_path for entry in self._entries}
+        self._inspection_stats_cache = {
+            key: value for key, value in self._inspection_stats_cache.items() if key[0] in current_paths
+        }
+        self._focus_assist_cache = {
+            key: value for key, value in self._focus_assist_cache.items() if key[0] in current_paths
+        }
         self._current_images = [QImage() for _ in self._entries]
         self._current_metadata = [self._metadata_cache.get(entry.source_path, EMPTY_METADATA) for entry in self._entries]
         self._source_versions = [_file_signature(entry.source_path) for entry in self._entries]
+        self._current_placeholder_flags = [False for _ in self._entries]
+        self._rendered_display_keys = [None for _ in self._entries]
         self._pending_requests = 0
         self._focused_slot = min(self._focused_slot, max(0, len(self._entries) - 1))
         self._update_before_after_controls()
         self._update_layout()
+        self._seed_entry_images_from_placeholders()
+        self._prime_entry_images_from_cache()
         self._render_all()
 
     def _before_after_entries(self) -> list[PreviewEntry] | None:
@@ -904,6 +1493,11 @@ class FullScreenPreview(QDialog):
                 edited_path=edited_path,
                 edited_candidates=edited_candidates,
                 label="Before",
+                ai_result=entry.ai_result,
+                review_summary=entry.review_summary,
+                workflow_summary=entry.workflow_summary,
+                workflow_details=entry.workflow_details,
+                placeholder_image=entry.placeholder_image if before_path == entry.source_path else None,
             ),
             PreviewEntry(
                 record=entry.record,
@@ -914,8 +1508,35 @@ class FullScreenPreview(QDialog):
                 edited_path=edited_path,
                 edited_candidates=edited_candidates,
                 label="After",
+                ai_result=entry.ai_result,
+                review_summary=entry.review_summary,
+                workflow_summary=entry.workflow_summary,
+                workflow_details=entry.workflow_details,
             ),
         ]
+
+    def _seed_entry_images_from_placeholders(self) -> None:
+        for slot, entry in enumerate(self._entries):
+            placeholder = entry.placeholder_image
+            if placeholder is None or placeholder.isNull():
+                continue
+            if not self._should_use_placeholder_image(slot, placeholder):
+                continue
+            self._current_images[slot] = placeholder.copy()
+            if slot < len(self._current_placeholder_flags):
+                self._current_placeholder_flags[slot] = True
+
+    def _should_use_placeholder_image(self, slot: int, image: QImage) -> bool:
+        if image.isNull():
+            return False
+        if len(self._entries) != 1:
+            return True
+        if not 0 <= slot < len(self._panes):
+            return False
+        target = self._fit_target_size(self._panes[slot])
+        minimum_width = max(720, int(target.width() * 0.66))
+        minimum_height = max(420, int(target.height() * 0.66))
+        return image.width() >= minimum_width and image.height() >= minimum_height
 
     def _before_source_path(self, record: ImageRecord) -> str:
         for path in record.companion_paths:
@@ -937,6 +1558,7 @@ class FullScreenPreview(QDialog):
         if multiple_candidates:
             current = (self._edited_variant_index % len(edited_candidates)) + 1
             self.next_edit_button.setText(f"Edit {current}/{len(edited_candidates)}")
+        self._sync_preview_controls()
 
     def _update_layout(self) -> None:
         visible_count = max(1, len(self._entries))
@@ -949,12 +1571,15 @@ class FullScreenPreview(QDialog):
                 widget.hide()
 
         columns = self._column_count_for(visible_count)
+        show_focus_frame = visible_count > 1
         for index, pane in enumerate(self._panes[:visible_count]):
             row = index // columns
             column = index % columns
             self.panes_layout.addWidget(pane, row, column)
             pane.caption_label.setVisible((self._compare_mode and visible_count > 1) or self._before_after_enabled)
+            pane.set_frame_visible(show_focus_frame)
             pane.set_active(index == self._focused_slot)
+            pane.set_minimal(False)
             pane.show()
 
         for pane in self._panes[visible_count:]:
@@ -991,19 +1616,45 @@ class FullScreenPreview(QDialog):
             if not 0 <= slot < len(self._entries):
                 continue
             entry = self._entries[slot]
+            source_signature = _file_signature(entry.source_path)
+            target_size = self._decode_target_size(slot)
+            prefer_embedded = not self._manual_zoom
+            cache_key = self._preview_cache_key(
+                entry.source_path,
+                source_signature,
+                target_size,
+                prefer_embedded=prefer_embedded,
+            )
+            cached_image = self._cached_preview_image(cache_key)
+            should_load_metadata = force_metadata or entry.source_path not in self._metadata_cache
+            if cached_image is not None and not cached_image.isNull():
+                self._current_images[slot] = cached_image
+                if slot < len(self._current_placeholder_flags):
+                    self._current_placeholder_flags[slot] = False
+                if slot < len(self._source_versions):
+                    self._source_versions[slot] = source_signature
+                metadata = self._metadata_cache.get(entry.source_path)
+                if metadata is not None:
+                    self._current_metadata[slot] = metadata
+                self._render_pane(slot)
+                if slot == self._focused_slot:
+                    self._update_analysis_panel()
+                if not should_load_metadata:
+                    continue
             self._pending_requests += 1
             task = PreviewTask(
                 PreviewRequest(
                     path=entry.source_path,
                     token=token,
                     slot=slot,
-                    target_size=self._decode_target_size(slot),
-                    prefer_embedded=not self._manual_zoom,
-                    load_metadata=force_metadata or entry.source_path not in self._metadata_cache,
+                    target_size=target_size,
+                    source_signature=source_signature,
+                    prefer_embedded=prefer_embedded,
+                    load_metadata=should_load_metadata,
                 ),
                 self._result_queue,
             )
-            self._pool.start(task)
+            self._pool.start(task, self._visible_request_priority(slot))
         if not self._drain_timer.isActive():
             self._drain_timer.start()
 
@@ -1015,34 +1666,87 @@ class FullScreenPreview(QDialog):
             except Empty:
                 break
 
-            state, token, slot, path, *payload = item
+            state, request, *payload = item
+            cache_key = self._preview_cache_key(
+                request.path,
+                request.source_signature,
+                request.target_size,
+                prefer_embedded=request.prefer_embedded,
+            )
+            self._pending_cache_keys.discard(cache_key)
 
-            if token == self._load_token and self._pending_requests > 0:
+            if not request.cache_only and request.token == self._load_token and self._pending_requests > 0:
                 self._pending_requests -= 1
-            if token == self._load_token and 0 <= slot < len(self._entries) and path == self._entries[slot].source_path:
+            if state == "ready":
+                image = payload[0]
+                metadata = payload[1] if len(payload) > 1 else None
+                self._cache_preview_image(cache_key, image)
+                if metadata is not None:
+                    self._metadata_cache[request.path] = metadata
+            if request.cache_only:
+                processed += 1
+                continue
+
+            if request.token == self._load_token and 0 <= request.slot < len(self._entries) and request.path == self._entries[request.slot].source_path:
                 if state == "ready":
                     image = payload[0]
                     metadata = payload[1] if len(payload) > 1 else None
-                    self._current_images[slot] = image
-                    if slot < len(self._source_versions):
-                        self._source_versions[slot] = _file_signature(path)
+                    self._current_images[request.slot] = image
+                    if request.slot < len(self._current_placeholder_flags):
+                        self._current_placeholder_flags[request.slot] = False
+                    if request.slot < len(self._source_versions):
+                        self._source_versions[request.slot] = request.source_signature
                     if metadata is not None:
-                        self._metadata_cache[path] = metadata
-                        self._current_metadata[slot] = metadata
-                    self._render_pane(slot)
+                        self._current_metadata[request.slot] = metadata
+                    self._render_pane(request.slot)
+                    if request.slot == self._focused_slot:
+                        self._update_analysis_panel()
                 else:
-                    if self._current_images[slot].isNull():
-                        self._show_failed(slot, payload[0])
+                    if self._current_images[request.slot].isNull():
+                        self._show_failed(request.slot, payload[0])
             processed += 1
 
         if processed == 0 and self._pending_requests == 0:
             self._drain_timer.stop()
 
+    def preload_paths(self, paths: list[str], *, load_metadata: bool = True) -> None:
+        if not paths:
+            return
+        target_size = self._preload_target_size()
+        max_paths = 10
+        for index, path in enumerate(paths[:max_paths]):
+            if not path or not os.path.exists(path):
+                continue
+            source_signature = _file_signature(path)
+            cache_key = self._preview_cache_key(path, source_signature, target_size, prefer_embedded=True)
+            if self._cached_preview_image(cache_key) is not None or cache_key in self._pending_cache_keys:
+                continue
+            self._pending_cache_keys.add(cache_key)
+            task = PreviewTask(
+                PreviewRequest(
+                    path=path,
+                    token=0,
+                    slot=-1,
+                    target_size=target_size,
+                    source_signature=source_signature,
+                    prefer_embedded=True,
+                    load_metadata=load_metadata and index < 2 and path not in self._metadata_cache,
+                    cache_only=True,
+                ),
+                self._result_queue,
+            )
+            self._pool.start(task, -20 - index)
+        if not self._drain_timer.isActive():
+            self._drain_timer.start()
+
     def _render_all(self) -> None:
         for slot in range(len(self._entries)):
             self._render_pane(slot)
+        if self._manual_zoom:
+            self._apply_zoom_to_all()
         self._update_focus_styles()
         self._update_cursor()
+        self._update_analysis_panel()
         self._update_info_label()
 
     def _poll_source_updates(self) -> None:
@@ -1063,6 +1767,7 @@ class FullScreenPreview(QDialog):
             if latest_signature is None or latest_signature == current_signature:
                 continue
             self._metadata_cache.pop(entry.source_path, None)
+            self._invalidate_preview_cache(entry.source_path)
             changed_slots.append(slot)
 
         if changed_slots:
@@ -1073,7 +1778,7 @@ class FullScreenPreview(QDialog):
             return
         pane = self._panes[slot]
         entry = self._entries[slot]
-        image = self._current_images[slot]
+        display_image = self._display_image_for_slot(slot)
         metadata = self._current_metadata[slot] if slot < len(self._current_metadata) else EMPTY_METADATA
         if entry.label:
             caption_text = f"{entry.label} | {Path(entry.source_path).name}"
@@ -1096,52 +1801,178 @@ class FullScreenPreview(QDialog):
         pane.reject_button.setChecked(entry.reject)
         pane.reject_button.setText(pane.REJECT_SYMBOL)
 
-        if image.isNull():
+        if display_image.isNull():
+            pane.image_label.setScaledContents(False)
             pane.image_label.resize(1, 1)
             pane.image_label.clear()
+            if slot < len(self._rendered_display_keys):
+                self._rendered_display_keys[slot] = None
             pane.image_label.setText("Loading full preview...")
             return
 
         if self._manual_zoom:
             scaled_size = QSize(
-                max(1, int(round(image.width() * self._zoom_scale))),
-                max(1, int(round(image.height() * self._zoom_scale))),
+                max(1, int(round(display_image.width() * self._zoom_scale))),
+                max(1, int(round(display_image.height() * self._zoom_scale))),
             )
-            if scaled_size == image.size():
-                pixmap = QPixmap.fromImage(image)
+            pane.image_label.setText("")
+            pane.image_label.setScaledContents(True)
+            display_key = self._display_render_key(slot, display_image)
+            if (
+                slot >= len(self._rendered_display_keys)
+                or self._rendered_display_keys[slot] != display_key
+                or pane.image_label.pixmap() is None
+                or pane.image_label.pixmap().isNull()
+            ):
+                pane.image_label.setPixmap(QPixmap.fromImage(display_image))
+                if slot < len(self._rendered_display_keys):
+                    self._rendered_display_keys[slot] = display_key
+            pane.image_label.resize(scaled_size)
+        else:
+            pane.image_label.setScaledContents(False)
+            target = self._fit_target_size(pane)
+            transform_mode = Qt.TransformationMode.SmoothTransformation
+            fitted_size = display_image.size().scaled(target, Qt.AspectRatioMode.KeepAspectRatio)
+            if fitted_size == display_image.size():
+                pixmap = QPixmap.fromImage(display_image)
             else:
                 pixmap = QPixmap.fromImage(
-                    image.scaled(
-                        scaled_size,
+                    display_image.scaled(
+                        target,
                         Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
+                        transform_mode,
                     )
                 )
+            pane.image_label.setText("")
             pane.image_label.setPixmap(pixmap)
             pane.image_label.resize(pixmap.size())
-        else:
-            target = self._fit_target_size(pane)
-            pixmap = QPixmap.fromImage(
-                image.scaled(
-                    target,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-            pane.image_label.setPixmap(pixmap)
-            pane.image_label.resize(pixmap.size())
+            if slot < len(self._rendered_display_keys):
+                self._rendered_display_keys[slot] = None
             pane.scroll_area.horizontalScrollBar().setValue(0)
             pane.scroll_area.verticalScrollBar().setValue(0)
 
-        if self._manual_zoom:
-            self._apply_zoom_to_all()
+    def _display_image_for_slot(self, slot: int) -> QImage:
+        if not 0 <= slot < len(self._current_images):
+            return QImage()
+        image = self._current_images[slot]
+        if image.isNull() or not self._focus_assist_enabled:
+            return image
+        cache_key = self._focus_assist_cache_key(slot, image)
+        cached = self._focus_assist_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        assisted = build_focus_assist_image(
+            image,
+            self._focus_assist_color,
+            self._focus_assist_strength,
+            dim_background=self._focus_assist_dim_background,
+        )
+        self._focus_assist_cache[cache_key] = assisted
+        return assisted
+
+    def _inspection_stats_for_slot(self, slot: int) -> InspectionStats:
+        if not 0 <= slot < len(self._current_images):
+            return EMPTY_INSPECTION_STATS
+        image = self._current_images[slot]
+        if image.isNull():
+            return EMPTY_INSPECTION_STATS
+        cache_key = self._image_cache_key(slot, image)
+        cached = self._inspection_stats_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        stats = build_inspection_stats(image)
+        self._inspection_stats_cache[cache_key] = stats
+        return stats
+
+    def _image_cache_key(self, slot: int, image: QImage) -> tuple[str, tuple[int, int] | None, int, int]:
+        path = self._entries[slot].source_path if 0 <= slot < len(self._entries) else ""
+        signature = self._source_versions[slot] if 0 <= slot < len(self._source_versions) else None
+        return (path, signature, image.width(), image.height())
+
+    def _display_render_key(self, slot: int, image: QImage) -> tuple[object, ...]:
+        base_key = self._image_cache_key(slot, image)
+        if not self._focus_assist_enabled:
+            return (*base_key, "display")
+        return (*self._focus_assist_cache_key(slot, image), "focus-assist")
+
+    def _focus_assist_cache_key(
+        self, slot: int, image: QImage
+    ) -> tuple[str, tuple[int, int] | None, int, int, str, str, bool]:
+        return (
+            *self._image_cache_key(slot, image),
+            self._focus_assist_color.id,
+            self._focus_assist_strength.id,
+            self._focus_assist_dim_background,
+        )
+
+    def _update_analysis_panel(self) -> None:
+        if not self._entries or not 0 <= self._focused_slot < len(self._entries):
+            self.analysis_subtitle_label.setText("Focused image analysis")
+            self.histogram_widget.set_stats(EMPTY_INSPECTION_STATS)
+            self.inspection_dimensions_label.setText("Size: --")
+            self.inspection_exposure_label.setText("Exposure: --")
+            self.inspection_clipping_label.setText("Clipping: --")
+            self.inspection_detail_label.setText("Detail: --")
+            self.ai_confidence_label.setText("Confidence: --")
+            self.ai_explanation_label.setText("Load an AI-scored image to see ranking rationale.")
+            return
+
+        entry = self._entries[self._focused_slot]
+        stats = self._inspection_stats_for_slot(self._focused_slot)
+        title = Path(entry.source_path).name
+        if entry.label:
+            title = f"{entry.label} | {title}"
+        self.analysis_subtitle_label.setText(title)
+        self.histogram_widget.set_stats(stats)
+
+        if stats.width <= 0 or stats.height <= 0:
+            self.inspection_dimensions_label.setText("Size: Loading...")
+            self.inspection_exposure_label.setText("Exposure: Loading...")
+            self.inspection_clipping_label.setText("Clipping: Loading...")
+            self.inspection_detail_label.setText("Detail: Loading...")
+            self.ai_confidence_label.setText(
+                f"Confidence: {entry.ai_result.confidence_bucket_label}" if entry.ai_result is not None else "Confidence: --"
+            )
+            explanation_lines = list(build_ai_explanation_lines(entry.ai_result, review_summary=entry.review_summary))
+            explanation_lines.extend(entry.workflow_details[:3])
+            self.ai_explanation_label.setText("\n".join(explanation_lines) or "Load an AI-scored image to see ranking rationale.")
+            return
+
+        self.inspection_dimensions_label.setText(f"Size: {stats.width:,} x {stats.height:,}")
+        self.inspection_exposure_label.setText(
+            f"Exposure: mean {stats.mean_luminance:.0f} | median {stats.median_luminance:.0f}"
+        )
+        self.inspection_clipping_label.setText(
+            f"Clipping: {stats.shadow_clip_pct:.1f}% shadows | {stats.highlight_clip_pct:.1f}% highlights"
+        )
+        self.inspection_detail_label.setText(
+            f"Detail: {stats.detail_score:.0f}/100 | {_detail_label(stats.detail_score)}"
+        )
+        if entry.ai_result is None:
+            self.ai_confidence_label.setText("Confidence: --")
+            self.ai_explanation_label.setText("\n".join(entry.workflow_details) or "AI is not loaded for this image.")
+            return
+        self.ai_confidence_label.setText(f"Confidence: {entry.ai_result.confidence_bucket_label}")
+        explanation = build_ai_explanation_lines(
+            entry.ai_result,
+            review_summary=entry.review_summary,
+            detail_score=stats.detail_score,
+        )
+        explanation_lines = list(explanation)
+        explanation_lines.extend(entry.workflow_details[:3])
+        self.ai_explanation_label.setText(
+            "\n".join(explanation_lines) if explanation_lines else "AI scoring is loaded, but no explanation signals are available."
+        )
 
     def _show_failed(self, slot: int, message: str) -> None:
         if not 0 <= slot < len(self._entries):
             return
         pane = self._panes[slot]
+        pane.image_label.setScaledContents(False)
         pane.image_label.resize(1, 1)
         pane.image_label.clear()
+        if slot < len(self._rendered_display_keys):
+            self._rendered_display_keys[slot] = None
         pane.image_label.setText(f"Failed\n{message}")
 
     def _fit_target_size(self, pane: PreviewPane) -> QSize:
@@ -1151,27 +1982,118 @@ class FullScreenPreview(QDialog):
         return QSize(width, height)
 
     def _decode_target_size(self, slot: int) -> QSize:
-        if self._manual_zoom and not self._compare_mode and slot == self._focused_slot:
-            return QSize()
         if 0 <= slot < len(self._panes):
             fit_target = self._fit_target_size(self._panes[slot])
         else:
             fit_target = QSize(max(1, self.width()), max(1, self.height()))
-        if fit_target.width() < 400 or fit_target.height() < 400:
+        if (not self.isVisible()) or fit_target.width() < 800 or fit_target.height() < 600:
             window_size = self.size()
-            if window_size.width() < 400 or window_size.height() < 400:
-                screen = self.screen()
-                if screen is not None:
-                    window_size = screen.availableGeometry().size()
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is not None:
+                window_size = screen.availableGeometry().size()
             columns = 2 if self._before_after_enabled and len(self._entries) == 2 else max(1, self._column_count_for(max(1, len(self._entries))))
+            sidebar_width = 360 if len(self._entries) <= 1 and not self._compare_mode else 72
             fit_target = QSize(
-                max(1, int(window_size.width() / columns) - 48),
-                max(1, window_size.height() - 180),
+                max(1, int((window_size.width() - sidebar_width) / columns) - 48),
+                max(1, window_size.height() - 188),
             )
+        if self._manual_zoom and slot == self._focused_slot:
+            zoom_scale = max(1.0, self._zoom_scale)
+            overscan = 1.25 if len(self._entries) <= 1 else 1.15
+            max_edge = 8192 if len(self._entries) <= 1 else 6144
+            return QSize(
+                min(max_edge, max(1, int(round(fit_target.width() * zoom_scale * overscan)))),
+                min(max_edge, max(1, int(round(fit_target.height() * zoom_scale * overscan)))),
+            )
+        overscan = 2.0
+        max_edge = 5120 if len(self._entries) <= 1 else 4096
         return QSize(
-            min(4096, max(1, fit_target.width() * 2)),
-            min(4096, max(1, fit_target.height() * 2)),
+            min(max_edge, max(1, int(round(fit_target.width() * overscan)))),
+            min(max_edge, max(1, int(round(fit_target.height() * overscan)))),
         )
+
+    def _prime_entry_images_from_cache(self) -> None:
+        if not self._entries:
+            return
+        for slot, entry in enumerate(self._entries):
+            source_signature = self._source_versions[slot] if slot < len(self._source_versions) else _file_signature(entry.source_path)
+            target_size = self._decode_target_size(slot)
+            cache_key = self._preview_cache_key(
+                entry.source_path,
+                source_signature,
+                target_size,
+                prefer_embedded=not self._manual_zoom,
+            )
+            cached_image = self._cached_preview_image(cache_key)
+            if cached_image is None or cached_image.isNull():
+                continue
+            self._current_images[slot] = cached_image
+            if slot < len(self._current_placeholder_flags):
+                self._current_placeholder_flags[slot] = False
+            metadata = self._metadata_cache.get(entry.source_path)
+            if metadata is not None and slot < len(self._current_metadata):
+                self._current_metadata[slot] = metadata
+
+    def _visible_request_priority(self, slot: int) -> int:
+        distance = abs(slot - self._focused_slot)
+        return max(20, 80 - (distance * 8))
+
+    def _preload_target_size(self) -> QSize:
+        if self._panes:
+            return self._decode_target_size(min(max(self._focused_slot, 0), len(self._panes) - 1))
+        width = max(960, int(self.width() * 0.7))
+        height = max(720, int(self.height() * 0.7))
+        return QSize(width, height)
+
+    def _preview_cache_key(
+        self,
+        path: str,
+        source_signature: tuple[int, int] | None,
+        target_size: QSize,
+        *,
+        prefer_embedded: bool,
+    ) -> tuple[str, tuple[int, int] | None, int, int, bool]:
+        return (
+            path,
+            source_signature,
+            max(0, target_size.width()),
+            max(0, target_size.height()),
+            prefer_embedded,
+        )
+
+    def _cached_preview_image(
+        self,
+        cache_key: tuple[str, tuple[int, int] | None, int, int, bool],
+    ) -> QImage | None:
+        cached = self._preview_cache.get(cache_key)
+        if cached is None:
+            return None
+        self._preview_cache.move_to_end(cache_key)
+        return cached[0]
+
+    def _cache_preview_image(
+        self,
+        cache_key: tuple[str, tuple[int, int] | None, int, int, bool],
+        image: QImage,
+    ) -> None:
+        if image.isNull():
+            return
+        cost = max(1, image.sizeInBytes())
+        existing = self._preview_cache.pop(cache_key, None)
+        if existing is not None:
+            self._preview_cache_bytes -= existing[1]
+        self._preview_cache[cache_key] = (image, cost)
+        self._preview_cache.move_to_end(cache_key)
+        self._preview_cache_bytes += cost
+        while self._preview_cache_bytes > self._preview_cache_limit and self._preview_cache:
+            _, (_, removed_cost) = self._preview_cache.popitem(last=False)
+            self._preview_cache_bytes -= removed_cost
+
+    def _invalidate_preview_cache(self, path: str) -> None:
+        matching_keys = [key for key in self._preview_cache if key[0] == path]
+        for key in matching_keys:
+            _image, cost = self._preview_cache.pop(key)
+            self._preview_cache_bytes -= cost
 
     def _fit_scale_threshold(self) -> float:
         scales: list[float] = []
@@ -1199,6 +2121,8 @@ class FullScreenPreview(QDialog):
         self._manual_zoom = False
         self._zoom_scale = self._fit_scale_threshold()
         self._dragging = False
+        self._pending_zoom_refresh_slots = []
+        self._zoom_request_timer.stop()
         self._hide_all_loupes()
         self._render_all()
 
@@ -1213,9 +2137,9 @@ class FullScreenPreview(QDialog):
         self._zoom_scale = clamped
         self._hide_all_loupes()
         self._render_all()
-        if entered_manual and self._entries:
+        if self._entries:
             target_slots = list(range(len(self._entries))) if (self._before_after_enabled or self._compare_mode) else [self._focused_slot]
-            self._request_preview_loads(target_slots)
+            self._schedule_zoom_resolution_refresh(target_slots, delay_ms=0 if entered_manual else 90)
 
     def _handle_wheel_zoom(self, delta: int) -> None:
         if delta == 0 or not self._entries:
@@ -1223,6 +2147,24 @@ class FullScreenPreview(QDialog):
         current_scale = self._zoom_scale if self._manual_zoom else self._fit_scale_threshold()
         step = 1.15 if delta > 0 else 1 / 1.15
         self._set_manual_zoom(current_scale * step)
+
+    def _schedule_zoom_resolution_refresh(self, slots: list[int], *, delay_ms: int = 90) -> None:
+        normalized_slots = [slot for slot in sorted(set(slots)) if 0 <= slot < len(self._entries)]
+        if not normalized_slots:
+            return
+        self._pending_zoom_refresh_slots = normalized_slots
+        if delay_ms <= 0:
+            self._zoom_request_timer.stop()
+            self._request_zoom_resolution_refresh()
+            return
+        self._zoom_request_timer.start(delay_ms)
+
+    def _request_zoom_resolution_refresh(self) -> None:
+        if not self._pending_zoom_refresh_slots:
+            return
+        slots = list(self._pending_zoom_refresh_slots)
+        self._pending_zoom_refresh_slots = []
+        self._request_preview_loads(slots)
 
     def _handle_mouse_press(self, event: QMouseEvent) -> bool:
         if not self._manual_zoom:
@@ -1376,6 +2318,7 @@ class FullScreenPreview(QDialog):
             return
         self._focused_slot = slot
         self._update_focus_styles()
+        self._update_analysis_panel()
         self._update_info_label()
 
     def _update_focus_styles(self) -> None:
@@ -1387,17 +2330,24 @@ class FullScreenPreview(QDialog):
             return
         self._set_focused_slot(slot)
         self.winner_requested.emit(self._entries[slot].record.path)
+        if self._should_auto_advance_after_review():
+            self.navigation_requested.emit(1)
 
     def _handle_reject_clicked(self, slot: int) -> None:
         if not 0 <= slot < len(self._entries):
             return
         self._set_focused_slot(slot)
         self.reject_requested.emit(self._entries[slot].record.path)
+        if self._should_auto_advance_after_review():
+            self.navigation_requested.emit(1)
 
     def _focused_path(self) -> str:
         if not 0 <= self._focused_slot < len(self._entries):
             return ""
         return self._entries[self._focused_slot].record.path
+
+    def focused_path(self) -> str:
+        return self._focused_path()
 
     def _focused_photoshop_path(self) -> str:
         if not 0 <= self._focused_slot < len(self._entries):
@@ -1406,6 +2356,9 @@ class FullScreenPreview(QDialog):
         if entry.source_path:
             return entry.source_path
         return entry.record.path
+
+    def focused_photoshop_path(self) -> str:
+        return self._focused_photoshop_path()
 
     def _edited_candidates_for_entry(self, entry: PreviewEntry) -> tuple[str, ...]:
         if entry.edited_candidates:
@@ -1433,6 +2386,91 @@ class FullScreenPreview(QDialog):
             return ""
         return self._entries[0].record.path
 
+    def compare_mode_enabled(self) -> bool:
+        return self._compare_mode
+
+    def toggle_compare_mode(self) -> None:
+        self.compare_mode_changed.emit(not self._compare_mode)
+
+    def navigate_relative(self, delta: int) -> None:
+        self.navigation_requested.emit(delta)
+
+    def toggle_zoom_command(self) -> None:
+        self._toggle_zoom()
+
+    def fit_to_screen(self) -> None:
+        self._set_fit_mode()
+
+    def toggle_loupe_command(self) -> None:
+        self._toggle_loupe()
+
+    def toggle_focus_assist_command(self) -> None:
+        with QSignalBlocker(self.focus_assist_button):
+            self.focus_assist_button.setChecked(not self._focus_assist_enabled)
+        self._handle_focus_assist_button_toggled(not self._focus_assist_enabled)
+
+    def focus_assist_enabled(self) -> bool:
+        return self._focus_assist_enabled
+
+    def focus_assist_color(self) -> FocusAssistColor:
+        return self._focus_assist_color
+
+    def set_focus_assist_color_by_id(self, color_id: str) -> None:
+        color = focus_assist_color_by_id(color_id)
+        if color.id == self._focus_assist_color.id:
+            return
+        combo_index = self.focus_assist_color_combo.findData(color.id)
+        if combo_index >= 0:
+            self.focus_assist_color_combo.setCurrentIndex(combo_index)
+        else:
+            self._focus_assist_color = color
+            self._settings.setValue(self.FOCUS_ASSIST_COLOR_KEY, color.id)
+            self._focus_assist_cache.clear()
+            self._sync_preview_controls()
+            self._update_analysis_panel()
+            if self._focus_assist_enabled:
+                self._render_all()
+
+    def cycle_focus_assist_color(self) -> None:
+        current_index = self.focus_assist_color_combo.currentIndex()
+        next_index = (current_index + 1) % max(1, self.focus_assist_color_combo.count())
+        self.focus_assist_color_combo.setCurrentIndex(next_index)
+
+    def focus_assist_strength(self) -> FocusAssistStrength:
+        return self._focus_assist_strength
+
+    def set_focus_assist_strength_by_id(self, strength_id: str) -> None:
+        strength = focus_assist_strength_by_id(strength_id)
+        if strength.id == self._focus_assist_strength.id:
+            return
+        combo_index = self.focus_assist_strength_combo.findData(strength.id)
+        if combo_index >= 0:
+            self.focus_assist_strength_combo.setCurrentIndex(combo_index)
+        else:
+            self._focus_assist_strength = strength
+            self._settings.setValue(self.FOCUS_ASSIST_STRENGTH_KEY, strength.id)
+            self._focus_assist_cache.clear()
+            self._sync_preview_controls()
+            self._update_analysis_panel()
+            if self._focus_assist_enabled:
+                self._render_all()
+
+    def cycle_focus_assist_strength(self) -> None:
+        current_index = self.focus_assist_strength_combo.currentIndex()
+        next_index = (current_index + 1) % max(1, self.focus_assist_strength_combo.count())
+        self.focus_assist_strength_combo.setCurrentIndex(next_index)
+
+    def focus_assist_dim_background(self) -> bool:
+        return self._focus_assist_dim_background
+
+    def set_focus_assist_dim_background(self, enabled: bool) -> None:
+        with QSignalBlocker(self.focus_assist_background_button):
+            self.focus_assist_background_button.setChecked(enabled)
+        self._handle_focus_assist_background_toggled(enabled)
+
+    def toggle_focus_assist_background_command(self) -> None:
+        self.set_focus_assist_dim_background(not self._focus_assist_dim_background)
+
     def set_annotation_state(self, path: str, winner: bool, reject: bool) -> None:
         updated = False
         for collection_name in ("_source_entries", "_entries"):
@@ -1450,6 +2488,10 @@ class FullScreenPreview(QDialog):
                     edited_candidates=entry.edited_candidates,
                     label=entry.label,
                     ai_result=entry.ai_result,
+                    review_summary=entry.review_summary,
+                    workflow_summary=entry.workflow_summary,
+                    workflow_details=entry.workflow_details,
+                    placeholder_image=entry.placeholder_image,
                 )
                 updated = True
         if updated:
@@ -1472,6 +2514,10 @@ class FullScreenPreview(QDialog):
                     edited_candidates=edited_candidates,
                     label=entry.label,
                     ai_result=entry.ai_result,
+                    review_summary=entry.review_summary,
+                    workflow_summary=entry.workflow_summary,
+                    workflow_details=entry.workflow_details,
+                    placeholder_image=entry.placeholder_image,
                 )
                 updated = True
         if updated:
@@ -1494,6 +2540,19 @@ class FullScreenPreview(QDialog):
         else:
             prefix = self._entries[0].record.name
         mode = f"{int(round(self._zoom_scale * 100))}%" if self._manual_zoom else "Fit"
+        focused_entry = self._entries[min(self._focused_slot, len(self._entries) - 1)]
+        confidence_hint = (
+            f" | {focused_entry.ai_result.confidence_bucket_label}"
+            if focused_entry.ai_result is not None
+            else ""
+        )
+        review_hint = f" | {focused_entry.review_summary}" if focused_entry.review_summary else ""
+        workflow_hint = f" | {focused_entry.workflow_summary}" if focused_entry.workflow_summary else ""
+        if self._winner_ladder_mode:
+            self.info_label.setText(
+                f"Winner Ladder  |  {prefix}{confidence_hint}{review_hint}{workflow_hint}  |  Left/A choose winner, Right/D choose challenger, W choose focus, N skip, Tab focus, Esc exit"
+            )
+            return
         if self._compare_mode:
             nav_hint = "Left/Right jump group, Up/Down step one"
         elif self._before_after_enabled:
@@ -1504,9 +2563,31 @@ class FullScreenPreview(QDialog):
         if self._compare_mode and self._entries:
             focus_hint = f" | Focus: {self._focused_slot + 1}/{len(self._entries)}"
         loupe_hint = f" | Loupe {int(round(self._loupe_zoom * 100))}%" if self._loupe_enabled else ""
-        self.info_label.setText(
-            f"{prefix}  |  {mode}{focus_hint}{loupe_hint}  |  {nav_hint}, wheel/Z zoom, L loupe, Alt+L cycle loupe, drag to pan, Tab focus, W/X/K/Delete/M/0-5/T actions, C compare, 0 to fit"
+        focus_assist_hint = (
+            f" | Focus Assist {self._focus_assist_color.label}/{self._focus_assist_strength.label}"
+            f"/{'Dim' if self._focus_assist_dim_background else 'Original'}"
+            if self._focus_assist_enabled
+            else ""
         )
+        auto_advance_hint = " | Auto-Advance" if self._should_auto_advance_after_review() else ""
+        self.info_label.setText(
+            f"{prefix}{confidence_hint}{review_hint}{workflow_hint}  |  {mode}{focus_hint}{loupe_hint}{focus_assist_hint}{auto_advance_hint}  |  {nav_hint}, wheel/Z zoom, L loupe, Alt+L cycle loupe, F focus assist, Shift+F cycles colors, use the inspection card for peaking controls, drag to pan, Tab focus, W/X/K/Delete/M/0-5/T actions, C compare, 0 to fit"
+        )
+
+    def winner_ladder_mode_enabled(self) -> bool:
+        return self._winner_ladder_mode
+
+    def set_winner_ladder_mode(self, enabled: bool) -> None:
+        normalized = bool(enabled)
+        if self._winner_ladder_mode == normalized:
+            return
+        self._winner_ladder_mode = normalized
+        if normalized:
+            if not self._compare_mode:
+                self.set_compare_mode(True)
+        self._sync_preview_controls()
+        self._update_layout()
+        self._update_info_label()
 
 
 def _file_signature(path: str) -> tuple[int, int] | None:
@@ -1522,6 +2603,8 @@ def _format_ai_metadata(ai_result: AIImageResult | None) -> str:
         return ""
 
     parts = [f"AI score {ai_result.display_score_with_scale_text}"]
+    if ai_result.confidence_bucket_label:
+        parts.append(ai_result.confidence_bucket_label)
     if ai_result.group_id:
         parts.append(ai_result.group_id)
     if ai_result.group_size > 1:
@@ -1529,3 +2612,37 @@ def _format_ai_metadata(ai_result: AIImageResult | None) -> str:
         if ai_result.is_top_pick:
             parts.append("recommended keeper")
     return "  |  ".join(part for part in parts if part)
+
+
+def _detail_label(score: float) -> str:
+    if score >= 72.0:
+        return "high detail"
+    if score >= 44.0:
+        return "moderate detail"
+    return "soft detail"
+
+
+def _histogram_path(values: tuple[int, ...], rect: QRect, max_value: int, *, closed: bool = False) -> QPainterPath:
+    path = QPainterPath()
+    if not values or rect.width() <= 0 or rect.height() <= 0 or max_value <= 0:
+        return path
+
+    left = float(rect.left())
+    bottom = float(rect.bottom())
+    x_step = rect.width() / max(1, len(values) - 1)
+    if closed:
+        path.moveTo(left, bottom)
+    for index, value in enumerate(values):
+        x = left + (x_step * index)
+        y = bottom - ((float(value) / float(max_value)) * rect.height())
+        if index == 0:
+            if closed:
+                path.lineTo(x, y)
+            else:
+                path.moveTo(x, y)
+            continue
+        path.lineTo(x, y)
+    if closed:
+        path.lineTo(float(rect.right()), bottom)
+        path.closeSubpath()
+    return path

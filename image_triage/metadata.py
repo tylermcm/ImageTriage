@@ -17,12 +17,16 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 @dataclass(slots=True, frozen=True)
 class CaptureMetadata:
     path: str
+    camera_make: str = ""
+    camera_model: str = ""
+    camera: str = ""
     exposure: str = ""
     aperture: str = ""
     iso: str = ""
     focal_length: str = ""
     lens: str = ""
     captured_at: str = ""
+    orientation: str = ""
     exposure_seconds: float | None = None
     aperture_value: float | None = None
     iso_value: float | None = None
@@ -38,7 +42,7 @@ class CaptureMetadata:
 
     @property
     def detail(self) -> str:
-        parts = [self.lens, self.captured_at]
+        parts = [self.camera, self.lens, self.captured_at, self.orientation]
         return "  |  ".join(part for part in parts if part)
 
     @property
@@ -69,8 +73,24 @@ def load_capture_metadata(path: str) -> CaptureMetadata:
     except Exception:  # pragma: no cover - parser/runtime path
         return CaptureMetadata(path=path)
 
+    camera_make_value = _tag_value(tags, "Image Make")
+    camera_model_value = _tag_value(tags, "Image Model")
+    width_value = _tag_value(tags, "EXIF ExifImageWidth") or _tag_value(tags, "Image ImageWidth")
+    height_value = _tag_value(tags, "EXIF ExifImageLength") or _tag_value(tags, "Image ImageLength")
+    orientation_value = _tag_value(tags, "Image Orientation") or _tag_value(tags, "EXIF Orientation")
+    width_pixels = _coerce_dimension(width_value)
+    height_pixels = _coerce_dimension(height_value)
+    if _orientation_swaps_dimensions(orientation_value):
+        width_pixels, height_pixels = height_pixels, width_pixels
+
     return CaptureMetadata(
         path=path,
+        camera_make=_format_text(camera_make_value),
+        camera_model=_format_text(camera_model_value),
+        camera=_format_camera(
+            camera_make_value,
+            camera_model_value,
+        ),
         exposure=_format_exposure(exposure_value := _tag_value(tags, "EXIF ExposureTime")),
         aperture=_format_aperture(aperture_value := _tag_value(tags, "EXIF FNumber")),
         iso=_format_iso(
@@ -86,11 +106,14 @@ def load_capture_metadata(path: str) -> CaptureMetadata:
             or _tag_value(tags, "MakerNote Lens")
         ),
         captured_at=_format_datetime(captured_at_value := _tag_value(tags, "EXIF DateTimeOriginal")),
+        orientation=_format_orientation(width_pixels, height_pixels),
         exposure_seconds=_to_float(exposure_value),
         aperture_value=_to_float(aperture_value),
         iso_value=_first_numeric(iso_value),
         focal_length_value=_to_float(focal_value),
         captured_at_value=_parse_datetime_value(captured_at_value),
+        width=width_pixels,
+        height=height_pixels,
     )
 
 
@@ -260,3 +283,43 @@ def _first_numeric(value) -> float | None:
     if isinstance(value, list) and value:
         return _to_float(value[0])
     return _to_float(value)
+
+
+def _coerce_dimension(value) -> int:
+    numeric = _first_numeric(value)
+    if numeric is None or numeric <= 0:
+        return 0
+    return int(round(numeric))
+
+
+def _format_camera(make, model) -> str:
+    make_text = _format_text(make)
+    model_text = _format_text(model)
+    if make_text and model_text:
+        if model_text.casefold().startswith(make_text.casefold()):
+            return model_text
+        return f"{make_text} {model_text}".strip()
+    return make_text or model_text
+
+
+def _format_orientation(width: int, height: int) -> str:
+    if width <= 0 or height <= 0:
+        return ""
+    if width > height:
+        return "Landscape"
+    if height > width:
+        return "Portrait"
+    return "Square"
+
+
+def _orientation_swaps_dimensions(value) -> bool:
+    numeric = _first_numeric(value)
+    if numeric is not None:
+        return int(round(numeric)) in {5, 6, 7, 8}
+
+    text = _format_text(value).casefold()
+    if not text:
+        return False
+    if "90" in text or "270" in text:
+        return True
+    return any(token in text for token in ("cw", "ccw", "left", "right"))

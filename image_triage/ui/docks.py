@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..ai_results import build_ai_explanation_lines
 from ..formats import suffix_for_path
+from ..review_workflows import review_round_label
 from .theme import ThemePalette, default_theme
 
 if TYPE_CHECKING:
@@ -731,6 +733,7 @@ class InspectorPanel(QWidget):
         self.file_section = self._make_pair(layout, "Current File")
         self.details_section = self._make_pair(layout, "Details")
         self.review_section = self._make_pair(layout, "Review")
+        self.workflow_section = self._make_pair(layout, "Workflow")
         self.ai_section = self._make_pair(layout, "AI")
 
         self.hint_label = QLabel("Move docks around to shape your workspace. More inspector tools can plug into this panel later.")
@@ -759,6 +762,7 @@ class InspectorPanel(QWidget):
         self.file_section.setText("Choose an image to see details.")
         self.details_section.setText("Stack, edits, and file format details will appear here.")
         self.review_section.setText("Accepted, rejected, ratings, and tags appear here.")
+        self.workflow_section.setText("Burst picks, disagreements, and review pass details appear here.")
         self.ai_section.setText("AI details appear when an image has a matched result.")
 
     def set_context(
@@ -771,6 +775,9 @@ class InspectorPanel(QWidget):
         display_path: str,
         annotation: "SessionAnnotation | None",
         ai_result: "AIImageResult | None",
+        review_summary: str = "",
+        workflow_summary: str = "",
+        workflow_details: tuple[str, ...] = (),
     ) -> None:
         self.folder_section.setText(folder or "No folder selected")
         self.mode_section.setText(mode_label)
@@ -780,6 +787,7 @@ class InspectorPanel(QWidget):
             self.file_section.setText("Choose an image to see details.")
             self.details_section.setText("Stack, edits, and file format details will appear here.")
             self.review_section.setText("Accepted, rejected, ratings, and tags appear here.")
+            self.workflow_section.setText("Burst picks, disagreements, and review pass details appear here.")
             self.ai_section.setText("AI details appear when an image has a matched result.")
             return
 
@@ -807,19 +815,29 @@ class InspectorPanel(QWidget):
                 review_parts.append(f"Rating {annotation.rating}/5")
             if annotation.tags:
                 review_parts.append(f"Tags: {', '.join(annotation.tags)}")
+            round_label = review_round_label(annotation.review_round)
+            if round_label:
+                review_parts.append(round_label)
         self.review_section.setText(" | ".join(review_parts) if review_parts else "Unreviewed")
+        workflow_text = "\n".join(workflow_details) if workflow_details else (workflow_summary or "No workflow insight for this file yet.")
+        self.workflow_section.setText(workflow_text)
 
         if ai_result is None:
-            self.ai_section.setText("No AI result loaded for this file.")
+            self.ai_section.setText(review_summary or "No AI result loaded for this file.")
             return
 
-        ai_parts = [f"Score {ai_result.display_score_with_scale_text}"]
+        ai_parts = [f"Score {ai_result.display_score_with_scale_text}", ai_result.confidence_bucket_label]
         if ai_result.group_id:
             ai_parts.append(ai_result.group_id)
         if ai_result.group_size > 1:
             ai_parts.append(ai_result.rank_text)
             if ai_result.is_top_pick:
                 ai_parts.append("Top pick")
+        explanation = build_ai_explanation_lines(ai_result, review_summary=review_summary)
+        explanation_text = "\n".join(explanation[:3])
+        if explanation_text:
+            self.ai_section.setText(" | ".join(ai_parts) + "\n" + explanation_text)
+            return
         self.ai_section.setText(" | ".join(ai_parts))
 
 

@@ -92,7 +92,7 @@ class FolderScanCache:
         }
         cache_path = self._cache_path(folder)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        cache_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
     def _cache_path(self, folder: str) -> Path:
         digest = hashlib.sha1(folder.encode("utf-8"), usedforsecurity=False).hexdigest()

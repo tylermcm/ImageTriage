@@ -52,13 +52,39 @@ def load_image_for_display(path: str, target_size: QSize, *, prefer_embedded: bo
     return _load_with_fallbacks(path, target_size)
 
 
-def _load_with_fallbacks(path: str, target_size: QSize, *, initial_error: str | None = None) -> tuple[QImage, str | None]:
-    image, error = _load_standard_image(path, target_size)
+def load_image_for_resize(path: str, *, target_size: QSize | None = None, ignore_orientation: bool = False) -> tuple[QImage, str | None]:
+    suffix = suffix_for_path(path)
+    requested_size = target_size if target_size is not None and _has_target(target_size) else QSize()
+    if suffix in MODEL_SUFFIXES:
+        return QImage(), "This file type cannot be resized yet."
+    if suffix in RAW_SUFFIXES:
+        return _load_raw_image(path, requested_size, prefer_embedded=False, suffix=suffix)
+    if suffix in PSD_SUFFIXES:
+        image, error = _load_psd_image(path, requested_size, auto_transform=not ignore_orientation)
+        if not image.isNull():
+            return image, None
+        return _load_with_fallbacks(
+            path,
+            requested_size,
+            initial_error=error,
+            auto_transform=not ignore_orientation,
+        )
+    return _load_with_fallbacks(path, requested_size, auto_transform=not ignore_orientation)
+
+
+def _load_with_fallbacks(
+    path: str,
+    target_size: QSize,
+    *,
+    initial_error: str | None = None,
+    auto_transform: bool = True,
+) -> tuple[QImage, str | None]:
+    image, error = _load_standard_image(path, target_size, auto_transform=auto_transform)
     if not image.isNull():
         return image, None
 
     if Image is not None:
-        pillow_image, pillow_error = _load_pillow_image(path, target_size)
+        pillow_image, pillow_error = _load_pillow_image(path, target_size, auto_transform=auto_transform)
         if not pillow_image.isNull():
             return pillow_image, None
         if initial_error:
@@ -74,9 +100,9 @@ def _load_with_fallbacks(path: str, target_size: QSize, *, initial_error: str | 
     return QImage(), error
 
 
-def _load_standard_image(path: str, target_size: QSize) -> tuple[QImage, str | None]:
+def _load_standard_image(path: str, target_size: QSize, *, auto_transform: bool = True) -> tuple[QImage, str | None]:
     reader = QImageReader(path)
-    reader.setAutoTransform(True)
+    reader.setAutoTransform(auto_transform)
     source_size = reader.size()
     if source_size.isValid() and _has_target(target_size):
         scaled = source_size.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
@@ -90,30 +116,30 @@ def _load_standard_image(path: str, target_size: QSize) -> tuple[QImage, str | N
     return _scale_if_needed(image, target_size), None
 
 
-def _load_psd_image(path: str, target_size: QSize) -> tuple[QImage, str | None]:
+def _load_psd_image(path: str, target_size: QSize, *, auto_transform: bool = True) -> tuple[QImage, str | None]:
     if PSDImage is None:
-        return _load_pillow_image(path, target_size)
+        return _load_pillow_image(path, target_size, auto_transform=auto_transform)
 
     try:
         psd = PSDImage.open(path)
         composite = psd.composite()
-        return _qimage_from_pillow_image(composite, target_size), None
+        return _qimage_from_pillow_image(composite, target_size, auto_transform=auto_transform), None
     except Exception as exc:  # pragma: no cover - library/runtime path
         return QImage(), str(exc)
 
 
-def _load_pillow_image(path: str, target_size: QSize) -> tuple[QImage, str | None]:
+def _load_pillow_image(path: str, target_size: QSize, *, auto_transform: bool = True) -> tuple[QImage, str | None]:
     if Image is None:
         return QImage(), "Extended format support requires Pillow-based codecs."
 
     try:
         with Image.open(path) as image:
-            return _qimage_from_pillow_image(image, target_size), None
+            return _qimage_from_pillow_image(image, target_size, auto_transform=auto_transform), None
     except Exception as exc:  # pragma: no cover - library/runtime path
         return QImage(), str(exc)
 
 
-def _qimage_from_pillow_image(image, target_size: QSize) -> QImage:
+def _qimage_from_pillow_image(image, target_size: QSize, *, auto_transform: bool = True) -> QImage:
     if Image is None:
         return QImage()
 
@@ -124,7 +150,7 @@ def _qimage_from_pillow_image(image, target_size: QSize) -> QImage:
         except EOFError:
             return QImage()
 
-    if ImageOps is not None:
+    if auto_transform and ImageOps is not None:
         working = ImageOps.exif_transpose(working)
     else:
         working = working.copy()
@@ -171,7 +197,8 @@ def _load_raw_image(path: str, target_size: QSize, *, prefer_embedded: bool, suf
                 if embedded is not None:
                     return embedded, None
 
-            image = _postprocess_raw(raw, target_size, high_quality=not prefer_embedded)
+            quality_mode = "fast" if prefer_embedded else "balanced" if _should_use_half_size(raw, target_size) else "high"
+            image = _postprocess_raw(raw, target_size, quality_mode=quality_mode)
             if image.isNull():
                 return QImage(), "Could not decode RAW image."
             return image, None
@@ -218,14 +245,15 @@ def _load_standard_image_from_bytes(payload: bytes, target_size: QSize) -> QImag
     return _scale_if_needed(image, target_size)
 
 
-def _postprocess_raw(raw, target_size: QSize, *, high_quality: bool) -> QImage:
+def _postprocess_raw(raw, target_size: QSize, *, quality_mode: str) -> QImage:
     options = {
         "use_camera_wb": True,
         "output_bps": 8,
         "auto_bright_thr": 0.01,
     }
-    if not high_quality:
+    if quality_mode in {"balanced", "fast"}:
         options["half_size"] = True
+    if quality_mode == "fast":
         options["demosaic_algorithm"] = rawpy.DemosaicAlgorithm.LINEAR
 
     rgb = raw.postprocess(**options)
@@ -233,6 +261,32 @@ def _postprocess_raw(raw, target_size: QSize, *, high_quality: bool) -> QImage:
     if image.isNull():
         return image
     return _scale_if_needed(image, target_size)
+
+
+def _should_use_half_size(raw, target_size: QSize) -> bool:
+    if not _has_target(target_size):
+        return False
+    source_width, source_height = _raw_output_dimensions(raw)
+    if source_width <= 0 or source_height <= 0:
+        return False
+    desired = QSize(source_width, source_height).scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
+    desired_width = max(1, desired.width())
+    desired_height = max(1, desired.height())
+    half_width = max(1, source_width // 2)
+    half_height = max(1, source_height // 2)
+    return half_width >= int(desired_width * 1.15) and half_height >= int(desired_height * 1.15)
+
+
+def _raw_output_dimensions(raw) -> tuple[int, int]:
+    sizes = getattr(raw, "sizes", None)
+    if sizes is None:
+        return 0, 0
+    for width_name, height_name in (("width", "height"), ("iwidth", "iheight"), ("raw_width", "raw_height")):
+        width = int(getattr(sizes, width_name, 0) or 0)
+        height = int(getattr(sizes, height_name, 0) or 0)
+        if width > 0 and height > 0:
+            return width, height
+    return 0, 0
 
 
 def _load_stl_image(path: str, target_size: QSize) -> tuple[QImage, str | None]:

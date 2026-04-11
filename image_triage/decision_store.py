@@ -11,7 +11,7 @@ from .models import ImageRecord, SessionAnnotation
 
 class DecisionStore:
     DEFAULT_SESSION = "Default"
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 6
 
     def __init__(self) -> None:
         app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
@@ -33,7 +33,7 @@ class DecisionStore:
                 paths = [record.path for record in chunk]
                 rows = connection.execute(
                     f"""
-                    SELECT path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json
+                    SELECT path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json, review_round
                     FROM decisions
                     WHERE session_id = ?
                       AND path IN ({placeholders})
@@ -53,6 +53,7 @@ class DecisionStore:
                         photoshop=bool(row["photoshop"]),
                         rating=int(row["rating"] or 0),
                         tags=tuple(json.loads(row["tags_json"] or "[]")),
+                        review_round=str(row["review_round"] or ""),
                     )
                     if annotation.is_empty:
                         continue
@@ -68,8 +69,8 @@ class DecisionStore:
             self._ensure_session_row(connection, normalized_session)
             connection.execute(
                 """
-                INSERT INTO decisions (session_id, path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO decisions (session_id, path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json, review_round)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id, path) DO UPDATE SET
                     modified_ns = excluded.modified_ns,
                     file_size = excluded.file_size,
@@ -77,7 +78,8 @@ class DecisionStore:
                     reject = excluded.reject,
                     photoshop = excluded.photoshop,
                     rating = excluded.rating,
-                    tags_json = excluded.tags_json
+                    tags_json = excluded.tags_json,
+                    review_round = excluded.review_round
                 """,
                 (
                     normalized_session,
@@ -89,6 +91,7 @@ class DecisionStore:
                     int(annotation.photoshop),
                     annotation.rating,
                     json.dumps(list(annotation.tags)),
+                    annotation.review_round,
                 ),
             )
             connection.commit()
@@ -103,8 +106,8 @@ class DecisionStore:
             connection.execute("DELETE FROM decisions WHERE session_id = ? AND path = ?", (normalized_session, old_path))
             connection.execute(
                 """
-                INSERT INTO decisions (session_id, path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO decisions (session_id, path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json, review_round)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id, path) DO UPDATE SET
                     modified_ns = excluded.modified_ns,
                     file_size = excluded.file_size,
@@ -112,7 +115,8 @@ class DecisionStore:
                     reject = excluded.reject,
                     photoshop = excluded.photoshop,
                     rating = excluded.rating,
-                    tags_json = excluded.tags_json
+                    tags_json = excluded.tags_json,
+                    review_round = excluded.review_round
                 """,
                 (
                     normalized_session,
@@ -124,8 +128,55 @@ class DecisionStore:
                     int(annotation.photoshop),
                     annotation.rating,
                     json.dumps(list(annotation.tags)),
+                    annotation.review_round,
                 ),
             )
+            connection.commit()
+
+    def move_annotations(
+        self,
+        session_id: str,
+        entries: list[tuple[str, ImageRecord, SessionAnnotation]],
+    ) -> None:
+        if not entries:
+            return
+        normalized_session = self._normalize_session_id(session_id)
+        with sqlite3.connect(self._db_path) as connection:
+            self._ensure_session_row(connection, normalized_session)
+            for old_path, record, annotation in entries:
+                connection.execute(
+                    "DELETE FROM decisions WHERE session_id = ? AND path = ?",
+                    (normalized_session, old_path),
+                )
+                if annotation.is_empty:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO decisions (session_id, path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json, review_round)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, path) DO UPDATE SET
+                        modified_ns = excluded.modified_ns,
+                        file_size = excluded.file_size,
+                        winner = excluded.winner,
+                        reject = excluded.reject,
+                        photoshop = excluded.photoshop,
+                        rating = excluded.rating,
+                        tags_json = excluded.tags_json,
+                        review_round = excluded.review_round
+                    """,
+                    (
+                        normalized_session,
+                        record.path,
+                        record.modified_ns,
+                        record.size,
+                        int(annotation.winner),
+                        int(annotation.reject),
+                        int(annotation.photoshop),
+                        annotation.rating,
+                        json.dumps(list(annotation.tags)),
+                        annotation.review_round,
+                    ),
+                )
             connection.commit()
 
     def delete_annotation(self, session_id: str, path: str) -> None:
@@ -152,6 +203,133 @@ class DecisionStore:
             sessions.insert(0, self.DEFAULT_SESSION)
         return sessions
 
+    def load_correction_events(self, session_id: str, folder_path: str = "") -> list[dict[str, object]]:
+        normalized_session = self._normalize_session_id(session_id)
+        with sqlite3.connect(self._db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            parameters: list[object] = [normalized_session]
+            query = """
+                SELECT
+                    folder_path,
+                    record_path,
+                    other_path,
+                    image_id,
+                    other_image_id,
+                    preferred_image_id,
+                    group_id,
+                    event_type,
+                    decision,
+                    source_mode,
+                    ai_bucket,
+                    ai_rank_in_group,
+                    ai_group_size,
+                    review_round,
+                    payload_json,
+                    created_at
+                FROM correction_events
+                WHERE session_id = ?
+            """
+            if folder_path:
+                query += " AND folder_path = ?"
+                parameters.append(folder_path)
+            query += " ORDER BY id ASC"
+            rows = connection.execute(query, parameters).fetchall()
+
+        loaded: list[dict[str, object]] = []
+        for row in rows:
+            payload_json = str(row["payload_json"] or "{}")
+            try:
+                payload = json.loads(payload_json)
+            except json.JSONDecodeError:
+                payload = {}
+            loaded.append(
+                {
+                    "folder_path": str(row["folder_path"] or ""),
+                    "record_path": str(row["record_path"] or ""),
+                    "other_path": str(row["other_path"] or ""),
+                    "image_id": str(row["image_id"] or ""),
+                    "other_image_id": str(row["other_image_id"] or ""),
+                    "preferred_image_id": str(row["preferred_image_id"] or ""),
+                    "group_id": str(row["group_id"] or ""),
+                    "event_type": str(row["event_type"] or ""),
+                    "decision": str(row["decision"] or ""),
+                    "source_mode": str(row["source_mode"] or ""),
+                    "ai_bucket": str(row["ai_bucket"] or ""),
+                    "ai_rank_in_group": int(row["ai_rank_in_group"] or 0),
+                    "ai_group_size": int(row["ai_group_size"] or 0),
+                    "review_round": str(row["review_round"] or ""),
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "created_at": str(row["created_at"] or ""),
+                }
+            )
+        return loaded
+
+    def record_correction_event(
+        self,
+        session_id: str,
+        *,
+        folder_path: str,
+        record_path: str = "",
+        other_path: str = "",
+        image_id: str = "",
+        other_image_id: str = "",
+        preferred_image_id: str = "",
+        group_id: str = "",
+        event_type: str,
+        decision: str = "",
+        source_mode: str = "",
+        ai_bucket: str = "",
+        ai_rank_in_group: int = 0,
+        ai_group_size: int = 0,
+        review_round: str = "",
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        normalized_session = self._normalize_session_id(session_id)
+        with sqlite3.connect(self._db_path) as connection:
+            self._ensure_session_row(connection, normalized_session)
+            connection.execute(
+                """
+                INSERT INTO correction_events (
+                    session_id,
+                    folder_path,
+                    record_path,
+                    other_path,
+                    image_id,
+                    other_image_id,
+                    preferred_image_id,
+                    group_id,
+                    event_type,
+                    decision,
+                    source_mode,
+                    ai_bucket,
+                    ai_rank_in_group,
+                    ai_group_size,
+                    review_round,
+                    payload_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_session,
+                    folder_path,
+                    record_path,
+                    other_path,
+                    image_id,
+                    other_image_id,
+                    preferred_image_id,
+                    group_id,
+                    event_type,
+                    decision,
+                    source_mode,
+                    ai_bucket,
+                    int(ai_rank_in_group),
+                    int(ai_group_size),
+                    review_round,
+                    json.dumps(payload or {}),
+                ),
+            )
+            connection.commit()
+
     def ensure_session(self, session_id: str) -> str:
         normalized_session = self._normalize_session_id(session_id)
         with sqlite3.connect(self._db_path) as connection:
@@ -177,6 +355,10 @@ class DecisionStore:
                 self._migrate_to_v3(connection)
             if current_version < 4:
                 self._migrate_to_v4(connection)
+            if current_version < 5:
+                self._migrate_to_v5(connection)
+            if current_version < 6:
+                self._migrate_to_v6(connection)
             self._create_schema(connection)
             self._ensure_session_row(connection, self.DEFAULT_SESSION)
             if current_version < self.SCHEMA_VERSION:
@@ -205,7 +387,33 @@ class DecisionStore:
                 photoshop INTEGER NOT NULL DEFAULT 0,
                 rating INTEGER NOT NULL DEFAULT 0,
                 tags_json TEXT NOT NULL DEFAULT '[]',
+                review_round TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(session_id, path),
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS correction_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                record_path TEXT NOT NULL DEFAULT '',
+                other_path TEXT NOT NULL DEFAULT '',
+                image_id TEXT NOT NULL DEFAULT '',
+                other_image_id TEXT NOT NULL DEFAULT '',
+                preferred_image_id TEXT NOT NULL DEFAULT '',
+                group_id TEXT NOT NULL DEFAULT '',
+                event_type TEXT NOT NULL,
+                decision TEXT NOT NULL DEFAULT '',
+                source_mode TEXT NOT NULL DEFAULT '',
+                ai_bucket TEXT NOT NULL DEFAULT '',
+                ai_rank_in_group INTEGER NOT NULL DEFAULT 0,
+                ai_group_size INTEGER NOT NULL DEFAULT 0,
+                review_round TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
             """
@@ -221,6 +429,18 @@ class DecisionStore:
             CREATE INDEX IF NOT EXISTS idx_decisions_review_state
             ON decisions(session_id, winner, reject, photoshop, rating)
         """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_correction_events_session_folder
+            ON correction_events(session_id, folder_path, created_at)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_correction_events_record
+            ON correction_events(session_id, record_path, event_type)
+            """
         )
 
     def _migrate_to_v3(self, connection: sqlite3.Connection) -> None:
@@ -284,6 +504,46 @@ class DecisionStore:
                 ADD COLUMN photoshop INTEGER NOT NULL DEFAULT 0
                 """
             )
+
+    def _migrate_to_v5(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(decisions)").fetchall()
+        }
+        if "review_round" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE decisions
+                ADD COLUMN review_round TEXT NOT NULL DEFAULT ''
+                """
+            )
+
+    def _migrate_to_v6(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS correction_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                record_path TEXT NOT NULL DEFAULT '',
+                other_path TEXT NOT NULL DEFAULT '',
+                image_id TEXT NOT NULL DEFAULT '',
+                other_image_id TEXT NOT NULL DEFAULT '',
+                preferred_image_id TEXT NOT NULL DEFAULT '',
+                group_id TEXT NOT NULL DEFAULT '',
+                event_type TEXT NOT NULL,
+                decision TEXT NOT NULL DEFAULT '',
+                source_mode TEXT NOT NULL DEFAULT '',
+                ai_bucket TEXT NOT NULL DEFAULT '',
+                ai_rank_in_group INTEGER NOT NULL DEFAULT 0,
+                ai_group_size INTEGER NOT NULL DEFAULT 0,
+                review_round TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+            """
+        )
 
     def _ensure_session_row(self, connection: sqlite3.Connection, session_id: str) -> None:
         connection.execute(

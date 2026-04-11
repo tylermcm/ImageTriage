@@ -93,11 +93,15 @@ class AIRunTask(QRunnable):
         folder: Path,
         runtime: AIWorkflowRuntime,
         paths: AIWorkflowPaths,
+        labels_dir: Path | None = None,
+        reference_bank_path: Path | None = None,
     ) -> None:
         super().__init__()
         self.folder = folder
         self.runtime = runtime
         self.paths = paths
+        self.labels_dir = labels_dir
+        self.reference_bank_path = reference_bank_path
         self.signals = AIRunSignals()
         self.setAutoDelete(True)
 
@@ -167,6 +171,11 @@ class AIRunTask(QRunnable):
                 ],
             ),
         ]
+
+        if self.labels_dir is not None and self.labels_dir.exists():
+            commands[-1][2].extend(["--labels-dir", str(self.labels_dir)])
+        if self.reference_bank_path is not None and self.reference_bank_path.exists():
+            commands[-1][2].extend(["--reference-bank-path", str(self.reference_bank_path)])
 
         use_local_stage = _should_use_local_staging(self.folder, self.runtime)
         total_stages = len(commands) + (1 if use_local_stage else 0)

@@ -4,6 +4,7 @@ import csv
 import json
 import os
 from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
@@ -33,6 +34,13 @@ def _fast_path_key(path: str | Path) -> str:
     return os.path.normpath(str(path)).casefold()
 
 
+class AIConfidenceBucket(str, Enum):
+    OBVIOUS_WINNER = "obvious_winner"
+    LIKELY_KEEPER = "likely_keeper"
+    NEEDS_REVIEW = "needs_review"
+    LIKELY_REJECT = "likely_reject"
+
+
 @dataclass(slots=True, frozen=True)
 class AIImageResult:
     image_id: str
@@ -45,6 +53,11 @@ class AIImageResult:
     cluster_reason: str = ""
     capture_timestamp: str = ""
     normalized_score: float | None = None
+    folder_percentile: float | None = None
+    score_gap_to_next: float | None = None
+    score_gap_to_top: float | None = None
+    confidence_bucket: AIConfidenceBucket = AIConfidenceBucket.NEEDS_REVIEW
+    confidence_summary: str = ""
 
     @property
     def is_top_pick(self) -> bool:
@@ -75,6 +88,14 @@ class AIImageResult:
         if self.group_size <= 0:
             return ""
         return f"#{self.rank_in_group}/{self.group_size}"
+
+    @property
+    def confidence_bucket_label(self) -> str:
+        return confidence_bucket_label(self.confidence_bucket)
+
+    @property
+    def confidence_bucket_short_label(self) -> str:
+        return confidence_bucket_short_label(self.confidence_bucket)
 
 
 @dataclass(slots=True, frozen=True)
@@ -144,13 +165,16 @@ def load_ai_bundle(path: str | Path) -> AIBundle:
         for group_id, results in group_buckets.items()
     }
     normalized_scores_by_path = _build_normalized_score_map(grouped_results)
+    folder_percentiles_by_path = _build_folder_percentile_map(grouped_results)
     enriched_results_by_path: dict[str, AIImageResult] = {}
     enriched_results_by_fast_path: dict[str, AIImageResult] = {}
     results_by_group = {
         group_id: tuple(
-            _enrich_result_with_normalized_score(
+            _enrich_result_with_context(
                 result,
+                grouped_results[group_id],
                 normalized_scores_by_path,
+                folder_percentiles_by_path,
                 enriched_results_by_path,
                 enriched_results_by_fast_path,
             )
@@ -212,15 +236,36 @@ def find_ai_result_for_record(
     return None
 
 
-def _enrich_result_with_normalized_score(
+def _enrich_result_with_context(
     result: AIImageResult,
+    group_results: tuple[AIImageResult, ...],
     normalized_scores_by_path: dict[str, float],
+    folder_percentiles_by_path: dict[str, float],
     enriched_results_by_path: dict[str, AIImageResult],
     enriched_results_by_fast_path: dict[str, AIImageResult],
 ) -> AIImageResult:
     normalized_key = normalized_path_key(result.file_path)
     normalized_score = normalized_scores_by_path.get(normalized_key)
-    enriched = replace(result, normalized_score=normalized_score)
+    folder_percentile = folder_percentiles_by_path.get(normalized_key)
+    score_gap_to_next = _score_gap_to_next(result, group_results)
+    score_gap_to_top = _score_gap_to_top(result, group_results)
+    confidence_bucket, confidence_summary = _confidence_context_for_result(
+        result,
+        group_results,
+        normalized_score=normalized_score,
+        folder_percentile=folder_percentile,
+        score_gap_to_next=score_gap_to_next,
+        score_gap_to_top=score_gap_to_top,
+    )
+    enriched = replace(
+        result,
+        normalized_score=normalized_score,
+        folder_percentile=folder_percentile,
+        score_gap_to_next=score_gap_to_next,
+        score_gap_to_top=score_gap_to_top,
+        confidence_bucket=confidence_bucket,
+        confidence_summary=confidence_summary,
+    )
     enriched_results_by_path[normalized_key] = enriched
     enriched_results_by_fast_path[_fast_path_key(result.file_path)] = enriched
     return enriched
@@ -303,7 +348,7 @@ def _row_to_result(row: dict[str, str]) -> AIImageResult | None:
 def _build_normalized_score_map(results_by_group: dict[str, tuple[AIImageResult, ...]]) -> dict[str, float]:
     normalized_scores: dict[str, float] = {}
     for results in results_by_group.values():
-        if not results:
+        if not results or len(results) <= 1:
             continue
         scores = [result.score for result in results]
         max_score = max(scores)
@@ -316,3 +361,121 @@ def _build_normalized_score_map(results_by_group: dict[str, tuple[AIImageResult,
                 normalized = ((result.score - min_score) / span) * 100.0
             normalized_scores[normalized_path_key(result.file_path)] = normalized
     return normalized_scores
+
+
+def _build_folder_percentile_map(results_by_group: dict[str, tuple[AIImageResult, ...]]) -> dict[str, float]:
+    ordered = sorted(
+        (result for results in results_by_group.values() for result in results),
+        key=lambda item: (-item.score, item.file_name.casefold()),
+    )
+    total = len(ordered)
+    if total <= 0:
+        return {}
+    if total == 1:
+        return {normalized_path_key(ordered[0].file_path): 100.0}
+
+    percentiles: dict[str, float] = {}
+    denominator = max(1, total - 1)
+    for index, result in enumerate(ordered):
+        percentile = 100.0 - ((index / denominator) * 100.0)
+        percentiles[normalized_path_key(result.file_path)] = percentile
+    return percentiles
+
+
+def _score_gap_to_next(result: AIImageResult, group_results: tuple[AIImageResult, ...]) -> float | None:
+    for index, candidate in enumerate(group_results):
+        if normalized_path_key(candidate.file_path) != normalized_path_key(result.file_path):
+            continue
+        if index + 1 >= len(group_results):
+            return None
+        return candidate.score - group_results[index + 1].score
+    return None
+
+
+def _score_gap_to_top(result: AIImageResult, group_results: tuple[AIImageResult, ...]) -> float | None:
+    if not group_results:
+        return None
+    top = group_results[0]
+    return top.score - result.score
+
+
+def _confidence_context_for_result(
+    result: AIImageResult,
+    group_results: tuple[AIImageResult, ...],
+    *,
+    normalized_score: float | None,
+    folder_percentile: float | None,
+    score_gap_to_next: float | None,
+    score_gap_to_top: float | None,
+) -> tuple[AIConfidenceBucket, str]:
+    if result.group_size > 1:
+        if result.rank_in_group == 1 and normalized_score is not None and normalized_score >= 78.0 and (score_gap_to_next or 0.0) >= 0.12:
+            return AIConfidenceBucket.OBVIOUS_WINNER, "Clear lead inside its AI group."
+        if result.rank_in_group == 1 and ((normalized_score is not None and normalized_score >= 58.0) or (folder_percentile or 0.0) >= 70.0):
+            return AIConfidenceBucket.LIKELY_KEEPER, "Strong group rank without a runaway margin."
+        if (normalized_score is not None and normalized_score <= 26.0) or ((folder_percentile or 100.0) <= 24.0 and (score_gap_to_top or 0.0) >= 0.18):
+            return AIConfidenceBucket.LIKELY_REJECT, "Trails the stronger frames in its group."
+        return AIConfidenceBucket.NEEDS_REVIEW, "Model signals are mixed enough to warrant a human pass."
+
+    percentile = folder_percentile if folder_percentile is not None else 50.0
+    if percentile >= 86.0:
+        return AIConfidenceBucket.LIKELY_KEEPER, "High single-image score compared with the rest of the folder."
+    if percentile <= 20.0:
+        return AIConfidenceBucket.LIKELY_REJECT, "Single-image score lands near the bottom of the folder."
+    return AIConfidenceBucket.NEEDS_REVIEW, "Single-image score does not imply a decisive winner on its own."
+
+
+def confidence_bucket_label(bucket: AIConfidenceBucket | str) -> str:
+    resolved = AIConfidenceBucket(bucket) if isinstance(bucket, str) else bucket
+    if resolved == AIConfidenceBucket.OBVIOUS_WINNER:
+        return "Obvious winner"
+    if resolved == AIConfidenceBucket.LIKELY_KEEPER:
+        return "Likely keeper"
+    if resolved == AIConfidenceBucket.LIKELY_REJECT:
+        return "Likely reject"
+    return "Needs review"
+
+
+def confidence_bucket_short_label(bucket: AIConfidenceBucket | str) -> str:
+    resolved = AIConfidenceBucket(bucket) if isinstance(bucket, str) else bucket
+    if resolved == AIConfidenceBucket.OBVIOUS_WINNER:
+        return "Winner"
+    if resolved == AIConfidenceBucket.LIKELY_KEEPER:
+        return "Keeper"
+    if resolved == AIConfidenceBucket.LIKELY_REJECT:
+        return "Reject"
+    return "Review"
+
+
+def build_ai_explanation_lines(
+    result: AIImageResult | None,
+    *,
+    review_summary: str = "",
+    detail_score: float | None = None,
+) -> tuple[str, ...]:
+    if result is None:
+        return ()
+
+    lines: list[str] = [f"Confidence bucket: {result.confidence_bucket_label}."]
+    if result.group_size > 1:
+        lines.append(f"Ranked {result.rank_text} inside a {result.group_size}-image AI group.")
+        if result.rank_in_group == 1 and result.score_gap_to_next is not None:
+            if result.score_gap_to_next >= 0.12:
+                lines.append(f"It led the next frame by {result.score_gap_to_next:.2f} model points.")
+            else:
+                lines.append("Its lead over the next frame is small, so this is not a runaway pick.")
+    elif result.folder_percentile is not None:
+        lines.append(f"Global folder percentile: {result.folder_percentile:.0f}.")
+
+    if result.cluster_reason:
+        lines.append(result.cluster_reason.rstrip(".") + ".")
+    if review_summary:
+        lines.append(f"Local grouping: {review_summary}.")
+    if detail_score is not None:
+        if detail_score >= 72.0:
+            lines.append("Inspection sees strong detail retention in the focused frame.")
+        elif detail_score <= 38.0:
+            lines.append("Inspection sees softer detail, which may explain a weaker rank.")
+    if result.confidence_summary:
+        lines.append(result.confidence_summary)
+    return tuple(lines[:5])

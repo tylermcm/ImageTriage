@@ -342,6 +342,22 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_disabled.css};
             border-color: {theme.border_muted.css};
         }}
+        QLineEdit {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 10px;
+            color: {theme.text_primary.css};
+            min-height: 28px;
+            padding: 2px 10px;
+            selection-background-color: {theme.selection_fill.css};
+        }}
+        QLineEdit:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QLineEdit:focus {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.accent.css};
+        }}
         QComboBox {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
@@ -505,8 +521,85 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLabel#secondaryText {{
             color: {theme.text_secondary.css};
         }}
+        QLabel#filterSummaryLabel {{
+            color: {theme.text_muted.css};
+            padding: 0 2px;
+        }}
         QLabel#mutedText {{
             color: {theme.text_muted.css};
+        }}
+        QTextBrowser#helpMarkdownView {{
+            background-color: {theme.panel_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 14px;
+            color: {theme.text_primary.css};
+            padding: 12px 14px;
+            selection-background-color: {theme.selection_fill.css};
+        }}
+        QPlainTextEdit#aiTrainingLogView {{
+            background-color: {theme.chrome_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 14px;
+            color: {theme.text_primary.css};
+            padding: 10px 12px;
+            font-family: Consolas, "Cascadia Mono", "Courier New";
+            selection-background-color: {theme.selection_fill.css};
+        }}
+        QWidget#aiTrainingStatsCard {{
+            background-color: {theme.panel_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 14px;
+        }}
+        QWidget#commandPaletteOverlay {{
+            background-color: rgba(0, 0, 0, 0.22);
+        }}
+        QFrame#commandPaletteCard {{
+            background-color: {theme.panel_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 18px;
+        }}
+        QListWidget#commandPaletteList {{
+            background-color: transparent;
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 14px;
+            outline: none;
+            padding: 6px;
+        }}
+        QListWidget#commandPaletteList::item {{
+            background-color: transparent;
+            border: none;
+            margin: 2px 0;
+        }}
+        QListWidget#commandPaletteList::item:selected {{
+            background-color: {theme.selection_fill.css};
+            border-radius: 12px;
+        }}
+        QLabel#commandPaletteTitle {{
+            color: {theme.text_primary.css};
+            font-family: "Segoe UI", "Segoe UI Variable Text";
+            font-size: 14px;
+            font-weight: 600;
+            min-height: 20px;
+            padding: 0 0 2px 0;
+            margin: 0;
+        }}
+        QLabel#commandPaletteSubtitle {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            padding: 0;
+            margin: 0;
+        }}
+        QLabel#commandPaletteShortcut {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            padding: 0 2px 0 8px;
+        }}
+        QToolButton#workspaceFiltersButton, QToolButton#workspacePresetsButton {{
+            min-height: 28px;
+            padding: 4px 10px;
+        }}
+        QToolButton#statusFilterClearButton {{
+            padding: 2px 8px;
         }}
         QTabBar#modeTabs::tab {{
             background-color: {theme.input_bg.css};

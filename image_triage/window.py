@@ -4,11 +4,14 @@ import ctypes
 import json
 import os
 import shutil
-from dataclasses import dataclass
+import subprocess
+import time
+from dataclasses import dataclass, replace
 from pathlib import Path
+from textwrap import dedent
 
-from PySide6.QtCore import QDir, QFile, QModelIndex, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QCloseEvent, QCursor
+from PySide6.QtCore import QDir, QEvent, QFile, QModelIndex, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -18,12 +21,15 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPushButton,
     QProgressBar,
+    QProgressDialog,
     QSizePolicy,
     QStackedWidget,
     QStatusBar,
@@ -35,22 +41,131 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .archive_ops import (
+    EXTRACT_ARCHIVE_FILTER,
+    CreateArchiveTask,
+    ExtractArchiveTask,
+    archive_format_for_key,
+    ensure_archive_suffix,
+)
+from .ai_training import (
+    BuildReferenceBankTask,
+    EvaluateRankerTask,
+    PrepareLabelingCandidatesTask,
+    PrepareTrainingDataTask,
+    RankerRunInfo,
+    RankerTrainingOptions,
+    ReferenceBankBuildOptions,
+    ScoreCurrentFolderTask,
+    TrainRankerTask,
+    ai_training_artifacts_ready,
+    build_ai_training_paths,
+    clear_active_ranker_selection,
+    count_label_records,
+    list_ranker_runs,
+    labeling_artifacts_ready,
+    launch_labeling_app,
+    prepare_hidden_ai_training_workspace,
+    resolve_trained_checkpoint,
+    set_active_ranker_selection,
+)
 from .ai_workflow import AIRunTask, build_ai_workflow_paths, default_ai_workflow_runtime, existing_hidden_ai_report_dir
-from .ai_results import AIBundle, find_ai_result_for_record, load_ai_bundle
+from .ai_results import AIBundle, AIConfidenceBucket, build_ai_explanation_lines, find_ai_result_for_record, load_ai_bundle
+from .batch_rename import BatchRenameApplyTask, BatchRenamePreview
 from .brackets import BracketDetector
+from .bursts import find_burst_groups
 from .decision_store import DecisionStore
-from .grid import ThumbnailGridView
+from .file_ops import FileMove, copy_paths, create_folder, delete_folder, move_folder, move_paths, rename_bundle_paths, rename_folder, unique_destination
+from .filtering import (
+    AIStateFilter,
+    FileTypeFilter,
+    OrientationFilter,
+    RecordFilterQuery,
+    ReviewStateFilter,
+    SavedFilterPreset,
+    active_filter_labels,
+    builtin_filter_presets,
+    deserialize_saved_filter_preset,
+    matches_record_query,
+    serialize_saved_filter_preset,
+)
+from .formats import MODEL_SUFFIXES, RAW_SUFFIXES
+from .grid import BurstVisualInfo, ThumbnailGridView
+from .image_convert import ConvertApplyTask, ConvertOptions, ConvertPlan, ConvertSourceItem
+from .image_resize import ResizeApplyTask, ResizeOptions, ResizePlan, ResizeSourceItem
+from .keyboard_mapping import ShortcutBinding, normalize_shortcut_text, serialize_shortcut_overrides
+from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoot, LibraryStore, VirtualCollection
+from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
 from .models import DeleteMode, FilterMode, ImageRecord, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
 from .preview import FullScreenPreview, PreviewEntry
+from .production_workflows import (
+    BEST_OF_BALANCED,
+    BEST_OF_TOP_N,
+    RECIPE_CONTENT_BUNDLE,
+    RECIPE_TRANSFER_ARCHIVE,
+    RECIPE_TRANSFER_MOVE,
+    BestOfSetPlan,
+    WorkflowExportPlan,
+    WorkflowExportTask,
+    WorkflowRecipe,
+    WorkspacePreset,
+    build_best_of_set_plan,
+    build_workflow_export_plan,
+    built_in_workflow_recipes,
+    built_in_workspace_presets,
+    deserialize_workflow_recipe,
+    deserialize_workspace_preset,
+    recipe_key_for_name,
+    serialize_workflow_recipe,
+    serialize_workspace_preset,
+)
+from .review_tools import FOCUS_ASSIST_COLORS, FOCUS_ASSIST_STRENGTHS
+from .review_intelligence import BuildReviewIntelligenceTask, ReviewIntelligenceBundle
+from .review_workflows import (
+    REVIEW_ROUND_FIRST_PASS,
+    REVIEW_ROUND_HERO,
+    REVIEW_ROUND_SECOND_PASS,
+    REVIEW_ROUND_THIRD_PASS,
+    BurstRecommendation,
+    RecordWorkflowInsight,
+    TasteProfile,
+    ai_strength,
+    build_burst_recommendations,
+    build_calibration_pairs,
+    build_pairwise_label_payload,
+    build_record_workflow_insight,
+    current_timestamp,
+    disagreement_level_for,
+    normalize_review_round,
+    review_round_label,
+)
 from .scan_cache import FolderScanCache
 from .scanner import FolderScanTask, discover_edited_paths, normalize_filesystem_path, normalized_path_key, scan_folder
 from .settings_dialog import WorkflowSettingsDialog
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
 from .thumbnails import ThumbnailManager
 from .ui import (
+    AdvancedFilterDialog,
+    AITrainingProgressDialog,
+    AITrainingStatsDialog,
     AppearanceMode,
+    BatchRenameDialog,
+    BestOfSetDialog,
+    CatalogSearchDialog,
+    CollectionEditDialog,
+    CommandPaletteDialog,
+    ConvertDialog,
+    HandoffBuilderDialog,
+    HelpMarkdownDialog,
     InspectorPanel,
+    KeyboardShortcutDialog,
     MainWindowActions,
+    PaletteCommand,
+    RankerCenterDialog,
+    RankerCenterSummary,
+    ResizeDialog,
+    TasteCalibrationDialog,
+    TrainRankerDialog,
     WorkspaceDocks,
     build_app_palette,
     build_app_stylesheet,
@@ -65,12 +180,7 @@ from .ui import (
     resolve_theme,
     save_window_layout,
 )
-
-
-@dataclass(slots=True)
-class FileMove:
-    source_path: str
-    target_path: str
+from .xmp import load_sidecar_annotations, sidecar_bundle_paths, sync_sidecar_annotation
 
 
 @dataclass(slots=True)
@@ -83,10 +193,94 @@ class UndoAction:
     original_photoshop: bool = False
     rating: int = 0
     tags: tuple[str, ...] = ()
+    original_review_round: str = ""
     folder: str = ""
     source_paths: tuple[str, ...] = ()
     session_id: str = ""
     winner_mode: str = ""
+
+
+@dataclass(slots=True)
+class BatchRenameExecutionContext:
+    preview: BatchRenamePreview
+    folder: str
+    is_current_folder: bool
+    loaded_annotations: dict[str, SessionAnnotation]
+    current_path_before: str | None = None
+
+
+@dataclass(slots=True)
+class ResizeExecutionContext:
+    plan: ResizePlan
+    options: ResizeOptions
+    refresh_folder: str = ""
+
+
+@dataclass(slots=True)
+class ConvertExecutionContext:
+    plan: ConvertPlan
+    options: ConvertOptions
+    refresh_folder: str = ""
+
+
+@dataclass(slots=True)
+class WorkflowExecutionContext:
+    recipe: WorkflowRecipe
+    action: str
+    destination_root: str = ""
+    destination_dir: str = ""
+    refresh_folder: str = ""
+    archive_after_export: bool = False
+    archive_format: str = "zip"
+
+
+@dataclass(slots=True)
+class ArchiveExecutionContext:
+    mode: str
+    archive_path: str = ""
+    destination_dir: str = ""
+    archive_label: str = ""
+    refresh_folder: str = ""
+
+
+@dataclass(slots=True)
+class AITrainingExecutionContext:
+    action: str
+    folder: str
+    title: str
+    launch_labeling_after_prepare: bool = False
+    reference_bank_path: str = ""
+    run_id: str = ""
+    run_label: str = ""
+    log_path: str = ""
+
+
+@dataclass(slots=True)
+class AITrainingPipelineState:
+    folder: str
+    options: RankerTrainingOptions
+    step_index: int = 0
+
+
+@dataclass(slots=True)
+class ChildAppProcess:
+    name: str
+    process: subprocess.Popen[str]
+
+
+@dataclass(slots=True)
+class ShortcutTarget:
+    id: str
+    label: str
+    section: str
+    default_shortcut: str
+    apply: object
+
+
+@dataclass(slots=True)
+class CatalogExecutionContext:
+    root_paths: tuple[str, ...] = ()
+    label: str = ""
 
 
 class MainWindow(QMainWindow):
@@ -100,6 +294,16 @@ class MainWindow(QMainWindow):
     WINNER_MODE_KEY = "workflow/winner_mode"
     DELETE_MODE_KEY = "workflow/delete_mode"
     FAVORITES_KEY = "folders/favorites"
+    RECENT_DESTINATIONS_KEY = "folders/recent_destinations"
+    SAVED_FILTERS_KEY = "filters/saved_queries"
+    RECENT_COMMANDS_KEY = "commands/recent"
+    WORKFLOW_RECIPES_KEY = "workflow/recipes"
+    WORKSPACE_PRESETS_KEY = "workspace/presets"
+    SHORTCUT_OVERRIDES_KEY = "shortcuts/overrides"
+    AI_CHECKPOINT_OVERRIDE_KEY = "ai/checkpoint_override"
+    AI_REFERENCE_BANK_KEY = "ai/reference_bank_path"
+    BURST_GROUPS_KEY = "view/burst_groups"
+    BURST_STACKS_KEY = "view/burst_stacks"
 
     def __init__(self) -> None:
         super().__init__()
@@ -108,6 +312,12 @@ class MainWindow(QMainWindow):
         self._settings = QSettings()
         self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.AUTO.value, str))
         self._theme = None
+        self._child_sync_state_path = self._prepare_child_sync_state_path()
+        self._child_processes: dict[int, ChildAppProcess] = {}
+        self._child_process_timer = QTimer(self)
+        self._child_process_timer.setInterval(1200)
+        self._child_process_timer.timeout.connect(self._prune_child_processes)
+        self._child_process_timer.start()
         self.actions: MainWindowActions | None = None
         self.primary_toolbar: QToolBar | None = None
         self.workspace_docks: WorkspaceDocks | None = None
@@ -115,6 +325,7 @@ class MainWindow(QMainWindow):
 
         self.thumbnail_manager = ThumbnailManager()
         self._decision_store = DecisionStore()
+        self._library_store = LibraryStore()
         self._bracket_detector = BracketDetector()
         self._photoshop_executable = detect_photoshop_executable()
         self.grid = ThumbnailGridView(self.thumbnail_manager)
@@ -122,24 +333,87 @@ class MainWindow(QMainWindow):
         self.preview.navigation_requested.connect(self._navigate_preview)
         self.preview.set_photoshop_available(bool(self._photoshop_executable))
         self._ai_runtime = default_ai_workflow_runtime()
+        self._default_ai_checkpoint_path = self._ai_runtime.checkpoint_path
+        self._active_reference_bank_path = ""
         self._folder_scan_cache = FolderScanCache()
 
         self._scan_pool = QThreadPool(self)
         self._scan_pool.setMaxThreadCount(1)
         self._ai_run_pool = QThreadPool(self)
         self._ai_run_pool.setMaxThreadCount(1)
+        self._ai_training_pool = QThreadPool(self)
+        self._ai_training_pool.setMaxThreadCount(1)
+        self._batch_rename_pool = QThreadPool(self)
+        self._batch_rename_pool.setMaxThreadCount(1)
+        self._resize_pool = QThreadPool(self)
+        self._resize_pool.setMaxThreadCount(1)
+        self._convert_pool = QThreadPool(self)
+        self._convert_pool.setMaxThreadCount(1)
+        self._workflow_export_pool = QThreadPool(self)
+        self._workflow_export_pool.setMaxThreadCount(1)
+        self._archive_pool = QThreadPool(self)
+        self._archive_pool.setMaxThreadCount(1)
+        self._catalog_pool = QThreadPool(self)
+        self._catalog_pool.setMaxThreadCount(1)
+        self._review_intelligence_pool = QThreadPool(self)
+        self._review_intelligence_pool.setMaxThreadCount(1)
         self._scan_token = 0
         self._scan_showed_cached = False
         self._active_scan_tasks: dict[int, FolderScanTask] = {}
         self._active_ai_task: AIRunTask | None = None
+        self._active_review_intelligence_task: BuildReviewIntelligenceTask | None = None
+        self._review_intelligence_token = 0
+        self._active_ai_training_task: object | None = None
+        self._ai_training_context: AITrainingExecutionContext | None = None
+        self._ai_training_pipeline: AITrainingPipelineState | None = None
+        self._ai_training_progress_dialog: AITrainingProgressDialog | None = None
+        self._ai_training_stats_dialog: AITrainingStatsDialog | None = None
+        self._ai_training_log_lines: list[str] = []
+        self._ai_training_stage_text = ""
+        self._ai_training_run_label = ""
+        self._active_batch_rename_task: BatchRenameApplyTask | None = None
+        self._batch_rename_context: BatchRenameExecutionContext | None = None
+        self._batch_rename_progress_dialog: QProgressDialog | None = None
+        self._active_resize_task: ResizeApplyTask | None = None
+        self._resize_context: ResizeExecutionContext | None = None
+        self._resize_progress_dialog: QProgressDialog | None = None
+        self._active_convert_task: ConvertApplyTask | None = None
+        self._convert_context: ConvertExecutionContext | None = None
+        self._convert_progress_dialog: QProgressDialog | None = None
+        self._active_workflow_export_task: WorkflowExportTask | None = None
+        self._workflow_context: WorkflowExecutionContext | None = None
+        self._workflow_progress_dialog: QProgressDialog | None = None
+        self._active_archive_task: CreateArchiveTask | ExtractArchiveTask | None = None
+        self._archive_context: ArchiveExecutionContext | None = None
+        self._archive_progress_dialog: QProgressDialog | None = None
+        self._active_catalog_task: CatalogRefreshTask | None = None
+        self._catalog_context: CatalogExecutionContext | None = None
+        self._catalog_progress_dialog: QProgressDialog | None = None
         self._current_folder = ""
+        self._scope_kind = "folder"
+        self._scope_id = ""
+        self._scope_label = ""
         self._scan_in_progress = False
         self._all_records: list[ImageRecord] = []
         self._all_records_by_path: dict[str, ImageRecord] = {}
         self._records: list[ImageRecord] = []
         self._record_index_by_path: dict[str, int] = {}
+        self._edited_candidates_cache: dict[str, tuple[str, ...]] = {}
+        self._visible_review_group_rows_by_id: dict[str, list[int]] = {}
+        self._visible_ai_group_rows_by_id: dict[str, list[int]] = {}
+        self._accepted_count = 0
+        self._rejected_count = 0
+        self._unreviewed_count = 0
+        self._summary_ai_text = "AI: Off"
+        self._summary_ai_tooltip = "No AI export is currently loaded."
         self._annotations: dict[str, SessionAnnotation] = {}
         self._ai_bundle: AIBundle | None = None
+        self._review_intelligence: ReviewIntelligenceBundle | None = None
+        self._correction_events: list[dict[str, object]] = []
+        self._taste_profile = TasteProfile()
+        self._burst_recommendations: dict[str, BurstRecommendation] = {}
+        self._workflow_insights_by_path: dict[str, RecordWorkflowInsight] = {}
+        self._winner_ladder_state: dict[str, object] | None = None
         self._ui_mode = "manual"
         self._ai_stage_index = 0
         self._ai_stage_total = 3
@@ -148,19 +422,56 @@ class MainWindow(QMainWindow):
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
         self._sort_mode = SortMode.NAME
-        self._filter_mode = FilterMode.ALL
+        self._filter_query = RecordFilterQuery()
+        self._pending_search_text = ""
         self._auto_advance_enabled = True
+        self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
         self._compare_enabled = False
         self._auto_bracket_enabled = self._settings.value(self.AUTO_BRACKET_KEY, True, bool)
+        self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
+        self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
         self._session_id = self._decision_store.ensure_session(
             self._settings.value(self.SESSION_KEY, DecisionStore.DEFAULT_SESSION, str)
         )
         self._winner_mode = self._load_winner_mode()
         self._delete_mode = self._load_delete_mode()
         self._favorites = self._load_favorites()
+        self._recent_destinations = self._load_recent_destinations()
+        self._saved_filter_presets = self._load_saved_filter_presets()
+        self._saved_workflow_recipes = self._load_saved_workflow_recipes()
+        self._saved_workspace_presets = self._load_saved_workspace_presets()
+        self._recent_command_ids = self._load_recent_command_ids()
+        self._shortcut_overrides = self._load_shortcut_overrides()
+        self._shortcut_targets: dict[str, ShortcutTarget] = {}
+        self._active_tool_mode = ""
+        self._visible_burst_groups: list[tuple[int, ...]] = []
+        self._burst_group_map: dict[str, BurstVisualInfo] = {}
+        self._apply_saved_ai_training_preferences()
+        self._command_palette_open = False
+        self._active_command_palette: CommandPaletteDialog | None = None
+        self._command_palette_dialogs: dict[str, CommandPaletteDialog] = {}
+        self._command_palette_shortcut_main: QShortcut | None = None
+        self._command_palette_shortcut_preview: QShortcut | None = None
         self._compare_count = 3
         self._manual_compare_count = 3
         self._undo_stack: list[UndoAction] = []
+        self._file_type_actions: dict[FileTypeFilter, QAction] = {}
+        self._review_state_actions: dict[ReviewStateFilter, QAction] = {}
+        self._ai_state_actions: dict[AIStateFilter, QAction] = {}
+
+        self._search_apply_timer = QTimer(self)
+        self._search_apply_timer.setSingleShot(True)
+        self._search_apply_timer.setInterval(140)
+        self._search_apply_timer.timeout.connect(self._commit_search_text_filter)
+        self._filter_metadata_manager = MetadataManager(max_workers=2, parent=self)
+        self._filter_metadata_manager.metadata_ready.connect(self._handle_filter_metadata_ready)
+        self._filter_metadata_by_path: dict[str, CaptureMetadata] = {}
+        self._filter_metadata_record_paths: set[str] = set()
+        self._filter_metadata_loaded_paths: set[str] = set()
+        self._metadata_reapply_timer = QTimer(self)
+        self._metadata_reapply_timer.setSingleShot(True)
+        self._metadata_reapply_timer.setInterval(180)
+        self._metadata_reapply_timer.timeout.connect(self._handle_metadata_filter_batch_update)
 
         self.folder_model = QFileSystemModel(self)
         self.folder_model.setFilter(QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot | QDir.Filter.Drives)
@@ -177,6 +488,9 @@ class MainWindow(QMainWindow):
         self.folder_tree.clicked.connect(self._handle_tree_selection)
         self.folder_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.folder_tree.customContextMenuRequested.connect(self._show_folder_tree_context_menu)
+        self.folder_tree.setAcceptDrops(True)
+        self.folder_tree.viewport().setAcceptDrops(True)
+        self.folder_tree.viewport().installEventFilter(self)
 
         self.favorites_label = QLabel("Favorites")
         self.favorites_label.setObjectName("sectionLabel")
@@ -189,6 +503,9 @@ class MainWindow(QMainWindow):
         self.favorites_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.favorites_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.favorites_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.favorites_list.setAcceptDrops(True)
+        self.favorites_list.viewport().setAcceptDrops(True)
+        self.favorites_list.viewport().installEventFilter(self)
 
         self.favorites_divider = QFrame()
         self.favorites_divider.setFrameShape(QFrame.Shape.HLine)
@@ -213,9 +530,11 @@ class MainWindow(QMainWindow):
         self.manual_path_label = QLabel("No folder selected")
         self.manual_path_label.setObjectName("pathLabel")
         self.manual_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.manual_path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.ai_path_label = QLabel("No folder selected")
         self.ai_path_label.setObjectName("pathLabel")
         self.ai_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.ai_path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
         self.sort_combo = QComboBox()
         for mode in SortMode:
@@ -228,33 +547,62 @@ class MainWindow(QMainWindow):
         self.filter_combo.currentIndexChanged.connect(self._handle_filter_changed)
 
         self.columns_combo = QComboBox()
-        for count in (2, 3, 4):
+        for count in range(1, 9):
             self.columns_combo.addItem(f"{count} Across", count)
-        self.columns_combo.setCurrentIndex(1)
+        default_columns_index = self.columns_combo.findData(3)
+        self.columns_combo.setCurrentIndex(default_columns_index if default_columns_index >= 0 else 0)
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
         self.actions = build_main_window_actions(self)
+        self._setup_command_palette_shortcuts()
+        self._register_shortcut_targets()
+        self._apply_shortcut_overrides()
+        self._build_record_filter_actions()
         self.primary_toolbar = build_primary_toolbar(self, self.actions)
         self.primary_toolbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.inspector_panel = InspectorPanel()
         self.inspector_panel.setMinimumWidth(260)
+        self.workspace_preset_menu = QMenu(self)
+        self.workflow_recipe_menu = QMenu("Run Recipe", self)
+        self.collections_menu = QMenu("Collections", self)
+        self.catalog_menu = QMenu("Catalog", self)
+
+        self.manual_search_field = self._build_search_field()
+        self.ai_search_field = self._build_search_field()
+        self.manual_search_field.textChanged.connect(
+            lambda text: self._handle_search_text_changed(text, source="manual")
+        )
+        self.ai_search_field.textChanged.connect(
+            lambda text: self._handle_search_text_changed(text, source="ai")
+        )
+        self.filter_toolbar_menu = QMenu(self)
+        self.manual_filter_button = self._build_advanced_filter_button()
+        self.ai_filter_button = self._build_advanced_filter_button()
+        self.view_toolbar_menu = self._build_view_toolbar_menu()
+        self.manual_review_tools_button = self._build_popup_button(
+            "Review",
+            self._build_review_toolbar_menu(),
+        )
+        self.ai_review_tools_button = self._build_popup_button(
+            "Review",
+            self._build_review_toolbar_menu(),
+        )
+        self.manual_view_tools_button = self._build_popup_button("View", self.view_toolbar_menu)
+        self.ai_view_tools_button = self._build_popup_button("View", self.view_toolbar_menu)
+        for button in (self.manual_view_tools_button, self.ai_view_tools_button):
+            button.setToolTip("Quick filters, sort options, and column layout.")
 
         self.manual_toolbar = QWidget()
         self.manual_toolbar.setObjectName("workspaceControls")
         manual_toolbar_layout = QHBoxLayout(self.manual_toolbar)
         manual_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         manual_toolbar_layout.setSpacing(8)
-        manual_toolbar_layout.addWidget(self._make_action_button(self.actions.compare_mode))
-        manual_toolbar_layout.addWidget(self._make_action_button(self.actions.auto_advance))
+        manual_toolbar_layout.addWidget(self.manual_review_tools_button)
+        manual_toolbar_layout.addWidget(self.manual_view_tools_button)
         manual_toolbar_layout.addSpacing(4)
-        manual_toolbar_layout.addWidget(self._build_section_label("Sort"))
-        manual_toolbar_layout.addWidget(self.sort_combo)
-        manual_toolbar_layout.addWidget(self._build_section_label("View"))
-        manual_toolbar_layout.addWidget(self.filter_combo)
-        manual_toolbar_layout.addWidget(self._build_section_label("Columns"))
-        manual_toolbar_layout.addWidget(self.columns_combo)
+        manual_toolbar_layout.addWidget(self.manual_search_field)
+        manual_toolbar_layout.addWidget(self.manual_filter_button)
         manual_toolbar_layout.addSpacing(8)
-        manual_toolbar_layout.addWidget(self._build_section_label("Folder"))
         manual_toolbar_layout.addWidget(self.manual_path_label, 1)
         self.ai_progress_bar = QProgressBar()
         self.ai_progress_bar.setRange(0, 1)
@@ -277,8 +625,12 @@ class MainWindow(QMainWindow):
         ai_toolbar_layout.addWidget(self._build_section_label("AI Status"))
         ai_toolbar_layout.addWidget(self.ai_progress_bar)
         ai_toolbar_layout.addWidget(self.ai_status_label)
+        ai_toolbar_layout.addWidget(self.ai_review_tools_button)
+        ai_toolbar_layout.addWidget(self.ai_view_tools_button)
         ai_toolbar_layout.addSpacing(8)
-        ai_toolbar_layout.addWidget(self._build_section_label("Folder"))
+        ai_toolbar_layout.addWidget(self.ai_search_field)
+        ai_toolbar_layout.addWidget(self.ai_filter_button)
+        ai_toolbar_layout.addSpacing(8)
         ai_toolbar_layout.addWidget(self.ai_path_label, 1)
 
         self.mode_tabs = QTabBar()
@@ -287,6 +639,9 @@ class MainWindow(QMainWindow):
         self.mode_tabs.addTab("AI Culling")
         self.mode_tabs.setExpanding(False)
         self.mode_tabs.setDrawBase(False)
+        self.mode_tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        self.mode_tabs.setUsesScrollButtons(False)
+        self.mode_tabs.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.mode_tabs.currentChanged.connect(self._handle_mode_tab_changed)
 
         self.toolbar_stack = QStackedWidget()
@@ -300,6 +655,30 @@ class MainWindow(QMainWindow):
         workspace_bar_layout.setSpacing(12)
         workspace_bar_layout.addWidget(self.mode_tabs, 0, Qt.AlignmentFlag.AlignVCenter)
         workspace_bar_layout.addWidget(self.toolbar_stack, 1)
+        self._refresh_mode_tabs_width()
+
+        self.tool_mode_bar = QWidget()
+        self.tool_mode_bar.setObjectName("workspaceControls")
+        tool_mode_layout = QHBoxLayout(self.tool_mode_bar)
+        tool_mode_layout.setContentsMargins(12, 8, 12, 8)
+        tool_mode_layout.setSpacing(10)
+        self.tool_mode_title = QLabel("Tool")
+        self.tool_mode_title.setObjectName("sectionLabel")
+        self.tool_mode_help = QLabel("")
+        self.tool_mode_help.setObjectName("secondaryText")
+        self.tool_mode_help.setWordWrap(True)
+        self.tool_mode_selection = QLabel("0 selected")
+        self.tool_mode_selection.setObjectName("secondaryText")
+        self.tool_mode_run_button = QPushButton("Run")
+        self.tool_mode_cancel_button = QPushButton("Cancel")
+        self.tool_mode_run_button.clicked.connect(self._run_active_tool_mode)
+        self.tool_mode_cancel_button.clicked.connect(self._cancel_tool_mode)
+        tool_mode_layout.addWidget(self.tool_mode_title)
+        tool_mode_layout.addWidget(self.tool_mode_help, 1)
+        tool_mode_layout.addWidget(self.tool_mode_selection)
+        tool_mode_layout.addWidget(self.tool_mode_run_button)
+        tool_mode_layout.addWidget(self.tool_mode_cancel_button)
+        self.tool_mode_bar.hide()
 
         center_column = QWidget()
         center_column.setObjectName("workspaceCenterColumn")
@@ -308,10 +687,23 @@ class MainWindow(QMainWindow):
         center_layout.setSpacing(8)
         center_layout.addWidget(self.primary_toolbar)
         center_layout.addWidget(self.workspace_bar)
+        center_layout.addWidget(self.tool_mode_bar)
         center_layout.addWidget(self.grid, 1)
 
         self.workspace_docks = build_workspace_docks(self, self.left_panel, self.inspector_panel, center_column)
-        build_main_menu_bar(self, self.actions, self.workspace_docks.toggle_actions)
+        self._refresh_workspace_preset_menu()
+        self._refresh_workflow_recipe_menu()
+        self._refresh_collections_menu()
+        self._refresh_catalog_menu()
+        build_main_menu_bar(
+            self,
+            self.actions,
+            self.workspace_docks.toggle_actions,
+            workflow_recipe_menu=self.workflow_recipe_menu,
+            workspace_preset_menu=self.workspace_preset_menu,
+            collections_menu=self.collections_menu,
+            catalog_menu=self.catalog_menu,
+        )
 
         self.summary_strip = QWidget()
         self.summary_strip.setObjectName("summaryStrip")
@@ -350,6 +742,16 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         status.showMessage("Ready")
         self.setStatusBar(status)
+        self.filter_summary_label = QLabel("Filters: All Images")
+        self.filter_summary_label.setObjectName("filterSummaryLabel")
+        self.filter_summary_label.setMaximumWidth(420)
+        self.clear_filters_button = QToolButton()
+        self.clear_filters_button.setObjectName("statusFilterClearButton")
+        self.clear_filters_button.setAutoRaise(True)
+        self.clear_filters_button.setDefaultAction(self.actions.clear_filters)
+        status.addPermanentWidget(self.filter_summary_label)
+        status.addPermanentWidget(self.clear_filters_button)
+        self._refresh_filter_toolbar_menu()
 
         self.grid.current_changed.connect(self._handle_current_changed)
         self.grid.preview_requested.connect(self._open_preview)
@@ -373,6 +775,9 @@ class MainWindow(QMainWindow):
         self.preview.move_requested.connect(self._handle_preview_move_requested)
         self.preview.rate_requested.connect(self._handle_preview_rate_requested)
         self.preview.tag_requested.connect(self._handle_preview_tag_requested)
+        self.preview.winner_ladder_choice_requested.connect(self._handle_preview_winner_ladder_choice)
+        self.preview.winner_ladder_skip_requested.connect(self._handle_preview_winner_ladder_skip)
+        self.preview.closed.connect(self._handle_preview_closed)
 
         app = QApplication.instance()
         if app is not None:
@@ -382,6 +787,8 @@ class MainWindow(QMainWindow):
                 color_scheme_changed.connect(self._handle_system_color_scheme_changed)
         self._apply_appearance()
         self._restore_window_state()
+        self._sync_record_filter_controls()
+        self._update_filter_summary()
         self.preview.set_auto_bracket_mode(self._auto_bracket_enabled)
         self._handle_mode_tab_changed(self.mode_tabs.currentIndex())
         self._update_action_states()
@@ -398,6 +805,1061 @@ class MainWindow(QMainWindow):
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         return button
 
+    def _build_popup_button(self, text: str, menu: QMenu) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("workspacePresetsButton")
+        button.setText(text)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setMenu(menu)
+        return button
+
+    def _build_review_toolbar_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.addAction(self.actions.compare_mode)
+        menu.addAction(self.actions.auto_advance)
+        menu.addSeparator()
+        menu.addAction(self.actions.burst_groups)
+        menu.addAction(self.actions.burst_stacks)
+        return menu
+
+    def _build_view_toolbar_menu(self) -> QMenu:
+        menu = QMenu(self)
+
+        quick_filter_menu = menu.addMenu("Quick Filter")
+        for mode in FilterMode:
+            quick_filter_menu.addAction(self.actions.filter_actions[mode])
+
+        sort_menu = menu.addMenu("Sort")
+        for mode in SortMode:
+            sort_menu.addAction(self.actions.sort_actions[mode])
+
+        columns_menu = menu.addMenu("Columns")
+        for count in range(1, 9):
+            columns_menu.addAction(self.actions.column_actions[count])
+
+        return menu
+
+    def _build_search_field(self) -> QLineEdit:
+        field = QLineEdit()
+        field.setObjectName("workspaceSearchField")
+        field.setClearButtonEnabled(True)
+        field.setPlaceholderText("Search filenames")
+        field.setMinimumWidth(124)
+        field.setMaximumWidth(220)
+        field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        return field
+
+    def _build_advanced_filter_button(self) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("workspaceFiltersButton")
+        button.setText("Filters")
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setMenu(self.filter_toolbar_menu)
+        return button
+
+    def _build_record_filter_actions(self) -> None:
+        file_type_group = QActionGroup(self)
+        file_type_group.setExclusive(True)
+        for mode in FileTypeFilter:
+            action = QAction(mode.value, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, selected=mode: self._set_file_type_filter(selected))
+            file_type_group.addAction(action)
+            self._file_type_actions[mode] = action
+
+        review_group = QActionGroup(self)
+        review_group.setExclusive(True)
+        for mode in ReviewStateFilter:
+            action = QAction(mode.value, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, selected=mode: self._set_review_state_filter(selected))
+            review_group.addAction(action)
+            self._review_state_actions[mode] = action
+
+        ai_group = QActionGroup(self)
+        ai_group.setExclusive(True)
+        for mode in AIStateFilter:
+            action = QAction(mode.value, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, selected=mode: self._set_ai_state_filter(selected))
+            ai_group.addAction(action)
+            self._ai_state_actions[mode] = action
+
+    def _populate_saved_filter_menu(self, menu: QMenu) -> None:
+        menu.addAction(self.actions.save_filter_preset)
+        menu.addAction(self.actions.delete_filter_preset)
+        menu.addSeparator()
+
+        active_label = self._matching_filter_preset_label(self._filter_query)
+        builtins = builtin_filter_presets()
+        if builtins:
+            builtins_header = menu.addSection("Smart Filters")
+            builtins_header.setEnabled(False)
+            for preset in builtins:
+                action = menu.addAction(preset.name)
+                action.setCheckable(True)
+                action.setChecked(active_label == preset.name)
+                action.triggered.connect(lambda _checked=False, target=preset: self._apply_filter_preset(target))
+            menu.addSeparator()
+
+        saved_header = menu.addSection("Saved Searches")
+        saved_header.setEnabled(False)
+        if self._saved_filter_presets:
+            for preset in self._saved_filter_presets:
+                action = menu.addAction(preset.name)
+                action.setCheckable(True)
+                action.setChecked(active_label == preset.name)
+                action.triggered.connect(lambda _checked=False, target=preset: self._apply_filter_preset(target))
+        else:
+            empty_action = menu.addAction("No saved searches yet")
+            empty_action.setEnabled(False)
+
+    def _refresh_filter_toolbar_menu(self) -> None:
+        self.filter_toolbar_menu.clear()
+        file_type_menu = self.filter_toolbar_menu.addMenu("File Type")
+        for mode in FileTypeFilter:
+            file_type_menu.addAction(self._file_type_actions[mode])
+
+        review_menu = self.filter_toolbar_menu.addMenu("Review State")
+        for mode in ReviewStateFilter:
+            review_menu.addAction(self._review_state_actions[mode])
+
+        ai_menu = self.filter_toolbar_menu.addMenu("AI State")
+        for mode in AIStateFilter:
+            ai_menu.addAction(self._ai_state_actions[mode])
+
+        self.filter_toolbar_menu.addSeparator()
+        self.filter_toolbar_menu.addAction(self.actions.advanced_filters)
+        self.filter_toolbar_menu.addAction(self.actions.clear_filters)
+        self.filter_toolbar_menu.addSeparator()
+        saved_menu = self.filter_toolbar_menu.addMenu("Saved Searches")
+        self._populate_saved_filter_menu(saved_menu)
+
+    def _register_shortcut_targets(self) -> None:
+        if self.actions is None:
+            return
+
+        def register_action(binding_id: str, action, *, label: str, section: str) -> None:
+            self._shortcut_targets[binding_id] = ShortcutTarget(
+                id=binding_id,
+                label=label,
+                section=section,
+                default_shortcut=action.shortcut().toString(QKeySequence.SequenceFormat.PortableText),
+                apply=lambda shortcut, target=action: target.setShortcut(QKeySequence(shortcut)),
+            )
+
+        register_action("file.open_folder", self.actions.open_folder, label="Open Folder", section="File")
+        register_action("file.refresh_folder", self.actions.refresh_folder, label="Refresh Folder", section="File")
+        register_action("edit.undo", self.actions.undo, label="Undo", section="Edit")
+        register_action("review.open_preview", self.actions.open_preview, label="Open Preview", section="Review")
+        register_action("review.compare_mode", self.actions.compare_mode, label="Compare Mode", section="Review")
+        register_action("review.accept_selection", self.actions.accept_selection, label="Accept Selection", section="Review")
+        register_action("review.reject_selection", self.actions.reject_selection, label="Reject Selection", section="Review")
+        register_action("review.keep_selection", self.actions.keep_selection, label="Move Selection To _keep", section="Review")
+        register_action("review.move_selection", self.actions.move_selection, label="Move Selection", section="Review")
+        register_action("review.delete_selection", self.actions.delete_selection, label="Delete Selection", section="Review")
+        register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
+        register_action("ai.compare_group", self.actions.compare_ai_group, label="Compare Current AI Group", section="AI")
+        register_action("workflow.handoff_builder", self.actions.handoff_builder, label="Deliver / Handoff Builder", section="Workflow")
+        register_action("workflow.send_to_editor", self.actions.send_to_editor_pipeline, label="Send To Editor", section="Workflow")
+        register_action("workflow.best_of", self.actions.best_of_set_auto_assembly, label="Best-of-Set Auto Assembly", section="Workflow")
+        register_action("workflow.save_workspace", self.actions.save_workspace_preset, label="Save Current Workspace Preset", section="Workflow")
+
+        self._shortcut_targets["palette.open"] = ShortcutTarget(
+            id="palette.open",
+            label="Open Command Palette",
+            section="Workspace",
+            default_shortcut="Ctrl+K",
+            apply=self._apply_command_palette_shortcut,
+        )
+
+    def _shortcut_bindings(self) -> list[ShortcutBinding]:
+        bindings: list[ShortcutBinding] = []
+        for binding_id, target in self._shortcut_targets.items():
+            bindings.append(
+                ShortcutBinding(
+                    id=binding_id,
+                    label=target.label,
+                    section=target.section,
+                    default_shortcut=target.default_shortcut,
+                    shortcut=self._shortcut_overrides.get(binding_id, ""),
+                )
+            )
+        bindings.sort(key=lambda item: (item.section.casefold(), item.label.casefold()))
+        return bindings
+
+    def _apply_shortcut_overrides(self) -> None:
+        for binding_id, target in self._shortcut_targets.items():
+            shortcut = self._shortcut_overrides.get(binding_id, "") or target.default_shortcut
+            normalized = normalize_shortcut_text(shortcut)
+            target.apply(normalized)
+
+    def _apply_command_palette_shortcut(self, shortcut: str) -> None:
+        sequence = QKeySequence(shortcut)
+        if self._command_palette_shortcut_main is not None:
+            self._command_palette_shortcut_main.setKey(sequence)
+        if self._command_palette_shortcut_preview is not None:
+            self._command_palette_shortcut_preview.setKey(sequence)
+        if self.actions is not None:
+            self.actions.open_command_palette.setShortcut(sequence)
+
+    def _load_saved_workflow_recipes(self) -> list[WorkflowRecipe]:
+        raw = self._settings.value(self.WORKFLOW_RECIPES_KEY, "", str)
+        if not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        recipes: list[WorkflowRecipe] = []
+        seen: set[str] = set()
+        if not isinstance(payload, list):
+            return recipes
+        for item in payload:
+            recipe = deserialize_workflow_recipe(item if isinstance(item, dict) else None)
+            if recipe is None or recipe.key in seen:
+                continue
+            seen.add(recipe.key)
+            recipes.append(recipe)
+        return recipes
+
+    def _save_saved_workflow_recipes(self) -> None:
+        payload = [serialize_workflow_recipe(recipe) for recipe in self._saved_workflow_recipes]
+        self._settings.setValue(self.WORKFLOW_RECIPES_KEY, json.dumps(payload))
+
+    def _load_saved_workspace_presets(self) -> list[WorkspacePreset]:
+        raw = self._settings.value(self.WORKSPACE_PRESETS_KEY, "", str)
+        if not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        presets: list[WorkspacePreset] = []
+        seen: set[str] = set()
+        if not isinstance(payload, list):
+            return presets
+        for item in payload:
+            preset = deserialize_workspace_preset(item if isinstance(item, dict) else None)
+            if preset is None or preset.key in seen:
+                continue
+            seen.add(preset.key)
+            presets.append(preset)
+        return presets
+
+    def _save_saved_workspace_presets(self) -> None:
+        payload = [serialize_workspace_preset(preset) for preset in self._saved_workspace_presets]
+        self._settings.setValue(self.WORKSPACE_PRESETS_KEY, json.dumps(payload))
+
+    def _load_shortcut_overrides(self) -> dict[str, str]:
+        raw = self._settings.value(self.SHORTCUT_OVERRIDES_KEY, "", str)
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(binding_id): normalize_shortcut_text(shortcut if isinstance(shortcut, str) else "")
+            for binding_id, shortcut in payload.items()
+            if isinstance(binding_id, str)
+        }
+
+    def _save_shortcut_overrides(self) -> None:
+        payload = serialize_shortcut_overrides(self._shortcut_overrides)
+        self._settings.setValue(self.SHORTCUT_OVERRIDES_KEY, json.dumps(payload))
+
+    def _refresh_workflow_recipe_menu(self) -> None:
+        if not hasattr(self, "workflow_recipe_menu") or self.workflow_recipe_menu is None:
+            return
+        self.workflow_recipe_menu.clear()
+        self.workflow_recipe_menu.setTitle("Run Recipe")
+        self.workflow_recipe_menu.addAction(self.actions.handoff_builder)
+        self.workflow_recipe_menu.addAction(self.actions.send_to_editor_pipeline)
+        self.workflow_recipe_menu.addSeparator()
+
+        builtins = built_in_workflow_recipes()
+        if builtins:
+            header = self.workflow_recipe_menu.addSection("Built-In Recipes")
+            header.setEnabled(False)
+            for recipe in builtins:
+                action = self.workflow_recipe_menu.addAction(recipe.name)
+                action.triggered.connect(lambda _checked=False, target=recipe: self._run_workflow_recipe(target))
+            self.workflow_recipe_menu.addSeparator()
+
+        saved_header = self.workflow_recipe_menu.addSection("Saved Recipes")
+        saved_header.setEnabled(False)
+        if self._saved_workflow_recipes:
+            for recipe in self._saved_workflow_recipes:
+                action = self.workflow_recipe_menu.addAction(recipe.name)
+                action.triggered.connect(lambda _checked=False, target=recipe: self._run_workflow_recipe(target))
+        else:
+            empty_action = self.workflow_recipe_menu.addAction("No saved recipes yet")
+            empty_action.setEnabled(False)
+
+    def _refresh_workspace_preset_menu(self) -> None:
+        if not hasattr(self, "workspace_preset_menu") or self.workspace_preset_menu is None:
+            return
+        self.workspace_preset_menu.clear()
+        self.workspace_preset_menu.setTitle("Workspace Presets")
+        builtins = built_in_workspace_presets()
+        if builtins:
+            builtins_header = self.workspace_preset_menu.addSection("Built-In Presets")
+            builtins_header.setEnabled(False)
+            for preset in builtins:
+                action = self.workspace_preset_menu.addAction(preset.name)
+                action.setToolTip(preset.description)
+                action.triggered.connect(lambda _checked=False, target=preset: self._apply_workspace_preset(target))
+            self.workspace_preset_menu.addSeparator()
+        saved_header = self.workspace_preset_menu.addSection("Saved Presets")
+        saved_header.setEnabled(False)
+        if self._saved_workspace_presets:
+            for preset in self._saved_workspace_presets:
+                action = self.workspace_preset_menu.addAction(preset.name)
+                action.setToolTip(preset.description)
+                action.triggered.connect(lambda _checked=False, target=preset: self._apply_workspace_preset(target))
+        else:
+            empty_action = self.workspace_preset_menu.addAction("No saved workspace presets yet")
+            empty_action.setEnabled(False)
+
+    def _scope_display_label(self) -> str:
+        if self._scope_kind == "folder":
+            return self._current_folder or "No folder selected"
+        return self._scope_label or "Virtual Scope"
+
+    def _apply_scope_label(self) -> None:
+        label = self._scope_display_label()
+        self.manual_path_label.setText(label)
+        self.ai_path_label.setText(label)
+
+    def _set_scope_state(self, *, kind: str, scope_id: str = "", label: str = "") -> None:
+        self._scope_kind = kind
+        self._scope_id = scope_id
+        self._scope_label = label
+        self._apply_scope_label()
+
+    def _current_scope_key(self) -> str:
+        if self._scope_kind == "folder":
+            return normalized_path_key(self._current_folder)
+        return f"{self._scope_kind}:{self._scope_id or self._scope_label.casefold()}"
+
+    def _refresh_collections_menu(self) -> None:
+        if not hasattr(self, "collections_menu") or self.collections_menu is None:
+            return
+        self.collections_menu.clear()
+        self.collections_menu.setTitle("Collections")
+        self.collections_menu.addAction(self.actions.create_virtual_collection)
+        self.collections_menu.addAction(self.actions.add_selection_to_collection)
+        self.collections_menu.addAction(self.actions.remove_selection_from_collection)
+        self.collections_menu.addAction(self.actions.delete_virtual_collection)
+        self.collections_menu.addSeparator()
+
+        collections = self._library_store.list_collections()
+        if collections:
+            header = self.collections_menu.addSection("Open Collection")
+            header.setEnabled(False)
+            for collection in collections:
+                action = self.collections_menu.addAction(f"{collection.name} ({collection.item_count})")
+                action.setToolTip(collection.description or collection.kind)
+                action.triggered.connect(lambda _checked=False, target=collection.id: self._open_virtual_collection(target))
+        else:
+            empty_action = self.collections_menu.addAction("No collections yet")
+            empty_action.setEnabled(False)
+        if self.actions is not None:
+            self._update_action_states()
+
+    def _refresh_catalog_menu(self) -> None:
+        if not hasattr(self, "catalog_menu") or self.catalog_menu is None:
+            return
+        self.catalog_menu.clear()
+        self.catalog_menu.setTitle("Catalog")
+        self.catalog_menu.addAction(self.actions.browse_catalog)
+        self.catalog_menu.addAction(self.actions.add_current_folder_to_catalog)
+        self.catalog_menu.addAction(self.actions.add_folder_to_catalog)
+        self.catalog_menu.addAction(self.actions.remove_catalog_folder)
+        self.catalog_menu.addAction(self.actions.refresh_catalog)
+        self.catalog_menu.addSeparator()
+
+        roots = self._library_store.list_catalog_roots()
+        if roots:
+            header = self.catalog_menu.addSection("Indexed Roots")
+            header.setEnabled(False)
+            for root in roots:
+                label = Path(root.path).name or root.path
+                action = self.catalog_menu.addAction(f"{label} ({root.indexed_record_count})")
+                tooltip_parts = [root.path]
+                if root.last_indexed_at:
+                    tooltip_parts.append(f"Indexed: {root.last_indexed_at}")
+                if root.last_error:
+                    tooltip_parts.append(f"Status: {root.last_error}")
+                action.setToolTip("\n".join(tooltip_parts))
+                action.triggered.connect(lambda _checked=False, target=root.path: self._browse_catalog(root_path_override=target))
+        else:
+            empty_action = self.catalog_menu.addAction("No catalog roots yet")
+            empty_action.setEnabled(False)
+        if self.actions is not None:
+            self._update_action_states()
+
+    def _open_command_palette(self, _checked: bool = False, *, context: str | None = None) -> None:
+        palette_context = context or ("preview" if self.preview.isVisible() and self.preview.isActiveWindow() else "main")
+        if self._active_command_palette is not None and self._active_command_palette.isVisible():
+            return
+        dialog = self._ensure_command_palette_dialog(palette_context)
+        commands = self._build_command_palette_commands(palette_context)
+        dialog.configure(
+            commands,
+            recent_command_ids=tuple(self._recent_command_ids),
+            title="Preview Commands" if palette_context == "preview" else "Command Palette",
+        )
+        self._command_palette_open = True
+        self._active_command_palette = dialog
+        self._set_command_palette_shortcuts_enabled(False)
+        dialog.present()
+
+    def _setup_command_palette_shortcuts(self) -> None:
+        self._command_palette_shortcut_main = QShortcut(QKeySequence("Ctrl+K"), self)
+        self._command_palette_shortcut_main.setAutoRepeat(False)
+        self._command_palette_shortcut_main.activated.connect(lambda: self._open_command_palette(context="main"))
+        self._command_palette_shortcut_preview = QShortcut(QKeySequence("Ctrl+K"), self.preview)
+        self._command_palette_shortcut_preview.setAutoRepeat(False)
+        self._command_palette_shortcut_preview.activated.connect(lambda: self._open_command_palette(context="preview"))
+
+    def _set_command_palette_shortcuts_enabled(self, enabled: bool) -> None:
+        if self.actions is not None:
+            self.actions.open_command_palette.setEnabled(enabled)
+        if self._command_palette_shortcut_main is not None:
+            self._command_palette_shortcut_main.setEnabled(enabled)
+        if self._command_palette_shortcut_preview is not None:
+            self._command_palette_shortcut_preview.setEnabled(enabled)
+
+    def _ensure_command_palette_dialog(self, context: str) -> CommandPaletteDialog:
+        existing = self._command_palette_dialogs.get(context)
+        if existing is not None:
+            return existing
+        parent = self.preview if context == "preview" and self.preview.isVisible() else self
+        dialog = CommandPaletteDialog([], recent_command_ids=(), parent=parent)
+        dialog.finished.connect(self._handle_command_palette_finished)
+        self._command_palette_dialogs[context] = dialog
+        return dialog
+
+    def _handle_command_palette_finished(self, result: int) -> None:
+        dialog = self.sender()
+        if not isinstance(dialog, CommandPaletteDialog):
+            self._command_palette_open = False
+            self._active_command_palette = None
+            self._set_command_palette_shortcuts_enabled(True)
+            return
+        self._command_palette_open = False
+        self._active_command_palette = None
+        self._set_command_palette_shortcuts_enabled(True)
+        if result != dialog.DialogCode.Accepted:
+            return
+        command = dialog.selected_command
+        if command is None:
+            return
+        self._remember_recent_command(command.id)
+        command.callback()
+
+    def _build_command_palette_commands(self, context: str) -> list[PaletteCommand]:
+        commands: list[PaletteCommand] = []
+
+        def add_action_command(
+            command_id: str,
+            action,
+            *,
+            section: str,
+            title: str | None = None,
+            subtitle: str = "",
+            keywords: tuple[str, ...] = (),
+        ) -> None:
+            if action is None or not action.isEnabled():
+                return
+            commands.append(
+                PaletteCommand(
+                    id=command_id,
+                    title=title or self._clean_command_text(action.text()),
+                    subtitle=subtitle,
+                    section=section,
+                    shortcut=action.shortcut().toString(),
+                    keywords=keywords,
+                    callback=action.trigger,
+                )
+            )
+
+        if self.actions is not None:
+            add_action_command("file.open_folder", self.actions.open_folder, section="File", keywords=("open directory", "browse folder"))
+            add_action_command("file.refresh_folder", self.actions.refresh_folder, section="File", keywords=("reload folder", "rescan"))
+            add_action_command("file.new_folder", self.actions.new_folder, section="File", keywords=("create folder", "new directory"))
+            add_action_command("file.workflow_settings", self.actions.workflow_settings, section="File", keywords=("preferences", "settings"))
+            add_action_command("edit.undo", self.actions.undo, section="Edit", keywords=("revert", "undo last action"))
+            add_action_command("edit.rename_selection", self.actions.rename_selection, section="Edit", keywords=("rename image", "rename file"))
+            add_action_command("tools.batch_rename", self.actions.batch_rename_selection, section="Tools", keywords=("batch rename tool", "rename many"))
+            add_action_command("tools.batch_resize", self.actions.batch_resize_selection, section="Tools", keywords=("batch resize tool", "resize many", "convert size"))
+            add_action_command("tools.batch_convert", self.actions.batch_convert_selection, section="Tools", keywords=("batch convert tool", "convert format", "png jpg webp"))
+            add_action_command("tools.extract_archive", self.actions.extract_archive, section="Tools", keywords=("extract archive", "unzip", "decompress", "7z"))
+            add_action_command("workflow.handoff_builder", self.actions.handoff_builder, section="Workflow", keywords=("delivery", "handoff", "export workflow"))
+            add_action_command("workflow.send_to_editor", self.actions.send_to_editor_pipeline, section="Workflow", keywords=("retouch", "editor queue", "send to editor"))
+            add_action_command("workflow.best_of", self.actions.best_of_set_auto_assembly, section="Workflow", keywords=("best of", "shortlist", "auto assembly"))
+            add_action_command("workflow.keyboard_shortcuts", self.actions.keyboard_shortcuts, section="Workflow", keywords=("shortcuts", "keyboard mapping"))
+            add_action_command("workflow.save_workspace", self.actions.save_workspace_preset, section="Workflow", keywords=("workspace preset", "save layout"))
+            add_action_command("library.create_collection", self.actions.create_virtual_collection, section="Library", keywords=("virtual collection", "portfolio picks", "proofing set"))
+            add_action_command("library.add_to_collection", self.actions.add_selection_to_collection, section="Library", keywords=("collection", "save picks"))
+            add_action_command("library.remove_from_collection", self.actions.remove_selection_from_collection, section="Library", keywords=("collection", "remove picks"))
+            add_action_command("library.delete_collection", self.actions.delete_virtual_collection, section="Library", keywords=("collection", "delete set"))
+            add_action_command("library.browse_catalog", self.actions.browse_catalog, section="Library", keywords=("catalog", "cross folder search", "global index"))
+            add_action_command("library.add_current_to_catalog", self.actions.add_current_folder_to_catalog, section="Library", keywords=("catalog root", "index current folder"))
+            add_action_command("library.add_folder_to_catalog", self.actions.add_folder_to_catalog, section="Library", keywords=("catalog root", "index folder"))
+            add_action_command("library.remove_catalog_root", self.actions.remove_catalog_folder, section="Library", keywords=("catalog root", "remove folder"))
+            add_action_command("library.refresh_catalog", self.actions.refresh_catalog, section="Library", keywords=("refresh catalog", "reindex library"))
+            add_action_command("review.open_preview", self.actions.open_preview, section="Review", keywords=("viewer", "popout", "fullscreen"))
+            add_action_command("review.accept_selection", self.actions.accept_selection, section="Review", keywords=("winner", "approve", "accept"))
+            add_action_command("review.reject_selection", self.actions.reject_selection, section="Review", keywords=("reject", "decline"))
+            add_action_command("review.keep_selection", self.actions.keep_selection, section="Review", keywords=("keep", "_keep"))
+            add_action_command("review.move_selection", self.actions.move_selection, section="Review", keywords=("relocate", "move"))
+            add_action_command(
+                "review.move_selection_to_new_folder",
+                self.actions.move_selection_to_new_folder,
+                section="Review",
+                keywords=("new folder", "move to new folder", "subfolder"),
+            )
+            add_action_command("review.delete_selection", self.actions.delete_selection, section="Review", keywords=("trash", "remove", "delete"))
+            add_action_command("review.restore_selection", self.actions.restore_selection, section="Review", keywords=("recover", "restore"))
+            add_action_command("review.reveal_in_explorer", self.actions.reveal_in_explorer, section="Review", keywords=("show in explorer", "reveal file"))
+            add_action_command("review.photoshop", self.actions.open_in_photoshop, section="Review", keywords=("edit in photoshop",))
+            add_action_command("review.compare_mode", self.actions.compare_mode, section="Review", subtitle=self._toggle_state_text(self._compare_enabled), keywords=("toggle compare",))
+            add_action_command("review.auto_advance", self.actions.auto_advance, section="Review", subtitle=self._toggle_state_text(self._auto_advance_enabled), keywords=("toggle auto advance",))
+            add_action_command("view.burst_groups", self.actions.burst_groups, section="View", subtitle=self._toggle_state_text(self._burst_groups_enabled), keywords=("burst grouping", "burst shots", "toggle bursts", "capture sequence"))
+            add_action_command("view.burst_stacks", self.actions.burst_stacks, section="View", subtitle=self._toggle_state_text(self._burst_stacks_enabled), keywords=("smart stacks", "cycle group", "stack shots", "duplicate stack"))
+            add_action_command("search.advanced_filters", self.actions.advanced_filters, section="Search", keywords=("metadata filters", "search filters"))
+            add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
+            add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
+            add_action_command("search.clear_filters", self.actions.clear_filters, section="Search", keywords=("reset filters", "clear search"))
+            add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run model"))
+            add_action_command("ai.load_saved", self.actions.load_saved_ai, section="AI", keywords=("load cached ai",))
+            add_action_command("ai.load_results", self.actions.load_ai_results, section="AI", keywords=("import ai results",))
+            add_action_command("ai.clear_results", self.actions.clear_ai_results, section="AI", keywords=("remove ai results",))
+            add_action_command("ai.open_report", self.actions.open_ai_report, section="AI", keywords=("html report",))
+            add_action_command("ai.data_selection", self.actions.open_ai_data_selection, section="AI", keywords=("collect training labels", "pairwise labels", "cluster labels", "ranking data", "labeling"))
+            add_action_command("ai.full_training_pipeline", self.actions.run_full_ai_training_pipeline, section="AI", keywords=("one click training", "full training pipeline", "prepare train evaluate score"))
+            add_action_command("ai.prepare_training_data", self.actions.prepare_ai_training_data, section="AI", keywords=("prepare training data", "prepare model data", "extract embeddings", "cluster"))
+            add_action_command("ai.build_reference_bank", self.actions.build_ai_reference_bank, section="AI", keywords=("reference bank", "exemplar model", "bucketed references"))
+            add_action_command("ai.train_ranker", self.actions.train_ai_ranker, section="AI", keywords=("train model", "train ranker", "preference model"))
+            add_action_command("ai.manage_rankers", self.actions.manage_ai_rankers, section="AI", keywords=("ranker center", "choose ranker", "model versions", "ranker versions", "checkpoint manager"))
+            add_action_command("ai.evaluate_ranker", self.actions.evaluate_ai_ranker, section="AI", keywords=("evaluate model", "metrics", "validation"))
+            add_action_command("ai.score_trained_ranker", self.actions.score_ai_with_trained_ranker, section="AI", keywords=("refresh ai report", "score current folder", "trained checkpoint"))
+            add_action_command("ai.clear_trained_model", self.actions.clear_ai_trained_model, section="AI", keywords=("reset ai checkpoint", "clear trained model"))
+            add_action_command("ai.next_top_pick", self.actions.next_ai_pick, section="AI", keywords=("next ai pick", "jump ai"))
+            add_action_command("ai.next_unreviewed_top_pick", self.actions.next_unreviewed_ai_pick, section="AI", keywords=("unreviewed ai pick",))
+            add_action_command("ai.compare_group", self.actions.compare_ai_group, section="AI", keywords=("compare ai cluster", "group compare"))
+            add_action_command("window.reset_layout", self.actions.reset_layout, section="Workspace", keywords=("restore layout", "default workspace"))
+            add_action_command("help.keyboard_help", self.actions.keyboard_help, section="Help", keywords=("quick help", "shortcuts", "help"))
+            add_action_command("help.ai_guide", self.actions.ai_guide, section="Help", keywords=("ai guide", "ai training guide", "model guide", "ai help"))
+            add_action_command("help.advanced_help", self.actions.advanced_help, section="Help", keywords=("advanced help", "reference", "guide"))
+            add_action_command("help.about", self.actions.about, section="Help", keywords=("about", "version"))
+
+            commands.append(
+                PaletteCommand(
+                    id="mode.manual",
+                    title="Switch To Manual Review",
+                    subtitle="Current mode" if self._ui_mode == "manual" else "",
+                    section="Workspace",
+                    keywords=("manual mode", "review mode"),
+                    callback=lambda: self._set_ui_mode("manual"),
+                )
+            )
+            commands.append(
+                PaletteCommand(
+                    id="mode.ai",
+                    title="Switch To AI Review",
+                    subtitle="Current mode" if self._ui_mode == "ai" else "",
+                    section="Workspace",
+                    keywords=("ai mode", "ai review"),
+                    callback=lambda: self._set_ui_mode("ai"),
+                )
+            )
+
+            for mode, action in self.actions.appearance_actions.items():
+                add_action_command(
+                    f"appearance.{mode.value.casefold()}",
+                    action,
+                    section="Appearance",
+                    title=f"Set Theme: {mode.value}",
+                    keywords=("theme", "appearance", mode.value.casefold()),
+                )
+            for mode, action in self.actions.sort_actions.items():
+                add_action_command(
+                    f"sort.{mode.name.casefold()}",
+                    action,
+                    section="View",
+                    title=f"View: Sort By {mode.value}",
+                    keywords=("view", "sort", mode.value.casefold()),
+                )
+            for mode, action in self.actions.filter_actions.items():
+                add_action_command(
+                    f"quick_filter.{mode.name.casefold()}",
+                    action,
+                    section="View",
+                    title=f"View: Quick Filter {mode.value}",
+                    keywords=("view", "quick filter", "filter", mode.value.casefold()),
+                )
+            for count, action in self.actions.column_actions.items():
+                add_action_command(
+                    f"columns.{count}",
+                    action,
+                    section="View",
+                    title=f"View: Columns {count} Across",
+                    keywords=("view", "columns", f"{count} across"),
+                )
+
+        if self.workspace_docks is not None:
+            for key, action in self.workspace_docks.toggle_actions.items():
+                panel_title = key.title()
+                commands.append(
+                    PaletteCommand(
+                        id=f"dock.{key}",
+                        title=f"{'Hide' if action.isChecked() else 'Show'} {panel_title}",
+                        subtitle="Workspace panel",
+                        section="Workspace",
+                        keywords=(panel_title.casefold(), "panel", "dock", "sidebar"),
+                        callback=action.trigger,
+                    )
+                )
+
+        for preset in builtin_filter_presets():
+            commands.append(
+                PaletteCommand(
+                    id=f"smart_filter.{preset.name.casefold().replace(' ', '_')}",
+                    title=f"Apply Smart Filter: {preset.name}",
+                    subtitle=self._preset_subtitle(preset),
+                    section="Search",
+                    keywords=("smart filter", "saved search", preset.name.casefold()),
+                    callback=lambda target=preset: self._apply_filter_preset(target),
+                )
+            )
+        for preset in self._saved_filter_presets:
+            commands.append(
+                PaletteCommand(
+                    id=f"saved_filter.{preset.name.casefold()}",
+                    title=f"Apply Saved Search: {preset.name}",
+                    subtitle=self._preset_subtitle(preset),
+                    section="Search",
+                    keywords=("saved search", "preset", preset.name.casefold()),
+                    callback=lambda target=preset: self._apply_filter_preset(target),
+                )
+            )
+
+        for recipe in built_in_workflow_recipes():
+            commands.append(
+                PaletteCommand(
+                    id=f"workflow_recipe.{recipe.key}",
+                    title=f"Run Workflow Recipe: {recipe.name}",
+                    subtitle=recipe.description or "Built-in workflow recipe",
+                    section="Workflow",
+                    keywords=("workflow recipe", recipe.name.casefold(), recipe.key),
+                    callback=lambda target=recipe: self._run_workflow_recipe(target),
+                )
+            )
+        for recipe in self._saved_workflow_recipes:
+            commands.append(
+                PaletteCommand(
+                    id=f"saved_workflow_recipe.{recipe.key}",
+                    title=f"Run Saved Recipe: {recipe.name}",
+                    subtitle=recipe.description or "Saved workflow recipe",
+                    section="Workflow",
+                    keywords=("saved recipe", "workflow recipe", recipe.name.casefold()),
+                    callback=lambda target=recipe: self._run_workflow_recipe(target),
+                )
+            )
+
+        for preset in built_in_workspace_presets():
+            commands.append(
+                PaletteCommand(
+                    id=f"workspace_preset.{preset.key}",
+                    title=f"Apply Workspace Preset: {preset.name}",
+                    subtitle=preset.description,
+                    section="Workspace",
+                    keywords=("workspace preset", preset.name.casefold(), preset.key),
+                    callback=lambda target=preset: self._apply_workspace_preset(target),
+                )
+            )
+        for preset in self._saved_workspace_presets:
+            commands.append(
+                PaletteCommand(
+                    id=f"saved_workspace_preset.{preset.key}",
+                    title=f"Apply Saved Workspace: {preset.name}",
+                    subtitle=preset.description or "Saved workspace preset",
+                    section="Workspace",
+                    keywords=("saved workspace", "workspace preset", preset.name.casefold()),
+                    callback=lambda target=preset: self._apply_workspace_preset(target),
+                )
+            )
+
+        for collection in self._library_store.list_collections():
+            commands.append(
+                PaletteCommand(
+                    id=f"collection.{collection.id}",
+                    title=f"Open Collection: {collection.name}",
+                    subtitle=collection.description or f"{collection.kind} | {collection.item_count} item(s)",
+                    section="Library",
+                    keywords=("collection", collection.name.casefold(), collection.kind.casefold()),
+                    callback=lambda target=collection.id: self._open_virtual_collection(target),
+                )
+            )
+
+        for root in self._library_store.list_catalog_roots():
+            root_label = Path(root.path).name or root.path
+            commands.append(
+                PaletteCommand(
+                    id=f"catalog.{normalized_path_key(root.path)}",
+                    title=f"Browse Catalog Root: {root_label}",
+                    subtitle=f"{root.indexed_record_count} indexed bundle(s)",
+                    section="Library",
+                    keywords=("catalog", "library", root_label.casefold()),
+                    callback=lambda target=root.path: self._browse_catalog(root_path_override=target),
+                )
+            )
+
+        for destination in self._recent_destination_paths(exclude_current_folder=True)[:6]:
+            label = Path(destination).name or destination
+            commands.append(
+                PaletteCommand(
+                    id=f"recent.move.{normalized_path_key(destination)}",
+                    title=f"Move Selection To Recent Folder: {label}",
+                    subtitle=destination,
+                    section="Review",
+                    keywords=("recent folder", "move recent", "destination"),
+                    callback=lambda target=destination: self._move_selected_records_to_destination(target),
+                )
+            )
+
+        if context == "preview" and self.preview.isVisible():
+            focused_path = self.preview.focused_path()
+            photoshop_path = self.preview.focused_photoshop_path()
+            commands.extend(
+                [
+                    PaletteCommand(
+                        id="preview.close",
+                        title="Close Preview",
+                        subtitle="Close the preview window",
+                        section="Preview",
+                        shortcut="Esc",
+                        keywords=("close viewer", "exit preview"),
+                        callback=self.preview.close,
+                    ),
+                    PaletteCommand(
+                        id="preview.previous",
+                        title="Previous Image",
+                        subtitle="Move to the previous visible image",
+                        section="Preview",
+                        keywords=("previous", "back", "left"),
+                        callback=lambda: self.preview.navigate_relative(-1),
+                    ),
+                    PaletteCommand(
+                        id="preview.next",
+                        title="Next Image",
+                        subtitle="Move to the next visible image",
+                        section="Preview",
+                        keywords=("next", "forward", "right"),
+                        callback=lambda: self.preview.navigate_relative(1),
+                    ),
+                    PaletteCommand(
+                        id="preview.compare",
+                        title="Toggle Compare Mode",
+                        subtitle=self._toggle_state_text(self.preview.compare_mode_enabled()),
+                        section="Preview",
+                        shortcut="C",
+                        keywords=("compare", "compare mode"),
+                        callback=self.preview.toggle_compare_mode,
+                    ),
+                    PaletteCommand(
+                        id="preview.zoom",
+                        title="Toggle Zoom",
+                        subtitle="Switch between fit and manual zoom",
+                        section="Preview",
+                        shortcut="Z",
+                        keywords=("zoom", "magnify"),
+                        callback=self.preview.toggle_zoom_command,
+                    ),
+                    PaletteCommand(
+                        id="preview.fit",
+                        title="Fit To Screen",
+                        subtitle="Return the preview to fit mode",
+                        section="Preview",
+                        shortcut="0",
+                        keywords=("fit", "fit screen", "reset zoom"),
+                        callback=self.preview.fit_to_screen,
+                    ),
+                    PaletteCommand(
+                        id="preview.loupe",
+                        title="Toggle Loupe",
+                        subtitle="Enable or disable the loupe overlay",
+                        section="Preview",
+                        shortcut="L",
+                        keywords=("loupe", "magnifier"),
+                        callback=self.preview.toggle_loupe_command,
+                    ),
+                    PaletteCommand(
+                        id="preview.focus_assist",
+                        title="Toggle Focus Assist",
+                        subtitle=(
+                            f"{self._toggle_state_text(self.preview.focus_assist_enabled())}"
+                            f" | {self.preview.focus_assist_color().label}"
+                            f" | {self.preview.focus_assist_strength().label}"
+                        ),
+                        section="Preview",
+                        shortcut="F",
+                        keywords=("focus assist", "focus", "inspection", "detail", "sensitivity"),
+                        callback=self.preview.toggle_focus_assist_command,
+                    ),
+                    PaletteCommand(
+                        id="preview.focus_assist_background",
+                        title="Toggle Focus Assist Background Filter",
+                        subtitle="Dimmed background" if self.preview.focus_assist_dim_background() else "Original image background",
+                        section="Preview",
+                        keywords=("focus assist", "background", "filter", "dim background", "overlay"),
+                        callback=self.preview.toggle_focus_assist_background_command,
+                    ),
+                ]
+            )
+            for color in FOCUS_ASSIST_COLORS:
+                commands.append(
+                    PaletteCommand(
+                        id=f"preview.focus_assist_color.{color.id}",
+                        title=f"Set Focus Assist Color: {color.label}",
+                        subtitle=(
+                            "Current color"
+                            if self.preview.focus_assist_color().id == color.id
+                            else "Switch focus peaking color"
+                        ),
+                        section="Preview",
+                        keywords=("focus assist", "focus peaking", "color", color.label.casefold()),
+                        callback=lambda color_id=color.id: self.preview.set_focus_assist_color_by_id(color_id),
+                    )
+                )
+            for strength in FOCUS_ASSIST_STRENGTHS:
+                commands.append(
+                    PaletteCommand(
+                        id=f"preview.focus_assist_strength.{strength.id}",
+                        title=f"Set Focus Assist Sensitivity: {strength.label}",
+                        subtitle=(
+                            "Current sensitivity"
+                            if self.preview.focus_assist_strength().id == strength.id
+                            else "Adjust focus peaking sensitivity"
+                        ),
+                        section="Preview",
+                        keywords=("focus assist", "focus peaking", "sensitivity", strength.label.casefold()),
+                        callback=lambda strength_id=strength.id: self.preview.set_focus_assist_strength_by_id(strength_id),
+                    )
+                )
+            if focused_path:
+                commands.extend(
+                    [
+                        PaletteCommand(
+                            id="preview.rename",
+                            title="Rename Focused Image...",
+                            subtitle="Rename the focused image bundle",
+                            section="Preview",
+                            shortcut="F2",
+                            keywords=("rename", "filename"),
+                            callback=lambda path=focused_path: self._handle_preview_rename_requested(path),
+                        ),
+                        PaletteCommand(
+                            id="preview.accept",
+                            title="Accept Focused Image",
+                            subtitle="Mark the focused preview image as accepted",
+                            section="Preview",
+                            shortcut="W",
+                            keywords=("accept", "winner", "approve"),
+                            callback=lambda path=focused_path: self._handle_preview_winner_requested(path),
+                        ),
+                        PaletteCommand(
+                            id="preview.reject",
+                            title="Reject Focused Image",
+                            subtitle="Mark the focused preview image as rejected",
+                            section="Preview",
+                            shortcut="X",
+                            keywords=("reject", "decline"),
+                            callback=lambda path=focused_path: self._handle_preview_reject_requested(path),
+                        ),
+                        PaletteCommand(
+                            id="preview.keep",
+                            title="Move Focused Image To _keep",
+                            subtitle="Send the focused preview image to the keep folder",
+                            section="Preview",
+                            shortcut="K",
+                            keywords=("keep", "_keep"),
+                            callback=lambda path=focused_path: self._handle_preview_keep_requested(path),
+                        ),
+                        PaletteCommand(
+                            id="preview.move",
+                            title="Move Focused Image...",
+                            subtitle="Move the focused preview image to another folder",
+                            section="Preview",
+                            shortcut="M",
+                            keywords=("move", "relocate"),
+                            callback=lambda path=focused_path: self._handle_preview_move_requested(path),
+                        ),
+                        PaletteCommand(
+                            id="preview.delete",
+                            title="Delete Focused Image",
+                            subtitle="Delete the focused preview image",
+                            section="Preview",
+                            shortcut="Delete",
+                            keywords=("delete", "trash", "remove"),
+                            callback=lambda path=focused_path: self._handle_preview_delete_requested(path),
+                        ),
+                        PaletteCommand(
+                            id="preview.tag",
+                            title="Tag Focused Image",
+                            subtitle="Edit tags for the focused preview image",
+                            section="Preview",
+                            shortcut="T",
+                            keywords=("tag", "keywords"),
+                            callback=lambda path=focused_path: self._handle_preview_tag_requested(path),
+                        ),
+                    ]
+                )
+            if photoshop_path and self._photoshop_executable:
+                commands.append(
+                    PaletteCommand(
+                        id="preview.photoshop",
+                        title="Open Focused Image In Photoshop",
+                        subtitle="Send the focused preview image to Photoshop",
+                        section="Preview",
+                        keywords=("photoshop", "edit"),
+                        callback=lambda path=photoshop_path: self._open_preview_image_in_photoshop(path),
+                    )
+                )
+
+        return commands
+
+    def _preset_subtitle(self, preset: SavedFilterPreset) -> str:
+        labels = active_filter_labels(preset.query)
+        if not labels:
+            return "All images"
+        return " | ".join(labels[:3])
+
+    @staticmethod
+    def _clean_command_text(text: str) -> str:
+        return (text or "").replace("&", "").replace("...", "").strip()
+
+    @staticmethod
+    def _toggle_state_text(enabled: bool) -> str:
+        return "On" if enabled else "Off"
+
+    def _remember_recent_command(self, command_id: str) -> None:
+        self._recent_command_ids = [command_id, *[item for item in self._recent_command_ids if item != command_id]][:12]
+        self._save_recent_command_ids()
+
+    def _matching_saved_filter_preset(self, query: RecordFilterQuery | None = None) -> SavedFilterPreset | None:
+        target = query or self._filter_query
+        for preset in self._saved_filter_presets:
+            if preset.query == target:
+                return preset
+        return None
+
+    def _matching_filter_preset_label(self, query: RecordFilterQuery | None = None) -> str:
+        target = query or self._filter_query
+        saved = self._matching_saved_filter_preset(target)
+        if saved is not None:
+            return saved.name
+        for preset in builtin_filter_presets():
+            if preset.query == target:
+                return preset.name
+        return ""
+
+    def _copy_filter_query(self, query: RecordFilterQuery) -> RecordFilterQuery:
+        return RecordFilterQuery(
+            quick_filter=query.quick_filter,
+            search_text=query.search_text,
+            file_type=query.file_type,
+            review_state=query.review_state,
+            ai_state=query.ai_state,
+            review_round=query.review_round,
+            camera_text=query.camera_text,
+            lens_text=query.lens_text,
+            tag_text=query.tag_text,
+            min_rating=query.min_rating,
+            orientation=query.orientation,
+            captured_after=query.captured_after,
+            captured_before=query.captured_before,
+            iso_min=query.iso_min,
+            iso_max=query.iso_max,
+            focal_min=query.focal_min,
+            focal_max=query.focal_max,
+        )
+
+    def _apply_filter_preset(self, preset: SavedFilterPreset) -> None:
+        self._filter_query = self._copy_filter_query(preset.query)
+        self._pending_search_text = self._filter_query.search_text
+        self._apply_filter_query_change()
+        self.statusBar().showMessage(f"Applied saved search: {preset.name}")
+
+    def _save_current_filter_preset(self) -> None:
+        if not self._filter_query.has_active_filters:
+            self.statusBar().showMessage("Set a search or filter before saving a preset")
+            return
+
+        existing = self._matching_saved_filter_preset()
+        initial_name = existing.name if existing is not None else self._matching_filter_preset_label(self._filter_query)
+        name, accepted = QInputDialog.getText(self, "Save Current Search", "Preset name", text=initial_name)
+        if not accepted:
+            return
+        name = (name or "").strip()
+        if not name:
+            return
+
+        existing_index = next(
+            (index for index, preset in enumerate(self._saved_filter_presets) if preset.name.casefold() == name.casefold()),
+            None,
+        )
+        if existing_index is not None:
+            overwrite = QMessageBox.question(
+                self,
+                "Overwrite Saved Search",
+                f"A saved search named '{self._saved_filter_presets[existing_index].name}' already exists. Overwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if overwrite != QMessageBox.StandardButton.Yes:
+                return
+            self._saved_filter_presets[existing_index] = SavedFilterPreset(name=name, query=self._copy_filter_query(self._filter_query))
+        else:
+            self._saved_filter_presets.append(SavedFilterPreset(name=name, query=self._copy_filter_query(self._filter_query)))
+
+        self._save_saved_filter_presets()
+        self._refresh_filter_toolbar_menu()
+        self._update_filter_summary()
+        self._update_action_states()
+        self.statusBar().showMessage(f"Saved search: {name}")
+
+    def _delete_current_filter_preset(self) -> None:
+        preset = self._matching_saved_filter_preset()
+        if preset is None:
+            self.statusBar().showMessage("The current filter state is not one of your saved searches")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Delete Saved Search",
+            f"Delete the saved search '{preset.name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        self._saved_filter_presets = [item for item in self._saved_filter_presets if item.name.casefold() != preset.name.casefold()]
+        self._save_saved_filter_presets()
+        self._refresh_filter_toolbar_menu()
+        self._update_filter_summary()
+        self._update_action_states()
+        self.statusBar().showMessage(f"Deleted saved search: {preset.name}")
+
     def _handle_system_color_scheme_changed(self) -> None:
         if self._appearance_mode == AppearanceMode.AUTO:
             self._apply_appearance()
@@ -409,12 +1871,22 @@ class MainWindow(QMainWindow):
         self._theme = resolve_theme(self._appearance_mode, app)
         app.setPalette(build_app_palette(self._theme))
         app.setStyleSheet(build_app_stylesheet(self._theme))
+        self._write_child_sync_state()
         self._update_dynamic_action_icons()
         if self.workspace_docks is not None:
             self.workspace_docks.apply_theme(self._theme)
         self.grid.apply_theme(self._theme)
         self.preview.apply_theme(self._theme)
+        self._refresh_mode_tabs_width()
         self._update_action_states()
+
+    def _refresh_mode_tabs_width(self) -> None:
+        self.mode_tabs.ensurePolished()
+        self.mode_tabs.adjustSize()
+        target_width = max(self.mode_tabs.sizeHint().width(), self.mode_tabs.minimumSizeHint().width())
+        target_width += 10
+        self.mode_tabs.setMinimumWidth(target_width)
+        self.mode_tabs.setMaximumWidth(target_width)
 
     def _update_dynamic_action_icons(self) -> None:
         if self.actions is None or self._theme is None:
@@ -426,6 +1898,95 @@ class MainWindow(QMainWindow):
                 pixel_size=18,
             )
         )
+
+    def _prepare_child_sync_state_path(self) -> Path:
+        base_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
+        if not base_dir:
+            base_dir = str(Path.home() / "AppData" / "Local" / "ImageTriage")
+        sync_dir = Path(base_dir) / "child_sync"
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        return sync_dir / f"host_state_{os.getpid()}.json"
+
+    def _current_child_appearance_mode(self) -> str:
+        if self._theme is not None:
+            return self._theme.name
+        return self._appearance_mode.value
+
+    def _write_child_sync_state(self, *, shutdown_requested: bool = False) -> None:
+        payload = {
+            "parent_pid": os.getpid(),
+            "appearance_mode": self._current_child_appearance_mode(),
+            "shutdown_requested": shutdown_requested,
+            "updated_at": time.time(),
+        }
+        temp_path = self._child_sync_state_path.with_suffix(".tmp")
+        try:
+            temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temp_path.replace(self._child_sync_state_path)
+        except OSError:
+            pass
+
+    def _register_child_process(self, process: subprocess.Popen[str], *, name: str) -> None:
+        pid = int(getattr(process, "pid", 0) or 0)
+        if pid <= 0:
+            return
+        self._child_processes[pid] = ChildAppProcess(name=name, process=process)
+        self._prune_child_processes()
+
+    def _prune_child_processes(self) -> None:
+        finished = [
+            pid
+            for pid, child in self._child_processes.items()
+            if child.process.poll() is not None
+        ]
+        for pid in finished:
+            self._child_processes.pop(pid, None)
+
+    def _shutdown_child_processes(self) -> None:
+        self._prune_child_processes()
+        if not self._child_processes:
+            return
+
+        self._write_child_sync_state(shutdown_requested=True)
+        graceful_deadline = time.monotonic() + 1.5
+        while self._child_processes and time.monotonic() < graceful_deadline:
+            QApplication.processEvents()
+            self._prune_child_processes()
+            if self._child_processes:
+                time.sleep(0.05)
+
+        for child in list(self._child_processes.values()):
+            if child.process.poll() is None:
+                try:
+                    child.process.terminate()
+                except OSError:
+                    continue
+
+        forced_deadline = time.monotonic() + 1.0
+        while self._child_processes and time.monotonic() < forced_deadline:
+            QApplication.processEvents()
+            self._prune_child_processes()
+            if self._child_processes:
+                time.sleep(0.05)
+
+        for child in list(self._child_processes.values()):
+            if child.process.poll() is None:
+                try:
+                    child.process.kill()
+                except OSError:
+                    continue
+
+        self._prune_child_processes()
+
+    def _cleanup_child_sync_state(self) -> None:
+        try:
+            self._child_process_timer.stop()
+        except RuntimeError:
+            pass
+        try:
+            self._child_sync_state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _apply_default_workspace(self) -> None:
         if self.workspace_docks is None:
@@ -454,6 +2015,8 @@ class MainWindow(QMainWindow):
         self._restore_ai_results()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._shutdown_child_processes()
+        self._cleanup_child_sync_state()
         self._save_window_state()
         super().closeEvent(event)
 
@@ -543,6 +2106,80 @@ class MainWindow(QMainWindow):
         if isinstance(folder, str) and os.path.isdir(folder):
             self._select_folder(folder)
 
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.folder_tree.viewport():
+            handled = self._handle_record_drop_event(event, source="folder_tree")
+            if handled is not None:
+                return handled
+        if watched is self.favorites_list.viewport():
+            handled = self._handle_record_drop_event(event, source="favorites")
+            if handled is not None:
+                return handled
+        return super().eventFilter(watched, event)
+
+    def _handle_record_drop_event(self, event, *, source: str) -> bool | None:
+        event_type = event.type()
+        if event_type not in {
+            QEvent.Type.DragEnter,
+            QEvent.Type.DragMove,
+            QEvent.Type.DragLeave,
+            QEvent.Type.Drop,
+        }:
+            return None
+        if event_type == QEvent.Type.DragLeave:
+            return False
+
+        paths = ThumbnailGridView.dragged_record_paths_from_mime(event.mimeData())
+        if not paths:
+            return None
+
+        point = event.position().toPoint()
+        destination_folder = (
+            self._folder_drop_target(point)
+            if source == "folder_tree"
+            else self._favorite_drop_target(point)
+        )
+        if not destination_folder or not self._can_accept_record_drop(destination_folder):
+            event.ignore()
+            return True
+
+        copy_requested = self._drag_drop_prefers_copy(event)
+        event.setDropAction(Qt.DropAction.CopyAction if copy_requested else Qt.DropAction.MoveAction)
+        if event_type == QEvent.Type.Drop:
+            event.accept()
+            self._handle_record_drop(paths, destination_folder, copy_requested=copy_requested)
+            return True
+
+        event.accept()
+        return True
+
+    def _folder_drop_target(self, point) -> str:
+        index = self.folder_tree.indexAt(point)
+        if not index.isValid():
+            return ""
+        folder = self.folder_model.filePath(index)
+        return folder if folder and os.path.isdir(folder) else ""
+
+    def _favorite_drop_target(self, point) -> str:
+        item = self.favorites_list.itemAt(point)
+        if item is None:
+            return ""
+        folder = item.data(Qt.ItemDataRole.UserRole)
+        return folder if isinstance(folder, str) and os.path.isdir(folder) else ""
+
+    def _drag_drop_prefers_copy(self, event) -> bool:
+        modifiers = QApplication.keyboardModifiers()
+        if hasattr(event, "keyboardModifiers"):
+            modifiers = event.keyboardModifiers()
+        return bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+
+    def _can_accept_record_drop(self, destination_folder: str) -> bool:
+        if not destination_folder or not os.path.isdir(destination_folder):
+            return False
+        if not self._current_folder:
+            return False
+        return normalized_path_key(destination_folder) != normalized_path_key(self._current_folder)
+
     def _show_folder_tree_context_menu(self, point) -> None:
         index = self.folder_tree.indexAt(point)
         if not index.isValid():
@@ -565,9 +2202,19 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         open_action = menu.addAction("Open")
         explorer_action = menu.addAction("Open In File Explorer")
-        rename_action = menu.addAction("Rename...")
         menu.addSeparator()
+        new_folder_action = menu.addAction("New Folder...")
+        extract_archive_action = menu.addAction("Extract Archive Here...")
+        rename_action = menu.addAction("Rename...")
+        move_action = menu.addAction("Move Folder...")
+        delete_action = menu.addAction("Delete Folder...")
+        menu.addSeparator()
+        catalog_action = menu.addAction("Remove From Catalog" if self._library_store.is_catalog_root(folder) else "Add To Catalog")
         favorite_action = menu.addAction("Remove From Favorites" if is_favorite else "Add To Favorites")
+        can_modify = not self._is_filesystem_root(folder)
+        rename_action.setEnabled(can_modify)
+        move_action.setEnabled(can_modify)
+        delete_action.setEnabled(can_modify)
 
         chosen = menu.exec(global_pos)
         if chosen is None:
@@ -578,8 +2225,30 @@ class MainWindow(QMainWindow):
         if chosen == explorer_action:
             open_in_file_explorer(folder)
             return
+        if chosen == new_folder_action:
+            self._create_folder_prompt(folder, select_created=True)
+            return
+        if chosen == extract_archive_action:
+            self._extract_archive_into_folder_prompt(folder)
+            return
         if chosen == rename_action:
             self._rename_folder(folder)
+            return
+        if chosen == move_action:
+            self._move_folder_prompt(folder)
+            return
+        if chosen == delete_action:
+            self._delete_folder_prompt(folder)
+            return
+        if chosen == catalog_action:
+            if self._library_store.is_catalog_root(folder):
+                self._library_store.remove_catalog_root(folder)
+                self._refresh_catalog_menu()
+                self.statusBar().showMessage(f"Removed catalog root: {Path(folder).name}")
+            else:
+                self._library_store.add_catalog_root(folder)
+                self._refresh_catalog_menu()
+                self._start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for catalog...")
             return
         if chosen == favorite_action:
             if is_favorite:
@@ -587,8 +2256,91 @@ class MainWindow(QMainWindow):
             else:
                 self._add_favorite(folder)
 
+    @staticmethod
+    def _is_filesystem_root(folder: str) -> bool:
+        path = Path(folder)
+        return str(path.parent) == str(path)
+
+    @staticmethod
+    def _folder_is_same_or_descendant(path: str, root_folder: str) -> bool:
+        try:
+            resolved_path = Path(path).resolve(strict=False)
+            resolved_root = Path(root_folder).resolve(strict=False)
+            resolved_path.relative_to(resolved_root)
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def _remap_folder_path(cls, path: str, source_root: str, destination_root: str) -> str:
+        if not cls._folder_is_same_or_descendant(path, source_root):
+            return path
+        resolved_path = Path(path).resolve(strict=False)
+        resolved_root = Path(source_root).resolve(strict=False)
+        relative = resolved_path.relative_to(resolved_root)
+        if not relative.parts:
+            return destination_root
+        return str(Path(destination_root) / relative)
+
+    def _remap_folder_references(self, source_root: str, destination_root: str) -> str:
+        favorites: list[str] = []
+        seen_favorites: set[str] = set()
+        for path in self._favorites:
+            mapped = self._remap_folder_path(path, source_root, destination_root)
+            if not os.path.isdir(mapped):
+                continue
+            key = normalized_path_key(mapped)
+            if key in seen_favorites:
+                continue
+            seen_favorites.add(key)
+            favorites.append(mapped)
+        self._favorites = favorites
+        self._save_favorites()
+        self._refresh_favorites_panel()
+
+        recent_destinations: list[str] = []
+        seen_destinations: set[str] = set()
+        for path in self._recent_destinations:
+            mapped = self._remap_folder_path(path, source_root, destination_root)
+            if not os.path.isdir(mapped):
+                continue
+            key = normalized_path_key(mapped)
+            if key in seen_destinations:
+                continue
+            seen_destinations.add(key)
+            recent_destinations.append(mapped)
+        self._recent_destinations = recent_destinations[:10]
+        self._save_recent_destinations()
+
+        if self._current_folder and self._folder_is_same_or_descendant(self._current_folder, source_root):
+            return self._remap_folder_path(self._current_folder, source_root, destination_root)
+        return destination_root
+
+    def _create_folder_prompt(self, parent_folder: str, *, select_created: bool) -> str | None:
+        folder_name, accepted = QInputDialog.getText(
+            self,
+            "New Folder",
+            "Folder name",
+            text="New Folder",
+        )
+        if not accepted:
+            return None
+        folder_name = (folder_name or "").strip()
+        if not folder_name:
+            return None
+        try:
+            created = create_folder(parent_folder, folder_name)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Create Folder Failed", f"Could not create folder.\n\n{exc}")
+            return None
+        self._remember_recent_destination(created)
+        self._refresh_folder_tree()
+        if select_created:
+            self._select_folder(created)
+        self.statusBar().showMessage(f"Created folder: {Path(created).name}")
+        return created
+
     def _rename_folder(self, folder: str) -> None:
-        parent = str(Path(folder).parent)
         current_name = Path(folder).name
         new_name, accepted = QInputDialog.getText(
             self,
@@ -601,25 +2353,1063 @@ class MainWindow(QMainWindow):
         new_name = (new_name or "").strip()
         if not new_name or new_name == current_name:
             return
-        destination = os.path.join(parent, new_name)
-        if os.path.exists(destination):
-            QMessageBox.warning(self, "Rename Failed", f"A folder named '{new_name}' already exists.")
-            return
         try:
-            os.rename(folder, destination)
-        except OSError as exc:
+            destination = rename_folder(folder, new_name)
+        except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Rename Failed", f"Could not rename folder.\n\n{exc}")
             return
-        if folder in self._favorites:
-            self._favorites = [destination if path == folder else path for path in self._favorites]
-            self._save_favorites()
-            self._refresh_favorites_panel()
-        if self._current_folder == folder or self._current_folder.startswith(folder + os.sep):
-            suffix = self._current_folder[len(folder):]
-            self._current_folder = destination + suffix
+        target_folder = self._remap_folder_references(folder, destination)
         self._refresh_folder_tree()
-        self._select_folder(destination)
+        self._select_folder(target_folder if os.path.isdir(target_folder) else destination)
         self.statusBar().showMessage(f"Renamed folder to {new_name}")
+
+    def _move_folder_prompt(self, folder: str) -> None:
+        destination_parent = QFileDialog.getExistingDirectory(
+            self,
+            "Move Folder",
+            str(Path(folder).parent),
+        )
+        if not destination_parent:
+            return
+        try:
+            destination = move_folder(folder, destination_parent)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Move Folder Failed", f"Could not move folder.\n\n{exc}")
+            return
+        target_folder = self._remap_folder_references(folder, destination)
+        self._remember_recent_destination(str(Path(destination).parent))
+        self._refresh_folder_tree()
+        self._select_folder(target_folder if os.path.isdir(target_folder) else destination)
+        self.statusBar().showMessage(f"Moved folder to {destination}")
+
+    def _delete_folder_prompt(self, folder: str) -> None:
+        if self._is_filesystem_root(folder):
+            return
+        try:
+            has_contents = any(Path(folder).iterdir())
+        except OSError as exc:
+            QMessageBox.warning(self, "Delete Failed", f"Could not inspect folder.\n\n{exc}")
+            return
+
+        message = f"Delete the empty folder '{Path(folder).name}'?"
+        if has_contents:
+            message = (
+                f"Delete the folder '{Path(folder).name}' and everything inside it?\n\n"
+                "This will permanently remove all contents."
+            )
+        confirmation = QMessageBox.question(
+            self,
+            "Delete Folder",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            delete_folder(folder)
+        except OSError as exc:
+            QMessageBox.warning(self, "Delete Failed", f"Could not delete folder.\n\n{exc}")
+            return
+
+        deleted_key = normalized_path_key(folder)
+        self._favorites = [
+            path
+            for path in self._favorites
+            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
+        ]
+        self._save_favorites()
+        self._refresh_favorites_panel()
+        self._recent_destinations = [
+            path
+            for path in self._recent_destinations
+            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
+        ]
+        self._save_recent_destinations()
+
+        replacement_folder = str(Path(folder).parent)
+        self._refresh_folder_tree()
+        if self._current_folder and (
+            normalized_path_key(self._current_folder) == deleted_key
+            or normalized_path_key(self._current_folder).startswith(deleted_key + os.sep)
+        ):
+            if os.path.isdir(replacement_folder):
+                self._select_folder(replacement_folder)
+            else:
+                self._current_folder = ""
+                self._set_scope_state(kind="folder", scope_id="", label="")
+                self._apply_loaded_records([])
+        self.statusBar().showMessage(f"Deleted folder: {Path(folder).name}")
+
+    def _open_batch_rename_dialog(
+        self,
+        records: list[ImageRecord],
+        *,
+        title: str,
+        scope_label: str,
+        folder: str,
+    ) -> bool:
+        if not records:
+            return False
+        dialog = BatchRenameDialog(records, title=title, scope_label=scope_label, parent=self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        preview = dialog.accepted_preview()
+        if not preview.can_apply:
+            return False
+        return self._apply_batch_rename_preview(preview, folder=folder)
+
+    def _open_resize_dialog(
+        self,
+        sources: list[ResizeSourceItem],
+        *,
+        title: str,
+        scope_label: str,
+        show_preview: bool | None = None,
+        raw_note: str = "",
+    ) -> bool:
+        if not sources:
+            return False
+        dialog = ResizeDialog(
+            sources,
+            title=title,
+            scope_label=scope_label,
+            show_preview=show_preview,
+            raw_note=raw_note,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        plan = dialog.accepted_plan()
+        if not plan.can_apply:
+            return False
+        options = dialog.accepted_options()
+        return self._apply_resize_plan(
+            plan,
+            options,
+            refresh_folder=self._resize_refresh_folder(plan),
+        )
+
+    def _open_convert_dialog(
+        self,
+        sources: list[ConvertSourceItem],
+        *,
+        title: str,
+        scope_label: str,
+        show_preview: bool | None = None,
+        raw_note: str = "",
+    ) -> bool:
+        if not sources:
+            return False
+        dialog = ConvertDialog(
+            sources,
+            title=title,
+            scope_label=scope_label,
+            show_preview=show_preview,
+            raw_note=raw_note,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        plan = dialog.accepted_plan()
+        if not plan.can_apply:
+            return False
+        options = dialog.accepted_options()
+        return self._apply_convert_plan(
+            plan,
+            options,
+            refresh_folder=self._resize_refresh_folder(plan),
+        )
+
+    def _apply_batch_rename_preview(self, preview: BatchRenamePreview, *, folder: str) -> bool:
+        if not preview.planned_moves:
+            return False
+        if self._active_batch_rename_task is not None:
+            QMessageBox.information(self, "Batch Rename Running", "A batch rename is already in progress.")
+            return False
+        renamed_items = [item for item in preview.items if item.status == "Rename"]
+        is_current_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        loaded_annotations: dict[str, SessionAnnotation] = {}
+        if not is_current_folder:
+            loaded_annotations = self._decision_store.load_annotations(self._session_id, [item.record for item in renamed_items])
+        self._batch_rename_context = BatchRenameExecutionContext(
+            preview=preview,
+            folder=folder,
+            is_current_folder=is_current_folder,
+            loaded_annotations=loaded_annotations,
+            current_path_before=self._current_visible_record_path() if is_current_folder else None,
+        )
+        task = BatchRenameApplyTask(preview.planned_moves)
+        task.signals.started.connect(self._handle_batch_rename_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_batch_rename_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_batch_rename_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_batch_rename_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_batch_rename_task = task
+        self._batch_rename_pool.start(task)
+        self.statusBar().showMessage(f"Applying batch rename for {len(renamed_items)} image bundle(s)...")
+        return True
+
+    def _resize_refresh_folder(self, plan: ResizePlan | ConvertPlan) -> str:
+        if not self._current_folder:
+            return ""
+        current_folder_key = normalized_path_key(self._current_folder)
+        for item in plan.executable_items:
+            source_folder = str(Path(item.source.source_path).parent)
+            target_folder = str(Path(item.target_path).parent)
+            if normalized_path_key(source_folder) == current_folder_key:
+                return self._current_folder
+            if normalized_path_key(target_folder) == current_folder_key:
+                return self._current_folder
+        return ""
+
+    def _apply_resize_plan(
+        self,
+        plan: ResizePlan,
+        options: ResizeOptions,
+        *,
+        refresh_folder: str = "",
+    ) -> bool:
+        if not plan.executable_items:
+            return False
+        if self._active_resize_task is not None:
+            QMessageBox.information(self, "Resize Running", "A resize task is already in progress.")
+            return False
+        dialog = self._show_resize_progress_dialog(max(1, len(plan.executable_items)))
+        dialog.setLabelText("Preparing resize...")
+        QApplication.processEvents()
+        self._resize_context = ResizeExecutionContext(
+            plan=plan,
+            options=options,
+            refresh_folder=refresh_folder,
+        )
+        task = ResizeApplyTask(plan, options)
+        task.signals.started.connect(self._handle_resize_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_resize_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_resize_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_resize_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_resize_task = task
+        self._resize_pool.start(task)
+        self.statusBar().showMessage(f"Applying resize for {len(plan.executable_items)} image(s)...")
+        return True
+
+    def _apply_convert_plan(
+        self,
+        plan: ConvertPlan,
+        options: ConvertOptions,
+        *,
+        refresh_folder: str = "",
+    ) -> bool:
+        if not plan.executable_items:
+            return False
+        if self._active_convert_task is not None:
+            QMessageBox.information(self, "Convert Running", "A convert task is already in progress.")
+            return False
+        dialog = self._show_convert_progress_dialog(max(1, len(plan.executable_items)))
+        dialog.setLabelText("Preparing conversion...")
+        QApplication.processEvents()
+        self._convert_context = ConvertExecutionContext(
+            plan=plan,
+            options=options,
+            refresh_folder=refresh_folder,
+        )
+        task = ConvertApplyTask(plan, options)
+        task.signals.started.connect(self._handle_convert_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_convert_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_convert_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_convert_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_convert_task = task
+        self._convert_pool.start(task)
+        self.statusBar().showMessage(f"Applying convert for {len(plan.executable_items)} image(s)...")
+        return True
+
+    def _workflow_refresh_folder(self, plan: WorkflowExportPlan) -> str:
+        if not self._current_folder:
+            return ""
+        current_folder_key = normalized_path_key(self._current_folder)
+        for item in plan.executable_items:
+            target_folder = str(Path(item.target_path).parent)
+            if normalized_path_key(target_folder) == current_folder_key:
+                return self._current_folder
+        return ""
+
+    def _start_workflow_export_task(self, plan: WorkflowExportPlan) -> bool:
+        if not plan.executable_items:
+            return False
+        if self._active_workflow_export_task is not None:
+            QMessageBox.information(self, "Workflow Running", "A deliver / handoff export is already in progress.")
+            return False
+        dialog = self._show_workflow_progress_dialog(max(1, len(plan.executable_items)))
+        dialog.setLabelText("Preparing workflow export...")
+        QApplication.processEvents()
+        destination_root = plan.destination_dir
+        if plan.recipe.destination_subfolder:
+            destination_root = str(Path(plan.destination_dir).parent)
+        self._workflow_context = WorkflowExecutionContext(
+            recipe=plan.recipe,
+            action="export",
+            destination_root=destination_root,
+            destination_dir=plan.destination_dir,
+            refresh_folder=self._workflow_refresh_folder(plan),
+            archive_after_export=plan.recipe.archive_after_export,
+            archive_format=plan.recipe.archive_format,
+        )
+        task = WorkflowExportTask(plan)
+        task.signals.started.connect(self._handle_workflow_export_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_workflow_export_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_workflow_export_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_workflow_export_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_workflow_export_task = task
+        self._workflow_export_pool.start(task)
+        self.statusBar().showMessage(f"Running workflow recipe: {plan.recipe.name}")
+        return True
+
+    def _handle_workflow_export_started(self, total_steps: int) -> None:
+        dialog = self._show_workflow_progress_dialog(total_steps)
+        dialog.setLabelText("Preparing workflow export...")
+
+    def _handle_workflow_export_progress(self, current: int, total: int, message: str) -> None:
+        dialog = self._show_workflow_progress_dialog(total)
+        dialog.setRange(0, max(1, total))
+        dialog.setValue(min(max(current, 0), max(1, total)))
+        dialog.setLabelText(message or "Saving workflow outputs...")
+
+    def _handle_workflow_export_finished(self, written_paths: object) -> None:
+        context = self._workflow_context
+        written = tuple(path for path in written_paths if isinstance(path, str)) if isinstance(written_paths, (list, tuple)) else ()
+        dialog = self._workflow_progress_dialog
+        if dialog is not None and context is not None and (context.refresh_folder or context.archive_after_export):
+            dialog.setRange(0, 0)
+            dialog.setValue(0)
+            if context.archive_after_export:
+                dialog.setLabelText("Packaging archive...")
+            else:
+                dialog.setLabelText("Refreshing library...")
+            QApplication.processEvents()
+
+        self._active_workflow_export_task = None
+        self._workflow_context = None
+        self._close_workflow_progress_dialog()
+
+        if context is None:
+            self.statusBar().showMessage(f"Exported {len(written)} image(s)")
+            return
+
+        if context.destination_dir:
+            self._remember_recent_destination(context.destination_dir)
+        elif context.destination_root:
+            self._remember_recent_destination(context.destination_root)
+
+        if context.archive_after_export and written:
+            archive_path = self._workflow_archive_path(context.recipe, context.destination_root or context.destination_dir)
+            if archive_path:
+                self._start_archive_create_task(
+                    written,
+                    archive_path,
+                    archive_key=context.archive_format,
+                    root_dir=context.destination_dir or None,
+                    refresh_folder=context.refresh_folder,
+                    archive_label=f"workflow archive for {context.recipe.name}",
+                )
+                self.statusBar().showMessage(f"Exported {len(written)} image(s), packaging archive...")
+                return
+
+        if context.refresh_folder:
+            self.statusBar().showMessage(f"Exported {len(written)} image(s), refreshing folder...")
+            self._load_folder(context.refresh_folder, force_refresh=True)
+            return
+
+        self.statusBar().showMessage(f"Exported {len(written)} image(s) with recipe: {context.recipe.name}")
+
+    def _handle_workflow_export_failed(self, message: str) -> None:
+        self._active_workflow_export_task = None
+        self._workflow_context = None
+        self._close_workflow_progress_dialog()
+        QMessageBox.warning(self, "Workflow Export Failed", f"Could not apply the workflow export.\n\n{message}")
+
+    def _start_catalog_refresh(self, root_paths: tuple[str, ...] | list[str], *, label: str) -> bool:
+        roots = tuple(normalize_filesystem_path(path) for path in root_paths if normalize_filesystem_path(path))
+        if not roots:
+            return False
+        if self._active_catalog_task is not None:
+            QMessageBox.information(self, "Catalog Refresh Running", "A catalog refresh is already in progress.")
+            return False
+        dialog = self._show_catalog_progress_dialog(max(1, len(roots)))
+        dialog.setLabelText(label)
+        QApplication.processEvents()
+        task = CatalogRefreshTask(roots)
+        task.signals.started.connect(self._handle_catalog_refresh_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_catalog_refresh_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_catalog_refresh_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_catalog_refresh_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_catalog_task = task
+        self._catalog_context = CatalogExecutionContext(root_paths=roots, label=label)
+        self._catalog_pool.start(task)
+        self.statusBar().showMessage(label)
+        return True
+
+    def _handle_catalog_refresh_started(self, total_roots: int) -> None:
+        dialog = self._show_catalog_progress_dialog(total_roots)
+        context = self._catalog_context
+        dialog.setLabelText(context.label if context is not None else "Refreshing global catalog...")
+
+    def _handle_catalog_refresh_progress(self, current: int, total: int, message: str) -> None:
+        dialog = self._show_catalog_progress_dialog(total)
+        dialog.setRange(0, max(1, total))
+        dialog.setValue(min(max(current, 0), max(1, total)))
+        dialog.setLabelText(message or "Refreshing global catalog...")
+
+    def _handle_catalog_refresh_finished(self, result: object) -> None:
+        summary = result if isinstance(result, CatalogRefreshSummary) else None
+        self._active_catalog_task = None
+        self._catalog_context = None
+        self._close_catalog_progress_dialog()
+        self._refresh_catalog_menu()
+        if summary is None:
+            self.statusBar().showMessage("Catalog refresh complete")
+            return
+        message = f"Catalog refreshed: {summary.record_count} image bundle(s) across {summary.folder_count} folder(s)"
+        if summary.missing_roots:
+            message = f"{message} | Missing roots: {len(summary.missing_roots)}"
+        self.statusBar().showMessage(message)
+
+    def _handle_catalog_refresh_failed(self, message: str) -> None:
+        self._active_catalog_task = None
+        self._catalog_context = None
+        self._close_catalog_progress_dialog()
+        QMessageBox.warning(self, "Catalog Refresh Failed", f"Could not refresh the global catalog.\n\n{message}")
+
+    def _handle_batch_rename_started(self, total_steps: int) -> None:
+        dialog = self._show_batch_rename_progress_dialog(total_steps)
+        dialog.setLabelText("Preparing batch rename...")
+
+    def _handle_batch_rename_progress(self, current: int, total: int, message: str) -> None:
+        dialog = self._show_batch_rename_progress_dialog(total)
+        dialog.setRange(0, max(1, total))
+        dialog.setValue(min(max(current, 0), max(1, total)))
+        dialog.setLabelText(message or "Applying batch rename...")
+
+    def _handle_batch_rename_finished(self, _applied_moves: object) -> None:
+        context = self._batch_rename_context
+        dialog = self._batch_rename_progress_dialog
+        if dialog is not None:
+            dialog.setRange(0, 0)
+            dialog.setValue(0)
+            dialog.setLabelText("Updating library...")
+            QApplication.processEvents()
+
+        try:
+            if context is not None:
+                self._finalize_batch_rename(context)
+        except Exception as exc:
+            QMessageBox.warning(self, "Batch Rename Finalize Failed", f"The files were renamed, but the library refresh failed.\n\n{exc}")
+        finally:
+            self._active_batch_rename_task = None
+            self._batch_rename_context = None
+            self._close_batch_rename_progress_dialog()
+
+    def _handle_batch_rename_failed(self, message: str) -> None:
+        self._active_batch_rename_task = None
+        self._batch_rename_context = None
+        self._close_batch_rename_progress_dialog()
+        QMessageBox.warning(self, "Batch Rename Failed", f"Could not apply the batch rename.\n\n{message}")
+
+    def _show_batch_rename_progress_dialog(self, total_steps: int) -> QProgressDialog:
+        dialog = self._batch_rename_progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(self)
+            dialog.setWindowTitle("Batch Rename")
+            dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setMinimumWidth(420)
+            self._batch_rename_progress_dialog = dialog
+        dialog.setRange(0, max(1, total_steps))
+        dialog.setValue(0)
+        dialog.show()
+        self._center_window_dialog(dialog)
+        dialog.raise_()
+        return dialog
+
+    def _handle_resize_started(self, total_steps: int) -> None:
+        dialog = self._show_resize_progress_dialog(total_steps)
+        dialog.setLabelText("Preparing resize...")
+
+    def _handle_resize_progress(self, current: int, total: int, message: str) -> None:
+        dialog = self._show_resize_progress_dialog(total)
+        dialog.setRange(0, max(1, total))
+        dialog.setValue(min(max(current, 0), max(1, total)))
+        dialog.setLabelText(message or "Saving resized images...")
+
+    def _handle_resize_finished(self, written_paths: object) -> None:
+        context = self._resize_context
+        written = tuple(path for path in written_paths if isinstance(path, str)) if isinstance(written_paths, (list, tuple)) else ()
+        dialog = self._resize_progress_dialog
+        if dialog is not None and context is not None and context.refresh_folder:
+            dialog.setRange(0, 0)
+            dialog.setValue(0)
+            dialog.setLabelText("Refreshing library...")
+            QApplication.processEvents()
+
+        self._active_resize_task = None
+        self._resize_context = None
+        self._close_resize_progress_dialog()
+
+        if context is not None and context.refresh_folder:
+            self.statusBar().showMessage(f"Resized {len(written)} image(s), refreshing folder...")
+            self._load_folder(context.refresh_folder, force_refresh=True)
+            return
+
+        self.statusBar().showMessage(f"Resized {len(written)} image(s)")
+
+    def _handle_resize_failed(self, message: str) -> None:
+        self._active_resize_task = None
+        self._resize_context = None
+        self._close_resize_progress_dialog()
+        QMessageBox.warning(self, "Resize Failed", f"Could not resize the selected image(s).\n\n{message}")
+
+    def _handle_convert_started(self, total_steps: int) -> None:
+        dialog = self._show_convert_progress_dialog(total_steps)
+        dialog.setLabelText("Preparing conversion...")
+
+    def _handle_convert_progress(self, current: int, total: int, message: str) -> None:
+        dialog = self._show_convert_progress_dialog(total)
+        dialog.setRange(0, max(1, total))
+        dialog.setValue(min(max(current, 0), max(1, total)))
+        dialog.setLabelText(message or "Saving converted images...")
+
+    def _handle_convert_finished(self, written_paths: object) -> None:
+        context = self._convert_context
+        written = tuple(path for path in written_paths if isinstance(path, str)) if isinstance(written_paths, (list, tuple)) else ()
+        dialog = self._convert_progress_dialog
+        if dialog is not None and context is not None and context.refresh_folder:
+            dialog.setRange(0, 0)
+            dialog.setValue(0)
+            dialog.setLabelText("Refreshing library...")
+            QApplication.processEvents()
+
+        self._active_convert_task = None
+        self._convert_context = None
+        self._close_convert_progress_dialog()
+
+        if context is not None and context.refresh_folder:
+            self.statusBar().showMessage(f"Converted {len(written)} image(s), refreshing folder...")
+            self._load_folder(context.refresh_folder, force_refresh=True)
+            return
+
+        self.statusBar().showMessage(f"Converted {len(written)} image(s)")
+
+    def _handle_convert_failed(self, message: str) -> None:
+        self._active_convert_task = None
+        self._convert_context = None
+        self._close_convert_progress_dialog()
+        QMessageBox.warning(self, "Convert Failed", f"Could not convert the selected image(s).\n\n{message}")
+
+    def _handle_archive_started(self, total_steps: int) -> None:
+        context = self._archive_context
+        dialog = self._show_archive_progress_dialog(total_steps, title="Extract Archive" if context and context.mode == "extract" else "Create Archive")
+        dialog.setLabelText("Preparing archive..." if context and context.mode == "create" else "Preparing extraction...")
+
+    def _handle_archive_progress(self, current: int, total: int, message: str) -> None:
+        context = self._archive_context
+        dialog = self._show_archive_progress_dialog(total, title="Extract Archive" if context and context.mode == "extract" else "Create Archive")
+        dialog.setRange(0, max(1, total))
+        dialog.setValue(min(max(current, 0), max(1, total)))
+        if context is not None and context.mode == "extract":
+            dialog.setLabelText(message or "Extracting archive...")
+        else:
+            dialog.setLabelText(message or "Creating archive...")
+
+    def _handle_archive_finished(self, result: object) -> None:
+        context = self._archive_context
+        extracted = tuple(path for path in result if isinstance(path, str)) if isinstance(result, (list, tuple)) else ()
+        created_path = result if isinstance(result, str) else ""
+        dialog = self._archive_progress_dialog
+        if dialog is not None and context is not None and context.refresh_folder:
+            dialog.setRange(0, 0)
+            dialog.setValue(0)
+            dialog.setLabelText("Refreshing library...")
+            QApplication.processEvents()
+
+        self._active_archive_task = None
+        self._archive_context = None
+        self._close_archive_progress_dialog()
+
+        if context is not None and context.mode == "extract":
+            if context.destination_dir:
+                self._remember_recent_destination(context.destination_dir)
+            if context.refresh_folder:
+                self.statusBar().showMessage(f"Extracted {len(extracted)} item(s), refreshing folder...")
+                self._load_folder(context.refresh_folder, force_refresh=True)
+                return
+            self.statusBar().showMessage(f"Extracted {len(extracted)} item(s) to {context.destination_dir}")
+            return
+
+        if created_path:
+            self._remember_recent_destination(str(Path(created_path).parent))
+            label = context.archive_label if context is not None and context.archive_label else "archive"
+            if context is not None and context.refresh_folder:
+                self.statusBar().showMessage(f"Created {label} {Path(created_path).name}, refreshing folder...")
+                self._load_folder(context.refresh_folder, force_refresh=True)
+                return
+            self.statusBar().showMessage(f"Created {label} {Path(created_path).name}")
+            return
+
+        self.statusBar().showMessage("Archive complete")
+
+    def _handle_archive_failed(self, message: str) -> None:
+        context = self._archive_context
+        mode = context.mode if context is not None else "create"
+        archive_label = context.archive_label if context is not None else "archive"
+        self._active_archive_task = None
+        self._archive_context = None
+        self._close_archive_progress_dialog()
+        if mode == "extract":
+            QMessageBox.warning(self, "Extract Archive Failed", f"Could not extract the archive.\n\n{message}")
+            return
+        extra_note = ""
+        if archive_label.startswith("workflow archive") and context is not None and context.destination_dir:
+            extra_note = f"\n\nThe exported files were kept in:\n{context.destination_dir}"
+        QMessageBox.warning(self, "Create Archive Failed", f"Could not create the archive.\n\n{message}{extra_note}")
+
+    def _handle_ai_training_started(self, total_steps: int) -> None:
+        context = self._ai_training_context
+        dialog = self._show_ai_training_progress_dialog(
+            total_steps,
+            title=context.title if context is not None else "AI Training",
+        )
+        self._ai_training_stage_text = "Preparing AI training task..."
+        dialog.set_status_text(self._ai_training_stage_text)
+        self.statusBar().showMessage("Starting AI training task...")
+        self._update_ai_toolbar_state()
+
+    def _handle_ai_training_stage(self, stage_index: int, stage_total: int, message: str) -> None:
+        dialog = self._show_ai_training_progress_dialog(
+            max(1, stage_total),
+            title=self._ai_training_context.title if self._ai_training_context is not None else "AI Training",
+        )
+        prefix = f"[{max(1, stage_index)}/{max(1, stage_total)}] "
+        self._ai_training_stage_text = prefix + (message or "Running AI training task...")
+        dialog.set_progress(0, 0)
+        dialog.set_status_text(self._ai_training_stage_text)
+        if self._ai_training_stats_dialog is not None:
+            self._ai_training_stats_dialog.set_stage_text(self._ai_training_stage_text)
+        self.statusBar().showMessage(message or "Running AI training task...")
+
+    def _handle_ai_training_progress(self, current: int, total: int, message: str) -> None:
+        dialog = self._show_ai_training_progress_dialog(
+            max(1, total) if total > 0 else 1,
+            title=self._ai_training_context.title if self._ai_training_context is not None else "AI Training",
+        )
+        self._ai_training_stage_text = message or self._ai_training_stage_text or "Running AI training task..."
+        dialog.set_progress(current, total)
+        dialog.set_status_text(self._ai_training_stage_text)
+        if self._ai_training_stats_dialog is not None:
+            self._ai_training_stats_dialog.set_stage_text(self._ai_training_stage_text)
+
+    def _handle_ai_training_log(self, line: str) -> None:
+        message = (line or "").strip()
+        if not message:
+            return
+        self._ai_training_log_lines.append(message)
+        if len(self._ai_training_log_lines) > 1200:
+            self._ai_training_log_lines = self._ai_training_log_lines[-1200:]
+        if self._ai_training_stats_dialog is not None:
+            self._ai_training_stats_dialog.append_log_line(message)
+
+    def _handle_ai_training_finished(self, result: object) -> None:
+        context = self._ai_training_context
+        self._active_ai_training_task = None
+        self._ai_training_context = None
+        self._close_ai_training_progress_dialog()
+
+        if context is None:
+            self._update_ai_toolbar_state()
+            self.statusBar().showMessage("AI training task complete")
+            return
+
+        folder_key = normalized_path_key(context.folder)
+        current_key = normalized_path_key(self._current_folder) if self._current_folder else ""
+        normalized_action = context.action[9:] if context.action.startswith("pipeline_") else context.action
+        pipeline_step_completed = False
+
+        if normalized_action == "label_candidates":
+            payload = result if isinstance(result, dict) else {}
+            group_count = int(payload.get("multi_image_groups") or 0)
+            self._update_ai_toolbar_state()
+            if context.launch_labeling_after_prepare and folder_key == current_key:
+                self.statusBar().showMessage(
+                    f"Built {group_count} multi-image label group(s). Opening Collect Training Labels..."
+                )
+                self._launch_ai_labeling_app()
+                return
+            self.statusBar().showMessage(f"Built {group_count} multi-image label group(s)")
+            return
+
+        if normalized_action == "prepare":
+            self._update_ai_toolbar_state()
+            pipeline_step_completed = True
+            if self._ai_training_pipeline is None:
+                self.statusBar().showMessage("Training data is ready for the current folder")
+                return
+
+        if normalized_action == "train":
+            payload = result if isinstance(result, dict) else {}
+            checkpoint_path = str(payload.get("checkpoint_path") or "")
+            training_paths = self._ai_training_paths_for_folder(context.folder)
+            try:
+                if checkpoint_path:
+                    if training_paths is not None:
+                        set_active_ranker_selection(
+                            training_paths,
+                            checkpoint_path=checkpoint_path,
+                            run_id=str(payload.get("run_id") or context.run_id or ""),
+                            display_name=str(payload.get("display_name") or context.run_label or Path(checkpoint_path).parent.name),
+                        )
+                    self._set_active_ai_checkpoint(checkpoint_path)
+            except FileNotFoundError:
+                pass
+            reference_bank_path = str(payload.get("reference_bank_path") or "")
+            if reference_bank_path:
+                try:
+                    self._set_active_reference_bank_path(reference_bank_path)
+                except FileNotFoundError:
+                    pass
+            else:
+                self._clear_active_reference_bank_path()
+            self._update_ai_toolbar_state()
+            pipeline_step_completed = True
+            if self._ai_training_pipeline is None:
+                if checkpoint_path:
+                    self.statusBar().showMessage(f"Training complete. Active checkpoint updated to {Path(checkpoint_path).name}")
+                else:
+                    self.statusBar().showMessage("Training complete")
+                return
+
+        if normalized_action == "evaluate":
+            payload = result if isinstance(result, dict) else {}
+            metrics_path = str(payload.get("metrics_path") or "")
+            self._update_ai_toolbar_state()
+            pipeline_step_completed = True
+            if metrics_path and os.path.exists(metrics_path):
+                summary_text = "Evaluation complete"
+                try:
+                    payload_json = json.loads(Path(metrics_path).read_text(encoding="utf-8"))
+                    pairwise_accuracy = payload_json.get("pairwise_evaluation", {}).get("all_preferences", {}).get("accuracy")
+                    top1 = payload_json.get("cluster_evaluation", {}).get("top_k_metrics", {}).get("top_1", {}).get("hit_rate")
+                    summary_parts = []
+                    if pairwise_accuracy is not None:
+                        summary_parts.append(f"pairwise acc {float(pairwise_accuracy):.3f}")
+                    if top1 is not None:
+                        summary_parts.append(f"top-1 hit {float(top1):.3f}")
+                    if summary_parts:
+                        summary_text = "Evaluation complete: " + ", ".join(summary_parts)
+                except (OSError, ValueError, TypeError):
+                    pass
+                if self._ai_training_pipeline is None:
+                    self.statusBar().showMessage(summary_text)
+                    return
+            if self._ai_training_pipeline is None:
+                self.statusBar().showMessage("Evaluation complete")
+                return
+
+        if normalized_action == "score":
+            payload = result if isinstance(result, dict) else {}
+            report_dir = str(payload.get("report_dir") or "")
+            self._update_ai_toolbar_state()
+            pipeline_step_completed = True
+            if report_dir and folder_key == current_key:
+                self._load_ai_results(report_dir, show_message=False)
+                self.mode_tabs.setCurrentIndex(1)
+                if self._ai_training_pipeline is None:
+                    self.statusBar().showMessage("Refreshed AI results with the trained ranker")
+                    return
+            if self._ai_training_pipeline is None:
+                self.statusBar().showMessage("Scored the current folder with the trained ranker")
+                return
+
+        if normalized_action == "reference_bank":
+            payload = result if isinstance(result, dict) else {}
+            reference_bank_path = str(payload.get("reference_bank_path") or "")
+            if reference_bank_path:
+                try:
+                    self._set_active_reference_bank_path(reference_bank_path)
+                except FileNotFoundError:
+                    pass
+            self._update_ai_toolbar_state()
+            self.statusBar().showMessage("Reference bank build complete")
+            return
+
+        if pipeline_step_completed and self._ai_training_pipeline is not None and folder_key == normalized_path_key(self._ai_training_pipeline.folder):
+            self._ai_training_pipeline.step_index += 1
+            if self._ai_training_pipeline.step_index >= 4:
+                self._ai_training_pipeline = None
+                self._update_ai_toolbar_state()
+                self.statusBar().showMessage("Full AI training pipeline complete. Active ranker evaluated and scored.")
+                return
+            QTimer.singleShot(0, self._start_next_ai_training_pipeline_step)
+            return
+
+        self._update_ai_toolbar_state()
+        self.statusBar().showMessage("AI training task complete")
+
+    def _handle_ai_training_failed(self, message: str) -> None:
+        context = self._ai_training_context
+        title = context.title if context is not None else "AI Training"
+        self._active_ai_training_task = None
+        self._ai_training_context = None
+        self._ai_training_pipeline = None
+        self._close_ai_training_progress_dialog()
+        self._update_ai_toolbar_state()
+        QMessageBox.warning(self, title, message)
+        self.statusBar().showMessage(f"{title} failed")
+
+    def _show_resize_progress_dialog(self, total_steps: int) -> QProgressDialog:
+        dialog = self._resize_progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(self)
+            dialog.setWindowTitle("Resize Images")
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setMinimumWidth(420)
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self._resize_progress_dialog = dialog
+        dialog.setRange(0, max(1, total_steps))
+        if dialog.value() > max(1, total_steps):
+            dialog.setValue(0)
+        dialog.show()
+        self._center_window_dialog(dialog)
+        dialog.raise_()
+        return dialog
+
+    def _show_convert_progress_dialog(self, total_steps: int) -> QProgressDialog:
+        dialog = self._convert_progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(self)
+            dialog.setWindowTitle("Convert Images")
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setMinimumWidth(420)
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self._convert_progress_dialog = dialog
+        dialog.setRange(0, max(1, total_steps))
+        if dialog.value() > max(1, total_steps):
+            dialog.setValue(0)
+        dialog.show()
+        self._center_window_dialog(dialog)
+        dialog.raise_()
+        return dialog
+
+    def _close_resize_progress_dialog(self) -> None:
+        dialog = self._resize_progress_dialog
+        if dialog is None:
+            return
+        dialog.hide()
+        dialog.deleteLater()
+        self._resize_progress_dialog = None
+
+    def _close_convert_progress_dialog(self) -> None:
+        dialog = self._convert_progress_dialog
+        if dialog is None:
+            return
+        dialog.hide()
+        dialog.deleteLater()
+        self._convert_progress_dialog = None
+
+    def _show_workflow_progress_dialog(self, total_steps: int) -> QProgressDialog:
+        dialog = self._workflow_progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(self)
+            dialog.setWindowTitle("Deliver / Handoff")
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setMinimumWidth(420)
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self._workflow_progress_dialog = dialog
+        dialog.setRange(0, max(1, total_steps))
+        if dialog.value() > max(1, total_steps):
+            dialog.setValue(0)
+        dialog.show()
+        self._center_window_dialog(dialog)
+        dialog.raise_()
+        return dialog
+
+    def _close_workflow_progress_dialog(self) -> None:
+        dialog = self._workflow_progress_dialog
+        if dialog is None:
+            return
+        dialog.hide()
+        dialog.deleteLater()
+        self._workflow_progress_dialog = None
+
+    def _show_catalog_progress_dialog(self, total_steps: int) -> QProgressDialog:
+        dialog = self._catalog_progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(self)
+            dialog.setWindowTitle("Global Catalog")
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setMinimumWidth(420)
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self._catalog_progress_dialog = dialog
+        dialog.setRange(0, max(1, total_steps))
+        if dialog.value() > max(1, total_steps):
+            dialog.setValue(0)
+        dialog.show()
+        self._center_window_dialog(dialog)
+        dialog.raise_()
+        return dialog
+
+    def _close_catalog_progress_dialog(self) -> None:
+        dialog = self._catalog_progress_dialog
+        if dialog is None:
+            return
+        dialog.hide()
+        dialog.deleteLater()
+        self._catalog_progress_dialog = None
+
+    def _show_archive_progress_dialog(self, total_steps: int, *, title: str) -> QProgressDialog:
+        dialog = self._archive_progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(self)
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setMinimumWidth(420)
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self._archive_progress_dialog = dialog
+        dialog.setWindowTitle(title)
+        dialog.setRange(0, max(1, total_steps))
+        if dialog.value() > max(1, total_steps):
+            dialog.setValue(0)
+        dialog.show()
+        self._center_window_dialog(dialog)
+        dialog.raise_()
+        return dialog
+
+    def _close_archive_progress_dialog(self) -> None:
+        dialog = self._archive_progress_dialog
+        if dialog is None:
+            return
+        dialog.hide()
+        dialog.deleteLater()
+        self._archive_progress_dialog = None
+
+    def _show_ai_training_progress_dialog(self, total_steps: int, *, title: str) -> AITrainingProgressDialog:
+        dialog = self._ai_training_progress_dialog
+        if dialog is None:
+            dialog = AITrainingProgressDialog(title=title, parent=self)
+            dialog.stats_requested.connect(self._open_ai_training_stats_dialog)
+            self._ai_training_progress_dialog = dialog
+        dialog.setWindowTitle(title)
+        dialog.set_progress(0, max(1, total_steps))
+        dialog.show()
+        self._center_window_dialog(dialog)
+        dialog.raise_()
+        return dialog
+
+    def _close_ai_training_progress_dialog(self) -> None:
+        dialog = self._ai_training_progress_dialog
+        if dialog is None:
+            return
+        dialog.hide()
+        dialog.deleteLater()
+        self._ai_training_progress_dialog = None
+
+    def _open_ai_training_stats_dialog(self) -> None:
+        dialog = self._ai_training_stats_dialog
+        if dialog is None:
+            dialog = AITrainingStatsDialog(parent=self)
+            self._ai_training_stats_dialog = dialog
+        dialog.set_stage_text(self._ai_training_stage_text or "Waiting for output")
+        dialog.set_run_text(self._ai_training_run_label or "Not started")
+        dialog.load_lines(self._ai_training_log_lines)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _close_batch_rename_progress_dialog(self) -> None:
+        dialog = self._batch_rename_progress_dialog
+        if dialog is None:
+            return
+        dialog.hide()
+        dialog.deleteLater()
+        self._batch_rename_progress_dialog = None
+
+    def _center_window_dialog(self, dialog) -> None:
+        if dialog is None:
+            return
+        dialog.adjustSize()
+        frame = dialog.frameGeometry()
+        frame.moveCenter(self.frameGeometry().center())
+        dialog.move(frame.topLeft())
+
+    def _finalize_batch_rename(self, context: BatchRenameExecutionContext) -> None:
+        renamed_items = [item for item in context.preview.items if item.status == "Rename"]
+        if not renamed_items:
+            return
+
+        annotation_updates: list[tuple[str, ImageRecord, SessionAnnotation]] = []
+        renamed_records_by_old_path: dict[str, ImageRecord] = {}
+        undo_actions: list[UndoAction] = []
+
+        for item in renamed_items:
+            renamed_record = self._record_after_moves(item.record, item.planned_moves)
+            renamed_records_by_old_path[item.record.path] = renamed_record
+
+            annotation = context.loaded_annotations.get(item.record.path)
+            if annotation is None and context.is_current_folder:
+                annotation = self._annotations.pop(item.record.path, None)
+            elif context.is_current_folder:
+                self._annotations.pop(item.record.path, None)
+            if annotation is not None:
+                if context.is_current_folder and not annotation.is_empty:
+                    self._annotations[renamed_record.path] = annotation
+                annotation_updates.append((item.record.path, renamed_record, annotation))
+
+            if context.is_current_folder:
+                undo_actions.append(
+                    UndoAction(
+                        kind="move",
+                        primary_path=item.record.path,
+                        file_moves=item.planned_moves,
+                        folder=context.folder,
+                        session_id=self._session_id,
+                    )
+                )
+
+        if annotation_updates:
+            self._decision_store.move_annotations(self._session_id, annotation_updates)
+
+        if context.is_current_folder:
+            self._replace_records_after_moves(renamed_records_by_old_path)
+            self._rekey_filter_metadata_after_moves(renamed_records_by_old_path)
+            self._push_undo_actions(undo_actions)
+            current_path = context.current_path_before
+            if current_path in renamed_records_by_old_path:
+                current_path = renamed_records_by_old_path[current_path].path
+            self._apply_records_view(current_path=current_path)
+            self.statusBar().showMessage(f"Renamed {len(renamed_items)} image bundle(s)")
+            return
+
+        self.statusBar().showMessage(
+            f"Renamed {len(renamed_items)} image bundle(s) in {Path(context.folder).name or context.folder} (undo is only available for the current folder)"
+        )
 
     def _refresh_folder_tree(self) -> None:
         current_root = self.folder_model.rootPath()
@@ -663,20 +3453,120 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _set_filter_mode(self, mode: FilterMode) -> None:
-        self._filter_mode = mode
+        self._filter_query.quick_filter = mode
         combo_index = self.filter_combo.findData(mode)
         if combo_index >= 0 and combo_index != self.filter_combo.currentIndex():
             self.filter_combo.setCurrentIndex(combo_index)
             return
-        self._apply_records_view()
-        self._scroll_active_view_to_top()
-        self._update_action_states()
+        self._apply_filter_query_change()
 
     def _handle_filter_changed(self) -> None:
         selected = self._selected_filter_mode()
         if selected is None:
             return
         self._set_filter_mode(selected)
+
+    def _handle_search_text_changed(self, text: str, *, source: str) -> None:
+        self._pending_search_text = text
+        other = self.ai_search_field if source == "manual" else self.manual_search_field
+        if other.text() != text:
+            with QSignalBlocker(other):
+                other.setText(text)
+        self._search_apply_timer.start()
+
+    def _commit_search_text_filter(self) -> None:
+        self._set_search_text(self._pending_search_text)
+
+    def _set_search_text(self, text: str) -> None:
+        if self._filter_query.search_text == text:
+            return
+        self._filter_query.search_text = text
+        self._apply_filter_query_change()
+
+    def _set_file_type_filter(self, mode: FileTypeFilter) -> None:
+        if self._filter_query.file_type == mode:
+            return
+        self._filter_query.file_type = mode
+        self._apply_filter_query_change()
+
+    def _set_review_state_filter(self, mode: ReviewStateFilter) -> None:
+        if self._filter_query.review_state == mode:
+            return
+        self._filter_query.review_state = mode
+        self._apply_filter_query_change()
+
+    def _set_ai_state_filter(self, mode: AIStateFilter) -> None:
+        if self._filter_query.ai_state == mode:
+            return
+        self._filter_query.ai_state = mode
+        self._apply_filter_query_change()
+
+    def _open_advanced_filters_dialog(self) -> None:
+        dialog = AdvancedFilterDialog(self._filter_query, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        updated_query = dialog.updated_query()
+        if updated_query == self._filter_query:
+            return
+        self._filter_query = updated_query
+        self._apply_filter_query_change()
+        self.statusBar().showMessage("Updated advanced filters")
+
+    def _clear_record_filters(self) -> None:
+        if not self._filter_query.has_active_filters:
+            return
+        self._filter_query = RecordFilterQuery()
+        self._pending_search_text = ""
+        self._sync_record_filter_controls()
+        self._apply_filter_query_change()
+        self.statusBar().showMessage("Cleared filters")
+
+    def _apply_filter_query_change(self) -> None:
+        current_path = self._current_visible_record_path()
+        self._sync_record_filter_controls()
+        self._ensure_filter_metadata_index()
+        self._refresh_filter_toolbar_menu()
+        self._apply_records_view(current_path=current_path)
+        if not self._records:
+            return
+        if current_path and current_path in self._record_index_by_path:
+            return
+        self._scroll_active_view_to_top()
+
+    def _sync_record_filter_controls(self) -> None:
+        search_text = self._filter_query.search_text
+        for field in (self.manual_search_field, self.ai_search_field):
+            if field.text() != search_text:
+                with QSignalBlocker(field):
+                    field.setText(search_text)
+
+        combo_index = self.filter_combo.findData(self._filter_query.quick_filter)
+        if combo_index >= 0 and combo_index != self.filter_combo.currentIndex():
+            with QSignalBlocker(self.filter_combo):
+                self.filter_combo.setCurrentIndex(combo_index)
+
+        for mode, action in self._file_type_actions.items():
+            with QSignalBlocker(action):
+                action.setChecked(self._filter_query.file_type == mode)
+        for mode, action in self._review_state_actions.items():
+            with QSignalBlocker(action):
+                action.setChecked(self._filter_query.review_state == mode)
+        for mode, action in self._ai_state_actions.items():
+            with QSignalBlocker(action):
+                action.setChecked(self._filter_query.ai_state == mode)
+
+    def _current_visible_record_path(self) -> str | None:
+        current_record = self._record_at(self.grid.current_index())
+        if current_record is None:
+            return None
+        return current_record.path
+
+    def _ensure_filter_metadata_index(self) -> None:
+        if not self._all_records:
+            return
+        if self._filter_metadata_record_paths:
+            return
+        self._reset_filter_metadata_index(self._all_records)
 
     def _set_column_count(self, count: int) -> None:
         combo_index = self.columns_combo.findData(count)
@@ -743,15 +3633,25 @@ class MainWindow(QMainWindow):
         current_record = self._record_at(current_index)
         in_recycle_folder = self._is_recycle_folder()
         in_winners_folder = self._is_winners_folder()
+        has_physical_folder = bool(self._current_folder)
+        collections = self._library_store.list_collections()
+        catalog_roots = self._library_store.list_catalog_roots()
         display_path = ""
         if current_record is not None and current_index >= 0:
             display_path = self.grid.displayed_variant_path(current_index) or current_record.path
+        current_ai = self._ai_result_for_record(current_record, preferred_path=display_path) if current_record is not None else None
+        current_workflow = self._workflow_insight_for_record(current_record)
+        can_open_winner_ladder = self._winner_ladder_candidate_count(current_index) >= 2
 
         self.actions.undo.setEnabled(bool(self._undo_stack))
         with QSignalBlocker(self.actions.compare_mode):
             self.actions.compare_mode.setChecked(self._compare_enabled)
         with QSignalBlocker(self.actions.auto_advance):
             self.actions.auto_advance.setChecked(self._auto_advance_enabled)
+        with QSignalBlocker(self.actions.burst_groups):
+            self.actions.burst_groups.setChecked(self._burst_groups_enabled)
+        with QSignalBlocker(self.actions.burst_stacks):
+            self.actions.burst_stacks.setChecked(self._burst_stacks_enabled)
         with QSignalBlocker(self.actions.mode_actions["manual"]):
             self.actions.mode_actions["manual"].setChecked(self._ui_mode == "manual")
         with QSignalBlocker(self.actions.mode_actions["ai"]):
@@ -765,7 +3665,7 @@ class MainWindow(QMainWindow):
                 action.setChecked(self._sort_mode == mode)
         for mode, action in self.actions.filter_actions.items():
             with QSignalBlocker(action):
-                action.setChecked(self._filter_mode == mode)
+                action.setChecked(self._filter_query.quick_filter == mode)
 
         current_columns = self.columns_combo.currentData()
         if not isinstance(current_columns, int):
@@ -775,14 +3675,65 @@ class MainWindow(QMainWindow):
                 action.setChecked(current_columns == count)
 
         self.actions.open_preview.setEnabled(current_record is not None)
-        self.actions.accept_selection.setEnabled(has_selection and not in_recycle_folder and not in_winners_folder)
-        self.actions.reject_selection.setEnabled(has_selection and not in_recycle_folder and not in_winners_folder)
-        self.actions.keep_selection.setEnabled(has_selection and not in_recycle_folder and not in_winners_folder)
-        self.actions.move_selection.setEnabled(has_selection)
-        self.actions.delete_selection.setEnabled(has_selection)
-        self.actions.restore_selection.setEnabled(has_selection and in_recycle_folder)
+        self.actions.winner_ladder_mode.setEnabled(can_open_winner_ladder)
+        self.actions.burst_groups.setEnabled(bool(self._current_folder and self._all_records))
+        self.actions.burst_stacks.setEnabled(bool(self._current_folder and self._all_records))
+        self.actions.rename_selection.setEnabled(current_record is not None and has_physical_folder and not in_recycle_folder and not in_winners_folder)
+        self.actions.batch_rename_selection.setEnabled(bool(self._current_folder and self._all_records) and not in_recycle_folder and not in_winners_folder)
+        has_resizeable_records = any(self._record_supports_resize(record) for record in self._all_records)
+        self.actions.batch_resize_selection.setEnabled(bool(self._current_folder and has_resizeable_records) and not in_recycle_folder)
+        has_convertible_records = any(self._record_supports_convert(record) for record in self._all_records)
+        self.actions.batch_convert_selection.setEnabled(bool(self._current_folder and has_convertible_records) and not in_recycle_folder)
+        self.actions.extract_archive.setEnabled(bool(self._current_folder))
+        training_paths = self._ai_training_paths_for_folder()
+        training_busy = self._active_ai_training_task is not None or self._active_ai_task is not None
+        training_allowed = bool(self._current_folder) and not in_recycle_folder and not in_winners_folder and not training_busy
+        has_training_artifacts = bool(training_paths and ai_training_artifacts_ready(training_paths))
+        pairwise_labels, cluster_labels = count_label_records(training_paths) if training_paths is not None else (0, 0)
+        has_labels = pairwise_labels > 0 or cluster_labels > 0
+        trained_checkpoint = self._current_trained_checkpoint_path()
+        self.actions.prepare_ai_training_data.setEnabled(training_allowed)
+        self.actions.open_ai_data_selection.setEnabled(training_allowed)
+        self.actions.train_ai_ranker.setEnabled(training_allowed and has_training_artifacts)
+        self.actions.evaluate_ai_ranker.setEnabled(training_allowed and has_training_artifacts and has_labels and trained_checkpoint is not None)
+        self.actions.score_ai_with_trained_ranker.setEnabled(training_allowed and trained_checkpoint is not None)
+        self.actions.build_ai_reference_bank.setEnabled(not training_busy)
+        self.actions.clear_ai_trained_model.setEnabled(not training_busy and trained_checkpoint is not None)
+        self.actions.accept_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
+        self.actions.reject_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
+        self.actions.keep_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
+        self.actions.move_selection.setEnabled(has_selection and has_physical_folder)
+        self.actions.move_selection_to_new_folder.setEnabled(has_selection and has_physical_folder)
+        self.actions.delete_selection.setEnabled(has_selection and has_physical_folder)
+        self.actions.restore_selection.setEnabled(has_selection and has_physical_folder and in_recycle_folder)
         self.actions.reveal_in_explorer.setEnabled(bool(display_path))
         self.actions.open_in_photoshop.setEnabled(bool(selected_records and self._photoshop_executable))
+        self.actions.review_ai_disagreements.setEnabled(self._ai_bundle is not None)
+        self.actions.taste_calibration_wizard.setEnabled(bool(self._current_folder and len(self._all_records) >= 2))
+        self.actions.assign_review_round_first_pass.setEnabled(has_selection)
+        self.actions.assign_review_round_second_pass.setEnabled(has_selection)
+        self.actions.assign_review_round_third_pass.setEnabled(has_selection)
+        self.actions.assign_review_round_hero.setEnabled(has_selection)
+        self.actions.clear_review_round.setEnabled(has_selection and bool(current_workflow and current_workflow.has_round))
+        self.actions.create_virtual_collection.setEnabled(current_record is not None)
+        self.actions.add_selection_to_collection.setEnabled(current_record is not None and bool(collections))
+        self.actions.remove_selection_from_collection.setEnabled(current_record is not None and bool(collections))
+        self.actions.delete_virtual_collection.setEnabled(bool(collections))
+        self.actions.browse_catalog.setEnabled(bool(catalog_roots))
+        self.actions.add_current_folder_to_catalog.setEnabled(has_physical_folder)
+        self.actions.add_folder_to_catalog.setEnabled(True)
+        self.actions.remove_catalog_folder.setEnabled(bool(catalog_roots))
+        self.actions.refresh_catalog.setEnabled(bool(catalog_roots) and self._active_catalog_task is None)
+        self.actions.handoff_builder.setEnabled(has_selection and has_physical_folder and not in_recycle_folder)
+        self.actions.send_to_editor_pipeline.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
+        self.actions.best_of_set_auto_assembly.setEnabled(bool(self._records) and (self._ai_bundle is not None or self._review_intelligence is not None))
+        self.actions.keyboard_shortcuts.setEnabled(True)
+        self.actions.save_workspace_preset.setEnabled(self.workspace_docks is not None)
+        self.actions.new_folder.setEnabled(bool(self._current_folder))
+        self.actions.save_filter_preset.setEnabled(self._filter_query.has_active_filters)
+        self.actions.delete_filter_preset.setEnabled(self._matching_saved_filter_preset() is not None)
+        self.actions.clear_filters.setEnabled(self._filter_query.has_active_filters)
+        self._refresh_tool_mode_ui()
 
     def _selected_records_for_actions(self) -> list[ImageRecord]:
         current_index = self.grid.current_index()
@@ -794,6 +3745,1663 @@ class MainWindow(QMainWindow):
         current_index = self.grid.current_index()
         if current_index >= 0:
             self._open_preview(current_index)
+
+    def _open_winner_ladder(self) -> None:
+        current_index = self.grid.current_index()
+        if current_index < 0:
+            return
+        self._start_winner_ladder(current_index)
+
+    def _review_ai_disagreements(self) -> None:
+        if self._ai_bundle is None:
+            self.statusBar().showMessage("Load AI results first to review disagreement cases.")
+            return
+        self._set_ui_mode("ai")
+        self._filter_query.quick_filter = FilterMode.AI_DISAGREEMENTS
+        self._apply_filter_query_change()
+        self.statusBar().showMessage("Showing AI disagreement cases for targeted review.")
+
+    def _open_taste_calibration_wizard(self) -> None:
+        if not self._current_folder or len(self._all_records) < 2:
+            self.statusBar().showMessage("Load at least two images before running taste calibration.")
+            return
+        pairs = build_calibration_pairs(
+            self._all_records,
+            ai_bundle=self._ai_bundle,
+            review_bundle=self._review_intelligence,
+            burst_recommendations=self._burst_recommendations,
+            limit=8,
+        )
+        if not pairs:
+            self.statusBar().showMessage("Not enough useful comparisons are available for calibration in this folder yet.")
+            return
+        dialog = TasteCalibrationDialog(pairs, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            self.statusBar().showMessage("Taste calibration cancelled.")
+            return
+        current_path = self._current_visible_record_path()
+        recorded = 0
+        for response in dialog.responses():
+            if response.choice not in {"left", "right"}:
+                continue
+            self._record_pairwise_preference(
+                left_path=response.pair.left_path,
+                right_path=response.pair.right_path,
+                preferred_path=response.preferred_path,
+                source_mode=response.pair.source_mode,
+                group_id=response.pair.group_id,
+                extra_payload={
+                    "prompt": response.pair.prompt,
+                    "group_label": response.pair.group_label,
+                    "left_label": response.pair.left_label,
+                    "right_label": response.pair.right_label,
+                },
+            )
+            recorded += 1
+        if recorded:
+            self._apply_records_view(current_path=current_path)
+            self.statusBar().showMessage(f"Saved {recorded} calibration preference(s) for this folder.")
+            return
+        self.statusBar().showMessage("Calibration finished with no recorded picks.")
+
+    def _assign_review_round_to_selection(self, review_round: str) -> None:
+        records = self._selected_records_for_actions()
+        if not records:
+            return
+        normalized_round = normalize_review_round(review_round)
+        current_path = self._current_visible_record_path() or records[0].path
+        changed = 0
+        for record in records:
+            annotation = self._annotations.setdefault(record.path, SessionAnnotation())
+            previous_annotation = SessionAnnotation(
+                winner=annotation.winner,
+                reject=annotation.reject,
+                photoshop=annotation.photoshop,
+                rating=annotation.rating,
+                tags=annotation.tags,
+                review_round=annotation.review_round,
+            )
+            if normalize_review_round(annotation.review_round) == normalized_round:
+                continue
+            self._push_undo(
+                UndoAction(
+                    kind="annotation",
+                    primary_path=record.path,
+                    original_winner=annotation.winner,
+                    original_reject=annotation.reject,
+                    original_photoshop=annotation.photoshop,
+                    rating=annotation.rating,
+                    tags=annotation.tags,
+                    original_review_round=annotation.review_round,
+                    folder=self._current_folder,
+                    source_paths=self._record_paths(record),
+                    session_id=self._session_id,
+                    winner_mode=self._winner_mode.value,
+                )
+            )
+            annotation.review_round = normalized_round
+            self._persist_annotation(record)
+            self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="review_round")
+            changed += 1
+        if not changed:
+            return
+        self._apply_records_view(current_path=current_path)
+        label = review_round_label(normalized_round)
+        if label:
+            self.statusBar().showMessage(f"Assigned {label} to {changed} image(s).")
+        else:
+            self.statusBar().showMessage(f"Cleared review round on {changed} image(s).")
+
+    def _selected_records_for_workflow(self) -> list[ImageRecord]:
+        records = self._selected_records_for_actions()
+        if records:
+            return records
+        current_index = self.grid.current_index()
+        record = self._record_at(current_index)
+        return [record] if record is not None else []
+
+    def _selected_record_paths_for_library(self) -> tuple[str, ...]:
+        return tuple(record.path for record in self._selected_records_for_workflow())
+
+    def _choose_virtual_collection(
+        self,
+        *,
+        title: str,
+        prompt: str,
+    ) -> VirtualCollection | None:
+        collections = self._library_store.list_collections()
+        if not collections:
+            self.statusBar().showMessage("Create a virtual collection first.")
+            return None
+        labels: list[str] = []
+        label_to_id: dict[str, str] = {}
+        for collection in collections:
+            label = f"{collection.name} ({collection.item_count})"
+            if label in label_to_id:
+                label = f"{label} [{collection.id}]"
+            labels.append(label)
+            label_to_id[label] = collection.id
+        default_label = labels[0]
+        if self._scope_kind == "collection" and self._scope_id:
+            current_collection = self._library_store.load_collection(self._scope_id)
+            if current_collection is not None:
+                for label, collection_id in label_to_id.items():
+                    if collection_id == current_collection.id:
+                        default_label = label
+                        break
+        choice, accepted = QInputDialog.getItem(self, title, prompt, labels, labels.index(default_label), False)
+        if not accepted or not choice:
+            return None
+        return self._library_store.load_collection(label_to_id[str(choice)])
+
+    def _resolve_records_for_paths(self, paths: tuple[str, ...] | list[str]) -> tuple[list[ImageRecord], int]:
+        ordered_paths: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            normalized = normalize_filesystem_path(path)
+            key = normalized_path_key(normalized)
+            if not normalized or key in seen:
+                continue
+            seen.add(key)
+            ordered_paths.append(normalized)
+
+        if not ordered_paths:
+            return [], 0
+
+        catalog_records = self._library_store.load_catalog_records_for_paths(ordered_paths)
+        folder_record_maps: dict[str, dict[str, ImageRecord]] = {}
+        for path in ordered_paths:
+            folder = normalize_filesystem_path(str(Path(path).parent))
+            folder_key = normalized_path_key(folder)
+            if folder_key in folder_record_maps:
+                continue
+            records = self._folder_scan_cache.load(folder)
+            if records is None:
+                try:
+                    records = scan_folder(folder)
+                except Exception:
+                    records = []
+                else:
+                    self._folder_scan_cache.save(folder, records)
+            folder_record_maps[folder_key] = {
+                normalized_path_key(record.path): record
+                for record in records
+            }
+
+        resolved: list[ImageRecord] = []
+        missing = 0
+        added: set[str] = set()
+        for path in ordered_paths:
+            key = normalized_path_key(path)
+            folder_key = normalized_path_key(str(Path(path).parent))
+            record = folder_record_maps.get(folder_key, {}).get(key) or catalog_records.get(key)
+            if record is None or not os.path.exists(record.path):
+                missing += 1
+                continue
+            record_key = normalized_path_key(record.path)
+            if record_key in added:
+                continue
+            added.add(record_key)
+            resolved.append(record)
+        return resolved, missing
+
+    def _create_virtual_collection_from_selection(self) -> None:
+        paths = self._selected_record_paths_for_library()
+        if not paths:
+            self.statusBar().showMessage("Select one or more images before creating a collection.")
+            return
+        dialog = CollectionEditDialog(selection_count=len(paths), parent=self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        result = dialog.result_data()
+        existing = self._library_store.find_collection_by_name(result.name)
+        if existing is not None:
+            overwrite = QMessageBox.question(
+                self,
+                "Replace Collection?",
+                f"{existing.name} already exists.\n\nReplace its items with the current selection?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if overwrite != QMessageBox.StandardButton.Yes:
+                return
+            self._library_store.update_collection(
+                VirtualCollection(
+                    id=existing.id,
+                    name=result.name,
+                    description=result.description,
+                    kind=result.kind,
+                    item_paths=existing.item_paths,
+                    item_count=existing.item_count,
+                    created_at=existing.created_at,
+                    updated_at=existing.updated_at,
+                )
+            )
+            collection = self._library_store.replace_collection_paths(existing.id, paths)
+        else:
+            collection = self._library_store.create_collection(
+                name=result.name,
+                description=result.description,
+                kind=result.kind,
+                item_paths=paths,
+            )
+        self._refresh_collections_menu()
+        if collection is not None:
+            self.statusBar().showMessage(f"Saved collection: {collection.name} ({collection.item_count} items)")
+
+    def _open_virtual_collection(self, collection_id: str) -> None:
+        collection = self._library_store.load_collection(collection_id)
+        if collection is None:
+            self._refresh_collections_menu()
+            self.statusBar().showMessage("That collection is no longer available.")
+            return
+        records, missing = self._resolve_records_for_paths(collection.item_paths)
+        if not records:
+            self.statusBar().showMessage(f"{collection.name} has no available files to open.")
+            return
+        self._load_virtual_scope_records(
+            records,
+            scope_kind="collection",
+            scope_id=collection.id,
+            scope_label=f"Collection: {collection.name}",
+        )
+        if missing:
+            self.statusBar().showMessage(f"Loaded collection {collection.name} ({len(records)} available, {missing} missing)")
+
+    def _add_selection_to_virtual_collection(self) -> None:
+        paths = self._selected_record_paths_for_library()
+        if not paths:
+            self.statusBar().showMessage("Select one or more images before adding them to a collection.")
+            return
+        collection = self._choose_virtual_collection(title="Add To Collection", prompt="Collection")
+        if collection is None:
+            return
+        updated = self._library_store.add_paths_to_collection(collection.id, paths)
+        self._refresh_collections_menu()
+        if updated is not None:
+            self.statusBar().showMessage(f"Added {len(paths)} item(s) to {updated.name}")
+
+    def _remove_selection_from_virtual_collection(self) -> None:
+        paths = self._selected_record_paths_for_library()
+        if not paths:
+            self.statusBar().showMessage("Select one or more images before removing them from a collection.")
+            return
+        collection = None
+        if self._scope_kind == "collection" and self._scope_id:
+            collection = self._library_store.load_collection(self._scope_id)
+        if collection is None:
+            collection = self._choose_virtual_collection(title="Remove From Collection", prompt="Collection")
+        if collection is None:
+            return
+        updated = self._library_store.remove_paths_from_collection(collection.id, paths)
+        self._refresh_collections_menu()
+        if updated is None:
+            return
+        if self._scope_kind == "collection" and self._scope_id == updated.id:
+            records, missing = self._resolve_records_for_paths(updated.item_paths)
+            self._load_virtual_scope_records(
+                records,
+                scope_kind="collection",
+                scope_id=updated.id,
+                scope_label=f"Collection: {updated.name}",
+            )
+            if missing:
+                self.statusBar().showMessage(f"Updated {updated.name} ({len(records)} available, {missing} missing)")
+            return
+        self.statusBar().showMessage(f"Removed selected items from {updated.name}")
+
+    def _delete_virtual_collection(self) -> None:
+        collection = None
+        if self._scope_kind == "collection" and self._scope_id:
+            collection = self._library_store.load_collection(self._scope_id)
+        if collection is None:
+            collection = self._choose_virtual_collection(title="Delete Collection", prompt="Collection")
+        if collection is None:
+            return
+        confirmation = QMessageBox.question(
+            self,
+            "Delete Collection?",
+            f"Delete the virtual collection \"{collection.name}\"?\n\nThis does not delete any files.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+        deleted = self._library_store.delete_collection(collection.id)
+        self._refresh_collections_menu()
+        if deleted and self._scope_kind == "collection" and self._scope_id == collection.id:
+            last_folder = self._settings.value(self.LAST_FOLDER_KEY, "", str)
+            if last_folder and os.path.isdir(last_folder):
+                self._select_folder(last_folder)
+            else:
+                self._current_folder = ""
+                self._set_scope_state(kind="folder", scope_id="", label="")
+                self._apply_loaded_records([])
+        if deleted:
+            self.statusBar().showMessage(f"Deleted collection: {collection.name}")
+
+    def _browse_catalog(self, _checked: bool = False, *, root_path_override: str = "") -> None:
+        roots = tuple(self._library_store.list_catalog_roots())
+        if not roots:
+            self.statusBar().showMessage("Add one or more folders to the catalog first.")
+            return
+        search_text = ""
+        root_path = normalize_filesystem_path(root_path_override)
+        if not root_path_override:
+            dialog = CatalogSearchDialog(roots, parent=self)
+            if dialog.exec() != dialog.DialogCode.Accepted:
+                return
+            result = dialog.result_data()
+            search_text = result.search_text
+            root_path = normalize_filesystem_path(result.root_path)
+        records = self._library_store.search_catalog(search_text=search_text, root_path=root_path)
+        if not records:
+            self.statusBar().showMessage("No catalog matches were found.")
+            return
+        if root_path:
+            root_label = Path(root_path).name or root_path
+            scope_label = f"Catalog: {root_label}"
+        else:
+            scope_label = "Catalog: All Indexed Folders"
+        if search_text:
+            scope_label = f'{scope_label} | Search "{search_text}"'
+        scope_id = f"{normalized_path_key(root_path)}|{search_text.casefold()}"
+        self._load_virtual_scope_records(records, scope_kind="catalog", scope_id=scope_id, scope_label=scope_label)
+
+    def _add_current_folder_to_catalog(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Open a real folder before adding it to the catalog.")
+            return
+        self._library_store.add_catalog_root(self._current_folder)
+        self._refresh_catalog_menu()
+        self._start_catalog_refresh((self._current_folder,), label="Indexing current folder for catalog...")
+
+    def _add_folder_to_catalog_prompt(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Add Folder To Catalog", self._current_folder or QDir.homePath())
+        if not folder:
+            return
+        self._library_store.add_catalog_root(folder)
+        self._refresh_catalog_menu()
+        self._start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for catalog...")
+
+    def _remove_catalog_root_prompt(self) -> None:
+        roots = self._library_store.list_catalog_roots()
+        if not roots:
+            self.statusBar().showMessage("No catalog roots are configured.")
+            return
+        labels = [f"{Path(root.path).name or root.path} ({root.indexed_record_count})" for root in roots]
+        label_to_path = {label: root.path for label, root in zip(labels, roots)}
+        choice, accepted = QInputDialog.getItem(self, "Remove Catalog Root", "Catalog root", labels, 0, False)
+        if not accepted or not choice:
+            return
+        root_path = label_to_path[str(choice)]
+        confirmation = QMessageBox.question(
+            self,
+            "Remove Catalog Root?",
+            f"Remove {root_path} from the optional catalog index?\n\nThis does not move or delete files.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+        if self._library_store.remove_catalog_root(root_path):
+            self._refresh_catalog_menu()
+            self.statusBar().showMessage(f"Removed catalog root: {Path(root_path).name or root_path}")
+
+    def _refresh_catalog_index(self) -> None:
+        roots = self._library_store.list_catalog_roots()
+        if not roots:
+            self.statusBar().showMessage("Add one or more folders to the catalog first.")
+            return
+        self._start_catalog_refresh(tuple(root.path for root in roots), label="Refreshing global catalog...")
+
+    def _open_handoff_builder(self, _checked: bool = False, *, initial_recipe: WorkflowRecipe | None = None) -> None:
+        records = self._selected_records_for_workflow()
+        if not records or not self._current_folder:
+            self.statusBar().showMessage("Select one or more images before building a handoff workflow.")
+            return
+        dialog = HandoffBuilderDialog(
+            built_in_recipes=built_in_workflow_recipes(),
+            saved_recipes=tuple(self._saved_workflow_recipes),
+            default_destination_root=self._current_folder,
+            selection_count=len(records),
+            initial_recipe=initial_recipe,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        updated_recipes = list(dialog.saved_recipes())
+        if updated_recipes != self._saved_workflow_recipes:
+            self._saved_workflow_recipes = updated_recipes
+            self._save_saved_workflow_recipes()
+            self._refresh_workflow_recipe_menu()
+        result = dialog.result_data()
+        self._run_workflow_recipe(result.recipe, destination_root=result.destination_root, records=records)
+
+    def _open_send_to_editor_pipeline(self) -> None:
+        recipe = next((item for item in built_in_workflow_recipes() if item.key == "send_to_editor"), None)
+        self._open_handoff_builder(initial_recipe=recipe)
+
+    def _open_best_of_set_builder(self) -> None:
+        if not self._records:
+            self.statusBar().showMessage("Load a folder before assembling a best-of set.")
+            return
+        dialog = BestOfSetDialog(visible_count=len(self._records), parent=self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        result = dialog.result_data()
+        plan = build_best_of_set_plan(
+            self._records,
+            ai_bundle=self._ai_bundle,
+            review_bundle=self._review_intelligence,
+            burst_recommendations=self._burst_recommendations,
+            annotations_by_path=self._annotations,
+            limit=result.limit,
+            strategy=result.strategy,
+        )
+        if not plan.candidates:
+            self.statusBar().showMessage("No best-of candidates were available for the current view.")
+            return
+        selected_indexes = [
+            index
+            for candidate in plan.candidates
+            for index in [self._record_index_by_path.get(candidate.path)]
+            if index is not None
+        ]
+        if not selected_indexes:
+            self.statusBar().showMessage("The proposed best-of picks are no longer visible in the current view.")
+            return
+        self.grid.set_selected_indexes(selected_indexes, current_index=selected_indexes[0])
+        if result.review_round:
+            self._assign_review_round_to_selection(result.review_round)
+        summary = plan.summary_lines[0] if plan.summary_lines else f"Selected {len(selected_indexes)} best-of pick(s)."
+        self.statusBar().showMessage(summary)
+
+    def _open_keyboard_shortcuts_dialog(self) -> None:
+        dialog = KeyboardShortcutDialog(self._shortcut_bindings(), self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        overrides: dict[str, str] = {}
+        for binding in dialog.bindings():
+            normalized = normalize_shortcut_text(binding.shortcut)
+            if normalized:
+                overrides[binding.id] = normalized
+        self._shortcut_overrides = overrides
+        self._save_shortcut_overrides()
+        self._apply_shortcut_overrides()
+        self.statusBar().showMessage("Updated keyboard shortcuts")
+
+    def _save_current_workspace_preset(self) -> None:
+        if self.workspace_docks is None:
+            return
+        name, accepted = QInputDialog.getText(
+            self,
+            "Save Workspace Preset",
+            "Preset name",
+            text="Current Workspace",
+        )
+        if not accepted:
+            return
+        name = " ".join((name or "").split())
+        if not name:
+            return
+        key = recipe_key_for_name(name) or "workspace_preset"
+        preset = WorkspacePreset(
+            key=key,
+            name=name,
+            description="Saved from the current workspace.",
+            ui_mode=self._ui_mode,
+            columns=int(self.columns_combo.currentData() or 3),
+            compare_enabled=self._compare_enabled,
+            auto_advance=self._auto_advance_enabled,
+            burst_groups=self._burst_groups_enabled,
+            burst_stacks=self._burst_stacks_enabled,
+            library_panel_mode=self.workspace_docks.library.mode,
+            inspector_panel_mode=self.workspace_docks.inspector.mode,
+            workspace_state=self.workspace_docks.save_state(),
+        )
+        existing_index = next((index for index, item in enumerate(self._saved_workspace_presets) if item.key == key), None)
+        if existing_index is None:
+            existing_index = next((index for index, item in enumerate(self._saved_workspace_presets) if item.name.casefold() == name.casefold()), None)
+        if existing_index is not None:
+            self._saved_workspace_presets[existing_index] = preset
+        else:
+            self._saved_workspace_presets.append(preset)
+        self._save_saved_workspace_presets()
+        self._refresh_workspace_preset_menu()
+        self.statusBar().showMessage(f"Saved workspace preset: {preset.name}")
+
+    def _apply_workspace_preset(self, preset: WorkspacePreset) -> None:
+        if self.workspace_docks is None:
+            return
+        if preset.workspace_state:
+            self.workspace_docks.restore_state(preset.workspace_state)
+        else:
+            self.workspace_docks.reset_layout()
+            if preset.library_panel_mode == "collapsed":
+                self.workspace_docks.collapse_panel("library")
+            elif preset.library_panel_mode == "hidden":
+                self.workspace_docks.hide_panel("library")
+            if preset.inspector_panel_mode == "collapsed":
+                self.workspace_docks.collapse_panel("inspector")
+            elif preset.inspector_panel_mode == "hidden":
+                self.workspace_docks.hide_panel("inspector")
+        self._set_ui_mode(preset.ui_mode)
+        if self._compare_enabled != preset.compare_enabled:
+            self._handle_compare_toggled(preset.compare_enabled)
+        if self._auto_advance_enabled != preset.auto_advance:
+            self._handle_auto_advance_toggled(preset.auto_advance)
+        if self._burst_groups_enabled != preset.burst_groups:
+            self._handle_burst_groups_toggled(preset.burst_groups)
+        if self._burst_stacks_enabled != preset.burst_stacks:
+            self._handle_burst_stacks_toggled(preset.burst_stacks)
+        self._set_column_count(preset.columns)
+        self.statusBar().showMessage(f"Applied workspace preset: {preset.name}")
+
+    def _rename_selected_record(self) -> None:
+        current_index = self.grid.current_index()
+        if current_index >= 0:
+            self._rename_record_prompt(current_index)
+
+    def _resize_selected_record(self) -> None:
+        current_index = self.grid.current_index()
+        if current_index >= 0:
+            self._resize_record_prompt(current_index)
+
+    def _record_supports_resize(self, record: ImageRecord | None) -> bool:
+        if record is None:
+            return False
+        return Path(record.path).suffix.lower() not in RAW_SUFFIXES and Path(record.path).suffix.lower() not in MODEL_SUFFIXES
+
+    def _record_supports_convert(self, record: ImageRecord | None) -> bool:
+        if record is None:
+            return False
+        return Path(record.path).suffix.lower() not in RAW_SUFFIXES and Path(record.path).suffix.lower() not in MODEL_SUFFIXES
+
+    def _start_batch_rename_tool_mode(self) -> None:
+        if not self._current_folder or not self._all_records or self._is_recycle_folder() or self._is_winners_folder():
+            return
+        if self._active_tool_mode == "batch_rename" and self.grid.tool_checkbox_mode():
+            self.statusBar().showMessage("Batch Rename tool is already active.")
+            return
+        if self._active_tool_mode and self._active_tool_mode != "batch_rename":
+            self._cancel_tool_mode(show_message=False)
+        self._active_tool_mode = "batch_rename"
+        self.grid.set_tool_checkbox_mode(True, clear_selection=True)
+        self._refresh_tool_mode_ui()
+        self.statusBar().showMessage("Batch Rename tool active. Use the top-left checkboxes to choose images, then click Run.")
+
+    def _start_batch_resize_tool_mode(self) -> None:
+        if not self._current_folder or not self._all_records or self._is_recycle_folder():
+            return
+        if not any(self._record_supports_resize(record) for record in self._all_records):
+            return
+        if self._active_tool_mode == "batch_resize" and self.grid.tool_checkbox_mode():
+            self.statusBar().showMessage("Batch Resize tool is already active.")
+            return
+        if self._active_tool_mode and self._active_tool_mode != "batch_resize":
+            self._cancel_tool_mode(show_message=False)
+        self._active_tool_mode = "batch_resize"
+        self.grid.set_tool_checkbox_mode(True, clear_selection=True)
+        self._refresh_tool_mode_ui()
+        self.statusBar().showMessage("Batch Resize tool active. Use the top-left checkboxes to choose images, then click Run.")
+
+    def _start_batch_convert_tool_mode(self) -> None:
+        if not self._current_folder or not self._all_records or self._is_recycle_folder():
+            return
+        if not any(self._record_supports_convert(record) for record in self._all_records):
+            return
+        if self._active_tool_mode == "batch_convert" and self.grid.tool_checkbox_mode():
+            self.statusBar().showMessage("Batch Convert tool is already active.")
+            return
+        if self._active_tool_mode and self._active_tool_mode != "batch_convert":
+            self._cancel_tool_mode(show_message=False)
+        self._active_tool_mode = "batch_convert"
+        self.grid.set_tool_checkbox_mode(True, clear_selection=True)
+        self._refresh_tool_mode_ui()
+        self.statusBar().showMessage("Batch Convert tool active. Use the top-left checkboxes to choose images, then click Run.")
+
+    def _run_active_tool_mode(self) -> None:
+        if self._active_tool_mode == "batch_rename":
+            records = self._selected_records_for_tool_mode()
+            if not records:
+                return
+            scope_label = f"Tool selection: {len(records)} image bundle(s)"
+            applied = self._open_batch_rename_dialog(
+                records,
+                title="Batch Rename Selection",
+                scope_label=scope_label,
+                folder=self._current_folder,
+            )
+            if applied and self._active_tool_mode:
+                self._cancel_tool_mode(show_message=False)
+            return
+        if self._active_tool_mode == "batch_resize":
+            selected_records = self._selected_records_for_tool_mode()
+            sources = self._selected_resize_sources_for_tool_mode()
+            if not sources:
+                self.statusBar().showMessage("Batch Resize skips RAW files. Select one or more non-RAW images.")
+                return
+            skipped_raw_count = max(0, len(selected_records) - len(sources))
+            scope_label = f"Tool selection: {len(sources)} image(s)"
+            raw_note = "Resize can't be used on RAW files."
+            if skipped_raw_count:
+                scope_label = (
+                    f"{scope_label}\n"
+                    f"{skipped_raw_count} RAW file(s) were skipped because resize can't be used on RAW files."
+                )
+            applied = self._open_resize_dialog(
+                sources,
+                title="Batch Resize Selection",
+                scope_label=scope_label,
+                show_preview=True,
+                raw_note=raw_note,
+            )
+            if applied and self._active_tool_mode:
+                self._cancel_tool_mode(show_message=False)
+            return
+        if self._active_tool_mode != "batch_convert":
+            return
+        selected_records = self._selected_records_for_tool_mode()
+        sources = self._selected_convert_sources_for_tool_mode()
+        if not sources:
+            self.statusBar().showMessage("Batch Convert skips RAW files. Select one or more non-RAW images.")
+            return
+        skipped_raw_count = max(0, len(selected_records) - len(sources))
+        scope_label = f"Tool selection: {len(sources)} image(s)"
+        raw_note = "Convert can't be used on RAW files."
+        if skipped_raw_count:
+            scope_label = (
+                f"{scope_label}\n"
+                f"{skipped_raw_count} RAW file(s) were skipped because convert can't be used on RAW files."
+            )
+        applied = self._open_convert_dialog(
+            sources,
+            title="Batch Convert Selection",
+            scope_label=scope_label,
+            show_preview=True,
+            raw_note=raw_note,
+        )
+        if applied and self._active_tool_mode:
+            self._cancel_tool_mode(show_message=False)
+
+    def _cancel_tool_mode(self, checked: bool = False, *, show_message: bool = True) -> None:
+        del checked
+        if not self._active_tool_mode and not self.grid.tool_checkbox_mode():
+            return
+        self._active_tool_mode = ""
+        self.grid.set_tool_checkbox_mode(False, clear_selection=True)
+        self._refresh_tool_mode_ui()
+        if show_message:
+            self.statusBar().showMessage("Exited tool selection mode")
+
+    def _refresh_tool_mode_ui(self) -> None:
+        active = bool(self._active_tool_mode)
+        self.tool_mode_bar.setVisible(active)
+        if not active:
+            return
+        selected_count = len(self._selected_records_for_tool_mode())
+        if self._active_tool_mode == "batch_rename":
+            self.tool_mode_title.setText("Batch Rename")
+            self.tool_mode_help.setText("Select images with the checkboxes, then run the rename tool.")
+            self.tool_mode_run_button.setText("Run Batch Rename")
+            self.tool_mode_selection.setText(f"{selected_count} selected")
+            self.tool_mode_run_button.setEnabled(selected_count > 0)
+        elif self._active_tool_mode == "batch_resize":
+            eligible_count = len(self._selected_resize_sources_for_tool_mode())
+            skipped_raw_count = max(0, selected_count - eligible_count)
+            self.tool_mode_title.setText("Batch Resize")
+            self.tool_mode_help.setText("Select images with the checkboxes, then run the resize tool. RAW files are skipped.")
+            self.tool_mode_run_button.setText("Run Batch Resize")
+            if skipped_raw_count:
+                self.tool_mode_selection.setText(f"{eligible_count} eligible | {skipped_raw_count} RAW skipped")
+            else:
+                self.tool_mode_selection.setText(f"{eligible_count} eligible")
+            self.tool_mode_run_button.setEnabled(eligible_count > 0)
+        elif self._active_tool_mode == "batch_convert":
+            eligible_count = len(self._selected_convert_sources_for_tool_mode())
+            skipped_raw_count = max(0, selected_count - eligible_count)
+            self.tool_mode_title.setText("Batch Convert")
+            self.tool_mode_help.setText("Select images with the checkboxes, then run the convert tool. RAW files are skipped.")
+            self.tool_mode_run_button.setText("Run Batch Convert")
+            if skipped_raw_count:
+                self.tool_mode_selection.setText(f"{eligible_count} eligible | {skipped_raw_count} RAW skipped")
+            else:
+                self.tool_mode_selection.setText(f"{eligible_count} eligible")
+            self.tool_mode_run_button.setEnabled(eligible_count > 0)
+        else:
+            self.tool_mode_title.setText("Tool")
+            self.tool_mode_help.setText("Select images, then run the active tool.")
+            self.tool_mode_run_button.setText("Run")
+            self.tool_mode_selection.setText(f"{selected_count} selected")
+            self.tool_mode_run_button.setEnabled(selected_count > 0)
+
+    def _selected_records_for_tool_mode(self) -> list[ImageRecord]:
+        return [
+            self._records[index]
+            for index in self.grid.selected_indexes()
+            if 0 <= index < len(self._records)
+        ]
+
+    def _resize_source_for_index(self, index: int) -> ResizeSourceItem | None:
+        record = self._record_at(index)
+        if record is None or not self._record_supports_resize(record):
+            return None
+
+        displayed_path = self.grid.displayed_variant_path(index)
+        candidates: list[str] = []
+        if displayed_path and displayed_path in record.edited_paths:
+            candidates.append(displayed_path)
+        candidates.append(record.path)
+        preview_source = self._preview_source_path(record)
+        if preview_source:
+            candidates.append(preview_source)
+        candidates.extend(record.companion_paths)
+        candidates.extend(record.edited_paths)
+        if displayed_path:
+            candidates.append(displayed_path)
+
+        source_path = next((path for path in candidates if path and os.path.exists(path)), "")
+        if not source_path:
+            source_path = next((path for path in candidates if path), "")
+        if not source_path:
+            return None
+
+        return ResizeSourceItem(
+            source_path=source_path,
+            source_name=Path(source_path).name,
+        )
+
+    def _selected_resize_sources_for_tool_mode(self) -> list[ResizeSourceItem]:
+        return [
+            source
+            for index in self.grid.selected_indexes()
+            if 0 <= index < len(self._records)
+            for source in [self._resize_source_for_index(index)]
+            if source is not None
+        ]
+
+    def _convert_source_for_index(self, index: int) -> ConvertSourceItem | None:
+        record = self._record_at(index)
+        if record is None or not self._record_supports_convert(record):
+            return None
+
+        displayed_path = self.grid.displayed_variant_path(index)
+        candidates: list[str] = []
+        if displayed_path and displayed_path in record.edited_paths:
+            candidates.append(displayed_path)
+        candidates.append(record.path)
+        preview_source = self._preview_source_path(record)
+        if preview_source:
+            candidates.append(preview_source)
+        candidates.extend(record.companion_paths)
+        candidates.extend(record.edited_paths)
+        if displayed_path:
+            candidates.append(displayed_path)
+
+        source_path = next((path for path in candidates if path and os.path.exists(path)), "")
+        if not source_path:
+            source_path = next((path for path in candidates if path), "")
+        if not source_path:
+            return None
+
+        return ConvertSourceItem(
+            source_path=source_path,
+            source_name=Path(source_path).name,
+        )
+
+    def _selected_convert_sources_for_tool_mode(self) -> list[ConvertSourceItem]:
+        return [
+            source
+            for index in self.grid.selected_indexes()
+            if 0 <= index < len(self._records)
+            for source in [self._convert_source_for_index(index)]
+            if source is not None
+        ]
+
+    def _workflow_export_source_for_record(self, record: ImageRecord) -> ResizeSourceItem | None:
+        preferred = record.preferred_edit_path or ""
+        candidates: list[str] = []
+        if preferred:
+            candidates.append(preferred)
+        preview_source = self._preview_source_path(record)
+        if preview_source:
+            candidates.append(preview_source)
+        candidates.append(record.path)
+        candidates.extend(record.companion_paths)
+        candidates.extend(record.edited_paths)
+
+        source_path = next((path for path in candidates if path and os.path.exists(path)), "")
+        if not source_path:
+            source_path = next((path for path in candidates if path), "")
+        if not source_path:
+            return None
+        return ResizeSourceItem(source_path=source_path, source_name=Path(source_path).name)
+
+    def _workflow_export_sources_for_records(self, records: list[ImageRecord]) -> list[ResizeSourceItem]:
+        sources: list[ResizeSourceItem] = []
+        seen: set[str] = set()
+        for record in records:
+            source = self._workflow_export_source_for_record(record)
+            if source is None:
+                continue
+            key = normalized_path_key(source.source_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append(source)
+        return sources
+
+    def _workflow_destination_dir(self, recipe: WorkflowRecipe, destination_root: str | None = None) -> str:
+        root = normalize_filesystem_path(destination_root or self._current_folder or "")
+        if not root:
+            return ""
+        if recipe.destination_subfolder:
+            return normalize_filesystem_path(str(Path(root) / recipe.destination_subfolder))
+        return root
+
+    def _workflow_archive_path(self, recipe: WorkflowRecipe, destination_root: str | None = None) -> str:
+        root = normalize_filesystem_path(destination_root or self._current_folder or "")
+        if not root:
+            return ""
+        archive_format = archive_format_for_key(recipe.archive_format)
+        base_name = recipe.destination_subfolder.strip() or recipe.name or "handoff"
+        return str(Path(root) / f"{base_name}{archive_format.suffix}")
+
+    def _workflow_record_folder_name(self, record: ImageRecord) -> str:
+        return Path(record.name).stem or "record"
+
+    def _run_workflow_recipe(
+        self,
+        recipe: WorkflowRecipe,
+        *,
+        destination_root: str | None = None,
+        records: list[ImageRecord] | None = None,
+    ) -> None:
+        selected_records = records if records is not None else self._selected_records_for_workflow()
+        if not selected_records:
+            self.statusBar().showMessage("Select one or more images before running a workflow recipe.")
+            return
+
+        destination_dir = self._workflow_destination_dir(recipe, destination_root)
+        if recipe.uses_transform_export:
+            if not destination_dir:
+                self.statusBar().showMessage("Choose a destination folder for this handoff recipe.")
+                return
+            sources = self._workflow_export_sources_for_records(selected_records)
+            if not sources:
+                self.statusBar().showMessage("No exportable sources were available for the selected records.")
+                return
+            plan = build_workflow_export_plan(sources, recipe, destination_dir=destination_dir)
+            if not plan.can_apply:
+                if plan.general_error:
+                    QMessageBox.warning(self, "Workflow Recipe", plan.general_error)
+                else:
+                    self.statusBar().showMessage("The workflow export plan could not be built.")
+                return
+            self._start_workflow_export_task(plan)
+            return
+
+        if recipe.transfer_mode == RECIPE_TRANSFER_ARCHIVE:
+            archive_path = self._workflow_archive_path(recipe, destination_root)
+            source_paths = self._archive_source_paths_for_records(selected_records)
+            if not archive_path or not source_paths:
+                self.statusBar().showMessage("No bundle files were available to archive for this recipe.")
+                return
+            self._start_archive_create_task(
+                source_paths,
+                archive_path,
+                archive_key=recipe.archive_format,
+                root_dir=self._current_folder or None,
+            )
+            return
+
+        if not destination_dir:
+            self.statusBar().showMessage("Choose a destination folder for this workflow recipe.")
+            return
+
+        destructive = recipe.transfer_mode == RECIPE_TRANSFER_MOVE
+        if destructive:
+            confirmation = QMessageBox.question(
+                self,
+                "Run Workflow Recipe?",
+                f"This recipe moves the selected bundles into:\n\n{destination_dir}\n\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirmation != QMessageBox.StandardButton.Yes:
+                return
+
+        processed = 0
+        for record in list(selected_records):
+            target_dir = destination_dir
+            if recipe.group_by_record_folder:
+                target_dir = normalize_filesystem_path(str(Path(destination_dir) / self._workflow_record_folder_name(record)))
+            if recipe.transfer_mode == RECIPE_TRANSFER_MOVE:
+                if self._move_record_to_path(record.path, target_dir):
+                    processed += 1
+            else:
+                if self._copy_record_to_path(record.path, target_dir):
+                    processed += 1
+        if processed:
+            self._remember_recent_destination(destination_dir)
+        action_label = "Moved" if recipe.transfer_mode == RECIPE_TRANSFER_MOVE else "Copied"
+        self.statusBar().showMessage(f"{action_label} {processed} bundle(s) with recipe: {recipe.name}")
+
+    def _resize_record_prompt(self, index: int) -> bool:
+        if self._is_recycle_folder():
+            return False
+        source = self._resize_source_for_index(index)
+        if source is None:
+            self.statusBar().showMessage("Resize can't be used on RAW files.")
+            return False
+        return self._open_resize_dialog(
+            [source],
+            title="Resize Image",
+            scope_label=f"Selected image: {source.source_name}",
+            show_preview=False,
+            raw_note="Resize can't be used on RAW files.",
+        )
+
+    def _convert_record_prompt(self, index: int) -> bool:
+        if self._is_recycle_folder():
+            return False
+        source = self._convert_source_for_index(index)
+        if source is None:
+            self.statusBar().showMessage("Convert can't be used on RAW files.")
+            return False
+        return self._open_convert_dialog(
+            [source],
+            title="Convert Image",
+            scope_label=f"Selected image: {source.source_name}",
+            show_preview=False,
+            raw_note="Convert can't be used on RAW files.",
+        )
+
+    def _archive_source_paths_for_records(self, records: list[ImageRecord]) -> tuple[str, ...]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for record in records:
+            for path in self._record_paths(record):
+                key = normalized_path_key(path)
+                if key in seen or not os.path.exists(path):
+                    continue
+                seen.add(key)
+                ordered.append(path)
+        return tuple(ordered)
+
+    def _default_archive_base_name(self, records: list[ImageRecord]) -> str:
+        if len(records) == 1:
+            return Path(records[0].name).stem or "archive"
+        folder_name = Path(self._current_folder).name if self._current_folder else "selection"
+        return f"{folder_name} selection".strip()
+
+    def _archive_output_path_for_records(self, records: list[ImageRecord], archive_key: str) -> str:
+        archive_format = archive_format_for_key(archive_key)
+        initial_directory = self._current_folder or QDir.homePath()
+        initial_path = str(Path(initial_directory) / f"{self._default_archive_base_name(records)}{archive_format.suffix}")
+        chosen_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            f"Create {archive_format.label} Archive",
+            initial_path,
+            archive_format.save_filter,
+        )
+        if not chosen_path:
+            return ""
+        try:
+            archive_path = ensure_archive_suffix(chosen_path, archive_format)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Archive Path", str(exc))
+            return ""
+        if os.path.exists(archive_path):
+            replace = QMessageBox.question(
+                self,
+                "Replace Archive?",
+                f"{Path(archive_path).name} already exists.\n\nDo you want to replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if replace != QMessageBox.StandardButton.Yes:
+                return ""
+        return archive_path
+
+    def _create_archive_for_records(self, records: list[ImageRecord], archive_key: str) -> None:
+        if not records:
+            return
+        archive_path = self._archive_output_path_for_records(records, archive_key)
+        if not archive_path:
+            return
+        source_paths = self._archive_source_paths_for_records(records)
+        if not source_paths:
+            self.statusBar().showMessage("No files were available to archive.")
+            return
+        self._start_archive_create_task(
+            source_paths,
+            archive_path,
+            archive_key=archive_key,
+            root_dir=self._current_folder or None,
+        )
+
+    def _extract_archive_prompt(self) -> None:
+        initial_directory = self._current_folder or QDir.homePath()
+        archive_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Extract Archive",
+            initial_directory,
+            EXTRACT_ARCHIVE_FILTER,
+        )
+        if not archive_path:
+            return
+        default_destination = self._current_folder or str(Path(archive_path).parent)
+        destination_dir = QFileDialog.getExistingDirectory(self, "Extract Archive To", default_destination)
+        if not destination_dir:
+            return
+        self._start_archive_extract_task(archive_path, destination_dir)
+
+    def _extract_archive_into_folder_prompt(self, destination_dir: str) -> None:
+        if not destination_dir:
+            return
+        archive_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Extract Archive Here",
+            destination_dir,
+            EXTRACT_ARCHIVE_FILTER,
+        )
+        if not archive_path:
+            return
+        self._start_archive_extract_task(archive_path, destination_dir)
+
+    def _start_archive_create_task(
+        self,
+        source_paths: tuple[str, ...],
+        archive_path: str,
+        *,
+        archive_key: str,
+        root_dir: str | None,
+        refresh_folder: str = "",
+        archive_label: str = "",
+    ) -> None:
+        if self._active_archive_task is not None:
+            self.statusBar().showMessage("An archive task is already running.")
+            return
+        archive_format = archive_format_for_key(archive_key)
+        task = CreateArchiveTask(source_paths, archive_path, archive_key=archive_key, root_dir=root_dir)
+        task.signals.started.connect(self._handle_archive_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_archive_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_archive_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_archive_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_archive_task = task
+        self._archive_context = ArchiveExecutionContext(
+            mode="create",
+            archive_path=archive_path,
+            destination_dir=str(Path(archive_path).parent),
+            archive_label=archive_label or f"{archive_format.label} archive",
+            refresh_folder=refresh_folder,
+        )
+        self._archive_pool.start(task)
+
+    def _start_archive_extract_task(self, archive_path: str, destination_dir: str) -> None:
+        if self._active_archive_task is not None:
+            self.statusBar().showMessage("An archive task is already running.")
+            return
+        normalized_destination = normalize_filesystem_path(destination_dir)
+        if not normalized_destination:
+            return
+        task = ExtractArchiveTask(archive_path, normalized_destination)
+        task.signals.started.connect(self._handle_archive_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_archive_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_archive_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_archive_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_archive_task = task
+        self._archive_context = ArchiveExecutionContext(
+            mode="extract",
+            archive_path=archive_path,
+            destination_dir=normalized_destination,
+            refresh_folder=normalized_destination if normalized_path_key(normalized_destination) == normalized_path_key(self._current_folder) else "",
+        )
+        self._archive_pool.start(task)
+
+    def _start_ai_training_task(
+        self,
+        task: object,
+        *,
+        action: str,
+        title: str,
+        folder: str | None = None,
+        launch_labeling_after_prepare: bool = False,
+        reference_bank_path: str = "",
+        run_id: str = "",
+        run_label: str = "",
+        log_path: str = "",
+    ) -> bool:
+        if self._active_ai_training_task is not None or self._active_ai_task is not None:
+            self.statusBar().showMessage("An AI task is already running.")
+            return False
+
+        target_folder = folder or self._current_folder
+        if not target_folder:
+            self.statusBar().showMessage("Choose a folder first.")
+            return False
+
+        signals = getattr(task, "signals", None)
+        if signals is None:
+            return False
+
+        signals.started.connect(self._handle_ai_training_started, Qt.ConnectionType.QueuedConnection)
+        if hasattr(signals, "stage"):
+            signals.stage.connect(self._handle_ai_training_stage, Qt.ConnectionType.QueuedConnection)
+        signals.progress.connect(self._handle_ai_training_progress, Qt.ConnectionType.QueuedConnection)
+        if hasattr(signals, "log"):
+            signals.log.connect(self._handle_ai_training_log, Qt.ConnectionType.QueuedConnection)
+        signals.finished.connect(self._handle_ai_training_finished, Qt.ConnectionType.QueuedConnection)
+        signals.failed.connect(self._handle_ai_training_failed, Qt.ConnectionType.QueuedConnection)
+
+        self._ai_training_log_lines = []
+        self._ai_training_stage_text = "Preparing AI training task..."
+        self._ai_training_run_label = run_label.strip()
+        if self._ai_training_stats_dialog is not None:
+            self._ai_training_stats_dialog.set_stage_text(self._ai_training_stage_text)
+            self._ai_training_stats_dialog.set_run_text(self._ai_training_run_label or "Not started")
+            self._ai_training_stats_dialog.clear_log()
+
+        self._active_ai_training_task = task
+        self._ai_training_context = AITrainingExecutionContext(
+            action=action,
+            folder=target_folder,
+            title=title,
+            launch_labeling_after_prepare=launch_labeling_after_prepare,
+            reference_bank_path=reference_bank_path,
+            run_id=run_id.strip(),
+            run_label=run_label.strip(),
+            log_path=log_path.strip(),
+        )
+        dialog = self._show_ai_training_progress_dialog(1, title=title)
+        dialog.set_status_text("Preparing AI training task...")
+        dialog.set_stats_button_enabled(True)
+        QApplication.processEvents()
+        self._update_ai_toolbar_state()
+        self._ai_training_pool.start(task)
+        return True
+
+    def _prepare_ai_training_data(
+        self,
+        _checked: bool = False,
+        *,
+        launch_labeling_after_prepare: bool = False,
+        dialog_title: str | None = None,
+        status_message: str | None = None,
+    ) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before preparing training data.")
+            return
+        task = PrepareTrainingDataTask(folder=Path(self._current_folder), runtime=self._ai_runtime)
+        resolved_title = dialog_title or "Prepare Training Data"
+        started = self._start_ai_training_task(
+            task,
+            action="prepare",
+            title=resolved_title,
+            launch_labeling_after_prepare=launch_labeling_after_prepare,
+        )
+        if started:
+            self.statusBar().showMessage(
+                status_message
+                or (
+                    "Preparing model data for the current folder..."
+                )
+            )
+
+    def _launch_ai_labeling_app(self, *, folder: str | None = None) -> None:
+        target_folder = folder or self._current_folder
+        if not target_folder:
+            self.statusBar().showMessage("Choose a folder before collecting training labels.")
+            return
+        try:
+            training_paths = self._ai_training_paths_for_folder(target_folder)
+            artifacts_dir = training_paths.labeling_artifacts_dir if training_paths is not None else None
+            process = launch_labeling_app(
+                self._ai_runtime,
+                folder=target_folder,
+                annotator_id=self._session_id,
+                artifacts_dir=artifacts_dir,
+                appearance_mode=self._current_child_appearance_mode(),
+                parent_pid=os.getpid(),
+                sync_file_path=self._child_sync_state_path,
+            )
+            self._register_child_process(process, name="AI Label Collection")
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Collect Training Labels",
+                f"Could not open the labeling app.\n\n{exc}",
+            )
+            return
+        self.statusBar().showMessage("Opened training label collection for the current folder.")
+
+    def _open_ai_data_selection(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before collecting training labels.")
+            return
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        if training_paths is not None and labeling_artifacts_ready(training_paths):
+            self._launch_ai_labeling_app()
+            return
+        if not self._all_records:
+            QMessageBox.information(
+                self,
+                "Collect Training Labels",
+                "No images are loaded for the current folder yet.",
+            )
+            return
+        task = PrepareLabelingCandidatesTask(
+            folder=Path(self._current_folder),
+            records=tuple(self._all_records),
+        )
+        started = self._start_ai_training_task(
+            task,
+            action="label_candidates",
+            title="Collect Training Labels",
+            launch_labeling_after_prepare=True,
+        )
+        if started:
+            self.statusBar().showMessage("Opening label collection and building local candidate groups...")
+
+    def _train_ai_ranker(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before training a ranker.")
+            return
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        if training_paths is None or not ai_training_artifacts_ready(training_paths):
+            QMessageBox.information(
+                self,
+                "Train Ranker",
+                "Prepare training data for this folder before training a ranker.",
+            )
+            return
+        pairwise_count, cluster_count = count_label_records(training_paths)
+        if pairwise_count <= 0 and cluster_count <= 0:
+            QMessageBox.information(
+                self,
+                "Train Ranker",
+                "No saved labels were found yet.\n\nUse Collect Training Labels first.",
+            )
+            return
+        options = self._prompt_train_ranker_options(
+            pairwise_count=pairwise_count,
+            cluster_count=cluster_count,
+            title="Train Ranker",
+        )
+        if options is None:
+            return
+        task = TrainRankerTask(
+            folder=Path(self._current_folder),
+            runtime=self._ai_runtime,
+            options=options,
+        )
+        started = self._start_ai_training_task(
+            task,
+            action="train",
+            title="Train Ranker",
+            reference_bank_path=options.reference_bank_path,
+            run_id=task.run_id,
+            run_label=task.display_name,
+            log_path=str(task.log_path),
+        )
+        if started:
+            self.statusBar().showMessage("Training a new AI preference ranker...")
+
+    def _run_full_ai_training_pipeline(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before running the full training pipeline.")
+            return
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        if training_paths is None:
+            self.statusBar().showMessage("Open a folder first.")
+            return
+        pairwise_count, cluster_count = count_label_records(training_paths)
+        if pairwise_count <= 0 and cluster_count <= 0:
+            QMessageBox.information(
+                self,
+                "Run Full Training Pipeline",
+                "The one-click pipeline still needs your human labels first.\n\nUse Collect Training Labels before running the full pipeline.",
+            )
+            return
+        options = self._prompt_train_ranker_options(
+            pairwise_count=pairwise_count,
+            cluster_count=cluster_count,
+            title="Run Full Training Pipeline",
+        )
+        if options is None:
+            return
+        self._ai_training_pipeline = AITrainingPipelineState(folder=self._current_folder, options=options, step_index=0)
+        self._start_next_ai_training_pipeline_step()
+
+    def _start_next_ai_training_pipeline_step(self) -> None:
+        pipeline = self._ai_training_pipeline
+        if pipeline is None:
+            return
+        if normalized_path_key(pipeline.folder) != normalized_path_key(self._current_folder):
+            self._select_folder(pipeline.folder)
+        steps = ("prepare", "train", "evaluate", "score")
+        if pipeline.step_index >= len(steps):
+            self._ai_training_pipeline = None
+            return
+        step = steps[pipeline.step_index]
+        if step == "prepare":
+            task = PrepareTrainingDataTask(folder=Path(pipeline.folder), runtime=self._ai_runtime)
+            started = self._start_ai_training_task(
+                task,
+                action="pipeline_prepare",
+                title="AI Training Pipeline",
+                folder=pipeline.folder,
+            )
+            if started:
+                self.statusBar().showMessage("Pipeline 1/4: preparing training data...")
+            return
+        if step == "train":
+            task = TrainRankerTask(folder=Path(pipeline.folder), runtime=self._ai_runtime, options=pipeline.options)
+            started = self._start_ai_training_task(
+                task,
+                action="pipeline_train",
+                title="AI Training Pipeline",
+                folder=pipeline.folder,
+                reference_bank_path=pipeline.options.reference_bank_path,
+                run_id=task.run_id,
+                run_label=task.display_name,
+                log_path=str(task.log_path),
+            )
+            if started:
+                self.statusBar().showMessage("Pipeline 2/4: training the new ranker...")
+            return
+        if step == "evaluate":
+            checkpoint_path = self._current_trained_checkpoint_path()
+            if checkpoint_path is None:
+                self._ai_training_pipeline = None
+                QMessageBox.warning(self, "AI Training Pipeline", "Training finished, but no checkpoint is available for evaluation.")
+                return
+            task = EvaluateRankerTask(
+                folder=Path(pipeline.folder),
+                runtime=self._ai_runtime,
+                checkpoint_path=checkpoint_path,
+                reference_bank_path=pipeline.options.reference_bank_path,
+            )
+            started = self._start_ai_training_task(
+                task,
+                action="pipeline_evaluate",
+                title="AI Training Pipeline",
+                folder=pipeline.folder,
+                reference_bank_path=pipeline.options.reference_bank_path,
+            )
+            if started:
+                self.statusBar().showMessage("Pipeline 3/4: evaluating the active ranker...")
+            return
+        checkpoint_path = self._current_trained_checkpoint_path()
+        if checkpoint_path is None:
+            self._ai_training_pipeline = None
+            QMessageBox.warning(self, "AI Training Pipeline", "No active checkpoint is available for scoring.")
+            return
+        task = ScoreCurrentFolderTask(
+            folder=Path(pipeline.folder),
+            runtime=self._ai_runtime,
+            checkpoint_path=checkpoint_path,
+            reference_bank_path=pipeline.options.reference_bank_path,
+        )
+        started = self._start_ai_training_task(
+            task,
+            action="pipeline_score",
+            title="AI Training Pipeline",
+            folder=pipeline.folder,
+            reference_bank_path=pipeline.options.reference_bank_path,
+        )
+        if started:
+            self.statusBar().showMessage("Pipeline 4/4: scoring the current folder with the active ranker...")
+
+    def _prompt_train_ranker_options(
+        self,
+        *,
+        pairwise_count: int,
+        cluster_count: int,
+        title: str,
+    ) -> RankerTrainingOptions | None:
+        dialog = TrainRankerDialog(
+            pairwise_count=pairwise_count,
+            cluster_count=cluster_count,
+            active_reference_bank_path=self._active_reference_bank_path,
+            parent=self,
+        )
+        dialog.setWindowTitle(title)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return None
+        return dialog.accepted_options()
+
+    def _evaluate_ai_ranker(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before evaluating a ranker.")
+            return
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        if training_paths is None or not ai_training_artifacts_ready(training_paths):
+            QMessageBox.information(
+                self,
+                "Evaluate Ranker",
+                "Prepare training data for this folder before evaluating a ranker.",
+            )
+            return
+        pairwise_count, cluster_count = count_label_records(training_paths)
+        if pairwise_count <= 0 and cluster_count <= 0:
+            QMessageBox.information(
+                self,
+                "Evaluate Ranker",
+                "No saved labels were found yet.\n\nUse Collect Training Labels first.",
+            )
+            return
+        checkpoint_path = self._current_trained_checkpoint_path()
+        if checkpoint_path is None:
+            QMessageBox.information(
+                self,
+                "Evaluate Ranker",
+                "No trained checkpoint is available yet.",
+            )
+            return
+        reference_bank_path = self._active_reference_bank_path if self._active_reference_bank_path else ""
+        task = EvaluateRankerTask(
+            folder=Path(self._current_folder),
+            runtime=self._ai_runtime,
+            checkpoint_path=checkpoint_path,
+            reference_bank_path=reference_bank_path,
+        )
+        started = self._start_ai_training_task(
+            task,
+            action="evaluate",
+            title="Evaluate Trained Ranker",
+            reference_bank_path=reference_bank_path,
+        )
+        if started:
+            self.statusBar().showMessage("Evaluating the trained ranker...")
+
+    def _score_current_folder_with_trained_ranker(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before scoring it with a trained ranker.")
+            return
+        checkpoint_path = self._current_trained_checkpoint_path()
+        if checkpoint_path is None:
+            QMessageBox.information(
+                self,
+                "Score With Trained Ranker",
+                "No trained checkpoint is available yet.",
+            )
+            return
+        try:
+            self._set_active_ai_checkpoint(str(checkpoint_path))
+        except FileNotFoundError:
+            pass
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        if training_paths is None or not ai_training_artifacts_ready(training_paths):
+            self.statusBar().showMessage("No prepared artifacts found. Running the full AI pipeline with the active trained ranker...")
+            self._run_ai_pipeline()
+            return
+        reference_bank_path = self._active_reference_bank_path if self._active_reference_bank_path else ""
+        task = ScoreCurrentFolderTask(
+            folder=Path(self._current_folder),
+            runtime=self._ai_runtime,
+            checkpoint_path=checkpoint_path,
+            reference_bank_path=reference_bank_path,
+        )
+        started = self._start_ai_training_task(
+            task,
+            action="score",
+            title="Score With Trained Ranker",
+            reference_bank_path=reference_bank_path,
+        )
+        if started:
+            self.statusBar().showMessage("Scoring the current folder with the trained ranker...")
+
+    def _build_ai_reference_bank(self) -> None:
+        initial_dir = self._current_folder or QDir.homePath()
+        reference_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Choose Reference Images Folder",
+            initial_dir,
+        )
+        if not reference_dir:
+            return
+        output_root = self._reference_bank_output_dir()
+        output_name = Path(reference_dir).name or "reference_bank"
+        output_dir = output_root / output_name
+        task = BuildReferenceBankTask(
+            runtime=self._ai_runtime,
+            options=ReferenceBankBuildOptions(
+                reference_dir=reference_dir,
+                output_dir=str(output_dir),
+                batch_size=8,
+                device="auto",
+            ),
+        )
+        started = self._start_ai_training_task(
+            task,
+            action="reference_bank",
+            title="Build Reference Bank",
+            folder=self._current_folder or reference_dir,
+            reference_bank_path=str(output_dir / "reference_bank.npz"),
+        )
+        if started:
+            self.statusBar().showMessage("Building a reference bank from the selected folder...")
+
+    def _manage_ai_rankers(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before opening Ranker Center.")
+            return
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        if training_paths is None:
+            self.statusBar().showMessage("Choose a folder before opening Ranker Center.")
+            return
+        runs = list_ranker_runs(training_paths)
+        pairwise_count, cluster_count = count_label_records(training_paths)
+        active_checkpoint = self._current_trained_checkpoint_path()
+        active_run = next((run for run in runs if run.is_active), None)
+        active_ranker_label = active_run.display_name if active_run is not None else "Default built-in checkpoint"
+        active_reference_label = (
+            Path(active_run.reference_bank_path).name
+            if active_run is not None and active_run.reference_bank_path
+            else (Path(self._active_reference_bank_path).name if self._active_reference_bank_path else "None")
+        )
+        summary = RankerCenterSummary(
+            folder_path=self._current_folder,
+            hidden_root=str(training_paths.hidden_root),
+            pairwise_labels=pairwise_count,
+            cluster_labels=cluster_count,
+            candidates_ready=labeling_artifacts_ready(training_paths),
+            prepared_ready=ai_training_artifacts_ready(training_paths),
+            active_ranker_label=active_ranker_label,
+            active_reference_label=active_reference_label,
+            saved_rankers=len(runs),
+            has_active_checkpoint=active_checkpoint is not None,
+        )
+        dialog = RankerCenterDialog(summary=summary, runs=runs, parent=self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        requested_action = dialog.requested_action
+        if requested_action == "collect_labels":
+            self._open_ai_data_selection()
+            return
+        if requested_action == "prepare_data":
+            self._prepare_ai_training_data()
+            return
+        if requested_action == "run_full_pipeline":
+            self._run_full_ai_training_pipeline()
+            return
+        if requested_action == "train":
+            self._train_ai_ranker()
+            return
+        if requested_action == "evaluate":
+            self._evaluate_ai_ranker()
+            return
+        if requested_action == "score":
+            self._score_current_folder_with_trained_ranker()
+            return
+        if requested_action == "use_default":
+            clear_active_ranker_selection(training_paths)
+            self._clear_active_ai_checkpoint_override()
+            self._clear_active_reference_bank_path()
+            self._update_ai_toolbar_state()
+            self.statusBar().showMessage("Switched back to the default built-in ranker.")
+            return
+        selected_run = dialog.selected_run()
+        if requested_action != "use_selected" or selected_run is None or selected_run.checkpoint_path is None:
+            return
+        set_active_ranker_selection(
+            training_paths,
+            checkpoint_path=selected_run.checkpoint_path,
+            run_id=selected_run.run_id,
+            display_name=selected_run.display_name,
+        )
+        try:
+            self._set_active_ai_checkpoint(str(selected_run.checkpoint_path))
+        except FileNotFoundError as exc:
+            QMessageBox.warning(self, "Ranker Center", f"Could not activate the selected ranker.\n\n{exc}")
+            return
+        if selected_run.reference_bank_path:
+            try:
+                self._set_active_reference_bank_path(selected_run.reference_bank_path)
+            except FileNotFoundError:
+                pass
+        else:
+            self._clear_active_reference_bank_path()
+        self._update_ai_toolbar_state()
+        self.statusBar().showMessage(f"Active ranker set to {selected_run.display_name}.")
+
+    def _clear_ai_trained_model(self) -> None:
+        if self._active_ai_training_task is not None or self._active_ai_task is not None:
+            self.statusBar().showMessage("Wait for the current AI task to finish first.")
+            return
+
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        current_folder_checkpoint = resolve_trained_checkpoint(training_paths) if training_paths is not None else None
+        active_checkpoint = self._current_trained_checkpoint_path()
+
+        if current_folder_checkpoint is None and active_checkpoint is None:
+            self.statusBar().showMessage("No trained model is available to clear.")
+            return
+
+        message = (
+            "Reset the active ranker and switch back to the default checkpoint?\n\n"
+            "Saved ranker versions will stay on disk so you can switch back later from Ranker Center."
+        )
+        title = "Reset Active Ranker"
+
+        confirmation = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        if training_paths is not None:
+            clear_active_ranker_selection(training_paths)
+        self._clear_active_ai_checkpoint_override()
+        self._update_ai_toolbar_state()
+        self.statusBar().showMessage("Reset the active model to the default checkpoint.")
 
     def _accept_selected_records(self) -> None:
         records = self._selected_records_for_actions()
@@ -814,6 +5422,11 @@ class MainWindow(QMainWindow):
         records = self._selected_records_for_actions()
         if records:
             self._batch_move_records(records)
+
+    def _move_selected_records_to_new_folder(self) -> None:
+        records = self._selected_records_for_actions()
+        if records:
+            self._batch_move_records_to_new_folder(records)
 
     def _delete_selected_records(self) -> None:
         records = self._selected_records_for_actions()
@@ -847,6 +5460,10 @@ class MainWindow(QMainWindow):
             return
         self._batch_open_in_photoshop(records)
 
+    def _create_folder_in_current_folder(self) -> None:
+        parent = self._current_folder or QDir.homePath()
+        self._create_folder_prompt(parent, select_created=False)
+
     def _load_winner_mode(self) -> WinnerMode:
         raw = self._settings.value(self.WINNER_MODE_KEY, WinnerMode.COPY.value, str)
         for mode in WinnerMode:
@@ -871,8 +5488,207 @@ class MainWindow(QMainWindow):
                 favorites.append(path)
         return favorites
 
+    def _load_recent_destinations(self) -> list[str]:
+        raw = self._settings.value(self.RECENT_DESTINATIONS_KEY, [], list)
+        if isinstance(raw, str):
+            raw = [raw]
+        destinations: list[str] = []
+        seen: set[str] = set()
+        for path in raw or []:
+            if not isinstance(path, str) or not path or not os.path.isdir(path):
+                continue
+            normalized = normalized_path_key(path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            destinations.append(path)
+        return destinations[:10]
+
+    def _load_saved_filter_presets(self) -> list[SavedFilterPreset]:
+        raw = self._settings.value(self.SAVED_FILTERS_KEY, "", str)
+        if not isinstance(raw, str) or not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(payload, list):
+            return []
+        presets: list[SavedFilterPreset] = []
+        seen_names: set[str] = set()
+        for item in payload:
+            preset = deserialize_saved_filter_preset(item if isinstance(item, dict) else None)
+            if preset is None:
+                continue
+            normalized_name = preset.name.casefold()
+            if normalized_name in seen_names:
+                continue
+            seen_names.add(normalized_name)
+            presets.append(preset)
+        return presets
+
+    def _load_recent_command_ids(self) -> list[str]:
+        raw = self._settings.value(self.RECENT_COMMANDS_KEY, [], list)
+        if isinstance(raw, str):
+            raw = [raw]
+        command_ids: list[str] = []
+        for value in raw or []:
+            if isinstance(value, str) and value and value not in command_ids:
+                command_ids.append(value)
+        return command_ids[:12]
+
+    def _apply_saved_ai_training_preferences(self) -> None:
+        checkpoint_override = self._settings.value(self.AI_CHECKPOINT_OVERRIDE_KEY, "", str)
+        if isinstance(checkpoint_override, str) and checkpoint_override:
+            candidate = Path(checkpoint_override).expanduser()
+            if candidate.exists():
+                self._ai_runtime = replace(self._ai_runtime, checkpoint_path=candidate.resolve())
+            else:
+                self._settings.remove(self.AI_CHECKPOINT_OVERRIDE_KEY)
+
+        reference_bank_path = self._settings.value(self.AI_REFERENCE_BANK_KEY, "", str)
+        if isinstance(reference_bank_path, str) and reference_bank_path:
+            candidate = Path(reference_bank_path).expanduser()
+            if candidate.exists():
+                self._active_reference_bank_path = str(candidate.resolve())
+            else:
+                self._settings.remove(self.AI_REFERENCE_BANK_KEY)
+                self._active_reference_bank_path = ""
+
+    def _set_active_ai_checkpoint(self, checkpoint_path: str) -> None:
+        candidate = Path(checkpoint_path).expanduser()
+        if not candidate.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {candidate}")
+        resolved = candidate.resolve()
+        self._ai_runtime = replace(self._ai_runtime, checkpoint_path=resolved)
+        if normalized_path_key(str(resolved)) == normalized_path_key(str(self._default_ai_checkpoint_path)):
+            self._settings.remove(self.AI_CHECKPOINT_OVERRIDE_KEY)
+        else:
+            self._settings.setValue(self.AI_CHECKPOINT_OVERRIDE_KEY, str(resolved))
+
+    def _clear_active_ai_checkpoint_override(self) -> None:
+        self._ai_runtime = replace(self._ai_runtime, checkpoint_path=self._default_ai_checkpoint_path)
+        self._settings.remove(self.AI_CHECKPOINT_OVERRIDE_KEY)
+
+    def _set_active_reference_bank_path(self, reference_bank_path: str) -> None:
+        candidate = Path(reference_bank_path).expanduser()
+        if not candidate.exists():
+            raise FileNotFoundError(f"Reference bank not found: {candidate}")
+        resolved = str(candidate.resolve())
+        self._active_reference_bank_path = resolved
+        self._settings.setValue(self.AI_REFERENCE_BANK_KEY, resolved)
+
+    def _clear_active_reference_bank_path(self) -> None:
+        self._active_reference_bank_path = ""
+        self._settings.remove(self.AI_REFERENCE_BANK_KEY)
+
+    def _ai_training_paths_for_folder(self, folder: str | None = None):
+        target_folder = folder or self._current_folder
+        if not target_folder:
+            return None
+        try:
+            return build_ai_training_paths(target_folder)
+        except Exception:
+            return None
+
+    def _current_trained_checkpoint_path(self) -> Path | None:
+        paths = self._ai_training_paths_for_folder()
+        if paths is not None:
+            checkpoint = resolve_trained_checkpoint(paths)
+            if checkpoint is not None:
+                return checkpoint
+        current_checkpoint = self._ai_runtime.checkpoint_path
+        if (
+            current_checkpoint.exists()
+            and normalized_path_key(str(current_checkpoint))
+            != normalized_path_key(str(self._default_ai_checkpoint_path))
+        ):
+            return current_checkpoint
+        return None
+
+    def _reference_bank_output_dir(self) -> Path:
+        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        root = Path(app_data) if app_data else (Path.home() / "AppData" / "Local" / "ImageTriage")
+        return root / "ai_training" / "reference_bank"
+
     def _save_favorites(self) -> None:
         self._settings.setValue(self.FAVORITES_KEY, self._favorites)
+
+    def _save_recent_destinations(self) -> None:
+        self._settings.setValue(self.RECENT_DESTINATIONS_KEY, self._recent_destinations[:10])
+
+    def _save_saved_filter_presets(self) -> None:
+        payload = [serialize_saved_filter_preset(preset) for preset in self._saved_filter_presets]
+        self._settings.setValue(self.SAVED_FILTERS_KEY, json.dumps(payload))
+
+    def _save_recent_command_ids(self) -> None:
+        self._settings.setValue(self.RECENT_COMMANDS_KEY, self._recent_command_ids[:12])
+
+    def _remember_recent_destination(self, destination_dir: str) -> None:
+        normalized = normalize_filesystem_path(destination_dir)
+        if not normalized or not os.path.isdir(normalized):
+            return
+        self._recent_destinations = [
+            normalized,
+            *[
+                item
+                for item in self._recent_destinations
+                if normalized_path_key(item) != normalized_path_key(normalized)
+            ],
+        ][:10]
+        self._save_recent_destinations()
+
+    def _recent_destination_paths(self, *, exclude_current_folder: bool = False) -> list[str]:
+        current_key = normalized_path_key(self._current_folder) if exclude_current_folder and self._current_folder else ""
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for path in self._recent_destinations:
+            if not os.path.isdir(path):
+                continue
+            normalized = normalized_path_key(path)
+            if normalized in seen or (current_key and normalized == current_key):
+                continue
+            seen.add(normalized)
+            cleaned.append(path)
+        if cleaned != self._recent_destinations:
+            self._recent_destinations = cleaned[:10]
+            self._save_recent_destinations()
+        return cleaned
+
+    def _add_recent_destination_actions(self, menu: QMenu, title: str) -> dict[QAction, str]:
+        recent_menu = menu.addMenu(title)
+        actions: dict[QAction, str] = {}
+        for destination in self._recent_destination_paths(exclude_current_folder=True):
+            label = Path(destination).name or destination
+            action = recent_menu.addAction(f"{label}  [{destination}]")
+            actions[action] = destination
+        if not actions:
+            empty_action = recent_menu.addAction("No recent folders")
+            empty_action.setEnabled(False)
+        return actions
+
+    def _add_send_to_actions(self, menu: QMenu) -> dict[str, object]:
+        send_to_menu = menu.addMenu("Send To")
+        copy_action = send_to_menu.addAction("Copy To Folder...")
+        copy_recent_actions = self._add_recent_destination_actions(send_to_menu, "Copy To Recent")
+        send_to_menu.addSeparator()
+        move_action = send_to_menu.addAction("Move To Folder...")
+        move_new_folder_action = send_to_menu.addAction("Move To New Folder...")
+        move_recent_actions = self._add_recent_destination_actions(send_to_menu, "Move To Recent")
+        send_to_menu.addSeparator()
+        zip_action = send_to_menu.addAction("ZIP Archive...")
+        seven_zip_action = send_to_menu.addAction("7-Zip Archive...")
+        tar_gz_action = send_to_menu.addAction("TAR.GZ Archive...")
+        return {
+            "copy_action": copy_action,
+            "copy_recent_actions": copy_recent_actions,
+            "move_action": move_action,
+            "move_new_folder_action": move_new_folder_action,
+            "move_recent_actions": move_recent_actions,
+            "zip_action": zip_action,
+            "seven_zip_action": seven_zip_action,
+            "tar_gz_action": tar_gz_action,
+        }
 
     def _refresh_favorites_panel(self) -> None:
         if not hasattr(self, "favorites_list"):
@@ -925,11 +5741,38 @@ class MainWindow(QMainWindow):
 
     def _handle_auto_advance_toggled(self, checked: bool) -> None:
         self._auto_advance_enabled = checked
+        self.preview.set_auto_advance_enabled(checked)
         self._update_action_states()
         mode = "on" if checked else "off"
         self.statusBar().showMessage(f"Auto-advance {mode}")
 
+    def _handle_burst_groups_toggled(self, checked: bool) -> None:
+        self._burst_groups_enabled = checked
+        self._settings.setValue(self.BURST_GROUPS_KEY, checked)
+        self._refresh_burst_group_view()
+        self._update_action_states()
+        group_count = len(self._visible_burst_groups)
+        if checked and group_count:
+            self.statusBar().showMessage(f"Smart groups on ({group_count} group(s) in the current view)")
+            return
+        mode = "on" if checked else "off"
+        self.statusBar().showMessage(f"Smart groups {mode}")
+
+    def _handle_burst_stacks_toggled(self, checked: bool) -> None:
+        self._burst_stacks_enabled = checked
+        self._settings.setValue(self.BURST_STACKS_KEY, checked)
+        self._refresh_burst_group_view()
+        self._update_action_states()
+        group_count = len(self._visible_burst_groups)
+        if checked and group_count:
+            self.statusBar().showMessage(f"Smart stacks on ({group_count} stack(s) in the current view)")
+            return
+        mode = "on" if checked else "off"
+        self.statusBar().showMessage(f"Smart stacks {mode}")
+
     def _handle_compare_toggled(self, checked: bool) -> None:
+        if not checked and self._winner_ladder_state is not None:
+            self._finish_winner_ladder(reopen_preview=False, show_message=False)
         self._compare_enabled = checked
         self.preview.set_compare_mode(checked)
         self._update_action_states()
@@ -960,6 +5803,8 @@ class MainWindow(QMainWindow):
             self._handle_auto_bracket_toggled(enabled)
 
     def _handle_preview_compare_mode_changed(self, enabled: bool) -> None:
+        if not enabled and self._winner_ladder_state is not None:
+            self._finish_winner_ladder(reopen_preview=False, show_message=False)
         if self._compare_enabled != enabled:
             if self.actions is not None:
                 self.actions.compare_mode.setChecked(enabled)
@@ -999,6 +5844,19 @@ class MainWindow(QMainWindow):
     def _handle_preview_keep_requested(self, path: str) -> None:
         self._dispatch_preview_action(path, self._keep_record)
 
+    def _handle_preview_rename_requested(self, path: str) -> None:
+        index = self._record_index_for_path(path)
+        if index is None:
+            return
+        renamed_path = self._rename_record_prompt(index)
+        if not renamed_path:
+            return
+        renamed_index = self._record_index_for_path(renamed_path)
+        if renamed_index is not None:
+            self.grid.set_current_index(renamed_index)
+            if self.preview.isVisible():
+                self._open_preview(renamed_index)
+
     def _handle_preview_delete_requested(self, path: str) -> None:
         self._dispatch_preview_action(path, self._delete_record)
 
@@ -1015,6 +5873,195 @@ class MainWindow(QMainWindow):
     def _handle_preview_tag_requested(self, path: str) -> None:
         self._dispatch_preview_action(path, self._tag_record, preserve_anchor=True)
 
+    def _handle_preview_winner_ladder_choice(self, path: str) -> None:
+        state = self._winner_ladder_state
+        if state is None:
+            return
+        challengers = list(state.get("challenger_paths", ()))
+        if not challengers:
+            self._finish_winner_ladder(reopen_preview=True)
+            return
+        winner_path = str(state.get("winner_path") or "")
+        challenger_path = challengers[0]
+        preferred_path = challenger_path if normalized_path_key(path) == normalized_path_key(challenger_path) else winner_path
+        self._record_pairwise_preference(
+            left_path=winner_path,
+            right_path=challenger_path,
+            preferred_path=preferred_path,
+            source_mode="winner_ladder",
+            group_id=str(state.get("group_id") or ""),
+            extra_payload={"winner_path": winner_path, "challenger_path": challenger_path},
+        )
+        if normalized_path_key(preferred_path) == normalized_path_key(challenger_path):
+            state["winner_path"] = challenger_path
+        state["challenger_paths"] = challengers[1:]
+        if not state["challenger_paths"]:
+            self._finish_winner_ladder(reopen_preview=True)
+            return
+        self._show_winner_ladder_state()
+
+    def _handle_preview_winner_ladder_skip(self) -> None:
+        state = self._winner_ladder_state
+        if state is None:
+            return
+        challengers = list(state.get("challenger_paths", ()))
+        if not challengers:
+            self._finish_winner_ladder(reopen_preview=True)
+            return
+        state["challenger_paths"] = challengers[1:]
+        if not state["challenger_paths"]:
+            self._finish_winner_ladder(reopen_preview=True)
+            return
+        self._show_winner_ladder_state()
+
+    def _handle_preview_closed(self) -> None:
+        if self._winner_ladder_state is not None:
+            self._finish_winner_ladder(reopen_preview=False, show_message=False)
+
+    def _winner_ladder_candidate_rows(self, index: int) -> tuple[list[tuple[int, ImageRecord]], str, str]:
+        record = self._record_at(index)
+        if record is None:
+            return [], "", ""
+        burst_recommendation = self._burst_recommendation_for_record(record)
+        if burst_recommendation is not None and burst_recommendation.group_size > 1:
+            rows = [
+                (row_index, self._records[row_index])
+                for row_index in self._visible_review_group_rows_by_id.get(burst_recommendation.group_id, ())
+                if 0 <= row_index < len(self._records)
+            ]
+            rows.sort(
+                key=lambda item: (
+                    self._burst_recommendation_for_record(item[1]).rank_in_group
+                    if self._burst_recommendation_for_record(item[1]) is not None
+                    else 99,
+                    item[1].name.casefold(),
+                )
+            )
+            if len(rows) >= 2:
+                return rows, "burst", burst_recommendation.group_id
+        current_ai = self._ai_result_for_index(index)
+        if current_ai is not None and current_ai.group_size > 1:
+            rows = [(row_index, record) for row_index, record, _result in self._visible_ai_group_rows(current_ai.group_id)]
+            if len(rows) >= 2:
+                return rows, "ai", current_ai.group_id
+        selected_indexes = [item_index for item_index in self.grid.selected_indexes() if 0 <= item_index < len(self._records)]
+        if len(selected_indexes) >= 2:
+            rows = [(item_index, self._records[item_index]) for item_index in selected_indexes]
+            rows.sort(key=lambda item: (item[0] != index, item[0]))
+            return rows, "selection", ""
+        return [], "", ""
+
+    def _winner_ladder_candidate_count(self, index: int) -> int:
+        rows, _source_mode, _group_id = self._winner_ladder_candidate_rows(index)
+        return len(rows)
+
+    def _preview_entry_for_visible_path(self, path: str, *, label: str = "") -> PreviewEntry | None:
+        index = self._record_index_for_path(path)
+        if index is None:
+            return None
+        record = self._record_at(index)
+        if record is None:
+            return None
+        annotation = self._annotations.get(record.path, SessionAnnotation())
+        displayed_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else self._preview_source_path(record)
+        edited_candidates = self._ordered_edited_candidates(record, displayed_path)
+        edited_path = edited_candidates[0] if edited_candidates else ""
+        return PreviewEntry(
+            record=record,
+            source_path=displayed_path,
+            winner=annotation.winner,
+            reject=annotation.reject,
+            edited_path=edited_path,
+            edited_candidates=tuple(edited_candidates),
+            label=label,
+            ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
+            review_summary=self._review_summary_for_record(record),
+            workflow_summary=self._workflow_summary_for_record(record),
+            workflow_details=self._workflow_detail_lines_for_record(record),
+            placeholder_image=self._preview_placeholder_for_index(index),
+        )
+
+    def _start_winner_ladder(self, index: int) -> None:
+        rows, source_mode, group_id = self._winner_ladder_candidate_rows(index)
+        if len(rows) < 2:
+            self.statusBar().showMessage("Winner Ladder needs a visible burst, AI group, or multi-selection.")
+            return
+        current_record = self._record_at(index)
+        burst_recommendation = self._burst_recommendation_for_record(current_record)
+        current_ai = self._ai_result_for_index(index)
+        winner_path = current_record.path if current_record is not None else rows[0][1].path
+        if source_mode == "burst" and burst_recommendation is not None and burst_recommendation.recommended_path:
+            winner_path = burst_recommendation.recommended_path
+        elif source_mode == "ai" and current_ai is not None and self._ai_bundle is not None:
+            group_results = self._ai_bundle.group_results(current_ai.group_id)
+            if group_results:
+                winner_path = group_results[0].file_path
+        ordered_paths = [record.path for _row_index, record in rows]
+        challengers = [path for path in ordered_paths if normalized_path_key(path) != normalized_path_key(winner_path)]
+        if not challengers:
+            self.statusBar().showMessage("Winner Ladder could not find a challenger for the current winner.")
+            return
+        self._winner_ladder_state = {
+            "winner_path": winner_path,
+            "challenger_paths": challengers,
+            "group_id": group_id,
+            "source_mode": source_mode,
+            "previous_compare_enabled": self._compare_enabled,
+        }
+        self._show_winner_ladder_state()
+
+    def _show_winner_ladder_state(self) -> None:
+        state = self._winner_ladder_state
+        if state is None:
+            return
+        challengers = list(state.get("challenger_paths", ()))
+        if not challengers:
+            self._finish_winner_ladder(reopen_preview=True)
+            return
+        winner_path = str(state.get("winner_path") or "")
+        challenger_path = challengers[0]
+        winner_entry = self._preview_entry_for_visible_path(winner_path, label="Current Winner")
+        challenger_entry = self._preview_entry_for_visible_path(challenger_path, label="Challenger")
+        if winner_entry is None or challenger_entry is None:
+            self._finish_winner_ladder(reopen_preview=False)
+            return
+        self._compare_enabled = True
+        if self.actions is not None:
+            with QSignalBlocker(self.actions.compare_mode):
+                self.actions.compare_mode.setChecked(True)
+        challenger_index = self._record_index_for_path(challenger_path)
+        if challenger_index is not None:
+            self.grid.set_current_index(challenger_index)
+        self.preview.set_compare_mode(True)
+        self.preview.set_winner_ladder_mode(True)
+        self.preview.set_compare_count(2)
+        self.preview.show_entries([winner_entry, challenger_entry])
+        self.preview._set_focused_slot(1)
+        self.statusBar().showMessage(
+            f"Winner Ladder: {Path(winner_path).name} vs {Path(challenger_path).name}"
+        )
+
+    def _finish_winner_ladder(self, *, reopen_preview: bool, show_message: bool = True) -> None:
+        state = self._winner_ladder_state
+        if state is None:
+            return
+        winner_path = str(state.get("winner_path") or "")
+        previous_compare_enabled = bool(state.get("previous_compare_enabled"))
+        self._winner_ladder_state = None
+        self.preview.set_winner_ladder_mode(False)
+        self._compare_enabled = previous_compare_enabled
+        if self.actions is not None:
+            with QSignalBlocker(self.actions.compare_mode):
+                self.actions.compare_mode.setChecked(previous_compare_enabled)
+        self.preview.set_compare_mode(previous_compare_enabled)
+        winner_index = self._record_index_for_path(winner_path)
+        if winner_index is not None:
+            self.grid.set_current_index(winner_index)
+            if reopen_preview and self.preview.isVisible():
+                self._open_preview(winner_index)
+        if show_message and winner_path:
+            self.statusBar().showMessage(f"Winner Ladder complete: {Path(winner_path).name}")
+
     def _refresh_folder(self) -> None:
         if self._current_folder:
             self._load_folder(self._current_folder, force_refresh=True)
@@ -1022,11 +6069,12 @@ class MainWindow(QMainWindow):
     def _load_folder(self, folder: str, *, force_refresh: bool = False) -> None:
         if not folder:
             return
+        if self._active_tool_mode or self.grid.tool_checkbox_mode():
+            self._cancel_tool_mode(show_message=False)
         folder_changed = normalized_path_key(folder) != normalized_path_key(self._current_folder)
         self._current_folder = folder
+        self._set_scope_state(kind="folder", scope_id=normalized_path_key(folder), label=folder)
         self._settings.setValue(self.LAST_FOLDER_KEY, folder)
-        self.manual_path_label.setText(folder)
-        self.ai_path_label.setText(folder)
         self._scan_token += 1
         token = self._scan_token
         self._scan_showed_cached = False
@@ -1054,6 +6102,17 @@ class MainWindow(QMainWindow):
             self._all_records_by_path = {}
             self._records = []
             self._record_index_by_path = {}
+            self._edited_candidates_cache = {}
+            self._visible_review_group_rows_by_id = {}
+            self._visible_ai_group_rows_by_id = {}
+            self._accepted_count = 0
+            self._rejected_count = 0
+            self._unreviewed_count = 0
+            self._summary_ai_text = "AI: Off" if self._ai_bundle is None else self._summary_ai_text
+            self._summary_ai_tooltip = "No AI export is currently loaded." if self._ai_bundle is None else self._summary_ai_tooltip
+            self._filter_metadata_by_path = {}
+            self._filter_metadata_record_paths = set()
+            self._filter_metadata_loaded_paths = set()
             self.grid.set_empty_message(f"Scanning {Path(folder).name}...")
             self.grid.set_items([])
             self._set_annotation_views()
@@ -1072,13 +6131,115 @@ class MainWindow(QMainWindow):
         task.signals.failed.connect(self._handle_scan_failed, Qt.ConnectionType.QueuedConnection)
         self._scan_pool.start(task)
 
+    def _load_virtual_scope_records(
+        self,
+        records: list[ImageRecord],
+        *,
+        scope_kind: str,
+        scope_id: str,
+        scope_label: str,
+    ) -> None:
+        if self._active_tool_mode or self.grid.tool_checkbox_mode():
+            self._cancel_tool_mode(show_message=False)
+        self._scan_in_progress = False
+        self._scan_token += 1
+        self._current_folder = ""
+        self._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
+        self._clear_ai_results_state(preserve_setting=True)
+        self._refresh_recycle_button()
+        self.grid.set_empty_message("Choose a folder to start triaging images.")
+        self._apply_loaded_records(records)
+        self.statusBar().showMessage(f"Loaded {scope_label} ({len(records)} image bundle(s))")
+
     def _apply_loaded_records(self, records: list[ImageRecord]) -> None:
         self._all_records = records
         self._all_records_by_path = {record.path: record for record in records}
+        self._edited_candidates_cache = {}
+        self._review_intelligence = None
+        self._reset_filter_metadata_index(records)
+        current_paths = {record.path for record in records}
+        self._annotations = {
+            path: annotation
+            for path, annotation in self._annotations.items()
+            if path in current_paths
+        }
+        for path, annotation in load_sidecar_annotations(records).items():
+            self._annotations[path] = annotation
         persisted = self._decision_store.load_annotations(self._session_id, records)
         for path, annotation in persisted.items():
             self._annotations[path] = annotation
+        self._load_correction_events_for_current_folder()
+        self._refresh_taste_and_burst_recommendations()
         self._apply_records_view()
+        self._start_review_intelligence_analysis()
+
+    def _start_review_intelligence_analysis(self) -> None:
+        if not self._all_records:
+            self._review_intelligence = None
+            return
+        self._review_intelligence_token += 1
+        token = self._review_intelligence_token
+        scope_key = self._current_scope_key()
+        task = BuildReviewIntelligenceTask(
+            folder=scope_key,
+            token=token,
+            records=tuple(self._all_records),
+        )
+        task.signals.finished.connect(self._handle_review_intelligence_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_review_intelligence_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_review_intelligence_task = task
+        self._review_intelligence_pool.start(task)
+
+    def _handle_review_intelligence_finished(self, folder: str, token: int, bundle: ReviewIntelligenceBundle) -> None:
+        if token != self._review_intelligence_token or folder != self._current_scope_key():
+            return
+        self._active_review_intelligence_task = None
+        self._review_intelligence = bundle
+        current_path = self._current_visible_record_path()
+        self._refresh_taste_and_burst_recommendations()
+        self._apply_records_view(current_path=current_path)
+        if self.preview.isVisible():
+            index = self.grid.current_index()
+            if index >= 0:
+                self._open_preview(index)
+
+    def _handle_review_intelligence_failed(self, folder: str, token: int, message: str) -> None:
+        if token != self._review_intelligence_token or folder != self._current_scope_key():
+            return
+        self._active_review_intelligence_task = None
+        self._review_intelligence = None
+        self.statusBar().showMessage(f"Smart grouping fallback active: {message}")
+
+    def _reset_filter_metadata_index(self, records: list[ImageRecord]) -> None:
+        self._filter_metadata_by_path = {}
+        self._filter_metadata_loaded_paths = set()
+        self._filter_metadata_record_paths = {record.path for record in records}
+        for record in records:
+            cached = self._filter_metadata_manager.get_cached(record)
+            if cached is not None:
+                self._filter_metadata_by_path[record.path] = cached
+                self._filter_metadata_loaded_paths.add(record.path)
+                continue
+            self._filter_metadata_manager.request_metadata(record)
+
+    def _handle_filter_metadata_ready(self, key, metadata) -> None:
+        record = self._all_records_by_path.get(key.path)
+        if record is None or record.path not in self._filter_metadata_record_paths:
+            return
+        self._filter_metadata_by_path[record.path] = metadata
+        self._filter_metadata_loaded_paths.add(record.path)
+        if self._filter_query.requires_metadata or self._burst_groups_enabled or self._burst_stacks_enabled:
+            self._metadata_reapply_timer.start()
+        else:
+            self._update_filter_summary()
+
+    def _handle_metadata_filter_batch_update(self) -> None:
+        current_path = self._current_visible_record_path()
+        if self._filter_query.requires_metadata:
+            self._apply_records_view(current_path=current_path)
+            return
+        if self._burst_groups_enabled or self._burst_stacks_enabled:
+            self._refresh_burst_group_view()
 
     def _handle_scan_cached(self, folder: str, token: int, records: list[ImageRecord]) -> None:
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder) or not records:
@@ -1112,6 +6273,21 @@ class MainWindow(QMainWindow):
         self._all_records_by_path = {}
         self._records = []
         self._record_index_by_path = {}
+        self._edited_candidates_cache = {}
+        self._visible_review_group_rows_by_id = {}
+        self._visible_ai_group_rows_by_id = {}
+        self._accepted_count = 0
+        self._rejected_count = 0
+        self._unreviewed_count = 0
+        self._correction_events = []
+        self._taste_profile = TasteProfile()
+        self._burst_recommendations = {}
+        self._workflow_insights_by_path = {}
+        self._summary_ai_text = "AI: Off" if self._ai_bundle is None else self._summary_ai_text
+        self._summary_ai_tooltip = "No AI export is currently loaded." if self._ai_bundle is None else self._summary_ai_tooltip
+        self._filter_metadata_by_path = {}
+        self._filter_metadata_record_paths = set()
+        self._filter_metadata_loaded_paths = set()
         self.grid.set_empty_message("Could not scan this folder.")
         self.grid.set_items([])
         self._refresh_recycle_button()
@@ -1121,6 +6297,8 @@ class MainWindow(QMainWindow):
     def _handle_current_changed(self, index: int) -> None:
         self._update_action_states()
         self._update_status(index=index)
+        if not self.preview.isVisible():
+            self._schedule_preview_preload(index)
 
     def _handle_grid_selection_changed(self) -> None:
         self._update_action_states()
@@ -1243,7 +6421,12 @@ class MainWindow(QMainWindow):
     def _refresh_ai_state(self) -> None:
         ai_results = self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {}
         self.grid.set_ai_results(ai_results)
+        self._refresh_taste_and_burst_recommendations()
+        current_path = self._current_visible_record_path()
+        if self._all_records:
+            self._apply_records_view(current_path=current_path)
         self._refresh_viewport_mode()
+        self._refresh_ai_summary_cache()
         self._update_ai_summary()
         self._update_ai_toolbar_state()
         self._update_status()
@@ -1267,14 +6450,30 @@ class MainWindow(QMainWindow):
             self.actions.run_ai_culling.setEnabled(current_folder and self._active_ai_task is None)
             self.actions.load_saved_ai.setEnabled(current_folder and saved_exists and self._active_ai_task is None)
             self.actions.open_ai_report.setEnabled(bool(ai_loaded and self._ai_bundle and self._ai_bundle.report_html_path))
+            can_run_training = current_folder and self._active_ai_training_task is None and self._active_ai_task is None
+            self.actions.open_ai_data_selection.setEnabled(can_run_training)
+            self.actions.run_full_ai_training_pipeline.setEnabled(can_run_training)
+            self.actions.prepare_ai_training_data.setEnabled(can_run_training)
+            self.actions.train_ai_ranker.setEnabled(can_run_training)
+            self.actions.manage_ai_rankers.setEnabled(can_run_training)
+            self.actions.evaluate_ai_ranker.setEnabled(can_run_training)
+            self.actions.score_ai_with_trained_ranker.setEnabled(can_run_training)
+            self.actions.build_ai_reference_bank.setEnabled(can_run_training)
+            self.actions.clear_ai_trained_model.setEnabled(can_run_training)
             self.actions.next_ai_pick.setEnabled(ai_loaded)
             self.actions.next_unreviewed_ai_pick.setEnabled(ai_loaded)
             self.actions.compare_ai_group.setEnabled(ai_loaded and can_compare_group)
+            self.actions.review_ai_disagreements.setEnabled(ai_loaded)
+            self.actions.taste_calibration_wizard.setEnabled(current_folder and len(self._all_records) >= 2)
             self.actions.clear_ai_results.setEnabled(ai_loaded)
             if FilterMode.AI_GROUPED in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_GROUPED].setEnabled(ai_loaded)
             if FilterMode.AI_TOP_PICKS in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_TOP_PICKS].setEnabled(ai_loaded)
+            if FilterMode.AI_DISAGREEMENTS in self.actions.filter_actions:
+                self.actions.filter_actions[FilterMode.AI_DISAGREEMENTS].setEnabled(ai_loaded)
+        for mode, action in self._ai_state_actions.items():
+            action.setEnabled(ai_loaded or mode == AIStateFilter.ALL)
 
         if self._active_ai_task is not None:
             self.ai_status_label.setText(self._build_ai_progress_text())
@@ -1283,15 +6482,20 @@ class MainWindow(QMainWindow):
             self.ai_status_label.setText(f"Loaded {export_name}")
         elif saved_exists:
             self.ai_status_label.setText("Saved AI cache available")
+        elif not current_folder and self._scope_kind != "folder":
+            self.ai_status_label.setText("AI cache stays folder-local in virtual scopes")
         else:
             self.ai_status_label.setText("No AI cache for this folder yet")
 
+        active_checkpoint = self._current_trained_checkpoint_path()
         runtime_lines = [
             f"Python: {self._ai_runtime.python_executable}",
             f"Engine: {self._ai_runtime.engine_root}",
-            f"Checkpoint: {self._ai_runtime.checkpoint_path}",
+            f"Checkpoint: {active_checkpoint or self._ai_runtime.checkpoint_path}",
             f"Local staging: {self._ai_runtime.local_stage_mode}",
         ]
+        if self._active_reference_bank_path:
+            runtime_lines.append(f"Reference bank: {self._active_reference_bank_path}")
         if self._ai_runtime.local_stage_root is not None:
             runtime_lines.append(f"Stage root: {self._ai_runtime.local_stage_root}")
         if ai_paths is not None:
@@ -1310,10 +6514,19 @@ class MainWindow(QMainWindow):
 
         try:
             paths = build_ai_workflow_paths(self._current_folder)
+            training_paths = self._ai_training_paths_for_folder(self._current_folder)
+            labels_dir = training_paths.labels_dir if training_paths is not None and training_paths.labels_dir.exists() else None
+            reference_bank_path = Path(self._active_reference_bank_path) if self._active_reference_bank_path else None
+            runtime = self._ai_runtime
+            active_checkpoint = self._current_trained_checkpoint_path()
+            if active_checkpoint is not None:
+                runtime = replace(runtime, checkpoint_path=active_checkpoint)
             task = AIRunTask(
                 folder=Path(self._current_folder),
-                runtime=self._ai_runtime,
+                runtime=runtime,
                 paths=paths,
+                labels_dir=labels_dir,
+                reference_bank_path=reference_bank_path,
             )
         except Exception as exc:
             QMessageBox.warning(self, "AI Culling", f"Could not prepare the AI run.\n\n{exc}")
@@ -1445,26 +6658,145 @@ class MainWindow(QMainWindow):
         return " | ".join(parts)
 
     def _update_ai_summary(self) -> None:
+        self.summary_ai.setText(self._summary_ai_text)
+        self.summary_ai.setToolTip(self._summary_ai_tooltip)
+
+    def _refresh_ai_summary_cache(self) -> None:
         if self._ai_bundle is None:
-            self.summary_ai.setText("AI: Off")
-            self.summary_ai.setToolTip("No AI export is currently loaded.")
+            self._summary_ai_text = "AI: Off"
+            self._summary_ai_tooltip = "No AI export is currently loaded."
             return
 
         total_records = len(self._all_records)
         matched = self._ai_bundle.count_matches(self._all_records)
         source_name = Path(self._ai_bundle.export_csv_path).stem
         if total_records:
-            self.summary_ai.setText(f"AI: {matched}/{total_records} matched")
+            self._summary_ai_text = f"AI: {matched}/{total_records} matched"
         else:
-            self.summary_ai.setText(f"AI: {source_name}")
+            self._summary_ai_text = f"AI: {source_name}"
 
         tooltip_lines = [
             f"Source: {self._ai_bundle.source_path}",
             f"Export: {self._ai_bundle.export_csv_path}",
         ]
+        bucket_counts = {
+            AIConfidenceBucket.OBVIOUS_WINNER: 0,
+            AIConfidenceBucket.LIKELY_KEEPER: 0,
+            AIConfidenceBucket.NEEDS_REVIEW: 0,
+            AIConfidenceBucket.LIKELY_REJECT: 0,
+        }
+        if self._ai_bundle.results_by_path:
+            for result in self._ai_bundle.results_by_path.values():
+                bucket_counts[result.confidence_bucket] = bucket_counts.get(result.confidence_bucket, 0) + 1
+            tooltip_lines.append(
+                "Buckets: "
+                + ", ".join(
+                    [
+                        f"winners {bucket_counts[AIConfidenceBucket.OBVIOUS_WINNER]}",
+                        f"keepers {bucket_counts[AIConfidenceBucket.LIKELY_KEEPER]}",
+                        f"review {bucket_counts[AIConfidenceBucket.NEEDS_REVIEW]}",
+                        f"rejects {bucket_counts[AIConfidenceBucket.LIKELY_REJECT]}",
+                    ]
+                )
+            )
         if self._ai_bundle.report_html_path:
             tooltip_lines.append(f"Report: {self._ai_bundle.report_html_path}")
-        self.summary_ai.setToolTip("\n".join(tooltip_lines))
+        self._summary_ai_tooltip = "\n".join(tooltip_lines)
+
+    def _recalculate_review_counts(self) -> None:
+        accepted = 0
+        rejected = 0
+        for record in self._all_records:
+            annotation = self._annotations.get(record.path)
+            if annotation is None:
+                continue
+            if annotation.winner:
+                accepted += 1
+            if annotation.reject:
+                rejected += 1
+        self._accepted_count = accepted
+        self._rejected_count = rejected
+        self._unreviewed_count = max(0, len(self._all_records) - accepted - rejected)
+
+    def _update_filter_summary(self) -> None:
+        labels = active_filter_labels(self._filter_query)
+        preset_label = self._matching_filter_preset_label(self._filter_query)
+        metadata_progress = ""
+        if self._filter_query.requires_metadata and self._filter_metadata_record_paths:
+            loaded = len(self._filter_metadata_loaded_paths)
+            total = len(self._filter_metadata_record_paths)
+            if loaded < total:
+                metadata_progress = f"Metadata {loaded}/{total}"
+        if labels:
+            summary_text = "Filters: " + " | ".join(labels)
+            tooltip_lines = list(labels)
+        else:
+            summary_text = "Filters: All Images"
+            tooltip_lines = ["No search or filters are active."]
+
+        if preset_label:
+            summary_text = f"Preset: {preset_label} | {summary_text}"
+            tooltip_lines.insert(0, f"Preset: {preset_label}")
+        if metadata_progress:
+            summary_text = f"{summary_text} | {metadata_progress}"
+            tooltip_lines.append(metadata_progress)
+
+        if self._burst_groups_enabled or self._burst_stacks_enabled:
+            burst_group_count = len(self._visible_burst_groups)
+            burst_image_count = sum(len(group) for group in self._visible_burst_groups)
+            burst_mode_labels: list[str] = []
+            if self._burst_groups_enabled:
+                burst_mode_labels.append("tags")
+            if self._burst_stacks_enabled:
+                burst_mode_labels.append("stacks")
+            burst_mode_text = ", ".join(burst_mode_labels) if burst_mode_labels else "on"
+            group_label = "Smart groups" if self._review_intelligence is not None else "Bursts"
+            if burst_group_count:
+                burst_summary = f"{group_label} {burst_group_count}"
+                tooltip_lines.append(f"{group_label} {burst_mode_text}: {burst_group_count} group(s), {burst_image_count} image(s)")
+            else:
+                burst_summary = f"{group_label} On"
+                tooltip_lines.append(f"{group_label} {burst_mode_text} is on. No related groups are currently visible.")
+            summary_text = f"{summary_text} | {burst_summary}"
+            visible_total = len(self._records)
+            if visible_total and self._review_intelligence is None:
+                visible_loaded = sum(1 for record in self._records if record.path in self._filter_metadata_loaded_paths)
+                if visible_loaded < visible_total:
+                    tooltip_lines.append(f"Burst detection metadata: {visible_loaded}/{visible_total}")
+        tooltip_text = "\n".join(tooltip_lines)
+
+        self.filter_summary_label.setText(summary_text)
+        self.filter_summary_label.setToolTip(tooltip_text)
+        self.clear_filters_button.setVisible(bool(labels))
+
+        advanced_count = self._advanced_filter_count()
+        button_text = f"Filters ({advanced_count})" if advanced_count else "Filters"
+        button_tooltip = tooltip_text if labels else "Filter by file type, review state, or AI state."
+        if self._saved_filter_presets:
+            button_tooltip = f"{button_tooltip}\nSaved searches: {len(self._saved_filter_presets)}"
+        if preset_label:
+            button_tooltip = f"{button_tooltip}\nActive preset: {preset_label}"
+        for button in (self.manual_filter_button, self.ai_filter_button):
+            button.setText(button_text)
+            button.setToolTip(button_tooltip)
+
+    def _advanced_filter_count(self) -> int:
+        count = int(self._filter_query.file_type != FileTypeFilter.ALL)
+        count += int(self._filter_query.review_state != ReviewStateFilter.ALL)
+        count += int(self._filter_query.ai_state != AIStateFilter.ALL)
+        count += int(bool(normalize_review_round(self._filter_query.review_round)))
+        count += int(bool(self._filter_query.camera_text.strip()))
+        count += int(bool(self._filter_query.lens_text.strip()))
+        count += int(bool(self._filter_query.tag_text.strip()))
+        count += int(self._filter_query.min_rating > 0)
+        count += int(self._filter_query.orientation != OrientationFilter.ALL)
+        count += int(self._filter_query.captured_after is not None)
+        count += int(self._filter_query.captured_before is not None)
+        count += int(self._filter_query.iso_min > 0)
+        count += int(self._filter_query.iso_max > 0)
+        count += int(self._filter_query.focal_min > 0)
+        count += int(self._filter_query.focal_max > 0)
+        return count
 
     def _ai_result_for_record(self, record: ImageRecord | None, *, preferred_path: str | None = None):
         if record is None or self._ai_bundle is None:
@@ -1478,6 +6810,352 @@ class MainWindow(QMainWindow):
         preferred_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else record.path
         return self._ai_result_for_record(record, preferred_path=preferred_path)
 
+    def _review_insight_for_record(self, record: ImageRecord | None):
+        if record is None or self._review_intelligence is None:
+            return None
+        return self._review_intelligence.insight_for_path(record.path)
+
+    def _review_insight_for_path(self, path: str):
+        if not path or self._review_intelligence is None:
+            return None
+        return self._review_intelligence.insight_for_path(path)
+
+    def _burst_recommendation_for_record(self, record: ImageRecord | None):
+        if record is None:
+            return None
+        return self._burst_recommendations.get(record.path) or self._burst_recommendations.get(normalized_path_key(record.path))
+
+    def _workflow_insight_for_record(self, record: ImageRecord | None):
+        if record is None:
+            return None
+        return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(normalized_path_key(record.path))
+
+    def _workflow_summary_for_record(self, record: ImageRecord | None) -> str:
+        insight = self._workflow_insight_for_record(record)
+        if insight is None:
+            return ""
+        return insight.summary_text
+
+    def _workflow_detail_lines_for_record(self, record: ImageRecord | None) -> tuple[str, ...]:
+        insight = self._workflow_insight_for_record(record)
+        if insight is None:
+            return ()
+        return insight.detail_lines
+
+    def _review_summary_for_record(self, record: ImageRecord | None) -> str:
+        parts: list[str] = []
+        insight = self._review_insight_for_record(record)
+        workflow = self._workflow_insight_for_record(record)
+        for text in (
+            insight.summary_text if insight is not None else "",
+            workflow.summary_text if workflow is not None else "",
+        ):
+            if text and text not in parts:
+                parts.append(text)
+        return " | ".join(parts)
+
+    def _load_correction_events_for_current_folder(self) -> None:
+        if not self._current_folder:
+            if self._scope_kind != "folder" and self._all_records:
+                self._correction_events = self._decision_store.load_correction_events(self._session_id)
+            else:
+                self._correction_events = []
+            return
+        self._correction_events = self._decision_store.load_correction_events(self._session_id, self._current_folder)
+
+    def _refresh_taste_and_burst_recommendations(self) -> None:
+        if not self._all_records:
+            self._taste_profile = TasteProfile()
+            self._burst_recommendations = {}
+            self._workflow_insights_by_path = {}
+            return
+        taste_profile, recommendations = build_burst_recommendations(
+            self._all_records,
+            ai_bundle=self._ai_bundle,
+            review_bundle=self._review_intelligence,
+            correction_events=self._correction_events,
+        )
+        self._taste_profile = taste_profile
+        self._burst_recommendations = recommendations
+        self._refresh_workflow_insights_cache()
+
+    def _refresh_workflow_insights_cache(self) -> None:
+        insights: dict[str, RecordWorkflowInsight] = {}
+        for record in self._all_records:
+            annotation = self._annotations.get(record.path, SessionAnnotation())
+            ai_result = self._ai_result_for_record(record)
+            burst_recommendation = self._burst_recommendation_for_record(record)
+            workflow = build_record_workflow_insight(
+                annotation,
+                ai_result,
+                burst_recommendation,
+                self._taste_profile,
+            )
+            insights[record.path] = workflow
+            insights[normalized_path_key(record.path)] = workflow
+        self._workflow_insights_by_path = insights
+
+    def _record_for_path(self, path: str) -> ImageRecord | None:
+        direct = self._all_records_by_path.get(path)
+        if direct is not None:
+            return direct
+        normalized = normalized_path_key(path)
+        for record_path, record in self._all_records_by_path.items():
+            if normalized_path_key(record_path) == normalized:
+                return record
+        return None
+
+    def _annotation_prefers_frame(self, annotation: SessionAnnotation | None) -> bool:
+        if annotation is None:
+            return False
+        round_value = normalize_review_round(annotation.review_round)
+        return annotation.winner or annotation.rating >= 4 or round_value in {REVIEW_ROUND_THIRD_PASS, REVIEW_ROUND_HERO}
+
+    def _comparison_target_for_preference(self, record: ImageRecord, ai_result, burst_recommendation) -> str:
+        if burst_recommendation is not None and burst_recommendation.recommended_path:
+            if normalized_path_key(burst_recommendation.recommended_path) != normalized_path_key(record.path):
+                return burst_recommendation.recommended_path
+        if ai_result is not None and self._ai_bundle is not None and ai_result.group_size > 1 and not ai_result.is_top_pick:
+            group_results = self._ai_bundle.group_results(ai_result.group_id)
+            if group_results:
+                target_path = group_results[0].file_path
+                if normalized_path_key(target_path) != normalized_path_key(record.path):
+                    return target_path
+        return ""
+
+    def _build_pairwise_feedback_payload(self, preferred_path: str, other_path: str) -> dict[str, object]:
+        preferred_record = self._record_for_path(preferred_path)
+        other_record = self._record_for_path(other_path)
+        preferred_ai = self._ai_result_for_record(preferred_record) if preferred_record is not None else None
+        other_ai = self._ai_result_for_record(other_record) if other_record is not None else None
+        preferred_review = self._review_insight_for_path(preferred_path)
+        other_review = self._review_insight_for_path(other_path)
+        return {
+            "preferred_path": preferred_path,
+            "other_path": other_path,
+            "preferred_detail_score": float(getattr(preferred_review, "detail_score", 0.0) or 0.0),
+            "other_detail_score": float(getattr(other_review, "detail_score", 0.0) or 0.0),
+            "preferred_ai_strength": ai_strength(preferred_ai),
+            "other_ai_strength": ai_strength(other_ai),
+            "preferred_ai_bucket": preferred_ai.confidence_bucket.value if preferred_ai is not None else "",
+            "other_ai_bucket": other_ai.confidence_bucket.value if other_ai is not None else "",
+        }
+
+    def _append_jsonl_record(self, path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+    def _record_pairwise_preference(
+        self,
+        *,
+        left_path: str,
+        right_path: str,
+        preferred_path: str,
+        source_mode: str,
+        group_id: str = "",
+        extra_payload: dict[str, object] | None = None,
+    ) -> None:
+        if not self._current_folder or not left_path or not right_path or not preferred_path:
+            return
+        label_payload = build_pairwise_label_payload(
+            folder=self._current_folder,
+            left_path=left_path,
+            right_path=right_path,
+            preferred_path=preferred_path,
+            source_mode=source_mode,
+            cluster_id=group_id,
+            annotator_id=self._session_id,
+        )
+        try:
+            training_paths = prepare_hidden_ai_training_workspace(self._current_folder)
+            self._append_jsonl_record(training_paths.pairwise_labels_path, label_payload)
+        except OSError:
+            return
+
+        other_path = right_path if normalized_path_key(preferred_path) == normalized_path_key(left_path) else left_path
+        payload = self._build_pairwise_feedback_payload(preferred_path, other_path)
+        if extra_payload:
+            payload.update(extra_payload)
+        payload.update(
+            {
+                "label_id": label_payload["label_id"],
+                "left_path": left_path,
+                "right_path": right_path,
+            }
+        )
+        preferred_record = self._record_for_path(preferred_path)
+        preferred_annotation = self._annotations.get(preferred_path, SessionAnnotation())
+        preferred_ai = self._ai_result_for_record(preferred_record) if preferred_record is not None else None
+        self._decision_store.record_correction_event(
+            self._session_id,
+            folder_path=self._current_folder,
+            record_path=preferred_path,
+            other_path=other_path,
+            image_id=str(label_payload.get("image_a_id") or ""),
+            other_image_id=str(label_payload.get("image_b_id") or ""),
+            preferred_image_id=str(label_payload.get("preferred_image_id") or ""),
+            group_id=group_id,
+            event_type="pairwise_preference",
+            decision=str(label_payload.get("decision") or ""),
+            source_mode=source_mode,
+            ai_bucket=preferred_ai.confidence_bucket.value if preferred_ai is not None else "",
+            ai_rank_in_group=preferred_ai.rank_in_group if preferred_ai is not None else 0,
+            ai_group_size=preferred_ai.group_size if preferred_ai is not None else 0,
+            review_round=preferred_annotation.review_round,
+            payload=payload,
+        )
+        self._load_correction_events_for_current_folder()
+        self._refresh_taste_and_burst_recommendations()
+
+    def _record_annotation_feedback_event(
+        self,
+        record: ImageRecord,
+        annotation: SessionAnnotation,
+        ai_result,
+        *,
+        source_mode: str,
+        payload: dict[str, object],
+    ) -> None:
+        if not self._current_folder or ai_result is None:
+            return
+        self._decision_store.record_correction_event(
+            self._session_id,
+            folder_path=self._current_folder,
+            record_path=record.path,
+            image_id=ai_result.image_id,
+            preferred_image_id=ai_result.image_id,
+            group_id=ai_result.group_id,
+            event_type="annotation_feedback",
+            decision="",
+            source_mode=source_mode,
+            ai_bucket=ai_result.confidence_bucket.value,
+            ai_rank_in_group=ai_result.rank_in_group,
+            ai_group_size=ai_result.group_size,
+            review_round=annotation.review_round,
+            payload=payload,
+        )
+        self._load_correction_events_for_current_folder()
+
+    def _capture_annotation_feedback(
+        self,
+        record: ImageRecord,
+        previous_annotation: SessionAnnotation,
+        annotation: SessionAnnotation,
+        *,
+        source_mode: str,
+    ) -> None:
+        ai_result = self._ai_result_for_record(record)
+        burst_recommendation = self._burst_recommendation_for_record(record)
+        previous_level = disagreement_level_for(previous_annotation, ai_result)
+        new_level = disagreement_level_for(annotation, ai_result)
+        if ai_result is not None and (
+            new_level
+            or previous_annotation.rating != annotation.rating
+            or previous_annotation.winner != annotation.winner
+            or previous_annotation.reject != annotation.reject
+            or normalize_review_round(previous_annotation.review_round) != normalize_review_round(annotation.review_round)
+        ):
+            payload = {
+                "timestamp": current_timestamp(),
+                "previous_winner": previous_annotation.winner,
+                "previous_reject": previous_annotation.reject,
+                "previous_rating": previous_annotation.rating,
+                "previous_review_round": previous_annotation.review_round,
+                "winner": annotation.winner,
+                "reject": annotation.reject,
+                "rating": annotation.rating,
+                "review_round": annotation.review_round,
+                "disagreement_level": new_level,
+                "previous_disagreement_level": previous_level,
+            }
+            self._record_annotation_feedback_event(record, annotation, ai_result, source_mode=source_mode, payload=payload)
+
+        if self._annotation_prefers_frame(previous_annotation) or not self._annotation_prefers_frame(annotation):
+            return
+        target_path = self._comparison_target_for_preference(record, ai_result, burst_recommendation)
+        if not target_path:
+            return
+        group_id = ""
+        if burst_recommendation is not None:
+            group_id = burst_recommendation.group_id
+        elif ai_result is not None:
+            group_id = ai_result.group_id
+        self._record_pairwise_preference(
+            left_path=record.path,
+            right_path=target_path,
+            preferred_path=record.path,
+            source_mode=source_mode,
+            group_id=group_id,
+            extra_payload={"record_path": record.path, "comparison_target": target_path},
+        )
+
+    def _preview_path_for_index(self, index: int) -> str:
+        record = self._record_at(index)
+        if record is None:
+            return ""
+        displayed = self.grid.displayed_variant_path(index)
+        return displayed or self._preview_source_path(record)
+
+    def _preview_placeholder_for_index(self, index: int):
+        if index < 0:
+            return None
+        return self.grid.thumbnail_for(index)
+
+    def _rebuild_visible_preview_group_indexes(self) -> None:
+        review_rows_by_id: dict[str, list[int]] = {}
+        ai_rows_by_id: dict[str, list[int]] = {}
+        for row_index, record in enumerate(self._records):
+            review_insight = self._review_insight_for_record(record)
+            if review_insight is not None and review_insight.has_group:
+                review_rows_by_id.setdefault(review_insight.group_id, []).append(row_index)
+            preferred_path = self.grid.displayed_variant_path(row_index) if record.has_variant_stack else record.path
+            ai_result = self._ai_result_for_record(record, preferred_path=preferred_path)
+            if ai_result is not None and ai_result.group_size > 1:
+                ai_rows_by_id.setdefault(ai_result.group_id, []).append(row_index)
+        self._visible_review_group_rows_by_id = review_rows_by_id
+        self._visible_ai_group_rows_by_id = ai_rows_by_id
+
+    def _schedule_preview_preload(self, index: int | None = None) -> None:
+        if index is None:
+            index = self.grid.current_index()
+        if index < 0:
+            return
+        self.preview.preload_paths(self._likely_preview_preload_paths(index))
+
+    def _likely_preview_preload_paths(self, index: int) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def add(candidate_index: int) -> None:
+            if not 0 <= candidate_index < len(self._records):
+                return
+            path = self._preview_path_for_index(candidate_index)
+            if not path:
+                return
+            normalized = normalized_path_key(path)
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            ordered.append(path)
+
+        add(index)
+        for delta in (1, -1, 2, -2, 3, -3):
+            add(index + delta)
+
+        current_record = self._record_at(index)
+        current_insight = self._review_insight_for_record(current_record)
+        if current_insight is not None and current_insight.has_group:
+            for row_index in self._visible_review_group_rows_by_id.get(current_insight.group_id, ()):
+                add(row_index)
+
+        current_ai = self._ai_result_for_index(index)
+        if current_ai is not None and current_ai.group_size > 1:
+            for row_index in self._visible_ai_group_rows_by_id.get(current_ai.group_id, ()):
+                add(row_index)
+
+        return ordered[:10]
+
     def _update_inspector_context(self, index: int | None = None) -> None:
         if self.inspector_panel is None:
             return
@@ -1488,19 +7166,28 @@ class MainWindow(QMainWindow):
         display_path = ""
         annotation = None
         ai_result = None
+        review_summary = ""
+        workflow_summary = ""
+        workflow_details: tuple[str, ...] = ()
         if current_record is not None and index >= 0:
             display_path = self.grid.displayed_variant_path(index) or current_record.path
             annotation = self._annotations.get(current_record.path, SessionAnnotation())
             ai_result = self._ai_result_for_record(current_record, preferred_path=display_path)
+            review_summary = self._review_summary_for_record(current_record)
+            workflow_summary = self._workflow_summary_for_record(current_record)
+            workflow_details = self._workflow_detail_lines_for_record(current_record)
 
         self.inspector_panel.set_context(
-            folder=self._current_folder,
+            folder=self._scope_display_label(),
             mode_label="AI Culling" if self._ui_mode == "ai" else "Manual Review",
             selected_count=self.grid.selected_count() if self._records else 0,
             current_record=current_record,
             display_path=display_path,
             annotation=annotation,
             ai_result=ai_result,
+            review_summary=review_summary,
+            workflow_summary=workflow_summary,
+            workflow_details=workflow_details,
         )
 
     def _is_unreviewed_record(self, record: ImageRecord) -> bool:
@@ -1629,6 +7316,10 @@ class MainWindow(QMainWindow):
                     edited_candidates=tuple(edited_candidates),
                     label=f"AI {label}" if label else "AI",
                     ai_result=ai_result,
+                    review_summary=self._review_summary_for_record(record),
+                    workflow_summary=self._workflow_summary_for_record(record),
+                    workflow_details=self._workflow_detail_lines_for_record(record),
+                    placeholder_image=self._preview_placeholder_for_index(item_index),
                 )
             )
 
@@ -1654,6 +7345,8 @@ class MainWindow(QMainWindow):
         if index is None:
             index = self.grid.current_index()
         self._update_inspector_context(index)
+        self._update_filter_summary()
+        scope_label = self._scope_display_label()
 
         if self._scan_in_progress and not self._all_records and not self._records:
             self.summary_total.setText("Total: scanning...")
@@ -1662,18 +7355,13 @@ class MainWindow(QMainWindow):
             self.summary_rejected.setText("Rejected: 0")
             self.summary_unreviewed.setText("Unreviewed: ...")
             self._update_ai_summary()
-            self.statusBar().showMessage(f"Scanning {self._current_folder}...")
+            self.statusBar().showMessage(f"Scanning {scope_label}...")
             return
 
         count = len(self._records)
-        accepted = sum(1 for record in self._all_records if self._annotations.get(record.path, SessionAnnotation()).winner)
-        rejected = sum(1 for record in self._all_records if self._annotations.get(record.path, SessionAnnotation()).reject)
-        remaining = sum(
-            1
-            for record in self._all_records
-            if not self._annotations.get(record.path, SessionAnnotation()).winner
-            and not self._annotations.get(record.path, SessionAnnotation()).reject
-        )
+        accepted = self._accepted_count
+        rejected = self._rejected_count
+        remaining = self._unreviewed_count
         selected_count = self.grid.selected_count() if count else 0
 
         self.summary_total.setText(f"Total: {count}")
@@ -1684,24 +7372,24 @@ class MainWindow(QMainWindow):
         self._update_ai_summary()
 
         if count == 0:
-            self.statusBar().showMessage(f"{self._current_folder or 'No folder'} | 0 images | {remaining} unreviewed")
+            self.statusBar().showMessage(f"{scope_label} | 0 images | {remaining} unreviewed")
             return
 
         selected_indexes = self.grid.selected_indexes()
         if len(selected_indexes) > 1:
             focused = max(0, index) + 1
             self.statusBar().showMessage(
-                f"{self._current_folder} | {count} images | {len(selected_indexes)} selected | focus {focused}/{count} | {remaining} unreviewed"
+                f"{scope_label} | {count} images | {len(selected_indexes)} selected | focus {focused}/{count} | {remaining} unreviewed"
             )
             return
 
         selected = max(0, index) + 1
-        message = f"{self._current_folder} | {count} images | {selected}/{count} selected | {remaining} unreviewed"
+        message = f"{scope_label} | {count} images | {selected}/{count} selected | {remaining} unreviewed"
         record = self._record_at(index)
         preferred_path = self.grid.displayed_variant_path(index) if record and record.has_variant_stack else ""
         ai_result = self._ai_result_for_record(record, preferred_path=preferred_path)
         if ai_result is not None:
-            ai_parts = [f"AI {ai_result.display_score_text}"]
+            ai_parts = [f"AI {ai_result.display_score_text}", ai_result.confidence_bucket_label]
             if ai_result.group_id:
                 ai_parts.append(ai_result.group_id)
             if ai_result.group_size > 1:
@@ -1726,48 +7414,203 @@ class MainWindow(QMainWindow):
         compare_ai_group_action.setEnabled(bool(current_ai_result and current_ai_result.group_size > 1))
         menu.exec(QCursor.pos())
 
+    def _show_markdown_help_dialog(self, *, title: str, markdown: str) -> None:
+        dialog = HelpMarkdownDialog(title=title, markdown=markdown, parent=self)
+        dialog.exec()
+
     def _show_help(self) -> None:
-        QMessageBox.information(
-            self,
-            "Image Triage Help",
-            "\n".join(
-                [
-                    "Grid",
-                    "Arrow keys navigate",
-                    "Ctrl-click and Shift-click multi-select, Ctrl+A selects all visible images",
-                    "Summary strip shows total, selected, accepted, rejected, and unreviewed counts",
-                    "Space or Enter opens preview",
-                    "W accepts, X rejects",
-                    "Ctrl+Z undoes the last change",
-                    "K moves to _keep, Delete trashes, M moves to a folder",
-                    "0-5 rates, T tags, C toggles compare",
-                    "Ctrl+Alt+P jumps to the next AI top pick, Ctrl+Alt+G opens the current AI group in compare",
-                    "",
-                    "Modes",
-                    "Manual Review keeps the original browse-and-cull workflow",
-                    "AI Culling runs the AI pipeline for the current folder, can stage remote/removable images to a local SSD scratch area first, stores results in a hidden per-folder cache, and auto-loads the ranked export",
-                    "",
-                    "Preview",
-                    "Wheel or Z zooms, 0 returns to fit, L toggles loupe, Alt+L cycles loupe zoom",
-                    "Left-drag pans while zoomed",
-                    "Open preview auto-refreshes when the source file changes on disk",
-                    "Before/After shows the original beside the latest detected edit",
-                    "Open In Photoshop sends the focused preview image to Photoshop",
-                    "Left/Right navigates, Tab changes compare focus",
-                    "Right-click or Space closes preview",
-                    "AI Results loads a ranked export so thumbnails and previews can show AI score, group, and top-pick hints",
-                    "Use AI Top Picks / AI Grouped in the View filter to focus on AI-suggested comparisons",
-                    "AI Culling mode can reformat the main grid into cluster sections with rank badges and normalized 0-100 per-group scores",
-                    "The AI Culling toolbar can run the current model end to end, show live image counts and ETA during extraction, and reopen the saved hidden report automatically",
-                    "",
-                    "Workflow",
-                    "RAW+JPG pairs stay together",
-                    "Accepted and rejected are mutually exclusive",
-                    "Removable drives use a local 'recycle bin' folder beside the working folder so deletes stay recoverable",
-                    "Empty Recycle Bin permanently clears that local recycle bin",
-                    "Workflow Settings controls the current session, accepted handling, and delete mode",
-                    "Right-click any tile for Explorer and app actions",
-                ]
+        self._show_markdown_help_dialog(
+            title="Image Triage Quick Start",
+            markdown=dedent(
+                """
+                # Quick Start
+
+                Use this when you just want to get moving.
+
+                1. **Open a folder** with `File > Open Folder...`.
+                2. **Select images** with click, `Ctrl`-click, `Shift`-click, or drag-select.
+                3. **Sort fast** with `W` accept, `X` reject, `K` move to `_keep`, `M` move, and `Delete` trash.
+                4. **Preview** with `Space` or `Enter`.
+                5. **Use right-click or `Tools`** for rename, resize, convert, archive, and batch actions.
+                6. **Organize by drag-and-drop** onto folders or favorites. Hold `Ctrl` to copy instead of move.
+                7. **Toggle `View > Burst Groups`** to tag likely burst sequences, or **`View > Burst Stacks`** for a stack-style burst navigator in the main viewer.
+                8. **Open `Help > AI Guide`** for AI culling and training.
+
+                ## Need More?
+
+                - Open **`Help > AI Guide`** for the full AI workflow.
+                - Open **`Help > Advanced Help`** for broader controls and shortcuts.
+                """
+            ),
+        )
+
+    def _show_ai_guide(self) -> None:
+        self._show_markdown_help_dialog(
+            title="Image Triage AI Guide",
+            markdown=dedent(
+                """
+                # AI Guide
+
+                AI is a core part of Image Triage. The app supports both:
+
+                - **AI culling** for grouping and ranking a folder
+                - **AI training** for teaching the model from your own preferences
+
+                The key principle is simple: **AI suggests, you stay in control**.
+
+                ## What AI Adds To Review
+
+                When AI results are loaded, the app can show:
+
+                - ranked groups
+                - per-image AI scores
+                - top-pick hints
+                - compare groups inside preview
+                - a saved HTML report for the folder
+
+                ## AI Culling Workflow
+
+                Use this when you want the app to score a folder and help you review it faster.
+
+                1. Open the folder you want to review.
+                2. Choose **`AI > Run AI Culling`**.
+                3. Wait for extraction, grouping, scoring, and report export to finish.
+                4. The app will automatically load the new results and switch into **AI Review**.
+                5. Use **`Ctrl+Alt+P`** to jump to the next AI top pick.
+                6. Use **`Ctrl+Alt+G`** to compare the current AI group.
+                7. Later, use **`AI > Load Saved AI For Folder`** if you want to reopen cached results without rerunning the model.
+
+                ## AI Training Workflow
+
+                Use this when you want the model to learn your own culling preferences.
+
+                1. Open the folder you want to train from.
+                2. Choose **`AI > Training > Collect Training Labels...`**.
+                3. The app opens the labeling workflow and, if needed, quickly builds local label groups from the current folder without running embedding extraction first.
+                4. In the labeling app, mark **Best**, **Acceptable**, and **Reject** images in clusters, and pick favorites in pairwise comparisons.
+                5. After you have labels, either:
+                   - choose **`AI > Training > Run Full Training Pipeline...`** to automatically prepare, train, evaluate, and rescore in one go
+                   - or step through the menu manually if you want tighter control
+                6. Optional: choose **`AI > Training > Build Reference Bank...`** if you want exemplar-driven scoring from a separate reference folder.
+                7. Choose **`AI > Training > Train Ranker...`** when you want a manual training run and give it a run name if you want easier version tracking.
+                8. Use **`Stats For Nerds`** during training to watch the live epoch, loss, and validation output.
+                9. Choose **`AI > Ranker Center...`** to switch between saved ranker versions and check folder training status.
+                10. Choose **`AI > Training > Evaluate Trained Ranker`** to check how well the active checkpoint matches your labels.
+                11. Choose **`AI > Training > Score Current Folder With Active Ranker`** to rebuild rankings for the current folder with the selected model.
+                12. Review the refreshed result in **AI Review**.
+                13. Add more labels and retrain whenever you want to refine the model further.
+
+                ## Training Menu Order
+
+                The training actions are intentionally arranged in usage order:
+
+                1. **Collect Training Labels...**
+                2. **Run Full Training Pipeline...**
+                3. **Prepare Training Data**
+                4. **Build Reference Bank...** (optional)
+                5. **Train Ranker...**
+                6. **Ranker Center...** (main AI menu item)
+                7. **Evaluate Trained Ranker**
+                8. **Score Current Folder With Active Ranker**
+                9. **Clear Trained Model...**
+
+                ## Where AI Files Live
+
+                Every AI-enabled folder gets a hidden workspace beside the images:
+
+                - **`.image_triage_ai/artifacts`**: embeddings, IDs, and clusters
+                - **`.image_triage_ai/labels`**: pairwise and cluster labels
+                - **`.image_triage_ai/training`**: versioned ranker runs and the active-ranker pointer
+                - **`.image_triage_ai/evaluation`**: evaluation summaries and breakdowns
+                - **`.image_triage_ai/ranker_report`**: scored exports and HTML report
+                - **`.image_triage_ai/reference_bank`**: optional exemplar reference features
+
+                ## Best Practices
+
+                - Start with folders that match the kind of work you care about most.
+                - Label clear winners and clear rejects first.
+                - Use the cluster labeling view to sort groups into Best, Acceptable, and Reject before spending time on pairwise edge cases.
+                - Treat **Collect Training Labels** as the human-labeling step and **Prepare Training Data** as the later model-prep step.
+                - Use run names so it is obvious which checkpoint came from which labeling pass.
+                - Keep older rankers around and compare them instead of assuming the newest one is always best.
+                - Retrain after a meaningful batch of labels, not after every tiny change.
+                - Evaluate a new checkpoint before trusting it broadly.
+                - Use a reference bank only when you want the model biased toward a specific style, subject, or look.
+
+                ## Troubleshooting
+
+                - If rankings look stale, run **Score Current Folder With Trained Ranker** again.
+                - If the folder changed heavily, collect a fresh round of labels and then rerun **Prepare Training Data** before rescoring.
+                - If you only want to review AI results, you do **not** need the training steps.
+                - Use **Clear Trained Model...** to reset the current folder back toward the default checkpoint behavior.
+                """
+            ),
+        )
+
+    def _show_advanced_help(self) -> None:
+        self._show_markdown_help_dialog(
+            title="Image Triage Advanced Help",
+            markdown=dedent(
+                """
+                # Advanced Help
+
+                This is the broader reference for the rest of the app.
+
+                ## Selection
+
+                - `Ctrl`-click adds or removes images
+                - `Shift`-click selects a range
+                - `Ctrl+A` selects all visible images
+                - drag on empty space marquee-selects like File Explorer
+                - drag selected thumbnails onto folders or favorites to move them
+                - hold `Ctrl` while dragging to copy instead of move
+                - **`View > Burst Groups`** highlights likely capture bursts in the main grid as a toggle, not a permanent regrouping
+                - **`View > Burst Stacks`** adds stacked burst visuals plus burst cycling in the main viewer with `[` and `]`
+
+                ## Core Review
+
+                - `Space` or `Enter` opens Preview
+                - `W` accepts
+                - `X` rejects
+                - `K` moves to `_keep`
+                - `M` moves to a folder
+                - `Delete` trashes
+                - `Ctrl+Z` undoes the last change
+                - `0-5` rates
+                - `T` tags
+                - `C` toggles compare
+
+                ## Tools
+
+                - Use the **Tools** menu for **Batch Rename**, **Batch Resize**, **Batch Convert**, and archive actions
+                - Batch tools use the checkbox mode in the grid
+                - Resize and Convert are also available from the image right-click menu
+                - RAW files are skipped for Resize and Convert
+                - **`Tools > AI Training`** mirrors the step-by-step training actions shown in **`Help > AI Guide`**
+                - **`Run Full Training Pipeline...`** is the one-click retrain option after labels already exist
+                - **`Ranker Center...`** is a direct item in both **AI** and **Tools** and lets you switch between saved ranker versions and see training status at a glance
+                - long AI tasks use centered progress dialogs while scripts are running, and **Stats For Nerds** opens the live training log
+
+                ## Preview
+
+                - mouse wheel or `Z` zooms
+                - `0` returns to fit
+                - `L` toggles loupe
+                - `C` toggles compare
+                - `Tab` changes preview focus
+                - Left and Right navigate
+                - Before/After compares the original with the latest detected edit
+                - Open In Photoshop sends the current preview image to Photoshop
+
+                ## Folders And AI
+
+                - right-click folders or favorites to create, rename, move, delete, or favorite folders
+                - recent destinations appear in copy and move menus for faster sorting
+                - **AI Review** lets you run AI culling or load saved AI results for the current folder
+                - **`Help > AI Guide`** is the dedicated walkthrough for the AI side of the app
+                - `Ctrl+Alt+P` jumps to the next AI top pick
+                - `Ctrl+Alt+G` compares the current AI group
+                """
             ),
         )
 
@@ -1879,7 +7722,15 @@ class MainWindow(QMainWindow):
         return any(part.casefold() == "recycle bin" for part in path.parts)
 
     def _record_paths(self, record: ImageRecord) -> tuple[str, ...]:
-        return record.stack_paths
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for path in (*record.stack_paths, *sidecar_bundle_paths(record)):
+            normalized = os.path.normpath(path).casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(path)
+        return tuple(ordered)
 
     def _remove_record(self, index: int) -> None:
         if not 0 <= index < len(self._records):
@@ -1890,11 +7741,16 @@ class MainWindow(QMainWindow):
         next_path = self._next_visible_path(index)
         if next_path == record.path:
             next_path = None
+        if self._current_folder:
+            self._folder_scan_cache.save(normalize_filesystem_path(self._current_folder), self._all_records)
         self._apply_records_view(current_path=next_path)
 
     def _delete_record(self, index: int) -> None:
         record = self._record_at(index)
         if record is None:
+            return
+        if not self._current_folder:
+            self.statusBar().showMessage("Open a real folder to delete files. Virtual scopes are non-destructive views.")
             return
 
         bundle_paths = self._record_paths(record)
@@ -1953,13 +7809,15 @@ class MainWindow(QMainWindow):
                     file_moves=trash_moves,
                     original_winner=annotation.winner,
                     original_reject=annotation.reject,
+                    original_photoshop=annotation.photoshop,
                     rating=annotation.rating,
-                tags=annotation.tags,
-                folder=self._current_folder,
-                source_paths=bundle_paths,
-                session_id=self._session_id,
-                winner_mode=self._winner_mode.value,
-            )
+                    tags=annotation.tags,
+                    original_review_round=annotation.review_round,
+                    folder=self._current_folder,
+                    source_paths=bundle_paths,
+                    session_id=self._session_id,
+                    winner_mode=self._winner_mode.value,
+                )
             )
 
         self._decision_store.delete_annotation(self._session_id, record.path)
@@ -1976,7 +7834,10 @@ class MainWindow(QMainWindow):
 
     def _keep_record(self, index: int) -> None:
         record = self._record_at(index)
-        if record is None or not self._current_folder:
+        if record is None:
+            return
+        if not self._current_folder:
+            self.statusBar().showMessage("Open a real folder to move files. Collections and catalog views do not move originals.")
             return
 
         keep_dir = os.path.join(self._current_folder, "_keep")
@@ -2003,6 +7864,9 @@ class MainWindow(QMainWindow):
         record = self._record_at(index)
         if record is None:
             return
+        if not self._current_folder:
+            self.statusBar().showMessage("Open a real folder to move files. Virtual scopes are browse-only for file moves.")
+            return
 
         destination_dir = QFileDialog.getExistingDirectory(self, "Move Selected Image", self._current_folder or QDir.homePath())
         if not destination_dir:
@@ -2023,6 +7887,7 @@ class MainWindow(QMainWindow):
                 session_id=self._session_id,
             )
         )
+        self._remember_recent_destination(destination_dir)
         self._remove_record(index)
         self.statusBar().showMessage(f"Moved {record.name} to {destination_dir}")
 
@@ -2032,9 +7897,36 @@ class MainWindow(QMainWindow):
             return
 
         annotation = self._annotations.setdefault(record.path, SessionAnnotation())
+        previous_annotation = SessionAnnotation(
+            winner=annotation.winner,
+            reject=annotation.reject,
+            photoshop=annotation.photoshop,
+            rating=annotation.rating,
+            tags=annotation.tags,
+            review_round=annotation.review_round,
+        )
+        if previous_annotation.rating == rating:
+            return
+        self._push_undo(
+            UndoAction(
+                kind="annotation",
+                primary_path=record.path,
+                original_winner=annotation.winner,
+                original_reject=annotation.reject,
+                original_photoshop=annotation.photoshop,
+                rating=annotation.rating,
+                tags=annotation.tags,
+                original_review_round=annotation.review_round,
+                folder=self._current_folder,
+                source_paths=self._record_paths(record),
+                session_id=self._session_id,
+                winner_mode=self._winner_mode.value,
+            )
+        )
         annotation.rating = rating
         self._persist_annotation(record)
-        self._set_annotation_views()
+        self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="rating")
+        self._apply_records_view(current_path=record.path)
         self.statusBar().showMessage(f"Rated {record.name}: {rating}/5")
 
     def _tag_record(self, index: int) -> None:
@@ -2070,7 +7962,10 @@ class MainWindow(QMainWindow):
         current_path_override: str | None = None,
     ) -> None:
         record = self._record_at(index)
-        if record is None or not self._current_folder:
+        if record is None:
+            return
+        if not self._current_folder:
+            self.statusBar().showMessage("Winner/reject actions stay folder-first. Open the source folder to change those states.")
             return
         if self._is_recycle_folder():
             self._restore_record(index)
@@ -2085,6 +7980,14 @@ class MainWindow(QMainWindow):
         if current_path_override is not None:
             next_path = current_path_override
         annotation = self._annotations.setdefault(record.path, SessionAnnotation())
+        previous_annotation = SessionAnnotation(
+            winner=annotation.winner,
+            reject=annotation.reject,
+            photoshop=annotation.photoshop,
+            rating=annotation.rating,
+            tags=annotation.tags,
+            review_round=annotation.review_round,
+        )
         previous_winner = annotation.winner
         previous_reject = annotation.reject
         previous_photoshop = annotation.photoshop
@@ -2114,6 +8017,7 @@ class MainWindow(QMainWindow):
                 original_photoshop=previous_photoshop,
                 rating=annotation.rating,
                 tags=annotation.tags,
+                original_review_round=previous_annotation.review_round,
                 folder=self._current_folder,
                 source_paths=self._record_paths(record),
                 session_id=self._session_id,
@@ -2121,6 +8025,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._persist_annotation(record)
+        self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="winner_toggle")
         self._apply_records_view(current_path=next_path)
         if annotation.winner:
             self.statusBar().showMessage(f"Winner added: {record.name}")
@@ -2135,7 +8040,10 @@ class MainWindow(QMainWindow):
         current_path_override: str | None = None,
     ) -> None:
         record = self._record_at(index)
-        if record is None or not self._current_folder:
+        if record is None:
+            return
+        if not self._current_folder:
+            self.statusBar().showMessage("Winner/reject actions stay folder-first. Open the source folder to change those states.")
             return
 
         should_advance = self._auto_advance_enabled if advance_override is None else advance_override
@@ -2144,6 +8052,14 @@ class MainWindow(QMainWindow):
             next_path = current_path_override
 
         annotation = self._annotations.setdefault(record.path, SessionAnnotation())
+        previous_annotation = SessionAnnotation(
+            winner=annotation.winner,
+            reject=annotation.reject,
+            photoshop=annotation.photoshop,
+            rating=annotation.rating,
+            tags=annotation.tags,
+            review_round=annotation.review_round,
+        )
         previous_winner = annotation.winner
         previous_reject = annotation.reject
         previous_photoshop = annotation.photoshop
@@ -2174,6 +8090,7 @@ class MainWindow(QMainWindow):
                 original_photoshop=previous_photoshop,
                 rating=annotation.rating,
                 tags=annotation.tags,
+                original_review_round=previous_annotation.review_round,
                 folder=self._current_folder,
                 source_paths=self._record_paths(record),
                 session_id=self._session_id,
@@ -2181,6 +8098,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._persist_annotation(record)
+        self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="reject_toggle")
         self._apply_records_view(current_path=next_path)
         if annotation.reject:
             self.statusBar().showMessage(f"Rejected: {record.name}")
@@ -2188,6 +8106,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Reject removed: {record.name}")
 
     def _open_preview(self, index: int) -> None:
+        if self._winner_ladder_state is not None:
+            self._finish_winner_ladder(reopen_preview=False, show_message=False)
         entries, effective_count, anchor_index = self._preview_entries_for(index)
         if not entries:
             return
@@ -2197,7 +8117,9 @@ class MainWindow(QMainWindow):
             self.preview.set_compare_count(effective_count)
             if anchor_index != index:
                 self.grid.set_current_index(anchor_index)
+        self.preview.set_winner_ladder_mode(False)
         self.preview.show_entries(entries)
+        self._schedule_preview_preload(anchor_index if anchor_index >= 0 else index)
 
     def _navigate_preview(self, delta: int) -> None:
         if not self._records:
@@ -2234,6 +8156,10 @@ class MainWindow(QMainWindow):
                     edited_path=edited_path,
                     edited_candidates=tuple(edited_candidates),
                     ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
+                    review_summary=self._review_summary_for_record(record),
+                    workflow_summary=self._workflow_summary_for_record(record),
+                    workflow_details=self._workflow_detail_lines_for_record(record),
+                    placeholder_image=self._preview_placeholder_for_index(index),
                 )
             ], 1, index)
 
@@ -2260,12 +8186,23 @@ class MainWindow(QMainWindow):
                     edited_path=edited_path,
                     edited_candidates=tuple(edited_candidates),
                     ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
+                    review_summary=self._review_summary_for_record(record),
+                    workflow_summary=self._workflow_summary_for_record(record),
+                    workflow_details=self._workflow_detail_lines_for_record(record),
+                    placeholder_image=self._preview_placeholder_for_index(item_index),
                 )
             )
         return entries, max(1, len(entries)), start
 
     def _ordered_edited_candidates(self, record: ImageRecord, displayed_path: str) -> tuple[str, ...]:
-        edited_candidates = record.edited_paths or discover_edited_paths(record)
+        if record.edited_paths:
+            edited_candidates = tuple(record.edited_paths)
+            self._edited_candidates_cache[record.path] = edited_candidates
+        else:
+            edited_candidates = self._edited_candidates_cache.get(record.path)
+            if edited_candidates is None:
+                edited_candidates = tuple(discover_edited_paths(record))
+                self._edited_candidates_cache[record.path] = edited_candidates
         if displayed_path and displayed_path in edited_candidates:
             return (displayed_path, *[path for path in edited_candidates if path != displayed_path])
         return tuple(edited_candidates)
@@ -2315,6 +8252,7 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "Copy Failed", f"Could not copy {record.name}.\n\n{exc}")
             return False
+        self._remember_recent_destination(destination_dir)
         self.statusBar().showMessage(f"Copied {record.name} to {destination_dir}")
         return True
 
@@ -2338,6 +8276,7 @@ class MainWindow(QMainWindow):
                 session_id=self._session_id,
             )
         )
+        self._remember_recent_destination(destination_dir)
         self._remove_record(index)
 
     def _restore_record(self, index: int) -> None:
@@ -2413,13 +8352,69 @@ class MainWindow(QMainWindow):
         moved = sum(1 for record in records if self._keep_record_by_path(record.path))
         self.statusBar().showMessage(f"Moved {moved} image(s) to _keep")
 
+    @staticmethod
+    def _primary_paths_for_records(records: list[ImageRecord]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for record in records:
+            key = normalized_path_key(record.path)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(record.path)
+        return ordered
+
+    def _copy_records_by_paths(self, primary_paths: list[str], destination_dir: str) -> int:
+        copied = 0
+        for path in primary_paths:
+            if self._copy_record_to_path(path, destination_dir):
+                copied += 1
+        if copied:
+            self._remember_recent_destination(destination_dir)
+        return copied
+
+    def _move_records_by_paths(self, primary_paths: list[str], destination_dir: str) -> int:
+        moved = 0
+        for path in primary_paths:
+            if self._move_record_to_path(path, destination_dir):
+                moved += 1
+        if moved:
+            self._remember_recent_destination(destination_dir)
+        return moved
+
+    def _handle_record_drop(self, primary_paths: list[str], destination_dir: str, *, copy_requested: bool) -> None:
+        normalized_destination = normalize_filesystem_path(destination_dir)
+        if not normalized_destination or not os.path.isdir(normalized_destination):
+            return
+        if not self._current_folder or normalized_path_key(normalized_destination) == normalized_path_key(self._current_folder):
+            self.statusBar().showMessage("Choose a different folder to drop these images into.")
+            return
+
+        unique_paths: list[str] = []
+        seen: set[str] = set()
+        for path in primary_paths:
+            key = normalized_path_key(path)
+            if key in seen or self._record_index_for_path(path) is None:
+                continue
+            seen.add(key)
+            unique_paths.append(path)
+        if not unique_paths:
+            return
+
+        action_label = "Copied" if copy_requested else "Moved"
+        if copy_requested:
+            count = self._copy_records_by_paths(unique_paths, normalized_destination)
+        else:
+            count = self._move_records_by_paths(unique_paths, normalized_destination)
+        self.statusBar().showMessage(f"{action_label} {count} image(s) to {normalized_destination}")
+
     def _batch_copy_records(self, records: list[ImageRecord]) -> None:
         if not records:
             return
         destination_dir = QFileDialog.getExistingDirectory(self, "Copy Selected Images", self._current_folder or QDir.homePath())
         if not destination_dir:
             return
-        copied = sum(1 for record in records if self._copy_record_to_path(record.path, destination_dir))
+        copied = self._copy_records_by_paths(self._primary_paths_for_records(records), destination_dir)
         self.statusBar().showMessage(f"Copied {copied} image(s) to {destination_dir}")
 
     def _batch_move_records(self, records: list[ImageRecord]) -> None:
@@ -2428,7 +8423,7 @@ class MainWindow(QMainWindow):
         destination_dir = QFileDialog.getExistingDirectory(self, "Move Selected Images", self._current_folder or QDir.homePath())
         if not destination_dir:
             return
-        moved = sum(1 for record in records if self._move_record_to_path(record.path, destination_dir))
+        moved = self._move_records_by_paths(self._primary_paths_for_records(records), destination_dir)
         self.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
 
     def _batch_delete_records(self, records: list[ImageRecord]) -> None:
@@ -2450,6 +8445,29 @@ class MainWindow(QMainWindow):
             open_in_photoshop(record.path)
         self.statusBar().showMessage(f"Opened {len(records)} image(s) in Photoshop")
 
+    def _move_selected_records_to_destination(self, destination_dir: str) -> None:
+        records = self._selected_records_for_actions()
+        if not records:
+            return
+        moved = self._move_records_by_paths(self._primary_paths_for_records(records), destination_dir)
+        self.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
+
+    def _copy_selected_records_to_destination(self, destination_dir: str) -> None:
+        records = self._selected_records_for_actions()
+        if not records:
+            return
+        copied = self._copy_records_by_paths(self._primary_paths_for_records(records), destination_dir)
+        self.statusBar().showMessage(f"Copied {copied} image(s) to {destination_dir}")
+
+    def _batch_move_records_to_new_folder(self, records: list[ImageRecord]) -> None:
+        if not records or not self._current_folder:
+            return
+        destination_dir = self._create_folder_prompt(self._current_folder, select_created=False)
+        if not destination_dir:
+            return
+        moved = self._move_records_by_paths(self._primary_paths_for_records(records), destination_dir)
+        self.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
+
     def _dispatch_preview_action(self, path: str, handler, *, preserve_anchor: bool = True) -> None:
         index = self._record_index_for_path(path)
         if index is None:
@@ -2470,12 +8488,17 @@ class MainWindow(QMainWindow):
             return
         self.preview.close()
 
-    def _persist_annotation(self, record: ImageRecord) -> None:
+    def _persist_annotation(self, record: ImageRecord, *, session_id: str | None = None) -> None:
+        target_session_id = session_id or self._session_id
         annotation = self._annotations.get(record.path)
         if annotation is None:
-            self._decision_store.delete_annotation(self._session_id, record.path)
-            return
-        self._decision_store.save_annotation(self._session_id, record, annotation)
+            self._decision_store.delete_annotation(target_session_id, record.path)
+        else:
+            self._decision_store.save_annotation(target_session_id, record, annotation)
+        try:
+            sync_sidecar_annotation(record, annotation)
+        except OSError as exc:
+            self.statusBar().showMessage(f"Saved app state, but could not sync XMP for {record.name}: {exc}")
 
     def _record_from_path(self, path: str) -> ImageRecord | None:
         existing = self._all_records_by_path.get(path)
@@ -2491,8 +8514,126 @@ class MainWindow(QMainWindow):
             modified_ns=getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000)),
         )
 
-    def _rekey_annotation_after_move(self, record: ImageRecord, moves: tuple[FileMove, ...]) -> None:
-        annotation = self._annotations.pop(record.path, None)
+    def _rename_record_prompt(self, index: int) -> str | None:
+        record = self._record_at(index)
+        if record is None or self._is_recycle_folder() or self._is_winners_folder():
+            return None
+
+        requested_name, accepted = QInputDialog.getText(
+            self,
+            "Rename Image",
+            "File name",
+            text=record.name,
+        )
+        if not accepted:
+            return None
+        requested_name = (requested_name or "").strip()
+        if not requested_name:
+            return None
+        return self._rename_record(index, requested_name)
+
+    def _rename_record(self, index: int, requested_name: str) -> str | None:
+        record = self._record_at(index)
+        if record is None:
+            return None
+
+        try:
+            moves = rename_bundle_paths(self._record_paths(record), record.path, requested_name)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Rename Failed", f"Could not rename {record.name}.\n\n{exc}")
+            return None
+        if not moves:
+            return record.path
+
+        self._rekey_annotation_after_move(record, moves)
+        self._push_undo(
+            UndoAction(
+                kind="move",
+                primary_path=record.path,
+                file_moves=moves,
+                folder=self._current_folder,
+                session_id=self._session_id,
+            )
+        )
+        renamed_record = self._record_after_moves(record, moves)
+        self._replace_record(record.path, renamed_record)
+        self._reset_filter_metadata_index(self._all_records)
+        self._apply_records_view(current_path=renamed_record.path)
+        self.statusBar().showMessage(f"Renamed {record.name} to {renamed_record.name}")
+        return renamed_record.path
+
+    def _record_after_moves(self, record: ImageRecord, moves: tuple[FileMove, ...]) -> ImageRecord:
+        moved_paths = {move.source_path: move.target_path for move in moves}
+        return ImageRecord(
+            path=moved_paths.get(record.path, record.path),
+            name=Path(moved_paths.get(record.path, record.path)).name,
+            size=record.size,
+            modified_ns=record.modified_ns,
+            companion_paths=tuple(moved_paths.get(path, path) for path in record.companion_paths),
+            edited_paths=tuple(moved_paths.get(path, path) for path in record.edited_paths),
+            variants=tuple(
+                type(variant)(
+                    path=moved_paths.get(variant.path, variant.path),
+                    name=Path(moved_paths.get(variant.path, variant.path)).name,
+                    size=variant.size,
+                    modified_ns=variant.modified_ns,
+                )
+                for variant in record.variants
+            ),
+        )
+
+    def _replace_record(self, original_path: str, record: ImageRecord) -> None:
+        self._all_records = [
+            record if existing.path == original_path else existing
+            for existing in self._all_records
+        ]
+        self._all_records_by_path.pop(original_path, None)
+        self._all_records_by_path[record.path] = record
+        if self._current_folder:
+            self._folder_scan_cache.save(normalize_filesystem_path(self._current_folder), self._all_records)
+
+    def _replace_records_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
+        if not records_by_old_path:
+            return
+        self._all_records = [
+            records_by_old_path.get(existing.path, existing)
+            for existing in self._all_records
+        ]
+        self._all_records_by_path = {record.path: record for record in self._all_records}
+        if self._current_folder:
+            self._folder_scan_cache.save(normalize_filesystem_path(self._current_folder), self._all_records)
+
+    def _rekey_filter_metadata_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
+        if not records_by_old_path:
+            return
+
+        updated_metadata: dict[str, CaptureMetadata] = {}
+        for old_path, renamed_record in records_by_old_path.items():
+            metadata = self._filter_metadata_by_path.pop(old_path, None)
+            if metadata is not None:
+                updated_metadata[renamed_record.path] = replace(metadata, path=renamed_record.path)
+            if old_path in self._filter_metadata_loaded_paths:
+                self._filter_metadata_loaded_paths.discard(old_path)
+                self._filter_metadata_loaded_paths.add(renamed_record.path)
+            if old_path in self._filter_metadata_record_paths:
+                self._filter_metadata_record_paths.discard(old_path)
+                self._filter_metadata_record_paths.add(renamed_record.path)
+
+        self._filter_metadata_by_path.update(updated_metadata)
+
+    def _rekey_annotation_after_move(
+        self,
+        record: ImageRecord,
+        moves: tuple[FileMove, ...],
+        *,
+        annotation_override: SessionAnnotation | None = None,
+        update_live_cache: bool = True,
+    ) -> None:
+        annotation = annotation_override
+        if annotation is None:
+            annotation = self._annotations.pop(record.path, None)
+        elif update_live_cache:
+            self._annotations.pop(record.path, None)
         if annotation is None:
             return
         if annotation.is_empty:
@@ -2500,13 +8641,16 @@ class MainWindow(QMainWindow):
             return
         new_primary_path = next((move.target_path for move in moves if move.source_path == record.path), "")
         if not new_primary_path:
-            self._annotations[record.path] = annotation
+            if update_live_cache:
+                self._annotations[record.path] = annotation
             return
         moved_record = self._record_from_path(new_primary_path)
         if moved_record is None:
-            self._annotations[record.path] = annotation
+            if update_live_cache:
+                self._annotations[record.path] = annotation
             return
-        self._annotations[new_primary_path] = annotation
+        if update_live_cache:
+            self._annotations[new_primary_path] = annotation
         self._decision_store.move_annotation(self._session_id, record.path, moved_record, annotation)
 
     def _show_grid_context_menu(self, index: int, global_pos) -> None:
@@ -2520,19 +8664,23 @@ class MainWindow(QMainWindow):
             accept_action = None
             reject_action = None
             keep_action = None
+            photoshop_action = None
             if self._is_recycle_folder():
                 restore_action = menu.addAction(f"Restore {len(records)} Images")
+                menu.addSeparator()
             else:
                 accept_action = menu.addAction(f"Accept {len(records)} Images")
                 reject_action = menu.addAction(f"Reject {len(records)} Images")
                 keep_action = menu.addAction(f"Move {len(records)} Images To _keep")
-            copy_action = menu.addAction(f"Copy {len(records)} Images...")
-            move_action = menu.addAction(f"Cut {len(records)} Images...")
-            delete_action = menu.addAction(f"Delete {len(records)} Images")
+                menu.addSeparator()
             photoshop_action = menu.addAction(f"Open {len(records)} Images In Photoshop")
             photoshop_action.setEnabled(bool(self._photoshop_executable))
             if not self._photoshop_executable:
                 photoshop_action.setText("Open In Photoshop (Not Found)")
+            menu.addSeparator()
+            send_to_actions = self._add_send_to_actions(menu)
+            menu.addSeparator()
+            delete_action = menu.addAction(f"Delete {len(records)} Images")
 
             chosen = menu.exec(global_pos)
             if chosen is None:
@@ -2549,17 +8697,35 @@ class MainWindow(QMainWindow):
             if keep_action is not None and chosen == keep_action:
                 self._batch_keep_records(records)
                 return
-            if chosen == copy_action:
+            if chosen == photoshop_action:
+                self._batch_open_in_photoshop(records)
+                return
+            if chosen == send_to_actions["copy_action"]:
                 self._batch_copy_records(records)
                 return
-            if chosen == move_action:
+            if chosen in send_to_actions["copy_recent_actions"]:
+                self._copy_selected_records_to_destination(send_to_actions["copy_recent_actions"][chosen])
+                return
+            if chosen == send_to_actions["move_action"]:
                 self._batch_move_records(records)
+                return
+            if chosen == send_to_actions["move_new_folder_action"]:
+                self._batch_move_records_to_new_folder(records)
+                return
+            if chosen in send_to_actions["move_recent_actions"]:
+                self._move_selected_records_to_destination(send_to_actions["move_recent_actions"][chosen])
+                return
+            if chosen == send_to_actions["zip_action"]:
+                self._create_archive_for_records(records, "zip")
+                return
+            if chosen == send_to_actions["seven_zip_action"]:
+                self._create_archive_for_records(records, "7z")
+                return
+            if chosen == send_to_actions["tar_gz_action"]:
+                self._create_archive_for_records(records, "tar_gz")
                 return
             if chosen == delete_action:
                 self._batch_delete_records(records)
-                return
-            if chosen == photoshop_action:
-                self._batch_open_in_photoshop(records)
                 return
             return
 
@@ -2570,29 +8736,39 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         restore_action = None
         open_action = menu.addAction("Open")
-        ai_result = self._ai_result_for_index(index)
-        compare_ai_group_action = None
-        jump_ai_pick_action = None
-        if ai_result is not None and ai_result.group_size > 1:
-            compare_ai_group_action = menu.addAction("Compare AI Group")
-            jump_ai_pick_action = menu.addAction("Jump To AI Top Pick")
-            menu.addSeparator()
-        if self._is_recycle_folder():
-            restore_action = menu.addAction("Restore")
+        open_with_menu = menu.addMenu("Open With")
+        default_action = open_with_menu.addAction("Default App")
+        open_with_action = open_with_menu.addAction("System Open With...")
+        reveal_action = menu.addAction("Reveal In File Explorer")
         photoshop_action = menu.addAction("Open In Photoshop")
         photoshop_action.setEnabled(bool(self._photoshop_executable))
         if not self._photoshop_executable:
             photoshop_action.setText("Open In Photoshop (Not Found)")
-        copy_action = menu.addAction("Copy...")
-        cut_action = menu.addAction("Cut...")
-        delete_action = menu.addAction("Delete")
-        reveal_action = menu.addAction("Reveal In File Explorer")
+        ai_result = self._ai_result_for_index(index)
+        compare_ai_group_action = None
+        jump_ai_pick_action = None
+        if ai_result is not None and ai_result.group_size > 1:
+            menu.addSeparator()
+            compare_ai_group_action = menu.addAction("Compare AI Group")
+            jump_ai_pick_action = menu.addAction("Jump To AI Top Pick")
+        if self._is_recycle_folder():
+            menu.addSeparator()
+            restore_action = menu.addAction("Restore")
+        else:
+            menu.addSeparator()
+        rename_action = menu.addAction("Rename...")
+        rename_action.setEnabled(not self._is_recycle_folder() and not self._is_winners_folder())
+        resize_action = menu.addAction("Resize...")
+        resize_action.setEnabled(not self._is_recycle_folder() and self._record_supports_resize(record))
+        convert_action = menu.addAction("Convert...")
+        convert_action.setEnabled(not self._is_recycle_folder() and self._record_supports_convert(record))
+        menu.addSeparator()
+        send_to_actions = self._add_send_to_actions(menu)
+        menu.addSeparator()
         copy_path_action = menu.addAction("Copy Path")
         copy_name_action = menu.addAction("Copy Filename")
         menu.addSeparator()
-        open_with_menu = menu.addMenu("Open With")
-        default_action = open_with_menu.addAction("Default App")
-        open_with_action = open_with_menu.addAction("System Open With...")
+        delete_action = menu.addAction("Delete")
 
         chosen = menu.exec(global_pos)
         if chosen is None:
@@ -2609,16 +8785,43 @@ class MainWindow(QMainWindow):
         if restore_action is not None and chosen == restore_action:
             self._restore_record(index)
             return
+        if chosen == rename_action:
+            self._rename_record_prompt(index)
+            return
+        if chosen == resize_action:
+            self._resize_record_prompt(index)
+            return
+        if chosen == convert_action:
+            self._convert_record_prompt(index)
+            return
         if chosen == photoshop_action and self._photoshop_executable:
             open_in_photoshop(display_path)
             return
-        if chosen == copy_action:
+        if chosen == send_to_actions["copy_action"]:
             destination_dir = QFileDialog.getExistingDirectory(self, "Copy Image", self._current_folder or QDir.homePath())
             if destination_dir:
                 self._copy_record_to(index, destination_dir)
             return
-        if chosen == cut_action:
+        if chosen in send_to_actions["copy_recent_actions"]:
+            self._copy_record_to(index, send_to_actions["copy_recent_actions"][chosen])
+            return
+        if chosen == send_to_actions["move_action"]:
             self._move_record_prompt(index)
+            return
+        if chosen == send_to_actions["move_new_folder_action"]:
+            self._batch_move_records_to_new_folder(records)
+            return
+        if chosen in send_to_actions["move_recent_actions"]:
+            self._move_record_to(index, send_to_actions["move_recent_actions"][chosen])
+            return
+        if chosen == send_to_actions["zip_action"]:
+            self._create_archive_for_records(records, "zip")
+            return
+        if chosen == send_to_actions["seven_zip_action"]:
+            self._create_archive_for_records(records, "7z")
+            return
+        if chosen == send_to_actions["tar_gz_action"]:
+            self._create_archive_for_records(records, "tar_gz")
             return
         if chosen == delete_action:
             self._delete_record(index)
@@ -2640,21 +8843,16 @@ class MainWindow(QMainWindow):
             return
 
     def _unique_destination(self, directory: str, filename: str) -> str:
-        candidate = Path(directory) / filename
-        if not candidate.exists():
-            return str(candidate)
-
-        stem = candidate.stem
-        suffix = candidate.suffix
-        counter = 1
-        while True:
-            alternative = candidate.with_name(f"{stem}_{counter}{suffix}")
-            if not alternative.exists():
-                return str(alternative)
-            counter += 1
+        return unique_destination(directory, filename)
 
     def _push_undo(self, action: UndoAction) -> None:
         self._undo_stack.append(action)
+        self._update_action_states()
+
+    def _push_undo_actions(self, actions: list[UndoAction]) -> None:
+        if not actions:
+            return
+        self._undo_stack.extend(actions)
         self._update_action_states()
 
     def _undo_last_action(self) -> None:
@@ -2690,11 +8888,9 @@ class MainWindow(QMainWindow):
                 mode_override = mode
                 break
         self._sync_winner_copy_for_paths(action.source_paths, action.original_winner, action.folder, mode_override=mode_override)
-        record = self._all_records_by_path.get(action.primary_path)
+        record = self._all_records_by_path.get(action.primary_path) or self._record_from_path(action.primary_path)
         if record is not None:
-            self._persist_annotation(record)
-        elif annotation.is_empty:
-            self._decision_store.delete_annotation(action.session_id or self._session_id, action.primary_path)
+            self._persist_annotation(record, session_id=action.session_id or self._session_id)
         self._set_annotation_views()
         self._apply_records_view(current_path=action.primary_path)
         self.statusBar().showMessage(f"Undid annotation change: {Path(action.primary_path).name}")
@@ -2731,9 +8927,12 @@ class MainWindow(QMainWindow):
         self._forget_recycle_origins(tuple(file_move.target_path for file_move in action.file_moves))
         annotation = self._annotation_from_action(action)
         restored_record = self._record_from_path(action.primary_path)
-        if not annotation.is_empty and restored_record is not None:
-            self._annotations[action.primary_path] = annotation
-            self._decision_store.save_annotation(action.session_id or self._session_id, restored_record, annotation)
+        if restored_record is not None:
+            if annotation.is_empty:
+                self._annotations.pop(action.primary_path, None)
+            else:
+                self._annotations[action.primary_path] = annotation
+            self._persist_annotation(restored_record, session_id=action.session_id or self._session_id)
 
         if self._current_folder == action.folder:
             self._load_folder(self._current_folder)
@@ -2750,6 +8949,7 @@ class MainWindow(QMainWindow):
             photoshop=action.original_photoshop,
             rating=action.rating,
             tags=action.tags,
+            review_round=action.original_review_round,
         )
 
     def _next_visible_path(self, index: int) -> str | None:
@@ -2762,74 +8962,119 @@ class MainWindow(QMainWindow):
         return self._records[index].path
 
     def _apply_records_view(self, current_path: str | None = None) -> None:
-        records = sort_records(list(self._all_records), self._sort_mode)
-        if self._filter_mode == FilterMode.WINNERS:
-            records = [record for record in records if self._annotations.get(record.path, SessionAnnotation()).winner]
-        elif self._filter_mode == FilterMode.REJECTS:
-            records = [record for record in records if self._annotations.get(record.path, SessionAnnotation()).reject]
-        elif self._filter_mode == FilterMode.UNREVIEWED:
-            records = [
-                record
-                for record in records
-                if not self._annotations.get(record.path, SessionAnnotation()).winner
-                and not self._annotations.get(record.path, SessionAnnotation()).reject
-            ]
-        elif self._filter_mode == FilterMode.EDITED:
-            records = [record for record in records if record.has_edits]
-        elif self._filter_mode == FilterMode.AI_TOP_PICKS:
-            records = [
-                record
-                for record in records
-                if (ai_result := self._ai_result_for_record(record)) is not None and ai_result.is_top_pick
-            ]
-        elif self._filter_mode == FilterMode.AI_GROUPED:
-            records = [
-                record
-                for record in records
-                if (ai_result := self._ai_result_for_record(record)) is not None and ai_result.group_size > 1
-            ]
+        self._refresh_workflow_insights_cache()
+        sorted_records = sort_records(list(self._all_records), self._sort_mode)
+        needs_ai = self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
+        needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
+        needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
+        needs_workflow = self._filter_query.quick_filter in {FilterMode.AI_DISAGREEMENTS, FilterMode.REVIEW_ROUNDS}
+        needs_workflow = needs_workflow or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
+        needs_workflow = needs_workflow or bool(normalize_review_round(self._filter_query.review_round))
+        needs_metadata = self._filter_query.requires_metadata
+        records: list[ImageRecord] = []
+        for record in sorted_records:
+            annotation = self._annotations.get(record.path, SessionAnnotation())
+            ai_result = self._ai_result_for_record(record) if needs_ai else None
+            review_insight = self._review_insight_for_record(record) if needs_review else None
+            workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
+            metadata = self._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
+            if matches_record_query(
+                record,
+                self._filter_query,
+                annotation=annotation,
+                ai_result=ai_result,
+                metadata=metadata,
+                review_insight=review_insight,
+                workflow_insight=workflow_insight,
+            ):
+                records.append(record)
 
         self._records = records
         self._record_index_by_path = {record.path: index for index, record in enumerate(records)}
+        self._recalculate_review_counts()
+        self._refresh_ai_summary_cache()
         self.grid.set_items(records)
         self._set_annotation_views()
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
+        self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
+        self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
+        self._rebuild_visible_preview_group_indexes()
+        self._refresh_burst_group_view()
         if self._is_recycle_folder():
             self.grid.set_action_mode("recycle_only")
         elif self._is_winners_folder():
             self.grid.set_action_mode("accepted_only")
-        elif self._filter_mode == FilterMode.WINNERS:
+        elif self._filter_query.quick_filter == FilterMode.WINNERS:
             self.grid.set_action_mode("accepted_only")
-        elif self._filter_mode == FilterMode.REJECTS:
+        elif self._filter_query.quick_filter == FilterMode.REJECTS:
             self.grid.set_action_mode("rejected_only")
         else:
             self.grid.set_action_mode("normal")
 
+        restored_current = False
         if current_path:
             index = self._record_index_by_path.get(current_path)
             if index is not None:
                 self.grid.set_current_index(index)
+                restored_current = True
+        if records and not restored_current:
+            self.grid.set_current_index(0)
         self._refresh_viewport_mode()
         self._update_action_states()
         self._update_status()
 
+    def _refresh_burst_group_view(self) -> None:
+        burst_groups: list[tuple[int, ...]] = []
+        burst_group_map: dict[str, BurstVisualInfo] = {}
+        if (self._burst_groups_enabled or self._burst_stacks_enabled) and self._records:
+            if self._review_intelligence is not None:
+                visible_groups_by_id: dict[str, list[int]] = {}
+                visible_label_by_id: dict[str, tuple[str, str]] = {}
+                for record_index, record in enumerate(self._records):
+                    insight = self._review_insight_for_record(record)
+                    if insight is None or not insight.has_group:
+                        continue
+                    visible_groups_by_id.setdefault(insight.group_id, []).append(record_index)
+                    visible_label_by_id.setdefault(insight.group_id, (insight.group_label, insight.group_kind))
+                burst_groups = [tuple(indexes) for indexes in visible_groups_by_id.values() if len(indexes) >= 2]
+                burst_groups.sort(key=lambda members: members[0])
+                for group_number, group in enumerate(burst_groups, start=1):
+                    insight = self._review_insight_for_record(self._records[group[0]])
+                    label, kind = visible_label_by_id.get(
+                        insight.group_id if insight is not None else "",
+                        ("Group", "similar"),
+                    )
+                    for index_in_group, record_index in enumerate(group, start=1):
+                        if not 0 <= record_index < len(self._records):
+                            continue
+                        burst_group_map[self._records[record_index].path] = BurstVisualInfo(
+                            group_number=group_number,
+                            index_in_group=index_in_group,
+                            group_size=len(group),
+                            label=label,
+                            kind=kind,
+                        )
+            else:
+                burst_groups = find_burst_groups(self._records, self._filter_metadata_by_path)
+                for group_number, group in enumerate(burst_groups, start=1):
+                    for index_in_group, record_index in enumerate(group, start=1):
+                        if not 0 <= record_index < len(self._records):
+                            continue
+                        burst_group_map[self._records[record_index].path] = BurstVisualInfo(
+                            group_number=group_number,
+                            index_in_group=index_in_group,
+                            group_size=len(group),
+                            label="Burst",
+                            kind="burst",
+                        )
+        self._visible_burst_groups = burst_groups
+        self._burst_group_map = burst_group_map
+        self.grid.set_burst_groups(burst_group_map, burst_groups)
+        self.grid.set_burst_stack_mode(self._burst_stacks_enabled)
+        self._update_filter_summary()
+
     def _move_bundle(self, source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
-        file_moves: list[FileMove] = []
-        moved_targets: list[FileMove] = []
-        try:
-            for source_path in source_paths:
-                destination = self._unique_destination(destination_dir, Path(source_path).name)
-                shutil.move(source_path, destination)
-                file_move = FileMove(source_path=source_path, target_path=destination)
-                file_moves.append(file_move)
-                moved_targets.append(file_move)
-        except OSError as exc:
-            for moved in reversed(moved_targets):
-                if os.path.exists(moved.target_path):
-                    Path(moved.source_path).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(moved.target_path, moved.source_path)
-            raise exc
-        return tuple(file_moves)
+        return move_paths(source_paths, destination_dir)
 
     def _move_bundle_to_recycle(self, source_paths: tuple[str, ...]) -> tuple[FileMove, ...]:
         recycle_root = self._recycle_root_for_folder()
@@ -2853,21 +9098,7 @@ class MainWindow(QMainWindow):
         return tuple(file_moves)
 
     def _copy_bundle(self, source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
-        file_copies: list[FileMove] = []
-        created_targets: list[FileMove] = []
-        try:
-            for source_path in source_paths:
-                destination = self._unique_destination(destination_dir, Path(source_path).name)
-                shutil.copy2(source_path, destination)
-                file_copy = FileMove(source_path=source_path, target_path=destination)
-                file_copies.append(file_copy)
-                created_targets.append(file_copy)
-        except OSError as exc:
-            for created in reversed(created_targets):
-                if os.path.exists(created.target_path):
-                    os.remove(created.target_path)
-            raise exc
-        return tuple(file_copies)
+        return copy_paths(source_paths, destination_dir)
 
     def _safe_trash_directory(self) -> str:
         recycle_root = self._recycle_root_for_folder()

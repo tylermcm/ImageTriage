@@ -99,10 +99,18 @@ class SessionAnnotation:
     photoshop: bool = False
     rating: int = 0
     tags: tuple[str, ...] = field(default_factory=tuple)
+    review_round: str = ""
 
     @property
     def is_empty(self) -> bool:
-        return not self.winner and not self.reject and not self.photoshop and self.rating == 0 and not self.tags
+        return (
+            not self.winner
+            and not self.reject
+            and not self.photoshop
+            and self.rating == 0
+            and not self.tags
+            and not self.review_round
+        )
 
 
 class SortMode(str, Enum):
@@ -117,8 +125,12 @@ class FilterMode(str, Enum):
     REJECTS = "Rejects Only"
     UNREVIEWED = "Unreviewed"
     EDITED = "Edited"
+    SMART_GROUPS = "Smart Groups"
+    DUPLICATES = "Duplicates"
     AI_TOP_PICKS = "AI Top Picks"
     AI_GROUPED = "AI Grouped"
+    AI_DISAGREEMENTS = "AI Disagreements"
+    REVIEW_ROUNDS = "Review Rounds"
 
 
 class WinnerMode(str, Enum):
