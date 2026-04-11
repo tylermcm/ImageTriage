@@ -1,2 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test / coverage / build
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local app runtime state
+decisions.sqlite3
+decisions.sqlite3-shm
+decisions.sqlite3-wal
+library.sqlite3
+library.sqlite3-shm
+library.sqlite3-wal
+
+# Local AI workspace and training artifacts
+.image_triage_ai/
+**/.image_triage_ai/
+best_ranker.pt
+last_ranker.pt
+reference_bank.npz
+embeddings.npy
+
+# Local smoke-test data and scratch captures
+_ai_smoke_input/
+_ai_smoke_input2/
 ai_smoke_input/
 ai_smoke_input2/
+_tmp_*.png
+

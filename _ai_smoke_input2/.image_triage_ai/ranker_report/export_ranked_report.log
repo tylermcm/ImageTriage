@@ -1,7 +1,0 @@
-2026-03-27 19:44:53,458 | INFO | app.storage.ranking_artifacts | Cluster labels not found at C:\Users\user0\Documents\GitHub\AICullingPipeline\outputs\my_test_run\labels\cluster_labels.jsonl; returning no label annotations.
-2026-03-27 19:46:07,348 | INFO | app.storage.ranking_artifacts | Cluster labels not found at C:\Users\user0\Documents\GitHub\AICullingPipeline\outputs\my_test_run\labels\cluster_labels.jsonl; returning no label annotations.
-2026-03-27 19:47:19,431 | INFO | app.storage.ranking_artifacts | Cluster labels not found at C:\Users\user0\Documents\GitHub\AICullingPipeline\outputs\my_test_run\labels\cluster_labels.jsonl; returning no label annotations.
-2026-03-27 19:49:10,781 | INFO | app.storage.ranking_artifacts | Cluster labels not found at C:\Users\user0\Documents\GitHub\AICullingPipeline\outputs\my_test_run\labels\cluster_labels.jsonl; returning no label annotations.
-2026-03-28 00:00:59,405 | INFO | app.storage.ranking_artifacts | Cluster labels not found at C:\Users\user0\Documents\GitHub\AICullingPipeline\outputs\my_test_run\labels\cluster_labels.jsonl; returning no label annotations.
-2026-03-28 00:10:46,229 | INFO | app.storage.ranking_artifacts | Cluster labels not found at C:\Users\user0\Documents\GitHub\AICullingPipeline\outputs\my_test_run\labels\cluster_labels.jsonl; returning no label annotations.
-2026-03-28 00:11:50,570 | INFO | app.storage.ranking_artifacts | Cluster labels not found at C:\Users\user0\Documents\GitHub\AICullingPipeline\outputs\my_test_run\labels\cluster_labels.jsonl; returning no label annotations.
