@@ -15,6 +15,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
+from hashlib import sha1
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
@@ -66,7 +67,7 @@ class CatalogRefreshSummary:
 
 
 class LibraryStore:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self) -> None:
         root = app_data_root()
@@ -381,6 +382,9 @@ class LibraryStore:
         if not normalized:
             return False
         with self._connect() as connection:
+            connection.execute("DELETE FROM catalog_folder_state WHERE root_path = ?", (normalized,))
+            if self._fts_available(connection):
+                connection.execute("DELETE FROM catalog_records_fts WHERE root_path = ?", (normalized,))
             connection.execute("DELETE FROM catalog_roots WHERE root_path = ?", (normalized,))
             deleted = connection.total_changes > 0
             connection.commit()
@@ -403,6 +407,7 @@ class LibraryStore:
         total_roots = len(requested_roots)
 
         with self._connect() as connection:
+            fts_ready = self._fts_available(connection)
             for index, root_path in enumerate(requested_roots, start=1):
                 normalized_root = normalize_filesystem_path(root_path)
                 if progress_callback is not None:
@@ -410,6 +415,9 @@ class LibraryStore:
                 self._ensure_catalog_root(connection, normalized_root)
                 if not normalized_root or not os.path.isdir(normalized_root):
                     connection.execute("DELETE FROM catalog_records WHERE root_path = ?", (normalized_root,))
+                    connection.execute("DELETE FROM catalog_folder_state WHERE root_path = ?", (normalized_root,))
+                    if fts_ready:
+                        connection.execute("DELETE FROM catalog_records_fts WHERE root_path = ?", (normalized_root,))
                     connection.execute(
                         """
                         UPDATE catalog_roots
@@ -425,16 +433,35 @@ class LibraryStore:
                     missing_roots.append(normalized_root)
                     continue
 
-                snapshots: list[tuple[str, str, str, int, int, str]] = []
+                folder_state_rows = connection.execute(
+                    """
+                    SELECT folder_path, folder_signature, record_count
+                    FROM catalog_folder_state
+                    WHERE root_path = ?
+                    """,
+                    (normalized_root,),
+                ).fetchall()
+                folder_state_by_path = {
+                    str(row[0]): (str(row[1] or ""), int(row[2] or 0))
+                    for row in folder_state_rows
+                    if row[0]
+                }
+                seen_folders: set[str] = set()
                 indexed_folder_count = 0
                 for folder in _iter_catalog_candidate_folders(normalized_root):
+                    seen_folders.add(folder)
+                    signature = _catalog_folder_signature(folder)
+                    previous_signature, previous_count = folder_state_by_path.get(folder, ("", -1))
+                    if previous_signature == signature:
+                        if previous_count > 0:
+                            indexed_folder_count += 1
+                        continue
+
                     try:
                         records = scan_folder(folder)
                     except Exception:
                         continue
-                    if not records:
-                        continue
-                    indexed_folder_count += 1
+                    snapshots: list[tuple[str, str, str, str, int, int, str]] = []
                     for record in records:
                         snapshots.append(
                             (
@@ -448,23 +475,70 @@ class LibraryStore:
                             )
                         )
 
-                connection.execute("DELETE FROM catalog_records WHERE root_path = ?", (normalized_root,))
-                if snapshots:
-                    connection.executemany(
+                    connection.execute(
+                        "DELETE FROM catalog_records WHERE root_path = ? AND folder_path = ?",
+                        (normalized_root, folder),
+                    )
+                    if snapshots:
+                        _insert_catalog_snapshots(connection, snapshots)
+                    if fts_ready:
+                        connection.execute(
+                            "DELETE FROM catalog_records_fts WHERE root_path = ? AND folder_path = ?",
+                            (normalized_root, folder),
+                        )
+                        if snapshots:
+                            connection.executemany(
+                                """
+                                INSERT INTO catalog_records_fts (path, name, root_path, folder_path)
+                                VALUES (?, ?, ?, ?)
+                                """,
+                                [(snapshot[0], snapshot[3], snapshot[1], snapshot[2]) for snapshot in snapshots],
+                            )
+
+                    record_count = len(snapshots)
+                    connection.execute(
                         """
-                        INSERT INTO catalog_records (
-                            path,
+                        INSERT INTO catalog_folder_state (
                             root_path,
                             folder_path,
-                            name,
-                            modified_ns,
-                            file_size,
-                            record_json
+                            folder_signature,
+                            record_count,
+                            indexed_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(root_path, folder_path) DO UPDATE SET
+                            folder_signature = excluded.folder_signature,
+                            record_count = excluded.record_count,
+                            indexed_at = CURRENT_TIMESTAMP
                         """,
-                        snapshots,
+                        (normalized_root, folder, signature, record_count),
                     )
+                    if record_count > 0:
+                        indexed_folder_count += 1
+
+                stale_folders = [folder for folder in folder_state_by_path.keys() if folder not in seen_folders]
+                if stale_folders:
+                    connection.executemany(
+                        "DELETE FROM catalog_records WHERE root_path = ? AND folder_path = ?",
+                        [(normalized_root, folder) for folder in stale_folders],
+                    )
+                    connection.executemany(
+                        "DELETE FROM catalog_folder_state WHERE root_path = ? AND folder_path = ?",
+                        [(normalized_root, folder) for folder in stale_folders],
+                    )
+                    if fts_ready:
+                        connection.executemany(
+                            "DELETE FROM catalog_records_fts WHERE root_path = ? AND folder_path = ?",
+                            [(normalized_root, folder) for folder in stale_folders],
+                        )
+
+                total_root_records = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM catalog_records WHERE root_path = ?",
+                        (normalized_root,),
+                    ).fetchone()[0]
+                    or 0
+                )
                 connection.execute(
                     """
                     UPDATE catalog_roots
@@ -475,16 +549,16 @@ class LibraryStore:
                         last_error = ''
                     WHERE root_path = ?
                     """,
-                    (indexed_folder_count, len(snapshots), normalized_root),
+                    (indexed_folder_count, total_root_records, normalized_root),
                 )
                 total_folders += indexed_folder_count
-                total_records += len(snapshots)
+                total_records += total_root_records
                 refreshed_roots.append(normalized_root)
                 if progress_callback is not None:
                     progress_callback(
                         index,
                         total_roots,
-                        f"Indexed {len(snapshots)} image bundle(s) from {Path(normalized_root).name or normalized_root}",
+                        f"Indexed {total_root_records} image bundle(s) from {Path(normalized_root).name or normalized_root}",
                     )
             connection.commit()
 
@@ -505,24 +579,51 @@ class LibraryStore:
     ) -> list[ImageRecord]:
         normalized_root = normalize_filesystem_path(root_path)
         tokens = [token.casefold() for token in search_text.split() if token.strip()]
-        query = """
-            SELECT record_json
-            FROM catalog_records
-            WHERE 1 = 1
-        """
-        parameters: list[object] = []
-        if normalized_root:
-            query += " AND root_path = ?"
-            parameters.append(normalized_root)
-        for token in tokens:
-            query += " AND (LOWER(name) LIKE ? OR LOWER(path) LIKE ?)"
-            like = f"%{token}%"
-            parameters.extend([like, like])
-        query += " ORDER BY modified_ns DESC, name COLLATE NOCASE LIMIT ?"
-        parameters.append(max(1, int(limit)))
-
         with self._connect() as connection:
-            rows = connection.execute(query, parameters).fetchall()
+            rows = []
+            if tokens and self._fts_available(connection):
+                fts_terms: list[str] = []
+                for token in tokens:
+                    escaped = token.replace('"', '""')
+                    fts_terms.append(f'"{escaped}"*')
+                fts_query = " AND ".join(fts_terms)
+                query = """
+                    SELECT c.record_json
+                    FROM catalog_records c
+                    JOIN catalog_records_fts f
+                        ON f.path = c.path
+                    WHERE 1 = 1
+                """
+                parameters: list[object] = []
+                if normalized_root:
+                    query += " AND f.root_path = ?"
+                    parameters.append(normalized_root)
+                query += " AND f.catalog_records_fts MATCH ?"
+                parameters.append(fts_query)
+                query += " ORDER BY c.modified_ns DESC, c.name COLLATE NOCASE LIMIT ?"
+                parameters.append(max(1, int(limit)))
+                try:
+                    rows = connection.execute(query, parameters).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []
+
+            if not rows:
+                query = """
+                    SELECT record_json
+                    FROM catalog_records
+                    WHERE 1 = 1
+                """
+                parameters = []
+                if normalized_root:
+                    query += " AND root_path = ?"
+                    parameters.append(normalized_root)
+                for token in tokens:
+                    query += " AND (LOWER(name) LIKE ? OR LOWER(path) LIKE ?)"
+                    like = f"%{token}%"
+                    parameters.extend([like, like])
+                query += " ORDER BY modified_ns DESC, name COLLATE NOCASE LIMIT ?"
+                parameters.append(max(1, int(limit)))
+                rows = connection.execute(query, parameters).fetchall()
         return [
             record
             for row in rows
@@ -558,6 +659,8 @@ class LibraryStore:
         with self._connect() as connection:
             current_version = connection.execute("PRAGMA user_version").fetchone()[0]
             self._create_schema(connection)
+            if current_version < 2:
+                self._rebuild_catalog_fts(connection)
             if current_version < self.SCHEMA_VERSION:
                 connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
             connection.commit()
@@ -643,6 +746,28 @@ class LibraryStore:
             ON catalog_records(name COLLATE NOCASE)
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS catalog_folder_state (
+                root_path TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                folder_signature TEXT NOT NULL DEFAULT '',
+                record_count INTEGER NOT NULL DEFAULT 0,
+                indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(root_path, folder_path),
+                FOREIGN KEY(root_path) REFERENCES catalog_roots(root_path) ON DELETE CASCADE
+            )
+            """
+        )
+        try:
+            connection.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS catalog_records_fts
+                USING fts5(path, name, root_path, folder_path, tokenize = 'unicode61')
+                """
+            )
+        except sqlite3.OperationalError:
+            pass
 
     def _unique_collection_id(self, connection: sqlite3.Connection, name: str) -> str:
         base = _key_from_name(name) or "collection"
@@ -706,6 +831,35 @@ class LibraryStore:
             (root_path,),
         )
 
+    def _fts_available(self, connection: sqlite3.Connection) -> bool:
+        try:
+            connection.execute("SELECT 1 FROM catalog_records_fts LIMIT 1").fetchone()
+        except sqlite3.OperationalError:
+            return False
+        return True
+
+    def _rebuild_catalog_fts(self, connection: sqlite3.Connection) -> None:
+        if not self._fts_available(connection):
+            return
+        connection.execute("DELETE FROM catalog_records_fts")
+        rows = connection.execute(
+            """
+            SELECT path, name, root_path, folder_path
+            FROM catalog_records
+            """
+        ).fetchall()
+        if not rows:
+            return
+        for chunk_start in range(0, len(rows), 600):
+            chunk = rows[chunk_start:chunk_start + 600]
+            connection.executemany(
+                """
+                INSERT INTO catalog_records_fts (path, name, root_path, folder_path)
+                VALUES (?, ?, ?, ?)
+                """,
+                chunk,
+            )
+
 
 class CatalogRefreshSignals(QObject):
     started = Signal(int)
@@ -734,6 +888,50 @@ class CatalogRefreshTask(QRunnable):
             self.signals.failed.emit(str(exc))
             return
         self.signals.finished.emit(summary)
+
+
+def _insert_catalog_snapshots(
+    connection: sqlite3.Connection,
+    snapshots: list[tuple[str, str, str, str, int, int, str]],
+    *,
+    chunk_size: int = 400,
+) -> None:
+    for chunk_start in range(0, len(snapshots), chunk_size):
+        chunk = snapshots[chunk_start:chunk_start + chunk_size]
+        connection.executemany(
+            """
+            INSERT INTO catalog_records (
+                path,
+                root_path,
+                folder_path,
+                name,
+                modified_ns,
+                file_size,
+                record_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            chunk,
+        )
+
+
+def _catalog_folder_signature(folder_path: str) -> str:
+    digest = sha1(usedforsecurity=False)
+    try:
+        with os.scandir(folder_path) as entries:
+            for entry in sorted(entries, key=lambda candidate: candidate.name.casefold()):
+                entry_name = entry.name.casefold()
+                try:
+                    stat_result = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                modified_ns = int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000)))
+                size = int(stat_result.st_size or 0)
+                kind = "d" if entry.is_dir(follow_symlinks=False) else "f"
+                digest.update(f"{kind}|{entry_name}|{modified_ns}|{size}\n".encode("utf-8"))
+    except OSError:
+        return ""
+    return digest.hexdigest()
 
 
 def _iter_catalog_candidate_folders(root_path: str):

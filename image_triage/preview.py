@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -479,6 +480,10 @@ class FullScreenPreview(QDialog):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(1200)
         self._refresh_timer.timeout.connect(self._poll_source_updates)
+        self._refresh_interval_active_ms = 1200
+        self._refresh_interval_idle_ms = 3200
+        self._stable_poll_cycles = 0
+        self._next_edited_discovery_at = 0.0
         self._panes: list[PreviewPane] = []
         self._watched_widgets: dict[object, int] = {}
         self._inspection_stats_cache: dict[tuple[str, tuple[int, int] | None, int, int], InspectionStats] = {}
@@ -1125,6 +1130,9 @@ class FullScreenPreview(QDialog):
         self._source_entries = list(entries)
         if len(entries) < 2:
             self._winner_ladder_mode = False
+        self._stable_poll_cycles = 0
+        self._next_edited_discovery_at = time.monotonic() + 1.8
+        self._refresh_timer.setInterval(self._refresh_interval_active_ms)
         self._focused_slot = 0
         self._manual_zoom = False
         self._zoom_scale = 1.0
@@ -1198,6 +1206,7 @@ class FullScreenPreview(QDialog):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._refresh_timer.stop()
+        self._stable_poll_cycles = 0
         self._zoom_request_timer.stop()
         self.closed.emit()
         super().closeEvent(event)
@@ -1753,12 +1762,22 @@ class FullScreenPreview(QDialog):
         if not self.isVisible() or not self._entries or self._pending_requests > 0:
             return
 
-        if not self._compare_mode and len(self._source_entries) == 1:
+        now = time.monotonic()
+        if (
+            not self._compare_mode
+            and len(self._source_entries) == 1
+            and now >= self._next_edited_discovery_at
+        ):
             source_entry = self._source_entries[0]
             if not self._edited_candidates_for_entry(source_entry):
                 discovered = discover_edited_paths(source_entry.record)
                 if discovered:
                     self.set_edited_candidates(source_entry.record.path, tuple(discovered))
+                    self._next_edited_discovery_at = now + 2.0
+                else:
+                    self._next_edited_discovery_at = now + 6.5
+            else:
+                self._next_edited_discovery_at = now + 7.0
 
         changed_slots: list[int] = []
         for slot, entry in enumerate(self._entries):
@@ -1771,7 +1790,20 @@ class FullScreenPreview(QDialog):
             changed_slots.append(slot)
 
         if changed_slots:
+            self._stable_poll_cycles = 0
+            self._refresh_timer.setInterval(900)
             self._request_preview_loads(changed_slots, force_metadata=True)
+            return
+
+        self._stable_poll_cycles += 1
+        if self._stable_poll_cycles >= 12:
+            next_interval = 5200
+        elif self._stable_poll_cycles >= 5:
+            next_interval = self._refresh_interval_idle_ms
+        else:
+            next_interval = self._refresh_interval_active_ms
+        if self._refresh_timer.interval() != next_interval:
+            self._refresh_timer.setInterval(next_interval)
 
     def _render_pane(self, slot: int) -> None:
         if not 0 <= slot < len(self._entries):

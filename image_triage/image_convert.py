@@ -7,13 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 
 from .formats import MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
-from .image_resize import (
-    OUTPUT_FORMAT_NAMES,
-    WRITABLE_IMAGE_SUFFIXES,
-    _load_resize_image,
-    _path_key,
-    _save_resized_image,
-)
+from .image_ops import load_image_for_transform, normalized_output_path_key, save_transformed_image
+from .image_resize import OUTPUT_FORMAT_NAMES, WRITABLE_IMAGE_SUFFIXES
 
 
 @dataclass(slots=True, frozen=True)
@@ -159,7 +154,7 @@ def build_convert_plan(sources: list[ConvertSourceItem], options: ConvertOptions
 
         if options.overwrite:
             target_path = source_path if source_suffix == target_suffix else str(Path(source_path).with_suffix(target_suffix))
-            target_key = _path_key(target_path)
+            target_key = normalized_output_path_key(target_path)
             if target_key in reserved_target_keys:
                 items.append(
                     ConvertPlanItem(
@@ -173,7 +168,9 @@ def build_convert_plan(sources: list[ConvertSourceItem], options: ConvertOptions
                 error_count += 1
                 continue
             reserved_target_keys.add(target_key)
-            target_exists = os.path.exists(target_path) and _path_key(target_path) != _path_key(source_path)
+            target_exists = os.path.exists(target_path) and (
+                normalized_output_path_key(target_path) != normalized_output_path_key(source_path)
+            )
             status = "Overwrite" if target_exists or target_path == source_path else "Convert"
             message = f"Converts to {target_format.name}."
             items.append(
@@ -190,7 +187,7 @@ def build_convert_plan(sources: list[ConvertSourceItem], options: ConvertOptions
 
         requested_name = _copy_target_name(source_name, target_suffix, target_format.name)
         target_path = _unique_copy_target_path(source_path, requested_name, reserved_target_keys)
-        reserved_target_keys.add(_path_key(target_path))
+        reserved_target_keys.add(normalized_output_path_key(target_path))
         message = f"Converts to {target_format.name}."
         if source_suffix == target_suffix:
             message = f"Creates a {target_format.name} copy."
@@ -267,13 +264,13 @@ class ConvertApplyTask(QRunnable):
 
 
 def _convert_item(item: ConvertPlanItem, plan: ConvertPlan, options: ConvertOptions) -> None:
-    loaded = _load_resize_image(
+    loaded = load_image_for_transform(
         item.source.source_path,
         target_size=QSize(),
         ignore_orientation=False,
         strip_metadata=options.strip_metadata,
     )
-    _save_resized_image(
+    save_transformed_image(
         loaded.image,
         target_path=item.target_path,
         target_suffix=plan.output_suffix,
@@ -309,7 +306,7 @@ def _unique_copy_target_path(source_path: str, requested_name: str, reserved_tar
     while True:
         candidate_name = requested.name if counter == 0 else f"{stem}_{counter}{suffix}"
         candidate_path = directory / candidate_name
-        candidate_key = _path_key(candidate_path)
+        candidate_key = normalized_output_path_key(candidate_path)
         if candidate_key not in reserved_target_keys and not candidate_path.exists():
             return str(candidate_path)
         counter += 1

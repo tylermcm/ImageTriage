@@ -9,6 +9,22 @@ from .actions import MainWindowActions
 from .theme import AppearanceMode
 
 
+def _add_ai_training_actions(menu: QMenu, actions: MainWindowActions) -> None:
+    menu.addAction(actions.open_ai_data_selection)
+    menu.addAction(actions.prepare_ai_training_data)
+    menu.addAction(actions.build_ai_reference_bank)
+    menu.addAction(actions.train_ai_ranker)
+    menu.addAction(actions.evaluate_ai_ranker)
+    menu.addAction(actions.score_ai_with_trained_ranker)
+    menu.addSeparator()
+    menu.addAction(actions.clear_ai_trained_model)
+
+
+def _add_ai_training_management_actions(menu: QMenu, actions: MainWindowActions) -> None:
+    menu.addAction(actions.manage_ai_rankers)
+    menu.addAction(actions.run_full_ai_training_pipeline)
+
+
 def build_main_menu_bar(
     window,
     actions: MainWindowActions,
@@ -138,16 +154,8 @@ def build_main_menu_bar(
     ai_menu.addAction(actions.taste_calibration_wizard)
     ai_menu.addSeparator()
     training_menu = ai_menu.addMenu("Training")
-    training_menu.addAction(actions.open_ai_data_selection)
-    training_menu.addAction(actions.prepare_ai_training_data)
-    training_menu.addAction(actions.build_ai_reference_bank)
-    training_menu.addAction(actions.train_ai_ranker)
-    training_menu.addAction(actions.evaluate_ai_ranker)
-    training_menu.addAction(actions.score_ai_with_trained_ranker)
-    training_menu.addSeparator()
-    training_menu.addAction(actions.clear_ai_trained_model)
-    ai_menu.addAction(actions.manage_ai_rankers)
-    ai_menu.addAction(actions.run_full_ai_training_pipeline)
+    _add_ai_training_actions(training_menu, actions)
+    _add_ai_training_management_actions(ai_menu, actions)
 
     tools_menu = menu_bar.addMenu("&Tools")
     tools_menu.addAction(actions.batch_rename_selection)
@@ -157,16 +165,8 @@ def build_main_menu_bar(
     tools_menu.addAction(actions.extract_archive)
     tools_menu.addSeparator()
     ai_tools_menu = tools_menu.addMenu("AI Training")
-    ai_tools_menu.addAction(actions.open_ai_data_selection)
-    ai_tools_menu.addAction(actions.prepare_ai_training_data)
-    ai_tools_menu.addAction(actions.build_ai_reference_bank)
-    ai_tools_menu.addAction(actions.train_ai_ranker)
-    ai_tools_menu.addAction(actions.evaluate_ai_ranker)
-    ai_tools_menu.addAction(actions.score_ai_with_trained_ranker)
-    ai_tools_menu.addSeparator()
-    ai_tools_menu.addAction(actions.clear_ai_trained_model)
-    tools_menu.addAction(actions.manage_ai_rankers)
-    tools_menu.addAction(actions.run_full_ai_training_pipeline)
+    _add_ai_training_actions(ai_tools_menu, actions)
+    _add_ai_training_management_actions(tools_menu, actions)
 
     window_menu = menu_bar.addMenu("&Window")
     if dock_actions:

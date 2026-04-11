@@ -37,6 +37,13 @@ class BurstVisualInfo:
     kind: str = "similar"
 
 
+@dataclass(slots=True, frozen=True)
+class GridDeltaUpdate:
+    changed_paths: tuple[str, ...] = ()
+    selection_anchor: int | None = None
+    preserve_pixmap_cache: bool = True
+
+
 class ThumbnailGridView(QAbstractScrollArea):
     INTERNAL_RECORD_MIME = "application/x-image-triage-record-paths"
     HEART_SYMBOL = "\u2665"
@@ -299,6 +306,87 @@ class ThumbnailGridView(QAbstractScrollArea):
     def set_annotations(self, annotations: dict[str, SessionAnnotation]) -> None:
         self._annotations = annotations
         self.viewport().update()
+
+    def update_annotations(self, changed_paths: list[str] | tuple[str, ...] | set[str]) -> None:
+        if not changed_paths:
+            return
+        normalized_index_lookup = {normalized_path_key(path): index for path, index in self._path_to_index.items()}
+        dirty_indexes: set[int] = set()
+        for path in changed_paths:
+            if not path:
+                continue
+            index = self._path_to_index.get(path)
+            if index is None:
+                index = normalized_index_lookup.get(normalized_path_key(path))
+            if index is not None:
+                dirty_indexes.add(index)
+        if not dirty_indexes:
+            return
+        self._update_selection_tiles(dirty_indexes)
+
+    def update_items(self, delta: GridDeltaUpdate | None = None) -> None:
+        if not self._items:
+            return
+        patch = delta or GridDeltaUpdate()
+        changed_paths = tuple(path for path in patch.changed_paths if path)
+        if not changed_paths:
+            self.viewport().update()
+            if patch.selection_anchor is not None and 0 <= patch.selection_anchor < len(self._items):
+                self._selection_anchor = patch.selection_anchor
+            self._schedule_visible_thumbnail_requests(immediate=True)
+            return
+
+        normalized_index_lookup = {normalized_path_key(path): index for path, index in self._path_to_index.items()}
+        dirty_indexes: set[int] = set()
+        for path in changed_paths:
+            index = self._path_to_index.get(path)
+            if index is None:
+                index = normalized_index_lookup.get(normalized_path_key(path))
+            if not 0 <= index < len(self._items):
+                continue
+            record = self._items[index]
+            for variant in record.display_variants:
+                self._meta_cache[variant.path] = self._format_meta_line(record, variant)
+                self._capture_cache[variant.path] = self._format_capture_line(self.metadata_manager.get_cached(variant))
+                self._meta_with_ai_cache.pop(variant.path, None)
+                self._failed_paths.discard(variant.path)
+            self._ai_result_cache.pop(record.path, None)
+            dirty_indexes.add(index)
+
+        if patch.selection_anchor is not None and 0 <= patch.selection_anchor < len(self._items):
+            self._selection_anchor = patch.selection_anchor
+        if not patch.preserve_pixmap_cache:
+            self._clear_pixmap_cache(paths=changed_paths)
+
+        if dirty_indexes:
+            self._update_selection_tiles(dirty_indexes)
+            self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def visible_item_paths(self, *, include_prefetch: bool = True, limit: int | None = None) -> list[str]:
+        indexes = self._visible_indexes()
+        if not indexes:
+            return []
+        selected: list[int]
+        if include_prefetch:
+            max_prefetch = max(1, self._columns * max(1, self._buffer_rows + 1))
+            min_visible = min(indexes)
+            max_visible = max(indexes)
+            prefetch_indexes: set[int] = set(indexes)
+            for offset in range(1, max_prefetch + 1):
+                left = min_visible - offset
+                right = max_visible + offset
+                if 0 <= left < len(self._items):
+                    prefetch_indexes.add(left)
+                if 0 <= right < len(self._items):
+                    prefetch_indexes.add(right)
+            selected = sorted(prefetch_indexes)
+        else:
+            selected = list(indexes)
+
+        paths = [self._items[index].path for index in selected if 0 <= index < len(self._items)]
+        if limit is not None and limit >= 0:
+            return paths[:limit]
+        return paths
 
     def set_burst_groups(
         self,
@@ -1957,9 +2045,22 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._pixmap_cache_bytes -= removed_cost
         return pixmap
 
-    def _clear_pixmap_cache(self) -> None:
-        self._pixmap_cache.clear()
-        self._pixmap_cache_bytes = 0
+    def _clear_pixmap_cache(self, *, paths: list[str] | tuple[str, ...] | set[str] | None = None) -> None:
+        if not paths:
+            self._pixmap_cache.clear()
+            self._pixmap_cache_bytes = 0
+            return
+
+        normalized_paths = {normalized_path_key(path) for path in paths if path}
+        if not normalized_paths:
+            return
+        removed_cost = 0
+        for key in list(self._pixmap_cache.keys()):
+            if normalized_path_key(key.path) in normalized_paths:
+                _, cost = self._pixmap_cache.pop(key)
+                removed_cost += cost
+        if removed_cost:
+            self._pixmap_cache_bytes = max(0, self._pixmap_cache_bytes - removed_cost)
 
     def _content_rect(self, index: int) -> QRect:
         slot = self._visible_slot_for_index(index)

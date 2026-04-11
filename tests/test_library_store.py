@@ -4,9 +4,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from image_triage.library_store import LibraryStore
-from image_triage.scanner import normalize_filesystem_path
+from image_triage.scanner import normalize_filesystem_path, scan_folder
 
 
 class LibraryStoreTests(unittest.TestCase):
@@ -91,6 +92,66 @@ class LibraryStoreTests(unittest.TestCase):
         loaded_by_path = store.load_catalog_records_for_paths((str(day_one / "hero.jpg"),))
         self.assertEqual(len(loaded_by_path), 1)
         self.assertEqual(next(iter(loaded_by_path.values())).name, "hero.jpg")
+
+    def test_catalog_refresh_skips_unchanged_folders_and_updates_changed_folder(self) -> None:
+        root = Path(self._temp_dir.name) / "library"
+        day_one = root / "day_one"
+        day_two = root / "day_two"
+        day_one.mkdir(parents=True)
+        day_two.mkdir(parents=True)
+        hero_path = day_one / "hero.jpg"
+        reject_path = day_two / "reject.jpg"
+        hero_path.write_bytes(b"hero")
+        reject_path.write_bytes(b"reject")
+
+        store = LibraryStore()
+        store.add_catalog_root(str(root))
+
+        with patch("image_triage.library_store.scan_folder", side_effect=scan_folder) as mocked_scan:
+            first_summary = store.refresh_catalog((str(root),))
+            self.assertEqual(first_summary.folder_count, 2)
+            self.assertEqual(mocked_scan.call_count, 2)
+
+            mocked_scan.reset_mock()
+            second_summary = store.refresh_catalog((str(root),))
+            self.assertEqual(second_summary.folder_count, 2)
+            self.assertEqual(mocked_scan.call_count, 0)
+
+            hero_path.write_bytes(b"hero-updated")
+            mocked_scan.reset_mock()
+            third_summary = store.refresh_catalog((str(root),))
+            self.assertEqual(third_summary.folder_count, 2)
+            self.assertEqual(third_summary.record_count, 2)
+            self.assertEqual(mocked_scan.call_count, 1)
+
+    def test_catalog_search_fts_and_fallback_return_same_results(self) -> None:
+        root = Path(self._temp_dir.name) / "library"
+        day_one = root / "day_one"
+        day_two = root / "day_two"
+        day_one.mkdir(parents=True)
+        day_two.mkdir(parents=True)
+        (day_one / "hero_frame.jpg").write_bytes(b"hero")
+        (day_two / "hero_alt.jpg").write_bytes(b"hero-alt")
+        (day_two / "reject.jpg").write_bytes(b"reject")
+
+        store = LibraryStore()
+        store.add_catalog_root(str(root))
+        store.refresh_catalog((str(root),))
+
+        with store._connect() as connection:
+            fts_available = store._fts_available(connection)
+        if not fts_available:
+            self.skipTest("SQLite build does not support FTS5.")
+
+        fts_paths = {record.path for record in store.search_catalog(search_text="hero", root_path=str(root), limit=10)}
+        with patch.object(store, "_fts_available", return_value=False):
+            fallback_paths = {
+                record.path
+                for record in store.search_catalog(search_text="hero", root_path=str(root), limit=10)
+            }
+
+        self.assertEqual(fts_paths, fallback_paths)
+        self.assertEqual(len(fts_paths), 2)
 
 
 if __name__ == "__main__":

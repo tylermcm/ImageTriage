@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord
-from image_triage.review_intelligence import _RecordFingerprint, build_review_intelligence
+from image_triage.review_intelligence import (
+    BuildReviewIntelligenceTask,
+    ReviewIntelligenceCancelled,
+    _RecordFingerprint,
+    build_review_intelligence,
+)
 
 
 class ReviewIntelligenceTests(unittest.TestCase):
@@ -115,6 +120,67 @@ class ReviewIntelligenceTests(unittest.TestCase):
         assert insight is not None
         self.assertTrue(insight.is_likely_duplicate)
         self.assertEqual(insight.summary_text, "Near Dup 1/2")
+
+    def test_build_review_intelligence_emits_progress_milestones(self) -> None:
+        records = [
+            ImageRecord(path=f"C:/shots/frame_{index:03d}.jpg", name=f"frame_{index:03d}.jpg", size=1000 + index, modified_ns=index)
+            for index in range(1, 86)
+        ]
+        emitted: list[tuple[int, int]] = []
+
+        def _fingerprint(record: ImageRecord, _metadata_cache: dict[str, CaptureMetadata]) -> _RecordFingerprint:
+            metadata = CaptureMetadata(path=record.path, width=4000, height=3000)
+            return _RecordFingerprint(
+                record=record,
+                source_path=record.path,
+                metadata=metadata,
+                dhash=(record.modified_ns % 16),
+                avg_luma=90.0,
+                width=4000,
+                height=3000,
+                sha1_digest=f"sha-{record.modified_ns}",
+            )
+
+        with patch("image_triage.review_intelligence._build_fingerprint", side_effect=_fingerprint):
+            build_review_intelligence(records, progress_callback=lambda current, total: emitted.append((current, total)))
+
+        self.assertIn((0, 85), emitted)
+        self.assertIn((1, 85), emitted)
+        self.assertIn((40, 85), emitted)
+        self.assertIn((80, 85), emitted)
+        self.assertIn((85, 85), emitted)
+        self.assertEqual(emitted[-1], (85, 85))
+
+    def test_build_review_intelligence_raises_when_cancelled(self) -> None:
+        records = [
+            ImageRecord(path=f"C:/shots/frame_{index:03d}.jpg", name=f"frame_{index:03d}.jpg", size=1000 + index, modified_ns=index)
+            for index in range(1, 6)
+        ]
+        checks = {"count": 0}
+
+        def _should_cancel() -> bool:
+            checks["count"] += 1
+            return checks["count"] >= 2
+
+        with self.assertRaises(ReviewIntelligenceCancelled):
+            build_review_intelligence(records, should_cancel=_should_cancel)
+
+    def test_build_review_task_emits_cancelled_signal(self) -> None:
+        task = BuildReviewIntelligenceTask(
+            folder="C:/shots",
+            token=17,
+            records=(ImageRecord(path="C:/shots/a.jpg", name="a.jpg", size=100, modified_ns=1),),
+        )
+        cancelled_events: list[tuple[str, int]] = []
+        finished_events: list[tuple[str, int]] = []
+        task.signals.cancelled.connect(lambda folder, token: cancelled_events.append((folder, token)))
+        task.signals.finished.connect(lambda folder, token, _bundle: finished_events.append((folder, token)))
+
+        task.cancel()
+        task.run()
+
+        self.assertEqual(cancelled_events, [("C:/shots", 17)])
+        self.assertEqual(finished_events, [])
 
 
 if __name__ == "__main__":

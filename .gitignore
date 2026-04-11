@@ -53,3 +53,5 @@ ai_smoke_input/
 ai_smoke_input2/
 _tmp_*.png
 
+# Local benchmark outputs
+benchmarks/*.json

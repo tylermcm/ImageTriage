@@ -239,16 +239,16 @@ class AIRunTask(QRunnable):
 
 
 def default_ai_workflow_runtime() -> AIWorkflowRuntime:
+    workspace_root = Path(__file__).resolve().parents[1]
     engine_root = _first_existing_path(
         [
             os.environ.get("AICULLING_ENGINE_ROOT", ""),
-            r"C:\Users\user0\Documents\GitHub\AICullingPipeline",
+            str(workspace_root / "AICullingPipeline"),
         ]
     )
     python_executable = _first_existing_path(
         [
             os.environ.get("AICULLING_PYTHON", ""),
-            r"C:\Users\user0\anaconda3\python.exe",
             sys.executable,
         ]
     )
@@ -597,20 +597,29 @@ def _run_command_with_live_output(
     chunks: list[str] = []
     buffer = ""
     assert process.stdout is not None
-    while True:
-        char = process.stdout.read(1)
-        if char == "" and process.poll() is not None:
-            break
-        if not char:
-            continue
-        chunks.append(char)
-        if char in {"\r", "\n"}:
-            line = buffer.strip()
-            if line and progress_callback is not None:
-                progress_callback(line)
-            buffer = ""
-        else:
-            buffer += char
+    try:
+        for chunk in iter(process.stdout.readline, ""):
+            if chunk == "" and process.poll() is not None:
+                break
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            normalized = chunk.replace("\r", "\n")
+            segments = normalized.split("\n")
+            for index, segment in enumerate(segments):
+                is_terminated = index < len(segments) - 1
+                if is_terminated:
+                    line = f"{buffer}{segment}".strip()
+                    if line and progress_callback is not None:
+                        progress_callback(line)
+                    buffer = ""
+                else:
+                    buffer += segment
+    finally:
+        try:
+            process.stdout.close()
+        except Exception:
+            pass
 
     if buffer.strip() and progress_callback is not None:
         progress_callback(buffer.strip())

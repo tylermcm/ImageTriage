@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from textwrap import dedent
 
-from PySide6.QtCore import QDir, QEvent, QFile, QModelIndex, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer
+from PySide6.QtCore import QDir, QEvent, QFile, QModelIndex, QObject, QRunnable, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -48,6 +48,7 @@ from .archive_ops import (
     archive_format_for_key,
     ensure_archive_suffix,
 )
+from .annotation_queue import AnnotationPersistenceQueue
 from .ai_training import (
     BuildReferenceBankTask,
     EvaluateRankerTask,
@@ -90,9 +91,10 @@ from .filtering import (
     serialize_saved_filter_preset,
 )
 from .formats import MODEL_SUFFIXES, RAW_SUFFIXES
-from .grid import BurstVisualInfo, ThumbnailGridView
+from .grid import BurstVisualInfo, GridDeltaUpdate, ThumbnailGridView
 from .image_convert import ConvertApplyTask, ConvertOptions, ConvertPlan, ConvertSourceItem
 from .image_resize import ResizeApplyTask, ResizeOptions, ResizePlan, ResizeSourceItem
+from .job_controller import JobController, JobSpec
 from .keyboard_mapping import ShortcutBinding, normalize_shortcut_text, serialize_shortcut_overrides
 from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoot, LibraryStore, VirtualCollection
 from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
@@ -120,6 +122,7 @@ from .production_workflows import (
     serialize_workspace_preset,
 )
 from .review_tools import FOCUS_ASSIST_COLORS, FOCUS_ASSIST_STRENGTHS
+from .records_view_cache import RecordsViewCache, ViewInvalidationReason
 from .review_intelligence import BuildReviewIntelligenceTask, ReviewIntelligenceBundle
 from .review_workflows import (
     REVIEW_ROUND_FIRST_PASS,
@@ -180,7 +183,7 @@ from .ui import (
     resolve_theme,
     save_window_layout,
 )
-from .xmp import load_sidecar_annotations, sidecar_bundle_paths, sync_sidecar_annotation
+from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
 
 
 @dataclass(slots=True)
@@ -283,6 +286,64 @@ class CatalogExecutionContext:
     label: str = ""
 
 
+class AnnotationHydrationSignals(QObject):
+    chunk = Signal(str, int, object)
+    finished = Signal(str, int)
+    failed = Signal(str, int, str)
+
+
+class AnnotationHydrationTask(QRunnable):
+    def __init__(
+        self,
+        *,
+        scope_key: str,
+        token: int,
+        session_id: str,
+        records: tuple[ImageRecord, ...],
+        prioritized_paths: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__()
+        self.scope_key = scope_key
+        self.token = token
+        self.session_id = session_id
+        self.records = records
+        self.prioritized_paths = prioritized_paths
+        self.signals = AnnotationHydrationSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            store = DecisionStore()
+            persisted = store.load_annotations(self.session_id, list(self.records))
+            prioritized_keys = {normalized_path_key(path) for path in self.prioritized_paths if path}
+            prioritized_records: list[ImageRecord] = []
+            remaining_records: list[ImageRecord] = []
+            for record in self.records:
+                if normalized_path_key(record.path) in prioritized_keys:
+                    prioritized_records.append(record)
+                else:
+                    remaining_records.append(record)
+            ordered_records = [*prioritized_records, *remaining_records]
+
+            chunk: dict[str, SessionAnnotation] = {}
+            for index, record in enumerate(ordered_records, start=1):
+                sidecar = load_sidecar_annotation(record.path)
+                if not sidecar.is_empty:
+                    chunk[record.path] = sidecar
+                persisted_annotation = persisted.get(record.path)
+                if persisted_annotation is not None and not persisted_annotation.is_empty:
+                    chunk[record.path] = persisted_annotation
+                if chunk and (index % 120 == 0):
+                    self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
+                    chunk.clear()
+
+            if chunk:
+                self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
+            self.signals.finished.emit(self.scope_key, self.token)
+        except Exception as exc:  # pragma: no cover - desktop/runtime path
+            self.signals.failed.emit(self.scope_key, self.token, str(exc))
+
+
 class MainWindow(QMainWindow):
     LAST_FOLDER_KEY = "window/last_folder"
     AI_RESULTS_KEY = "window/ai_results_path"
@@ -357,12 +418,22 @@ class MainWindow(QMainWindow):
         self._catalog_pool.setMaxThreadCount(1)
         self._review_intelligence_pool = QThreadPool(self)
         self._review_intelligence_pool.setMaxThreadCount(1)
+        self._annotation_hydration_pool = QThreadPool(self)
+        self._annotation_hydration_pool.setMaxThreadCount(1)
         self._scan_token = 0
         self._scan_showed_cached = False
         self._active_scan_tasks: dict[int, FolderScanTask] = {}
         self._active_ai_task: AIRunTask | None = None
         self._active_review_intelligence_task: BuildReviewIntelligenceTask | None = None
         self._review_intelligence_token = 0
+        self._active_annotation_hydration_task: AnnotationHydrationTask | None = None
+        self._annotation_hydration_token = 0
+        self._annotation_hydration_dirty_paths: set[str] = set()
+        self._annotation_hydration_pending_clear_paths: set[str] = set()
+        self._annotation_reapply_timer = QTimer(self)
+        self._annotation_reapply_timer.setSingleShot(True)
+        self._annotation_reapply_timer.setInterval(90)
+        self._annotation_reapply_timer.timeout.connect(self._flush_annotation_hydration_updates)
         self._active_ai_training_task: object | None = None
         self._ai_training_context: AITrainingExecutionContext | None = None
         self._ai_training_pipeline: AITrainingPipelineState | None = None
@@ -389,6 +460,8 @@ class MainWindow(QMainWindow):
         self._active_catalog_task: CatalogRefreshTask | None = None
         self._catalog_context: CatalogExecutionContext | None = None
         self._catalog_progress_dialog: QProgressDialog | None = None
+        self._job_controllers: dict[str, JobController] = {}
+        self._archive_job_key = "archive:create"
         self._current_folder = ""
         self._scope_kind = "folder"
         self._scope_id = ""
@@ -413,6 +486,8 @@ class MainWindow(QMainWindow):
         self._taste_profile = TasteProfile()
         self._burst_recommendations: dict[str, BurstRecommendation] = {}
         self._workflow_insights_by_path: dict[str, RecordWorkflowInsight] = {}
+        self._records_view_cache = RecordsViewCache()
+        self._last_view_record_paths: tuple[str, ...] = ()
         self._winner_ladder_state: dict[str, object] | None = None
         self._ui_mode = "manual"
         self._ai_stage_index = 0
@@ -458,6 +533,9 @@ class MainWindow(QMainWindow):
         self._file_type_actions: dict[FileTypeFilter, QAction] = {}
         self._review_state_actions: dict[ReviewStateFilter, QAction] = {}
         self._ai_state_actions: dict[AIStateFilter, QAction] = {}
+        self._annotation_persistence_queue = AnnotationPersistenceQueue(parent=self)
+        self._annotation_persistence_queue.failed.connect(self._handle_annotation_persist_failed)
+        self._annotation_persistence_queue.warning.connect(self._handle_annotation_persist_warning)
 
         self._search_apply_timer = QTimer(self)
         self._search_apply_timer.setSingleShot(True)
@@ -468,6 +546,11 @@ class MainWindow(QMainWindow):
         self._filter_metadata_by_path: dict[str, CaptureMetadata] = {}
         self._filter_metadata_record_paths: set[str] = set()
         self._filter_metadata_loaded_paths: set[str] = set()
+        self._filter_metadata_requested_paths: set[str] = set()
+        self._filter_metadata_queue: list[str] = []
+        self._metadata_request_timer = QTimer(self)
+        self._metadata_request_timer.setInterval(45)
+        self._metadata_request_timer.timeout.connect(self._drain_filter_metadata_requests)
         self._metadata_reapply_timer = QTimer(self)
         self._metadata_reapply_timer.setSingleShot(True)
         self._metadata_reapply_timer.setInterval(180)
@@ -2015,6 +2098,7 @@ class MainWindow(QMainWindow):
         self._restore_ai_results()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._annotation_persistence_queue.flush_blocking()
         self._shutdown_child_processes()
         self._cleanup_child_sync_state()
         self._save_window_state()
@@ -2814,22 +2898,19 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Batch Rename Failed", f"Could not apply the batch rename.\n\n{message}")
 
     def _show_batch_rename_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._batch_rename_progress_dialog
-        if dialog is None:
-            dialog = QProgressDialog(self)
-            dialog.setWindowTitle("Batch Rename")
-            dialog.setWindowModality(Qt.WindowModality.WindowModal)
-            dialog.setCancelButton(None)
-            dialog.setMinimumDuration(0)
-            dialog.setAutoClose(False)
-            dialog.setAutoReset(False)
-            dialog.setMinimumWidth(420)
-            self._batch_rename_progress_dialog = dialog
-        dialog.setRange(0, max(1, total_steps))
-        dialog.setValue(0)
-        dialog.show()
-        self._center_window_dialog(dialog)
-        dialog.raise_()
+        dialog = self._show_job_progress_dialog(
+            key="batch_rename",
+            total_steps=total_steps,
+            spec=JobSpec(
+                title="Batch Rename",
+                preparing_label="Preparing batch rename...",
+                running_label="Applying batch rename...",
+                indeterminate_label="Updating library...",
+                window_modality=Qt.WindowModality.WindowModal,
+                stays_on_top=False,
+            ),
+        )
+        self._batch_rename_progress_dialog = dialog
         return dialog
 
     def _handle_resize_started(self, total_steps: int) -> None:
@@ -3165,149 +3246,121 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, title, message)
         self.statusBar().showMessage(f"{title} failed")
 
+    def _show_job_progress_dialog(self, *, key: str, total_steps: int, spec: JobSpec) -> QProgressDialog:
+        controller = self._job_controllers.get(key)
+        if controller is None:
+            controller = JobController(self, spec)
+            self._job_controllers[key] = controller
+        dialog = controller.start(total_steps)
+        return dialog
+
+    def _close_job_progress_dialog(self, key: str) -> None:
+        controller = self._job_controllers.pop(key, None)
+        if controller is None:
+            return
+        controller.close()
+
     def _show_resize_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._resize_progress_dialog
-        if dialog is None:
-            dialog = QProgressDialog(self)
-            dialog.setWindowTitle("Resize Images")
-            dialog.setWindowModality(Qt.WindowModality.NonModal)
-            dialog.setCancelButton(None)
-            dialog.setMinimumDuration(0)
-            dialog.setAutoClose(False)
-            dialog.setAutoReset(False)
-            dialog.setMinimumWidth(420)
-            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self._resize_progress_dialog = dialog
-        dialog.setRange(0, max(1, total_steps))
-        if dialog.value() > max(1, total_steps):
-            dialog.setValue(0)
-        dialog.show()
-        self._center_window_dialog(dialog)
-        dialog.raise_()
+        dialog = self._show_job_progress_dialog(
+            key="resize",
+            total_steps=total_steps,
+            spec=JobSpec(
+                title="Resize Images",
+                preparing_label="Preparing resize...",
+                running_label="Saving resized images...",
+                indeterminate_label="Refreshing library...",
+                window_modality=Qt.WindowModality.NonModal,
+                stays_on_top=True,
+            ),
+        )
+        self._resize_progress_dialog = dialog
         return dialog
 
     def _show_convert_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._convert_progress_dialog
-        if dialog is None:
-            dialog = QProgressDialog(self)
-            dialog.setWindowTitle("Convert Images")
-            dialog.setWindowModality(Qt.WindowModality.NonModal)
-            dialog.setCancelButton(None)
-            dialog.setMinimumDuration(0)
-            dialog.setAutoClose(False)
-            dialog.setAutoReset(False)
-            dialog.setMinimumWidth(420)
-            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self._convert_progress_dialog = dialog
-        dialog.setRange(0, max(1, total_steps))
-        if dialog.value() > max(1, total_steps):
-            dialog.setValue(0)
-        dialog.show()
-        self._center_window_dialog(dialog)
-        dialog.raise_()
+        dialog = self._show_job_progress_dialog(
+            key="convert",
+            total_steps=total_steps,
+            spec=JobSpec(
+                title="Convert Images",
+                preparing_label="Preparing conversion...",
+                running_label="Converting images...",
+                indeterminate_label="Refreshing library...",
+                window_modality=Qt.WindowModality.NonModal,
+                stays_on_top=True,
+            ),
+        )
+        self._convert_progress_dialog = dialog
         return dialog
 
     def _close_resize_progress_dialog(self) -> None:
-        dialog = self._resize_progress_dialog
-        if dialog is None:
-            return
-        dialog.hide()
-        dialog.deleteLater()
+        self._close_job_progress_dialog("resize")
         self._resize_progress_dialog = None
 
     def _close_convert_progress_dialog(self) -> None:
-        dialog = self._convert_progress_dialog
-        if dialog is None:
-            return
-        dialog.hide()
-        dialog.deleteLater()
+        self._close_job_progress_dialog("convert")
         self._convert_progress_dialog = None
 
     def _show_workflow_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._workflow_progress_dialog
-        if dialog is None:
-            dialog = QProgressDialog(self)
-            dialog.setWindowTitle("Deliver / Handoff")
-            dialog.setWindowModality(Qt.WindowModality.NonModal)
-            dialog.setCancelButton(None)
-            dialog.setMinimumDuration(0)
-            dialog.setAutoClose(False)
-            dialog.setAutoReset(False)
-            dialog.setMinimumWidth(420)
-            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self._workflow_progress_dialog = dialog
-        dialog.setRange(0, max(1, total_steps))
-        if dialog.value() > max(1, total_steps):
-            dialog.setValue(0)
-        dialog.show()
-        self._center_window_dialog(dialog)
-        dialog.raise_()
+        dialog = self._show_job_progress_dialog(
+            key="workflow",
+            total_steps=total_steps,
+            spec=JobSpec(
+                title="Deliver / Handoff",
+                preparing_label="Preparing workflow export...",
+                running_label="Saving workflow outputs...",
+                indeterminate_label="Refreshing library...",
+                window_modality=Qt.WindowModality.NonModal,
+                stays_on_top=True,
+            ),
+        )
+        self._workflow_progress_dialog = dialog
         return dialog
 
     def _close_workflow_progress_dialog(self) -> None:
-        dialog = self._workflow_progress_dialog
-        if dialog is None:
-            return
-        dialog.hide()
-        dialog.deleteLater()
+        self._close_job_progress_dialog("workflow")
         self._workflow_progress_dialog = None
 
     def _show_catalog_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._catalog_progress_dialog
-        if dialog is None:
-            dialog = QProgressDialog(self)
-            dialog.setWindowTitle("Global Catalog")
-            dialog.setWindowModality(Qt.WindowModality.NonModal)
-            dialog.setCancelButton(None)
-            dialog.setMinimumDuration(0)
-            dialog.setAutoClose(False)
-            dialog.setAutoReset(False)
-            dialog.setMinimumWidth(420)
-            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self._catalog_progress_dialog = dialog
-        dialog.setRange(0, max(1, total_steps))
-        if dialog.value() > max(1, total_steps):
-            dialog.setValue(0)
-        dialog.show()
-        self._center_window_dialog(dialog)
-        dialog.raise_()
+        dialog = self._show_job_progress_dialog(
+            key="catalog",
+            total_steps=total_steps,
+            spec=JobSpec(
+                title="Global Catalog",
+                preparing_label="Refreshing global catalog...",
+                running_label="Refreshing global catalog...",
+                window_modality=Qt.WindowModality.NonModal,
+                stays_on_top=True,
+            ),
+        )
+        self._catalog_progress_dialog = dialog
         return dialog
 
     def _close_catalog_progress_dialog(self) -> None:
-        dialog = self._catalog_progress_dialog
-        if dialog is None:
-            return
-        dialog.hide()
-        dialog.deleteLater()
+        self._close_job_progress_dialog("catalog")
         self._catalog_progress_dialog = None
 
     def _show_archive_progress_dialog(self, total_steps: int, *, title: str) -> QProgressDialog:
-        dialog = self._archive_progress_dialog
-        if dialog is None:
-            dialog = QProgressDialog(self)
-            dialog.setWindowModality(Qt.WindowModality.NonModal)
-            dialog.setCancelButton(None)
-            dialog.setMinimumDuration(0)
-            dialog.setAutoClose(False)
-            dialog.setAutoReset(False)
-            dialog.setMinimumWidth(420)
-            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self._archive_progress_dialog = dialog
-        dialog.setWindowTitle(title)
-        dialog.setRange(0, max(1, total_steps))
-        if dialog.value() > max(1, total_steps):
-            dialog.setValue(0)
-        dialog.show()
-        self._center_window_dialog(dialog)
-        dialog.raise_()
+        key = f"archive:{title.casefold()}"
+        if self._archive_job_key != key:
+            self._close_job_progress_dialog(self._archive_job_key)
+        self._archive_job_key = key
+        dialog = self._show_job_progress_dialog(
+            key=key,
+            total_steps=total_steps,
+            spec=JobSpec(
+                title=title,
+                preparing_label="Preparing archive...",
+                running_label="Processing archive...",
+                indeterminate_label="Refreshing library...",
+                window_modality=Qt.WindowModality.NonModal,
+                stays_on_top=True,
+            ),
+        )
+        self._archive_progress_dialog = dialog
         return dialog
 
     def _close_archive_progress_dialog(self) -> None:
-        dialog = self._archive_progress_dialog
-        if dialog is None:
-            return
-        dialog.hide()
-        dialog.deleteLater()
+        self._close_job_progress_dialog(self._archive_job_key)
         self._archive_progress_dialog = None
 
     def _show_ai_training_progress_dialog(self, total_steps: int, *, title: str) -> AITrainingProgressDialog:
@@ -3344,11 +3397,7 @@ class MainWindow(QMainWindow):
         dialog.activateWindow()
 
     def _close_batch_rename_progress_dialog(self) -> None:
-        dialog = self._batch_rename_progress_dialog
-        if dialog is None:
-            return
-        dialog.hide()
-        dialog.deleteLater()
+        self._close_job_progress_dialog("batch_rename")
         self._batch_rename_progress_dialog = None
 
     def _center_window_dialog(self, dialog) -> None:
@@ -3425,6 +3474,7 @@ class MainWindow(QMainWindow):
 
     def _set_sort_mode(self, mode: SortMode) -> None:
         self._sort_mode = mode
+        self._records_view_cache.mark(ViewInvalidationReason.SORT_CHANGED)
         combo_index = self.sort_combo.findData(mode)
         if combo_index >= 0 and combo_index != self.sort_combo.currentIndex():
             self.sort_combo.setCurrentIndex(combo_index)
@@ -3526,6 +3576,7 @@ class MainWindow(QMainWindow):
         self._sync_record_filter_controls()
         self._ensure_filter_metadata_index()
         self._refresh_filter_toolbar_menu()
+        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
         self._apply_records_view(current_path=current_path)
         if not self._records:
             return
@@ -3579,7 +3630,16 @@ class MainWindow(QMainWindow):
     def _scroll_active_view_to_top(self) -> None:
         self.grid.verticalScrollBar().setValue(0)
 
-    def _set_annotation_views(self) -> None:
+    def _set_annotation_views(self, changed_paths: list[str] | tuple[str, ...] | set[str] | None = None) -> None:
+        if changed_paths:
+            if getattr(self.grid, "_annotations", None) is not self._annotations:
+                self.grid.set_annotations(self._annotations)
+            self.grid.update_annotations(changed_paths)
+            if self.preview.isVisible():
+                for path in changed_paths:
+                    annotation = self._annotations.get(path, SessionAnnotation())
+                    self.preview.set_annotation_state(path, annotation.winner, annotation.reject)
+            return
         self.grid.set_annotations(self._annotations)
 
     def _refresh_viewport_mode(self) -> None:
@@ -3810,20 +3870,14 @@ class MainWindow(QMainWindow):
             return
         normalized_round = normalize_review_round(review_round)
         current_path = self._current_visible_record_path() or records[0].path
-        changed = 0
+        changed_paths: list[str] = []
+        undo_actions: list[UndoAction] = []
         for record in records:
             annotation = self._annotations.setdefault(record.path, SessionAnnotation())
-            previous_annotation = SessionAnnotation(
-                winner=annotation.winner,
-                reject=annotation.reject,
-                photoshop=annotation.photoshop,
-                rating=annotation.rating,
-                tags=annotation.tags,
-                review_round=annotation.review_round,
-            )
+            previous_annotation = self._annotation_snapshot(annotation)
             if normalize_review_round(annotation.review_round) == normalized_round:
                 continue
-            self._push_undo(
+            undo_actions.append(
                 UndoAction(
                     kind="annotation",
                     primary_path=record.path,
@@ -3840,17 +3894,18 @@ class MainWindow(QMainWindow):
                 )
             )
             annotation.review_round = normalized_round
-            self._persist_annotation(record)
+            self._queue_annotation_persist(record, previous_annotation=previous_annotation)
             self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="review_round")
-            changed += 1
-        if not changed:
+            changed_paths.append(record.path)
+        if not changed_paths:
             return
-        self._apply_records_view(current_path=current_path)
+        self._push_undo_actions(undo_actions)
+        self._apply_annotation_change_effects(changed_paths, current_path=current_path)
         label = review_round_label(normalized_round)
         if label:
-            self.statusBar().showMessage(f"Assigned {label} to {changed} image(s).")
+            self.statusBar().showMessage(f"Assigned {label} to {len(changed_paths)} image(s).")
         else:
-            self.statusBar().showMessage(f"Cleared review round on {changed} image(s).")
+            self.statusBar().showMessage(f"Cleared review round on {len(changed_paths)} image(s).")
 
     def _selected_records_for_workflow(self) -> list[ImageRecord]:
         records = self._selected_records_for_actions()
@@ -6079,22 +6134,21 @@ class MainWindow(QMainWindow):
         token = self._scan_token
         self._scan_showed_cached = False
         self._scan_in_progress = True
+        self._annotation_hydration_token += 1
+        self._active_annotation_hydration_task = None
+        self._annotation_hydration_dirty_paths.clear()
+        self._annotation_hydration_pending_clear_paths.clear()
+        self._annotation_reapply_timer.stop()
+        self._review_intelligence_token += 1
+        if self._active_review_intelligence_task is not None:
+            self._active_review_intelligence_task.cancel()
+            self._active_review_intelligence_task = None
         self._refresh_recycle_button()
         if folder_changed:
             self._clear_ai_results_state(preserve_setting=True)
         cached_records = self._folder_scan_cache.load(normalize_filesystem_path(folder))
         if cached_records:
-            self._scan_showed_cached = True
-            self.grid.set_empty_message("Choose a folder to start triaging images.")
-            self._apply_loaded_records(cached_records)
-            if self._ui_mode == "ai":
-                self._load_hidden_ai_results_for_current_folder(show_message=False)
-            if self._is_slow_source_folder(folder) and not force_refresh:
-                # For removable/network sources, cached results are better than a blocking refresh.
-                self._scan_in_progress = False
-                self._update_status()
-                return
-            self.statusBar().showMessage(f"Loaded cached folder index for {self._current_folder}, refreshing from disk...")
+            self.statusBar().showMessage(f"Loading cached folder index for {self._current_folder}...")
         else:
             # Never fall back to a synchronous full scan here; it freezes the UI on large or slow folders.
             self.statusBar().showMessage(f"Scanning {folder}...")
@@ -6143,6 +6197,15 @@ class MainWindow(QMainWindow):
             self._cancel_tool_mode(show_message=False)
         self._scan_in_progress = False
         self._scan_token += 1
+        self._annotation_hydration_token += 1
+        self._active_annotation_hydration_task = None
+        self._annotation_hydration_dirty_paths.clear()
+        self._annotation_hydration_pending_clear_paths.clear()
+        self._annotation_reapply_timer.stop()
+        self._review_intelligence_token += 1
+        if self._active_review_intelligence_task is not None:
+            self._active_review_intelligence_task.cancel()
+            self._active_review_intelligence_task = None
         self._current_folder = ""
         self._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
         self._clear_ai_results_state(preserve_setting=True)
@@ -6156,6 +6219,7 @@ class MainWindow(QMainWindow):
         self._all_records_by_path = {record.path: record for record in records}
         self._edited_candidates_cache = {}
         self._review_intelligence = None
+        self._records_view_cache.mark(ViewInvalidationReason.LOAD_CHANGED)
         self._reset_filter_metadata_index(records)
         current_paths = {record.path for record in records}
         self._annotations = {
@@ -6163,20 +6227,89 @@ class MainWindow(QMainWindow):
             for path, annotation in self._annotations.items()
             if path in current_paths
         }
-        for path, annotation in load_sidecar_annotations(records).items():
-            self._annotations[path] = annotation
-        persisted = self._decision_store.load_annotations(self._session_id, records)
-        for path, annotation in persisted.items():
-            self._annotations[path] = annotation
         self._load_correction_events_for_current_folder()
         self._refresh_taste_and_burst_recommendations()
         self._apply_records_view()
+        self._start_annotation_hydration(records)
         self._start_review_intelligence_analysis()
+
+    def _start_annotation_hydration(self, records: list[ImageRecord]) -> None:
+        self._annotation_hydration_token += 1
+        token = self._annotation_hydration_token
+        self._active_annotation_hydration_task = None
+        self._annotation_hydration_dirty_paths.clear()
+        self._annotation_hydration_pending_clear_paths = {record.path for record in records if record.path in self._annotations}
+        self._annotation_reapply_timer.stop()
+        if not records:
+            return
+        scope_key = self._current_scope_key()
+        task = AnnotationHydrationTask(
+            scope_key=scope_key,
+            token=token,
+            session_id=self._session_id,
+            records=tuple(records),
+            prioritized_paths=tuple(self.grid.visible_item_paths(limit=240)),
+        )
+        task.signals.chunk.connect(self._handle_annotation_hydration_chunk, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_annotation_hydration_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_annotation_hydration_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_annotation_hydration_task = task
+        self._annotation_hydration_pool.start(task)
+
+    def _handle_annotation_hydration_chunk(self, scope_key: str, token: int, chunk: dict[str, SessionAnnotation]) -> None:
+        if token != self._annotation_hydration_token or scope_key != self._current_scope_key():
+            return
+        if not chunk:
+            return
+        changed_paths: list[str] = []
+        for path, annotation in chunk.items():
+            self._annotation_hydration_pending_clear_paths.discard(path)
+            previous = self._annotations.get(path)
+            if previous == annotation:
+                continue
+            self._annotations[path] = annotation
+            changed_paths.append(path)
+        if not changed_paths:
+            return
+        self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=changed_paths)
+        self._annotation_hydration_dirty_paths.update(changed_paths)
+        self._annotation_reapply_timer.start()
+
+    def _flush_annotation_hydration_updates(self) -> None:
+        if not self._annotation_hydration_dirty_paths:
+            return
+        changed_paths = sorted(self._annotation_hydration_dirty_paths)
+        self._annotation_hydration_dirty_paths.clear()
+        current_path = self._current_visible_record_path()
+        self._apply_annotation_change_effects(changed_paths, current_path=current_path)
+
+    def _handle_annotation_hydration_finished(self, scope_key: str, token: int) -> None:
+        if token != self._annotation_hydration_token or scope_key != self._current_scope_key():
+            return
+        self._active_annotation_hydration_task = None
+        if self._annotation_hydration_pending_clear_paths:
+            stale_paths = sorted(self._annotation_hydration_pending_clear_paths)
+            self._annotation_hydration_pending_clear_paths.clear()
+            for path in stale_paths:
+                self._annotations.pop(path, None)
+            self._annotation_hydration_dirty_paths.update(stale_paths)
+        self._flush_annotation_hydration_updates()
+
+    def _handle_annotation_hydration_failed(self, scope_key: str, token: int, message: str) -> None:
+        if token != self._annotation_hydration_token or scope_key != self._current_scope_key():
+            return
+        self._active_annotation_hydration_task = None
+        self._annotation_hydration_dirty_paths.clear()
+        self._annotation_hydration_pending_clear_paths.clear()
+        self.statusBar().showMessage(f"Loaded folder, but annotation hydration failed: {message}")
 
     def _start_review_intelligence_analysis(self) -> None:
         if not self._all_records:
             self._review_intelligence = None
             return
+        previous_task = self._active_review_intelligence_task
+        if previous_task is not None:
+            previous_task.cancel()
         self._review_intelligence_token += 1
         token = self._review_intelligence_token
         scope_key = self._current_scope_key()
@@ -6185,10 +6318,32 @@ class MainWindow(QMainWindow):
             token=token,
             records=tuple(self._all_records),
         )
+        task.signals.started.connect(self._handle_review_intelligence_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_review_intelligence_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.cancelled.connect(self._handle_review_intelligence_cancelled, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(self._handle_review_intelligence_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_review_intelligence_failed, Qt.ConnectionType.QueuedConnection)
         self._active_review_intelligence_task = task
         self._review_intelligence_pool.start(task)
+
+    def _handle_review_intelligence_started(self, folder: str, token: int, total: int) -> None:
+        if token != self._review_intelligence_token or folder != self._current_scope_key():
+            return
+        if total > 0:
+            self.statusBar().showMessage(f"Building smart groups for {total} image bundle(s)...")
+
+    def _handle_review_intelligence_progress(self, folder: str, token: int, current: int, total: int) -> None:
+        if token != self._review_intelligence_token or folder != self._current_scope_key():
+            return
+        if total <= 0:
+            return
+        if current in {0, 1, total} or current % 80 == 0:
+            self.statusBar().showMessage(f"Building smart groups ({current}/{total})...")
+
+    def _handle_review_intelligence_cancelled(self, folder: str, token: int) -> None:
+        if token != self._review_intelligence_token or folder != self._current_scope_key():
+            return
+        self._active_review_intelligence_task = None
 
     def _handle_review_intelligence_finished(self, folder: str, token: int, bundle: ReviewIntelligenceBundle) -> None:
         if token != self._review_intelligence_token or folder != self._current_scope_key():
@@ -6213,25 +6368,31 @@ class MainWindow(QMainWindow):
     def _reset_filter_metadata_index(self, records: list[ImageRecord]) -> None:
         self._filter_metadata_by_path = {}
         self._filter_metadata_loaded_paths = set()
+        self._filter_metadata_requested_paths = set()
+        self._filter_metadata_queue = []
+        self._metadata_request_timer.stop()
         self._filter_metadata_record_paths = {record.path for record in records}
         for record in records:
             cached = self._filter_metadata_manager.get_cached(record)
             if cached is not None:
                 self._filter_metadata_by_path[record.path] = cached
                 self._filter_metadata_loaded_paths.add(record.path)
-                continue
-            self._filter_metadata_manager.request_metadata(record)
+        if records:
+            self._enqueue_filter_metadata_paths([record.path for record in records[:180]])
 
     def _handle_filter_metadata_ready(self, key, metadata) -> None:
         record = self._all_records_by_path.get(key.path)
         if record is None or record.path not in self._filter_metadata_record_paths:
             return
+        self._filter_metadata_requested_paths.discard(record.path)
         self._filter_metadata_by_path[record.path] = metadata
         self._filter_metadata_loaded_paths.add(record.path)
         if self._filter_query.requires_metadata or self._burst_groups_enabled or self._burst_stacks_enabled:
             self._metadata_reapply_timer.start()
         else:
             self._update_filter_summary()
+        if self._filter_metadata_queue and not self._metadata_request_timer.isActive():
+            self._metadata_request_timer.start()
 
     def _handle_metadata_filter_batch_update(self) -> None:
         current_path = self._current_visible_record_path()
@@ -6240,6 +6401,56 @@ class MainWindow(QMainWindow):
             return
         if self._burst_groups_enabled or self._burst_stacks_enabled:
             self._refresh_burst_group_view()
+
+    def _enqueue_filter_metadata_paths(
+        self,
+        paths: list[str] | tuple[str, ...] | set[str],
+        *,
+        front: bool = False,
+    ) -> None:
+        if not paths:
+            return
+        pending_keys = {normalized_path_key(path) for path in self._filter_metadata_queue}
+        additions: list[str] = []
+        for path in paths:
+            if not path:
+                continue
+            if path not in self._filter_metadata_record_paths:
+                continue
+            if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
+                continue
+            key = normalized_path_key(path)
+            if key in pending_keys:
+                continue
+            pending_keys.add(key)
+            additions.append(path)
+        if not additions:
+            return
+        if front:
+            self._filter_metadata_queue = [*additions, *self._filter_metadata_queue]
+        else:
+            self._filter_metadata_queue.extend(additions)
+        if not self._metadata_request_timer.isActive():
+            self._metadata_request_timer.start()
+
+    def _drain_filter_metadata_requests(self) -> None:
+        if not self._filter_metadata_queue:
+            self._metadata_request_timer.stop()
+            return
+        requested = 0
+        while self._filter_metadata_queue and requested < 20:
+            path = self._filter_metadata_queue.pop(0)
+            if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
+                continue
+            record = self._all_records_by_path.get(path)
+            if record is None:
+                continue
+            self._filter_metadata_requested_paths.add(path)
+            priority = max(1, 12_000 - requested * 200)
+            self._filter_metadata_manager.request_metadata(record, priority=priority)
+            requested += 1
+        if not self._filter_metadata_queue:
+            self._metadata_request_timer.stop()
 
     def _handle_scan_cached(self, folder: str, token: int, records: list[ImageRecord]) -> None:
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder) or not records:
@@ -6269,9 +6480,15 @@ class MainWindow(QMainWindow):
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
             return
         self._scan_in_progress = False
+        self._annotation_hydration_token += 1
+        self._active_annotation_hydration_task = None
+        self._annotation_hydration_dirty_paths.clear()
+        self._annotation_hydration_pending_clear_paths.clear()
+        self._annotation_reapply_timer.stop()
         self._all_records = []
         self._all_records_by_path = {}
         self._records = []
+        self._last_view_record_paths = ()
         self._record_index_by_path = {}
         self._edited_candidates_cache = {}
         self._visible_review_group_rows_by_id = {}
@@ -6288,6 +6505,8 @@ class MainWindow(QMainWindow):
         self._filter_metadata_by_path = {}
         self._filter_metadata_record_paths = set()
         self._filter_metadata_loaded_paths = set()
+        self._filter_metadata_requested_paths = set()
+        self._filter_metadata_queue = []
         self.grid.set_empty_message("Could not scan this folder.")
         self.grid.set_items([])
         self._refresh_recycle_button()
@@ -6295,6 +6514,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Could not scan {self._current_folder}: {message}")
 
     def _handle_current_changed(self, index: int) -> None:
+        self._enqueue_filter_metadata_paths(self.grid.visible_item_paths(limit=200), front=True)
         self._update_action_states()
         self._update_status(index=index)
         if not self.preview.isVisible():
@@ -6877,11 +7097,40 @@ class MainWindow(QMainWindow):
         )
         self._taste_profile = taste_profile
         self._burst_recommendations = recommendations
-        self._refresh_workflow_insights_cache()
+        self._refresh_workflow_insights_cache(force_full=True)
 
-    def _refresh_workflow_insights_cache(self) -> None:
-        insights: dict[str, RecordWorkflowInsight] = {}
-        for record in self._all_records:
+    def _refresh_workflow_insights_cache(
+        self,
+        *,
+        changed_paths: set[str] | None = None,
+        force_full: bool = False,
+    ) -> None:
+        if force_full or not self._workflow_insights_by_path:
+            insights: dict[str, RecordWorkflowInsight] = {}
+            for record in self._all_records:
+                annotation = self._annotations.get(record.path, SessionAnnotation())
+                ai_result = self._ai_result_for_record(record)
+                burst_recommendation = self._burst_recommendation_for_record(record)
+                workflow = build_record_workflow_insight(
+                    annotation,
+                    ai_result,
+                    burst_recommendation,
+                    self._taste_profile,
+                )
+                insights[record.path] = workflow
+                insights[normalized_path_key(record.path)] = workflow
+            self._workflow_insights_by_path = insights
+            return
+
+        if not changed_paths:
+            return
+
+        for path in changed_paths:
+            record = self._record_for_path(path)
+            if record is None:
+                self._workflow_insights_by_path.pop(path, None)
+                self._workflow_insights_by_path.pop(normalized_path_key(path), None)
+                continue
             annotation = self._annotations.get(record.path, SessionAnnotation())
             ai_result = self._ai_result_for_record(record)
             burst_recommendation = self._burst_recommendation_for_record(record)
@@ -6891,9 +7140,8 @@ class MainWindow(QMainWindow):
                 burst_recommendation,
                 self._taste_profile,
             )
-            insights[record.path] = workflow
-            insights[normalized_path_key(record.path)] = workflow
-        self._workflow_insights_by_path = insights
+            self._workflow_insights_by_path[record.path] = workflow
+            self._workflow_insights_by_path[normalized_path_key(record.path)] = workflow
 
     def _record_for_path(self, path: str) -> ImageRecord | None:
         direct = self._all_records_by_path.get(path)
@@ -7897,14 +8145,7 @@ class MainWindow(QMainWindow):
             return
 
         annotation = self._annotations.setdefault(record.path, SessionAnnotation())
-        previous_annotation = SessionAnnotation(
-            winner=annotation.winner,
-            reject=annotation.reject,
-            photoshop=annotation.photoshop,
-            rating=annotation.rating,
-            tags=annotation.tags,
-            review_round=annotation.review_round,
-        )
+        previous_annotation = self._annotation_snapshot(annotation)
         if previous_annotation.rating == rating:
             return
         self._push_undo(
@@ -7924,9 +8165,9 @@ class MainWindow(QMainWindow):
             )
         )
         annotation.rating = rating
-        self._persist_annotation(record)
+        self._queue_annotation_persist(record, previous_annotation=previous_annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="rating")
-        self._apply_records_view(current_path=record.path)
+        self._apply_annotation_change_effects([record.path], current_path=record.path)
         self.statusBar().showMessage(f"Rated {record.name}: {rating}/5")
 
     def _tag_record(self, index: int) -> None:
@@ -7946,13 +8187,98 @@ class MainWindow(QMainWindow):
 
         tags = tuple(tag.strip() for tag in value.split(",") if tag.strip())
         annotation = self._annotations.setdefault(record.path, SessionAnnotation())
+        previous_annotation = self._annotation_snapshot(annotation)
+        if previous_annotation.tags == tags:
+            return
         annotation.tags = tags
-        self._persist_annotation(record)
-        self._set_annotation_views()
+        self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+        self._apply_annotation_change_effects([record.path], current_path=record.path)
         if tags:
             self.statusBar().showMessage(f"Tagged {record.name}: {', '.join(tags)}")
         else:
             self.statusBar().showMessage(f"Cleared tags for {record.name}")
+
+    @staticmethod
+    def _annotation_snapshot(annotation: SessionAnnotation) -> SessionAnnotation:
+        return replace(annotation)
+
+    def _queue_annotation_persist(
+        self,
+        record: ImageRecord,
+        *,
+        previous_annotation: SessionAnnotation | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=[record.path])
+        target_session = session_id or self._session_id
+        annotation = self._annotations.get(record.path)
+        self._annotation_persistence_queue.enqueue(
+            record.path,
+            annotation,
+            record=record,
+            session_id=target_session,
+            previous_annotation=previous_annotation,
+        )
+
+    def _handle_annotation_persist_failed(self, path: str, message: str) -> None:
+        rollback = self._annotation_persistence_queue.rollback(path)
+        if rollback is None:
+            self.statusBar().showMessage(f"Could not persist annotation for {Path(path).name or path}: {message}")
+            return
+        if rollback.is_empty:
+            self._annotations.pop(path, None)
+        else:
+            self._annotations[path] = rollback
+        self._apply_annotation_change_effects([path], current_path=path)
+        self.statusBar().showMessage(f"Rolled back annotation for {Path(path).name or path}: {message}")
+
+    def _handle_annotation_persist_warning(self, path: str, message: str) -> None:
+        self.statusBar().showMessage(f"Saved app state for {Path(path).name or path}, but sidecar sync failed: {message}")
+
+    def _annotation_change_affects_active_filter(self) -> bool:
+        if bool((self._filter_query.search_text or "").strip()):
+            return True
+        if self._filter_query.review_state != ReviewStateFilter.ALL:
+            return True
+        if self._filter_query.quick_filter in {
+            FilterMode.WINNERS,
+            FilterMode.REJECTS,
+            FilterMode.UNREVIEWED,
+            FilterMode.AI_DISAGREEMENTS,
+            FilterMode.REVIEW_ROUNDS,
+        }:
+            return True
+        if self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS:
+            return True
+        if bool(normalize_review_round(self._filter_query.review_round)):
+            return True
+        return False
+
+    def _apply_annotation_change_effects(
+        self,
+        changed_paths: list[str] | tuple[str, ...] | set[str],
+        *,
+        current_path: str | None = None,
+    ) -> None:
+        paths = [path for path in changed_paths if path]
+        if not paths:
+            return
+        self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=paths)
+        if self._annotation_change_affects_active_filter():
+            self._apply_records_view(current_path=current_path)
+            return
+        self._refresh_workflow_insights_cache(changed_paths=set(paths))
+        self._set_annotation_views(paths)
+        self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
+        self._recalculate_review_counts()
+        self._refresh_ai_summary_cache()
+        self._update_filter_summary()
+        if current_path:
+            next_index = self._record_index_by_path.get(current_path)
+            if next_index is not None:
+                self.grid.set_current_index(next_index)
+        self._update_action_states()
+        self._update_status()
 
     def _toggle_winner(
         self,
@@ -7980,24 +8306,13 @@ class MainWindow(QMainWindow):
         if current_path_override is not None:
             next_path = current_path_override
         annotation = self._annotations.setdefault(record.path, SessionAnnotation())
-        previous_annotation = SessionAnnotation(
-            winner=annotation.winner,
-            reject=annotation.reject,
-            photoshop=annotation.photoshop,
-            rating=annotation.rating,
-            tags=annotation.tags,
-            review_round=annotation.review_round,
-        )
+        previous_annotation = self._annotation_snapshot(annotation)
         previous_winner = annotation.winner
         previous_reject = annotation.reject
         previous_photoshop = annotation.photoshop
         annotation.winner = not annotation.winner
         if annotation.winner:
             annotation.reject = False
-
-        self._set_annotation_views()
-        self.grid.viewport().repaint()
-        QApplication.processEvents()
 
         try:
             self._sync_winner_copy(record, annotation.winner, self._current_folder)
@@ -8024,9 +8339,9 @@ class MainWindow(QMainWindow):
                 winner_mode=self._winner_mode.value,
             )
         )
-        self._persist_annotation(record)
+        self._queue_annotation_persist(record, previous_annotation=previous_annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="winner_toggle")
-        self._apply_records_view(current_path=next_path)
+        self._apply_annotation_change_effects([record.path], current_path=next_path)
         if annotation.winner:
             self.statusBar().showMessage(f"Winner added: {record.name}")
         else:
@@ -8052,24 +8367,13 @@ class MainWindow(QMainWindow):
             next_path = current_path_override
 
         annotation = self._annotations.setdefault(record.path, SessionAnnotation())
-        previous_annotation = SessionAnnotation(
-            winner=annotation.winner,
-            reject=annotation.reject,
-            photoshop=annotation.photoshop,
-            rating=annotation.rating,
-            tags=annotation.tags,
-            review_round=annotation.review_round,
-        )
+        previous_annotation = self._annotation_snapshot(annotation)
         previous_winner = annotation.winner
         previous_reject = annotation.reject
         previous_photoshop = annotation.photoshop
         annotation.reject = not annotation.reject
         if annotation.reject:
             annotation.winner = False
-
-        self._set_annotation_views()
-        self.grid.viewport().repaint()
-        QApplication.processEvents()
 
         try:
             if previous_winner != annotation.winner:
@@ -8097,9 +8401,9 @@ class MainWindow(QMainWindow):
                 winner_mode=self._winner_mode.value,
             )
         )
-        self._persist_annotation(record)
+        self._queue_annotation_persist(record, previous_annotation=previous_annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="reject_toggle")
-        self._apply_records_view(current_path=next_path)
+        self._apply_annotation_change_effects([record.path], current_path=next_path)
         if annotation.reject:
             self.statusBar().showMessage(f"Rejected: {record.name}")
         else:
@@ -8337,14 +8641,85 @@ class MainWindow(QMainWindow):
         if self._is_winners_folder():
             self._batch_delete_records(records)
             return
-        changed = sum(1 for record in records if self._set_winner_by_path(record.path, True))
+        changed, failures = self._batch_apply_annotation_state(records, winner=True, reject=False, source_mode="winner_toggle")
+        if failures:
+            self.statusBar().showMessage(f"Accepted {changed} image(s); {failures} failed to sync winner artifacts")
+            return
         self.statusBar().showMessage(f"Accepted {changed} image(s)")
 
     def _batch_set_reject(self, records: list[ImageRecord]) -> None:
         if not records:
             return
-        changed = sum(1 for record in records if self._set_reject_by_path(record.path, True))
+        changed, failures = self._batch_apply_annotation_state(records, winner=False, reject=True, source_mode="reject_toggle")
+        if failures:
+            self.statusBar().showMessage(f"Rejected {changed} image(s); {failures} failed to update")
+            return
         self.statusBar().showMessage(f"Rejected {changed} image(s)")
+
+    def _batch_apply_annotation_state(
+        self,
+        records: list[ImageRecord],
+        *,
+        winner: bool,
+        reject: bool,
+        source_mode: str,
+    ) -> tuple[int, int]:
+        if not records:
+            return 0, 0
+
+        changed_paths: list[str] = []
+        undo_actions: list[UndoAction] = []
+        failures = 0
+        current_path = self._current_visible_record_path() or records[0].path
+
+        for record in records:
+            annotation = self._annotations.setdefault(record.path, SessionAnnotation())
+            previous_annotation = self._annotation_snapshot(annotation)
+            target_winner = bool(winner)
+            target_reject = bool(reject)
+            if target_winner:
+                target_reject = False
+            if target_reject:
+                target_winner = False
+            if previous_annotation.winner == target_winner and previous_annotation.reject == target_reject:
+                continue
+
+            annotation.winner = target_winner
+            annotation.reject = target_reject
+            try:
+                if previous_annotation.winner != annotation.winner:
+                    self._sync_winner_copy(record, annotation.winner, self._current_folder)
+            except OSError:
+                annotation.winner = previous_annotation.winner
+                annotation.reject = previous_annotation.reject
+                failures += 1
+                continue
+
+            undo_actions.append(
+                UndoAction(
+                    kind="annotation",
+                    primary_path=record.path,
+                    original_winner=previous_annotation.winner,
+                    original_reject=previous_annotation.reject,
+                    original_photoshop=previous_annotation.photoshop,
+                    rating=previous_annotation.rating,
+                    tags=previous_annotation.tags,
+                    original_review_round=previous_annotation.review_round,
+                    folder=self._current_folder,
+                    source_paths=self._record_paths(record),
+                    session_id=self._session_id,
+                    winner_mode=self._winner_mode.value,
+                )
+            )
+            self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+            self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode=source_mode)
+            changed_paths.append(record.path)
+
+        if undo_actions:
+            self._push_undo_actions(undo_actions)
+        if changed_paths:
+            self._apply_annotation_change_effects(changed_paths, current_path=current_path)
+        return len(changed_paths), failures
 
     def _batch_keep_records(self, records: list[ImageRecord]) -> None:
         if not records:
@@ -8489,6 +8864,7 @@ class MainWindow(QMainWindow):
         self.preview.close()
 
     def _persist_annotation(self, record: ImageRecord, *, session_id: str | None = None) -> None:
+        self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=[record.path])
         target_session_id = session_id or self._session_id
         annotation = self._annotations.get(record.path)
         if annotation is None:
@@ -8890,7 +9266,7 @@ class MainWindow(QMainWindow):
         self._sync_winner_copy_for_paths(action.source_paths, action.original_winner, action.folder, mode_override=mode_override)
         record = self._all_records_by_path.get(action.primary_path) or self._record_from_path(action.primary_path)
         if record is not None:
-            self._persist_annotation(record, session_id=action.session_id or self._session_id)
+            self._queue_annotation_persist(record, session_id=action.session_id or self._session_id)
         self._set_annotation_views()
         self._apply_records_view(current_path=action.primary_path)
         self.statusBar().showMessage(f"Undid annotation change: {Path(action.primary_path).name}")
@@ -8932,7 +9308,7 @@ class MainWindow(QMainWindow):
                 self._annotations.pop(action.primary_path, None)
             else:
                 self._annotations[action.primary_path] = annotation
-            self._persist_annotation(restored_record, session_id=action.session_id or self._session_id)
+            self._queue_annotation_persist(restored_record, session_id=action.session_id or self._session_id)
 
         if self._current_folder == action.folder:
             self._load_folder(self._current_folder)
@@ -8962,7 +9338,24 @@ class MainWindow(QMainWindow):
         return self._records[index].path
 
     def _apply_records_view(self, current_path: str | None = None) -> None:
-        self._refresh_workflow_insights_cache()
+        reasons, dirty_paths = self._records_view_cache.consume()
+        force_workflow_rebuild = not self._workflow_insights_by_path and bool(self._all_records)
+        if reasons.intersection(
+            {
+                ViewInvalidationReason.SORT_CHANGED,
+                ViewInvalidationReason.FILTER_CHANGED,
+                ViewInvalidationReason.AI_CHANGED,
+                ViewInvalidationReason.REVIEW_CHANGED,
+                ViewInvalidationReason.LOAD_CHANGED,
+            }
+        ):
+            force_workflow_rebuild = True
+        if force_workflow_rebuild or dirty_paths:
+            self._refresh_workflow_insights_cache(
+                changed_paths=set(dirty_paths) if dirty_paths else None,
+                force_full=force_workflow_rebuild,
+            )
+
         sorted_records = sort_records(list(self._all_records), self._sort_mode)
         needs_ai = self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
         needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
@@ -8989,12 +9382,28 @@ class MainWindow(QMainWindow):
             ):
                 records.append(record)
 
+        previous_record_paths = self._last_view_record_paths
+        next_record_paths = tuple(record.path for record in records)
+        structural_changed = previous_record_paths != next_record_paths
+
         self._records = records
         self._record_index_by_path = {record.path: index for index, record in enumerate(records)}
         self._recalculate_review_counts()
         self._refresh_ai_summary_cache()
-        self.grid.set_items(records)
-        self._set_annotation_views()
+        if structural_changed:
+            self.grid.set_items(records)
+            self._set_annotation_views()
+        else:
+            changed_visible_paths = tuple(path for path in dirty_paths if path in self._record_index_by_path)
+            self.grid.update_items(
+                GridDeltaUpdate(
+                    changed_paths=changed_visible_paths,
+                    selection_anchor=self.grid.current_index(),
+                    preserve_pixmap_cache=True,
+                )
+            )
+            if changed_visible_paths:
+                self._set_annotation_views(changed_visible_paths)
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
         self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
         self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
@@ -9017,8 +9426,10 @@ class MainWindow(QMainWindow):
             if index is not None:
                 self.grid.set_current_index(index)
                 restored_current = True
-        if records and not restored_current:
+        if records and not restored_current and structural_changed:
             self.grid.set_current_index(0)
+        self._last_view_record_paths = next_record_paths
+        self._enqueue_filter_metadata_paths(self.grid.visible_item_paths(limit=240), front=True)
         self._refresh_viewport_mode()
         self._update_action_states()
         self._update_status()

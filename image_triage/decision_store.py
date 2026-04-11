@@ -96,6 +96,52 @@ class DecisionStore:
             )
             connection.commit()
 
+    def save_annotations(
+        self,
+        session_id: str,
+        entries: list[tuple[ImageRecord, SessionAnnotation | None]],
+    ) -> None:
+        if not entries:
+            return
+        normalized_session = self._normalize_session_id(session_id)
+        with sqlite3.connect(self._db_path) as connection:
+            self._ensure_session_row(connection, normalized_session)
+            for record, annotation in entries:
+                if annotation is None or annotation.is_empty:
+                    connection.execute(
+                        "DELETE FROM decisions WHERE session_id = ? AND path = ?",
+                        (normalized_session, record.path),
+                    )
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO decisions (session_id, path, modified_ns, file_size, winner, reject, photoshop, rating, tags_json, review_round)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, path) DO UPDATE SET
+                        modified_ns = excluded.modified_ns,
+                        file_size = excluded.file_size,
+                        winner = excluded.winner,
+                        reject = excluded.reject,
+                        photoshop = excluded.photoshop,
+                        rating = excluded.rating,
+                        tags_json = excluded.tags_json,
+                        review_round = excluded.review_round
+                    """,
+                    (
+                        normalized_session,
+                        record.path,
+                        record.modified_ns,
+                        record.size,
+                        int(annotation.winner),
+                        int(annotation.reject),
+                        int(annotation.photoshop),
+                        annotation.rating,
+                        json.dumps(list(annotation.tags)),
+                        annotation.review_round,
+                    ),
+                )
+            connection.commit()
+
     def move_annotation(self, session_id: str, old_path: str, record: ImageRecord, annotation: SessionAnnotation) -> None:
         if annotation.is_empty:
             self.delete_annotation(session_id, old_path)

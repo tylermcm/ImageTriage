@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from hashlib import sha1
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, Signal
 from PySide6.QtGui import QImage
@@ -114,8 +115,11 @@ class _RecordFingerprint:
 
 
 class ReviewIntelligenceSignals(QObject):
+    started = Signal(str, int, int)
+    progress = Signal(str, int, int, int)
     finished = Signal(str, int, object)
     failed = Signal(str, int, str)
+    cancelled = Signal(str, int)
 
 
 class BuildReviewIntelligenceTask(QRunnable):
@@ -125,31 +129,67 @@ class BuildReviewIntelligenceTask(QRunnable):
         self.token = token
         self.records = records
         self.signals = ReviewIntelligenceSignals()
+        self._cancelled = False
         self.setAutoDelete(True)
 
+    def cancel(self) -> None:
+        self._cancelled = True
+
     def run(self) -> None:
+        total = len(self.records)
+        self.signals.started.emit(self.folder, self.token, total)
         try:
-            bundle = build_review_intelligence(list(self.records))
+            bundle = build_review_intelligence(
+                list(self.records),
+                should_cancel=lambda: self._cancelled,
+                progress_callback=lambda current, total_records: self.signals.progress.emit(
+                    self.folder,
+                    self.token,
+                    current,
+                    total_records,
+                ),
+            )
+        except ReviewIntelligenceCancelled:
+            self.signals.cancelled.emit(self.folder, self.token)
+            return
         except Exception as exc:  # pragma: no cover - desktop/runtime path
             self.signals.failed.emit(self.folder, self.token, str(exc))
             return
         self.signals.finished.emit(self.folder, self.token, bundle)
 
 
-def build_review_intelligence(records: list[ImageRecord]) -> ReviewIntelligenceBundle:
+class ReviewIntelligenceCancelled(RuntimeError):
+    pass
+
+
+def build_review_intelligence(
+    records: list[ImageRecord],
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> ReviewIntelligenceBundle:
     if not records:
         return ReviewIntelligenceBundle(groups=(), insights_by_path={})
 
+    total_records = len(records)
+    _emit_progress(progress_callback, 0, total_records)
     metadata_cache: dict[str, CaptureMetadata] = {}
-    fingerprints = [_build_fingerprint(record, metadata_cache) for record in records]
+    fingerprints: list[_RecordFingerprint] = []
+    for index, record in enumerate(records, start=1):
+        _raise_if_cancelled(should_cancel)
+        fingerprints.append(_build_fingerprint(record, metadata_cache))
+        _emit_progress(progress_callback, index, total_records)
+
     path_to_fingerprint = {fingerprint.record.path: fingerprint for fingerprint in fingerprints}
 
     union = _UnionFind()
     edge_kinds: dict[tuple[str, str], str] = {}
     edge_reasons: dict[tuple[str, str], tuple[str, ...]] = {}
 
-    exact_duplicate_groups = _find_exact_duplicate_groups(fingerprints)
+    _raise_if_cancelled(should_cancel)
+    exact_duplicate_groups = _find_exact_duplicate_groups(fingerprints, should_cancel=should_cancel)
     for members in exact_duplicate_groups:
+        _raise_if_cancelled(should_cancel)
         anchor = members[0]
         for path in members[1:]:
             _connect(
@@ -171,8 +211,10 @@ def build_review_intelligence(records: list[ImageRecord]) -> ReviewIntelligenceB
         ),
     )
     for index, anchor in enumerate(ordered):
+        _raise_if_cancelled(should_cancel)
         previous = anchor
         for offset, candidate in enumerate(ordered[index + 1 : index + 1 + _FALLBACK_MAX_NEIGHBORS], start=1):
+            _raise_if_cancelled(should_cancel)
             if offset > 4 and _time_gap_too_large(anchor.metadata, candidate.metadata):
                 break
             kind, reasons = _classify_pair(anchor, previous, candidate)
@@ -191,6 +233,7 @@ def build_review_intelligence(records: list[ImageRecord]) -> ReviewIntelligenceB
 
     members_by_root: dict[str, list[str]] = defaultdict(list)
     for record in records:
+        _raise_if_cancelled(should_cancel)
         members_by_root[union.find(record.path)].append(record.path)
 
     groups: list[ReviewGroup] = []
@@ -202,6 +245,7 @@ def build_review_intelligence(records: list[ImageRecord]) -> ReviewIntelligenceB
         ),
         start=1,
     ):
+        _raise_if_cancelled(should_cancel)
         if len(member_paths) <= 1:
             continue
 
@@ -230,6 +274,7 @@ def build_review_intelligence(records: list[ImageRecord]) -> ReviewIntelligenceB
             )
         )
         for rank, path in enumerate(member_paths, start=1):
+            _raise_if_cancelled(should_cancel)
             fingerprint = path_to_fingerprint[path]
             insight = ReviewInsight(
                 path=path,
@@ -292,17 +337,24 @@ def _analysis_source_path(record: ImageRecord) -> str:
     return record.path
 
 
-def _find_exact_duplicate_groups(fingerprints: list[_RecordFingerprint]) -> list[tuple[str, ...]]:
+def _find_exact_duplicate_groups(
+    fingerprints: list[_RecordFingerprint],
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[tuple[str, ...]]:
     by_size: dict[int, list[_RecordFingerprint]] = defaultdict(list)
     for fingerprint in fingerprints:
+        _raise_if_cancelled(should_cancel)
         by_size[fingerprint.record.size].append(fingerprint)
 
     groups: list[tuple[str, ...]] = []
     for candidates in by_size.values():
+        _raise_if_cancelled(should_cancel)
         if len(candidates) < 2:
             continue
         by_hash: dict[str, list[str]] = defaultdict(list)
         for fingerprint in candidates:
+            _raise_if_cancelled(should_cancel)
             digest = fingerprint.sha1_digest or _sha1_for_path(fingerprint.record.path)
             if not digest:
                 continue
@@ -311,6 +363,25 @@ def _find_exact_duplicate_groups(fingerprints: list[_RecordFingerprint]) -> list
             if len(member_paths) >= 2:
                 groups.append(tuple(sorted(member_paths, key=str.casefold)))
     return groups
+
+
+def _raise_if_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise ReviewIntelligenceCancelled("Review intelligence task cancelled")
+
+
+def _emit_progress(
+    callback: Callable[[int, int], None] | None,
+    current: int,
+    total: int,
+) -> None:
+    if callback is None:
+        return
+    if total <= 0:
+        callback(current, total)
+        return
+    if current in {0, 1, total} or current % 40 == 0:
+        callback(current, total)
 
 
 def _classify_pair(

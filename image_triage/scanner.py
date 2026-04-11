@@ -111,6 +111,32 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
         family = variant_family_key(scanned.stem_key, exact_stems)
         nested_edit_files_by_family.setdefault(family, []).append(scanned)
 
+    root_variant_cache: dict[tuple[str, str], list[ScannedFile]] = {}
+    nested_variant_cache: dict[tuple[str, str], list[ScannedFile]] = {}
+
+    def _sorted_variants_for_family(family: str, stem_key: str) -> tuple[list[ScannedFile], list[ScannedFile]]:
+        cache_key = (family, stem_key)
+        root_cached = root_variant_cache.get(cache_key)
+        nested_cached = nested_variant_cache.get(cache_key)
+        if root_cached is not None and nested_cached is not None:
+            return root_cached, nested_cached
+
+        root_candidates = [
+            item
+            for item in root_files_by_family.get(family, [])
+            if edit_stem_matches(stem_key, item.stem_key)
+        ]
+        nested_candidates = [
+            item
+            for item in nested_edit_files_by_family.get(family, [])
+            if edit_stem_matches(stem_key, item.stem_key)
+        ]
+        root_cached = sorted(root_candidates, key=lambda item: edited_candidate_sort_key(stem_key, item))
+        nested_cached = sorted(nested_candidates, key=lambda item: edited_candidate_sort_key(stem_key, item))
+        root_variant_cache[cache_key] = root_cached
+        nested_variant_cache[cache_key] = nested_cached
+        return root_cached, nested_cached
+
     records: list[ImageRecord] = []
     consumed_root_paths: set[str] = set()
 
@@ -121,18 +147,9 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
             companions = tuple(item.path for item in companion_files)
             consumed_root_paths.update(path for path in companions if os.path.normpath(os.path.dirname(path)) == folder)
             excluded = {_path_key_fast(raw.path), *[_path_key_fast(item.path) for item in companion_files]}
-            root_variant_files = [
-                item
-                for item in root_files_by_family.get(family, [])
-                if _path_key_fast(item.path) not in excluded and edit_stem_matches(raw.stem_key, item.stem_key)
-            ]
-            nested_variant_files = [
-                item
-                for item in nested_edit_files_by_family.get(family, [])
-                if edit_stem_matches(raw.stem_key, item.stem_key)
-            ]
-            root_variant_files = sorted(root_variant_files, key=lambda item: edited_candidate_sort_key(raw.stem_key, item))
-            nested_variant_files = sorted(nested_variant_files, key=lambda item: edited_candidate_sort_key(raw.stem_key, item))
+            sorted_root_variants, sorted_nested_variants = _sorted_variants_for_family(family, raw.stem_key)
+            root_variant_files = [item for item in sorted_root_variants if _path_key_fast(item.path) not in excluded]
+            nested_variant_files = list(sorted_nested_variants)
             edit_files = dedupe_scanned([*root_variant_files, *nested_variant_files])
             stack_base = preferred_stack_base(raw, companion_files)
             if edit_files:
@@ -166,17 +183,9 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
 
     for family, family_files in remaining_by_family.items():
         primary = sorted(family_files, key=lambda item: root_primary_sort_key(family, item))[0]
-        root_variant_files = [
-            item for item in family_files
-            if _path_key_fast(item.path) != _path_key_fast(primary.path)
-        ]
-        root_variant_files = sorted(root_variant_files, key=lambda item: edited_candidate_sort_key(primary.stem_key, item))
-        nested_variant_files = [
-            item
-            for item in nested_edit_files_by_family.get(family, [])
-            if edit_stem_matches(family, item.stem_key)
-        ]
-        nested_variant_files = sorted(nested_variant_files, key=lambda item: edited_candidate_sort_key(primary.stem_key, item))
+        sorted_root_variants, sorted_nested_variants = _sorted_variants_for_family(family, primary.stem_key)
+        root_variant_files = [item for item in sorted_root_variants if _path_key_fast(item.path) != _path_key_fast(primary.path)]
+        nested_variant_files = list(sorted_nested_variants)
         edit_files = dedupe_scanned([*root_variant_files, *nested_variant_files])
         stack_variants = ()
         if edit_files:
