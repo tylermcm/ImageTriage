@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from functools import lru_cache
 from glob import glob
 from pathlib import Path
@@ -15,26 +16,60 @@ except ImportError:  # pragma: no cover - Windows only
 
 def reveal_in_file_explorer(path: str) -> None:
     normalized = os.path.normpath(path)
-    subprocess.Popen(["explorer", f"/select,{normalized}"])
+    if os.name == "nt":
+        subprocess.Popen(["explorer", f"/select,{normalized}"])
+        return
+    _open_path(os.path.dirname(normalized) or normalized)
 
 
 def open_in_file_explorer(path: str) -> None:
     normalized = os.path.normpath(path)
-    os.startfile(normalized)
+    if os.name == "nt":
+        os.startfile(normalized)
+        return
+    _open_path(normalized)
 
 
 def open_with_default(path: str) -> None:
-    os.startfile(path)
+    if os.name == "nt":
+        os.startfile(path)
+        return
+    _open_path(path)
 
 
 def open_with_dialog(path: str) -> None:
-    subprocess.Popen(["rundll32.exe", "shell32.dll,OpenAs_RunDLL", path])
+    if os.name == "nt":
+        subprocess.Popen(["rundll32.exe", "shell32.dll,OpenAs_RunDLL", path])
+        return
+    _open_path(path)
 
 
 def open_in_photoshop(path: str) -> None:
     executable = detect_photoshop_executable()
     if executable:
         subprocess.Popen([executable, path])
+    elif os.name != "nt":
+        open_with_default(path)
+
+
+def _open_path(path: str) -> None:
+    command = _best_open_command(path)
+    if command is None:
+        raise FileNotFoundError(f"No desktop open command is available for: {path}")
+    subprocess.Popen(command)
+
+
+def _best_open_command(path: str) -> list[str] | None:
+    if sys.platform == "darwin":
+        return ["open", path]
+    for candidate in ("xdg-open", "gio", "gnome-open", "kde-open"):
+        executable = shutil.which(candidate)
+        if not executable:
+            continue
+        if candidate == "gio":
+            return [executable, "open", path]
+        return [executable, path]
+    return None
 
 
 @lru_cache(maxsize=1)

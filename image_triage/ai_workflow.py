@@ -35,7 +35,7 @@ TQDM_PROGRESS_PATTERN = re.compile(
     r"^(?P<label>Scanning images|Extracting embeddings):.*?\|\s*(?P<current>\d+)/(?P<total>\d+)\s*\[(?P<timing>[^\]]+)\]"
 )
 AI_RUNTIME_DIR_NAME = "ai_runtime"
-AI_RUNNER_EXE_NAME = "ai_python_runner.exe"
+AI_RUNNER_TARGET_NAME = "ai_python_runner.exe" if os.name == "nt" else "ai_python_runner"
 REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
     "scripts/extract_embeddings.py",
     "scripts/cluster_embeddings.py",
@@ -274,7 +274,7 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     python_executable = _first_existing_path(
         [
             os.environ.get("AICULLING_PYTHON", ""),
-            str(runtime_root / AI_RUNNER_EXE_NAME),
+            str(runtime_root / AI_RUNNER_TARGET_NAME),
             sys.executable,
         ]
     )

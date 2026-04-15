@@ -2431,7 +2431,8 @@ class MainWindow(QMainWindow):
     def _show_folder_context_menu(self, folder: str, global_pos, *, is_favorite: bool) -> None:
         menu = QMenu(self)
         open_action = menu.addAction("Open")
-        explorer_action = menu.addAction("Open In File Explorer")
+        explorer_label = "Open In File Explorer" if os.name == "nt" else "Open In File Manager"
+        explorer_action = menu.addAction(explorer_label)
         menu.addSeparator()
         new_folder_action = menu.addAction("New Folder...")
         extract_archive_action = menu.addAction("Extract Archive Here...")
@@ -9669,7 +9670,8 @@ class MainWindow(QMainWindow):
         open_with_menu = menu.addMenu("Open With")
         default_action = open_with_menu.addAction("Default App")
         open_with_action = open_with_menu.addAction("System Open With...")
-        reveal_action = menu.addAction("Reveal In File Explorer")
+        reveal_label = "Reveal In File Explorer" if os.name == "nt" else "Reveal In File Manager"
+        reveal_action = menu.addAction(reveal_label)
         photoshop_action = menu.addAction("Open In Photoshop")
         photoshop_action.setEnabled(bool(self._photoshop_executable))
         if not self._photoshop_executable:

@@ -13,7 +13,12 @@ coverage.xml
 htmlcov/
 build/
 dist/
-build_assets/
+build_assets/*
+!build_assets/icons/
+build_assets/icons/*
+!build_assets/icons/*.ico
+!build_assets/icons/*.png
+!build_assets/icons/*.svg
 .eggs/
 *.egg-info/
 pip-wheel-metadata/

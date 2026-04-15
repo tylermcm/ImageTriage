@@ -244,7 +244,8 @@ def stage_ai_site_packages() -> None:
         else:
             print(f"Skipping missing optional AI dependency entry: {source}")
 
-    _patch_sklearn_distributor_init(AI_SITE_PACKAGES_STAGE_ROOT)
+    if os.name == "nt":
+        _patch_sklearn_distributor_init(AI_SITE_PACKAGES_STAGE_ROOT)
 
 
 def stage_ai_stdlib() -> None:
@@ -340,13 +341,14 @@ executables = [
     ),
 ]
 
-setup(
-    name="ImageTriage",
-    version=_read_project_version(),
-    description="Image Triage desktop installer",
-    options={
-        "build_exe": build_exe_options,
-        "bdist_msi": bdist_msi_options,
-    },
-    executables=executables,
-)
+if __name__ == "__main__":
+    setup(
+        name="ImageTriage",
+        version=_read_project_version(),
+        description="Image Triage desktop installer",
+        options={
+            "build_exe": build_exe_options,
+            "bdist_msi": bdist_msi_options,
+        },
+        executables=executables,
+    )
