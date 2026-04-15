@@ -6,7 +6,7 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import QApplication
 
-from .window import MainWindow
+from image_triage.window import MainWindow
 
 
 def main() -> int:

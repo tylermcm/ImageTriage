@@ -34,12 +34,19 @@ DRIVE_REMOTE = 4
 TQDM_PROGRESS_PATTERN = re.compile(
     r"^(?P<label>Scanning images|Extracting embeddings):.*?\|\s*(?P<current>\d+)/(?P<total>\d+)\s*\[(?P<timing>[^\]]+)\]"
 )
+AI_RUNTIME_DIR_NAME = "ai_runtime"
+AI_RUNNER_EXE_NAME = "ai_python_runner.exe"
+REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
+    "scripts/extract_embeddings.py",
+    "scripts/cluster_embeddings.py",
+    "scripts/export_ranked_report.py",
+)
 
 
 @dataclass(slots=True, frozen=True)
 class AIWorkflowRuntime:
     engine_root: Path
-    python_executable: Path
+    python_executable: Path | None
     checkpoint_path: Path
     extraction_config_path: Path
     clustering_config_path: Path
@@ -54,7 +61,6 @@ class AIWorkflowRuntime:
         missing: list[str] = []
         for label, path in (
             ("engine root", self.engine_root),
-            ("python executable", self.python_executable),
             ("checkpoint", self.checkpoint_path),
             ("extract config", self.extraction_config_path),
             ("cluster config", self.clustering_config_path),
@@ -62,6 +68,18 @@ class AIWorkflowRuntime:
         ):
             if not path.exists():
                 missing.append(f"{label}: {path}")
+        for script_relative_path in REQUIRED_AI_SCRIPT_RELATIVE_PATHS:
+            script_path = self.engine_root / script_relative_path
+            script_executable = script_path.with_suffix(".exe")
+            if script_executable.exists():
+                continue
+            if not script_path.exists():
+                missing.append(f"ai tool: {script_path}")
+                continue
+            if self.python_executable is None:
+                missing.append("python executable: (missing)")
+            elif not self.python_executable.exists():
+                missing.append(f"python executable: {self.python_executable}")
         if missing:
             raise FileNotFoundError("Missing AI workflow paths:\n" + "\n".join(missing))
         if self.local_stage_mode not in {"auto", "always", "off"}:
@@ -121,9 +139,8 @@ class AIRunTask(QRunnable):
             (
                 "extract",
                 "Extracting embeddings",
+                "scripts/extract_embeddings.py",
                 [
-                    str(self.runtime.python_executable),
-                    "scripts/extract_embeddings.py",
                     "--config",
                     str(self.runtime.extraction_config_path),
                     "--input-dir",
@@ -141,9 +158,8 @@ class AIRunTask(QRunnable):
             (
                 "cluster",
                 "Building culling groups",
+                "scripts/cluster_embeddings.py",
                 [
-                    str(self.runtime.python_executable),
-                    "scripts/cluster_embeddings.py",
                     "--config",
                     str(self.runtime.clustering_config_path),
                     "--artifacts-dir",
@@ -155,9 +171,8 @@ class AIRunTask(QRunnable):
             (
                 "report",
                 "Scoring groups and building report",
+                "scripts/export_ranked_report.py",
                 [
-                    str(self.runtime.python_executable),
-                    "scripts/export_ranked_report.py",
                     "--config",
                     str(self.runtime.report_config_path),
                     "--artifacts-dir",
@@ -173,9 +188,9 @@ class AIRunTask(QRunnable):
         ]
 
         if self.labels_dir is not None and self.labels_dir.exists():
-            commands[-1][2].extend(["--labels-dir", str(self.labels_dir)])
+            commands[-1][3].extend(["--labels-dir", str(self.labels_dir)])
         if self.reference_bank_path is not None and self.reference_bank_path.exists():
-            commands[-1][2].extend(["--reference-bank-path", str(self.reference_bank_path)])
+            commands[-1][3].extend(["--reference-bank-path", str(self.reference_bank_path)])
 
         use_local_stage = _should_use_local_staging(self.folder, self.runtime)
         total_stages = len(commands) + (1 if use_local_stage else 0)
@@ -194,16 +209,21 @@ class AIRunTask(QRunnable):
                     eta_text,
                 ),
             )
-            commands[0][2][commands[0][2].index("--input-dir") + 1] = str(staged_input_dir)
+            commands[0][3][commands[0][3].index("--input-dir") + 1] = str(staged_input_dir)
             command_start_index = 2
         else:
-            commands[0][2][commands[0][2].index("--input-dir") + 1] = str(self.folder)
+            commands[0][3][commands[0][3].index("--input-dir") + 1] = str(self.folder)
 
-        for stage_index, (_stage_name, stage_message, command) in enumerate(
+        for stage_index, (stage_name, stage_message, script_relative_path, stage_args) in enumerate(
             commands,
             start=command_start_index,
         ):
             self.signals.stage.emit(folder_text, stage_index, total_stages, stage_message)
+            command = _resolve_stage_command(
+                self.runtime,
+                script_relative_path=script_relative_path,
+                stage_args=stage_args,
+            )
             completed = _run_command_with_live_output(
                 command,
                 cwd=self.runtime.engine_root,
@@ -225,7 +245,7 @@ class AIRunTask(QRunnable):
                     error_parts.append(stdout)
                 self.signals.failed.emit(folder_text, "\n\n".join(error_parts))
                 return
-            if staged_input_dir is not None and command[1] == "scripts/extract_embeddings.py":
+            if staged_input_dir is not None and stage_name == "extract":
                 rewrite_extraction_artifact_paths(
                     artifacts_dir=self.paths.artifacts_dir,
                     source_folder=self.folder,
@@ -240,15 +260,21 @@ class AIRunTask(QRunnable):
 
 def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     workspace_root = Path(__file__).resolve().parents[1]
+    runtime_root = _application_runtime_root(workspace_root)
+    bundled_engine_root = runtime_root / AI_RUNTIME_DIR_NAME / "AICullingPipeline"
+    adjacent_engine_root = runtime_root / "AICullingPipeline"
     engine_root = _first_existing_path(
         [
             os.environ.get("AICULLING_ENGINE_ROOT", ""),
+            str(bundled_engine_root),
+            str(adjacent_engine_root),
             str(workspace_root / "AICullingPipeline"),
         ]
     )
     python_executable = _first_existing_path(
         [
             os.environ.get("AICULLING_PYTHON", ""),
+            str(runtime_root / AI_RUNNER_EXE_NAME),
             sys.executable,
         ]
     )
@@ -268,9 +294,10 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     )
 
     engine_root_path = Path(engine_root).expanduser().resolve()
+    python_path = Path(python_executable).expanduser().resolve() if python_executable else None
     return AIWorkflowRuntime(
         engine_root=engine_root_path,
-        python_executable=Path(python_executable).expanduser().resolve(),
+        python_executable=python_path,
         checkpoint_path=Path(checkpoint_path).expanduser().resolve(),
         extraction_config_path=engine_root_path / "configs" / "extract_embeddings.json",
         clustering_config_path=engine_root_path / "configs" / "cluster_embeddings.json",
@@ -550,6 +577,39 @@ def _first_existing_path(candidates: list[str]) -> str:
         if path.exists():
             return str(path.resolve())
     return candidates[-1] if candidates else ""
+
+
+def _application_runtime_root(workspace_root: Path) -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return workspace_root
+
+
+def _resolve_stage_command(
+    runtime: AIWorkflowRuntime,
+    *,
+    script_relative_path: str,
+    stage_args: list[str],
+) -> list[str]:
+    script_path = (runtime.engine_root / script_relative_path).resolve()
+    stage_executable = script_path.with_suffix(".exe")
+    if stage_executable.exists():
+        return [str(stage_executable), *stage_args]
+    runtime_root = _runtime_root_from_engine_root(runtime.engine_root)
+    root_stage_executable = runtime_root / stage_executable.name
+    if root_stage_executable.exists():
+        return [str(root_stage_executable), *stage_args]
+    if runtime.python_executable is None:
+        raise FileNotFoundError(f"No Python runner configured for AI tool: {script_path}")
+    if not runtime.python_executable.exists():
+        raise FileNotFoundError(f"Python runner does not exist: {runtime.python_executable}")
+    return [str(runtime.python_executable), str(script_path), *stage_args]
+
+
+def _runtime_root_from_engine_root(engine_root: Path) -> Path:
+    if engine_root.name == "AICullingPipeline" and engine_root.parent.name == AI_RUNTIME_DIR_NAME:
+        return engine_root.parent.parent
+    return engine_root.parent
 
 
 def _mark_hidden(path: Path) -> None:

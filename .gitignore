@@ -13,6 +13,7 @@ coverage.xml
 htmlcov/
 build/
 dist/
+build_assets/
 .eggs/
 *.egg-info/
 pip-wheel-metadata/
