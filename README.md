@@ -49,6 +49,45 @@ If you are updating an existing install, rerun the install command so dependenci
 py -3 -m pip install -e .
 ```
 
+## Linux AppImage
+
+Build and install a local AppImage from this repo with:
+
+```bash
+bash packaging/install_linux.sh
+```
+
+That script will:
+
+- create `.linux_build_venv`
+- install the AppImage build dependencies from [packaging/linux-build-requirements.txt](/Users/user0/OneDrive/Documents/Playground/packaging/linux-build-requirements.txt)
+- run [setup_linux.py](/Users/user0/OneDrive/Documents/Playground/setup_linux.py) to build the AppImage
+- install the result under `~/.local/opt/ImageTriage`
+- create a launcher at `~/.local/bin/image-triage`
+- create a desktop entry under `~/.local/share/applications`
+
+If you already have a built AppImage, install just that file:
+
+```bash
+bash packaging/install_linux.sh --appimage /path/to/ImageTriage-0.1.0-x86_64.AppImage
+```
+
+Useful options:
+
+- `--skip-build`: reuse the newest AppImage in `./dist`
+- `--install-dir PATH`: change the install target
+- `--no-desktop`: skip desktop entry creation
+
+The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/user0/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same integrated `AICullingPipeline` tree and the same Python-side AI dependencies.
+
+On first launch, the app offers to download the AI model into:
+
+```text
+~/.cache/image_triage_ai_cache/models/Skulleton12/DinoV2
+```
+
+If the user skips that step, the AI actions stay unavailable until they use `AI > Download AI Model...`.
+
 ## Notes
 
 - Version 1 focuses on scan speed, responsive scrolling, and large visual previews.
