@@ -10,8 +10,22 @@ from cx_Freeze import Executable, setup
 
 ROOT = Path(__file__).resolve().parent
 APP_ICON_PATH = ROOT / "build_assets" / "icons" / "image_triage.ico"
-DEFAULT_AI_SOURCE = Path(r"C:\Users\user0\Documents\GitHub\AICullingPipeline")
-AI_SOURCE = Path(os.environ.get("IMAGE_TRIAGE_AI_SOURCE", str(DEFAULT_AI_SOURCE))).expanduser().resolve()
+
+
+def _discover_ai_source_root() -> Path:
+    candidates = [
+        ROOT / "AICullingPipeline",
+        Path(r"C:\Users\user0\Documents\GitHub\AICullingPipeline"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return candidates[0].resolve()
+
+
+AI_SOURCE = Path(
+    os.environ.get("IMAGE_TRIAGE_AI_SOURCE", str(_discover_ai_source_root()))
+).expanduser().resolve()
 AI_STAGE_ROOT = ROOT / "build_assets" / "ai_runtime" / "AICullingPipeline"
 DEFAULT_AI_SITE_PACKAGES_SOURCE = ROOT / ".msi_build_venv" / "Lib" / "site-packages"
 AI_SITE_PACKAGES_SOURCE = Path(
@@ -33,6 +47,16 @@ STAGE_SCRIPT_NAMES = (
     "cluster_embeddings.py",
     "export_ranked_report.py",
 )
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    value = os.environ.get(name, default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+INCLUDE_LOCAL_BACKBONE = _env_flag("IMAGE_TRIAGE_INCLUDE_LOCAL_MODEL")
+INCLUDE_DEFAULT_RANKER = _env_flag("IMAGE_TRIAGE_INCLUDE_DEFAULT_RANKER")
+
 AI_SITE_PACKAGES_ENTRIES = (
     "numpy",
     "torch",
@@ -208,15 +232,31 @@ def stage_ai_runtime() -> None:
         Path("app"),
         Path("configs"),
         Path("scripts"),
-        Path("vit_base_patch14_dinov2.lvd142m"),
     ):
         _copy_tree(AI_SOURCE / relative_dir, AI_STAGE_ROOT / relative_dir)
 
-    for relative_file in (
-        Path("outputs/china26_full/ranker_run_mlp_100ep/best_ranker.pt"),
-        Path("outputs/china26_full/ranker_run_mlp_100ep/last_ranker.pt"),
-    ):
-        _copy_file(AI_SOURCE / relative_file, AI_STAGE_ROOT / relative_file)
+    if INCLUDE_LOCAL_BACKBONE:
+        _copy_tree(
+            AI_SOURCE / "vit_base_patch14_dinov2.lvd142m",
+            AI_STAGE_ROOT / "vit_base_patch14_dinov2.lvd142m",
+        )
+    else:
+        print(
+            "Skipping bundled DINOv2 backbone directory; the packaged app will download "
+            "the timm model on demand."
+        )
+
+    if INCLUDE_DEFAULT_RANKER:
+        for relative_file in (
+            Path("outputs/china26_full/ranker_run_mlp_100ep/best_ranker.pt"),
+            Path("outputs/china26_full/ranker_run_mlp_100ep/last_ranker.pt"),
+        ):
+            _copy_file(AI_SOURCE / relative_file, AI_STAGE_ROOT / relative_file)
+    else:
+        print(
+            "Skipping bundled default ranker checkpoint; set IMAGE_TRIAGE_INCLUDE_DEFAULT_RANKER=1 "
+            "to include a local checkpoint for private builds."
+        )
 
     scripts_dir = AI_STAGE_ROOT / "scripts"
     for script_name in STAGE_SCRIPT_NAMES:

@@ -1,0 +1,25 @@
+{
+  "input_dir": "../data/images",
+  "output_dir": "../outputs/default_run",
+  "model_name": "vit_base_patch14_dinov2.lvd142m",
+  "fallback_model_name": "vit_small_patch14_dinov2.lvd142m",
+  "allow_model_fallback": true,
+  "batch_size": 8,
+  "num_workers": 0,
+  "scan_workers": 8,
+  "device": "auto",
+  "image_size": null,
+  "supported_extensions": [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp"
+  ],
+  "metadata_filename": "images.csv",
+  "embeddings_filename": "embeddings.npy",
+  "image_ids_filename": "image_ids.json",
+  "log_level": "INFO"
+}

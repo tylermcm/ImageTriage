@@ -19,7 +19,7 @@ def _discover_ai_source_root() -> Path:
                 return candidate.resolve()
 
     candidates = [
-        ROOT.parent / "AICullingPipeline",
+        ROOT / "AICullingPipeline",
         Path.home() / "Documents" / "GitHub" / "AICullingPipeline",
         Path.home() / "GitHub" / "AICullingPipeline",
     ]

@@ -1,0 +1,14 @@
+{
+  "artifacts_dir": "../outputs/my_test_run",
+  "checkpoint_path": "../outputs/my_test_run/ranker_run/best_ranker.pt",
+  "output_dir": "../outputs/my_test_run/ranker_run",
+  "reference_bank_path": null,
+  "metadata_filename": "images.csv",
+  "embeddings_filename": "embeddings.npy",
+  "image_ids_filename": "image_ids.json",
+  "clusters_filename": "clusters.csv",
+  "scored_clusters_filename": "ranked_clusters.csv",
+  "summary_filename": "ranked_clusters_summary.json",
+  "device": "auto",
+  "log_level": "INFO"
+}

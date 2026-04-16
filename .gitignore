@@ -51,6 +51,8 @@ best_ranker.pt
 last_ranker.pt
 reference_bank.npz
 embeddings.npy
+AICullingPipeline/vit_base_patch14_dinov2.lvd142m/
+AICullingPipeline/outputs/china26_full/ranker_run_mlp_100ep/
 
 # Local smoke-test data and scratch captures
 _ai_smoke_input/

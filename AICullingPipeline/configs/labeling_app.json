@@ -1,0 +1,17 @@
+{
+  "artifacts_dir": "../outputs/my_test_run",
+  "output_dir": "../outputs/my_test_run/labels",
+  "metadata_filename": "images.csv",
+  "image_ids_filename": "image_ids.json",
+  "clusters_filename": "clusters.csv",
+  "pairwise_labels_filename": "pairwise_labels.jsonl",
+  "cluster_labels_filename": "cluster_labels.jsonl",
+  "annotator_id": null,
+  "pair_preview_max_width": 1100,
+  "pair_preview_max_height": 900,
+  "cluster_preview_height": 280,
+  "cluster_grid_columns": 3,
+  "random_seed": 7,
+  "default_arbitrary_singletons_only": true,
+  "log_level": "INFO"
+}

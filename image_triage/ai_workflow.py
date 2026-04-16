@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
@@ -51,6 +52,7 @@ class AIWorkflowRuntime:
     extraction_config_path: Path
     clustering_config_path: Path
     report_config_path: Path
+    checkpoint_download_url: str | None = None
     device: str = "cuda"
     batch_size: int = 16
     num_workers: int = 4
@@ -61,7 +63,6 @@ class AIWorkflowRuntime:
         missing: list[str] = []
         for label, path in (
             ("engine root", self.engine_root),
-            ("checkpoint", self.checkpoint_path),
             ("extract config", self.extraction_config_path),
             ("cluster config", self.clustering_config_path),
             ("report config", self.report_config_path),
@@ -80,10 +81,25 @@ class AIWorkflowRuntime:
                 missing.append("python executable: (missing)")
             elif not self.python_executable.exists():
                 missing.append(f"python executable: {self.python_executable}")
-        if missing:
-            raise FileNotFoundError("Missing AI workflow paths:\n" + "\n".join(missing))
+        if not self.checkpoint_path.exists():
+            if self.checkpoint_download_url:
+                try:
+                    _download_asset(self.checkpoint_download_url, self.checkpoint_path)
+                except Exception as exc:
+                    missing.append(f"checkpoint download failed: {exc}")
+            if not self.checkpoint_path.exists():
+                if self.checkpoint_download_url:
+                    missing.append(
+                        f"checkpoint: {self.checkpoint_path} (download from {self.checkpoint_download_url})"
+                    )
+                else:
+                    missing.append(
+                        f"checkpoint: {self.checkpoint_path} (missing; set AICULLING_CHECKPOINT or AICULLING_CHECKPOINT_URL)"
+                    )
         if self.local_stage_mode not in {"auto", "always", "off"}:
             raise ValueError("local_stage_mode must be 'auto', 'always', or 'off'.")
+        if missing:
+            raise FileNotFoundError("Missing AI workflow paths:\n" + "\n".join(missing))
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,14 +142,13 @@ class AIRunTask(QRunnable):
     def run(self) -> None:
         folder_text = str(self.folder)
         staged_input_dir: Path | None = None
+        self.signals.started.emit(folder_text)
         try:
             self.runtime.validate()
             prepare_hidden_ai_workspace(self.folder)
         except Exception as exc:
             self.signals.failed.emit(folder_text, str(exc))
             return
-
-        self.signals.started.emit(folder_text)
 
         commands = [
             (
@@ -278,18 +293,21 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
             sys.executable,
         ]
     )
+    cache_root = _default_user_cache_root() / "image_triage_ai_cache"
+    checkpoint_cache_path = cache_root / "checkpoints" / "best_ranker.pt"
     checkpoint_path = _first_existing_path(
         [
             os.environ.get("AICULLING_CHECKPOINT", ""),
             str(Path(engine_root) / "outputs" / "china26_full" / "ranker_run_mlp_100ep" / "best_ranker.pt"),
+            str(checkpoint_cache_path),
         ]
     )
+    checkpoint_download_url = (os.environ.get("AICULLING_CHECKPOINT_URL", "") or "").strip() or None
     local_stage_mode = (os.environ.get("AICULLING_LOCAL_STAGE_MODE", "auto") or "auto").strip().lower()
-    local_appdata = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
     local_stage_root = Path(
         os.environ.get(
             "AICULLING_LOCAL_STAGE_ROOT",
-            str(local_appdata / "image_triage_ai_cache" / "stage"),
+            str(cache_root / "stage"),
         )
     )
 
@@ -302,6 +320,7 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
         extraction_config_path=engine_root_path / "configs" / "extract_embeddings.json",
         clustering_config_path=engine_root_path / "configs" / "cluster_embeddings.json",
         report_config_path=engine_root_path / "configs" / "export_ranked_report.json",
+        checkpoint_download_url=checkpoint_download_url,
         local_stage_mode=local_stage_mode,
         local_stage_root=local_stage_root.expanduser().resolve(),
     )
@@ -583,6 +602,32 @@ def _application_runtime_root(workspace_root: Path) -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return workspace_root
+
+
+def _default_user_cache_root() -> Path:
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    return Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+
+
+def _download_asset(source: str, destination: Path) -> None:
+    source_text = source.strip()
+    if not source_text:
+        raise ValueError("download source is empty")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_path = Path(source_text).expanduser()
+    if source_path.exists():
+        shutil.copy2(source_path, destination)
+        return
+
+    temp_destination = destination.with_suffix(destination.suffix + ".download")
+    if temp_destination.exists():
+        temp_destination.unlink(missing_ok=True)
+
+    with urllib.request.urlopen(source_text) as response, temp_destination.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+    temp_destination.replace(destination)
 
 
 def _resolve_stage_command(

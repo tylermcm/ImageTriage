@@ -1,0 +1,24 @@
+{
+  "artifacts_dir": "../outputs/my_test_run",
+  "labels_dir": "../outputs/my_test_run/labels",
+  "checkpoint_path": "../outputs/my_test_run/ranker_run/best_ranker.pt",
+  "output_dir": "../outputs/my_test_run/ranker_evaluation",
+  "reference_bank_path": null,
+  "metadata_filename": "images.csv",
+  "embeddings_filename": "embeddings.npy",
+  "image_ids_filename": "image_ids.json",
+  "clusters_filename": "clusters.csv",
+  "pairwise_labels_filename": "pairwise_labels.jsonl",
+  "cluster_labels_filename": "cluster_labels.jsonl",
+  "include_cluster_label_pairs": true,
+  "top_k_values": [
+    1,
+    3
+  ],
+  "score_batch_size": 2048,
+  "metrics_filename": "ranker_evaluation.json",
+  "pairwise_breakdown_filename": "pairwise_evaluation.csv",
+  "cluster_breakdown_filename": "cluster_evaluation.csv",
+  "device": "auto",
+  "log_level": "INFO"
+}

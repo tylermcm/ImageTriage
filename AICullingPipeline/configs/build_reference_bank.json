@@ -1,0 +1,33 @@
+{
+  "reference_dir": "../reference_sets/default_user",
+  "output_dir": "../outputs/reference_bank_default_user",
+  "model_name": "vit_base_patch14_dinov2.lvd142m",
+  "fallback_model_name": "vit_small_patch14_dinov2.lvd142m",
+  "allow_model_fallback": true,
+  "batch_size": 8,
+  "num_workers": 0,
+  "scan_workers": 4,
+  "device": "auto",
+  "image_size": null,
+  "supported_extensions": [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp"
+  ],
+  "reference_buckets": [
+    "terrible",
+    "bad",
+    "okay",
+    "good",
+    "great"
+  ],
+  "metadata_filename": "reference_images.csv",
+  "bank_filename": "reference_bank.npz",
+  "summary_filename": "reference_bank_summary.json",
+  "resolved_config_filename": "resolved_config.json",
+  "log_level": "INFO"
+}
