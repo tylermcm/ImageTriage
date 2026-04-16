@@ -78,6 +78,8 @@ Useful options:
 - `--install-dir PATH`: change the install target
 - `--no-desktop`: skip desktop entry creation
 
+GitHub Actions also builds an AppImage artifact on pull requests, pushes to `main`, and manual runs through [build-linux-appimage.yml](/C:/Users/user0/OneDrive/Documents/Playground/.github/workflows/build-linux-appimage.yml).
+
 The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/user0/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same integrated `AICullingPipeline` tree and the same Python-side AI dependencies.
 
 On first launch, the app offers to download the AI model into:
