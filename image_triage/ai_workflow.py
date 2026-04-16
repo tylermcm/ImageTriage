@@ -18,6 +18,8 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
+from .ai_model import AIModelInstallation, resolve_ai_model_installation
+
 
 HIDDEN_ROOT_NAME = ".image_triage_ai"
 ARTIFACTS_DIR_NAME = "artifacts"
@@ -48,10 +50,12 @@ REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
 class AIWorkflowRuntime:
     engine_root: Path
     python_executable: Path | None
+    model_name: str
     checkpoint_path: Path
     extraction_config_path: Path
     clustering_config_path: Path
     report_config_path: Path
+    model_installation: AIModelInstallation | None = None
     checkpoint_download_url: str | None = None
     device: str = "cuda"
     batch_size: int = 16
@@ -81,6 +85,23 @@ class AIWorkflowRuntime:
                 missing.append("python executable: (missing)")
             elif not self.python_executable.exists():
                 missing.append(f"python executable: {self.python_executable}")
+        if self.model_installation is not None and not self.model_installation.is_installed:
+            missing.extend(f"ai model: {path}" for path in self.model_installation.missing_files)
+        elif self.model_name:
+            model_path = Path(self.model_name).expanduser()
+            if (
+                model_path.is_absolute()
+                or "/" in self.model_name
+                or "\\" in self.model_name
+                or self.model_name.startswith(".")
+            ):
+                if not model_path.exists():
+                    missing.append(f"ai model: {model_path}")
+                elif model_path.is_dir():
+                    for filename in ("config.json", "model.safetensors"):
+                        candidate = model_path / filename
+                        if not candidate.exists():
+                            missing.append(f"ai model: {candidate}")
         if not self.checkpoint_path.exists():
             if self.checkpoint_download_url:
                 try:
@@ -164,6 +185,8 @@ class AIRunTask(QRunnable):
                     str(self.paths.artifacts_dir),
                     "--batch-size",
                     str(self.runtime.batch_size),
+                    "--model-name",
+                    self.runtime.model_name,
                     "--device",
                     self.runtime.device,
                     "--num-workers",
@@ -303,6 +326,11 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
         ]
     )
     checkpoint_download_url = (os.environ.get("AICULLING_CHECKPOINT_URL", "") or "").strip() or None
+    model_name_override = (os.environ.get("AICULLING_MODEL_NAME", "") or "").strip()
+    model_installation = None if model_name_override else resolve_ai_model_installation()
+    model_name = model_name_override or (
+        model_installation.model_name if model_installation is not None else ""
+    )
     local_stage_mode = (os.environ.get("AICULLING_LOCAL_STAGE_MODE", "auto") or "auto").strip().lower()
     local_stage_root = Path(
         os.environ.get(
@@ -316,10 +344,12 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     return AIWorkflowRuntime(
         engine_root=engine_root_path,
         python_executable=python_path,
+        model_name=model_name,
         checkpoint_path=Path(checkpoint_path).expanduser().resolve(),
         extraction_config_path=engine_root_path / "configs" / "extract_embeddings.json",
         clustering_config_path=engine_root_path / "configs" / "cluster_embeddings.json",
         report_config_path=engine_root_path / "configs" / "export_ranked_report.json",
+        model_installation=model_installation,
         checkpoint_download_url=checkpoint_download_url,
         local_stage_mode=local_stage_mode,
         local_stage_root=local_stage_root.expanduser().resolve(),

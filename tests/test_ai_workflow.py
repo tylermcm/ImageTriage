@@ -77,17 +77,22 @@ class AIWorkflowStreamingTests(unittest.TestCase):
             engine_root = Path(temp_dir) / "engine"
             config_dir = engine_root / "configs"
             checkpoint_path = engine_root / "outputs" / "ranker" / "best_ranker.pt"
+            model_dir = Path(temp_dir) / "model"
             config_dir.mkdir(parents=True)
             checkpoint_path.parent.mkdir(parents=True)
+            model_dir.mkdir(parents=True)
             (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
             (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
             (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
             checkpoint_path.write_bytes(b"checkpoint")
+            (model_dir / "config.json").write_text('{"model_type":"dinov2"}', encoding="utf-8")
+            (model_dir / "model.safetensors").write_bytes(b"weights")
 
             env = {
                 "AICULLING_ENGINE_ROOT": str(engine_root),
                 "AICULLING_PYTHON": sys.executable,
                 "AICULLING_CHECKPOINT": str(checkpoint_path),
+                "AICULLING_MODEL_DIR": str(model_dir),
                 "AICULLING_LOCAL_STAGE_MODE": "always",
                 "AICULLING_LOCAL_STAGE_ROOT": str(Path(temp_dir) / "scratch"),
             }
@@ -96,6 +101,9 @@ class AIWorkflowStreamingTests(unittest.TestCase):
 
             self.assertEqual(runtime.engine_root, engine_root.resolve())
             self.assertEqual(runtime.python_executable, Path(sys.executable).resolve())
+            self.assertEqual(runtime.model_name, str(model_dir.resolve()))
+            self.assertIsNotNone(runtime.model_installation)
+            self.assertTrue(runtime.model_installation.is_installed)
             self.assertEqual(runtime.checkpoint_path, checkpoint_path.resolve())
             self.assertEqual(runtime.local_stage_mode, "always")
 

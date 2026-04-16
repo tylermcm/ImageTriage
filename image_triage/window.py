@@ -15,6 +15,7 @@ from PySide6.QtCore import QDir, QEvent, QFile, QModelIndex, QObject, QRunnable,
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFrame,
     QFileDialog,
@@ -42,6 +43,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .ai_model import (
+    AIModelInstallation,
+    DEFAULT_AI_MODEL_SIZE_MB,
+    download_ai_model as download_managed_ai_model,
+    resolve_ai_model_installation,
+)
 from .archive_ops import (
     EXTRACT_ARCHIVE_FILTER,
     CreateArchiveTask,
@@ -463,6 +470,44 @@ class ScopeEnrichmentTask(QRunnable):
             self.signals.failed.emit(self.scope_key, self.token, str(exc))
 
 
+class AIModelDownloadSignals(QObject):
+    started = Signal(str)
+    progress = Signal(str, int, int)
+    finished = Signal(str)
+    failed = Signal(str)
+
+
+class AIModelDownloadTask(QRunnable):
+    def __init__(
+        self,
+        *,
+        installation: AIModelInstallation,
+        force: bool = False,
+    ) -> None:
+        super().__init__()
+        self.installation = installation
+        self.force = force
+        self.signals = AIModelDownloadSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            self.signals.started.emit(str(self.installation.install_dir))
+            download_managed_ai_model(
+                self.installation,
+                force=self.force,
+                progress_callback=lambda filename, current, total: self.signals.progress.emit(
+                    filename,
+                    current,
+                    total,
+                ),
+            )
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+        self.signals.finished.emit(str(self.installation.install_dir))
+
+
 class MainWindow(QMainWindow):
     LAST_FOLDER_KEY = "window/last_folder"
     AI_RESULTS_KEY = "window/ai_results_path"
@@ -480,6 +525,7 @@ class MainWindow(QMainWindow):
     WORKFLOW_RECIPES_KEY = "workflow/recipes"
     WORKSPACE_PRESETS_KEY = "workspace/presets"
     SHORTCUT_OVERRIDES_KEY = "shortcuts/overrides"
+    AI_MODEL_PROMPTED_KEY = "ai/model_prompted"
     AI_CHECKPOINT_OVERRIDE_KEY = "ai/checkpoint_override"
     AI_REFERENCE_BANK_KEY = "ai/reference_bank_path"
     BURST_GROUPS_KEY = "view/burst_groups"
@@ -513,7 +559,10 @@ class MainWindow(QMainWindow):
         self.preview = FullScreenPreview(self)
         self.preview.navigation_requested.connect(self._navigate_preview)
         self.preview.set_photoshop_available(bool(self._photoshop_executable))
+        self._ai_model_installation = resolve_ai_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
+        if self._ai_runtime.model_installation is not None:
+            self._ai_model_installation = self._ai_runtime.model_installation
         self._default_ai_checkpoint_path = self._ai_runtime.checkpoint_path
         self._active_reference_bank_path = ""
         self._folder_scan_cache = FolderScanCache()
@@ -524,6 +573,8 @@ class MainWindow(QMainWindow):
         self._ai_run_pool.setMaxThreadCount(1)
         self._ai_training_pool = QThreadPool(self)
         self._ai_training_pool.setMaxThreadCount(1)
+        self._ai_model_pool = QThreadPool(self)
+        self._ai_model_pool.setMaxThreadCount(1)
         self._batch_rename_pool = QThreadPool(self)
         self._batch_rename_pool.setMaxThreadCount(1)
         self._resize_pool = QThreadPool(self)
@@ -546,6 +597,7 @@ class MainWindow(QMainWindow):
         self._scan_showed_cached = False
         self._active_scan_tasks: dict[int, FolderScanTask] = {}
         self._active_ai_task: AIRunTask | None = None
+        self._active_ai_model_task: AIModelDownloadTask | None = None
         self._active_review_intelligence_task: BuildReviewIntelligenceTask | None = None
         self._active_scope_enrichment_task: ScopeEnrichmentTask | None = None
         self._scope_enrichment_token = 0
@@ -599,6 +651,7 @@ class MainWindow(QMainWindow):
         self._catalog_progress_dialog: QProgressDialog | None = None
         self._job_controllers: dict[str, JobController] = {}
         self._archive_job_key = "archive:create"
+        self._ai_model_job_key = "ai:model"
         self._current_folder = ""
         self._scope_kind = "folder"
         self._scope_id = ""
@@ -1567,6 +1620,7 @@ class MainWindow(QMainWindow):
             add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
             add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
             add_action_command("search.clear_filters", self.actions.clear_filters, section="Search", keywords=("reset filters", "clear search"))
+            add_action_command("ai.download_model", self.actions.download_ai_model, section="AI", keywords=("download ai model", "install ai model", "enable ai"))
             add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run model"))
             add_action_command("ai.load_saved", self.actions.load_saved_ai, section="AI", keywords=("load cached ai",))
             add_action_command("ai.load_results", self.actions.load_ai_results, section="AI", keywords=("import ai results",))
@@ -2242,6 +2296,187 @@ class MainWindow(QMainWindow):
     def _finish_startup_restore(self) -> None:
         self._load_start_folder()
         self._restore_ai_results()
+        QTimer.singleShot(0, self._maybe_prompt_for_ai_model_install)
+
+    def _managed_ai_model_installation(self) -> AIModelInstallation:
+        runtime_installation = self._ai_runtime.model_installation
+        if runtime_installation is not None:
+            return runtime_installation
+        return self._ai_model_installation
+
+    def _ai_model_available(self) -> bool:
+        runtime_installation = self._ai_runtime.model_installation
+        if runtime_installation is not None:
+            return runtime_installation.is_installed
+
+        model_name = (self._ai_runtime.model_name or "").strip()
+        if not model_name:
+            return False
+        path = Path(model_name).expanduser()
+        if path.is_absolute() or "/" in model_name or "\\" in model_name or model_name.startswith("."):
+            if not path.exists():
+                return False
+            if path.is_dir():
+                return (path / "config.json").exists() and (path / "model.safetensors").exists()
+            return True
+        return True
+
+    def _ai_model_explanation_text(self) -> str:
+        installation = self._managed_ai_model_installation()
+        return (
+            "Image Triage uses a local DINOv2 model for AI culling, training-data preparation, "
+            "and reference-bank extraction.\n\n"
+            "Without that model the AI generation and training tools stay disabled, but you can "
+            "still open any AI results that were already generated.\n\n"
+            f"Download size: about {DEFAULT_AI_MODEL_SIZE_MB} MB\n"
+            f"Install location:\n{installation.install_dir}"
+        )
+
+    def _ensure_ai_model_available(self, *, title: str) -> bool:
+        if self._ai_model_available():
+            return True
+        if self._active_ai_model_task is not None:
+            self.statusBar().showMessage("AI model download already running.")
+            return False
+        prompt = QMessageBox.question(
+            self,
+            title,
+            self._ai_model_explanation_text() + "\n\nDownload the AI model now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if prompt == QMessageBox.StandardButton.Yes:
+            self._prompt_for_ai_model_install(automatic=False)
+        return False
+
+    def _maybe_prompt_for_ai_model_install(self) -> None:
+        if not getattr(sys, "frozen", False):
+            return
+        if self._ai_runtime.model_installation is None or self._ai_model_available():
+            return
+        if self._active_ai_model_task is not None:
+            return
+        if self._settings.value(self.AI_MODEL_PROMPTED_KEY, False, bool):
+            return
+        self._settings.setValue(self.AI_MODEL_PROMPTED_KEY, True)
+        self._prompt_for_ai_model_install(automatic=True)
+
+    def _prompt_for_ai_model_install(self, *, automatic: bool) -> None:
+        installation = self._managed_ai_model_installation()
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle("Install AI Model")
+        dialog.setText("Install the DINOv2 AI model now?")
+        dialog.setInformativeText(self._ai_model_explanation_text())
+        checkbox = QCheckBox("Download the AI model now (recommended)", dialog)
+        checkbox.setChecked(True)
+        dialog.setCheckBox(checkbox)
+        continue_button = dialog.addButton(
+            "Continue" if automatic else "Start Download",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        dialog.addButton(
+            "Later" if automatic else "Cancel",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        dialog.exec()
+        if dialog.clickedButton() != continue_button:
+            self.statusBar().showMessage("AI model download skipped for now.")
+            return
+        if not checkbox.isChecked():
+            self.statusBar().showMessage("AI model download skipped for now.")
+            return
+        force_download = installation.is_installed
+        self._start_ai_model_download(force=force_download)
+
+    def _download_ai_model(self) -> None:
+        if self._active_ai_model_task is not None:
+            self.statusBar().showMessage("AI model download already running.")
+            return
+        self._prompt_for_ai_model_install(automatic=False)
+
+    def _start_ai_model_download(self, *, force: bool = False) -> None:
+        installation = self._managed_ai_model_installation()
+        task = AIModelDownloadTask(installation=installation, force=force)
+        task.signals.started.connect(self._handle_ai_model_download_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_ai_model_download_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_ai_model_download_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_ai_model_download_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_ai_model_task = task
+        controller = self._show_job_progress_dialog(
+            key=self._ai_model_job_key,
+            total_steps=1,
+            spec=JobSpec(
+                title="Downloading AI Model",
+                preparing_label="Preparing AI model download...",
+                running_label="Downloading AI model...",
+                indeterminate_label="Downloading AI model...",
+            ),
+        )
+        controller.setRange(0, 0)
+        controller.setValue(0)
+        self._update_action_states()
+        self._update_ai_toolbar_state()
+        self.statusBar().showMessage("Starting AI model download...")
+        self._ai_model_pool.start(task)
+
+    def _handle_ai_model_download_started(self, install_dir: str) -> None:
+        controller = self._show_job_progress_dialog(
+            key=self._ai_model_job_key,
+            total_steps=1,
+            spec=JobSpec(
+                title="Downloading AI Model",
+                preparing_label="Preparing AI model download...",
+                running_label="Downloading AI model...",
+                indeterminate_label="Downloading AI model...",
+            ),
+        )
+        controller.setRange(0, 0)
+        controller.setValue(0)
+        controller.setLabelText(f"Downloading AI model to\n{install_dir}")
+        self.statusBar().showMessage("Downloading AI model...")
+
+    def _handle_ai_model_download_progress(self, filename: str, current: int, total: int) -> None:
+        controller = self._show_job_progress_dialog(
+            key=self._ai_model_job_key,
+            total_steps=max(1, total if total > 0 else 1),
+            spec=JobSpec(
+                title="Downloading AI Model",
+                preparing_label="Preparing AI model download...",
+                running_label="Downloading AI model...",
+                indeterminate_label="Downloading AI model...",
+            ),
+        )
+        if total > 0:
+            controller.setRange(0, total)
+            controller.setValue(min(current, total))
+            size_mb = total / (1024 * 1024)
+            downloaded_mb = current / (1024 * 1024)
+            controller.setLabelText(f"Downloading {filename} ({downloaded_mb:.1f} / {size_mb:.1f} MB)")
+        else:
+            controller.setRange(0, 0)
+            controller.setValue(0)
+            controller.setLabelText(f"Downloading {filename}...")
+
+    def _handle_ai_model_download_finished(self, install_dir: str) -> None:
+        self._active_ai_model_task = None
+        self._close_job_progress_dialog(self._ai_model_job_key)
+        self._update_action_states()
+        self._update_ai_toolbar_state()
+        self.statusBar().showMessage("AI model installed.")
+        QMessageBox.information(
+            self,
+            "AI Model Installed",
+            f"The AI model is ready.\n\nInstalled to:\n{install_dir}",
+        )
+
+    def _handle_ai_model_download_failed(self, message: str) -> None:
+        self._active_ai_model_task = None
+        self._close_job_progress_dialog(self._ai_model_job_key)
+        self._update_action_states()
+        self._update_ai_toolbar_state()
+        QMessageBox.warning(self, "AI Model Download", f"Could not download the AI model.\n\n{message}")
+        self.statusBar().showMessage("AI model download failed.")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._annotation_persistence_queue.flush_blocking()
@@ -3944,19 +4179,33 @@ class MainWindow(QMainWindow):
         self.actions.batch_convert_selection.setEnabled(bool(self._current_folder and has_convertible_records) and not in_recycle_folder)
         self.actions.extract_archive.setEnabled(bool(self._current_folder))
         training_paths = self._ai_training_paths_for_folder()
-        training_busy = self._active_ai_training_task is not None or self._active_ai_task is not None
-        training_allowed = bool(self._current_folder) and not in_recycle_folder and not in_winners_folder and not training_busy
+        ai_model_ready = self._ai_model_available()
+        training_busy = (
+            self._active_ai_training_task is not None
+            or self._active_ai_task is not None
+            or self._active_ai_model_task is not None
+        )
+        training_allowed = (
+            bool(self._current_folder)
+            and not in_recycle_folder
+            and not in_winners_folder
+            and not training_busy
+            and ai_model_ready
+        )
         has_training_artifacts = bool(training_paths and ai_training_artifacts_ready(training_paths))
         pairwise_labels, cluster_labels = count_label_records(training_paths) if training_paths is not None else (0, 0)
         has_labels = pairwise_labels > 0 or cluster_labels > 0
         trained_checkpoint = self._current_trained_checkpoint_path()
+        self.actions.download_ai_model.setEnabled(self._active_ai_model_task is None)
+        self.actions.run_full_ai_training_pipeline.setEnabled(training_allowed and has_labels)
         self.actions.prepare_ai_training_data.setEnabled(training_allowed)
         self.actions.open_ai_data_selection.setEnabled(training_allowed)
+        self.actions.manage_ai_rankers.setEnabled(training_allowed)
         self.actions.train_ai_ranker.setEnabled(training_allowed and has_training_artifacts)
         self.actions.evaluate_ai_ranker.setEnabled(training_allowed and has_training_artifacts and has_labels and trained_checkpoint is not None)
         self.actions.score_ai_with_trained_ranker.setEnabled(training_allowed and trained_checkpoint is not None)
-        self.actions.build_ai_reference_bank.setEnabled(not training_busy)
-        self.actions.clear_ai_trained_model.setEnabled(not training_busy and trained_checkpoint is not None)
+        self.actions.build_ai_reference_bank.setEnabled(ai_model_ready and not training_busy)
+        self.actions.clear_ai_trained_model.setEnabled(ai_model_ready and not training_busy and trained_checkpoint is not None)
         self.actions.accept_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.reject_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.keep_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
@@ -5187,6 +5436,8 @@ class MainWindow(QMainWindow):
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before preparing training data.")
             return
+        if not self._ensure_ai_model_available(title="Prepare Training Data"):
+            return
         task = PrepareTrainingDataTask(folder=Path(self._current_folder), runtime=self._ai_runtime)
         resolved_title = dialog_title or "Prepare Training Data"
         started = self._start_ai_training_task(
@@ -5234,6 +5485,8 @@ class MainWindow(QMainWindow):
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before collecting training labels.")
             return
+        if not self._ensure_ai_model_available(title="Collect Training Labels"):
+            return
         training_paths = self._ai_training_paths_for_folder(self._current_folder)
         if training_paths is not None and labeling_artifacts_ready(training_paths):
             self._launch_ai_labeling_app()
@@ -5261,6 +5514,8 @@ class MainWindow(QMainWindow):
     def _train_ai_ranker(self) -> None:
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before training a ranker.")
+            return
+        if not self._ensure_ai_model_available(title="Train Ranker"):
             return
         training_paths = self._ai_training_paths_for_folder(self._current_folder)
         if training_paths is None or not ai_training_artifacts_ready(training_paths):
@@ -5305,6 +5560,8 @@ class MainWindow(QMainWindow):
     def _run_full_ai_training_pipeline(self) -> None:
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before running the full training pipeline.")
+            return
+        if not self._ensure_ai_model_available(title="Run Full Training Pipeline"):
             return
         training_paths = self._ai_training_paths_for_folder(self._current_folder)
         if training_paths is None:
@@ -5430,6 +5687,8 @@ class MainWindow(QMainWindow):
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before evaluating a ranker.")
             return
+        if not self._ensure_ai_model_available(title="Evaluate Ranker"):
+            return
         training_paths = self._ai_training_paths_for_folder(self._current_folder)
         if training_paths is None or not ai_training_artifacts_ready(training_paths):
             QMessageBox.information(
@@ -5474,6 +5733,8 @@ class MainWindow(QMainWindow):
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before scoring it with a trained ranker.")
             return
+        if not self._ensure_ai_model_available(title="Score With Trained Ranker"):
+            return
         checkpoint_path = self._current_trained_checkpoint_path()
         if checkpoint_path is None:
             QMessageBox.information(
@@ -5508,6 +5769,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Scoring the current folder with the trained ranker...")
 
     def _build_ai_reference_bank(self) -> None:
+        if not self._ensure_ai_model_available(title="Build Reference Bank"):
+            return
         initial_dir = self._current_folder or QDir.homePath()
         reference_dir = QFileDialog.getExistingDirectory(
             self,
@@ -5541,6 +5804,8 @@ class MainWindow(QMainWindow):
     def _manage_ai_rankers(self) -> None:
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before opening Ranker Center.")
+            return
+        if not self._ensure_ai_model_available(title="Ranker Center"):
             return
         training_paths = self._ai_training_paths_for_folder(self._current_folder)
         if training_paths is None:
@@ -7059,6 +7324,8 @@ class MainWindow(QMainWindow):
         if self.actions is None:
             return
         menu = QMenu(self)
+        menu.addAction(self.actions.download_ai_model)
+        menu.addSeparator()
         run_action = menu.addAction(self.actions.run_ai_culling)
         load_hidden_action = menu.addAction(self.actions.load_saved_ai)
         load_action = menu.addAction(self.actions.load_ai_results)
@@ -7212,6 +7479,7 @@ class MainWindow(QMainWindow):
     def _update_ai_toolbar_state(self) -> None:
         current_folder = bool(self._current_folder)
         ai_loaded = self._ai_bundle is not None
+        ai_model_ready = self._ai_model_available()
         ai_paths = self._hidden_ai_paths_for_current_folder()
         saved_exists = False
         if self._ui_mode == "ai":
@@ -7221,10 +7489,18 @@ class MainWindow(QMainWindow):
         can_compare_group = bool(current_ai and current_ai.group_size > 1)
 
         if self.actions is not None:
-            self.actions.run_ai_culling.setEnabled(current_folder and self._active_ai_task is None)
+            can_use_ai_tools = (
+                current_folder
+                and ai_model_ready
+                and self._active_ai_task is None
+                and self._active_ai_training_task is None
+                and self._active_ai_model_task is None
+            )
+            self.actions.download_ai_model.setEnabled(self._active_ai_model_task is None)
+            self.actions.run_ai_culling.setEnabled(can_use_ai_tools)
             self.actions.load_saved_ai.setEnabled(current_folder and saved_exists and self._active_ai_task is None)
             self.actions.open_ai_report.setEnabled(bool(ai_loaded and self._ai_bundle and self._ai_bundle.report_html_path))
-            can_run_training = current_folder and self._active_ai_training_task is None and self._active_ai_task is None
+            can_run_training = can_use_ai_tools
             self.actions.open_ai_data_selection.setEnabled(can_run_training)
             self.actions.run_full_ai_training_pipeline.setEnabled(can_run_training)
             self.actions.prepare_ai_training_data.setEnabled(can_run_training)
@@ -7251,6 +7527,10 @@ class MainWindow(QMainWindow):
 
         if self._active_ai_task is not None:
             self.ai_status_label.setText(self._build_ai_progress_text())
+        elif self._active_ai_model_task is not None:
+            self.ai_status_label.setText("Downloading AI model...")
+        elif not ai_model_ready:
+            self.ai_status_label.setText("AI model not installed")
         elif ai_loaded and self._ai_bundle is not None:
             export_name = Path(self._ai_bundle.export_csv_path).name
             self.ai_status_label.setText(f"Loaded {export_name}")
@@ -7265,9 +7545,14 @@ class MainWindow(QMainWindow):
         runtime_lines = [
             f"Python: {self._ai_runtime.python_executable}",
             f"Engine: {self._ai_runtime.engine_root}",
+            f"Model: {self._ai_runtime.model_name}",
+            f"Model installed: {ai_model_ready}",
             f"Checkpoint: {active_checkpoint or self._ai_runtime.checkpoint_path}",
             f"Local staging: {self._ai_runtime.local_stage_mode}",
         ]
+        managed_installation = self._ai_runtime.model_installation
+        if managed_installation is not None:
+            runtime_lines.append(f"Managed model dir: {managed_installation.install_dir}")
         if self._active_reference_bank_path:
             runtime_lines.append(f"Reference bank: {self._active_reference_bank_path}")
         if self._ai_runtime.local_stage_root is not None:
@@ -7281,6 +7566,8 @@ class MainWindow(QMainWindow):
     def _run_ai_pipeline(self) -> None:
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before running AI culling")
+            return
+        if not self._ensure_ai_model_available(title="Run AI Culling"):
             return
         if self._active_ai_task is not None:
             self.statusBar().showMessage("AI culling is already running for the current folder")
@@ -8261,6 +8548,14 @@ class MainWindow(QMainWindow):
 
                 The key principle is simple: **AI suggests, you stay in control**.
 
+                ## Model Download
+
+                The installer now opens a first-launch setup step for the local DINOv2 model.
+
+                - Leave the download checkbox on if you want AI culling and AI training available immediately.
+                - Turn it off if you only want the core browser for now.
+                - If you skip it, use **`AI > Download AI Model...`** later to install the model automatically.
+
                 ## What AI Adds To Review
 
                 When AI results are loaded, the app can show:
@@ -8344,6 +8639,7 @@ class MainWindow(QMainWindow):
 
                 - If rankings look stale, run **Score Current Folder With Trained Ranker** again.
                 - If the folder changed heavily, collect a fresh round of labels and then rerun **Prepare Training Data** before rescoring.
+                - If AI actions are disabled, install the local model from **`AI > Download AI Model...`**.
                 - If you only want to review AI results, you do **not** need the training steps.
                 - Use **Clear Trained Model...** to reset the current folder back toward the default checkpoint behavior.
                 """

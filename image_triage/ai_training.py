@@ -498,6 +498,8 @@ class PrepareTrainingDataTask(QRunnable):
                         str(paths.artifacts_dir),
                         "--batch-size",
                         str(self.runtime.batch_size),
+                        "--model-name",
+                        self.runtime.model_name,
                         "--device",
                         self.runtime.device,
                         "--num-workers",
@@ -845,6 +847,8 @@ class BuildReferenceBankTask(QRunnable):
             str(output_dir),
             "--batch-size",
             str(max(1, self.options.batch_size)),
+            "--model-name",
+            self.runtime.model_name,
             "--device",
             self.options.device or self.runtime.device,
         ]

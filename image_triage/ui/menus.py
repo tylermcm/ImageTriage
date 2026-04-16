@@ -138,6 +138,8 @@ def build_main_menu_bar(
     workflow_menu.addAction(actions.keyboard_shortcuts)
 
     ai_menu = menu_bar.addMenu("&AI")
+    ai_menu.addAction(actions.download_ai_model)
+    ai_menu.addSeparator()
     ai_menu.addAction(actions.run_ai_culling)
     ai_menu.addAction(actions.load_saved_ai)
     ai_menu.addAction(actions.load_ai_results)

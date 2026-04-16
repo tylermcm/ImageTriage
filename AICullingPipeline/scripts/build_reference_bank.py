@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, help="Override the output folder.")
     parser.add_argument("--batch-size", type=int, help="Override the embedding batch size.")
+    parser.add_argument("--model-name", type=str, help="Override the model source.")
     parser.add_argument(
         "--device",
         type=str,
@@ -52,6 +53,7 @@ def main() -> None:
         reference_dir=args.reference_dir,
         output_dir=args.output_dir,
         batch_size=args.batch_size,
+        model_name=args.model_name,
         device=args.device,
     )
 

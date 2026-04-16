@@ -44,6 +44,7 @@ class MainWindowActions:
     burst_stacks: QAction
     manual_mode: QAction
     ai_mode: QAction
+    download_ai_model: QAction
     run_ai_culling: QAction
     load_saved_ai: QAction
     load_ai_results: QAction
@@ -222,6 +223,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         manual_mode=_create_action(window, "Manual Review", slot=lambda _checked=False: window._set_ui_mode("manual"), checkable=True),
         ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
+        download_ai_model=_create_action(
+            window,
+            "Download AI Model...",
+            slot=window._download_ai_model,
+        ),
         run_ai_culling=_create_action(
             window,
             "Run AI Culling",
