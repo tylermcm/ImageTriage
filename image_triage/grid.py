@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPalette, QPen, QPixmap, QTextOption
+from PySide6.QtGui import QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea
 
 from .ai_results import AIImageResult
@@ -75,6 +75,7 @@ class ThumbnailGridView(QAbstractScrollArea):
 
         self._items: list[ImageRecord] = []
         self._path_to_index: dict[str, int] = {}
+        self._fast_path_to_index: dict[str, int] = {}
         self._variant_path_to_index: dict[str, int] = {}
         self._variant_indexes: dict[str, int] = {}
         self._annotations: dict[str, SessionAnnotation] = {}
@@ -191,6 +192,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._marquee_rect = QRect()
         self._marquee_base_selection: set[int] = set()
         self._marquee_active = False
+        self._wheel_angle_remainder = 0
+        self._wheel_pixel_remainder = 0
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -273,6 +276,16 @@ class ThumbnailGridView(QAbstractScrollArea):
             for index, item in enumerate(items)
             for variant in item.display_variants
         }
+        self._fast_path_to_index = {
+            _fast_path_key(path): index
+            for path, index in self._variant_path_to_index.items()
+        }
+        self._fast_path_to_index.update(
+            {
+                _fast_path_key(path): index
+                for path, index in self._path_to_index.items()
+            }
+        )
         self._variant_indexes = {
             item.path: min(previous_variant_indexes.get(item.path, 0), max(0, item.stack_count - 1))
             for item in items
@@ -304,16 +317,7 @@ class ThumbnailGridView(QAbstractScrollArea):
     def update_annotations(self, changed_paths: list[str] | tuple[str, ...] | set[str]) -> None:
         if not changed_paths:
             return
-        normalized_index_lookup = {normalized_path_key(path): index for path, index in self._path_to_index.items()}
-        dirty_indexes: set[int] = set()
-        for path in changed_paths:
-            if not path:
-                continue
-            index = self._path_to_index.get(path)
-            if index is None:
-                index = normalized_index_lookup.get(normalized_path_key(path))
-            if index is not None:
-                dirty_indexes.add(index)
+        dirty_indexes = self._indexes_for_paths(changed_paths)
         if not dirty_indexes:
             return
         self._update_selection_tiles(dirty_indexes)
@@ -330,12 +334,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._schedule_visible_thumbnail_requests(immediate=True)
             return
 
-        normalized_index_lookup = {normalized_path_key(path): index for path, index in self._path_to_index.items()}
-        dirty_indexes: set[int] = set()
-        for path in changed_paths:
-            index = self._path_to_index.get(path)
-            if index is None:
-                index = normalized_index_lookup.get(normalized_path_key(path))
+        dirty_indexes = self._indexes_for_paths(changed_paths)
+        for index in dirty_indexes:
             if not 0 <= index < len(self._items):
                 continue
             record = self._items[index]
@@ -345,7 +345,6 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._meta_with_ai_cache.pop(variant.path, None)
                 self._failed_paths.discard(variant.path)
             self._ai_result_cache.pop(record.path, None)
-            dirty_indexes.add(index)
 
         if patch.selection_anchor is not None and 0 <= patch.selection_anchor < len(self._items):
             self._selection_anchor = patch.selection_anchor
@@ -355,6 +354,45 @@ class ThumbnailGridView(QAbstractScrollArea):
         if dirty_indexes:
             self._update_selection_tiles(dirty_indexes)
             self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def update_review_workflow_insights(
+        self,
+        insights_by_path: dict[str, object],
+        changed_paths: list[str] | tuple[str, ...] | set[str],
+    ) -> None:
+        if not changed_paths:
+            return
+        dirty_indexes = self._indexes_for_paths(changed_paths)
+        for path in changed_paths:
+            if not path:
+                continue
+            normalized = normalized_path_key(path)
+            insight = insights_by_path.get(path) or insights_by_path.get(normalized)
+            if insight is None:
+                self._workflow_insights_by_path.pop(path, None)
+                self._workflow_insights_by_path.pop(normalized, None)
+                continue
+            self._workflow_insights_by_path[path] = insight
+            self._workflow_insights_by_path[normalized] = insight
+        for index in dirty_indexes:
+            if not 0 <= index < len(self._items):
+                continue
+            for variant in self._items[index].display_variants:
+                self._meta_with_ai_cache.pop(variant.path, None)
+        if dirty_indexes:
+            self._update_selection_tiles(dirty_indexes)
+
+    def _indexes_for_paths(self, paths: list[str] | tuple[str, ...] | set[str]) -> set[int]:
+        indexes: set[int] = set()
+        for path in paths:
+            if not path:
+                continue
+            index = self._path_to_index.get(path)
+            if index is None:
+                index = self._fast_path_to_index.get(_fast_path_key(path))
+            if index is not None:
+                indexes.add(index)
+        return indexes
 
     def visible_item_paths(self, *, include_prefetch: bool = True, limit: int | None = None) -> list[str]:
         indexes = self._visible_indexes()
@@ -586,6 +624,20 @@ class ThumbnailGridView(QAbstractScrollArea):
         super().scrollContentsBy(dx, dy)
         self.viewport().update()
         self._schedule_visible_thumbnail_requests()
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        row_height = self._row_height()
+        if not self._items or row_height <= 0:
+            super().wheelEvent(event)
+            return
+
+        steps = self._wheel_row_steps(event, row_height)
+        if steps == 0:
+            event.accept()
+            return
+
+        self._scroll_by_aligned_rows(steps)
+        event.accept()
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self.viewport())
@@ -1939,6 +1991,49 @@ class ThumbnailGridView(QAbstractScrollArea):
         elif bottom > scroll_value + viewport_height:
             self.verticalScrollBar().setValue(bottom - viewport_height + self._spacing)
 
+    def _wheel_row_steps(self, event: QWheelEvent, row_height: int) -> int:
+        angle_y = event.angleDelta().y()
+        if angle_y:
+            if self._wheel_angle_remainder and (self._wheel_angle_remainder > 0) != (angle_y > 0):
+                self._wheel_angle_remainder = 0
+            self._wheel_angle_remainder += angle_y
+            steps = int(abs(self._wheel_angle_remainder) // 120)
+            if steps <= 0:
+                return 0
+            direction = -1 if self._wheel_angle_remainder > 0 else 1
+            self._wheel_angle_remainder -= (120 * steps) if self._wheel_angle_remainder > 0 else (-120 * steps)
+            self._wheel_pixel_remainder = 0
+            return direction * steps
+
+        pixel_y = event.pixelDelta().y()
+        if not pixel_y:
+            return 0
+        if self._wheel_pixel_remainder and (self._wheel_pixel_remainder > 0) != (pixel_y > 0):
+            self._wheel_pixel_remainder = 0
+        self._wheel_pixel_remainder += pixel_y
+        threshold = max(32, min(row_height, row_height // 2))
+        steps = int(abs(self._wheel_pixel_remainder) // threshold)
+        if steps <= 0:
+            return 0
+        direction = -1 if self._wheel_pixel_remainder > 0 else 1
+        self._wheel_pixel_remainder -= threshold * steps if self._wheel_pixel_remainder > 0 else -threshold * steps
+        self._wheel_angle_remainder = 0
+        return direction * steps
+
+    def _scroll_by_aligned_rows(self, row_delta: int) -> None:
+        row_height = self._row_height()
+        if row_delta == 0 or row_height <= 0:
+            return
+        scrollbar = self.verticalScrollBar()
+        current = scrollbar.value()
+        if row_delta > 0:
+            row = current // row_height + row_delta
+        else:
+            row = math.ceil(current / row_height) + row_delta
+        row = max(0, min(max(0, self._row_count() - 1), row))
+        target = max(scrollbar.minimum(), min(scrollbar.maximum(), row * row_height))
+        scrollbar.setValue(target)
+
     def _update_scrollbar(self) -> None:
         rows = self._row_count()
         total_height = self._margin * 2
@@ -1947,7 +2042,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         max_value = max(0, total_height - self.viewport().height())
         self.verticalScrollBar().setRange(0, max_value)
         self.verticalScrollBar().setPageStep(self.viewport().height())
-        self.verticalScrollBar().setSingleStep(max(40, self._row_height() // 4))
+        self.verticalScrollBar().setSingleStep(max(40, self._row_height()))
 
     def _request_visible_thumbnails(self) -> None:
         if not self._items:

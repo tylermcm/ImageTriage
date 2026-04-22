@@ -84,6 +84,7 @@ class MainWindowActions:
     best_of_set_auto_assembly: QAction
     keyboard_shortcuts: QAction
     save_workspace_preset: QAction
+    customize_workspace_toolbar: QAction
     open_command_palette: QAction
     advanced_filters: QAction
     save_filter_preset: QAction
@@ -399,6 +400,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Save Current Workspace Preset...",
             slot=window._save_current_workspace_preset,
             shortcut="Ctrl+Alt+S",
+        ),
+        customize_workspace_toolbar=_create_action(
+            window,
+            "Customize Toolbars...",
+            slot=window._enter_toolbar_edit_mode,
         ),
         open_command_palette=_create_action(
             window,

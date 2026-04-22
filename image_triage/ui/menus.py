@@ -179,6 +179,8 @@ def build_main_menu_bar(
     window_menu.addAction(actions.manual_mode)
     window_menu.addAction(actions.ai_mode)
     window_menu.addSeparator()
+    window_menu.addAction(actions.customize_workspace_toolbar)
+    window_menu.addSeparator()
     if workspace_preset_menu is not None:
         window_menu.addMenu(workspace_preset_menu)
         window_menu.addAction(actions.save_workspace_preset)

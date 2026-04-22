@@ -451,6 +451,107 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border: 1px solid {theme.border.css};
             border-radius: 12px;
         }}
+        QFrame#toolbarEditOverlay {{
+            background-color: rgba(0, 0, 0, 132);
+            border: 1px solid {theme.accent_soft.css};
+            border-radius: 12px;
+        }}
+        QDialog#toolbarCustomizerDialog {{
+            background-color: {theme.window_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QScrollArea#toolbarCustomizerPreviewScroll {{
+            background-color: transparent;
+            border: none;
+        }}
+        QFrame#toolbarCustomizerPreviewHost {{
+            background-color: transparent;
+            border: none;
+        }}
+        QFrame#toolbarCustomizerPreviewBar {{
+            background-color: {theme.toolbar_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 12px;
+        }}
+        QPushButton#toolbarCustomizerPreviewButton {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.text_primary.css};
+            font-weight: 600;
+            min-height: 28px;
+            padding: 4px 12px;
+        }}
+        QPushButton#toolbarCustomizerPreviewButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QPushButton#toolbarCustomizerPreviewButton:checked {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.css};
+        }}
+        QFrame#toolbarEditSidebar {{
+            background-color: {theme.panel_bg.with_alpha(232).css};
+            border: 1px solid {theme.border.css};
+            border-radius: 10px;
+            min-width: 170px;
+            max-width: 210px;
+        }}
+        QFrame#toolbarEditContent {{
+            background-color: rgba(0, 0, 0, 0);
+            border: none;
+        }}
+        QFrame#toolbarEditChip {{
+            background-color: {theme.panel_bg.with_alpha(218).css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+        }}
+        QLabel#toolbarEditTitle {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#toolbarEditHint {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+        }}
+        QToolButton#toolbarEditAddButton, QToolButton#toolbarEditModeButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.text_primary.css};
+            min-height: 24px;
+            padding: 2px 8px;
+        }}
+        QToolButton#toolbarEditModeButton:checked {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.css};
+        }}
+        QToolButton#toolbarEditMoveButton, QToolButton#toolbarEditRemoveButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 7px;
+            color: {theme.text_primary.css};
+            min-width: 18px;
+            max-width: 18px;
+            min-height: 18px;
+            max-height: 18px;
+            padding: 0px;
+        }}
+        QToolButton#toolbarEditRemoveButton {{
+            background-color: {theme.danger_soft.css};
+            border-color: {theme.danger.css};
+        }}
+        QPushButton#toolbarEditPaletteButton, QPushButton#toolbarEditResetButton, QPushButton#toolbarEditDoneButton {{
+            border-radius: 8px;
+            min-height: 24px;
+            padding: 3px 8px;
+            text-align: left;
+        }}
+        QPushButton#toolbarEditDoneButton {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.css};
+        }}
         QWidget#workspaceControls {{
             background-color: transparent;
             border: none;
