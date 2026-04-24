@@ -15,6 +15,9 @@ freeze_assets = prepare_ai_build_assets()
 build_exe_options = {
     "include_msvcr": True,
     "includes": [
+        "astropy",
+        "astropy.io.fits",
+        "astropy.visualization",
         "uuid",
     ],
     "include_files": freeze_assets.include_files,

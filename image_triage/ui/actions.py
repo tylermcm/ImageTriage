@@ -42,6 +42,7 @@ class MainWindowActions:
     auto_advance: QAction
     burst_groups: QAction
     burst_stacks: QAction
+    compact_cards: QAction
     manual_mode: QAction
     ai_mode: QAction
     download_ai_model: QAction
@@ -113,11 +114,18 @@ def _create_action(
 ) -> QAction:
     resolved_icon = window.style().standardIcon(icon) if icon is not None else None
     action = QAction(resolved_icon, text, window) if resolved_icon is not None else QAction(text, window)
-    action.setToolTip(text)
-    action.setStatusTip(text)
+    action.setProperty("imageTriageBaseText", text)
     action.setAutoRepeat(auto_repeat)
     if shortcut is not None:
         action.setShortcut(shortcut)
+    shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+    hinted_text = f"{text} ({shortcut_text})" if shortcut_text else text
+    action.setToolTip(hinted_text)
+    action.setStatusTip(hinted_text)
+    try:
+        action.setShortcutVisibleInContextMenu(True)
+    except AttributeError:
+        pass
     if checkable:
         action.setCheckable(True)
     if slot is not None:
@@ -220,6 +228,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Smart Stacks",
             slot=window._handle_burst_stacks_toggled,
+            checkable=True,
+        ),
+        compact_cards=_create_action(
+            window,
+            "Compact Cards",
+            slot=window._handle_compact_cards_toggled,
             checkable=True,
         ),
         manual_mode=_create_action(window, "Manual Review", slot=lambda _checked=False: window._set_ui_mode("manual"), checkable=True),

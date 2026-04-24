@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal, Qt
 from PySide6.QtGui import QColor, QImage, QImageWriter, QPainter
 
-from .formats import JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import FITS_SUFFIXES, JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import load_image_for_resize
 
 try:
@@ -178,6 +178,17 @@ def build_resize_plan(sources: list[ResizeSourceItem], options: ResizeOptions) -
             continue
 
         source_suffix = suffix_for_path(source_path)
+        if source_suffix in FITS_SUFFIXES:
+            item = ResizePlanItem(
+                source=source,
+                target_path=source_path,
+                target_name=source_name,
+                status="Error",
+                message="FITS files are view-only for now.",
+            )
+            items.append(item)
+            error_count += 1
+            continue
         target_suffix = _target_suffix(source_suffix)
         message = ""
         status = copy_mode

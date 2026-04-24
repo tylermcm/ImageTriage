@@ -612,12 +612,24 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             min-height: 1px;
             border: none;
         }}
-        QLabel#pathLabel {{
+        QComboBox#pathComboBox {{
             background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 10px;
             color: {theme.text_secondary.css};
-            padding: 6px 10px;
+            min-height: 28px;
+            padding: 2px 8px;
+        }}
+        QComboBox#pathComboBox:focus {{
+            border-color: {theme.accent.css};
+            color: {theme.text_primary.css};
+        }}
+        QLabel#toolbarSelectionCount {{
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 0 4px;
+        }}
+        QLabel#toolbarSelectionCount[toolbarPreviewSelected="true"] {{
+            color: {theme.text_primary.css};
         }}
         QLabel#secondaryText {{
             color: {theme.text_secondary.css};

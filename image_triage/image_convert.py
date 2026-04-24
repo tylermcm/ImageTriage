@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 
-from .formats import MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .image_ops import load_image_for_transform, normalized_output_path_key, save_transformed_image
 from .image_resize import OUTPUT_FORMAT_NAMES, WRITABLE_IMAGE_SUFFIXES
 
@@ -135,6 +135,18 @@ def build_convert_plan(sources: list[ConvertSourceItem], options: ConvertOptions
                     target_name=source_name,
                     status="Error",
                     message="RAW files are not supported by Convert.",
+                )
+            )
+            error_count += 1
+            continue
+        if source_suffix in FITS_SUFFIXES:
+            items.append(
+                ConvertPlanItem(
+                    source=source,
+                    target_path=source_path,
+                    target_name=source_name,
+                    status="Error",
+                    message="FITS files are view-only for now.",
                 )
             )
             error_count += 1

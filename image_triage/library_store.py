@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .formats import IMAGE_SUFFIXES
+from .formats import IMAGE_SUFFIXES, suffix_for_path
 from .models import ImageRecord, ImageVariant
 from .scan_cache import app_data_root
 from .scanner import EDIT_DIRECTORIES, JPEG_PAIR_DIRECTORIES, normalize_filesystem_path, normalized_path_key, scan_folder
@@ -940,7 +940,7 @@ def _iter_catalog_candidate_folders(root_path: str):
         return
     for current_dir, dirnames, filenames in os.walk(normalized_root):
         lower_dirs = {name.casefold() for name in dirnames}
-        if any(Path(name).suffix.casefold() in IMAGE_SUFFIXES for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):
+        if any(suffix_for_path(name) in IMAGE_SUFFIXES for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):
             yield normalize_filesystem_path(current_dir)
 
 

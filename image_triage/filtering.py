@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .ai_results import AIConfidenceBucket
-from .formats import JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import FITS_SUFFIXES, JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .models import FilterMode, ImageRecord, SessionAnnotation
 from .review_workflows import (
     REVIEW_ROUND_FIRST_PASS,
@@ -31,6 +31,7 @@ TIFF_SUFFIXES = frozenset({".tif", ".tiff"})
 class FileTypeFilter(str, Enum):
     ALL = "Any File Type"
     RAW = "RAW"
+    FITS = "FITS"
     JPEG = "JPEG"
     EDITED = "Edited"
     PSD = "PSD / PSB"
@@ -238,6 +239,9 @@ def _record_file_type_categories(record: ImageRecord) -> set[FileTypeFilter]:
             continue
         if suffix in RAW_SUFFIXES:
             categories.add(FileTypeFilter.RAW)
+            recognized_suffix = True
+        elif suffix in FITS_SUFFIXES:
+            categories.add(FileTypeFilter.FITS)
             recognized_suffix = True
         elif suffix in JPEG_SUFFIXES:
             categories.add(FileTypeFilter.JPEG)

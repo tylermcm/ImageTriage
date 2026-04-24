@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from .formats import FITS_SUFFIXES, suffix_for_path
 from .metadata import CaptureMetadata, EMPTY_METADATA
 from .models import ImageRecord
 
@@ -14,6 +15,8 @@ def burst_candidate_indices(
     used: set[int],
     search_limit: int = 8,
 ) -> list[int]:
+    if _record_uses_fits(records[start_index]):
+        return [start_index]
     anchor_metadata = metadata_by_path.get(records[start_index].path, EMPTY_METADATA)
     if anchor_metadata is EMPTY_METADATA or anchor_metadata.captured_at_value is None:
         return [start_index]
@@ -22,6 +25,8 @@ def burst_candidate_indices(
     previous_metadata = anchor_metadata
     for candidate_index in range(start_index + 1, min(len(records), start_index + search_limit)):
         if candidate_index in used:
+            break
+        if _record_uses_fits(records[candidate_index]):
             break
         candidate_metadata = metadata_by_path.get(records[candidate_index].path, EMPTY_METADATA)
         if not is_burst_neighbor(anchor_metadata, previous_metadata, candidate_metadata):
@@ -84,3 +89,7 @@ def _close_numeric(left: float | None, right: float | None, *, tolerance: float)
     if left is None or right is None:
         return True
     return abs(left - right) <= tolerance
+
+
+def _record_uses_fits(record: ImageRecord) -> bool:
+    return suffix_for_path(record.path) in FITS_SUFFIXES

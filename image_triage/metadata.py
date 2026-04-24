@@ -6,12 +6,18 @@ from queue import Empty, SimpleQueue
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
+from .fits_support import load_basic_fits_header
+from .formats import FITS_SUFFIXES, suffix_for_path
 from .models import ImageRecord
 
 try:
     import exifread
 except ImportError:  # pragma: no cover - optional dependency at runtime
     exifread = None
+
+
+_ASTROPY_IMPORT_ATTEMPTED = False
+_ASTROPY_FITS = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -62,6 +68,12 @@ class MetadataKey:
 
 
 def load_capture_metadata(path: str) -> CaptureMetadata:
+    suffix = suffix_for_path(path)
+    if suffix in FITS_SUFFIXES:
+        fits_metadata = _load_fits_capture_metadata(path)
+        if fits_metadata is not None:
+            return fits_metadata
+
     if exifread is None:
         return EMPTY_METADATA if not path else CaptureMetadata(path=path)
 
@@ -110,6 +122,79 @@ def load_capture_metadata(path: str) -> CaptureMetadata:
         exposure_seconds=_to_float(exposure_value),
         aperture_value=_to_float(aperture_value),
         iso_value=_first_numeric(iso_value),
+        focal_length_value=_to_float(focal_value),
+        captured_at_value=_parse_datetime_value(captured_at_value),
+        width=width_pixels,
+        height=height_pixels,
+    )
+
+
+def _import_astropy_fits_module():
+    global _ASTROPY_IMPORT_ATTEMPTED, _ASTROPY_FITS
+    if not _ASTROPY_IMPORT_ATTEMPTED:
+        _ASTROPY_IMPORT_ATTEMPTED = True
+        try:
+            from astropy.io import fits as astropy_fits
+        except ImportError:
+            _ASTROPY_FITS = None
+        else:  # pragma: no branch - exercised when dependency is installed
+            _ASTROPY_FITS = astropy_fits
+    return _ASTROPY_FITS
+
+
+def _load_fits_capture_metadata(path: str) -> CaptureMetadata | None:
+    astropy_fits = _import_astropy_fits_module()
+    header = None
+    if astropy_fits is not None:
+        try:
+            with astropy_fits.open(path, memmap=True, lazy_load_hdus=True) as hdul:
+                for hdu in hdul:
+                    candidate = getattr(hdu, "header", None)
+                    if candidate is None:
+                        continue
+                    header = candidate
+                    if getattr(hdu, "data", None) is not None:
+                        break
+        except OSError:
+            header = None
+        except Exception:  # pragma: no cover - parser/runtime path
+            header = None
+
+    if header is None:
+        basic_header, _error = load_basic_fits_header(path)
+        if basic_header is None:
+            return CaptureMetadata(path=path)
+        header = basic_header
+
+    telescope_value = header.get("TELESCOP") or header.get("OBSERVAT")
+    instrument_value = header.get("INSTRUME") or header.get("CAMERA")
+    exposure_value = header.get("EXPTIME") or header.get("EXPOSURE")
+    focal_value = header.get("FOCALLEN") or header.get("FOCAL") or header.get("FOCUSLEN")
+    captured_at_value = header.get("DATE-OBS") or header.get("DATE")
+    object_value = header.get("OBJECT")
+    filter_value = header.get("FILTER")
+    width_pixels = _coerce_dimension(header.get("NAXIS1"))
+    height_pixels = _coerce_dimension(header.get("NAXIS2"))
+
+    camera_label = _format_camera(telescope_value, instrument_value)
+    fallback_camera = _format_text(object_value) or "FITS"
+    lens_label = _format_text(filter_value) or _format_text(object_value)
+
+    return CaptureMetadata(
+        path=path,
+        camera_make=_format_text(telescope_value),
+        camera_model=_format_text(instrument_value),
+        camera=camera_label or fallback_camera,
+        exposure=_format_exposure(exposure_value),
+        aperture="",
+        iso="",
+        focal_length=_format_focal_length(focal_value),
+        lens=lens_label,
+        captured_at=_format_datetime(captured_at_value),
+        orientation=_format_orientation(width_pixels, height_pixels),
+        exposure_seconds=_to_float(exposure_value),
+        aperture_value=None,
+        iso_value=None,
         focal_length_value=_to_float(focal_value),
         captured_at_value=_parse_datetime_value(captured_at_value),
         width=width_pixels,

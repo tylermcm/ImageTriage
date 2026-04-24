@@ -89,6 +89,7 @@ def build_main_menu_bar(
     view_menu.addSeparator()
     view_menu.addAction(actions.burst_groups)
     view_menu.addAction(actions.burst_stacks)
+    view_menu.addAction(actions.compact_cards)
     view_menu.addAction(actions.compare_mode)
     view_menu.addAction(actions.auto_advance)
     view_menu.addSeparator()

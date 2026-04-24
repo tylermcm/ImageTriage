@@ -5,9 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 from image_triage.models import ImageRecord
+from image_triage.imaging import FitsDisplaySettings
 from image_triage.preview import FullScreenPreview, PreviewEntry
 
 
@@ -120,7 +123,24 @@ class PreviewPollingTests(unittest.TestCase):
             self.assertEqual(preview._next_edited_discovery_at, 117.0)
             preview.close()
 
+    def test_fits_preview_cache_and_image_keys_track_stf_state(self) -> None:
+        preview = FullScreenPreview()
+        path = "C:/temp/sample.fits"
+        preview._entries = [_entry(path)]
+        preview._source_entries = list(preview._entries)
+        preview._source_versions = [(1, 1)]
+        preview._current_image_display_tokens = [("auto",)]
+
+        auto_key = preview._preview_cache_key(path, (1, 1), QSize(800, 600), prefer_embedded=True)
+        preview._fits_display_settings = FitsDisplaySettings(stf_preset_id="strong")
+        strong_key = preview._preview_cache_key(path, (1, 1), QSize(800, 600), prefer_embedded=True)
+
+        self.assertNotEqual(auto_key, strong_key)
+
+        image_key = preview._image_cache_key(0, QImage(32, 24, QImage.Format.Format_RGB32))
+        self.assertEqual(image_key[-1], ("auto",))
+        preview.close()
+
 
 if __name__ == "__main__":
     unittest.main()
-

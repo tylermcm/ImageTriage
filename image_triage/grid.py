@@ -95,6 +95,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._workflow_insights_by_path: dict[str, object] = {}
         self._normalized_path_cache: dict[str, str] = {}
         self._failed_paths: set[str] = set()
+        self._failed_messages: dict[str, str] = {}
         self._empty_message = "Choose a folder to start triaging images."
         self._meta_cache: dict[str, str] = {}
         self._meta_with_ai_cache: dict[str, str] = {}
@@ -107,6 +108,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._selection_anchor = -1
         self._tool_checkbox_mode = False
         self._action_mode = "normal"
+        self._compact_card_mode = False
         self._columns = 3
         self._margin = 18
         self._spacing = 18
@@ -291,6 +293,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             for item in items
         }
         self._failed_paths.clear()
+        self._failed_messages.clear()
         # Keep folder-open fast for large lists by priming only visible rows.
         self._meta_cache.clear()
         self._capture_cache.clear()
@@ -309,6 +312,28 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._schedule_visible_thumbnail_requests(immediate=True)
         self.current_changed.emit(self._current_index)
         self.selection_changed.emit()
+
+    def append_items(self, items: list[ImageRecord]) -> None:
+        if not items:
+            return
+        start_index = len(self._items)
+        self._items.extend(items)
+        for offset, item in enumerate(items):
+            index = start_index + offset
+            self._path_to_index[item.path] = index
+            self._fast_path_to_index[_fast_path_key(item.path)] = index
+            self._variant_indexes[item.path] = min(
+                self._variant_indexes.get(item.path, 0),
+                max(0, item.stack_count - 1),
+            )
+            for variant in item.display_variants:
+                self._variant_path_to_index[variant.path] = index
+                self._fast_path_to_index[_fast_path_key(variant.path)] = index
+        self._rebuild_visible_items()
+        self._update_scrollbar()
+        self._prime_visible_text_caches(limit=120)
+        self.viewport().update()
+        self._schedule_visible_thumbnail_requests()
 
     def set_annotations(self, annotations: dict[str, SessionAnnotation]) -> None:
         self._annotations = annotations
@@ -510,6 +535,26 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._update_scrollbar()
         self.viewport().update()
         self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def set_compact_card_mode(self, enabled: bool) -> None:
+        normalized = bool(enabled)
+        if self._compact_card_mode == normalized:
+            return
+        self._compact_card_mode = normalized
+        self._recalculate_metrics()
+        self._update_scrollbar()
+        self.viewport().update()
+        self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def compact_card_mode(self) -> bool:
+        return self._compact_card_mode
+
+    def current_scroll_value(self) -> int:
+        return self.verticalScrollBar().value()
+
+    def restore_scroll_value(self, value: int) -> None:
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(max(scrollbar.minimum(), min(scrollbar.maximum(), int(value))))
 
     def set_action_mode(self, mode: str) -> None:
         normalized = mode if mode in {"normal", "accepted_only", "rejected_only", "recycle_only"} else "normal"
@@ -1077,6 +1122,7 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _handle_thumbnail_ready(self, key: ThumbnailKey, _image: QImage) -> None:
         self._failed_paths.discard(key.path)
+        self._failed_messages.pop(key.path, None)
         self._cache_pixmap(key, _image)
         target = self._thumbnail_target_size()
         if key.width != target.width() or key.height != target.height():
@@ -1095,6 +1141,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if index is None:
             return
         self._failed_paths.add(key.path)
+        self._failed_messages[key.path] = _message
         rect = self._item_rect(index)
         if rect.intersects(self.viewport().rect()):
             self.viewport().update(rect)
@@ -1159,7 +1206,15 @@ class ThumbnailGridView(QAbstractScrollArea):
         elif variant.path in self._failed_paths:
             painter.setPen(self._failed_text_color)
             painter.setFont(self._placeholder_font)
-            painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, "Failed")
+            failed_message = self._failed_messages.get(variant.path, "").strip()
+            failure_text = "Failed"
+            if failed_message:
+                failure_text = f"Failed\n{failed_message}"
+            painter.drawText(
+                image_rect.adjusted(12, 12, -12, -12),
+                Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                failure_text,
+            )
         else:
             painter.setPen(self._placeholder_text_color)
             painter.setFont(self._placeholder_font)
@@ -1322,15 +1377,16 @@ class ThumbnailGridView(QAbstractScrollArea):
             index == self._hovered_reject_index,
         )
 
-        painter.setPen(self._capture_color)
-        painter.setFont(self._meta_font)
-        capture_text = painter.fontMetrics().elidedText(self._capture_line(record), Qt.TextElideMode.ElideRight, capture_rect.width())
-        painter.drawText(capture_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, capture_text)
+        if not self._compact_card_mode:
+            painter.setPen(self._capture_color)
+            painter.setFont(self._meta_font)
+            capture_text = painter.fontMetrics().elidedText(self._capture_line(record), Qt.TextElideMode.ElideRight, capture_rect.width())
+            painter.drawText(capture_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, capture_text)
 
-        painter.setPen(self._meta_color)
-        painter.setFont(self._meta_font)
-        meta_text = painter.fontMetrics().elidedText(self._meta_line(record), Qt.TextElideMode.ElideRight, meta_rect.width())
-        painter.drawText(meta_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, meta_text)
+            painter.setPen(self._meta_color)
+            painter.setFont(self._meta_font)
+            meta_text = painter.fontMetrics().elidedText(self._meta_line(record), Qt.TextElideMode.ElideRight, meta_rect.width())
+            painter.drawText(meta_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, meta_text)
         if record.has_variant_stack:
             self._paint_variant_arrow(
                 painter,
@@ -1615,6 +1671,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         )
 
     def _capture_rect(self, tile_rect: QRect) -> QRect:
+        if self._compact_card_mode:
+            return QRect()
         title_rect = self._title_rect(tile_rect)
         return QRect(
             tile_rect.x() + 12,
@@ -1624,6 +1682,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         )
 
     def _meta_rect(self, tile_rect: QRect) -> QRect:
+        if self._compact_card_mode:
+            return QRect()
         capture_rect = self._capture_rect(tile_rect)
         return QRect(
             tile_rect.x() + 12,
@@ -1633,6 +1693,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         )
 
     def _action_rect(self, tile_rect: QRect) -> QRect:
+        if self._compact_card_mode:
+            title_rect = self._title_rect(tile_rect)
+            return QRect(
+                tile_rect.x() + 12,
+                title_rect.bottom() + 5,
+                tile_rect.width() - 24,
+                self._action_height,
+            )
         meta_rect = self._meta_rect(tile_rect)
         return QRect(
             tile_rect.x() + 12,
@@ -2058,6 +2126,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             distance = abs(index - center)
             priority = max(1, 10_000 - distance)
             variant = self._current_variant(self._items[index])
+            if variant.path in self._failed_paths:
+                continue
             self.thumbnail_manager.request_thumbnail(variant, target, priority=priority)
             self.metadata_manager.request_metadata(variant, priority=priority)
 
@@ -2111,11 +2181,18 @@ class ThumbnailGridView(QAbstractScrollArea):
         return self._thumbnail_target_size_value
 
     def _recalculate_metrics(self) -> None:
+        self._margin = 10 if self._compact_card_mode else 18
+        self._spacing = 10 if self._compact_card_mode else 18
+        self._image_padding = 8 if self._compact_card_mode else 10
+        self._caption_height = 20 if self._compact_card_mode else 22
+        self._capture_height = 0 if self._compact_card_mode else 16
+        self._meta_height = 0 if self._compact_card_mode else 16
         available = max(320, self.viewport().width() - (self._margin * 2) - ((self._columns - 1) * self._spacing))
-        minimum_tile_width = 220 if self._columns <= 4 else 120
-        minimum_image_height = 180 if self._columns <= 4 else 90
+        minimum_tile_width = (180 if self._columns <= 4 else 108) if self._compact_card_mode else (220 if self._columns <= 4 else 120)
+        minimum_image_height = (128 if self._columns <= 4 else 72) if self._compact_card_mode else (180 if self._columns <= 4 else 90)
         self._tile_width_value = max(minimum_tile_width, available // self._columns)
-        self._image_height_value = max(minimum_image_height, int(self._tile_width_value * 0.72))
+        image_ratio = 0.64 if self._compact_card_mode else 0.72
+        self._image_height_value = max(minimum_image_height, int(self._tile_width_value * image_ratio))
         self._tile_height_value = (
             self._image_padding * 2
             + self._image_height_value
@@ -2123,7 +2200,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             + self._action_height
             + self._capture_height
             + self._meta_height
-            + 20
+            + (12 if self._compact_card_mode else 20)
         )
         self._row_height_value = self._tile_height_value + self._spacing
         self._thumbnail_target_size_value = QSize(

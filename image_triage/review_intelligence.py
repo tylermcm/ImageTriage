@@ -10,6 +10,7 @@ from typing import Callable
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, Signal
 from PySide6.QtGui import QImage
 
+from .formats import FITS_SUFFIXES, suffix_for_path
 from .imaging import load_image_for_display
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord
@@ -366,6 +367,8 @@ def _find_exact_duplicate_groups(
     by_size: dict[int, list[_RecordFingerprint]] = defaultdict(list)
     for fingerprint in fingerprints:
         _raise_if_cancelled(should_cancel)
+        if _uses_fits_grouping_exemption(fingerprint.record.path):
+            continue
         by_size[fingerprint.record.size].append(fingerprint)
 
     groups: list[tuple[str, ...]] = []
@@ -410,6 +413,8 @@ def _classify_pair(
     previous: _RecordFingerprint,
     candidate: _RecordFingerprint,
 ) -> tuple[str, tuple[str, ...]]:
+    if _uses_fits_grouping_exemption(anchor.record.path) or _uses_fits_grouping_exemption(candidate.record.path):
+        return "", ()
     if not _can_be_related(anchor, candidate):
         return "", ()
 
@@ -534,6 +539,10 @@ def _sha1_for_path(path: str) -> str:
     except OSError:
         return ""
     return digest.hexdigest()
+
+
+def _uses_fits_grouping_exemption(path: str) -> bool:
+    return suffix_for_path(path) in FITS_SUFFIXES
 
 
 def _modified_sort_key(record: ImageRecord) -> int:

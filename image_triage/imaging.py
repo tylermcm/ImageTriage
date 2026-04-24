@@ -3,12 +3,18 @@ from __future__ import annotations
 import math
 import os
 import struct
+from dataclasses import dataclass
 
 import numpy as np
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QSize, Qt
 from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPolygonF
 
-from .formats import MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .fits_support import (
+    is_basic_displayable_fits_array,
+    load_basic_fits_image,
+    normalize_basic_fits_array,
+)
+from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 
 try:
     import rawpy
@@ -36,12 +42,64 @@ except ImportError:  # pragma: no cover - depends on local environment
 
 _DEFAULT_THUMBNAIL_SIZE = QSize(512, 512)
 _MAX_STL_TRIANGLES = 5000
+_ASTROPY_IMPORT_ATTEMPTED = False
+_ASTROPY_FITS = None
+_ASTROPY_ZSCALE_INTERVAL = None
 
 
-def load_image_for_display(path: str, target_size: QSize, *, prefer_embedded: bool):
+@dataclass(slots=True, frozen=True)
+class FitsStfPreset:
+    id: str
+    label: str
+    asinh_strength: float
+
+
+@dataclass(slots=True, frozen=True)
+class FitsDisplaySettings:
+    stf_preset_id: str = "auto"
+
+    @property
+    def preset(self) -> FitsStfPreset:
+        return fits_stf_preset_by_id(self.stf_preset_id)
+
+    def cache_key(self) -> tuple[str]:
+        return (self.preset.id,)
+
+
+FITS_STF_PRESETS: tuple[FitsStfPreset, ...] = (
+    FitsStfPreset("auto", "Auto STF", 6.0),
+    FitsStfPreset("linear", "Linear", 0.0),
+    FitsStfPreset("soft", "Soft", 3.0),
+    FitsStfPreset("medium", "Medium", 6.0),
+    FitsStfPreset("strong", "Strong", 12.0),
+)
+
+
+def fits_stf_preset_by_id(value: str) -> FitsStfPreset:
+    for preset in FITS_STF_PRESETS:
+        if preset.id == value:
+            return preset
+    return FITS_STF_PRESETS[0]
+
+
+def normalize_fits_display_settings(settings: FitsDisplaySettings | None) -> FitsDisplaySettings:
+    if settings is None:
+        return FitsDisplaySettings()
+    return FitsDisplaySettings(stf_preset_id=fits_stf_preset_by_id(settings.stf_preset_id).id)
+
+
+def load_image_for_display(
+    path: str,
+    target_size: QSize,
+    *,
+    prefer_embedded: bool,
+    fits_display_settings: FitsDisplaySettings | None = None,
+):
     suffix = suffix_for_path(path)
     if suffix in MODEL_SUFFIXES:
         return _load_stl_image(path, target_size)
+    if suffix in FITS_SUFFIXES:
+        return _load_fits_image(path, target_size, fits_display_settings=fits_display_settings)
     if suffix in RAW_SUFFIXES:
         return _load_raw_image(path, target_size, prefer_embedded=prefer_embedded, suffix=suffix)
     if suffix in PSD_SUFFIXES:
@@ -57,6 +115,8 @@ def load_image_for_resize(path: str, *, target_size: QSize | None = None, ignore
     requested_size = target_size if target_size is not None and _has_target(target_size) else QSize()
     if suffix in MODEL_SUFFIXES:
         return QImage(), "This file type cannot be resized yet."
+    if suffix in FITS_SUFFIXES:
+        return QImage(), "FITS files are view-only for now."
     if suffix in RAW_SUFFIXES:
         return _load_raw_image(path, requested_size, prefer_embedded=False, suffix=suffix)
     if suffix in PSD_SUFFIXES:
@@ -202,6 +262,254 @@ def _pillow_lanczos():
     if resampling is not None:
         return resampling.LANCZOS
     return Image.LANCZOS
+
+
+def _import_astropy_modules():
+    global _ASTROPY_IMPORT_ATTEMPTED, _ASTROPY_FITS, _ASTROPY_ZSCALE_INTERVAL
+    if not _ASTROPY_IMPORT_ATTEMPTED:
+        _ASTROPY_IMPORT_ATTEMPTED = True
+        try:
+            from astropy.io import fits as astropy_fits
+            from astropy.visualization import ZScaleInterval
+        except ImportError:
+            _ASTROPY_FITS = None
+            _ASTROPY_ZSCALE_INTERVAL = None
+        else:  # pragma: no branch - exercised when dependency is installed
+            _ASTROPY_FITS = astropy_fits
+            _ASTROPY_ZSCALE_INTERVAL = ZScaleInterval
+    return _ASTROPY_FITS, _ASTROPY_ZSCALE_INTERVAL
+
+
+def _load_fits_image(
+    path: str,
+    target_size: QSize,
+    *,
+    fits_display_settings: FitsDisplaySettings | None = None,
+) -> tuple[QImage, str | None]:
+    astropy_fits, zscale_interval = _import_astropy_modules()
+    display_settings = normalize_fits_display_settings(fits_display_settings)
+    astropy_error: str | None = None
+
+    if astropy_fits is not None and zscale_interval is not None:
+        try:
+            with astropy_fits.open(path, memmap=True, lazy_load_hdus=True) as hdul:
+                data = _first_fits_display_data(hdul)
+        except Exception as exc:  # pragma: no cover - depends on local FITS parser/runtime
+            astropy_error = str(exc)
+        else:
+            if data is not None:
+                try:
+                    image = _qimage_from_fits_data(
+                        data,
+                        target_size=target_size,
+                        zscale_interval=zscale_interval,
+                        fits_display_settings=display_settings,
+                    )
+                except Exception as exc:  # pragma: no cover - depends on source data/runtime
+                    astropy_error = str(exc)
+                else:
+                    if not image.isNull():
+                        return image, None
+                    astropy_error = "Could not render FITS image."
+            else:
+                astropy_error = "The FITS file did not contain displayable image data."
+
+    basic_image, basic_error = load_basic_fits_image(path)
+    if basic_image is not None:
+        try:
+            image = _qimage_from_fits_data(
+                basic_image.data,
+                target_size=target_size,
+                zscale_interval=_fallback_zscale_interval,
+                fits_display_settings=display_settings,
+            )
+        except Exception as exc:  # pragma: no cover - depends on source data/runtime
+            basic_error = str(exc)
+        else:
+            if not image.isNull():
+                return image, None
+            basic_error = "Could not render FITS image."
+
+    return QImage(), basic_error or astropy_error or "FITS support requires the astropy package."
+
+
+def _first_fits_display_data(hdul) -> np.ndarray | None:
+    for hdu in hdul:
+        if not getattr(hdu, "is_image", True):
+            continue
+        data = getattr(hdu, "data", None)
+        if data is None:
+            continue
+        array = np.asarray(data)
+        if array.size <= 0 or not is_basic_displayable_fits_array(array):
+            continue
+        return normalize_basic_fits_array(array)
+    return None
+
+
+def _qimage_from_fits_data(
+    data: np.ndarray,
+    *,
+    target_size: QSize,
+    zscale_interval,
+    fits_display_settings: FitsDisplaySettings,
+) -> QImage:
+    working = np.asarray(data)
+    while working.ndim > 3:
+        working = working[0]
+
+    if working.ndim == 3:
+        if working.shape[-1] in {3, 4}:
+            return _qimage_from_rgb_array(
+                _normalize_fits_rgb(working, target_size, fits_display_settings=fits_display_settings)
+            )
+        if working.shape[0] in {3, 4}:
+            return _qimage_from_rgb_array(
+                _normalize_fits_rgb(
+                    np.moveaxis(working, 0, -1),
+                    target_size,
+                    fits_display_settings=fits_display_settings,
+                )
+            )
+        working = working[0]
+
+    if working.ndim == 1:
+        working = working[np.newaxis, :]
+    if working.ndim != 2:
+        return QImage()
+
+    normalized = _normalize_fits_grayscale(
+        working,
+        target_size,
+        zscale_interval=zscale_interval,
+        fits_display_settings=fits_display_settings,
+    )
+    if normalized.size <= 0:
+        return QImage()
+    image = QImage(
+        normalized.data,
+        int(normalized.shape[1]),
+        int(normalized.shape[0]),
+        int(normalized.strides[0]),
+        QImage.Format.Format_Grayscale8,
+    )
+    return image.copy()
+
+
+def _normalize_fits_rgb(
+    array: np.ndarray,
+    target_size: QSize,
+    *,
+    fits_display_settings: FitsDisplaySettings,
+) -> np.ndarray:
+    working = np.asarray(array, dtype=np.float32)
+    working = _downsample_fits_array(working, target_size)
+    if working.ndim != 3 or working.shape[-1] < 3:
+        return np.zeros((1, 1, 3), dtype=np.uint8)
+    working = working[..., :3]
+    normalized_channels: list[np.ndarray] = []
+    for index in range(working.shape[-1]):
+        normalized_channels.append(
+            _normalize_fits_channel(working[..., index], fits_display_settings=fits_display_settings)
+        )
+    return np.stack(normalized_channels, axis=-1)
+
+
+def _normalize_fits_grayscale(
+    array: np.ndarray,
+    target_size: QSize,
+    *,
+    zscale_interval,
+    fits_display_settings: FitsDisplaySettings,
+) -> np.ndarray:
+    working = np.asarray(array, dtype=np.float32)
+    working = _downsample_fits_array(working, target_size)
+    if working.size <= 0:
+        return np.zeros((1, 1), dtype=np.uint8)
+
+    finite = np.isfinite(working)
+    if not finite.any():
+        return np.zeros(working.shape[:2], dtype=np.uint8)
+
+    values = working[finite]
+    try:
+        interval = zscale_interval(n_samples=min(4000, max(256, int(values.size))))
+        normalized = interval(working, clip=True)
+    except Exception:
+        low = float(np.nanpercentile(values, 1.0))
+        high = float(np.nanpercentile(values, 99.5))
+        if not math.isfinite(low) or not math.isfinite(high) or abs(high - low) < 1e-9:
+            low = float(np.nanmin(values))
+            high = float(np.nanmax(values))
+        if not math.isfinite(low) or not math.isfinite(high) or abs(high - low) < 1e-9:
+            return np.zeros(working.shape[:2], dtype=np.uint8)
+        normalized = np.clip((working - low) / (high - low), 0.0, 1.0)
+
+    stretched = _apply_fits_stf(normalized, fits_display_settings=fits_display_settings)
+    return np.ascontiguousarray(np.clip(stretched * 255.0, 0.0, 255.0).astype(np.uint8))
+
+
+def _normalize_fits_channel(channel: np.ndarray, *, fits_display_settings: FitsDisplaySettings) -> np.ndarray:
+    finite = np.isfinite(channel)
+    if not finite.any():
+        return np.zeros(channel.shape[:2], dtype=np.uint8)
+    values = channel[finite]
+    low = float(np.nanpercentile(values, 1.0))
+    high = float(np.nanpercentile(values, 99.5))
+    if not math.isfinite(low) or not math.isfinite(high) or abs(high - low) < 1e-9:
+        low = float(np.nanmin(values))
+        high = float(np.nanmax(values))
+    if not math.isfinite(low) or not math.isfinite(high) or abs(high - low) < 1e-9:
+        return np.zeros(channel.shape[:2], dtype=np.uint8)
+    normalized = np.clip((channel - low) / (high - low), 0.0, 1.0)
+    normalized = _apply_fits_stf(normalized, fits_display_settings=fits_display_settings)
+    return np.ascontiguousarray((normalized * 255.0).astype(np.uint8))
+
+
+def _apply_fits_stf(normalized: np.ndarray, *, fits_display_settings: FitsDisplaySettings) -> np.ndarray:
+    settings = normalize_fits_display_settings(fits_display_settings)
+    clipped = np.nan_to_num(np.clip(normalized, 0.0, 1.0), nan=0.0, posinf=1.0, neginf=0.0)
+    strength = settings.preset.asinh_strength
+    if strength <= 0.0:
+        return clipped
+    stretched = np.arcsinh(clipped * strength) / math.asinh(strength)
+    return np.nan_to_num(np.clip(stretched, 0.0, 1.0), nan=0.0, posinf=1.0, neginf=0.0)
+
+
+def _fallback_zscale_interval(*, n_samples: int):
+    class _PercentileInterval:
+        def __call__(self, array: np.ndarray, clip: bool = True) -> np.ndarray:
+            working = np.asarray(array, dtype=np.float32)
+            finite = np.isfinite(working)
+            if not finite.any():
+                return np.zeros(working.shape, dtype=np.float32)
+            values = working[finite]
+            low = float(np.nanpercentile(values, 1.0))
+            high = float(np.nanpercentile(values, 99.5))
+            if not math.isfinite(low) or not math.isfinite(high) or abs(high - low) < 1e-9:
+                low = float(np.nanmin(values))
+                high = float(np.nanmax(values))
+            if not math.isfinite(low) or not math.isfinite(high) or abs(high - low) < 1e-9:
+                return np.zeros(working.shape, dtype=np.float32)
+            normalized = (working - low) / (high - low)
+            if clip:
+                normalized = np.clip(normalized, 0.0, 1.0)
+            return normalized
+
+    return _PercentileInterval()
+
+
+def _downsample_fits_array(array: np.ndarray, target_size: QSize) -> np.ndarray:
+    if not _has_target(target_size) or array.ndim < 2:
+        return np.ascontiguousarray(array)
+    height = max(1, int(array.shape[0]))
+    width = max(1, int(array.shape[1]))
+    step_y = max(1, math.ceil(height / max(1, target_size.height() * 2)))
+    step_x = max(1, math.ceil(width / max(1, target_size.width() * 2)))
+    slices = (slice(None, None, step_y), slice(None, None, step_x))
+    if array.ndim == 2:
+        return np.ascontiguousarray(array[slices])
+    return np.ascontiguousarray(array[slices[0], slices[1], ...])
 
 
 def _load_raw_image(path: str, target_size: QSize, *, prefer_embedded: bool, suffix: str) -> tuple[QImage, str | None]:

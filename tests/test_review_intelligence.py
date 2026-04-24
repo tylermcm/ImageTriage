@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from image_triage.metadata import CaptureMetadata
@@ -120,6 +121,45 @@ class ReviewIntelligenceTests(unittest.TestCase):
         assert insight is not None
         self.assertTrue(insight.is_likely_duplicate)
         self.assertEqual(insight.summary_text, "Near Dup 1/2")
+
+    def test_fits_records_are_excluded_from_near_duplicate_groups(self) -> None:
+        records = [
+            ImageRecord(path="C:/astro/frame_01.fits", name="frame_01.fits", size=1500, modified_ns=1),
+            ImageRecord(path="C:/astro/frame_02.fits", name="frame_02.fits", size=1510, modified_ns=2),
+        ]
+        captured_at = datetime(2022, 8, 24, 23, 23, 26)
+        fingerprints = {
+            records[0].path: _RecordFingerprint(
+                record=records[0],
+                source_path=records[0].path,
+                metadata=CaptureMetadata(path=records[0].path, width=3008, height=3008, captured_at_value=captured_at),
+                dhash=0b1111000011110000,
+                avg_luma=92.0,
+                width=3008,
+                height=3008,
+                sha1_digest="a",
+            ),
+            records[1].path: _RecordFingerprint(
+                record=records[1],
+                source_path=records[1].path,
+                metadata=CaptureMetadata(path=records[1].path, width=3008, height=3008, captured_at_value=captured_at),
+                dhash=0b1111000011110001,
+                avg_luma=95.0,
+                width=3008,
+                height=3008,
+                sha1_digest="b",
+            ),
+        }
+
+        with patch(
+            "image_triage.review_intelligence._build_fingerprint",
+            side_effect=lambda record, _metadata_cache: fingerprints[record.path],
+        ):
+            bundle = build_review_intelligence(records)
+
+        self.assertEqual(bundle.groups, ())
+        self.assertIsNone(bundle.insight_for_path(records[0].path))
+        self.assertIsNone(bundle.insight_for_path(records[1].path))
 
     def test_build_review_intelligence_emits_progress_milestones(self) -> None:
         records = [

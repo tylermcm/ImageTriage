@@ -85,6 +85,19 @@ class ScannerTests(unittest.TestCase):
             self.assertIn(str(new_edit), discovered)
             self.assertIn(str(nested_new_edit), discovered)
 
+    def test_scan_folder_includes_fits_variants(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            primary_fits = root / "m42.fits"
+            compressed_fits = root / "andromeda.fits.fz"
+            for path in (primary_fits, compressed_fits):
+                _write_image(path)
+
+            records = scan_folder(str(root))
+
+            self.assertEqual({primary_fits.name, compressed_fits.name}, {record.name for record in records})
+            self.assertEqual({str(primary_fits), str(compressed_fits)}, {record.path for record in records})
+
 
 if __name__ == "__main__":
     unittest.main()

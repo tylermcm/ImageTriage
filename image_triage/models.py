@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES
+from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,7 +73,7 @@ class ImageRecord:
         if not self.companion_paths:
             return ""
 
-        suffixes = {os.path.splitext(path)[1].lower() for path in self.all_paths}
+        suffixes = {suffix_for_path(path) for path in self.all_paths}
         if suffixes & RAW_SUFFIXES and suffixes & JPEG_SUFFIXES:
             return "RAW+JPG"
         return f"{len(self.all_paths)} files"
@@ -88,7 +88,7 @@ class ImageRecord:
             return ""
         return sorted(
             self.edited_paths,
-            key=lambda path: (EDIT_PRIORITY.get(os.path.splitext(path)[1].lower(), 99), path.casefold()),
+            key=lambda path: (EDIT_PRIORITY.get(suffix_for_path(path), 99), path.casefold()),
         )[0]
 
 

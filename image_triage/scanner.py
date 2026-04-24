@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ROOT_PRIMARY_PRIORITY
+from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ROOT_PRIMARY_PRIORITY, suffix_for_path
 from .models import ImageRecord, ImageVariant, SortMode, sort_records
 from .scan_cache import FolderScanCache
 
@@ -75,7 +75,7 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
 
     with os.scandir(folder) as entries:
         for entry in entries:
-            suffix = os.path.splitext(entry.name)[1].lower()
+            suffix = suffix_for_path(entry.name)
             if suffix in IMAGE_SUFFIXES:
                 scanned = to_scanned_file(entry, IMAGE_SUFFIXES, include_stat=include_stat, parent_folder=folder)
                 if scanned is not None:
@@ -336,7 +336,7 @@ def to_scanned_file(
     include_stat: bool = True,
     parent_folder: str | None = None,
 ) -> ScannedFile | None:
-    suffix = os.path.splitext(entry.name)[1].lower()
+    suffix = suffix_for_path(entry.name)
     if suffix not in allowed_suffixes:
         return None
 

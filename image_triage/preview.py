@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from .ai_results import AIImageResult, build_ai_explanation_lines
-from .imaging import load_image_for_display
+from .formats import FITS_SUFFIXES, suffix_for_path
+from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord, JPEG_SUFFIXES
 from .review_tools import (
@@ -57,6 +58,7 @@ class PreviewRequest:
     prefer_embedded: bool = False
     load_metadata: bool = True
     cache_only: bool = False
+    fits_display_settings: FitsDisplaySettings | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -88,6 +90,7 @@ class PreviewTask(QRunnable):
             self.request.path,
             self.request.target_size,
             prefer_embedded=self.request.prefer_embedded,
+            fits_display_settings=self.request.fits_display_settings,
         )
         if image.isNull():
             self.result_queue.put(("failed", self.request, error or "Could not decode image."))
@@ -400,6 +403,7 @@ class FullScreenPreview(QDialog):
     FOCUS_ASSIST_COLOR_KEY = "preview/focus_assist_color"
     FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
     FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
+    FITS_STF_PRESET_KEY = "preview/fits_stf_preset"
     navigation_requested = Signal(int)
     compare_mode_changed = Signal(bool)
     auto_bracket_mode_changed = Signal(bool)
@@ -449,6 +453,13 @@ class FullScreenPreview(QDialog):
             True,
             bool,
         )
+        self._fits_display_settings = FitsDisplaySettings(
+            stf_preset_id=self._settings.value(
+                self.FITS_STF_PRESET_KEY,
+                FitsDisplaySettings().stf_preset_id,
+                str,
+            )
+        )
         self._loupe_enabled = False
         self._loupe_zoom_levels = (1.25, 1.5, 2.0, 3.0)
         self._loupe_zoom_index = 1
@@ -464,11 +475,12 @@ class FullScreenPreview(QDialog):
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
         self._result_queue: SimpleQueue = SimpleQueue()
-        self._preview_cache: OrderedDict[tuple[str, tuple[int, int] | None, int, int, bool], tuple[QImage, int]] = OrderedDict()
+        self._preview_cache: OrderedDict[tuple[object, ...], tuple[QImage, int]] = OrderedDict()
         self._preview_cache_bytes = 0
         self._preview_cache_limit = 320 * 1024 * 1024
-        self._pending_cache_keys: set[tuple[str, tuple[int, int] | None, int, int, bool]] = set()
+        self._pending_cache_keys: set[tuple[object, ...]] = set()
         self._current_placeholder_flags: list[bool] = []
+        self._current_image_display_tokens: list[tuple[object, ...]] = []
         self._rendered_display_keys: list[tuple[object, ...] | None] = []
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(12)
@@ -492,8 +504,8 @@ class FullScreenPreview(QDialog):
         self._edited_discovery_interval_with_candidates_s = 12.0
         self._panes: list[PreviewPane] = []
         self._watched_widgets: dict[object, int] = {}
-        self._inspection_stats_cache: dict[tuple[str, tuple[int, int] | None, int, int], InspectionStats] = {}
-        self._focus_assist_cache: dict[tuple[str, tuple[int, int] | None, int, int, str, str, bool], QImage] = {}
+        self._inspection_stats_cache: dict[tuple[object, ...], InspectionStats] = {}
+        self._focus_assist_cache: dict[tuple[object, ...], QImage] = {}
         self._theme = default_theme()
 
         self.setWindowTitle("Preview")
@@ -840,6 +852,45 @@ class FullScreenPreview(QDialog):
         focus_controls_layout.addWidget(self.focus_strength_row)
         focus_controls_layout.addWidget(self.focus_background_row)
 
+        self.fits_controls_card = QFrame()
+        self.fits_controls_card.setObjectName("previewControlsCard")
+        fits_controls_layout = QVBoxLayout(self.fits_controls_card)
+        fits_controls_layout.setContentsMargins(12, 12, 12, 12)
+        fits_controls_layout.setSpacing(8)
+
+        self.fits_controls_title_label = QLabel("FITS Display")
+        self.fits_controls_title_label.setObjectName("previewControlsTitle")
+        self.fits_controls_summary_label = QLabel("Auto STF")
+        self.fits_controls_summary_label.setObjectName("previewControlsSummary")
+
+        self.fits_stf_row = QWidget()
+        fits_stf_layout = QHBoxLayout(self.fits_stf_row)
+        fits_stf_layout.setContentsMargins(0, 0, 0, 0)
+        fits_stf_layout.setSpacing(10)
+        self.fits_stf_label = QLabel("Stretch")
+        self.fits_stf_label.setObjectName("previewControlLabel")
+        self.fits_stf_combo = QComboBox()
+        self.fits_stf_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.fits_stf_combo.setMinimumWidth(132)
+        for preset in FITS_STF_PRESETS:
+            self.fits_stf_combo.addItem(preset.label, preset.id)
+        fits_preset_index = self.fits_stf_combo.findData(self._fits_display_settings.preset.id)
+        if fits_preset_index >= 0:
+            self.fits_stf_combo.setCurrentIndex(fits_preset_index)
+        self.fits_stf_combo.currentIndexChanged.connect(self._handle_fits_stf_changed)
+        fits_stf_layout.addWidget(self.fits_stf_label)
+        fits_stf_layout.addStretch(1)
+        fits_stf_layout.addWidget(self.fits_stf_combo)
+
+        self.fits_reset_button = QPushButton("Reset")
+        self.fits_reset_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.fits_reset_button.clicked.connect(self._handle_fits_stf_reset)
+
+        fits_controls_layout.addWidget(self.fits_controls_title_label)
+        fits_controls_layout.addWidget(self.fits_controls_summary_label)
+        fits_controls_layout.addWidget(self.fits_stf_row)
+        fits_controls_layout.addWidget(self.fits_reset_button, 0, Qt.AlignmentFlag.AlignRight)
+
         self.histogram_widget = HistogramWidget(self.analysis_panel)
         self.inspection_dimensions_label = QLabel("Size: --")
         self.inspection_dimensions_label.setObjectName("previewAnalysisValue")
@@ -873,6 +924,7 @@ class FullScreenPreview(QDialog):
         analysis_layout.addWidget(self.analysis_title_label)
         analysis_layout.addWidget(self.analysis_subtitle_label)
         analysis_layout.addWidget(self.focus_controls_card)
+        analysis_layout.addWidget(self.fits_controls_card)
         analysis_layout.addWidget(self.histogram_widget)
         analysis_layout.addWidget(self.inspection_dimensions_label)
         analysis_layout.addWidget(self.inspection_exposure_label)
@@ -963,6 +1015,37 @@ class FullScreenPreview(QDialog):
             }}
         """
 
+    def _entry_supports_fits_stf(self, entry: PreviewEntry | None) -> bool:
+        if entry is None or not entry.source_path:
+            return False
+        return suffix_for_path(entry.source_path) in FITS_SUFFIXES
+
+    def _fits_display_settings_for_path(self, path: str) -> FitsDisplaySettings | None:
+        if suffix_for_path(path) not in FITS_SUFFIXES:
+            return None
+        return self._fits_display_settings
+
+    def _fits_display_settings_for_entry(self, entry: PreviewEntry | None) -> FitsDisplaySettings | None:
+        if entry is None:
+            return None
+        return self._fits_display_settings_for_path(entry.source_path)
+
+    def _focused_entry_supports_fits_stf(self) -> bool:
+        if not self._entries or not 0 <= self._focused_slot < len(self._entries):
+            return False
+        return self._entry_supports_fits_stf(self._entries[self._focused_slot])
+
+    def _fits_entry_slots(self) -> list[int]:
+        return [slot for slot, entry in enumerate(self._entries) if self._entry_supports_fits_stf(entry)]
+
+    def _fits_display_cache_key_for_path(
+        self,
+        path: str,
+        fits_display_settings: FitsDisplaySettings | None = None,
+    ) -> tuple[object, ...]:
+        settings = fits_display_settings if fits_display_settings is not None else self._fits_display_settings_for_path(path)
+        return settings.cache_key() if settings is not None else ()
+
     def _sync_preview_controls(self) -> None:
         edited_candidates = self._edited_candidates_for_entry(self._source_entries[0]) if self._source_entries else ()
         before_after_visible = (not self._compare_mode) and len(self._source_entries) == 1 and bool(edited_candidates)
@@ -985,8 +1068,20 @@ class FullScreenPreview(QDialog):
                 f"{'Dimmed' if self._focus_assist_dim_background else 'Original'} background"
             )
         self.focus_controls_summary_label.setText(summary)
+        fits_controls_visible = self._focused_entry_supports_fits_stf()
+        self.fits_controls_card.setVisible(fits_controls_visible)
+        self.fits_controls_summary_label.setText(self._fits_display_settings.preset.label)
+        with QSignalBlocker(self.fits_stf_combo):
+            fits_preset_index = self.fits_stf_combo.findData(self._fits_display_settings.preset.id)
+            if fits_preset_index >= 0:
+                self.fits_stf_combo.setCurrentIndex(fits_preset_index)
+        self.fits_reset_button.setEnabled(self._fits_display_settings.preset.id != FitsDisplaySettings().preset.id)
         self.header_widget.setVisible(True)
         self.analysis_panel.setVisible(True)
+        hint_text = "Histogram follows the focused pane. Focus Peaking settings live in the inspection card."
+        if fits_controls_visible:
+            hint_text = "Histogram follows the focused pane. FITS display stretch changes the preview only."
+        self.inspection_hint_label.setText(hint_text)
         for pane in self._panes[: len(self._entries)]:
             pane.set_minimal(False)
 
@@ -1026,6 +1121,7 @@ class FullScreenPreview(QDialog):
         self.focus_assist_color_combo.setStyleSheet(combo_style)
         self.focus_assist_strength_combo.setStyleSheet(combo_style)
         self.compare_count_combo.setStyleSheet(combo_style)
+        self.fits_stf_combo.setStyleSheet(combo_style)
         self.analysis_panel.setStyleSheet(
             f"""
             QFrame#previewAnalysisPanel {{
@@ -1073,6 +1169,7 @@ class FullScreenPreview(QDialog):
             """
         )
         self.histogram_widget.apply_theme(theme)
+        self.fits_reset_button.setStyleSheet(self._action_button_style())
         for pane in self._panes:
             pane.apply_theme(theme)
 
@@ -1454,6 +1551,38 @@ class FullScreenPreview(QDialog):
         if self._focus_assist_enabled:
             self._render_all()
 
+    def _handle_fits_stf_changed(self) -> None:
+        selected = self.fits_stf_combo.currentData()
+        if not isinstance(selected, str):
+            return
+        settings = FitsDisplaySettings(stf_preset_id=selected)
+        if settings.cache_key() == self._fits_display_settings.cache_key():
+            return
+        self._apply_fits_display_settings(settings)
+
+    def _handle_fits_stf_reset(self) -> None:
+        self._apply_fits_display_settings(FitsDisplaySettings())
+
+    def _apply_fits_display_settings(self, settings: FitsDisplaySettings) -> None:
+        normalized = FitsDisplaySettings(stf_preset_id=settings.preset.id)
+        if normalized.cache_key() == self._fits_display_settings.cache_key():
+            self._sync_preview_controls()
+            return
+        self._fits_display_settings = normalized
+        self._settings.setValue(self.FITS_STF_PRESET_KEY, normalized.preset.id)
+        self._inspection_stats_cache.clear()
+        self._focus_assist_cache.clear()
+        target_slots = self._fits_entry_slots()
+        target_paths = {self._entries[slot].source_path for slot in target_slots if 0 <= slot < len(self._entries)}
+        for path in target_paths:
+            self._invalidate_preview_cache(path)
+        self._sync_preview_controls()
+        self._update_info_label()
+        if target_slots:
+            self._request_preview_loads(target_slots)
+        else:
+            self._update_analysis_panel()
+
     def _ensure_panes(self, count: int) -> None:
         while len(self._panes) < count:
             pane = PreviewPane()
@@ -1483,6 +1612,7 @@ class FullScreenPreview(QDialog):
         self._current_metadata = [self._metadata_cache.get(entry.source_path, EMPTY_METADATA) for entry in self._entries]
         self._source_versions = [_file_signature(entry.source_path) for entry in self._entries]
         self._current_placeholder_flags = [False for _ in self._entries]
+        self._current_image_display_tokens = [() for _ in self._entries]
         self._rendered_display_keys = [None for _ in self._entries]
         self._pending_requests = 0
         self._focused_slot = min(self._focused_slot, max(0, len(self._entries) - 1))
@@ -1544,6 +1674,8 @@ class FullScreenPreview(QDialog):
             self._current_images[slot] = placeholder.copy()
             if slot < len(self._current_placeholder_flags):
                 self._current_placeholder_flags[slot] = True
+            if slot < len(self._current_image_display_tokens):
+                self._current_image_display_tokens[slot] = ()
 
     def _should_use_placeholder_image(self, slot: int, image: QImage) -> bool:
         if image.isNull():
@@ -1638,16 +1770,23 @@ class FullScreenPreview(QDialog):
             source_signature = _file_signature(entry.source_path)
             target_size = self._decode_target_size(slot)
             prefer_embedded = not self._manual_zoom
+            fits_display_settings = self._fits_display_settings_for_entry(entry)
             cache_key = self._preview_cache_key(
                 entry.source_path,
                 source_signature,
                 target_size,
                 prefer_embedded=prefer_embedded,
+                fits_display_settings=fits_display_settings,
             )
             cached_image = self._cached_preview_image(cache_key)
             should_load_metadata = force_metadata or entry.source_path not in self._metadata_cache
             if cached_image is not None and not cached_image.isNull():
                 self._current_images[slot] = cached_image
+                if slot < len(self._current_image_display_tokens):
+                    self._current_image_display_tokens[slot] = self._fits_display_cache_key_for_path(
+                        entry.source_path,
+                        fits_display_settings,
+                    )
                 if slot < len(self._current_placeholder_flags):
                     self._current_placeholder_flags[slot] = False
                 if slot < len(self._source_versions):
@@ -1670,6 +1809,7 @@ class FullScreenPreview(QDialog):
                     source_signature=source_signature,
                     prefer_embedded=prefer_embedded,
                     load_metadata=should_load_metadata,
+                    fits_display_settings=fits_display_settings,
                 ),
                 self._result_queue,
             )
@@ -1691,6 +1831,7 @@ class FullScreenPreview(QDialog):
                 request.source_signature,
                 request.target_size,
                 prefer_embedded=request.prefer_embedded,
+                fits_display_settings=request.fits_display_settings,
             )
             self._pending_cache_keys.discard(cache_key)
 
@@ -1711,6 +1852,11 @@ class FullScreenPreview(QDialog):
                     image = payload[0]
                     metadata = payload[1] if len(payload) > 1 else None
                     self._current_images[request.slot] = image
+                    if request.slot < len(self._current_image_display_tokens):
+                        self._current_image_display_tokens[request.slot] = self._fits_display_cache_key_for_path(
+                            request.path,
+                            request.fits_display_settings,
+                        )
                     if request.slot < len(self._current_placeholder_flags):
                         self._current_placeholder_flags[request.slot] = False
                     if request.slot < len(self._source_versions):
@@ -1737,7 +1883,14 @@ class FullScreenPreview(QDialog):
             if not path or not os.path.exists(path):
                 continue
             source_signature = _file_signature(path)
-            cache_key = self._preview_cache_key(path, source_signature, target_size, prefer_embedded=True)
+            fits_display_settings = self._fits_display_settings_for_path(path)
+            cache_key = self._preview_cache_key(
+                path,
+                source_signature,
+                target_size,
+                prefer_embedded=True,
+                fits_display_settings=fits_display_settings,
+            )
             if self._cached_preview_image(cache_key) is not None or cache_key in self._pending_cache_keys:
                 continue
             self._pending_cache_keys.add(cache_key)
@@ -1751,6 +1904,7 @@ class FullScreenPreview(QDialog):
                     prefer_embedded=True,
                     load_metadata=load_metadata and index < 2 and path not in self._metadata_cache,
                     cache_only=True,
+                    fits_display_settings=fits_display_settings,
                 ),
                 self._result_queue,
             )
@@ -1944,10 +2098,17 @@ class FullScreenPreview(QDialog):
         self._inspection_stats_cache[cache_key] = stats
         return stats
 
-    def _image_cache_key(self, slot: int, image: QImage) -> tuple[str, tuple[int, int] | None, int, int]:
+    def _image_cache_key(self, slot: int, image: QImage) -> tuple[object, ...]:
         path = self._entries[slot].source_path if 0 <= slot < len(self._entries) else ""
         signature = self._source_versions[slot] if 0 <= slot < len(self._source_versions) else None
-        return (path, signature, image.width(), image.height())
+        display_token = self._current_image_display_tokens[slot] if 0 <= slot < len(self._current_image_display_tokens) else ()
+        return (
+            path,
+            signature,
+            image.width(),
+            image.height(),
+            display_token,
+        )
 
     def _display_render_key(self, slot: int, image: QImage) -> tuple[object, ...]:
         base_key = self._image_cache_key(slot, image)
@@ -1957,7 +2118,7 @@ class FullScreenPreview(QDialog):
 
     def _focus_assist_cache_key(
         self, slot: int, image: QImage
-    ) -> tuple[str, tuple[int, int] | None, int, int, str, str, bool]:
+    ) -> tuple[object, ...]:
         return (
             *self._image_cache_key(slot, image),
             self._focus_assist_color.id,
@@ -2083,11 +2244,17 @@ class FullScreenPreview(QDialog):
                 source_signature,
                 target_size,
                 prefer_embedded=not self._manual_zoom,
+                fits_display_settings=self._fits_display_settings_for_entry(entry),
             )
             cached_image = self._cached_preview_image(cache_key)
             if cached_image is None or cached_image.isNull():
                 continue
             self._current_images[slot] = cached_image
+            if slot < len(self._current_image_display_tokens):
+                self._current_image_display_tokens[slot] = self._fits_display_cache_key_for_path(
+                    entry.source_path,
+                    self._fits_display_settings_for_entry(entry),
+                )
             if slot < len(self._current_placeholder_flags):
                 self._current_placeholder_flags[slot] = False
             metadata = self._metadata_cache.get(entry.source_path)
@@ -2112,18 +2279,20 @@ class FullScreenPreview(QDialog):
         target_size: QSize,
         *,
         prefer_embedded: bool,
-    ) -> tuple[str, tuple[int, int] | None, int, int, bool]:
+        fits_display_settings: FitsDisplaySettings | None = None,
+    ) -> tuple[object, ...]:
         return (
             path,
             source_signature,
             max(0, target_size.width()),
             max(0, target_size.height()),
             prefer_embedded,
+            self._fits_display_cache_key_for_path(path, fits_display_settings),
         )
 
     def _cached_preview_image(
         self,
-        cache_key: tuple[str, tuple[int, int] | None, int, int, bool],
+        cache_key: tuple[object, ...],
     ) -> QImage | None:
         cached = self._preview_cache.get(cache_key)
         if cached is None:
@@ -2133,7 +2302,7 @@ class FullScreenPreview(QDialog):
 
     def _cache_preview_image(
         self,
-        cache_key: tuple[str, tuple[int, int] | None, int, int, bool],
+        cache_key: tuple[object, ...],
         image: QImage,
     ) -> None:
         if image.isNull():
@@ -2629,9 +2798,10 @@ class FullScreenPreview(QDialog):
             if self._focus_assist_enabled
             else ""
         )
+        fits_hint = f" | FITS {self._fits_display_settings.preset.label}" if self._focused_entry_supports_fits_stf() else ""
         auto_advance_hint = " | Auto-Advance" if self._should_auto_advance_after_review() else ""
         self.info_label.setText(
-            f"{prefix}{confidence_hint}{review_hint}{workflow_hint}  |  {mode}{focus_hint}{loupe_hint}{focus_assist_hint}{auto_advance_hint}  |  {nav_hint}, wheel/Z zoom, L loupe, Alt+L cycle loupe, F focus assist, Shift+F cycles colors, use the inspection card for peaking controls, drag to pan, Tab focus, W/X/K/Delete/M/0-5/T actions, C compare, 0 to fit"
+            f"{prefix}{confidence_hint}{review_hint}{workflow_hint}  |  {mode}{focus_hint}{loupe_hint}{focus_assist_hint}{fits_hint}{auto_advance_hint}  |  {nav_hint}, wheel/Z zoom, L loupe, Alt+L cycle loupe, F focus assist, Shift+F cycles colors, use the inspection card for peaking controls, drag to pan, Tab focus, W/X/K/Delete/M/0-5/T actions, C compare, 0 to fit"
         )
 
     def winner_ladder_mode_enabled(self) -> bool:

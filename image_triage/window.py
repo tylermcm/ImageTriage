@@ -5,13 +5,14 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from textwrap import dedent
 
-from PySide6.QtCore import QDir, QEvent, QFile, QMimeData, QModelIndex, QObject, QRunnable, QSize, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QDir, QEvent, QFile, QMimeData, QModelIndex, QObject, QRunnable, QSize, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -101,7 +102,7 @@ from .filtering import (
     matches_record_query,
     serialize_saved_filter_preset,
 )
-from .formats import MODEL_SUFFIXES, RAW_SUFFIXES
+from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .grid import BurstVisualInfo, GridDeltaUpdate, ThumbnailGridView
 from .image_convert import ConvertApplyTask, ConvertOptions, ConvertPlan, ConvertSourceItem
 from .image_resize import ResizeApplyTask, ResizeOptions, ResizePlan, ResizeSourceItem
@@ -578,11 +579,20 @@ class ToolbarCustomizerDialog(QDialog):
                 field.setProperty("toolbarPreviewSelected", True)
             return field
         if item_id == "address":
-            label = QLabel("X:/Photography/China '26/Raw Files", parent)
-            label.setObjectName("pathLabel")
-            label.setMinimumWidth(180)
-            label.setMaximumWidth(420)
+            label = QComboBox(parent)
+            label.setObjectName("pathComboBox")
+            label.setEditable(True)
+            label.addItem("X:/Photography/China '26/Raw Files")
+            label.setMinimumWidth(260)
+            label.setMaximumWidth(460)
             label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            if selected:
+                label.setProperty("toolbarPreviewSelected", True)
+            return label
+        if item_id == "selection_count":
+            label = QLabel("3 selected", parent)
+            label.setObjectName("toolbarSelectionCount")
+            label.setMinimumWidth(76)
             if selected:
                 label.setProperty("toolbarPreviewSelected", True)
             return label
@@ -640,6 +650,8 @@ class ToolbarCustomizerDialog(QDialog):
             "auto_advance": "Auto",
             "burst_groups": "Groups",
             "burst_stacks": "Stacks",
+            "compact_cards": "Compact",
+            "selection_count": "3 selected",
             "accept_selection": "Accept",
             "reject_selection": "Reject",
             "keep_selection": "Keep",
@@ -958,6 +970,7 @@ class MainWindow(QMainWindow):
     FAST_RATING_HINT_SESSIONS_KEY = "workflow/fast_rating_hint_sessions"
     FAST_RATING_HINT_SIZE_BYTES = 20 * 1024 * 1024
     FAVORITES_KEY = "folders/favorites"
+    RECENT_FOLDERS_KEY = "folders/recent_opened"
     RECENT_DESTINATIONS_KEY = "folders/recent_destinations"
     SAVED_FILTERS_KEY = "filters/saved_queries"
     RECENT_COMMANDS_KEY = "commands/recent"
@@ -971,11 +984,17 @@ class MainWindow(QMainWindow):
     AI_REFERENCE_BANK_KEY = "ai/reference_bank_path"
     BURST_GROUPS_KEY = "view/burst_groups"
     BURST_STACKS_KEY = "view/burst_stacks"
+    VIEW_COLUMNS_KEY = "view/columns"
+    COMPACT_CARDS_KEY = "view/compact_cards"
+    FOLDER_VIEW_STATE_KEY = "view/folder_state"
+    DIALOG_GEOMETRY_KEY_PREFIX = "dialogs/geometry"
     AUTO_REVIEW_INTELLIGENCE_MAX_RECORDS = 2400
+    CHUNKED_RESTORE_LOAD_MIN_RECORDS = 600
+    CHUNKED_RESTORE_LOAD_BATCH_SIZE = 360
     WORKSPACE_TOOLBAR_DEFAULTS = {
         "primary": ("open_folder", "refresh_folder", "undo", "separator", "run_ai_culling", "ai_results"),
-        "manual": ("review", "view", "search", "filters", "address"),
-        "ai": ("ai_status", "review", "view", "search", "filters", "address"),
+        "manual": ("review", "view", "selection_count", "search", "filters", "address"),
+        "ai": ("ai_status", "review", "view", "selection_count", "search", "filters", "address"),
     }
     WORKSPACE_TOOLBAR_ALLOWED_ITEMS = {
         "primary": (
@@ -1011,6 +1030,8 @@ class MainWindow(QMainWindow):
             "auto_advance",
             "burst_groups",
             "burst_stacks",
+            "compact_cards",
+            "selection_count",
             "open_folder",
             "refresh_folder",
             "undo",
@@ -1046,6 +1067,8 @@ class MainWindow(QMainWindow):
             "auto_advance",
             "burst_groups",
             "burst_stacks",
+            "compact_cards",
+            "selection_count",
             "next_ai_pick",
             "next_unreviewed_ai_pick",
             "compare_ai_group",
@@ -1097,6 +1120,8 @@ class MainWindow(QMainWindow):
         "auto_advance": "Auto-Advance",
         "burst_groups": "Smart Groups",
         "burst_stacks": "Smart Stacks",
+        "compact_cards": "Compact Cards",
+        "selection_count": "Selected Count",
         "accept_selection": "Accept",
         "reject_selection": "Reject",
         "keep_selection": "Keep",
@@ -1274,6 +1299,14 @@ class MainWindow(QMainWindow):
         self._workflow_insights_by_path: dict[str, RecordWorkflowInsight] = {}
         self._records_view_cache = RecordsViewCache()
         self._last_view_record_paths: tuple[str, ...] = ()
+        self._chunked_load_scan_tokens: set[int] = set()
+        self._records_view_chunk_timer = QTimer(self)
+        self._records_view_chunk_timer.setSingleShot(True)
+        self._records_view_chunk_timer.timeout.connect(self._drain_records_view_chunk)
+        self._records_view_chunk_records: list[ImageRecord] = []
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path: str | None = None
+        self._records_view_chunk_post_load_enrichment = ""
         self._winner_ladder_state: dict[str, object] | None = None
         self._ui_mode = "manual"
         self._ai_stage_index = 0
@@ -1291,6 +1324,8 @@ class MainWindow(QMainWindow):
         self._auto_bracket_enabled = self._settings.value(self.AUTO_BRACKET_KEY, True, bool)
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
+        self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, False, bool)
+        self.grid.set_compact_card_mode(self._compact_cards_enabled)
         self._session_id = self._decision_store.ensure_session(
             self._settings.value(self.SESSION_KEY, DecisionStore.DEFAULT_SESSION, str)
         )
@@ -1300,7 +1335,10 @@ class MainWindow(QMainWindow):
         self._fast_rating_hint_disabled = self._settings.value(self.FAST_RATING_HINT_DISABLED_KEY, False, bool)
         self._fast_rating_hint_sessions = self._load_fast_rating_hint_sessions()
         self._favorites = self._load_favorites()
+        self._recent_folders = self._load_recent_folders()
         self._recent_destinations = self._load_recent_destinations()
+        self._folder_view_states = self._load_folder_view_states()
+        self._pending_folder_scroll_value: int | None = None
         self._saved_filter_presets = self._load_saved_filter_presets()
         self._saved_workflow_recipes = self._load_saved_workflow_recipes()
         self._saved_workspace_presets = self._load_saved_workspace_presets()
@@ -1407,18 +1445,10 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.folder_tree, 1)
         self._refresh_favorites_panel()
 
-        self.manual_path_label = QLabel("No folder selected")
-        self.manual_path_label.setObjectName("pathLabel")
-        self.manual_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.manual_path_label.setMinimumWidth(180)
-        self.manual_path_label.setMaximumWidth(420)
-        self.manual_path_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.ai_path_label = QLabel("No folder selected")
-        self.ai_path_label.setObjectName("pathLabel")
-        self.ai_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.ai_path_label.setMinimumWidth(180)
-        self.ai_path_label.setMaximumWidth(420)
-        self.ai_path_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.manual_path_combo = self._build_path_combo(mode="manual")
+        self.ai_path_combo = self._build_path_combo(mode="ai")
+        self.manual_selection_count_label = self._build_selection_count_label(mode="manual")
+        self.ai_selection_count_label = self._build_selection_count_label(mode="ai")
 
         self.sort_combo = QComboBox()
         for mode in SortMode:
@@ -1433,8 +1463,10 @@ class MainWindow(QMainWindow):
         self.columns_combo = QComboBox()
         for count in range(1, 9):
             self.columns_combo.addItem(f"{count} Across", count)
-        default_columns_index = self.columns_combo.findData(3)
+        saved_columns = self._normalize_column_count(self._settings.value(self.VIEW_COLUMNS_KEY, 3, int))
+        default_columns_index = self.columns_combo.findData(saved_columns)
         self.columns_combo.setCurrentIndex(default_columns_index if default_columns_index >= 0 else 0)
+        self.grid.set_column_count(saved_columns)
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
         self.actions = build_main_window_actions(self)
@@ -1534,6 +1566,7 @@ class MainWindow(QMainWindow):
         self.toolbar_stack = QStackedWidget()
         self.toolbar_stack.addWidget(self.manual_toolbar)
         self.toolbar_stack.addWidget(self.ai_toolbar)
+        self._configure_toolbar_context_target(self.toolbar_stack, "workspace")
 
         self.workspace_bar = QWidget()
         self.workspace_bar.setObjectName("workspaceBar")
@@ -1642,6 +1675,7 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
         self._refresh_filter_toolbar_menu()
+        self._refresh_recent_folder_combos()
 
         self.grid.current_changed.connect(self._handle_current_changed)
         self.grid.preview_requested.connect(self._open_preview)
@@ -1700,6 +1734,7 @@ class MainWindow(QMainWindow):
         button = QToolButton()
         button.setObjectName("workspacePresetsButton")
         button.setText(text)
+        button.setToolTip(text)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         button.setMenu(menu)
@@ -1729,6 +1764,9 @@ class MainWindow(QMainWindow):
         for count in range(1, 9):
             columns_menu.addAction(self.actions.column_actions[count])
 
+        menu.addSeparator()
+        menu.addAction(self.actions.compact_cards)
+
         return menu
 
     def _build_search_field(self) -> QLineEdit:
@@ -1741,10 +1779,39 @@ class MainWindow(QMainWindow):
         field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         return field
 
+    def _build_path_combo(self, *, mode: str) -> QComboBox:
+        combo = QComboBox()
+        combo.setObjectName("pathComboBox")
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        combo.setDuplicatesEnabled(False)
+        combo.setMinimumWidth(260)
+        combo.setMaximumWidth(460)
+        combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        combo.setToolTip("Type a folder path or choose a recent folder")
+        line_edit = combo.lineEdit()
+        if line_edit is not None:
+            line_edit.setPlaceholderText("No folder selected")
+            line_edit.setClearButtonEnabled(False)
+            line_edit.returnPressed.connect(lambda target=combo: self._commit_path_combo_text(target))
+        combo.activated.connect(lambda index, target=combo: self._handle_path_combo_activated(target, index))
+        self._configure_toolbar_context_target(combo, mode)
+        return combo
+
+    def _build_selection_count_label(self, *, mode: str) -> QLabel:
+        label = QLabel("0 selected")
+        label.setObjectName("toolbarSelectionCount")
+        label.setMinimumWidth(76)
+        label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        label.setToolTip("Selected images in the current view")
+        self._configure_toolbar_context_target(label, mode)
+        return label
+
     def _build_advanced_filter_button(self) -> QToolButton:
         button = QToolButton()
         button.setObjectName("workspaceFiltersButton")
         button.setText("Filters")
+        button.setToolTip("Advanced filters and saved searches")
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         button.setMenu(self.filter_toolbar_menu)
@@ -1785,6 +1852,7 @@ class MainWindow(QMainWindow):
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         button.setMenu(menu)
         button.setMinimumWidth(min_width)
+        button.setToolTip(text)
         self._configure_toolbar_context_target(button, "primary")
         return button
 
@@ -1848,6 +1916,7 @@ class MainWindow(QMainWindow):
         button.setObjectName("workspacePresetsButton")
         button.setDefaultAction(action)
         button.setText(text)
+        button.setToolTip(action.toolTip() or text)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         return button
 
@@ -1859,7 +1928,8 @@ class MainWindow(QMainWindow):
                 "view": self.ai_view_tools_button,
                 "search": self.ai_search_field,
                 "filters": self.ai_filter_button,
-                "address": self.ai_path_label,
+                "address": self.ai_path_combo,
+                "selection_count": self.ai_selection_count_label,
             }
         else:
             widgets = {
@@ -1867,7 +1937,8 @@ class MainWindow(QMainWindow):
                 "view": self.manual_view_tools_button,
                 "search": self.manual_search_field,
                 "filters": self.manual_filter_button,
-                "address": self.manual_path_label,
+                "address": self.manual_path_combo,
+                "selection_count": self.manual_selection_count_label,
             }
 
         menu_factories = {
@@ -1898,6 +1969,7 @@ class MainWindow(QMainWindow):
             "auto_advance": (self.actions.auto_advance, "Auto"),
             "burst_groups": (self.actions.burst_groups, "Groups"),
             "burst_stacks": (self.actions.burst_stacks, "Stacks"),
+            "compact_cards": (self.actions.compact_cards, "Compact"),
             "accept_selection": (self.actions.accept_selection, "Accept"),
             "reject_selection": (self.actions.reject_selection, "Reject"),
             "keep_selection": (self.actions.keep_selection, "Keep"),
@@ -1974,6 +2046,19 @@ class MainWindow(QMainWindow):
             for widget in widgets.values():
                 widget.setEnabled(enabled)
 
+    def _update_selection_count_labels(self) -> None:
+        count = self.grid.selected_count() if self._records else 0
+        text = f"{count} selected"
+        tooltip = f"{count} selected image{'s' if count != 1 else ''}"
+        for label in (
+            getattr(self, "manual_selection_count_label", None),
+            getattr(self, "ai_selection_count_label", None),
+        ):
+            if label is None:
+                continue
+            label.setText(text)
+            label.setToolTip(tooltip)
+
     def _rebuild_workspace_toolbar(self, mode: str) -> None:
         if mode == "ai":
             layout = self.ai_toolbar_layout
@@ -2002,7 +2087,7 @@ class MainWindow(QMainWindow):
             current_mode=target_mode,
             parent=self,
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "toolbar_customizer") != QDialog.DialogCode.Accepted:
             return
         self._workspace_toolbar_layouts = dialog.toolbar_layouts()
         self._save_workspace_toolbar_layouts()
@@ -2293,6 +2378,29 @@ class MainWindow(QMainWindow):
         saved_menu = self.filter_toolbar_menu.addMenu("Saved Searches")
         self._populate_saved_filter_menu(saved_menu)
 
+    def _refresh_action_shortcut_hint(self, action: QAction) -> None:
+        base_text = action.property("imageTriageBaseText")
+        if not isinstance(base_text, str) or not base_text:
+            base_text = action.text().replace("&", "")
+        shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+        hinted_text = f"{base_text} ({shortcut_text})" if shortcut_text else base_text
+        action.setToolTip(hinted_text)
+        action.setStatusTip(hinted_text)
+
+    def _set_action_shortcut(self, action: QAction, shortcut: str) -> None:
+        action.setShortcut(QKeySequence(shortcut))
+        self._refresh_action_shortcut_hint(action)
+
+    @staticmethod
+    def _menu_text_with_hint(text: str, hint: str = "") -> str:
+        return f"{text}\t{hint}" if hint else text
+
+    def _menu_text_with_action_shortcut(self, text: str, action: QAction | None) -> str:
+        if action is None:
+            return text
+        shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
+        return self._menu_text_with_hint(text, shortcut_text)
+
     def _register_shortcut_targets(self) -> None:
         if self.actions is None:
             return
@@ -2303,7 +2411,7 @@ class MainWindow(QMainWindow):
                 label=label,
                 section=section,
                 default_shortcut=action.shortcut().toString(QKeySequence.SequenceFormat.PortableText),
-                apply=lambda shortcut, target=action: target.setShortcut(QKeySequence(shortcut)),
+                apply=lambda shortcut, target=action: self._set_action_shortcut(target, shortcut),
             )
 
         register_action("file.open_folder", self.actions.open_folder, label="Open Folder", section="File")
@@ -2360,6 +2468,7 @@ class MainWindow(QMainWindow):
             self._command_palette_shortcut_preview.setKey(sequence)
         if self.actions is not None:
             self.actions.open_command_palette.setShortcut(sequence)
+            self._refresh_action_shortcut_hint(self.actions.open_command_palette)
 
     def _load_saved_workflow_recipes(self) -> list[WorkflowRecipe]:
         raw = self._settings.value(self.WORKFLOW_RECIPES_KEY, "", str)
@@ -2487,16 +2596,8 @@ class MainWindow(QMainWindow):
             return self._current_folder or "No folder selected"
         return self._scope_label or "Virtual Scope"
 
-    def _set_path_label_text(self, label_widget: QLabel, text: str) -> None:
-        available_width = max(80, label_widget.maximumWidth() - 22)
-        display_text = label_widget.fontMetrics().elidedText(text, Qt.TextElideMode.ElideMiddle, available_width)
-        label_widget.setText(display_text)
-        label_widget.setToolTip(text)
-
     def _apply_scope_label(self) -> None:
-        label = self._scope_display_label()
-        self._set_path_label_text(self.manual_path_label, label)
-        self._set_path_label_text(self.ai_path_label, label)
+        self._refresh_recent_folder_combos()
 
     def _set_scope_state(self, *, kind: str, scope_id: str = "", label: str = "") -> None:
         self._scope_kind = kind
@@ -3560,6 +3661,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("AI model download failed.")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._remember_current_folder_view_state()
         self._annotation_persistence_queue.flush_blocking()
         self._shutdown_child_processes()
         self._cleanup_child_sync_state()
@@ -3569,7 +3671,7 @@ class MainWindow(QMainWindow):
     def _load_start_folder(self) -> None:
         last_folder = self._settings.value(self.LAST_FOLDER_KEY, "", str)
         if last_folder and os.path.isdir(last_folder):
-            self._select_folder(last_folder, sync_tree=False)
+            self._select_folder(last_folder, sync_tree=False, chunked_restore=True)
             self.folder_tree.clearSelection()
             self.folder_tree.setCurrentIndex(QModelIndex())
 
@@ -3635,12 +3737,12 @@ class MainWindow(QMainWindow):
         if folder:
             self._select_folder(folder)
 
-    def _select_folder(self, folder: str, *, sync_tree: bool = True) -> None:
+    def _select_folder(self, folder: str, *, sync_tree: bool = True, chunked_restore: bool = False) -> None:
         if sync_tree:
             index = self.folder_model.index(folder)
             if index.isValid():
                 self.folder_tree.setCurrentIndex(index)
-        self._load_folder(folder)
+        self._load_folder(folder, chunked_restore=chunked_restore)
 
     def _configure_toolbar_context_target(self, widget: QWidget | None, mode: str) -> None:
         if widget is None:
@@ -3672,7 +3774,13 @@ class MainWindow(QMainWindow):
     def _show_toolbar_context_menu(self, mode: str, global_pos) -> None:
         target_mode = mode if mode in self.WORKSPACE_TOOLBAR_DEFAULTS else self._ui_mode
         menu = QMenu(self)
-        customize_action = menu.addAction("Customize Toolbars...")
+        action = self.actions.customize_workspace_toolbar if self.actions is not None else None
+        toolbar_label = {
+            "primary": "Top Toolbar",
+            "manual": "Manual Toolbar",
+            "ai": "AI Toolbar",
+        }.get(target_mode, "Toolbar")
+        customize_action = menu.addAction(self._menu_text_with_action_shortcut(f"Customize {toolbar_label}...", action))
         chosen = menu.exec(global_pos)
         if chosen == customize_action:
             self._show_workspace_toolbar_editor(target_mode)
@@ -3706,6 +3814,9 @@ class MainWindow(QMainWindow):
             if event.type() == QEvent.Type.MouseButtonDblClick:
                 self._show_workspace_toolbar_editor(self._ui_mode)
                 return True
+        if hasattr(self, "toolbar_stack") and watched is self.toolbar_stack and event.type() == QEvent.Type.MouseButtonDblClick:
+            self._show_workspace_toolbar_editor(self._ui_mode)
+            return True
         if hasattr(self, "manual_toolbar") and watched is self.manual_toolbar and event.type() == QEvent.Type.MouseButtonDblClick:
             self._show_workspace_toolbar_editor("manual")
             return True
@@ -3918,6 +4029,21 @@ class MainWindow(QMainWindow):
         self._recent_destinations = recent_destinations[:10]
         self._save_recent_destinations()
 
+        recent_folders: list[str] = []
+        seen_recent_folders: set[str] = set()
+        for path in self._recent_folders:
+            mapped = self._remap_folder_path(path, source_root, destination_root)
+            if not os.path.isdir(mapped):
+                continue
+            key = normalized_path_key(mapped)
+            if key in seen_recent_folders:
+                continue
+            seen_recent_folders.add(key)
+            recent_folders.append(mapped)
+        self._recent_folders = recent_folders[:12]
+        self._save_recent_folders()
+        self._refresh_recent_folder_combos()
+
         if self._current_folder and self._folder_is_same_or_descendant(self._current_folder, source_root):
             return self._remap_folder_path(self._current_folder, source_root, destination_root)
         return destination_root
@@ -4032,6 +4158,13 @@ class MainWindow(QMainWindow):
             if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
         ]
         self._save_recent_destinations()
+        self._recent_folders = [
+            path
+            for path in self._recent_folders
+            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
+        ]
+        self._save_recent_folders()
+        self._refresh_recent_folder_combos()
 
         replacement_folder = str(Path(folder).parent)
         self._refresh_folder_tree()
@@ -4058,7 +4191,7 @@ class MainWindow(QMainWindow):
         if not records:
             return False
         dialog = BatchRenameDialog(records, title=title, scope_label=scope_label, parent=self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "batch_rename") != dialog.DialogCode.Accepted:
             return False
         preview = dialog.accepted_preview()
         if not preview.can_apply:
@@ -4084,7 +4217,7 @@ class MainWindow(QMainWindow):
             raw_note=raw_note,
             parent=self,
         )
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "resize") != dialog.DialogCode.Accepted:
             return False
         plan = dialog.accepted_plan()
         if not plan.can_apply:
@@ -4115,7 +4248,7 @@ class MainWindow(QMainWindow):
             raw_note=raw_note,
             parent=self,
         )
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "convert") != dialog.DialogCode.Accepted:
             return False
         plan = dialog.accepted_plan()
         if not plan.can_apply:
@@ -4974,6 +5107,29 @@ class MainWindow(QMainWindow):
         frame.moveCenter(self.frameGeometry().center())
         dialog.move(frame.topLeft())
 
+    def _dialog_geometry_key(self, dialog_id: str) -> str:
+        normalized = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in dialog_id.strip())
+        return f"{self.DIALOG_GEOMETRY_KEY_PREFIX}/{normalized or 'dialog'}"
+
+    def _restore_dialog_geometry(self, dialog: QDialog, dialog_id: str) -> bool:
+        geometry = self._settings.value(self._dialog_geometry_key(dialog_id), QByteArray(), QByteArray)
+        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
+            return dialog.restoreGeometry(geometry)
+        return False
+
+    def _save_dialog_geometry(self, dialog: QDialog, dialog_id: str) -> None:
+        self._settings.setValue(self._dialog_geometry_key(dialog_id), dialog.saveGeometry())
+
+    def _exec_dialog_with_geometry(self, dialog: QDialog, dialog_id: str):
+        restored = self._restore_dialog_geometry(dialog, dialog_id)
+        if not restored:
+            frame = dialog.frameGeometry()
+            frame.moveCenter(self.frameGeometry().center())
+            dialog.move(frame.topLeft())
+        result = dialog.exec()
+        self._save_dialog_geometry(dialog, dialog_id)
+        return result
+
     def _finalize_batch_rename(self, context: BatchRenameExecutionContext) -> None:
         renamed_items = [item for item in context.preview.items if item.status == "Rename"]
         if not renamed_items:
@@ -5047,6 +5203,7 @@ class MainWindow(QMainWindow):
             return
         self._apply_records_view()
         self._scroll_active_view_to_top()
+        self._remember_current_folder_view_state()
         self._update_action_states()
 
     def _set_ui_mode(self, mode: str) -> None:
@@ -5119,7 +5276,7 @@ class MainWindow(QMainWindow):
 
     def _open_advanced_filters_dialog(self) -> None:
         dialog = AdvancedFilterDialog(self._filter_query, self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "advanced_filters") != dialog.DialogCode.Accepted:
             return
         updated_query = dialog.updated_query()
         if updated_query == self._filter_query:
@@ -5192,12 +5349,23 @@ class MainWindow(QMainWindow):
             return
         self._reset_filter_metadata_index(self._all_records)
 
+    @staticmethod
+    def _normalize_column_count(value: object, *, default: int = 3) -> int:
+        try:
+            columns = int(value)
+        except (TypeError, ValueError):
+            columns = default
+        return max(1, min(8, columns))
+
     def _set_column_count(self, count: int) -> None:
-        combo_index = self.columns_combo.findData(count)
+        columns = self._normalize_column_count(count)
+        combo_index = self.columns_combo.findData(columns)
         if combo_index >= 0 and combo_index != self.columns_combo.currentIndex():
             self.columns_combo.setCurrentIndex(combo_index)
             return
-        self.grid.set_column_count(count)
+        self.grid.set_column_count(columns)
+        self._settings.setValue(self.VIEW_COLUMNS_KEY, columns)
+        self._remember_current_folder_view_state()
         self._update_action_states()
 
     def _scroll_active_view_to_top(self) -> None:
@@ -5285,6 +5453,8 @@ class MainWindow(QMainWindow):
             self.actions.burst_groups.setChecked(self._burst_groups_enabled)
         with QSignalBlocker(self.actions.burst_stacks):
             self.actions.burst_stacks.setChecked(self._burst_stacks_enabled)
+        with QSignalBlocker(self.actions.compact_cards):
+            self.actions.compact_cards.setChecked(self._compact_cards_enabled)
         with QSignalBlocker(self.actions.mode_actions["manual"]):
             self.actions.mode_actions["manual"].setChecked(self._ui_mode == "manual")
         with QSignalBlocker(self.actions.mode_actions["ai"]):
@@ -5300,9 +5470,7 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(action):
                 action.setChecked(self._filter_query.quick_filter == mode)
 
-        current_columns = self.columns_combo.currentData()
-        if not isinstance(current_columns, int):
-            current_columns = 3
+        current_columns = self._normalize_column_count(self.columns_combo.currentData())
         for count, action in self.actions.column_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(current_columns == count)
@@ -5311,6 +5479,7 @@ class MainWindow(QMainWindow):
         self.actions.winner_ladder_mode.setEnabled(can_open_winner_ladder)
         self.actions.burst_groups.setEnabled(bool(self._current_folder and self._all_records))
         self.actions.burst_stacks.setEnabled(bool(self._current_folder and self._all_records))
+        self.actions.compact_cards.setEnabled(True)
         self.actions.rename_selection.setEnabled(current_record is not None and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.batch_rename_selection.setEnabled(bool(self._current_folder and self._all_records) and not in_recycle_folder and not in_winners_folder)
         has_resizeable_records = self._records_have_resizable
@@ -5426,7 +5595,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Not enough useful comparisons are available for calibration in this folder yet.")
             return
         dialog = TasteCalibrationDialog(pairs, self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "taste_calibration") != dialog.DialogCode.Accepted:
             self.statusBar().showMessage("Taste calibration cancelled.")
             return
         current_path = self._current_visible_record_path()
@@ -5596,7 +5765,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Select one or more images before creating a collection.")
             return
         dialog = CollectionEditDialog(selection_count=len(paths), parent=self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "collection_edit") != dialog.DialogCode.Accepted:
             return
         result = dialog.result_data()
         existing = self._library_store.find_collection_by_name(result.name)
@@ -5734,7 +5903,7 @@ class MainWindow(QMainWindow):
         root_path = normalize_filesystem_path(root_path_override)
         if not root_path_override:
             dialog = CatalogSearchDialog(roots, parent=self)
-            if dialog.exec() != dialog.DialogCode.Accepted:
+            if self._exec_dialog_with_geometry(dialog, "catalog_search") != dialog.DialogCode.Accepted:
                 return
             result = dialog.result_data()
             search_text = result.search_text
@@ -5813,7 +5982,7 @@ class MainWindow(QMainWindow):
             initial_recipe=initial_recipe,
             parent=self,
         )
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "handoff_builder") != dialog.DialogCode.Accepted:
             return
         updated_recipes = list(dialog.saved_recipes())
         if updated_recipes != self._saved_workflow_recipes:
@@ -5832,7 +6001,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Load a folder before assembling a best-of set.")
             return
         dialog = BestOfSetDialog(visible_count=len(self._records), parent=self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "best_of_set") != dialog.DialogCode.Accepted:
             return
         result = dialog.result_data()
         plan = build_best_of_set_plan(
@@ -5864,7 +6033,7 @@ class MainWindow(QMainWindow):
 
     def _open_keyboard_shortcuts_dialog(self) -> None:
         dialog = KeyboardShortcutDialog(self._shortcut_bindings(), self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "keyboard_shortcuts") != dialog.DialogCode.Accepted:
             return
         overrides: dict[str, str] = {}
         for binding in dialog.bindings():
@@ -5956,12 +6125,14 @@ class MainWindow(QMainWindow):
     def _record_supports_resize(self, record: ImageRecord | None) -> bool:
         if record is None:
             return False
-        return Path(record.path).suffix.lower() not in RAW_SUFFIXES and Path(record.path).suffix.lower() not in MODEL_SUFFIXES
+        suffix = suffix_for_path(record.path)
+        return suffix not in RAW_SUFFIXES and suffix not in FITS_SUFFIXES and suffix not in MODEL_SUFFIXES
 
     def _record_supports_convert(self, record: ImageRecord | None) -> bool:
         if record is None:
             return False
-        return Path(record.path).suffix.lower() not in RAW_SUFFIXES and Path(record.path).suffix.lower() not in MODEL_SUFFIXES
+        suffix = suffix_for_path(record.path)
+        return suffix not in RAW_SUFFIXES and suffix not in FITS_SUFFIXES and suffix not in MODEL_SUFFIXES
 
     def _refresh_record_capability_cache(self, records: list[ImageRecord] | None = None) -> None:
         source_records = self._all_records if records is None else records
@@ -6850,7 +7021,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.setWindowTitle(title)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "train_ranker") != dialog.DialogCode.Accepted:
             return None
         return dialog.accepted_options()
 
@@ -7005,7 +7176,7 @@ class MainWindow(QMainWindow):
             has_active_checkpoint=active_checkpoint is not None,
         )
         dialog = RankerCenterDialog(summary=summary, runs=runs, parent=self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "ranker_center") != dialog.DialogCode.Accepted:
             return
         requested_action = dialog.requested_action
         if requested_action == "collect_labels":
@@ -7239,6 +7410,51 @@ class MainWindow(QMainWindow):
                 favorites.append(path)
         return favorites
 
+    def _load_recent_folders(self) -> list[str]:
+        raw = self._settings.value(self.RECENT_FOLDERS_KEY, [], list)
+        if isinstance(raw, str):
+            raw = [raw]
+        folders: list[str] = []
+        seen: set[str] = set()
+        for path in raw or []:
+            if not isinstance(path, str) or not path or not os.path.isdir(path):
+                continue
+            normalized = normalized_path_key(path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            folders.append(path)
+        return folders[:12]
+
+    def _load_folder_view_states(self) -> dict[str, dict[str, object]]:
+        raw = self._settings.value(self.FOLDER_VIEW_STATE_KEY, "", str)
+        if not isinstance(raw, str) or not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        states: dict[str, dict[str, object]] = {}
+        for key, value in payload.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            state: dict[str, object] = {}
+            if "columns" in value:
+                state["columns"] = self._normalize_column_count(value.get("columns"))
+            sort_value = value.get("sort")
+            if isinstance(sort_value, str) and any(sort_value in {mode.name, mode.value} for mode in SortMode):
+                state["sort"] = sort_value
+            scroll_value = value.get("scroll")
+            try:
+                state["scroll"] = max(0, int(scroll_value))
+            except (TypeError, ValueError):
+                pass
+            if state:
+                states[key] = state
+        return states
+
     def _load_recent_destinations(self) -> list[str]:
         raw = self._settings.value(self.RECENT_DESTINATIONS_KEY, [], list)
         if isinstance(raw, str):
@@ -7365,6 +7581,12 @@ class MainWindow(QMainWindow):
     def _save_favorites(self) -> None:
         self._settings.setValue(self.FAVORITES_KEY, self._favorites)
 
+    def _save_recent_folders(self) -> None:
+        self._settings.setValue(self.RECENT_FOLDERS_KEY, self._recent_folders[:12])
+
+    def _save_folder_view_states(self) -> None:
+        self._settings.setValue(self.FOLDER_VIEW_STATE_KEY, json.dumps(self._folder_view_states))
+
     def _save_recent_destinations(self) -> None:
         self._settings.setValue(self.RECENT_DESTINATIONS_KEY, self._recent_destinations[:10])
 
@@ -7374,6 +7596,167 @@ class MainWindow(QMainWindow):
 
     def _save_recent_command_ids(self) -> None:
         self._settings.setValue(self.RECENT_COMMANDS_KEY, self._recent_command_ids[:12])
+
+    def _sort_mode_from_state(self, value: object) -> SortMode | None:
+        if isinstance(value, SortMode):
+            return value
+        if not isinstance(value, str):
+            return None
+        for mode in SortMode:
+            if value in {mode.name, mode.value}:
+                return mode
+        return None
+
+    def _current_folder_view_state(self) -> dict[str, object]:
+        return {
+            "columns": self._normalize_column_count(self.columns_combo.currentData()),
+            "sort": self._sort_mode.value,
+            "scroll": max(0, int(self.grid.current_scroll_value())),
+        }
+
+    def _remember_current_folder_view_state(self) -> None:
+        if not getattr(self, "_current_folder", ""):
+            return
+        key = normalized_path_key(self._current_folder)
+        if not key:
+            return
+        self._folder_view_states[key] = self._current_folder_view_state()
+        if len(self._folder_view_states) > 120:
+            self._folder_view_states = dict(list(self._folder_view_states.items())[-120:])
+        self._save_folder_view_states()
+
+    def _apply_folder_view_state(self, folder: str) -> None:
+        state = self._folder_view_states.get(normalized_path_key(folder))
+        if not state:
+            self._pending_folder_scroll_value = None
+            return
+        columns = self._normalize_column_count(state.get("columns"))
+        combo_index = self.columns_combo.findData(columns)
+        if combo_index >= 0:
+            with QSignalBlocker(self.columns_combo):
+                self.columns_combo.setCurrentIndex(combo_index)
+        self.grid.set_column_count(columns)
+
+        sort_mode = self._sort_mode_from_state(state.get("sort"))
+        if sort_mode is not None:
+            self._sort_mode = sort_mode
+            combo_index = self.sort_combo.findData(sort_mode)
+            if combo_index >= 0:
+                with QSignalBlocker(self.sort_combo):
+                    self.sort_combo.setCurrentIndex(combo_index)
+        try:
+            self._pending_folder_scroll_value = max(0, int(state.get("scroll", 0)))
+        except (TypeError, ValueError):
+            self._pending_folder_scroll_value = None
+
+    def _restore_pending_folder_scroll(self) -> None:
+        if self._pending_folder_scroll_value is None:
+            return
+        value = self._pending_folder_scroll_value
+        self._pending_folder_scroll_value = None
+        self.grid.restore_scroll_value(value)
+
+    def _remember_recent_folder(self, folder: str) -> None:
+        normalized = normalize_filesystem_path(folder)
+        if not normalized or not os.path.isdir(normalized):
+            return
+        normalized_key = normalized_path_key(normalized)
+        self._recent_folders = [
+            normalized,
+            *[
+                item
+                for item in self._recent_folders
+                if normalized_path_key(item) != normalized_key
+            ],
+        ][:12]
+        self._save_recent_folders()
+        self._refresh_recent_folder_combos()
+
+    def _recent_folder_paths(self, *, exclude_current_folder: bool = False) -> list[str]:
+        valid: list[str] = []
+        seen: set[str] = set()
+        for path in self._recent_folders:
+            if not os.path.isdir(path):
+                continue
+            key = normalized_path_key(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            valid.append(path)
+        if valid != self._recent_folders:
+            self._recent_folders = valid[:12]
+            self._save_recent_folders()
+        if not exclude_current_folder or not self._current_folder:
+            return valid
+        current_key = normalized_path_key(self._current_folder)
+        return [path for path in valid if normalized_path_key(path) != current_key]
+
+    def _open_recent_folder(self, folder: str) -> None:
+        if os.path.isdir(folder):
+            self._select_folder(folder)
+            return
+        missing_key = normalized_path_key(folder)
+        self._recent_folders = [
+            path for path in self._recent_folders if normalized_path_key(path) != missing_key
+        ]
+        self._save_recent_folders()
+        self._refresh_recent_folder_combos()
+        self.statusBar().showMessage("Recent folder no longer exists.")
+
+    def _refresh_recent_folder_combos(self) -> None:
+        current_text = self._scope_display_label()
+        current_folder = self._current_folder if self._scope_kind == "folder" and self._current_folder else ""
+        for combo in (
+            getattr(self, "manual_path_combo", None),
+            getattr(self, "ai_path_combo", None),
+        ):
+            if combo is None:
+                continue
+            with QSignalBlocker(combo):
+                combo.clear()
+                combo.addItem(current_text, current_folder)
+                recent_paths = self._recent_folder_paths(exclude_current_folder=True)
+                if recent_paths:
+                    combo.insertSeparator(combo.count())
+                    for folder in recent_paths:
+                        combo.addItem(folder, folder)
+                combo.insertSeparator(combo.count())
+                combo.addItem("Open Folder...", "__open_folder__")
+                combo.setCurrentIndex(0)
+                combo.setEditText(current_text)
+            combo.setToolTip(current_text)
+            line_edit = combo.lineEdit()
+            if line_edit is not None:
+                line_edit.setToolTip(current_text)
+
+    def _handle_path_combo_activated(self, combo: QComboBox, index: int) -> None:
+        value = combo.itemData(index)
+        if value == "__open_folder__":
+            self._refresh_recent_folder_combos()
+            self._choose_folder()
+            return
+        if isinstance(value, str) and value:
+            if self._current_folder and normalized_path_key(value) == normalized_path_key(self._current_folder):
+                self._refresh_recent_folder_combos()
+                return
+            self._open_recent_folder(value)
+            return
+        self._refresh_recent_folder_combos()
+
+    def _commit_path_combo_text(self, combo: QComboBox) -> None:
+        raw_text = combo.currentText().strip().strip('"')
+        folder = normalize_filesystem_path(raw_text)
+        if not folder:
+            self._refresh_recent_folder_combos()
+            return
+        if not os.path.isdir(folder):
+            self.statusBar().showMessage(f"Folder not found: {folder}")
+            self._refresh_recent_folder_combos()
+            return
+        if self._current_folder and normalized_path_key(folder) == normalized_path_key(self._current_folder):
+            self._refresh_recent_folder_combos()
+            return
+        self._select_folder(folder)
 
     def _remember_recent_destination(self, destination_dir: str) -> None:
         normalized = normalize_filesystem_path(destination_dir)
@@ -7513,7 +7896,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Removed from favorites: {folder}")
 
     def _handle_columns_changed(self) -> None:
-        columns = int(self.columns_combo.currentData())
+        columns = self._normalize_column_count(self.columns_combo.currentData())
         self._set_column_count(columns)
 
     def _handle_auto_advance_toggled(self, checked: bool) -> None:
@@ -7546,6 +7929,15 @@ class MainWindow(QMainWindow):
             return
         mode = "on" if checked else "off"
         self.statusBar().showMessage(f"Smart stacks {mode}")
+
+    def _handle_compact_cards_toggled(self, checked: bool) -> None:
+        self._compact_cards_enabled = bool(checked)
+        self._settings.setValue(self.COMPACT_CARDS_KEY, self._compact_cards_enabled)
+        self.grid.set_compact_card_mode(self._compact_cards_enabled)
+        self._remember_current_folder_view_state()
+        self._update_action_states()
+        mode = "on" if checked else "off"
+        self.statusBar().showMessage(f"Compact cards {mode}")
 
     def _handle_compare_toggled(self, checked: bool) -> None:
         if not checked and self._winner_ladder_state is not None:
@@ -7843,17 +8235,25 @@ class MainWindow(QMainWindow):
         if self._current_folder:
             self._load_folder(self._current_folder, force_refresh=True)
 
-    def _load_folder(self, folder: str, *, force_refresh: bool = False) -> None:
+    def _load_folder(self, folder: str, *, force_refresh: bool = False, chunked_restore: bool = False) -> None:
         if not folder:
             return
         if self._active_tool_mode or self.grid.tool_checkbox_mode():
             self._cancel_tool_mode(show_message=False)
+        self._cancel_records_view_chunk()
         folder_changed = normalized_path_key(folder) != normalized_path_key(self._current_folder)
+        if folder_changed:
+            self._remember_current_folder_view_state()
         self._current_folder = folder
         self._set_scope_state(kind="folder", scope_id=normalized_path_key(folder), label=folder)
         self._settings.setValue(self.LAST_FOLDER_KEY, folder)
+        self._remember_recent_folder(folder)
+        self._apply_folder_view_state(folder)
         self._scan_token += 1
         token = self._scan_token
+        if chunked_restore:
+            self._chunked_load_scan_tokens.add(token)
+        self._chunked_load_scan_tokens = {existing for existing in self._chunked_load_scan_tokens if existing >= token}
         self._scan_showed_cached = False
         self._scan_in_progress = True
         self._cancel_scope_enrichment_task()
@@ -7873,40 +8273,38 @@ class MainWindow(QMainWindow):
         self._refresh_recycle_button()
         if folder_changed:
             self._clear_ai_results_state(preserve_setting=True)
-        cached_records = self._folder_scan_cache.load(normalize_filesystem_path(folder))
-        if cached_records:
-            self.statusBar().showMessage(f"Loading cached folder index for {self._current_folder}...")
-        else:
-            # Never fall back to a synchronous full scan here; it freezes the UI on large or slow folders.
-            self.statusBar().showMessage(f"Scanning {folder}...")
-            self._all_records = []
-            self._all_records_by_path = {}
-            self._records = []
-            self._record_index_by_path = {}
-            self._edited_candidates_cache = {}
-            self._visible_review_group_rows_by_id = {}
-            self._visible_ai_group_rows_by_id = {}
-            self._accepted_count = 0
-            self._rejected_count = 0
-            self._unreviewed_count = 0
-            self._records_have_resizable = False
-            self._records_have_convertible = False
-            self._invalidate_training_label_counts_cache()
-            self._summary_ai_text = "AI: Off" if self._ai_bundle is None else self._summary_ai_text
-            self._summary_ai_tooltip = "No AI export is currently loaded." if self._ai_bundle is None else self._summary_ai_tooltip
-            self._filter_metadata_by_path = {}
-            self._filter_metadata_record_paths = set()
-            self._filter_metadata_loaded_paths = set()
-            self._filter_metadata_requested_paths = set()
-            self._filter_metadata_queue = deque()
-            self._metadata_membership_dirty_paths = set()
-            self._metadata_scroll_prefetch_timer.stop()
-            self._metadata_request_timer.stop()
-            self.grid.set_empty_message(f"Scanning {Path(folder).name}...")
-            self.grid.set_items([])
-            self._set_annotation_views()
-            self._refresh_viewport_mode()
-            self._update_ai_toolbar_state()
+        # Cache reads can be large enough to make Windows mark startup as hung. Let the
+        # scanner worker emit cached records instead of loading the cache on the UI thread.
+        self.statusBar().showMessage(f"Scanning {folder}...")
+        self._all_records = []
+        self._all_records_by_path = {}
+        self._records = []
+        self._last_view_record_paths = ()
+        self._record_index_by_path = {}
+        self._edited_candidates_cache = {}
+        self._visible_review_group_rows_by_id = {}
+        self._visible_ai_group_rows_by_id = {}
+        self._accepted_count = 0
+        self._rejected_count = 0
+        self._unreviewed_count = 0
+        self._records_have_resizable = False
+        self._records_have_convertible = False
+        self._invalidate_training_label_counts_cache()
+        self._summary_ai_text = "AI: Off" if self._ai_bundle is None else self._summary_ai_text
+        self._summary_ai_tooltip = "No AI export is currently loaded." if self._ai_bundle is None else self._summary_ai_tooltip
+        self._filter_metadata_by_path = {}
+        self._filter_metadata_record_paths = set()
+        self._filter_metadata_loaded_paths = set()
+        self._filter_metadata_requested_paths = set()
+        self._filter_metadata_queue = deque()
+        self._metadata_membership_dirty_paths = set()
+        self._metadata_scroll_prefetch_timer.stop()
+        self._metadata_request_timer.stop()
+        self.grid.set_empty_message(f"Scanning {Path(folder).name}...")
+        self.grid.set_items([])
+        self._set_annotation_views()
+        self._refresh_viewport_mode()
+        self._update_ai_toolbar_state()
 
         task = FolderScanTask(
             folder,
@@ -7930,6 +8328,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self._active_tool_mode or self.grid.tool_checkbox_mode():
             self._cancel_tool_mode(show_message=False)
+        self._remember_current_folder_view_state()
+        self._pending_folder_scroll_value = None
         self._scan_in_progress = False
         self._scan_token += 1
         self._cancel_scope_enrichment_task()
@@ -7954,7 +8354,35 @@ class MainWindow(QMainWindow):
         self._apply_loaded_records(records)
         self.statusBar().showMessage(f"Loaded {scope_label} ({len(records)} image bundle(s))")
 
-    def _apply_loaded_records(self, records: list[ImageRecord], *, defer_enrichment: bool = False) -> None:
+    def _cancel_records_view_chunk(self) -> None:
+        self._records_view_chunk_timer.stop()
+        self._records_view_chunk_records = []
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path = None
+        self._records_view_chunk_post_load_enrichment = ""
+
+    def _records_view_chunk_active(self) -> bool:
+        return bool(self._records_view_chunk_records)
+
+    def _finish_loaded_records_enrichment(self, records: list[ImageRecord], *, defer_enrichment: bool) -> None:
+        if defer_enrichment:
+            self._deferred_enrichment_pending = True
+            self._deferred_enrichment_scope_key = self._current_scope_key()
+            self._deferred_enrichment_token = self._scan_token
+            if not self._scan_in_progress and not self._records_view_chunk_active():
+                self._schedule_loaded_records_enrichment()
+            return
+        self._start_scope_enrichment_task(records)
+        self._start_annotation_hydration(records)
+        self._start_review_intelligence_analysis()
+
+    def _apply_loaded_records(
+        self,
+        records: list[ImageRecord],
+        *,
+        defer_enrichment: bool = False,
+        chunked_view: bool = False,
+    ) -> None:
         self._all_records = records
         self._all_records_by_path = {record.path: record for record in records}
         self._refresh_record_capability_cache(records)
@@ -7973,27 +8401,21 @@ class MainWindow(QMainWindow):
             for path, annotation in self._annotations.items()
             if path in current_paths
         }
-        if defer_enrichment:
-            self._correction_events = []
-            self._taste_profile = TasteProfile()
-            self._burst_recommendations = {}
-            self._workflow_insights_by_path = {}
-            self._apply_records_view()
-            self._deferred_enrichment_pending = True
-            self._deferred_enrichment_scope_key = self._current_scope_key()
-            self._deferred_enrichment_token = self._scan_token
-            return
         self._correction_events = []
         self._taste_profile = TasteProfile()
         self._burst_recommendations = {}
         self._workflow_insights_by_path = {}
-        self._apply_records_view()
-        self._start_scope_enrichment_task(records)
-        self._start_annotation_hydration(records)
-        self._start_review_intelligence_analysis()
+        view_complete = self._apply_records_view(
+            chunked=chunked_view,
+            post_load_enrichment="defer" if defer_enrichment else "start",
+        )
+        if view_complete:
+            self._finish_loaded_records_enrichment(records, defer_enrichment=defer_enrichment)
 
     def _schedule_loaded_records_enrichment(self) -> None:
         if not self._deferred_enrichment_pending or self._deferred_enrichment_scheduled:
+            return
+        if self._records_view_chunk_active():
             return
         self._deferred_enrichment_scheduled = True
         QTimer.singleShot(0, self._run_loaded_records_enrichment)
@@ -8501,7 +8923,11 @@ class MainWindow(QMainWindow):
             return
         self._scan_showed_cached = True
         self.grid.set_empty_message("Choose a folder to start triaging images.")
-        self._apply_loaded_records(records, defer_enrichment=True)
+        self._apply_loaded_records(
+            records,
+            defer_enrichment=True,
+            chunked_view=token in self._chunked_load_scan_tokens,
+        )
         if self._ui_mode == "ai":
             self._load_hidden_ai_results_for_current_folder(show_message=False)
         self.statusBar().showMessage(f"Loaded cached folder index for {self._current_folder}, refreshing from disk...")
@@ -8509,17 +8935,20 @@ class MainWindow(QMainWindow):
     def _handle_scan_finished(self, folder: str, token: int, records: list[ImageRecord]) -> None:
         self._active_scan_tasks.pop(token, None)
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
+            self._chunked_load_scan_tokens.discard(token)
             return
 
         self._scan_in_progress = False
         self.grid.set_empty_message("Choose a folder to start triaging images.")
+        chunked_view = token in self._chunked_load_scan_tokens
+        self._chunked_load_scan_tokens.discard(token)
         if self._scan_showed_cached and self._records_match_for_refresh(self._all_records, records):
             self._schedule_loaded_records_enrichment()
             if self._ui_mode == "ai":
                 self._load_hidden_ai_results_for_current_folder(show_message=False)
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
             return
-        self._apply_loaded_records(records)
+        self._apply_loaded_records(records, chunked_view=chunked_view)
         if self._ui_mode == "ai":
             self._load_hidden_ai_results_for_current_folder(show_message=False)
         if self._scan_showed_cached:
@@ -8528,7 +8957,11 @@ class MainWindow(QMainWindow):
     def _handle_scan_failed(self, folder: str, token: int, message: str) -> None:
         self._active_scan_tasks.pop(token, None)
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
+            self._chunked_load_scan_tokens.discard(token)
             return
+        self._chunked_load_scan_tokens.discard(token)
+        self._cancel_records_view_chunk()
+        self._pending_folder_scroll_value = None
         self._scan_in_progress = False
         self._cancel_scope_enrichment_task()
         self._annotation_hydration_token += 1
@@ -8732,7 +9165,11 @@ class MainWindow(QMainWindow):
         self._start_scope_enrichment_task()
         current_path = self._current_visible_record_path()
         if self._all_records:
-            self._apply_records_view(current_path=current_path)
+            self._apply_records_view(
+                current_path=current_path,
+                chunked=self._records_view_chunk_active(),
+                post_load_enrichment=self._records_view_chunk_post_load_enrichment,
+            )
         self._refresh_viewport_mode()
         self._refresh_ai_summary_cache()
         self._update_ai_summary()
@@ -9718,6 +10155,20 @@ class MainWindow(QMainWindow):
         self._update_inspector_context(index)
         self._update_filter_summary()
         scope_label = self._scope_display_label()
+        self._update_selection_count_labels()
+
+        if self._records_view_chunk_active():
+            total = len(self._records_view_chunk_records)
+            loaded = min(len(self._records), total)
+            selected_count = self.grid.selected_count() if loaded else 0
+            self.summary_total.setText(f"Total: Loading {loaded} / {total}")
+            self.summary_selected.setText(f"Selected: {selected_count}")
+            self.summary_accepted.setText(f"Accepted: {self._accepted_count}")
+            self.summary_rejected.setText(f"Rejected: {self._rejected_count}")
+            self.summary_unreviewed.setText(f"Unreviewed: {self._unreviewed_count}")
+            self._update_ai_summary()
+            self.statusBar().showMessage(f"Loading {loaded} / {total} images from {scope_label}...")
+            return
 
         if self._scan_in_progress and not self._all_records and not self._records:
             self.summary_total.setText("Total: scanning...")
@@ -9787,7 +10238,7 @@ class MainWindow(QMainWindow):
 
     def _show_markdown_help_dialog(self, *, title: str, markdown: str) -> None:
         dialog = HelpMarkdownDialog(title=title, markdown=markdown, parent=self)
-        dialog.exec()
+        self._exec_dialog_with_geometry(dialog, f"help_{title}")
 
     def _show_help(self) -> None:
         self._show_markdown_help_dialog(
@@ -10028,7 +10479,7 @@ class MainWindow(QMainWindow):
             preset_save_callback=persist_workflow_presets,
             parent=self,
         )
-        if dialog.exec() != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "workflow_settings") != dialog.DialogCode.Accepted:
             return
 
         result = dialog.result_settings()
@@ -11315,7 +11766,7 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
         restore_action = None
-        open_action = menu.addAction("Open")
+        open_action = menu.addAction(self._menu_text_with_hint("Open", "Space / Enter"))
         open_with_menu = menu.addMenu("Open With")
         default_action = open_with_menu.addAction("Default App")
         open_with_action = open_with_menu.addAction("System Open With...")
@@ -11330,14 +11781,20 @@ class MainWindow(QMainWindow):
         jump_ai_pick_action = None
         if ai_result is not None and ai_result.group_size > 1:
             menu.addSeparator()
-            compare_ai_group_action = menu.addAction("Compare AI Group")
-            jump_ai_pick_action = menu.addAction("Jump To AI Top Pick")
+            compare_ai_group_action = menu.addAction(
+                self._menu_text_with_action_shortcut("Compare AI Group", self.actions.compare_ai_group if self.actions else None)
+            )
+            jump_ai_pick_action = menu.addAction(
+                self._menu_text_with_action_shortcut("Jump To AI Top Pick", self.actions.next_ai_pick if self.actions else None)
+            )
         if self._is_recycle_folder():
             menu.addSeparator()
             restore_action = menu.addAction("Restore")
         else:
             menu.addSeparator()
-        rename_action = menu.addAction("Rename...")
+        rename_action = menu.addAction(
+            self._menu_text_with_action_shortcut("Rename...", self.actions.rename_selection if self.actions else None)
+        )
         rename_action.setEnabled(not self._is_recycle_folder() and not self._is_winners_folder())
         resize_action = menu.addAction("Resize...")
         resize_action.setEnabled(not self._is_recycle_folder() and self._record_supports_resize(record))
@@ -11349,7 +11806,7 @@ class MainWindow(QMainWindow):
         copy_path_action = menu.addAction("Copy Path")
         copy_name_action = menu.addAction("Copy Filename")
         menu.addSeparator()
-        delete_action = menu.addAction("Delete")
+        delete_action = menu.addAction(self._menu_text_with_hint("Delete", "Del"))
 
         chosen = menu.exec(global_pos)
         if chosen is None:
@@ -11545,7 +12002,127 @@ class MainWindow(QMainWindow):
             return self._records[index - 1].path
         return self._records[index].path
 
-    def _apply_records_view(self, current_path: str | None = None) -> None:
+    def _apply_records_view_action_mode(self) -> None:
+        if self._is_recycle_folder():
+            self.grid.set_action_mode("recycle_only")
+        elif self._is_winners_folder():
+            self.grid.set_action_mode("accepted_only")
+        elif self._filter_query.quick_filter == FilterMode.WINNERS:
+            self.grid.set_action_mode("accepted_only")
+        elif self._filter_query.quick_filter == FilterMode.REJECTS:
+            self.grid.set_action_mode("rejected_only")
+        else:
+            self.grid.set_action_mode("normal")
+
+    def _finalize_records_view_display(
+        self,
+        *,
+        records: list[ImageRecord],
+        next_record_paths: tuple[str, ...],
+        structural_changed: bool,
+        current_path: str | None,
+    ) -> None:
+        self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
+        self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
+        self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
+        self._rebuild_visible_preview_group_indexes()
+        self._refresh_burst_group_view()
+        self._apply_records_view_action_mode()
+
+        restored_current = False
+        if current_path:
+            index = self._record_index_by_path.get(current_path)
+            if index is not None:
+                self.grid.set_current_index(index)
+                restored_current = True
+        if records and not restored_current and structural_changed:
+            self.grid.set_current_index(0)
+        self._last_view_record_paths = next_record_paths
+        self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
+        self._refresh_viewport_mode()
+        self._update_action_states()
+        self._update_status()
+        if self._pending_folder_scroll_value is not None:
+            QTimer.singleShot(0, self._restore_pending_folder_scroll)
+
+    def _start_records_view_chunk(
+        self,
+        *,
+        records: list[ImageRecord],
+        current_path: str | None,
+        post_load_enrichment: str,
+    ) -> None:
+        self._records_view_chunk_timer.stop()
+        self._records_view_chunk_records = records
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path = current_path
+        self._records_view_chunk_post_load_enrichment = post_load_enrichment
+        self._records = []
+        self._record_index_by_path = {}
+        self._visible_review_group_rows_by_id = {}
+        self._visible_ai_group_rows_by_id = {}
+        self._last_view_record_paths = ()
+        self.grid.set_items([])
+        self._set_annotation_views()
+        self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
+        self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
+        self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
+        self._apply_records_view_action_mode()
+        self._update_status()
+        self._records_view_chunk_timer.start(0)
+
+    def _drain_records_view_chunk(self) -> None:
+        records = self._records_view_chunk_records
+        if not records:
+            return
+        start = self._records_view_chunk_next_index
+        batch_size = max(1, self.CHUNKED_RESTORE_LOAD_BATCH_SIZE)
+        end = min(len(records), start + batch_size)
+        batch = records[start:end]
+        if start == 0:
+            self._records = list(batch)
+            self._record_index_by_path = {record.path: index for index, record in enumerate(self._records)}
+            self.grid.set_items(list(self._records))
+            self._set_annotation_views()
+        else:
+            offset = len(self._records)
+            self._records.extend(batch)
+            for index, record in enumerate(batch, start=offset):
+                self._record_index_by_path[record.path] = index
+            self.grid.append_items(list(batch))
+        self._records_view_chunk_next_index = end
+        if end < len(records):
+            self._update_status()
+            self._records_view_chunk_timer.start(0)
+            return
+
+        current_path = self._records_view_chunk_current_path
+        post_load_enrichment = self._records_view_chunk_post_load_enrichment
+        next_record_paths = tuple(record.path for record in records)
+        self._records_view_chunk_records = []
+        self._records_view_chunk_next_index = 0
+        self._records_view_chunk_current_path = None
+        self._records_view_chunk_post_load_enrichment = ""
+        self._finalize_records_view_display(
+            records=records,
+            next_record_paths=next_record_paths,
+            structural_changed=True,
+            current_path=current_path,
+        )
+        if post_load_enrichment == "defer":
+            self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=True)
+        elif post_load_enrichment == "start":
+            self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=False)
+
+    def _apply_records_view(
+        self,
+        current_path: str | None = None,
+        *,
+        chunked: bool = False,
+        post_load_enrichment: str = "",
+    ) -> bool:
+        if self._records_view_chunk_active() or not chunked:
+            self._cancel_records_view_chunk()
         reasons, dirty_paths = self._records_view_cache.consume()
         force_workflow_rebuild = (
             ViewInvalidationReason.AI_CHANGED in reasons
@@ -11593,6 +12170,14 @@ class MainWindow(QMainWindow):
         if reasons.intersection({ViewInvalidationReason.LOAD_CHANGED, ViewInvalidationReason.AI_CHANGED}):
             self._refresh_ai_summary_cache()
         if structural_changed:
+            should_chunk = chunked and len(records) >= self.CHUNKED_RESTORE_LOAD_MIN_RECORDS
+            if should_chunk:
+                self._start_records_view_chunk(
+                    records=records,
+                    current_path=current_path,
+                    post_load_enrichment=post_load_enrichment,
+                )
+                return False
             self.grid.set_items(records)
             self._set_annotation_views()
         else:
@@ -11606,35 +12191,13 @@ class MainWindow(QMainWindow):
             )
             if changed_visible_paths:
                 self._set_annotation_views(changed_visible_paths)
-        self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
-        self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
-        self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
-        self._rebuild_visible_preview_group_indexes()
-        self._refresh_burst_group_view()
-        if self._is_recycle_folder():
-            self.grid.set_action_mode("recycle_only")
-        elif self._is_winners_folder():
-            self.grid.set_action_mode("accepted_only")
-        elif self._filter_query.quick_filter == FilterMode.WINNERS:
-            self.grid.set_action_mode("accepted_only")
-        elif self._filter_query.quick_filter == FilterMode.REJECTS:
-            self.grid.set_action_mode("rejected_only")
-        else:
-            self.grid.set_action_mode("normal")
-
-        restored_current = False
-        if current_path:
-            index = self._record_index_by_path.get(current_path)
-            if index is not None:
-                self.grid.set_current_index(index)
-                restored_current = True
-        if records and not restored_current and structural_changed:
-            self.grid.set_current_index(0)
-        self._last_view_record_paths = next_record_paths
-        self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
-        self._refresh_viewport_mode()
-        self._update_action_states()
-        self._update_status()
+        self._finalize_records_view_display(
+            records=records,
+            next_record_paths=next_record_paths,
+            structural_changed=structural_changed,
+            current_path=current_path,
+        )
+        return True
 
     def _refresh_burst_group_view(self) -> None:
         burst_groups: list[tuple[int, ...]] = []
