@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -33,6 +34,8 @@ class WorkflowSettingsResult:
     session_id: str
     winner_mode: WinnerMode
     delete_mode: DeleteMode
+    catalog_cache_enabled: bool = True
+    watch_current_folder: bool = True
     presets: tuple[WorkflowPreset, ...] = ()
 
 
@@ -44,6 +47,9 @@ class WorkflowSettingsDialog(QDialog):
         current_session: str,
         winner_mode: WinnerMode,
         delete_mode: DeleteMode,
+        catalog_cache_enabled: bool = True,
+        watch_current_folder: bool = True,
+        catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
         parent=None,
@@ -104,6 +110,27 @@ class WorkflowSettingsDialog(QDialog):
         workflow_layout.addRow("Accepted handling", self.winner_mode_combo)
         workflow_layout.addRow("Delete behavior", self.delete_mode_combo)
         layout.addWidget(workflow_group)
+
+        catalog_group = QGroupBox("Catalog Cache")
+        catalog_layout = QVBoxLayout(catalog_group)
+        catalog_layout.setContentsMargins(12, 14, 12, 12)
+        catalog_layout.setSpacing(10)
+
+        self.catalog_cache_checkbox = QCheckBox("Use catalog cache for faster folder open")
+        self.catalog_cache_checkbox.setChecked(catalog_cache_enabled)
+        catalog_layout.addWidget(self.catalog_cache_checkbox)
+
+        self.watch_current_folder_checkbox = QCheckBox("Refresh the open folder when files change on disk")
+        self.watch_current_folder_checkbox.setChecked(watch_current_folder)
+        catalog_layout.addWidget(self.watch_current_folder_checkbox)
+
+        self.catalog_summary_label = QLabel(catalog_summary_text or "Catalog database has not been created yet.")
+        self.catalog_summary_label.setWordWrap(True)
+        self.catalog_summary_label.setObjectName("mutedText")
+        self.catalog_summary_label.setStyleSheet("font-size: 11px;")
+        catalog_layout.addWidget(self.catalog_summary_label)
+
+        layout.addWidget(catalog_group)
 
         self.preset_status_label = QLabel("")
         self.preset_status_label.setObjectName("mutedText")
@@ -234,5 +261,7 @@ class WorkflowSettingsDialog(QDialog):
             session_id=session_id or "Default",
             winner_mode=winner_mode,
             delete_mode=delete_mode,
+            catalog_cache_enabled=self.catalog_cache_checkbox.isChecked(),
+            watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
             presets=tuple(self._presets) if include_presets else (),
         )

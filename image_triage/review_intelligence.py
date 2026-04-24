@@ -14,6 +14,7 @@ from .formats import FITS_SUFFIXES, suffix_for_path
 from .imaging import load_image_for_display
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord
+from .plugins import ReviewGroupingRequest, register_review_grouping_provider, resolve_review_grouping_provider
 from .review_tools import build_inspection_stats
 from .scanner import normalized_path_key
 
@@ -33,6 +34,8 @@ _GROUP_LABEL = {
     "likely_duplicate": "Near Dup",
     "exact_duplicate": "Exact Dup",
 }
+
+_BUILTIN_REVIEW_GROUPING_PROVIDERS_REGISTERED = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -172,7 +175,59 @@ class ReviewIntelligenceCancelled(RuntimeError):
     pass
 
 
+@dataclass(slots=True, frozen=True)
+class _DefaultReviewGroupingProvider:
+    provider_id: str = "default"
+
+    def can_handle_review_grouping(self, request: ReviewGroupingRequest) -> bool:
+        return True
+
+    def build_review_intelligence(self, request: ReviewGroupingRequest) -> object:
+        return _build_review_intelligence_builtin(
+            list(request.records),
+            should_cancel=request.should_cancel,
+            progress_callback=request.progress_callback,
+            chunk_callback=request.chunk_callback,
+        )
+
+
+def _ensure_builtin_review_grouping_providers() -> None:
+    global _BUILTIN_REVIEW_GROUPING_PROVIDERS_REGISTERED
+    if _BUILTIN_REVIEW_GROUPING_PROVIDERS_REGISTERED:
+        return
+    register_review_grouping_provider(_DefaultReviewGroupingProvider())
+    _BUILTIN_REVIEW_GROUPING_PROVIDERS_REGISTERED = True
+
+
+def review_grouping_provider_id(records: list[ImageRecord] | tuple[ImageRecord, ...]) -> str:
+    request = ReviewGroupingRequest(records=tuple(records))
+    _ensure_builtin_review_grouping_providers()
+    provider = resolve_review_grouping_provider(request)
+    return provider.provider_id if provider is not None else ""
+
+
 def build_review_intelligence(
+    records: list[ImageRecord],
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    chunk_callback: Callable[[tuple[ReviewGroup, ...], dict[str, ReviewInsight]], None] | None = None,
+) -> ReviewIntelligenceBundle:
+    request = ReviewGroupingRequest(
+        records=tuple(records),
+        should_cancel=should_cancel,
+        progress_callback=progress_callback,
+        chunk_callback=chunk_callback,
+    )
+    _ensure_builtin_review_grouping_providers()
+    provider = resolve_review_grouping_provider(request)
+    if provider is None:
+        return ReviewIntelligenceBundle(groups=(), insights_by_path={})
+    bundle = provider.build_review_intelligence(request)
+    return bundle if isinstance(bundle, ReviewIntelligenceBundle) else ReviewIntelligenceBundle(groups=(), insights_by_path={})
+
+
+def _build_review_intelligence_builtin(
     records: list[ImageRecord],
     *,
     should_cancel: Callable[[], bool] | None = None,

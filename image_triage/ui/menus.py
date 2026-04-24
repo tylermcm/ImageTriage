@@ -126,6 +126,7 @@ def build_main_menu_bar(
     library_menu.addAction(actions.add_folder_to_catalog)
     library_menu.addAction(actions.remove_catalog_folder)
     library_menu.addAction(actions.refresh_catalog)
+    library_menu.addAction(actions.rebuild_folder_catalog_cache)
     if catalog_menu is not None:
         library_menu.addMenu(catalog_menu)
 

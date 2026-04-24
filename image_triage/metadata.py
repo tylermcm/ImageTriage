@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from queue import Empty, SimpleQueue
+from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from .fits_support import load_basic_fits_header
 from .formats import FITS_SUFFIXES, suffix_for_path
 from .models import ImageRecord
+from .plugins import MetadataLoadRequest, register_metadata_provider, resolve_metadata_provider
 
 try:
     import exifread
@@ -18,6 +20,7 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 
 _ASTROPY_IMPORT_ATTEMPTED = False
 _ASTROPY_FITS = None
+_BUILTIN_METADATA_PROVIDERS_REGISTERED = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -68,14 +71,73 @@ class MetadataKey:
 
 
 def load_capture_metadata(path: str) -> CaptureMetadata:
-    suffix = suffix_for_path(path)
-    if suffix in FITS_SUFFIXES:
-        fits_metadata = _load_fits_capture_metadata(path)
-        if fits_metadata is not None:
-            return fits_metadata
+    if not path:
+        return EMPTY_METADATA
+    request = MetadataLoadRequest(path=path, suffix=suffix_for_path(path))
+    _ensure_builtin_metadata_providers()
+    provider = resolve_metadata_provider(request)
+    if provider is None:
+        return CaptureMetadata(path=path)
+    metadata = provider.load_metadata(request)
+    return metadata if isinstance(metadata, CaptureMetadata) else CaptureMetadata(path=path)
 
+
+@dataclass(slots=True, frozen=True)
+class _SuffixMetadataProvider:
+    provider_id: str
+    suffixes: frozenset[str]
+    loader: Callable[[MetadataLoadRequest], CaptureMetadata]
+
+    def can_handle_metadata(self, request: MetadataLoadRequest) -> bool:
+        return request.suffix in self.suffixes
+
+    def load_metadata(self, request: MetadataLoadRequest) -> CaptureMetadata:
+        return self.loader(request)
+
+
+@dataclass(slots=True, frozen=True)
+class _DefaultMetadataProvider:
+    provider_id: str = "exif"
+
+    def can_handle_metadata(self, request: MetadataLoadRequest) -> bool:
+        return True
+
+    def load_metadata(self, request: MetadataLoadRequest) -> CaptureMetadata:
+        return _load_exif_capture_metadata(request.path)
+
+
+def _load_fits_metadata_provider(request: MetadataLoadRequest) -> CaptureMetadata:
+    metadata = _load_fits_capture_metadata(request.path)
+    return metadata if metadata is not None else CaptureMetadata(path=request.path)
+
+
+def _ensure_builtin_metadata_providers() -> None:
+    global _BUILTIN_METADATA_PROVIDERS_REGISTERED
+    if _BUILTIN_METADATA_PROVIDERS_REGISTERED:
+        return
+    register_metadata_provider(
+        _SuffixMetadataProvider(
+            provider_id="fits",
+            suffixes=FITS_SUFFIXES,
+            loader=_load_fits_metadata_provider,
+        )
+    )
+    register_metadata_provider(_DefaultMetadataProvider())
+    _BUILTIN_METADATA_PROVIDERS_REGISTERED = True
+
+
+def metadata_provider_id_for_path(path: str) -> str:
+    if not path:
+        return ""
+    request = MetadataLoadRequest(path=path, suffix=suffix_for_path(path))
+    _ensure_builtin_metadata_providers()
+    provider = resolve_metadata_provider(request)
+    return provider.provider_id if provider is not None else ""
+
+
+def _load_exif_capture_metadata(path: str) -> CaptureMetadata:
     if exifread is None:
-        return EMPTY_METADATA if not path else CaptureMetadata(path=path)
+        return CaptureMetadata(path=path)
 
     try:
         with open(path, "rb") as stream:

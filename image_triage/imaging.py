@@ -4,6 +4,7 @@ import math
 import os
 import struct
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QSize, Qt
@@ -15,6 +16,7 @@ from .fits_support import (
     normalize_basic_fits_array,
 )
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .plugins import DisplayLoadRequest, register_display_provider, resolve_display_provider
 
 try:
     import rawpy
@@ -45,6 +47,7 @@ _MAX_STL_TRIANGLES = 5000
 _ASTROPY_IMPORT_ATTEMPTED = False
 _ASTROPY_FITS = None
 _ASTROPY_ZSCALE_INTERVAL = None
+_BUILTIN_DISPLAY_PROVIDERS_REGISTERED = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -88,6 +91,106 @@ def normalize_fits_display_settings(settings: FitsDisplaySettings | None) -> Fit
     return FitsDisplaySettings(stf_preset_id=fits_stf_preset_by_id(settings.stf_preset_id).id)
 
 
+@dataclass(slots=True, frozen=True)
+class _SuffixDisplayProvider:
+    provider_id: str
+    suffixes: frozenset[str]
+    loader: Callable[[DisplayLoadRequest], tuple[QImage, str | None]]
+
+    def can_handle_display(self, request: DisplayLoadRequest) -> bool:
+        return request.suffix in self.suffixes
+
+    def load_for_display(self, request: DisplayLoadRequest) -> tuple[QImage, str | None]:
+        return self.loader(request)
+
+
+@dataclass(slots=True, frozen=True)
+class _DefaultDisplayProvider:
+    provider_id: str = "default"
+
+    def can_handle_display(self, request: DisplayLoadRequest) -> bool:
+        return True
+
+    def load_for_display(self, request: DisplayLoadRequest) -> tuple[QImage, str | None]:
+        return _load_with_fallbacks(request.path, request.target_size)
+
+
+def _load_model_display(request: DisplayLoadRequest) -> tuple[QImage, str | None]:
+    return _load_stl_image(request.path, request.target_size)
+
+
+def _load_fits_display(request: DisplayLoadRequest) -> tuple[QImage, str | None]:
+    return _load_fits_image(
+        request.path,
+        request.target_size,
+        fits_display_settings=request.fits_display_settings,
+    )
+
+
+def _load_raw_display(request: DisplayLoadRequest) -> tuple[QImage, str | None]:
+    return _load_raw_image(
+        request.path,
+        request.target_size,
+        prefer_embedded=request.prefer_embedded,
+        suffix=request.suffix,
+    )
+
+
+def _load_psd_display(request: DisplayLoadRequest) -> tuple[QImage, str | None]:
+    image, error = _load_psd_image(request.path, request.target_size)
+    if not image.isNull():
+        return image, None
+    return _load_with_fallbacks(request.path, request.target_size, initial_error=error)
+
+
+def _ensure_builtin_display_providers() -> None:
+    global _BUILTIN_DISPLAY_PROVIDERS_REGISTERED
+    if _BUILTIN_DISPLAY_PROVIDERS_REGISTERED:
+        return
+    register_display_provider(
+        _SuffixDisplayProvider(
+            provider_id="model",
+            suffixes=MODEL_SUFFIXES,
+            loader=_load_model_display,
+        )
+    )
+    register_display_provider(
+        _SuffixDisplayProvider(
+            provider_id="fits",
+            suffixes=FITS_SUFFIXES,
+            loader=_load_fits_display,
+        )
+    )
+    register_display_provider(
+        _SuffixDisplayProvider(
+            provider_id="raw",
+            suffixes=RAW_SUFFIXES,
+            loader=_load_raw_display,
+        )
+    )
+    register_display_provider(
+        _SuffixDisplayProvider(
+            provider_id="psd",
+            suffixes=PSD_SUFFIXES,
+            loader=_load_psd_display,
+        )
+    )
+    register_display_provider(_DefaultDisplayProvider())
+    _BUILTIN_DISPLAY_PROVIDERS_REGISTERED = True
+
+
+def display_provider_id_for_path(path: str) -> str:
+    request = DisplayLoadRequest(
+        path=path,
+        suffix=suffix_for_path(path),
+        target_size=QSize(),
+        prefer_embedded=False,
+    )
+    _ensure_builtin_display_providers()
+    provider = resolve_display_provider(request)
+    return provider.provider_id if provider is not None else ""
+
+
 def load_image_for_display(
     path: str,
     target_size: QSize,
@@ -95,19 +198,18 @@ def load_image_for_display(
     prefer_embedded: bool,
     fits_display_settings: FitsDisplaySettings | None = None,
 ):
-    suffix = suffix_for_path(path)
-    if suffix in MODEL_SUFFIXES:
-        return _load_stl_image(path, target_size)
-    if suffix in FITS_SUFFIXES:
-        return _load_fits_image(path, target_size, fits_display_settings=fits_display_settings)
-    if suffix in RAW_SUFFIXES:
-        return _load_raw_image(path, target_size, prefer_embedded=prefer_embedded, suffix=suffix)
-    if suffix in PSD_SUFFIXES:
-        image, error = _load_psd_image(path, target_size)
-        if not image.isNull():
-            return image, None
-        return _load_with_fallbacks(path, target_size, initial_error=error)
-    return _load_with_fallbacks(path, target_size)
+    request = DisplayLoadRequest(
+        path=path,
+        suffix=suffix_for_path(path),
+        target_size=target_size,
+        prefer_embedded=prefer_embedded,
+        fits_display_settings=fits_display_settings,
+    )
+    _ensure_builtin_display_providers()
+    provider = resolve_display_provider(request)
+    if provider is None:
+        return _load_with_fallbacks(path, target_size)
+    return provider.load_for_display(request)
 
 
 def load_image_for_resize(path: str, *, target_size: QSize | None = None, ignore_orientation: bool = False) -> tuple[QImage, str | None]:

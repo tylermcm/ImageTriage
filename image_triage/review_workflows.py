@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from .ai_results import AIBundle, AIConfidenceBucket, AIImageResult, find_ai_result_for_record
 from .models import ImageRecord, SessionAnnotation
+from .plugins import ReviewScoringRequest, register_review_scoring_provider, resolve_review_scoring_provider
 from .scanner import normalized_path_key
 
 if TYPE_CHECKING:
@@ -36,6 +37,8 @@ _AI_BUCKET_RANK = {
     AIConfidenceBucket.LIKELY_KEEPER: 0.74,
     AIConfidenceBucket.OBVIOUS_WINNER: 1.0,
 }
+
+_BUILTIN_REVIEW_SCORING_PROVIDERS_REGISTERED = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -98,6 +101,49 @@ class CalibrationPair:
     group_label: str = ""
     left_label: str = ""
     right_label: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class _DefaultReviewScoringProvider:
+    provider_id: str = "default"
+
+    def can_handle_review_scoring(self, request: ReviewScoringRequest) -> bool:
+        return True
+
+    def build_burst_recommendations(self, request: ReviewScoringRequest) -> object:
+        return _build_burst_recommendations_builtin(
+            list(request.records),
+            ai_bundle=request.ai_bundle if isinstance(request.ai_bundle, AIBundle) or request.ai_bundle is None else None,
+            review_bundle=request.review_bundle,
+            correction_events=request.correction_events,
+            should_cancel=request.should_cancel,
+        )
+
+
+def _ensure_builtin_review_scoring_providers() -> None:
+    global _BUILTIN_REVIEW_SCORING_PROVIDERS_REGISTERED
+    if _BUILTIN_REVIEW_SCORING_PROVIDERS_REGISTERED:
+        return
+    register_review_scoring_provider(_DefaultReviewScoringProvider())
+    _BUILTIN_REVIEW_SCORING_PROVIDERS_REGISTERED = True
+
+
+def review_scoring_provider_id(
+    records: list[ImageRecord] | tuple[ImageRecord, ...],
+    *,
+    ai_bundle: AIBundle | None = None,
+    review_bundle: "ReviewIntelligenceBundle | None" = None,
+    correction_events: Iterable[dict[str, object]] = (),
+) -> str:
+    request = ReviewScoringRequest(
+        records=tuple(records),
+        ai_bundle=ai_bundle,
+        review_bundle=review_bundle,
+        correction_events=tuple(correction_events),
+    )
+    _ensure_builtin_review_scoring_providers()
+    provider = resolve_review_scoring_provider(request)
+    return provider.provider_id if provider is not None else ""
 
 
 def normalize_review_round(value: str | None) -> str:
@@ -171,6 +217,36 @@ def build_taste_profile(correction_events: Iterable[dict[str, object]]) -> Taste
 
 
 def build_burst_recommendations(
+    records: list[ImageRecord],
+    *,
+    ai_bundle: AIBundle | None,
+    review_bundle: "ReviewIntelligenceBundle | None",
+    correction_events: Iterable[dict[str, object]],
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[TasteProfile, dict[str, BurstRecommendation]]:
+    request = ReviewScoringRequest(
+        records=tuple(records),
+        ai_bundle=ai_bundle,
+        review_bundle=review_bundle,
+        correction_events=tuple(correction_events),
+        should_cancel=should_cancel,
+    )
+    _ensure_builtin_review_scoring_providers()
+    provider = resolve_review_scoring_provider(request)
+    if provider is None:
+        return TasteProfile(), {}
+    result = provider.build_burst_recommendations(request)
+    if (
+        not isinstance(result, tuple)
+        or len(result) != 2
+        or not isinstance(result[0], TasteProfile)
+        or not isinstance(result[1], dict)
+    ):
+        return TasteProfile(), {}
+    return result[0], result[1]
+
+
+def _build_burst_recommendations_builtin(
     records: list[ImageRecord],
     *,
     ai_bundle: AIBundle | None,

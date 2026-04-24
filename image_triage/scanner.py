@@ -7,9 +7,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
+from .catalog import CatalogRepository, catalog_cache_enabled
 from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ROOT_PRIMARY_PRIORITY, suffix_for_path
 from .models import ImageRecord, ImageVariant, SortMode, sort_records
-from .scan_cache import FolderScanCache
 
 
 JPEG_PAIR_DIRECTORIES = {
@@ -358,40 +358,64 @@ def to_scanned_file(
 
 
 class FolderScanSignals(QObject):
-    cached = Signal(str, int, object)
-    finished = Signal(str, int, object)
+    cached = Signal(str, int, object, str)
+    finished = Signal(str, int, object, str)
     failed = Signal(str, int, str)
 
 
 class FolderScanTask(QRunnable):
-    _cache = FolderScanCache()
+    _catalog = CatalogRepository()
 
-    def __init__(self, folder: str, token: int, sort_mode: SortMode, *, prefer_cached_only: bool = False) -> None:
+    def __init__(
+        self,
+        folder: str,
+        token: int,
+        sort_mode: SortMode,
+        *,
+        prefer_cached_only: bool = False,
+        use_catalog_cache: bool = True,
+        read_cached_records: bool = True,
+    ) -> None:
         super().__init__()
         self.folder = normalize_filesystem_path(folder)
         self.token = token
         self.sort_mode = sort_mode
         self.prefer_cached_only = prefer_cached_only
+        self.use_catalog_cache = use_catalog_cache
+        self.read_cached_records = read_cached_records
         self.signals = FolderScanSignals()
         # Keep the runnable alive until the window releases it after the final signal.
         self.setAutoDelete(False)
 
     def run(self) -> None:
         try:
-            cached_records = self._cache.load(self.folder)
-            if cached_records:
+            cached_records, cache_source = self._load_cached_records()
+            if cached_records is not None:
                 sorted_cached = sort_records(cached_records, self.sort_mode)
                 if self.prefer_cached_only:
-                    self.signals.finished.emit(self.folder, self.token, sorted_cached)
+                    self.signals.finished.emit(self.folder, self.token, sorted_cached, cache_source)
                     return
-                self.signals.cached.emit(self.folder, self.token, sorted_cached)
+                if sorted_cached:
+                    self.signals.cached.emit(self.folder, self.token, sorted_cached, cache_source)
             records = sort_records(scan_folder(self.folder), self.sort_mode)
-            self._cache.save(self.folder, records)
+            self._persist_scan_records(records)
         except Exception as exc:  # pragma: no cover - legacy UI error path
             self.signals.failed.emit(self.folder, self.token, str(exc))
             return
 
-        self.signals.finished.emit(self.folder, self.token, records)
+        self.signals.finished.emit(self.folder, self.token, records, "live")
+
+    def _load_cached_records(self) -> tuple[list[ImageRecord] | None, str]:
+        if not self.read_cached_records:
+            return None, ""
+        if catalog_cache_enabled(self.use_catalog_cache):
+            cached_records = self._catalog.load_folder_records(self.folder)
+            if cached_records is not None:
+                return cached_records, "catalog"
+        return None, ""
+
+    def _persist_scan_records(self, records: list[ImageRecord]) -> None:
+        self._catalog.save_folder_records(self.folder, records, source="scan")
 
 
 __all__ = ["FolderScanTask", "discover_edited_paths", "ImageRecord", "normalize_filesystem_path", "normalized_path_key", "scan_folder", "scan_folder_quick"]

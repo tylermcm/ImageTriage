@@ -12,7 +12,7 @@ def _add_toolbar_action(toolbar: QToolBar, action, *, toolbar_text: str, min_wid
     button = toolbar.widgetForAction(action)
     if isinstance(button, QToolButton):
         button.setObjectName("primaryToolbarButton")
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         button.setMinimumWidth(min_width)
 
 
@@ -33,7 +33,7 @@ def build_primary_toolbar(window, actions: MainWindowActions) -> QToolBar:
     toolbar.setMovable(False)
     toolbar.setFloatable(False)
     toolbar.setIconSize(QSize(14, 14))
-    toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
     _add_toolbar_action(toolbar, actions.open_folder, toolbar_text="Open", min_width=96)
     _add_toolbar_action(toolbar, actions.refresh_folder, toolbar_text="Refresh", min_width=108)

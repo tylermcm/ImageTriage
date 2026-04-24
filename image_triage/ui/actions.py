@@ -80,6 +80,7 @@ class MainWindowActions:
     add_folder_to_catalog: QAction
     remove_catalog_folder: QAction
     refresh_catalog: QAction
+    rebuild_folder_catalog_cache: QAction
     handoff_builder: QAction
     send_to_editor_pipeline: QAction
     best_of_set_auto_assembly: QAction
@@ -112,8 +113,7 @@ def _create_action(
     checkable: bool = False,
     auto_repeat: bool = True,
 ) -> QAction:
-    resolved_icon = window.style().standardIcon(icon) if icon is not None else None
-    action = QAction(resolved_icon, text, window) if resolved_icon is not None else QAction(text, window)
+    action = QAction(text, window)
     action.setProperty("imageTriageBaseText", text)
     action.setAutoRepeat(auto_repeat)
     if shortcut is not None:
@@ -385,6 +385,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Refresh Catalog Index",
             slot=window._refresh_catalog_index,
+        ),
+        rebuild_folder_catalog_cache=_create_action(
+            window,
+            "Rebuild Open Folder Cache",
+            slot=window._rebuild_current_folder_catalog_cache,
         ),
         handoff_builder=_create_action(
             window,

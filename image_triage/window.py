@@ -12,8 +12,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from textwrap import dedent
 
-from PySide6.QtCore import QByteArray, QDir, QEvent, QFile, QMimeData, QModelIndex, QObject, QRunnable, QSize, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtCore import QByteArray, QDir, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QRunnable, QSize, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -87,6 +87,7 @@ from .ai_results import AIBundle, AIConfidenceBucket, build_ai_explanation_lines
 from .batch_rename import BatchRenameApplyTask, BatchRenamePreview
 from .brackets import BracketDetector
 from .bursts import find_burst_groups
+from .catalog import CatalogRepository, catalog_cache_env_override
 from .decision_store import DecisionStore
 from .file_ops import FileMove, copy_paths, create_folder, delete_folder, move_folder, move_paths, rename_bundle_paths, rename_folder, unique_destination
 from .filtering import (
@@ -154,7 +155,6 @@ from .review_workflows import (
     normalize_review_round,
     review_round_label,
 )
-from .scan_cache import FolderScanCache
 from .scanner import FolderScanTask, discover_edited_paths, normalize_filesystem_path, normalized_path_key, scan_folder
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
@@ -188,7 +188,6 @@ from .ui import (
     build_main_window_actions,
     build_primary_toolbar,
     build_workspace_docks,
-    build_undo_icon,
     clear_window_layout,
     parse_appearance_mode,
     restore_window_layout,
@@ -543,7 +542,7 @@ class ToolbarCustomizerDialog(QDialog):
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         toolbar.setIconSize(QSize(14, 14))
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         for index, item_id in enumerate(items):
             if item_id == "separator":
                 toolbar.addSeparator()
@@ -966,6 +965,8 @@ class MainWindow(QMainWindow):
     WINNER_MODE_KEY = "workflow/winner_mode"
     DELETE_MODE_KEY = "workflow/delete_mode"
     WORKFLOW_PRESETS_KEY = "workflow/presets"
+    CATALOG_CACHE_ENABLED_KEY = "catalog/cache_enabled"
+    CATALOG_WATCH_CURRENT_FOLDER_KEY = "catalog/watch_current_folder"
     FAST_RATING_HINT_DISABLED_KEY = "workflow/fast_rating_hint_disabled"
     FAST_RATING_HINT_SESSIONS_KEY = "workflow/fast_rating_hint_sessions"
     FAST_RATING_HINT_SIZE_BYTES = 20 * 1024 * 1024
@@ -1170,6 +1171,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_manager = ThumbnailManager()
         self._decision_store = DecisionStore()
         self._library_store = LibraryStore()
+        self._catalog_repository = CatalogRepository()
         self._bracket_detector = BracketDetector()
         self._photoshop_executable = detect_photoshop_executable()
         self.grid = ThumbnailGridView(self.thumbnail_manager)
@@ -1182,8 +1184,6 @@ class MainWindow(QMainWindow):
             self._ai_model_installation = self._ai_runtime.model_installation
         self._default_ai_checkpoint_path = self._ai_runtime.checkpoint_path
         self._active_reference_bank_path = ""
-        self._folder_scan_cache = FolderScanCache()
-
         self._scan_pool = QThreadPool(self)
         self._scan_pool.setMaxThreadCount(1)
         self._ai_run_pool = QThreadPool(self)
@@ -1212,6 +1212,7 @@ class MainWindow(QMainWindow):
         self._annotation_hydration_pool.setMaxThreadCount(1)
         self._scan_token = 0
         self._scan_showed_cached = False
+        self._scan_cached_source = ""
         self._active_scan_tasks: dict[int, FolderScanTask] = {}
         self._active_ai_task: AIRunTask | None = None
         self._active_ai_model_task: AIModelDownloadTask | None = None
@@ -1325,6 +1326,12 @@ class MainWindow(QMainWindow):
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
         self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, False, bool)
+        self._catalog_cache_enabled = self._settings.value(self.CATALOG_CACHE_ENABLED_KEY, True, bool)
+        self._watch_current_folder_enabled = self._settings.value(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, True, bool)
+        self._catalog_load_source = "idle"
+        self._catalog_load_detail = "Ready"
+        self._watched_folder_path = ""
+        self._folder_watch_refresh_pending = False
         self.grid.set_compact_card_mode(self._compact_cards_enabled)
         self._session_id = self._decision_store.ensure_session(
             self._settings.value(self.SESSION_KEY, DecisionStore.DEFAULT_SESSION, str)
@@ -1390,6 +1397,12 @@ class MainWindow(QMainWindow):
         self._metadata_reapply_timer.setSingleShot(True)
         self._metadata_reapply_timer.setInterval(180)
         self._metadata_reapply_timer.timeout.connect(self._handle_metadata_filter_batch_update)
+        self._folder_watcher = QFileSystemWatcher(self)
+        self._folder_watcher.directoryChanged.connect(self._handle_watched_folder_changed)
+        self._folder_watch_refresh_timer = QTimer(self)
+        self._folder_watch_refresh_timer.setSingleShot(True)
+        self._folder_watch_refresh_timer.setInterval(900)
+        self._folder_watch_refresh_timer.timeout.connect(self._run_watched_folder_refresh)
 
         self.folder_model = QFileSystemModel(self)
         self.folder_model.setFilter(QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot | QDir.Filter.Drives)
@@ -1668,12 +1681,17 @@ class MainWindow(QMainWindow):
         self.filter_summary_label = QLabel("Filters: All Images")
         self.filter_summary_label.setObjectName("filterSummaryLabel")
         self.filter_summary_label.setMaximumWidth(420)
+        self.catalog_status_label = QLabel("")
+        self.catalog_status_label.setObjectName("filterSummaryLabel")
+        self.catalog_status_label.setMaximumWidth(260)
         self.clear_filters_button = QToolButton()
         self.clear_filters_button.setObjectName("statusFilterClearButton")
         self.clear_filters_button.setAutoRaise(True)
         self.clear_filters_button.setDefaultAction(self.actions.clear_filters)
+        status.addPermanentWidget(self.catalog_status_label)
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
+        self._refresh_catalog_status_indicator()
         self._refresh_filter_toolbar_menu()
         self._refresh_recent_folder_combos()
 
@@ -1727,7 +1745,7 @@ class MainWindow(QMainWindow):
     def _make_action_button(self, action) -> QToolButton:
         button = QToolButton()
         button.setDefaultAction(action)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         return button
 
     def _build_popup_button(self, text: str, menu: QMenu) -> QToolButton:
@@ -1862,7 +1880,7 @@ class MainWindow(QMainWindow):
         button = self.primary_toolbar.widgetForAction(action)
         if isinstance(button, QToolButton):
             button.setObjectName("primaryToolbarButton")
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
             button.setMinimumWidth(min_width)
             self._configure_toolbar_context_target(button, "primary")
 
@@ -2645,6 +2663,7 @@ class MainWindow(QMainWindow):
         self.catalog_menu.addAction(self.actions.add_folder_to_catalog)
         self.catalog_menu.addAction(self.actions.remove_catalog_folder)
         self.catalog_menu.addAction(self.actions.refresh_catalog)
+        self.catalog_menu.addAction(self.actions.rebuild_folder_catalog_cache)
         self.catalog_menu.addSeparator()
 
         roots = self._library_store.list_catalog_roots()
@@ -2778,6 +2797,7 @@ class MainWindow(QMainWindow):
             add_action_command("library.add_folder_to_catalog", self.actions.add_folder_to_catalog, section="Library", keywords=("catalog root", "index folder"))
             add_action_command("library.remove_catalog_root", self.actions.remove_catalog_folder, section="Library", keywords=("catalog root", "remove folder"))
             add_action_command("library.refresh_catalog", self.actions.refresh_catalog, section="Library", keywords=("refresh catalog", "reindex library"))
+            add_action_command("library.rebuild_open_folder_cache", self.actions.rebuild_folder_catalog_cache, section="Library", keywords=("rebuild cache", "rebuild folder cache", "rescan without cache"))
             add_action_command("review.open_preview", self.actions.open_preview, section="Review", keywords=("viewer", "popout", "fullscreen"))
             add_action_command("review.accept_selection", self.actions.accept_selection, section="Review", keywords=("winner", "approve", "accept"))
             add_action_command("review.reject_selection", self.actions.reject_selection, section="Review", keywords=("reject", "decline"))
@@ -3356,13 +3376,7 @@ class MainWindow(QMainWindow):
     def _update_dynamic_action_icons(self) -> None:
         if self.actions is None or self._theme is None:
             return
-        self.actions.undo.setIcon(
-            build_undo_icon(
-                self._theme.text_secondary.qcolor(),
-                disabled_color=self._theme.text_disabled.qcolor(),
-                pixel_size=18,
-            )
-        )
+        self.actions.undo.setIcon(QIcon())
 
     def _prepare_child_sync_state_path(self) -> Path:
         base_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
@@ -3662,6 +3676,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._remember_current_folder_view_state()
+        self._folder_watch_refresh_timer.stop()
+        if self._folder_watcher.directories():
+            self._folder_watcher.removePaths(list(self._folder_watcher.directories()))
         self._annotation_persistence_queue.flush_blocking()
         self._shutdown_child_processes()
         self._cleanup_child_sync_state()
@@ -5540,6 +5557,7 @@ class MainWindow(QMainWindow):
         self.actions.add_folder_to_catalog.setEnabled(True)
         self.actions.remove_catalog_folder.setEnabled(bool(catalog_roots))
         self.actions.refresh_catalog.setEnabled(bool(catalog_roots) and self._active_catalog_task is None)
+        self.actions.rebuild_folder_catalog_cache.setEnabled(has_physical_folder and not self._scan_in_progress)
         self.actions.handoff_builder.setEnabled(has_selection and has_physical_folder and not in_recycle_folder)
         self.actions.send_to_editor_pipeline.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.best_of_set_auto_assembly.setEnabled(bool(self._records) and (self._ai_bundle is not None or self._review_intelligence is not None))
@@ -5729,14 +5747,14 @@ class MainWindow(QMainWindow):
             folder_key = normalized_path_key(folder)
             if folder_key in folder_record_maps:
                 continue
-            records = self._folder_scan_cache.load(folder)
+            records, _source = self._load_cached_folder_records(folder)
             if records is None:
                 try:
                     records = scan_folder(folder)
                 except Exception:
                     records = []
                 else:
-                    self._folder_scan_cache.save(folder, records)
+                    self._persist_folder_record_cache(folder, records, source="collection-resolve")
             folder_record_maps[folder_key] = {
                 normalized_path_key(record.path): record
                 for record in records
@@ -8235,7 +8253,92 @@ class MainWindow(QMainWindow):
         if self._current_folder:
             self._load_folder(self._current_folder, force_refresh=True)
 
-    def _load_folder(self, folder: str, *, force_refresh: bool = False, chunked_restore: bool = False) -> None:
+    def _rebuild_current_folder_catalog_cache(self) -> None:
+        if self._scope_kind != "folder" or not self._current_folder:
+            self.statusBar().showMessage("Open a real folder before rebuilding its catalog cache.")
+            return
+        self.statusBar().showMessage(f"Rebuilding catalog cache for {self._current_folder}...")
+        self._load_folder(self._current_folder, force_refresh=True, bypass_catalog_cache=True)
+
+    def _load_cached_folder_records(self, folder: str) -> tuple[list[ImageRecord] | None, str]:
+        normalized_folder = normalize_filesystem_path(folder)
+        records = self._catalog_repository.load_folder_records(normalized_folder)
+        if records is not None:
+            return records, "catalog"
+        return None, ""
+
+    def _persist_folder_record_cache(self, folder: str, records: list[ImageRecord], *, source: str = "window") -> None:
+        normalized_folder = normalize_filesystem_path(folder)
+        if not normalized_folder:
+            return
+        self._catalog_repository.save_folder_records(normalized_folder, records, source=source)
+
+    def _refresh_current_folder_watch(self) -> None:
+        target = ""
+        if self._watch_current_folder_enabled and self._scope_kind == "folder" and self._current_folder:
+            candidate = self._current_folder
+            if os.path.isdir(candidate):
+                target = candidate
+
+        if self._watched_folder_path == target:
+            return
+
+        existing_paths = list(self._folder_watcher.directories())
+        if existing_paths:
+            self._folder_watcher.removePaths(existing_paths)
+        self._folder_watch_refresh_timer.stop()
+        self._folder_watch_refresh_pending = False
+        self._watched_folder_path = ""
+        if not target:
+            return
+        try:
+            if self._folder_watcher.addPath(target):
+                self._watched_folder_path = target
+        except RuntimeError:
+            self._watched_folder_path = ""
+
+    def _queue_watched_folder_refresh(self, delay_ms: int = 900) -> None:
+        if not self._watch_current_folder_enabled or self._scope_kind != "folder" or not self._current_folder:
+            return
+        self._folder_watch_refresh_pending = True
+        self._folder_watch_refresh_timer.start(max(0, delay_ms))
+
+    def _handle_watched_folder_changed(self, path: str) -> None:
+        if not self._watch_current_folder_enabled or self._scope_kind != "folder" or not self._current_folder:
+            return
+        if normalized_path_key(path) != normalized_path_key(self._current_folder):
+            return
+        self._queue_watched_folder_refresh()
+        if self._scan_in_progress:
+            self.statusBar().showMessage(f"Detected folder changes in {self._current_folder}; refresh queued.")
+            return
+        self.statusBar().showMessage(f"Detected folder changes in {self._current_folder}; refreshing...")
+
+    def _run_watched_folder_refresh(self) -> None:
+        if not self._folder_watch_refresh_pending:
+            return
+        if not self._watch_current_folder_enabled or self._scope_kind != "folder" or not self._current_folder:
+            self._folder_watch_refresh_pending = False
+            return
+        if self._scan_in_progress:
+            self._folder_watch_refresh_timer.start(450)
+            return
+        if not os.path.isdir(self._current_folder):
+            self._folder_watch_refresh_pending = False
+            self._refresh_current_folder_watch()
+            return
+        self._folder_watch_refresh_pending = False
+        self.statusBar().showMessage(f"Refreshing changed folder: {self._current_folder}")
+        self._load_folder(self._current_folder, force_refresh=True)
+
+    def _load_folder(
+        self,
+        folder: str,
+        *,
+        force_refresh: bool = False,
+        chunked_restore: bool = False,
+        bypass_catalog_cache: bool = False,
+    ) -> None:
         if not folder:
             return
         if self._active_tool_mode or self.grid.tool_checkbox_mode():
@@ -8246,6 +8349,7 @@ class MainWindow(QMainWindow):
             self._remember_current_folder_view_state()
         self._current_folder = folder
         self._set_scope_state(kind="folder", scope_id=normalized_path_key(folder), label=folder)
+        self._refresh_current_folder_watch()
         self._settings.setValue(self.LAST_FOLDER_KEY, folder)
         self._remember_recent_folder(folder)
         self._apply_folder_view_state(folder)
@@ -8255,7 +8359,11 @@ class MainWindow(QMainWindow):
             self._chunked_load_scan_tokens.add(token)
         self._chunked_load_scan_tokens = {existing for existing in self._chunked_load_scan_tokens if existing >= token}
         self._scan_showed_cached = False
+        self._scan_cached_source = ""
         self._scan_in_progress = True
+        self._catalog_load_source = "scanning"
+        self._catalog_load_detail = f"Scanning {folder}..."
+        self._refresh_catalog_status_indicator()
         self._cancel_scope_enrichment_task()
         self._annotation_hydration_token += 1
         if self._active_annotation_hydration_task is not None:
@@ -8311,6 +8419,8 @@ class MainWindow(QMainWindow):
             token,
             self._sort_mode,
             prefer_cached_only=(not force_refresh and self._is_slow_source_folder(folder)),
+            use_catalog_cache=self._catalog_cache_reads_enabled(),
+            read_cached_records=not bypass_catalog_cache,
         )
         self._active_scan_tasks[token] = task
         task.signals.cached.connect(self._handle_scan_cached, Qt.ConnectionType.QueuedConnection)
@@ -8348,6 +8458,12 @@ class MainWindow(QMainWindow):
             self._active_review_intelligence_task = None
         self._current_folder = ""
         self._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
+        self._refresh_current_folder_watch()
+        self._scan_showed_cached = False
+        self._scan_cached_source = ""
+        self._catalog_load_source = "idle"
+        self._catalog_load_detail = "Virtual scopes are loaded from app state, not folder cache."
+        self._refresh_catalog_status_indicator()
         self._clear_ai_results_state(preserve_setting=True)
         self._refresh_recycle_button()
         self.grid.set_empty_message("Choose a folder to start triaging images.")
@@ -8918,10 +9034,63 @@ class MainWindow(QMainWindow):
         if not self._filter_metadata_queue:
             self._metadata_request_timer.stop()
 
-    def _handle_scan_cached(self, folder: str, token: int, records: list[ImageRecord]) -> None:
+    def _catalog_cache_reads_enabled(self) -> bool:
+        override = catalog_cache_env_override()
+        return self._catalog_cache_enabled if override is None else override
+
+    @staticmethod
+    def _catalog_source_label(source: str) -> str:
+        if source == "catalog":
+            return "Catalog Cache"
+        if source == "live":
+            return "Live Scan"
+        if source == "scanning":
+            return "Scanning"
+        if source == "failed":
+            return "Failed"
+        return "Idle"
+
+    def _catalog_status_badge_text(self) -> str:
+        if self._catalog_load_source == "live" and self._scan_cached_source:
+            return f"Load: {self._catalog_source_label(self._scan_cached_source)} + Live"
+        return f"Load: {self._catalog_source_label(self._catalog_load_source)}"
+
+    def _catalog_debug_summary(self, *, include_current: bool = False) -> str:
+        stats = self._catalog_repository.stats()
+        enabled_label = "Enabled" if self._catalog_cache_reads_enabled() else "Disabled"
+        override = catalog_cache_env_override()
+        lines = [f"Catalog cache reads: {enabled_label}"]
+        if override is not None:
+            lines[-1] = f"{lines[-1]} (environment override)"
+        lines.append(f"Folder watch: {'Enabled' if self._watch_current_folder_enabled else 'Disabled'}")
+        if include_current:
+            lines.append(f"Current load: {self._catalog_source_label(self._catalog_load_source)}")
+            if self._catalog_load_detail:
+                lines.append(self._catalog_load_detail)
+        if stats.error_message:
+            lines.append(f"Catalog error: {stats.error_message}")
+        else:
+            lines.append(f"Indexed folders: {stats.folder_count}")
+            lines.append(f"Indexed image bundles: {stats.record_count}")
+            if stats.last_indexed_at:
+                lines.append(f"Last indexed: {stats.last_indexed_at}")
+        lines.append(f"Database: {stats.db_path}")
+        return "\n".join(lines)
+
+    def _refresh_catalog_status_indicator(self) -> None:
+        if not hasattr(self, "catalog_status_label"):
+            return
+        self.catalog_status_label.setText(self._catalog_status_badge_text())
+        self.catalog_status_label.setToolTip(self._catalog_debug_summary(include_current=True))
+
+    def _handle_scan_cached(self, folder: str, token: int, records: list[ImageRecord], source: str) -> None:
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder) or not records:
             return
         self._scan_showed_cached = True
+        self._scan_cached_source = source
+        self._catalog_load_source = source or "idle"
+        self._catalog_load_detail = f"Loaded from {self._catalog_source_label(source)}; live refresh still running."
+        self._refresh_catalog_status_indicator()
         self.grid.set_empty_message("Choose a folder to start triaging images.")
         self._apply_loaded_records(
             records,
@@ -8930,9 +9099,10 @@ class MainWindow(QMainWindow):
         )
         if self._ui_mode == "ai":
             self._load_hidden_ai_results_for_current_folder(show_message=False)
-        self.statusBar().showMessage(f"Loaded cached folder index for {self._current_folder}, refreshing from disk...")
+        cache_label = self._catalog_source_label(source)
+        self.statusBar().showMessage(f"Loaded {cache_label.lower()} for {self._current_folder}, refreshing from disk...")
 
-    def _handle_scan_finished(self, folder: str, token: int, records: list[ImageRecord]) -> None:
+    def _handle_scan_finished(self, folder: str, token: int, records: list[ImageRecord], source: str) -> None:
         self._active_scan_tasks.pop(token, None)
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
             self._chunked_load_scan_tokens.discard(token)
@@ -8943,16 +9113,32 @@ class MainWindow(QMainWindow):
         chunked_view = token in self._chunked_load_scan_tokens
         self._chunked_load_scan_tokens.discard(token)
         if self._scan_showed_cached and self._records_match_for_refresh(self._all_records, records):
+            self._catalog_load_source = source or "live"
+            if self._scan_cached_source:
+                self._catalog_load_detail = f"Opened from {self._catalog_source_label(self._scan_cached_source)} and confirmed by live scan."
+            else:
+                self._catalog_load_detail = "Live scan confirmed the current folder contents."
+            self._refresh_catalog_status_indicator()
             self._schedule_loaded_records_enrichment()
             if self._ui_mode == "ai":
                 self._load_hidden_ai_results_for_current_folder(show_message=False)
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
+            if self._folder_watch_refresh_pending:
+                self._folder_watch_refresh_timer.start(250)
             return
         self._apply_loaded_records(records, chunked_view=chunked_view)
+        self._catalog_load_source = source or "live"
+        if self._scan_showed_cached and self._scan_cached_source:
+            self._catalog_load_detail = f"Opened from {self._catalog_source_label(self._scan_cached_source)} and refreshed from disk."
+        else:
+            self._catalog_load_detail = "Loaded directly from a live folder scan."
+        self._refresh_catalog_status_indicator()
         if self._ui_mode == "ai":
             self._load_hidden_ai_results_for_current_folder(show_message=False)
         if self._scan_showed_cached:
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
+        if self._folder_watch_refresh_pending:
+            self._folder_watch_refresh_timer.start(250)
 
     def _handle_scan_failed(self, folder: str, token: int, message: str) -> None:
         self._active_scan_tasks.pop(token, None)
@@ -9006,7 +9192,12 @@ class MainWindow(QMainWindow):
         self.grid.set_items([])
         self._refresh_recycle_button()
         self._update_action_states()
+        self._catalog_load_source = "failed"
+        self._catalog_load_detail = message
+        self._refresh_catalog_status_indicator()
         self.statusBar().showMessage(f"Could not scan {self._current_folder}: {message}")
+        if self._folder_watch_refresh_pending:
+            self._folder_watch_refresh_timer.start(450)
 
     def _handle_current_changed(self, index: int) -> None:
         self._enqueue_filter_metadata_paths(self.grid.visible_item_paths(limit=200), front=True)
@@ -10475,6 +10666,9 @@ class MainWindow(QMainWindow):
             current_session=self._session_id,
             winner_mode=self._winner_mode,
             delete_mode=self._delete_mode,
+            catalog_cache_enabled=self._catalog_cache_enabled,
+            watch_current_folder=self._watch_current_folder_enabled,
+            catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
             preset_save_callback=persist_workflow_presets,
             parent=self,
@@ -10489,15 +10683,23 @@ class MainWindow(QMainWindow):
         session_changed = new_session != self._session_id
         winner_changed = result.winner_mode != self._winner_mode
         delete_changed = result.delete_mode != self._delete_mode
+        catalog_changed = result.catalog_cache_enabled != self._catalog_cache_enabled
+        watch_changed = result.watch_current_folder != self._watch_current_folder_enabled
 
         self._session_id = new_session
         self._winner_mode = result.winner_mode
         self._delete_mode = result.delete_mode
+        self._catalog_cache_enabled = result.catalog_cache_enabled
+        self._watch_current_folder_enabled = result.watch_current_folder
         self._settings.setValue(self.SESSION_KEY, self._session_id)
         self._settings.setValue(self.WINNER_MODE_KEY, self._winner_mode.value)
         self._settings.setValue(self.DELETE_MODE_KEY, self._delete_mode.value)
+        self._settings.setValue(self.CATALOG_CACHE_ENABLED_KEY, self._catalog_cache_enabled)
+        self._settings.setValue(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, self._watch_current_folder_enabled)
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Session: {self._session_id}")
+        self._refresh_current_folder_watch()
+        self._refresh_catalog_status_indicator()
 
         if session_changed:
             self._undo_stack.clear()
@@ -10512,6 +10714,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Delete behavior set to {self._delete_mode.value}")
         elif session_changed:
             self.statusBar().showMessage(f"Switched to session: {self._session_id}")
+        elif catalog_changed:
+            state = "enabled" if self._catalog_cache_enabled else "disabled"
+            self.statusBar().showMessage(f"Catalog cache reads {state}")
+        elif watch_changed:
+            state = "enabled" if self._watch_current_folder_enabled else "disabled"
+            self.statusBar().showMessage(f"Current-folder watch {state}")
 
     def _empty_recycle_bin(self) -> None:
         recycle_root = self._recycle_root_for_folder()
@@ -10625,7 +10833,7 @@ class MainWindow(QMainWindow):
         if next_path == record.path:
             next_path = None
         if self._current_folder:
-            self._folder_scan_cache.save(normalize_filesystem_path(self._current_folder), self._all_records)
+            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-remove")
         self._apply_records_view(current_path=next_path)
 
     def _delete_record(self, index: int) -> None:
@@ -11618,7 +11826,7 @@ class MainWindow(QMainWindow):
         self._all_records_by_path.pop(original_path, None)
         self._all_records_by_path[record.path] = record
         if self._current_folder:
-            self._folder_scan_cache.save(normalize_filesystem_path(self._current_folder), self._all_records)
+            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-replace")
 
     def _replace_records_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
         if not records_by_old_path:
@@ -11629,7 +11837,7 @@ class MainWindow(QMainWindow):
         ]
         self._all_records_by_path = {record.path: record for record in self._all_records}
         if self._current_folder:
-            self._folder_scan_cache.save(normalize_filesystem_path(self._current_folder), self._all_records)
+            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-move")
 
     def _rekey_filter_metadata_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
         if not records_by_old_path:
