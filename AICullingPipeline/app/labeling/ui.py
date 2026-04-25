@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import sys
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -39,6 +41,9 @@ from app.labeling.session import LabelingSession
 from app.labeling.theme import apply_labeling_theme
 
 
+_READY_FILE_ENV = "IMAGE_TRIAGE_LABELING_READY_FILE"
+
+
 def launch_labeling_app(
     config: LabelingConfig,
     *,
@@ -55,7 +60,21 @@ def launch_labeling_app(
         parent=window,
     )
     window.show()
+    app.processEvents()
+    _notify_host_ready()
     return app.exec()
+
+
+def _notify_host_ready() -> None:
+    ready_file = os.environ.get(_READY_FILE_ENV, "").strip()
+    if not ready_file:
+        return
+    ready_path = Path(ready_file).expanduser()
+    try:
+        ready_path.parent.mkdir(parents=True, exist_ok=True)
+        ready_path.write_text('{"state":"ready"}', encoding="utf-8")
+    except OSError:
+        pass
 
 
 class ImagePreviewWidget(QGroupBox):

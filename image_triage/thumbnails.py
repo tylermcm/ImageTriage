@@ -69,6 +69,7 @@ class ThumbnailTask(QRunnable):
 class ThumbnailManager(QObject):
     thumbnail_ready = Signal(object, object)
     thumbnail_failed = Signal(object, str)
+    RESULTS_PER_TICK = 8
 
     def __init__(
         self,
@@ -119,7 +120,7 @@ class ThumbnailManager(QObject):
 
     def _drain_results(self) -> None:
         processed = 0
-        while processed < 32:
+        while processed < self.RESULTS_PER_TICK:
             try:
                 state, key, payload = self._result_queue.get_nowait()
             except Empty:

@@ -36,6 +36,7 @@ class WorkflowSettingsResult:
     delete_mode: DeleteMode
     catalog_cache_enabled: bool = True
     watch_current_folder: bool = True
+    ai_auto_profile_enabled: bool = False
     presets: tuple[WorkflowPreset, ...] = ()
 
 
@@ -49,6 +50,7 @@ class WorkflowSettingsDialog(QDialog):
         delete_mode: DeleteMode,
         catalog_cache_enabled: bool = True,
         watch_current_folder: bool = True,
+        ai_auto_profile_enabled: bool = False,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
@@ -57,7 +59,7 @@ class WorkflowSettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Workflow Settings")
         self.setModal(True)
-        self.resize(460, 260)
+        self.resize(480, 360)
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
@@ -131,6 +133,26 @@ class WorkflowSettingsDialog(QDialog):
         catalog_layout.addWidget(self.catalog_summary_label)
 
         layout.addWidget(catalog_group)
+
+        ai_group = QGroupBox("AI Training")
+        ai_layout = QVBoxLayout(ai_group)
+        ai_layout.setContentsMargins(12, 14, 12, 12)
+        ai_layout.setSpacing(10)
+
+        self.ai_auto_profile_checkbox = QCheckBox("Suggest a training profile before training")
+        self.ai_auto_profile_checkbox.setChecked(ai_auto_profile_enabled)
+        ai_layout.addWidget(self.ai_auto_profile_checkbox)
+
+        ai_note = QLabel(
+            "Off by default. When enabled, the app classifies the current folder before training and prefills the profile. "
+            "If the folder is mixed or unclear, it stays on General Use."
+        )
+        ai_note.setWordWrap(True)
+        ai_note.setObjectName("mutedText")
+        ai_note.setStyleSheet("font-size: 11px;")
+        ai_layout.addWidget(ai_note)
+
+        layout.addWidget(ai_group)
 
         self.preset_status_label = QLabel("")
         self.preset_status_label.setObjectName("mutedText")
@@ -263,5 +285,6 @@ class WorkflowSettingsDialog(QDialog):
             delete_mode=delete_mode,
             catalog_cache_enabled=self.catalog_cache_checkbox.isChecked(),
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
+            ai_auto_profile_enabled=self.ai_auto_profile_checkbox.isChecked(),
             presets=tuple(self._presets) if include_presets else (),
         )

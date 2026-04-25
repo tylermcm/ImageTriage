@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
@@ -144,6 +145,87 @@ def review_scoring_provider_id(
     _ensure_builtin_review_scoring_providers()
     provider = resolve_review_scoring_provider(request)
     return provider.provider_id if provider is not None else ""
+
+
+def build_review_scoring_cache_key(
+    records: list[ImageRecord] | tuple[ImageRecord, ...],
+    *,
+    ai_bundle: AIBundle | None,
+    review_bundle: "ReviewIntelligenceBundle | None",
+    correction_events: Iterable[dict[str, object]],
+) -> str:
+    correction_event_rows = tuple(correction_events)
+    provider_id = review_scoring_provider_id(
+        records,
+        ai_bundle=ai_bundle,
+        review_bundle=review_bundle,
+        correction_events=correction_event_rows,
+    )
+    canonical_records = [
+        {
+            "path": record.path,
+            "size": int(record.size),
+            "modified_ns": int(record.modified_ns),
+        }
+        for record in records
+    ]
+    ai_rows: list[dict[str, object]] = []
+    if ai_bundle is not None:
+        for record in records:
+            result = find_ai_result_for_record(ai_bundle, record)
+            if result is None:
+                continue
+            ai_rows.append(
+                {
+                    "path": record.path,
+                    "group_id": result.group_id,
+                    "group_size": int(result.group_size),
+                    "rank_in_group": int(result.rank_in_group),
+                    "score": round(float(result.score), 6),
+                    "normalized_score": None if result.normalized_score is None else round(float(result.normalized_score), 6),
+                    "confidence_bucket": result.confidence_bucket.value,
+                }
+            )
+    review_groups: list[dict[str, object]] = []
+    review_insights: list[dict[str, object]] = []
+    if review_bundle is not None:
+        for group in review_bundle.groups:
+            review_groups.append(
+                {
+                    "id": group.id,
+                    "kind": group.kind,
+                    "label": group.label,
+                    "member_paths": list(group.member_paths),
+                    "reasons": list(group.reasons),
+                }
+            )
+        for record in records:
+            insight = review_bundle.insight_for_path(record.path)
+            if insight is None:
+                continue
+            review_insights.append(
+                {
+                    "path": record.path,
+                    "group_id": insight.group_id,
+                    "group_kind": insight.group_kind,
+                    "group_label": insight.group_label,
+                    "group_size": int(insight.group_size),
+                    "rank_in_group": int(insight.rank_in_group),
+                    "detail_score": round(float(insight.detail_score), 6),
+                    "exposure_score": round(float(insight.exposure_score), 6),
+                }
+            )
+    correction_rows = [_canonicalize_correction_event(event) for event in correction_event_rows]
+    payload = {
+        "provider_id": provider_id,
+        "records": canonical_records,
+        "ai_results": ai_rows,
+        "review_groups": review_groups,
+        "review_insights": review_insights,
+        "corrections": correction_rows,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha1(encoded.encode("utf-8")).hexdigest()
 
 
 def normalize_review_round(value: str | None) -> str:
@@ -723,3 +805,26 @@ def _float_value(value: object) -> float | None:
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
+
+
+def _canonicalize_correction_event(event: dict[str, object]) -> dict[str, object]:
+    payload = event.get("payload")
+    payload_dict = payload if isinstance(payload, dict) else {}
+    return {
+        "record_path": str(event.get("record_path") or ""),
+        "other_path": str(event.get("other_path") or ""),
+        "group_id": str(event.get("group_id") or ""),
+        "event_type": str(event.get("event_type") or ""),
+        "decision": str(event.get("decision") or ""),
+        "source_mode": str(event.get("source_mode") or ""),
+        "ai_bucket": str(event.get("ai_bucket") or ""),
+        "ai_rank_in_group": int(event.get("ai_rank_in_group") or 0),
+        "ai_group_size": int(event.get("ai_group_size") or 0),
+        "review_round": str(event.get("review_round") or ""),
+        "payload": {
+            "preferred_detail_score": _float_value(payload_dict.get("preferred_detail_score")),
+            "other_detail_score": _float_value(payload_dict.get("other_detail_score")),
+            "preferred_ai_strength": _float_value(payload_dict.get("preferred_ai_strength")),
+            "other_ai_strength": _float_value(payload_dict.get("other_ai_strength")),
+        },
+    }

@@ -38,6 +38,9 @@ class AITrainingStatsDialog(QDialog):
         self.train_loss_value_label = QLabel("n/a", summary_card)
         self.validation_loss_value_label = QLabel("n/a", summary_card)
         self.validation_accuracy_value_label = QLabel("n/a", summary_card)
+        self.fit_health_value_label = QLabel("Pending", summary_card)
+        self.fit_summary_value_label = QLabel("Run training or evaluation to get a simple health check.", summary_card)
+        self.fit_remedy_value_label = QLabel("", summary_card)
         for label in (
             self.stage_value_label,
             self.run_value_label,
@@ -45,9 +48,13 @@ class AITrainingStatsDialog(QDialog):
             self.train_loss_value_label,
             self.validation_loss_value_label,
             self.validation_accuracy_value_label,
+            self.fit_health_value_label,
+            self.fit_summary_value_label,
+            self.fit_remedy_value_label,
         ):
             label.setObjectName("secondaryText")
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setWordWrap(True)
 
         rows = (
             ("Stage", self.stage_value_label),
@@ -56,6 +63,9 @@ class AITrainingStatsDialog(QDialog):
             ("Train Loss", self.train_loss_value_label),
             ("Validation Loss", self.validation_loss_value_label),
             ("Validation Pairwise Acc", self.validation_accuracy_value_label),
+            ("Training Health", self.fit_health_value_label),
+            ("Summary", self.fit_summary_value_label),
+            ("Try Next", self.fit_remedy_value_label),
         )
         for row_index, (title_text, value_label) in enumerate(rows):
             key_label = QLabel(title_text, summary_card)
@@ -92,6 +102,11 @@ class AITrainingStatsDialog(QDialog):
 
     def clear_log(self) -> None:
         self.log_view.clear()
+
+    def set_fit_diagnosis(self, label: str, summary: str = "", remedy: str = "") -> None:
+        self.fit_health_value_label.setText(label or "Pending")
+        self.fit_summary_value_label.setText(summary or "Run training or evaluation to get a simple health check.")
+        self.fit_remedy_value_label.setText(remedy or "")
 
     def append_log_line(self, line: str) -> None:
         message = (line or "").strip()

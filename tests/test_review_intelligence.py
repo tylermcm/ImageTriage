@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
+from image_triage.catalog import CatalogRepository
 from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord
 from image_triage.review_intelligence import (
     BuildReviewIntelligenceTask,
     ReviewIntelligenceCancelled,
+    ReviewGroup,
+    ReviewInsight,
+    ReviewIntelligenceBundle,
     _RecordFingerprint,
+    build_review_feature_cache_key,
+    build_review_grouping_cache_key,
     build_review_intelligence,
 )
 
@@ -264,6 +272,235 @@ class ReviewIntelligenceTests(unittest.TestCase):
 
         self.assertEqual(cancelled_events, [("C:/shots", 17)])
         self.assertEqual(finished_events, [])
+
+    def test_build_review_task_uses_cached_grouping_when_available(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_review_cache_") as temp_dir:
+            db_path = Path(temp_dir) / "catalog.sqlite3"
+            folder = str(Path(temp_dir) / "shots")
+            records = (
+                ImageRecord(path=f"{folder}/frame_01.jpg", name="frame_01.jpg", size=100, modified_ns=1),
+                ImageRecord(path=f"{folder}/frame_02.jpg", name="frame_02.jpg", size=120, modified_ns=2),
+            )
+            repository = CatalogRepository(db_path)
+            repository.save_folder_records(folder, list(records))
+            cached_group = ReviewGroup(
+                id="review-1",
+                kind="similar",
+                label="Similar",
+                member_paths=(records[0].path, records[1].path),
+                reasons=("Cached grouping.",),
+            )
+            cached_insight = ReviewInsight(
+                path=records[0].path,
+                group_id=cached_group.id,
+                group_kind=cached_group.kind,
+                group_label=cached_group.label,
+                group_size=2,
+                rank_in_group=1,
+                reasons=cached_group.reasons,
+                detail_score=84.0,
+                exposure_score=66.0,
+            )
+            cached_bundle = ReviewIntelligenceBundle(
+                groups=(cached_group,),
+                insights_by_path={
+                    records[0].path: cached_insight,
+                },
+            )
+            repository.save_review_grouping(
+                folder,
+                cache_key=build_review_grouping_cache_key(records),
+                provider_id="default",
+                bundle=cached_bundle,
+            )
+            task = BuildReviewIntelligenceTask(
+                folder=folder,
+                token=21,
+                records=records,
+                folder_path=folder,
+                catalog_db_path=db_path,
+            )
+            finished_payloads: list[ReviewIntelligenceBundle] = []
+            cache_status_payloads: list[dict[str, object]] = []
+            task.signals.finished.connect(lambda _folder, _token, bundle: finished_payloads.append(bundle))
+            task.signals.cache_status.connect(lambda _folder, _token, payload: cache_status_payloads.append(payload))
+
+            with patch(
+                "image_triage.review_intelligence.build_review_intelligence",
+                side_effect=AssertionError("expected cached grouping"),
+            ):
+                task.run()
+
+            self.assertEqual(1, len(finished_payloads))
+            self.assertEqual(cached_group, finished_payloads[0].groups[0])
+            self.assertEqual(cached_insight, finished_payloads[0].insight_for_path(records[0].path))
+            self.assertEqual("catalog", cache_status_payloads[0]["grouping_source"])
+            self.assertEqual("skipped", cache_status_payloads[0]["feature_source"])
+
+    def test_build_review_task_persists_grouping_after_compute(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_review_cache_") as temp_dir:
+            db_path = Path(temp_dir) / "catalog.sqlite3"
+            folder = str(Path(temp_dir) / "shots")
+            records = (
+                ImageRecord(path=f"{folder}/frame_01.jpg", name="frame_01.jpg", size=100, modified_ns=1),
+                ImageRecord(path=f"{folder}/frame_02.jpg", name="frame_02.jpg", size=120, modified_ns=2),
+            )
+            repository = CatalogRepository(db_path)
+            repository.save_folder_records(folder, list(records))
+            computed_group = ReviewGroup(
+                id="review-2",
+                kind="likely_duplicate",
+                label="Near Dup",
+                member_paths=(records[0].path, records[1].path),
+                reasons=("Computed grouping.",),
+            )
+            computed_insight_a = ReviewInsight(
+                path=records[0].path,
+                group_id=computed_group.id,
+                group_kind=computed_group.kind,
+                group_label=computed_group.label,
+                group_size=2,
+                rank_in_group=1,
+                reasons=computed_group.reasons,
+                detail_score=91.0,
+                exposure_score=74.0,
+            )
+            computed_insight_b = ReviewInsight(
+                path=records[1].path,
+                group_id=computed_group.id,
+                group_kind=computed_group.kind,
+                group_label=computed_group.label,
+                group_size=2,
+                rank_in_group=2,
+                reasons=computed_group.reasons,
+                detail_score=79.0,
+                exposure_score=63.0,
+            )
+            computed_bundle = ReviewIntelligenceBundle(
+                groups=(computed_group,),
+                insights_by_path={
+                    records[0].path: computed_insight_a,
+                    records[1].path: computed_insight_b,
+                },
+            )
+            task = BuildReviewIntelligenceTask(
+                folder=folder,
+                token=22,
+                records=records,
+                folder_path=folder,
+                catalog_db_path=db_path,
+            )
+            cache_status_payloads: list[dict[str, object]] = []
+            task.signals.cache_status.connect(lambda _folder, _token, payload: cache_status_payloads.append(payload))
+
+            with patch(
+                "image_triage.review_intelligence.build_review_intelligence",
+                return_value=computed_bundle,
+            ):
+                task.run()
+
+            loaded = repository.load_review_grouping(folder, cache_key=build_review_grouping_cache_key(records))
+
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(computed_group, loaded.bundle.groups[0])
+            self.assertEqual(computed_insight_a, loaded.bundle.insight_for_path(records[0].path))
+            self.assertEqual(computed_insight_b, loaded.bundle.insight_for_path(records[1].path))
+            self.assertEqual("live", cache_status_payloads[0]["grouping_source"])
+
+    def test_build_review_task_uses_cached_features_before_compute(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_review_cache_") as temp_dir:
+            db_path = Path(temp_dir) / "catalog.sqlite3"
+            folder = str(Path(temp_dir) / "shots")
+            records = (
+                ImageRecord(path=f"{folder}/frame_01.jpg", name="frame_01.jpg", size=100, modified_ns=1),
+            )
+            repository = CatalogRepository(db_path)
+            repository.save_folder_records(folder, list(records))
+            cached_fingerprint = _RecordFingerprint(
+                record=records[0],
+                source_path=records[0].path,
+                metadata=CaptureMetadata(path=records[0].path, width=4000, height=3000),
+                dhash=0xAAAA,
+                avg_luma=90.0,
+                width=4000,
+                height=3000,
+                sha1_digest="cached",
+                detail_score=54.0,
+                exposure_score=61.0,
+            )
+            repository.save_review_features(
+                folder,
+                cache_keys={records[0].path: build_review_feature_cache_key(records[0])},
+                fingerprints=[cached_fingerprint],
+            )
+            task = BuildReviewIntelligenceTask(
+                folder=folder,
+                token=23,
+                records=records,
+                folder_path=folder,
+                catalog_db_path=db_path,
+            )
+            finished_payloads: list[ReviewIntelligenceBundle] = []
+            cache_status_payloads: list[dict[str, object]] = []
+            task.signals.finished.connect(lambda _folder, _token, bundle: finished_payloads.append(bundle))
+            task.signals.cache_status.connect(lambda _folder, _token, payload: cache_status_payloads.append(payload))
+
+            with patch(
+                "image_triage.review_intelligence._build_fingerprint",
+                side_effect=AssertionError("expected cached review features"),
+            ):
+                task.run()
+
+            self.assertEqual(1, len(finished_payloads))
+            self.assertEqual((), finished_payloads[0].groups)
+            self.assertEqual("catalog", cache_status_payloads[0]["feature_source"])
+
+    def test_build_review_task_persists_features_after_compute(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_review_cache_") as temp_dir:
+            db_path = Path(temp_dir) / "catalog.sqlite3"
+            folder = str(Path(temp_dir) / "shots")
+            records = (
+                ImageRecord(path=f"{folder}/frame_01.jpg", name="frame_01.jpg", size=100, modified_ns=1),
+            )
+            repository = CatalogRepository(db_path)
+            repository.save_folder_records(folder, list(records))
+            computed_fingerprint = _RecordFingerprint(
+                record=records[0],
+                source_path=records[0].path,
+                metadata=CaptureMetadata(path=records[0].path, width=3200, height=2400),
+                dhash=0x1234,
+                avg_luma=72.0,
+                width=3200,
+                height=2400,
+                sha1_digest="persisted",
+                detail_score=48.0,
+                exposure_score=53.0,
+            )
+            task = BuildReviewIntelligenceTask(
+                folder=folder,
+                token=24,
+                records=records,
+                folder_path=folder,
+                catalog_db_path=db_path,
+            )
+            cache_status_payloads: list[dict[str, object]] = []
+            task.signals.cache_status.connect(lambda _folder, _token, payload: cache_status_payloads.append(payload))
+
+            with patch(
+                "image_triage.review_intelligence._build_fingerprint",
+                return_value=computed_fingerprint,
+            ):
+                task.run()
+
+            loaded = repository.load_review_features(
+                folder,
+                records=records,
+                cache_keys={records[0].path: build_review_feature_cache_key(records[0])},
+            )
+
+            self.assertEqual(computed_fingerprint, loaded[records[0].path])
+            self.assertEqual("live", cache_status_payloads[0]["feature_source"])
 
 
 if __name__ == "__main__":

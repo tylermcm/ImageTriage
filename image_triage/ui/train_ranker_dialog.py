@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..ai_training import RankerTrainingOptions
+from ..ai_training import RankerTrainingOptions, ranker_profile_options
 
 
 class TrainRankerDialog(QDialog):
@@ -31,12 +31,14 @@ class TrainRankerDialog(QDialog):
         pairwise_count: int,
         cluster_count: int,
         active_reference_bank_path: str = "",
+        suggested_profile_key: str = "",
+        suggestion_reason: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Train Ranker")
         self.setModal(True)
-        self.resize(560, 440)
+        self.resize(560, 500)
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(16, 16, 16, 16)
@@ -68,6 +70,15 @@ class TrainRankerDialog(QDialog):
         self.run_name_edit = QLineEdit()
         self.run_name_edit.setPlaceholderText("Optional name like indoor-portraits-v3")
         options_layout.addRow("Run Name", self.run_name_edit)
+
+        self.profile_combo = QComboBox()
+        for profile_key, profile_label in ranker_profile_options():
+            self.profile_combo.addItem(profile_label, profile_key)
+        if suggested_profile_key:
+            suggested_index = self.profile_combo.findData(suggested_profile_key)
+            if suggested_index >= 0:
+                self.profile_combo.setCurrentIndex(suggested_index)
+        options_layout.addRow("Profile", self.profile_combo)
 
         self.num_epochs_spin = QSpinBox()
         self.num_epochs_spin.setRange(1, 1000)
@@ -135,6 +146,19 @@ class TrainRankerDialog(QDialog):
         reference_layout.addWidget(reference_note)
         root_layout.addWidget(reference_group)
 
+        profile_note = QLabel(
+            "General Use is the safe default for mixed folders. Pick a narrower profile only when the folder is mostly one kind of subject."
+        )
+        profile_note.setObjectName("mutedText")
+        profile_note.setWordWrap(True)
+        root_layout.addWidget(profile_note)
+
+        if suggestion_reason:
+            suggestion_label = QLabel(suggestion_reason)
+            suggestion_label.setObjectName("mutedText")
+            suggestion_label.setWordWrap(True)
+            root_layout.addWidget(suggestion_label)
+
         button_box = QDialogButtonBox(self)
         self.cancel_button = QPushButton("Cancel")
         self.train_button = QPushButton("Train")
@@ -154,6 +178,7 @@ class TrainRankerDialog(QDialog):
             reference_bank_path = self.reference_bank_path_edit.text().strip()
         return RankerTrainingOptions(
             run_name=self.run_name_edit.text().strip(),
+            profile_key=str(self.profile_combo.currentData() or "general"),
             num_epochs=int(self.num_epochs_spin.value()),
             batch_size=int(self.batch_size_spin.value()),
             learning_rate=float(self.learning_rate_spin.value()),

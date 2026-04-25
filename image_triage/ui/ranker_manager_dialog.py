@@ -27,12 +27,20 @@ class RankerCenterSummary:
     hidden_root: str
     pairwise_labels: int
     cluster_labels: int
+    general_pairwise_labels: int
+    general_cluster_labels: int
+    general_source_folders: int
+    general_retrain_status: str
     candidates_ready: bool
     prepared_ready: bool
     active_ranker_label: str
+    active_profile_label: str
     active_reference_label: str
     saved_rankers: int
     has_active_checkpoint: bool
+    can_run_full_pipeline: bool
+    can_train: bool
+    can_evaluate: bool
 
 
 class RankerCenterDialog(QDialog):
@@ -75,9 +83,14 @@ class RankerCenterDialog(QDialog):
             ("Hidden AI Workspace", summary.hidden_root or "Not created yet"),
             ("Pairwise Labels", str(summary.pairwise_labels)),
             ("Cluster Labels", str(summary.cluster_labels)),
+            ("General Pairwise Labels", str(summary.general_pairwise_labels)),
+            ("General Cluster Labels", str(summary.general_cluster_labels)),
+            ("General Label Sources", str(summary.general_source_folders)),
+            ("General Retrain", summary.general_retrain_status or "No General Use guidance yet"),
             ("Candidate Groups", _yes_no(summary.candidates_ready)),
             ("Prepared Training Data", _yes_no(summary.prepared_ready)),
             ("Active Ranker", summary.active_ranker_label),
+            ("Active Profile", summary.active_profile_label),
             ("Reference Bank", summary.active_reference_label),
             ("Saved Rankers", str(summary.saved_rankers)),
         )
@@ -106,11 +119,11 @@ class RankerCenterDialog(QDialog):
             (
                 ("Collect Labels...", "collect_labels", True),
                 ("Prepare Data", "prepare_data", True),
-                ("Run Full Pipeline...", "run_full_pipeline", summary.pairwise_labels > 0 or summary.cluster_labels > 0),
+                ("Run Full Pipeline...", "run_full_pipeline", summary.can_run_full_pipeline),
             ),
             (
-                ("Train...", "train", summary.prepared_ready and (summary.pairwise_labels > 0 or summary.cluster_labels > 0)),
-                ("Evaluate", "evaluate", summary.has_active_checkpoint and (summary.pairwise_labels > 0 or summary.cluster_labels > 0)),
+                ("Train...", "train", summary.can_train),
+                ("Evaluate", "evaluate", summary.can_evaluate),
                 ("Score", "score", summary.has_active_checkpoint),
             ),
         )
@@ -130,15 +143,17 @@ class RankerCenterDialog(QDialog):
         table_label.setObjectName("secondaryText")
         root_layout.addWidget(table_label)
 
-        self.table = QTableWidget(0, 8, self)
+        self.table = QTableWidget(0, 10, self)
         self.table.setHorizontalHeaderLabels(
             [
                 "Active",
                 "Run",
+                "Profile",
                 "Created",
                 "Best Epoch",
                 "Pairwise Acc",
                 "Top-1 Hit",
+                "Fit",
                 "Labels",
                 "Reference",
             ]
@@ -223,10 +238,12 @@ class RankerCenterDialog(QDialog):
             values = (
                 "Yes" if run.is_active else "",
                 run.display_name,
+                run.profile_label,
                 _format_created_at(run.created_at),
                 str(run.best_epoch) if run.best_epoch is not None else "n/a",
                 _format_metric(run.best_validation_accuracy),
                 _format_metric(run.cluster_top1_hit_rate),
+                run.fit_diagnosis.label,
                 f"P {run.pairwise_labels} | C {run.cluster_labels}",
                 Path(run.reference_bank_path).name if run.reference_bank_path else "Plain ranker",
             )
@@ -254,9 +271,13 @@ class RankerCenterDialog(QDialog):
             return
         details = [
             f"Run: {selected.display_name}",
+            f"Profile: {selected.profile_label}",
             f"Created: {_format_created_at(selected.created_at)}",
             f"Checkpoint: {selected.checkpoint_path or 'Not available'}",
             f"Run Folder: {selected.run_dir}",
+            f"Training Health: {selected.fit_diagnosis.label}",
+            f"Health Summary: {selected.fit_diagnosis.summary}",
+            f"Try Next: {selected.fit_diagnosis.remedy}",
         ]
         if selected.metrics_path is not None:
             details.append(f"Training Metrics: {selected.metrics_path}")

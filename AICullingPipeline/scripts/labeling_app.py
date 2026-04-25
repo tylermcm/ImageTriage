@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
+import traceback
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from app.engine import LabelingConfig
+_READY_FILE_ENV = "IMAGE_TRIAGE_LABELING_READY_FILE"
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,24 +44,35 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Load config and launch the labeling UI."""
-
-    args = parse_args()
-    config = LabelingConfig.from_file(args.config).apply_overrides(
-        artifacts_dir=args.artifacts_dir,
-        output_dir=args.output_dir,
-        annotator_id=args.annotator_id,
-    )
-
     try:
+        from app.engine import LabelingConfig
+
+        args = parse_args()
+        config = LabelingConfig.from_file(args.config).apply_overrides(
+            artifacts_dir=args.artifacts_dir,
+            output_dir=args.output_dir,
+            annotator_id=args.annotator_id,
+        )
         _bootstrap_pyside6_runtime()
         from app.labeling.ui import launch_labeling_app
     except ImportError as exc:
-        raise ImportError(
+        wrapped = ImportError(
             "PySide6 is required for the labeling app. Install it with "
             "'pip install -r requirements.txt'."
-        ) from exc
+        )
+        _write_startup_error(wrapped, traceback.format_exc())
+        raise wrapped from exc
+    except Exception as exc:
+        _write_startup_error(exc, traceback.format_exc())
+        raise
 
-    raise SystemExit(launch_labeling_app(config))
+    try:
+        raise SystemExit(launch_labeling_app(config))
+    except BaseException as exc:
+        if isinstance(exc, SystemExit) and exc.code in (0, None):
+            raise
+        _write_startup_error(exc, traceback.format_exc())
+        raise
 
 
 def _bootstrap_pyside6_runtime() -> None:
@@ -79,6 +91,23 @@ def _bootstrap_pyside6_runtime() -> None:
     path_entries = current_path.split(os.pathsep) if current_path else []
     if str(pyside_dir) not in path_entries:
         os.environ["PATH"] = str(pyside_dir) + os.pathsep + current_path
+
+
+def _write_startup_error(exc: BaseException, details: str) -> None:
+    ready_file = os.environ.get(_READY_FILE_ENV, "").strip()
+    if not ready_file:
+        return
+    ready_path = Path(ready_file).expanduser()
+    payload = {
+        "state": "error",
+        "message": str(exc) or exc.__class__.__name__,
+        "details": details.strip(),
+    }
+    try:
+        ready_path.parent.mkdir(parents=True, exist_ok=True)
+        ready_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

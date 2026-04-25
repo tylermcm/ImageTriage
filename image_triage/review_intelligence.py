@@ -4,15 +4,17 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 from hashlib import sha1
+import json
 from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, Signal
 from PySide6.QtGui import QImage
 
+from .catalog import CatalogRepository
 from .formats import FITS_SUFFIXES, suffix_for_path
 from .imaging import load_image_for_display
-from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
+from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata, metadata_provider_id_for_path
 from .models import ImageRecord
 from .plugins import ReviewGroupingRequest, register_review_grouping_provider, resolve_review_grouping_provider
 from .review_tools import build_inspection_stats
@@ -20,6 +22,8 @@ from .scanner import normalized_path_key
 
 _FINGERPRINT_SIZE = QSize(96, 96)
 _FALLBACK_MAX_NEIGHBORS = 10
+_REVIEW_FEATURE_CACHE_VERSION = 1
+_REVIEW_GROUPING_CACHE_VERSION = 1
 
 _GROUP_PRIORITY = {
     "burst": 1,
@@ -122,17 +126,28 @@ class ReviewIntelligenceSignals(QObject):
     started = Signal(str, int, int)
     progress = Signal(str, int, int, int)
     chunk = Signal(str, int, object)
+    cache_status = Signal(str, int, object)
     finished = Signal(str, int, object)
     failed = Signal(str, int, str)
     cancelled = Signal(str, int)
 
 
 class BuildReviewIntelligenceTask(QRunnable):
-    def __init__(self, *, folder: str, token: int, records: tuple[ImageRecord, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        folder: str,
+        token: int,
+        records: tuple[ImageRecord, ...],
+        folder_path: str = "",
+        catalog_db_path: str | Path | None = None,
+    ) -> None:
         super().__init__()
         self.folder = folder
         self.token = token
         self.records = records
+        self.folder_path = folder_path
+        self.catalog_db_path = Path(catalog_db_path) if catalog_db_path else None
         self.signals = ReviewIntelligenceSignals()
         self._cancelled = False
         self.setAutoDelete(True)
@@ -144,6 +159,46 @@ class BuildReviewIntelligenceTask(QRunnable):
         total = len(self.records)
         self.signals.started.emit(self.folder, self.token, total)
         try:
+            repository = CatalogRepository(self.catalog_db_path) if self.folder_path else None
+            feature_cache_keys: dict[str, str] = {}
+            cached_fingerprints: dict[str, _RecordFingerprint] = {}
+            cached_feature_count = 0
+            feature_source = "live" if total > 0 else "idle"
+            if self.folder_path:
+                cache_key = build_review_grouping_cache_key(self.records)
+                feature_cache_keys = {
+                    record.path: build_review_feature_cache_key(record)
+                    for record in self.records
+                }
+                cached_entry = repository.load_review_grouping(self.folder_path, cache_key=cache_key) if repository is not None else None
+                cached_fingerprints = (
+                    repository.load_review_features(
+                        self.folder_path,
+                        records=self.records,
+                        cache_keys=feature_cache_keys,
+                    )
+                    if repository is not None
+                    else {}
+                )
+                cached_feature_count = sum(
+                    1 for record in self.records if isinstance(cached_fingerprints.get(record.path), _RecordFingerprint)
+                )
+                feature_source = _review_feature_source(total, cached_feature_count)
+                if cached_entry is not None:
+                    self.signals.cache_status.emit(
+                        self.folder,
+                        self.token,
+                        {
+                            "grouping_source": "catalog",
+                            "feature_source": "skipped",
+                            "total_records": total,
+                            "cached_feature_count": cached_feature_count,
+                            "computed_feature_count": 0,
+                        },
+                    )
+                    self.signals.finished.emit(self.folder, self.token, cached_entry.bundle)
+                    return
+            computed_fingerprints: list[_RecordFingerprint] = []
             bundle = build_review_intelligence(
                 list(self.records),
                 should_cancel=lambda: self._cancelled,
@@ -161,6 +216,33 @@ class BuildReviewIntelligenceTask(QRunnable):
                         "insights": dict(insights),
                     },
                 ),
+                cached_fingerprints=cached_fingerprints,
+                computed_fingerprint_callback=lambda fingerprint: computed_fingerprints.append(fingerprint),
+            )
+            if self.folder_path and not self._cancelled and repository is not None:
+                if computed_fingerprints:
+                    repository.save_review_features(
+                        self.folder_path,
+                        cache_keys=feature_cache_keys,
+                        fingerprints=computed_fingerprints,
+                    )
+                repository.save_review_grouping(
+                    self.folder_path,
+                    cache_key=build_review_grouping_cache_key(self.records),
+                    provider_id=review_grouping_provider_id(self.records),
+                    bundle=bundle,
+                )
+            computed_feature_count = len({fingerprint.record.path for fingerprint in computed_fingerprints})
+            self.signals.cache_status.emit(
+                self.folder,
+                self.token,
+                {
+                    "grouping_source": "live",
+                    "feature_source": feature_source,
+                    "total_records": total,
+                    "cached_feature_count": cached_feature_count,
+                    "computed_feature_count": computed_feature_count,
+                },
             )
         except ReviewIntelligenceCancelled:
             self.signals.cancelled.emit(self.folder, self.token)
@@ -188,6 +270,8 @@ class _DefaultReviewGroupingProvider:
             should_cancel=request.should_cancel,
             progress_callback=request.progress_callback,
             chunk_callback=request.chunk_callback,
+            cached_fingerprints=request.cached_fingerprints,
+            computed_fingerprint_callback=request.computed_fingerprint_callback,
         )
 
 
@@ -206,18 +290,46 @@ def review_grouping_provider_id(records: list[ImageRecord] | tuple[ImageRecord, 
     return provider.provider_id if provider is not None else ""
 
 
+def build_review_grouping_cache_key(records: list[ImageRecord] | tuple[ImageRecord, ...]) -> str:
+    payload = {
+        "cache_version": _REVIEW_GROUPING_CACHE_VERSION,
+        "provider_id": review_grouping_provider_id(records),
+        "records": [_canonicalize_grouping_record(record) for record in records],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha1(encoded.encode("utf-8")).hexdigest()
+
+
+def build_review_feature_cache_key(record: ImageRecord) -> str:
+    source_path = _analysis_source_path(record)
+    payload = {
+        "cache_version": _REVIEW_FEATURE_CACHE_VERSION,
+        "record_path": record.path,
+        "record_size": int(record.size),
+        "record_modified_ns": int(record.modified_ns),
+        "source_path": source_path,
+        "metadata_provider_id": metadata_provider_id_for_path(source_path),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha1(encoded.encode("utf-8")).hexdigest()
+
+
 def build_review_intelligence(
     records: list[ImageRecord],
     *,
     should_cancel: Callable[[], bool] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     chunk_callback: Callable[[tuple[ReviewGroup, ...], dict[str, ReviewInsight]], None] | None = None,
+    cached_fingerprints: dict[str, object] | None = None,
+    computed_fingerprint_callback: Callable[[object], None] | None = None,
 ) -> ReviewIntelligenceBundle:
     request = ReviewGroupingRequest(
         records=tuple(records),
         should_cancel=should_cancel,
         progress_callback=progress_callback,
         chunk_callback=chunk_callback,
+        cached_fingerprints=cached_fingerprints,
+        computed_fingerprint_callback=computed_fingerprint_callback,
     )
     _ensure_builtin_review_grouping_providers()
     provider = resolve_review_grouping_provider(request)
@@ -233,6 +345,8 @@ def _build_review_intelligence_builtin(
     should_cancel: Callable[[], bool] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     chunk_callback: Callable[[tuple[ReviewGroup, ...], dict[str, ReviewInsight]], None] | None = None,
+    cached_fingerprints: dict[str, object] | None = None,
+    computed_fingerprint_callback: Callable[[object], None] | None = None,
 ) -> ReviewIntelligenceBundle:
     if not records:
         return ReviewIntelligenceBundle(groups=(), insights_by_path={})
@@ -241,9 +355,18 @@ def _build_review_intelligence_builtin(
     _emit_progress(progress_callback, 0, total_records)
     metadata_cache: dict[str, CaptureMetadata] = {}
     fingerprints: list[_RecordFingerprint] = []
+    cached_lookup = cached_fingerprints or {}
     for index, record in enumerate(records, start=1):
         _raise_if_cancelled(should_cancel)
-        fingerprints.append(_build_fingerprint(record, metadata_cache))
+        cached = cached_lookup.get(record.path) or cached_lookup.get(normalized_path_key(record.path))
+        if isinstance(cached, _RecordFingerprint):
+            metadata_cache[record.path] = cached.metadata
+            fingerprints.append(cached)
+        else:
+            fingerprint = _build_fingerprint(record, metadata_cache)
+            fingerprints.append(fingerprint)
+            if computed_fingerprint_callback is not None:
+                computed_fingerprint_callback(fingerprint)
         _emit_progress(progress_callback, index, total_records)
 
     path_to_fingerprint = {fingerprint.record.path: fingerprint for fingerprint in fingerprints}
@@ -382,6 +505,7 @@ def _build_fingerprint(record: ImageRecord, metadata_cache: dict[str, CaptureMet
     avg_luma = 0.0
     width = metadata.width
     height = metadata.height
+    sha1_digest = _sha1_for_path(record.path)
     detail_score = 0.0
     exposure_score = 0.0
     if not image.isNull():
@@ -401,6 +525,7 @@ def _build_fingerprint(record: ImageRecord, metadata_cache: dict[str, CaptureMet
         avg_luma=avg_luma,
         width=width,
         height=height,
+        sha1_digest=sha1_digest,
         detail_score=detail_score,
         exposure_score=exposure_score,
     )
@@ -574,6 +699,24 @@ def _close_numeric(left: float | None, right: float | None, *, tolerance: float)
     return abs(left - right) <= tolerance
 
 
+def _canonicalize_grouping_record(record: ImageRecord) -> dict[str, object]:
+    return {
+        "path": record.path,
+        "size": int(record.size),
+        "modified_ns": int(record.modified_ns),
+        "companion_paths": list(record.companion_paths),
+        "edited_paths": list(record.edited_paths),
+        "variants": [
+            {
+                "path": variant.path,
+                "size": int(variant.size),
+                "modified_ns": int(variant.modified_ns),
+            }
+            for variant in record.display_variants
+        ],
+    }
+
+
 def _dimension_similarity(left: _RecordFingerprint, right: _RecordFingerprint) -> float:
     if left.width <= 0 or left.height <= 0 or right.width <= 0 or right.height <= 0:
         return 0.0
@@ -658,6 +801,16 @@ def _exposure_balance(stats) -> float:
 
 def _hamming_distance(left: int, right: int) -> int:
     return (left ^ right).bit_count()
+
+
+def _review_feature_source(total_records: int, cached_feature_count: int) -> str:
+    if total_records <= 0:
+        return "idle"
+    if cached_feature_count <= 0:
+        return "live"
+    if cached_feature_count >= total_records:
+        return "catalog"
+    return "mixed"
 
 
 def _connect(

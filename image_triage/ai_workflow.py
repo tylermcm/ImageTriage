@@ -14,11 +14,14 @@ import urllib.request
 from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from .ai_model import AIModelInstallation, resolve_ai_model_installation
+
+if TYPE_CHECKING:
+    from .models import ImageRecord
 
 
 HIDDEN_ROOT_NAME = ".image_triage_ai"
@@ -133,6 +136,13 @@ class AIWorkflowPaths:
     html_report_path: Path
 
 
+@dataclass(slots=True, frozen=True)
+class AIStageCacheKeys:
+    embedding_cache_key: str
+    cluster_cache_key: str
+    report_cache_key: str
+
+
 class AIRunSignals(QObject):
     started = Signal(str)
     stage = Signal(str, int, int, str)
@@ -150,6 +160,8 @@ class AIRunTask(QRunnable):
         paths: AIWorkflowPaths,
         labels_dir: Path | None = None,
         reference_bank_path: Path | None = None,
+        skip_extract: bool = False,
+        skip_cluster: bool = False,
     ) -> None:
         super().__init__()
         self.folder = folder
@@ -157,6 +169,8 @@ class AIRunTask(QRunnable):
         self.paths = paths
         self.labels_dir = labels_dir
         self.reference_bank_path = reference_bank_path
+        self.skip_cluster = bool(skip_cluster)
+        self.skip_extract = bool(skip_extract or self.skip_cluster)
         self.signals = AIRunSignals()
         self.setAutoDelete(True)
 
@@ -171,68 +185,75 @@ class AIRunTask(QRunnable):
             self.signals.failed.emit(folder_text, str(exc))
             return
 
-        commands = [
-            (
-                "extract",
-                "Extracting embeddings",
-                "scripts/extract_embeddings.py",
-                [
-                    "--config",
-                    str(self.runtime.extraction_config_path),
-                    "--input-dir",
-                    "",
-                    "--output-dir",
-                    str(self.paths.artifacts_dir),
-                    "--batch-size",
-                    str(self.runtime.batch_size),
-                    "--model-name",
-                    self.runtime.model_name,
-                    "--device",
-                    self.runtime.device,
-                    "--num-workers",
-                    str(self.runtime.num_workers),
-                ],
-            ),
-            (
-                "cluster",
-                "Building culling groups",
-                "scripts/cluster_embeddings.py",
-                [
-                    "--config",
-                    str(self.runtime.clustering_config_path),
-                    "--artifacts-dir",
-                    str(self.paths.artifacts_dir),
-                    "--output-dir",
-                    str(self.paths.artifacts_dir),
-                ],
-            ),
+        commands: list[tuple[str, str, str, list[str]]] = []
+        if not self.skip_extract:
+            commands.append(
+                (
+                    "extract",
+                    "Extracting embeddings",
+                    "scripts/extract_embeddings.py",
+                    [
+                        "--config",
+                        str(self.runtime.extraction_config_path),
+                        "--input-dir",
+                        "",
+                        "--output-dir",
+                        str(self.paths.artifacts_dir),
+                        "--batch-size",
+                        str(self.runtime.batch_size),
+                        "--model-name",
+                        self.runtime.model_name,
+                        "--device",
+                        self.runtime.device,
+                        "--num-workers",
+                        str(self.runtime.num_workers),
+                    ],
+                )
+            )
+        if not self.skip_cluster:
+            commands.append(
+                (
+                    "cluster",
+                    "Building culling groups",
+                    "scripts/cluster_embeddings.py",
+                    [
+                        "--config",
+                        str(self.runtime.clustering_config_path),
+                        "--artifacts-dir",
+                        str(self.paths.artifacts_dir),
+                        "--output-dir",
+                        str(self.paths.artifacts_dir),
+                    ],
+                )
+            )
+        report_args = [
+            "--config",
+            str(self.runtime.report_config_path),
+            "--artifacts-dir",
+            str(self.paths.artifacts_dir),
+            "--checkpoint-path",
+            str(self.runtime.checkpoint_path),
+            "--output-dir",
+            str(self.paths.report_dir),
+            "--device",
+            self.runtime.device,
+        ]
+        commands.append(
             (
                 "report",
                 "Scoring groups and building report",
                 "scripts/export_ranked_report.py",
-                [
-                    "--config",
-                    str(self.runtime.report_config_path),
-                    "--artifacts-dir",
-                    str(self.paths.artifacts_dir),
-                    "--checkpoint-path",
-                    str(self.runtime.checkpoint_path),
-                    "--output-dir",
-                    str(self.paths.report_dir),
-                    "--device",
-                    self.runtime.device,
-                ],
-            ),
-        ]
+                report_args,
+            )
+        )
 
         if self.labels_dir is not None and self.labels_dir.exists():
-            commands[-1][3].extend(["--labels-dir", str(self.labels_dir)])
+            report_args.extend(["--labels-dir", str(self.labels_dir)])
         if self.reference_bank_path is not None and self.reference_bank_path.exists():
-            commands[-1][3].extend(["--reference-bank-path", str(self.reference_bank_path)])
+            report_args.extend(["--reference-bank-path", str(self.reference_bank_path)])
 
-        use_local_stage = _should_use_local_staging(self.folder, self.runtime)
+        use_local_stage = not self.skip_extract and _should_use_local_staging(self.folder, self.runtime)
         total_stages = len(commands) + (1 if use_local_stage else 0)
-        command_start_index = 1
 
         if use_local_stage:
             self.signals.stage.emit(folder_text, 1, total_stages, "Staging images locally")
@@ -247,14 +268,14 @@ class AIRunTask(QRunnable):
                     eta_text,
                 ),
             )
-            commands[0][3][commands[0][3].index("--input-dir") + 1] = str(staged_input_dir)
-            command_start_index = 2
-        else:
+            if commands and commands[0][0] == "extract":
+                commands[0][3][commands[0][3].index("--input-dir") + 1] = str(staged_input_dir)
+        elif commands and commands[0][0] == "extract":
             commands[0][3][commands[0][3].index("--input-dir") + 1] = str(self.folder)
 
         for stage_index, (stage_name, stage_message, script_relative_path, stage_args) in enumerate(
             commands,
-            start=command_start_index,
+            start=(2 if use_local_stage else 1),
         ):
             self.signals.stage.emit(folder_text, stage_index, total_stages, stage_message)
             command = _resolve_stage_command(
@@ -385,6 +406,57 @@ def existing_hidden_ai_report_dir(folder: str | Path) -> Path | None:
     if paths.ranked_export_path.exists():
         return paths.report_dir
     return None
+
+
+def build_ai_stage_cache_keys(
+    records: list[ImageRecord] | tuple[ImageRecord, ...],
+    runtime: AIWorkflowRuntime,
+    *,
+    labels_dir: Path | None = None,
+    reference_bank_path: Path | None = None,
+) -> AIStageCacheKeys:
+    embedding_payload = {
+        "records": _records_signature(records),
+        "model_name": runtime.model_name,
+        "extraction_config": _path_signature(runtime.extraction_config_path),
+    }
+    embedding_cache_key = _hash_payload(embedding_payload)
+    cluster_payload = {
+        "embedding_cache_key": embedding_cache_key,
+        "clustering_config": _path_signature(runtime.clustering_config_path),
+    }
+    cluster_cache_key = _hash_payload(cluster_payload)
+    report_payload = {
+        "cluster_cache_key": cluster_cache_key,
+        "report_config": _path_signature(runtime.report_config_path),
+        "checkpoint": _path_signature(runtime.checkpoint_path),
+        "labels_dir": _path_signature(labels_dir),
+        "reference_bank": _path_signature(reference_bank_path),
+    }
+    report_cache_key = _hash_payload(report_payload)
+    return AIStageCacheKeys(
+        embedding_cache_key=embedding_cache_key,
+        cluster_cache_key=cluster_cache_key,
+        report_cache_key=report_cache_key,
+    )
+
+
+def ai_embedding_artifacts_ready(paths: AIWorkflowPaths) -> bool:
+    return all(
+        (
+            (paths.artifacts_dir / "images.csv").exists(),
+            (paths.artifacts_dir / "embeddings.npy").exists(),
+            (paths.artifacts_dir / "image_ids.json").exists(),
+        )
+    )
+
+
+def ai_cluster_artifacts_ready(paths: AIWorkflowPaths) -> bool:
+    return ai_embedding_artifacts_ready(paths) and (paths.artifacts_dir / "clusters.csv").exists()
+
+
+def ai_report_artifacts_ready(paths: AIWorkflowPaths) -> bool:
+    return paths.ranked_export_path.exists()
 
 
 def stage_supported_images(
@@ -812,3 +884,76 @@ def _format_seconds(total_seconds: int) -> str:
     if hours > 0:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def _hash_payload(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha1(encoded, usedforsecurity=False).hexdigest()
+
+
+def _records_signature(records: list[ImageRecord] | tuple[ImageRecord, ...]) -> list[dict[str, object]]:
+    signature_rows: list[dict[str, object]] = []
+    for record in records:
+        signature_rows.append(
+            {
+                "path": record.path,
+                "size": int(record.size),
+                "modified_ns": int(record.modified_ns),
+                "companions": list(record.companion_paths),
+                "edits": list(record.edited_paths),
+                "variants": [
+                    {
+                        "path": variant.path,
+                        "size": int(variant.size),
+                        "modified_ns": int(variant.modified_ns),
+                    }
+                    for variant in record.variants
+                ],
+            }
+        )
+    signature_rows.sort(key=lambda item: str(item["path"]).casefold())
+    return signature_rows
+
+
+def _path_signature(path: Path | None) -> dict[str, object] | None:
+    if path is None:
+        return None
+    candidate = Path(path).expanduser()
+    try:
+        candidate = candidate.resolve(strict=False)
+    except OSError:
+        candidate = candidate.absolute()
+    if candidate.is_dir():
+        return _directory_signature(candidate)
+    try:
+        stat_result = candidate.stat()
+    except OSError:
+        return {"path": str(candidate), "exists": False}
+    return {
+        "path": str(candidate),
+        "exists": True,
+        "size": int(stat_result.st_size),
+        "modified_ns": int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))),
+    }
+
+
+def _directory_signature(path: Path) -> dict[str, object]:
+    entries: list[dict[str, object]] = []
+    if path.exists():
+        for child in sorted((candidate for candidate in path.rglob("*") if candidate.is_file()), key=lambda item: item.as_posix().casefold()):
+            try:
+                stat_result = child.stat()
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "path": child.relative_to(path).as_posix(),
+                    "size": int(stat_result.st_size),
+                    "modified_ns": int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))),
+                }
+            )
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "entries": entries,
+    }

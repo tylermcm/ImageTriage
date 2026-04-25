@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+from hashlib import sha1
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -99,6 +100,15 @@ class AIImageResult:
 
 
 @dataclass(slots=True, frozen=True)
+class AIBundleSource:
+    source_path: str
+    export_csv_path: str
+    summary_json_path: str = ""
+    report_html_path: str = ""
+    cache_key: str = ""
+
+
+@dataclass(slots=True, frozen=True)
 class AIBundle:
     source_path: str
     export_csv_path: str
@@ -142,27 +152,71 @@ class AIBundle:
 
 
 def load_ai_bundle(path: str | Path) -> AIBundle:
-    source_path = Path(path).expanduser().resolve()
-    export_csv_path = _discover_export_csv(source_path)
-    summary_path = _discover_neighbor(export_csv_path.parent, SUMMARY_FILENAMES)
-    html_path = _discover_neighbor(export_csv_path.parent, HTML_REPORT_FILENAMES)
-
-    results_by_path: dict[str, AIImageResult] = {}
-    group_buckets: dict[str, list[AIImageResult]] = {}
-    with export_csv_path.open("r", encoding="utf-8", newline="") as handle:
+    source = inspect_ai_bundle_source(path)
+    results: list[AIImageResult] = []
+    with Path(source.export_csv_path).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
-            raise ValueError(f"AI export file has no header row: {export_csv_path}")
+            raise ValueError(f"AI export file has no header row: {source.export_csv_path}")
         for row in reader:
             result = _row_to_result(row)
             if result is None:
                 continue
-            results_by_path[normalized_path_key(result.file_path)] = result
-            group_buckets.setdefault(result.group_id, []).append(result)
+            results.append(result)
+
+    summary = {}
+    if source.summary_json_path:
+        try:
+            summary = json.loads(Path(source.summary_json_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            summary = {}
+
+    return build_ai_bundle_from_results(
+        source_path=source.source_path,
+        export_csv_path=source.export_csv_path,
+        summary_json_path=source.summary_json_path,
+        report_html_path=source.report_html_path,
+        results=results,
+        summary=summary,
+    )
+
+
+def inspect_ai_bundle_source(path: str | Path) -> AIBundleSource:
+    source_path = Path(path).expanduser().resolve()
+    export_csv_path = _discover_export_csv(source_path)
+    summary_path = _discover_neighbor(export_csv_path.parent, SUMMARY_FILENAMES)
+    html_path = _discover_neighbor(export_csv_path.parent, HTML_REPORT_FILENAMES)
+    cache_key = _build_ai_bundle_cache_key(
+        source_path=source_path,
+        export_csv_path=export_csv_path,
+        summary_json_path=summary_path,
+        report_html_path=html_path,
+    )
+    return AIBundleSource(
+        source_path=str(source_path),
+        export_csv_path=str(export_csv_path),
+        summary_json_path=str(summary_path) if summary_path is not None else "",
+        report_html_path=str(html_path) if html_path is not None else "",
+        cache_key=cache_key,
+    )
+
+
+def build_ai_bundle_from_results(
+    *,
+    source_path: str | Path,
+    export_csv_path: str | Path,
+    results: Iterable[AIImageResult],
+    summary_json_path: str | Path = "",
+    report_html_path: str | Path = "",
+    summary: dict | None = None,
+) -> AIBundle:
+    group_buckets: dict[str, list[AIImageResult]] = {}
+    for result in results:
+        group_buckets.setdefault(result.group_id, []).append(result)
 
     grouped_results = {
-        group_id: tuple(sorted(results, key=lambda item: (item.rank_in_group, -item.score, item.file_name.casefold())))
-        for group_id, results in group_buckets.items()
+        group_id: tuple(sorted(group_results, key=lambda item: (item.rank_in_group, -item.score, item.file_name.casefold())))
+        for group_id, group_results in group_buckets.items()
     }
     normalized_scores_by_path = _build_normalized_score_map(grouped_results)
     folder_percentiles_by_path = _build_folder_percentile_map(grouped_results)
@@ -178,29 +232,47 @@ def load_ai_bundle(path: str | Path) -> AIBundle:
                 enriched_results_by_path,
                 enriched_results_by_fast_path,
             )
-            for result in results
+            for result in group_results
         )
-        for group_id, results in grouped_results.items()
+        for group_id, group_results in grouped_results.items()
     }
-
-    summary = {}
-    if summary_path is not None:
-        try:
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            summary = {}
 
     return AIBundle(
         source_path=str(source_path),
         export_csv_path=str(export_csv_path),
-        summary_json_path=str(summary_path) if summary_path is not None else "",
-        report_html_path=str(html_path) if html_path is not None else "",
+        summary_json_path=str(summary_json_path),
+        report_html_path=str(report_html_path),
         results_by_path=enriched_results_by_path,
         results_by_fast_path=enriched_results_by_fast_path,
         results_by_group=results_by_group,
         normalized_scores_by_path=normalized_scores_by_path,
-        summary=summary,
+        summary=dict(summary) if isinstance(summary, dict) else {},
     )
+
+
+def iter_ai_bundle_results(bundle: AIBundle) -> tuple[AIImageResult, ...]:
+    if bundle.results_by_group:
+        seen: set[str] = set()
+        ordered: list[AIImageResult] = []
+        for group_id in sorted(bundle.results_by_group, key=str.casefold):
+            for result in bundle.results_by_group[group_id]:
+                key = normalized_path_key(result.file_path)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                ordered.append(result)
+        return tuple(ordered)
+    if not bundle.results_by_path:
+        return ()
+    seen = set()
+    ordered = []
+    for result in bundle.results_by_path.values():
+        key = normalized_path_key(result.file_path)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(result)
+    return tuple(sorted(ordered, key=lambda item: (item.group_id.casefold(), item.rank_in_group, item.file_name.casefold())))
 
 
 def find_ai_result_for_record(
@@ -303,6 +375,37 @@ def _discover_neighbor(folder: Path, names: tuple[str, ...]) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _build_ai_bundle_cache_key(
+    *,
+    source_path: Path,
+    export_csv_path: Path,
+    summary_json_path: Path | None,
+    report_html_path: Path | None,
+) -> str:
+    payload = {
+        "source_path": str(source_path),
+        "export_csv": _path_signature(export_csv_path),
+        "summary_json": _path_signature(summary_json_path),
+        "report_html": _path_signature(report_html_path),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return sha1(encoded).hexdigest()
+
+
+def _path_signature(path: Path | None) -> dict[str, object]:
+    if path is None:
+        return {"path": "", "size": -1, "modified_ns": -1}
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return {"path": str(path), "size": -1, "modified_ns": -1}
+    return {
+        "path": str(path),
+        "size": int(stat_result.st_size),
+        "modified_ns": int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))),
+    }
 
 
 def _row_to_result(row: dict[str, str]) -> AIImageResult | None:

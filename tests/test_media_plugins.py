@@ -141,6 +141,8 @@ class MediaPluginTests(unittest.TestCase):
                     should_cancel=request.should_cancel,
                     progress_callback=request.progress_callback,
                     chunk_callback=request.chunk_callback,
+                    cached_fingerprints=request.cached_fingerprints,
+                    computed_fingerprint_callback=request.computed_fingerprint_callback,
                 )
 
         register_review_grouping_provider(_OverrideReviewProvider())

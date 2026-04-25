@@ -52,6 +52,8 @@ class ReviewGroupingRequest:
     should_cancel: Callable[[], bool] | None = None
     progress_callback: Callable[[int, int], None] | None = None
     chunk_callback: Callable[[tuple[object, ...], dict[str, object]], None] | None = None
+    cached_fingerprints: dict[str, object] | None = None
+    computed_fingerprint_callback: Callable[[object], None] | None = None
 
 
 @runtime_checkable

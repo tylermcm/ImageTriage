@@ -391,7 +391,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         for path in changed_paths:
             if not path:
                 continue
-            normalized = normalized_path_key(path)
+            normalized = _fast_path_key(path)
             insight = insights_by_path.get(path) or insights_by_path.get(normalized)
             if insight is None:
                 self._workflow_insights_by_path.pop(path, None)
@@ -1123,7 +1123,6 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _handle_thumbnail_ready(self, key: ThumbnailKey, _image: QImage) -> None:
         self._failed_paths.discard(key.path)
         self._failed_messages.pop(key.path, None)
-        self._cache_pixmap(key, _image)
         target = self._thumbnail_target_size()
         if key.width != target.width() or key.height != target.height():
             return
@@ -1134,6 +1133,7 @@ class ThumbnailGridView(QAbstractScrollArea):
 
         rect = self._item_rect(index)
         if rect.intersects(self.viewport().rect()):
+            self._cache_pixmap(key, _image)
             self.viewport().update(rect)
 
     def _handle_thumbnail_failed(self, key: ThumbnailKey, _message: str) -> None:
@@ -1489,10 +1489,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         return "  |  ".join(part for part in parts if part)
 
     def _review_insight_for(self, record: ImageRecord):
-        return self._review_insights_by_path.get(record.path) or self._review_insights_by_path.get(normalized_path_key(record.path))
+        return self._review_insights_by_path.get(record.path) or self._review_insights_by_path.get(_fast_path_key(record.path))
 
     def _workflow_insight_for(self, record: ImageRecord):
-        return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(normalized_path_key(record.path))
+        return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(_fast_path_key(record.path))
 
     def _group_badge_palette(self, kind: str) -> tuple[QColor, QColor]:
         if kind == "exact_duplicate":
