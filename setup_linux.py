@@ -57,7 +57,7 @@ if __name__ == "__main__":
     setup(
         name="ImageTriage",
         version=read_project_version(),
-        description="Image Triage desktop installer",
+        description="Image Triage",
         options={
             "build_exe": build_exe_options,
             "bdist_appimage": bdist_appimage_options,

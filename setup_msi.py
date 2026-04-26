@@ -34,12 +34,21 @@ build_exe_options = {
     ],
 }
 
+msi_data = {
+    "Directory": [
+        ("ProgramMenuFolder", "TARGETDIR", "."),
+        ("ImageTriageProgramMenu", "ProgramMenuFolder", "IMAGET~1|Image Triage"),
+    ],
+}
+
 bdist_msi_options = {
     "add_to_path": False,
     "all_users": True,
+    "data": msi_data,
     "initial_target_dir": r"[ProgramFiles64Folder]\ImageTriage",
     "install_icon": str(APP_ICON_WINDOWS_PATH),
     "launch_on_finish": True,
+    "product_name": "Image Triage",
     "upgrade_code": "{D2ED08E1-991F-42CE-94A3-E95CD4D624AB}",
 }
 
@@ -49,6 +58,8 @@ executables = [
         base="gui",
         target_name="ImageTriage.exe",
         icon=str(APP_ICON_WINDOWS_PATH),
+        shortcut_name="Image Triage",
+        shortcut_dir="ImageTriageProgramMenu",
     ),
     Executable(
         script="packaging/ai_python_runner.py",
@@ -62,7 +73,7 @@ if __name__ == "__main__":
     setup(
         name="ImageTriage",
         version=read_project_version(),
-        description="Image Triage desktop installer",
+        description="Image Triage",
         options={
             "build_exe": build_exe_options,
             "bdist_msi": bdist_msi_options,

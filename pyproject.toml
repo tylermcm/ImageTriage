@@ -1,7 +1,7 @@
 [project]
 name = "image-triage"
 version = "0.1.0"
-description = "High-performance desktop image triage app built with Python and PySide6."
+description = "Image Triage"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

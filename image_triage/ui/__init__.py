@@ -10,6 +10,7 @@ from .command_palette import CommandPaletteDialog, PaletteCommand
 from .convert_dialog import ConvertDialog
 from .docks import InspectorPanel, WorkspaceDocks, build_workspace_docks
 from .filter_dialog import AdvancedFilterDialog
+from .file_associations_dialog import FileAssociationsDialog
 from .handoff_dialog import HandoffBuilderDialog
 from .help_dialog import HelpMarkdownDialog
 from .icons import build_symbol_icon, build_undo_icon
@@ -44,6 +45,7 @@ __all__ = [
     "ColorToken",
     "CommandPaletteDialog",
     "ConvertDialog",
+    "FileAssociationsDialog",
     "HandoffBuilderDialog",
     "HelpMarkdownDialog",
     "InspectorPanel",

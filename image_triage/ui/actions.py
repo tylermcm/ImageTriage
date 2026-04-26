@@ -20,6 +20,7 @@ class MainWindowActions:
     empty_recycle_bin: QAction
     new_folder: QAction
     workflow_settings: QAction
+    file_associations: QAction
     reset_layout: QAction
     exit_app: QAction
     undo: QAction
@@ -157,6 +158,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Workflow Settings...",
             slot=window._show_settings,
             shortcut="Ctrl+,",
+        ),
+        file_associations=_create_action(
+            window,
+            "File Associations...",
+            slot=window._open_file_associations_dialog,
         ),
         reset_layout=_create_action(window, "Reset Window Layout", slot=window._reset_window_layout),
         exit_app=_create_action(window, "Exit", slot=window.close),

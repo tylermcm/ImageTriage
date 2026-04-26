@@ -197,6 +197,7 @@ from .ui import (
     CollectionEditDialog,
     CommandPaletteDialog,
     ConvertDialog,
+    FileAssociationsDialog,
     HandoffBuilderDialog,
     HelpMarkdownDialog,
     InspectorPanel,
@@ -1283,8 +1284,10 @@ class MainWindow(QMainWindow):
         "taste_calibration": "Calibration",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, launch_target: str | None = None) -> None:
         super().__init__()
+        self._startup_launch_target = normalize_filesystem_path(launch_target) if launch_target else ""
+        self._pending_folder_focus_path = ""
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
         self._settings = QSettings()
@@ -3647,8 +3650,12 @@ class MainWindow(QMainWindow):
         save_window_layout(self, self._settings, self.GEOMETRY_KEY, self.STATE_KEY, self.workspace_docks)
 
     def _finish_startup_restore(self) -> None:
-        self._load_start_folder()
-        self._restore_ai_results()
+        if self._startup_launch_target and self._open_launch_target(self._startup_launch_target, chunked_restore=True):
+            self._startup_launch_target = ""
+        else:
+            self._startup_launch_target = ""
+            self._load_start_folder()
+            self._restore_ai_results()
         QTimer.singleShot(0, self._maybe_prompt_for_ai_model_install)
 
     def _managed_ai_model_installation(self) -> AIModelInstallation:
@@ -3849,6 +3856,30 @@ class MainWindow(QMainWindow):
             self.folder_tree.clearSelection()
             self.folder_tree.setCurrentIndex(QModelIndex())
 
+    def _open_launch_target(self, target: str, *, chunked_restore: bool = False) -> bool:
+        normalized = normalize_filesystem_path(target)
+        if not normalized:
+            return False
+        if os.path.isdir(normalized):
+            self._select_folder(normalized, sync_tree=False, chunked_restore=chunked_restore)
+            self.folder_tree.clearSelection()
+            self.folder_tree.setCurrentIndex(QModelIndex())
+            return True
+        if os.path.isfile(normalized):
+            folder = normalize_filesystem_path(str(Path(normalized).parent))
+            if folder and os.path.isdir(folder):
+                self._select_folder(
+                    folder,
+                    sync_tree=False,
+                    chunked_restore=chunked_restore,
+                    preferred_record_path=normalized,
+                )
+                self.folder_tree.clearSelection()
+                self.folder_tree.setCurrentIndex(QModelIndex())
+                return True
+        self.statusBar().showMessage(f"Launch target not found: {normalized}")
+        return False
+
     def _folder_drive_root(self, folder: str | None = None) -> str:
         target = folder or self._current_folder
         if not target:
@@ -3911,12 +3942,27 @@ class MainWindow(QMainWindow):
         if folder:
             self._select_folder(folder)
 
-    def _select_folder(self, folder: str, *, sync_tree: bool = True, chunked_restore: bool = False) -> None:
+    def _select_folder(
+        self,
+        folder: str,
+        *,
+        sync_tree: bool = True,
+        chunked_restore: bool = False,
+        preferred_record_path: str | None = None,
+    ) -> None:
         if sync_tree:
             index = self.folder_model.index(folder)
             if index.isValid():
                 self.folder_tree.setCurrentIndex(index)
-        self._load_folder(folder, chunked_restore=chunked_restore)
+        self._load_folder(
+            folder,
+            chunked_restore=chunked_restore,
+            preferred_record_path=preferred_record_path,
+        )
+
+    def _open_file_associations_dialog(self) -> None:
+        dialog = FileAssociationsDialog(self)
+        dialog.exec()
 
     def _configure_toolbar_context_target(self, widget: QWidget | None, mode: str) -> None:
         if widget is None:
@@ -8826,6 +8872,7 @@ class MainWindow(QMainWindow):
         force_refresh: bool = False,
         chunked_restore: bool = False,
         bypass_catalog_cache: bool = False,
+        preferred_record_path: str | None = None,
     ) -> None:
         if not folder:
             return
@@ -8835,6 +8882,11 @@ class MainWindow(QMainWindow):
         folder_changed = normalized_path_key(folder) != normalized_path_key(self._current_folder)
         if folder_changed:
             self._remember_current_folder_view_state()
+        normalized_focus_path = normalize_filesystem_path(preferred_record_path) if preferred_record_path else ""
+        if normalized_focus_path and normalized_path_key(Path(normalized_focus_path).parent) == normalized_path_key(folder):
+            self._pending_folder_focus_path = normalized_focus_path
+        elif folder_changed:
+            self._pending_folder_focus_path = ""
         self._current_folder = folder
         self._set_scope_state(kind="folder", scope_id=normalized_path_key(folder), label=folder)
         self._refresh_current_folder_watch()
@@ -8945,6 +8997,7 @@ class MainWindow(QMainWindow):
         if self._active_review_intelligence_task is not None:
             self._active_review_intelligence_task.cancel()
             self._active_review_intelligence_task = None
+        self._pending_folder_focus_path = ""
         self._current_folder = ""
         self._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
         self._refresh_current_folder_watch()
@@ -9004,6 +9057,7 @@ class MainWindow(QMainWindow):
         *,
         defer_enrichment: bool = False,
         chunked_view: bool = False,
+        current_path: str | None = None,
     ) -> None:
         self._all_records = records
         self._all_records_by_path = {record.path: record for record in records}
@@ -9028,6 +9082,7 @@ class MainWindow(QMainWindow):
         self._burst_recommendations = {}
         self._workflow_insights_by_path = {}
         view_complete = self._apply_records_view(
+            current_path=current_path,
             chunked=chunked_view,
             post_load_enrichment="defer" if defer_enrichment else "start",
         )
@@ -9742,6 +9797,7 @@ class MainWindow(QMainWindow):
             records,
             defer_enrichment=True,
             chunked_view=chunked_view,
+            current_path=self._pending_folder_focus_path or None,
         )
         if self._ui_mode == "ai":
             self._load_hidden_ai_results_for_current_folder(show_message=False)
@@ -9771,8 +9827,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
+            self._pending_folder_focus_path = ""
             return
-        self._apply_loaded_records(records, chunked_view=chunked_view)
+        self._apply_loaded_records(
+            records,
+            chunked_view=chunked_view,
+            current_path=self._pending_folder_focus_path or None,
+        )
         self._catalog_load_source = source or "live"
         if self._scan_showed_cached and self._scan_cached_source:
             self._catalog_load_detail = f"Opened from {self._catalog_source_label(self._scan_cached_source)} and refreshed from disk."
@@ -9785,6 +9846,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
         if self._folder_watch_refresh_pending:
             self._folder_watch_refresh_timer.start(250)
+        self._pending_folder_focus_path = ""
 
     def _handle_scan_failed(self, folder: str, token: int, message: str) -> None:
         self._active_scan_tasks.pop(token, None)
@@ -9805,6 +9867,7 @@ class MainWindow(QMainWindow):
         self._deferred_enrichment_scheduled = False
         self._deferred_enrichment_scope_key = ""
         self._deferred_enrichment_token = 0
+        self._pending_folder_focus_path = ""
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
         self._all_records = []

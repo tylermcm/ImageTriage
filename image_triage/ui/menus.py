@@ -36,6 +36,17 @@ def _add_selection_actions(menu: QMenu, actions: MainWindowActions) -> None:
     menu.addAction(actions.restore_selection)
 
 
+def _add_workspace_presets_menu(
+    menu: QMenu,
+    actions: MainWindowActions,
+    workspace_preset_menu: QMenu | None,
+) -> None:
+    if workspace_preset_menu is None:
+        return
+    menu.addMenu(workspace_preset_menu)
+    menu.addAction(actions.save_workspace_preset)
+
+
 def build_main_menu_bar(
     window,
     actions: MainWindowActions,
@@ -54,8 +65,6 @@ def build_main_menu_bar(
     file_menu.addAction(actions.refresh_folder)
     file_menu.addAction(actions.new_folder)
     file_menu.addAction(actions.empty_recycle_bin)
-    file_menu.addSeparator()
-    file_menu.addAction(actions.workflow_settings)
     file_menu.addSeparator()
     file_menu.addAction(actions.exit_app)
 
@@ -92,9 +101,9 @@ def build_main_menu_bar(
     view_menu.addAction(actions.compact_cards)
     view_menu.addAction(actions.compare_mode)
     view_menu.addAction(actions.auto_advance)
-    view_menu.addSeparator()
-    view_menu.addAction(actions.manual_mode)
-    view_menu.addAction(actions.ai_mode)
+    mode_menu = view_menu.addMenu("Workspace Mode")
+    mode_menu.addAction(actions.manual_mode)
+    mode_menu.addAction(actions.ai_mode)
 
     review_menu = menu_bar.addMenu("&Review")
     review_menu.addAction(actions.open_preview)
@@ -114,21 +123,26 @@ def build_main_menu_bar(
     review_menu.addAction(actions.open_in_photoshop)
 
     library_menu = menu_bar.addMenu("&Library")
-    library_menu.addAction(actions.create_virtual_collection)
-    library_menu.addAction(actions.add_selection_to_collection)
-    library_menu.addAction(actions.remove_selection_from_collection)
-    library_menu.addAction(actions.delete_virtual_collection)
+    collections_section = library_menu.addMenu("Collections")
+    collections_section.addAction(actions.create_virtual_collection)
+    collections_section.addAction(actions.add_selection_to_collection)
+    collections_section.addAction(actions.remove_selection_from_collection)
+    collections_section.addAction(actions.delete_virtual_collection)
     if collections_menu is not None:
-        library_menu.addMenu(collections_menu)
-    library_menu.addSeparator()
-    library_menu.addAction(actions.browse_catalog)
-    library_menu.addAction(actions.add_current_folder_to_catalog)
-    library_menu.addAction(actions.add_folder_to_catalog)
-    library_menu.addAction(actions.remove_catalog_folder)
-    library_menu.addAction(actions.refresh_catalog)
-    library_menu.addAction(actions.rebuild_folder_catalog_cache)
+        collections_section.addSeparator()
+        collections_section.addMenu(collections_menu)
+
+    catalog_section = library_menu.addMenu("Catalog")
+    catalog_section.addAction(actions.browse_catalog)
+    catalog_section.addAction(actions.add_current_folder_to_catalog)
+    catalog_section.addAction(actions.add_folder_to_catalog)
+    catalog_section.addAction(actions.remove_catalog_folder)
+    catalog_section.addSeparator()
+    catalog_section.addAction(actions.refresh_catalog)
+    catalog_section.addAction(actions.rebuild_folder_catalog_cache)
     if catalog_menu is not None:
-        library_menu.addMenu(catalog_menu)
+        catalog_section.addSeparator()
+        catalog_section.addMenu(catalog_menu)
 
     workflow_menu = menu_bar.addMenu("&Workflow")
     workflow_menu.addAction(actions.handoff_builder)
@@ -136,8 +150,6 @@ def build_main_menu_bar(
     workflow_menu.addAction(actions.best_of_set_auto_assembly)
     if workflow_recipe_menu is not None:
         workflow_menu.addMenu(workflow_recipe_menu)
-    workflow_menu.addSeparator()
-    workflow_menu.addAction(actions.keyboard_shortcuts)
 
     ai_menu = menu_bar.addMenu("&AI")
     ai_menu.addAction(actions.download_ai_model)
@@ -159,15 +171,21 @@ def build_main_menu_bar(
     _add_ai_training_management_actions(ai_menu, actions)
 
     tools_menu = menu_bar.addMenu("&Tools")
+    tools_menu.addAction(actions.open_command_palette)
+    tools_menu.addSeparator()
     tools_menu.addAction(actions.batch_rename_selection)
     tools_menu.addAction(actions.batch_resize_selection)
     tools_menu.addAction(actions.batch_convert_selection)
     tools_menu.addSeparator()
     tools_menu.addAction(actions.extract_archive)
-    tools_menu.addSeparator()
-    ai_tools_menu = tools_menu.addMenu("AI Training")
-    _add_ai_training_actions(ai_tools_menu, actions)
-    _add_ai_training_management_actions(tools_menu, actions)
+
+    settings_menu = menu_bar.addMenu("&Settings")
+    settings_menu.addAction(actions.workflow_settings)
+    settings_menu.addAction(actions.file_associations)
+    settings_menu.addAction(actions.keyboard_shortcuts)
+    settings_menu.addSeparator()
+    settings_menu.addAction(actions.customize_workspace_toolbar)
+    _add_workspace_presets_menu(settings_menu, actions, workspace_preset_menu)
 
     window_menu = menu_bar.addMenu("&Window")
     if dock_actions:
@@ -175,17 +193,6 @@ def build_main_menu_bar(
             action = dock_actions.get(key)
             if action is not None:
                 window_menu.addAction(action)
-        window_menu.addSeparator()
-    window_menu.addAction(actions.open_command_palette)
-    window_menu.addSeparator()
-    window_menu.addAction(actions.manual_mode)
-    window_menu.addAction(actions.ai_mode)
-    window_menu.addSeparator()
-    window_menu.addAction(actions.customize_workspace_toolbar)
-    window_menu.addSeparator()
-    if workspace_preset_menu is not None:
-        window_menu.addMenu(workspace_preset_menu)
-        window_menu.addAction(actions.save_workspace_preset)
         window_menu.addSeparator()
     window_menu.addAction(actions.reset_layout)
 

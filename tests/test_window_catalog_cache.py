@@ -51,6 +51,32 @@ class _WindowRebuildStub:
         self.load_calls.append((folder, force_refresh, bypass_catalog_cache))
 
 
+class _WindowLaunchStub:
+    def __init__(self) -> None:
+        self.select_calls: list[tuple[str, bool, bool, str | None]] = []
+        self.status_messages: list[str] = []
+        self.folder_tree = SimpleNamespace(
+            clearSelection=lambda: None,
+            setCurrentIndex=lambda _index=None: None,
+        )
+
+    def _select_folder(
+        self,
+        folder: str,
+        *,
+        sync_tree: bool = True,
+        chunked_restore: bool = False,
+        preferred_record_path: str | None = None,
+    ) -> None:
+        self.select_calls.append((folder, sync_tree, chunked_restore, preferred_record_path))
+
+    def statusBar(self):
+        return self
+
+    def showMessage(self, message: str) -> None:
+        self.status_messages.append(message)
+
+
 class _ScopeStartStub:
     def __init__(self, repository: CatalogRepository, records: list[ImageRecord]) -> None:
         self._all_records = records
@@ -475,6 +501,22 @@ class WindowCatalogCacheTests(unittest.TestCase):
 
         self.assertEqual([], window.load_calls)
         self.assertIn("open a real folder", window.status_messages[-1].casefold())
+
+    def test_open_launch_target_opens_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stub = _WindowLaunchStub()
+            opened = MainWindow._open_launch_target(stub, temp_dir, chunked_restore=True)
+        self.assertTrue(opened)
+        self.assertEqual([(temp_dir, False, True, None)], stub.select_calls)
+
+    def test_open_launch_target_opens_parent_folder_and_focuses_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "frame001.nef"
+            image_path.write_text("x", encoding="utf-8")
+            stub = _WindowLaunchStub()
+            opened = MainWindow._open_launch_target(stub, str(image_path), chunked_restore=True)
+        self.assertTrue(opened)
+        self.assertEqual([(temp_dir, False, True, str(image_path))], stub.select_calls)
 
     def test_start_scope_enrichment_task_uses_all_records_when_records_argument_is_omitted(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_window_cache_") as temp_dir:
