@@ -16,8 +16,15 @@ from image_triage.production_workflows import (
     build_workflow_export_plan,
     deserialize_workflow_recipe,
     deserialize_workspace_preset,
+    dump_saved_workflow_recipes,
+    dump_saved_workspace_presets,
+    load_saved_workflow_recipes,
+    load_saved_workspace_presets,
     serialize_workflow_recipe,
     serialize_workspace_preset,
+    workflow_archive_path,
+    workflow_destination_dir,
+    workflow_record_folder_name,
 )
 from image_triage.review_intelligence import ReviewInsight, ReviewIntelligenceBundle
 from image_triage.review_workflows import REVIEW_ROUND_HERO, BurstRecommendation
@@ -99,6 +106,47 @@ class ProductionWorkflowTests(unittest.TestCase):
 
         self.assertEqual(deserialize_workflow_recipe(serialize_workflow_recipe(recipe)), recipe)
         self.assertEqual(deserialize_workspace_preset(serialize_workspace_preset(preset)), preset)
+
+    def test_saved_recipe_and_preset_helpers_drop_invalid_duplicates(self) -> None:
+        recipes = load_saved_workflow_recipes(
+            dump_saved_workflow_recipes(
+                [
+                    WorkflowRecipe(key="client_delivery", name="Client Delivery"),
+                    WorkflowRecipe(key="client_delivery", name="Duplicate"),
+                ]
+            )
+        )
+        recipes_from_invalid = load_saved_workflow_recipes('[{"name":"Missing key"}, "junk"]')
+        presets = load_saved_workspace_presets(
+            dump_saved_workspace_presets(
+                [
+                    WorkspacePreset(key="delivery", name="Delivery"),
+                    WorkspacePreset(key="delivery", name="Duplicate"),
+                ]
+            )
+        )
+        presets_from_invalid = load_saved_workspace_presets('[{"key":"missing_name"}, 7]')
+
+        self.assertEqual([recipe.key for recipe in recipes], ["client_delivery"])
+        self.assertEqual(recipes_from_invalid, [])
+        self.assertEqual([preset.key for preset in presets], ["delivery"])
+        self.assertEqual(presets_from_invalid, [])
+
+    def test_workflow_path_helpers_resolve_destination_archive_and_record_names(self) -> None:
+        recipe = WorkflowRecipe(
+            key="client_delivery",
+            name="Client Delivery",
+            destination_subfolder="Delivery",
+            archive_format="zip",
+        )
+
+        destination_dir = workflow_destination_dir(recipe, "C:/shots")
+        archive_path = workflow_archive_path(recipe, "C:/shots")
+        record_folder = workflow_record_folder_name("DSC4914 (Large).jpg")
+
+        self.assertEqual(Path(destination_dir).as_posix(), "C:/shots/Delivery")
+        self.assertEqual(Path(archive_path).as_posix(), "C:/shots/Delivery.zip")
+        self.assertEqual(record_folder, "DSC4914 (Large)")
 
     def test_build_workflow_export_plan_applies_affixes_and_unique_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

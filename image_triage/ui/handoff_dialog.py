@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from ..image_convert import convert_formats
 from ..image_resize import resize_presets
-from ..production_workflows import (
+from ..workflows import (
     RECIPE_CONTENT_BUNDLE,
     RECIPE_CONTENT_EXPORT,
     RECIPE_TRANSFER_ARCHIVE,

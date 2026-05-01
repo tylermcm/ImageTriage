@@ -1,36 +1,78 @@
 from __future__ import annotations
 
+import os
 import runpy
 import sys
 from pathlib import Path
 
+_DLL_DIRECTORY_HANDLES: list[object] = []
 
-def _prepend_ai_site_packages(script_path: Path) -> None:
-    candidate_roots = [
+
+def _candidate_runtime_roots(script_path: Path) -> list[Path]:
+    candidates = [
         Path(sys.executable).resolve().parent,
         script_path.parent.parent.parent,
         Path.cwd(),
     ]
-    for root in candidate_roots:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        for root in (candidate, candidate / "build_assets"):
+            key = str(root.resolve(strict=False))
+            if key in seen:
+                continue
+            seen.add(key)
+            roots.append(root)
+    return roots
+
+
+def _prepend_path_entry(path: Path) -> None:
+    path_text = str(path)
+    if path_text in sys.path:
+        sys.path.remove(path_text)
+    sys.path.insert(0, path_text)
+
+
+def _prepend_ai_site_packages(script_path: Path) -> None:
+    for root in _candidate_runtime_roots(script_path):
         site_packages_dir = root / "ai_site_packages"
         if site_packages_dir.exists():
-            site_packages_text = str(site_packages_dir)
-            if site_packages_text not in sys.path:
-                sys.path.insert(0, site_packages_text)
+            _prepend_path_entry(site_packages_dir)
 
 
 def _prepend_ai_stdlib(script_path: Path) -> None:
-    candidate_roots = [
-        Path(sys.executable).resolve().parent,
-        script_path.parent.parent.parent,
-        Path.cwd(),
-    ]
-    for root in candidate_roots:
+    for root in _candidate_runtime_roots(script_path):
         stdlib_dir = root / "ai_stdlib"
         if stdlib_dir.exists():
-            stdlib_text = str(stdlib_dir)
-            if stdlib_text not in sys.path:
-                sys.path.insert(0, stdlib_text)
+            _prepend_path_entry(stdlib_dir)
+
+
+def _prepend_ai_binary_modules(script_path: Path) -> None:
+    for root in _candidate_runtime_roots(script_path):
+        candidate_dirs = [root / "lib", root / "ai_python_dlls"]
+        site_packages_dir = root / "ai_site_packages"
+        if site_packages_dir.exists():
+            candidate_dirs.append(site_packages_dir / "torch" / "lib")
+            candidate_dirs.extend(path for path in site_packages_dir.glob("*.libs"))
+        for directory in candidate_dirs:
+            _register_binary_search_path(directory)
+
+
+def _register_binary_search_path(path: Path) -> None:
+    if not path.exists():
+        return
+    path_text = str(path)
+    existing_parts = os.environ.get("PATH", "").split(os.pathsep) if os.environ.get("PATH") else []
+    if path_text not in existing_parts:
+        os.environ["PATH"] = path_text if not existing_parts else path_text + os.pathsep + os.environ["PATH"]
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is None:
+        return
+    try:
+        handle = add_dll_directory(path_text)
+    except OSError:
+        return
+    _DLL_DIRECTORY_HANDLES.append(handle)
 
 
 def _prepend_engine_root(script_path: Path) -> None:
@@ -63,6 +105,7 @@ def main() -> int:
 
     # Emulate `python script.py ...` argument semantics.
     _prepend_ai_stdlib(script_path)
+    _prepend_ai_binary_modules(script_path)
     _prepend_ai_site_packages(script_path)
     _prepend_engine_root(script_path)
     sys.argv = [str(script_path), *sys.argv[2:]]

@@ -88,6 +88,7 @@ class MainWindowActions:
     keyboard_shortcuts: QAction
     save_workspace_preset: QAction
     customize_workspace_toolbar: QAction
+    show_workspace_toolbar: QAction
     open_command_palette: QAction
     advanced_filters: QAction
     save_filter_preset: QAction
@@ -430,6 +431,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Customize Toolbars...",
             slot=window._enter_toolbar_edit_mode,
+        ),
+        show_workspace_toolbar=_create_action(
+            window,
+            "Show Workspace Toolbar",
+            slot=window._handle_workspace_toolbar_visibility_action,
+            checkable=True,
         ),
         open_command_palette=_create_action(
             window,

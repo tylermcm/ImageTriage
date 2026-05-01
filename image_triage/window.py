@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+"""Main desktop window and task orchestration for Image Triage.
+
+This module is intentionally the highest-level coordinator in the application.
+It wires together folder loading, persistent settings, review state, AI tasks,
+workflow execution, dock layout, and command routing. The file is large because
+it owns the user-facing control flow, but the surrounding modules are expected
+to hold the reusable backend logic whenever a behavior can be isolated cleanly.
+"""
+
 import ctypes
 import json
 import os
@@ -12,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from textwrap import dedent
 
-from PySide6.QtCore import QByteArray, QDir, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QRunnable, QSize, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QDir, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QRunnable, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,7 +50,6 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTabBar,
     QToolButton,
-    QToolBar,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -138,7 +146,7 @@ from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoo
 from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
 from .models import DeleteMode, FilterMode, ImageRecord, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
 from .preview import FullScreenPreview, PreviewEntry
-from .production_workflows import (
+from .workflows import (
     BEST_OF_BALANCED,
     BEST_OF_TOP_N,
     RECIPE_CONTENT_BUNDLE,
@@ -153,11 +161,14 @@ from .production_workflows import (
     build_workflow_export_plan,
     built_in_workflow_recipes,
     built_in_workspace_presets,
-    deserialize_workflow_recipe,
-    deserialize_workspace_preset,
+    dump_saved_workflow_recipes,
+    dump_saved_workspace_presets,
+    load_saved_workflow_recipes,
+    load_saved_workspace_presets,
     recipe_key_for_name,
-    serialize_workflow_recipe,
-    serialize_workspace_preset,
+    workflow_archive_path,
+    workflow_destination_dir,
+    workflow_record_folder_name,
 )
 from .review_tools import FOCUS_ASSIST_COLORS, FOCUS_ASSIST_STRENGTHS
 from .records_view_cache import RecordsViewCache, ViewInvalidationReason
@@ -214,7 +225,6 @@ from .ui import (
     build_app_stylesheet,
     build_main_menu_bar,
     build_main_window_actions,
-    build_primary_toolbar,
     build_workspace_docks,
     clear_window_layout,
     parse_appearance_mode,
@@ -227,6 +237,7 @@ from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_ann
 
 @dataclass(slots=True)
 class UndoAction:
+    """Captures the minimum state needed to reverse one destructive user action."""
     kind: str
     primary_path: str
     file_moves: tuple[FileMove, ...] = ()
@@ -244,6 +255,7 @@ class UndoAction:
 
 @dataclass(slots=True)
 class BatchRenameExecutionContext:
+    """Tracks rename-task state that must survive async completion handlers."""
     preview: BatchRenamePreview
     folder: str
     is_current_folder: bool
@@ -253,6 +265,7 @@ class BatchRenameExecutionContext:
 
 @dataclass(slots=True)
 class ResizeExecutionContext:
+    """Stores the active resize plan while the resize worker is running."""
     plan: ResizePlan
     options: ResizeOptions
     refresh_folder: str = ""
@@ -260,6 +273,7 @@ class ResizeExecutionContext:
 
 @dataclass(slots=True)
 class ConvertExecutionContext:
+    """Stores the active convert plan while the convert worker is running."""
     plan: ConvertPlan
     options: ConvertOptions
     refresh_folder: str = ""
@@ -267,6 +281,7 @@ class ConvertExecutionContext:
 
 @dataclass(slots=True)
 class WorkflowExecutionContext:
+    """Stores recipe execution state across export, copy, move, and archive steps."""
     recipe: WorkflowRecipe
     action: str
     destination_root: str = ""
@@ -278,6 +293,7 @@ class WorkflowExecutionContext:
 
 @dataclass(slots=True)
 class ArchiveExecutionContext:
+    """Describes the archive job currently in flight for status and refresh logic."""
     mode: str
     archive_path: str = ""
     destination_dir: str = ""
@@ -287,6 +303,7 @@ class ArchiveExecutionContext:
 
 @dataclass(slots=True)
 class AITrainingExecutionContext:
+    """Carries the active labeling/training/evaluation command state for UI updates."""
     action: str
     folder: str
     title: str
@@ -299,6 +316,7 @@ class AITrainingExecutionContext:
 
 @dataclass(slots=True)
 class AITrainingPipelineState:
+    """Tracks multi-step AI training pipeline progress across background tasks."""
     folder: str
     options: RankerTrainingOptions
     general_source_folders: tuple[str, ...] = ()
@@ -307,12 +325,14 @@ class AITrainingPipelineState:
 
 @dataclass(slots=True)
 class ChildAppProcess:
+    """Wraps a spawned companion process so the window can track its lifetime."""
     name: str
     process: subprocess.Popen[str]
 
 
 @dataclass(slots=True)
 class ShortcutTarget:
+    """Describes one configurable shortcut endpoint inside the main window."""
     id: str
     label: str
     section: str
@@ -322,6 +342,7 @@ class ShortcutTarget:
 
 @dataclass(slots=True, frozen=True)
 class AITrainingActionAvailability:
+    """Summarizes which AI training actions should be enabled for the current state."""
     local_has_labels: bool
     general_has_labels: bool
     evaluating_general: bool
@@ -331,6 +352,7 @@ class AITrainingActionAvailability:
 
 
 def _memory_path_key(path: str) -> str:
+    """Create a cheap case-insensitive in-memory lookup key for loaded paths."""
     return os.path.normpath(path).casefold()
 
 
@@ -344,6 +366,7 @@ def _build_ai_training_action_availability(
     trained_checkpoint_available: bool,
     active_profile_key: str = "",
 ) -> AITrainingActionAvailability:
+    """Centralize the enablement rules for AI training commands and menu items."""
     local_has_labels = local_pairwise_labels > 0 or local_cluster_labels > 0
     general_has_labels = general_pairwise_labels > 0 or general_cluster_labels > 0
     evaluating_general = active_profile_key == "general"
@@ -365,15 +388,16 @@ def _build_ai_training_action_availability(
 
 @dataclass(slots=True)
 class CatalogExecutionContext:
+    """Carries the currently running catalog refresh request through async handlers."""
     root_paths: tuple[str, ...] = ()
     label: str = ""
 
 
 class ToolbarCustomizerDialog(QDialog):
+    """Interactive preview dialog for editing the manual and AI review toolbars."""
     MODES = (
-        ("primary", "Top Toolbar"),
-        ("manual", "Manual Toolbar"),
-        ("ai", "AI Toolbar"),
+        ("manual", "Manual Review"),
+        ("ai", "AI Review"),
     )
 
     def __init__(
@@ -586,56 +610,6 @@ class ToolbarCustomizerDialog(QDialog):
             button.setMinimumWidth(min_width)
         return button
 
-    def _primary_preview_text(self, item_id: str) -> tuple[str, int]:
-        return {
-            "open_folder": ("Open", 96),
-            "refresh_folder": ("Refresh", 108),
-            "undo": ("Undo", 92),
-            "run_ai_culling": ("Run AI", 98),
-            "ai_results": ("AI Results", 104),
-            "command_palette": ("Command", 106),
-            "columns": ("Columns", 94),
-            "sort": ("Sort", 82),
-            "quick_filter": ("Quick Filter", 112),
-            "advanced_filters": ("Adv. Filters", 108),
-            "clear_filters": ("Clear", 88),
-            "batch_rename": ("Rename", 92),
-            "batch_resize": ("Resize", 92),
-            "batch_convert": ("Convert", 98),
-            "handoff_builder": ("Handoff", 98),
-            "send_to_editor": ("Editor", 92),
-            "best_of_set": ("Best Of", 92),
-            "keyboard_shortcuts": ("Shortcuts", 108),
-        }.get(item_id, (self._labels.get(item_id, item_id), 92))
-
-    def _build_primary_preview(self, items: list[str]) -> QWidget:
-        toolbar = QToolBar("Primary Preview")
-        toolbar.setObjectName("primaryToolbar")
-        toolbar.setMovable(False)
-        toolbar.setFloatable(False)
-        toolbar.setIconSize(QSize(14, 14))
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        for index, item_id in enumerate(items):
-            if item_id == "separator":
-                toolbar.addSeparator()
-                continue
-            text, min_width = self._primary_preview_text(item_id)
-            button = self._preview_button(
-                text,
-                parent=toolbar,
-                object_name="primaryToolbarButton",
-                min_width=min_width,
-                selected=index == self._selected_index,
-            )
-            button.clicked.connect(lambda _checked=False, selected=index: self._select_item(selected))
-            toolbar.addWidget(button)
-            self._register_preview_selectable(button, index)
-        if toolbar.layout() is not None:
-            toolbar.layout().setContentsMargins(2, 2, 2, 2)
-            toolbar.layout().setSpacing(2)
-        toolbar.setMinimumHeight(36)
-        return toolbar
-
     def _workspace_preview_widget_for_item(self, item_id: str, index: int, parent: QWidget) -> QWidget:
         selected = index == self._selected_index
         if item_id == "search":
@@ -643,9 +617,9 @@ class ToolbarCustomizerDialog(QDialog):
             field.setObjectName("workspaceSearchField")
             field.setClearButtonEnabled(True)
             field.setPlaceholderText("Search filenames")
-            field.setMinimumWidth(124)
-            field.setMaximumWidth(220)
-            field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            field.setMinimumWidth(140)
+            field.setMaximumWidth(320)
+            field.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
             if selected:
                 field.setProperty("toolbarPreviewSelected", True)
             return field
@@ -654,9 +628,9 @@ class ToolbarCustomizerDialog(QDialog):
             label.setObjectName("pathComboBox")
             label.setEditable(True)
             label.addItem("X:/Photography/China '26/Raw Files")
-            label.setMinimumWidth(260)
-            label.setMaximumWidth(460)
-            label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            label.setMinimumWidth(280)
+            label.setMaximumWidth(640)
+            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             if selected:
                 label.setProperty("toolbarPreviewSelected", True)
             return label
@@ -684,8 +658,8 @@ class ToolbarCustomizerDialog(QDialog):
             progress.setFormat("Idle")
             progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
             progress.setTextVisible(True)
-            progress.setMinimumWidth(150)
-            progress.setMaximumWidth(210)
+            progress.setMinimumWidth(124)
+            progress.setMaximumWidth(180)
             progress.setFixedHeight(18)
             layout.addWidget(progress)
             status = QLabel("AI cache not loaded", wrapper)
@@ -747,12 +721,12 @@ class ToolbarCustomizerDialog(QDialog):
         bar.setObjectName("workspaceBar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         tabs = QTabBar(bar)
         tabs.setObjectName("modeTabs")
         tabs.addTab("Manual Review")
-        tabs.addTab("AI Culling")
+        tabs.addTab("AI Review")
         tabs.setCurrentIndex(1 if self._mode == "ai" else 0)
         tabs.setExpanding(False)
         tabs.setDrawBase(False)
@@ -771,11 +745,23 @@ class ToolbarCustomizerDialog(QDialog):
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
+        address_widget: QWidget | None = None
+        has_search = False
         for index, item_id in enumerate(items):
             widget = self._workspace_preview_widget_for_item(item_id, index, controls)
             self._register_preview_selectable(widget, index)
-            controls_layout.addWidget(widget)
-        controls_layout.addStretch(1)
+            if item_id == "address":
+                address_widget = widget
+                continue
+            is_search = item_id == "search"
+            has_search = has_search or is_search
+            controls_layout.addWidget(widget, 1 if is_search else 0)
+        if address_widget is not None:
+            if not has_search:
+                controls_layout.addStretch(1)
+            controls_layout.addWidget(address_widget, 0, Qt.AlignmentFlag.AlignRight)
+        elif not has_search:
+            controls_layout.addStretch(1)
         layout.addWidget(controls, 1)
         return bar
 
@@ -786,7 +772,7 @@ class ToolbarCustomizerDialog(QDialog):
         if self._selected_index >= len(items):
             self._selected_index = len(items) - 1
         if items:
-            preview = self._build_primary_preview(items) if self._mode == "primary" else self._build_workspace_preview(items)
+            preview = self._build_workspace_preview(items)
             preview.ensurePolished()
             preview.adjustSize()
             self._preview_content_width = preview.sizeHint().width()
@@ -813,12 +799,14 @@ class ToolbarCustomizerDialog(QDialog):
 
 
 class AnnotationHydrationSignals(QObject):
+    """Signals emitted while annotation state is loaded in batches for a scope."""
     chunk = Signal(str, int, object)
     finished = Signal(str, int)
     failed = Signal(str, int, str)
 
 
 class AnnotationHydrationTask(QRunnable):
+    """Loads persisted and sidecar annotations without blocking the UI thread."""
     PRIORITY_BATCH_SIZE = 96
     BACKGROUND_BATCH_SIZE = 240
 
@@ -922,12 +910,14 @@ class AnnotationHydrationTask(QRunnable):
 
 
 class ScopeEnrichmentSignals(QObject):
+    """Signals for workflow-scoring and taste-profile enrichment work."""
     cache_status = Signal(str, int, object)
     finished = Signal(str, int, object, object, object)
     failed = Signal(str, int, str)
 
 
 class ScopeEnrichmentTask(QRunnable):
+    """Builds workflow recommendations for the current scope, with catalog reuse."""
     def __init__(
         self,
         *,
@@ -1056,6 +1046,7 @@ class ScopeEnrichmentTask(QRunnable):
 
 
 class AIModelDownloadSignals(QObject):
+    """Signals for the managed AI model download worker."""
     started = Signal(str)
     progress = Signal(str, int, int)
     finished = Signal(str)
@@ -1063,6 +1054,7 @@ class AIModelDownloadSignals(QObject):
 
 
 class AIModelDownloadTask(QRunnable):
+    """Downloads the managed AI model bundle on a background worker thread."""
     def __init__(
         self,
         *,
@@ -1094,6 +1086,18 @@ class AIModelDownloadTask(QRunnable):
 
 
 class MainWindow(QMainWindow):
+    """Top-level application window.
+
+    The main window coordinates three kinds of work:
+
+    - synchronous UI state such as menus, docks, toolbar layout, and selection
+    - asynchronous backend tasks such as scans, thumbnailing, AI runs, and archives
+    - persistence surfaces such as settings, catalog cache, review state, and
+      workflow/toolbar customization
+
+    Most feature modules report into this class, so the class docstring is the
+    fast way to understand where user actions eventually land.
+    """
     LAST_FOLDER_KEY = "window/last_folder"
     AI_RESULTS_KEY = "window/ai_results_path"
     AUTO_BRACKET_KEY = "window/auto_bracket_compare"
@@ -1118,7 +1122,29 @@ class MainWindow(QMainWindow):
     WORKFLOW_RECIPES_KEY = "workflow/recipes"
     WORKSPACE_PRESETS_KEY = "workspace/presets"
     WORKSPACE_TOOLBAR_LAYOUT_KEY = "workspace/toolbar_items"
-    WORKSPACE_TOOLBAR_LAYOUT_VERSION = 1
+    WORKSPACE_TOOLBAR_LAYOUT_VERSION = 2
+    WORKSPACE_BAR_STATE_KEY = "workspace/bar_state"
+    LEGACY_PRIMARY_TOOLBAR_ITEMS = (
+        "open_folder",
+        "refresh_folder",
+        "undo",
+        "separator",
+        "run_ai_culling",
+        "ai_results",
+        "command_palette",
+        "columns",
+        "sort",
+        "quick_filter",
+        "advanced_filters",
+        "clear_filters",
+        "batch_rename",
+        "batch_resize",
+        "batch_convert",
+        "handoff_builder",
+        "send_to_editor",
+        "best_of_set",
+        "keyboard_shortcuts",
+    )
     SHORTCUT_OVERRIDES_KEY = "shortcuts/overrides"
     AI_MODEL_PROMPTED_KEY = "ai/model_prompted"
     AI_CHECKPOINT_OVERRIDE_KEY = "ai/checkpoint_override"
@@ -1134,32 +1160,10 @@ class MainWindow(QMainWindow):
     CHUNKED_RESTORE_LOAD_BATCH_SIZE = 120
     FILTER_METADATA_EAGER_CACHE_MAX_RECORDS = 400
     WORKSPACE_TOOLBAR_DEFAULTS = {
-        "primary": ("open_folder", "refresh_folder", "undo", "separator", "run_ai_culling", "ai_results"),
-        "manual": ("review", "view", "selection_count", "search", "filters", "address"),
-        "ai": ("ai_status", "review", "view", "selection_count", "search", "filters", "address"),
+        "manual": ("open_folder", "undo", "review", "view", "selection_count", "search", "filters", "address"),
+        "ai": ("run_ai_culling", "ai_results", "ai_status", "review", "view", "selection_count", "search", "filters", "address"),
     }
     WORKSPACE_TOOLBAR_ALLOWED_ITEMS = {
-        "primary": (
-            "open_folder",
-            "refresh_folder",
-            "undo",
-            "separator",
-            "run_ai_culling",
-            "ai_results",
-            "command_palette",
-            "columns",
-            "sort",
-            "quick_filter",
-            "advanced_filters",
-            "clear_filters",
-            "batch_rename",
-            "batch_resize",
-            "batch_convert",
-            "handoff_builder",
-            "send_to_editor",
-            "best_of_set",
-            "keyboard_shortcuts",
-        ),
         "manual": (
             "review",
             "view",
@@ -1168,6 +1172,8 @@ class MainWindow(QMainWindow):
             "columns",
             "sort",
             "quick_filter",
+            "advanced_filters",
+            "clear_filters",
             "compare",
             "auto_advance",
             "burst_groups",
@@ -1205,6 +1211,8 @@ class MainWindow(QMainWindow):
             "columns",
             "sort",
             "quick_filter",
+            "advanced_filters",
+            "clear_filters",
             "compare",
             "auto_advance",
             "burst_groups",
@@ -1220,6 +1228,13 @@ class MainWindow(QMainWindow):
             "refresh_folder",
             "undo",
             "command_palette",
+            "batch_rename",
+            "batch_resize",
+            "batch_convert",
+            "handoff_builder",
+            "send_to_editor",
+            "best_of_set",
+            "keyboard_shortcuts",
             "load_saved_ai",
             "load_ai_results",
             "clear_ai_results",
@@ -1292,10 +1307,17 @@ class MainWindow(QMainWindow):
         self.resize(1600, 960)
         self._settings = QSettings()
         self._workspace_toolbar_layouts = self._load_workspace_toolbar_layouts()
+        self._workspace_bar_state = self._normalize_workspace_bar_state(
+            self._settings.value(self.WORKSPACE_BAR_STATE_KEY, "expanded", str)
+        )
         self._toolbar_edit_mode = False
         self._toolbar_edit_target_mode = "manual"
         self._toolbar_edit_overlay: QFrame | None = None
         self._workspace_toolbar_item_widgets: dict[str, dict[str, QWidget]] = {}
+        self._workspace_toolbar_overflow_buttons: dict[str, QToolButton] = {}
+        self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
+        self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
+        self._workspace_toolbar_overflow_update_pending: set[str] = set()
         self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.AUTO.value, str))
         self._theme = None
         self._child_sync_state_path = self._prepare_child_sync_state_path()
@@ -1305,7 +1327,6 @@ class MainWindow(QMainWindow):
         self._child_process_timer.timeout.connect(self._prune_child_processes)
         self._child_process_timer.start()
         self.actions: MainWindowActions | None = None
-        self.primary_toolbar: QToolBar | None = None
         self.workspace_docks: WorkspaceDocks | None = None
         self.inspector_panel: InspectorPanel | None = None
         self._toolbar_context_mode_property = "imageTriageToolbarContextMode"
@@ -1643,10 +1664,6 @@ class MainWindow(QMainWindow):
         self._register_shortcut_targets()
         self._apply_shortcut_overrides()
         self._build_record_filter_actions()
-        self.primary_toolbar = build_primary_toolbar(self, self.actions)
-        self._configure_toolbar_context_target(self.primary_toolbar, "primary")
-        self.primary_toolbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._rebuild_primary_toolbar()
         self.inspector_panel = InspectorPanel()
         self.inspector_panel.setMinimumWidth(260)
         self.workspace_preset_menu = QMenu(self)
@@ -1691,8 +1708,8 @@ class MainWindow(QMainWindow):
         self.ai_progress_bar.setFormat("Idle")
         self.ai_progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.ai_progress_bar.setTextVisible(True)
-        self.ai_progress_bar.setMinimumWidth(150)
-        self.ai_progress_bar.setMaximumWidth(210)
+        self.ai_progress_bar.setMinimumWidth(124)
+        self.ai_progress_bar.setMaximumWidth(180)
         self.ai_progress_bar.setFixedHeight(18)
         self.ai_status_label = QLabel("AI cache not loaded")
         self.ai_status_label.setObjectName("secondaryText")
@@ -1718,13 +1735,17 @@ class MainWindow(QMainWindow):
             "manual": self._build_workspace_toolbar_widgets("manual"),
             "ai": self._build_workspace_toolbar_widgets("ai"),
         }
+        self._workspace_toolbar_overflow_buttons = {
+            "manual": self._build_workspace_toolbar_overflow_button("manual"),
+            "ai": self._build_workspace_toolbar_overflow_button("ai"),
+        }
         self._rebuild_workspace_toolbar("manual")
         self._rebuild_workspace_toolbar("ai")
 
         self.mode_tabs = QTabBar()
         self.mode_tabs.setObjectName("modeTabs")
         self.mode_tabs.addTab("Manual Review")
-        self.mode_tabs.addTab("AI Culling")
+        self.mode_tabs.addTab("AI Review")
         self.mode_tabs.setExpanding(False)
         self.mode_tabs.setDrawBase(False)
         self.mode_tabs.setElideMode(Qt.TextElideMode.ElideNone)
@@ -1737,15 +1758,39 @@ class MainWindow(QMainWindow):
         self.toolbar_stack.addWidget(self.ai_toolbar)
         self._configure_toolbar_context_target(self.toolbar_stack, "workspace")
 
+        self.workspace_bar_toggle_button = self._build_workspace_bar_button(
+            "\u2212",
+            "Minimize workspace toolbar",
+            object_name="workspacePanelButton",
+        )
+        self.workspace_bar_toggle_button.clicked.connect(self._toggle_workspace_bar_collapsed)
+        self.workspace_bar_close_button = self._build_workspace_bar_button(
+            "\u2715",
+            "Hide workspace toolbar",
+            object_name="workspacePanelCloseButton",
+        )
+        self.workspace_bar_close_button.clicked.connect(
+            lambda _checked=False: self._set_workspace_bar_state("hidden")
+        )
+        self.workspace_bar_chrome = QWidget()
+        self.workspace_bar_chrome.setObjectName("workspaceBarChrome")
+        workspace_bar_chrome_layout = QHBoxLayout(self.workspace_bar_chrome)
+        workspace_bar_chrome_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_bar_chrome_layout.setSpacing(4)
+        workspace_bar_chrome_layout.addWidget(self.workspace_bar_toggle_button)
+        workspace_bar_chrome_layout.addWidget(self.workspace_bar_close_button)
+
         self.workspace_bar = QWidget()
         self.workspace_bar.setObjectName("workspaceBar")
         self._configure_toolbar_context_target(self.workspace_bar, "workspace")
         workspace_bar_layout = QHBoxLayout(self.workspace_bar)
         workspace_bar_layout.setContentsMargins(12, 8, 12, 8)
-        workspace_bar_layout.setSpacing(12)
+        workspace_bar_layout.setSpacing(10)
         workspace_bar_layout.addWidget(self.mode_tabs, 0, Qt.AlignmentFlag.AlignVCenter)
         workspace_bar_layout.addWidget(self.toolbar_stack, 1)
+        workspace_bar_layout.addWidget(self.workspace_bar_chrome, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._refresh_mode_tabs_width()
+        self._apply_workspace_bar_state()
 
         self.tool_mode_bar = QWidget()
         self.tool_mode_bar.setObjectName("workspaceControls")
@@ -1775,7 +1820,6 @@ class MainWindow(QMainWindow):
         center_layout = QVBoxLayout(center_column)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(8)
-        center_layout.addWidget(self.primary_toolbar)
         center_layout.addWidget(self.workspace_bar)
         center_layout.addWidget(self.tool_mode_bar)
         center_layout.addWidget(self.grid, 1)
@@ -1870,6 +1914,7 @@ class MainWindow(QMainWindow):
         self.preview.compare_mode_changed.connect(self._handle_preview_compare_mode_changed)
         self.preview.auto_bracket_mode_changed.connect(self._handle_preview_auto_bracket_mode_changed)
         self.preview.compare_count_changed.connect(self._handle_preview_compare_count_changed)
+        self.preview.command_palette_requested.connect(lambda: self._open_command_palette(context="preview"))
         self.preview.photoshop_requested.connect(self._open_preview_image_in_photoshop)
         self.preview.winner_requested.connect(self._handle_preview_winner_requested)
         self.preview.reject_requested.connect(self._handle_preview_reject_requested)
@@ -1952,9 +1997,9 @@ class MainWindow(QMainWindow):
         field.setObjectName("workspaceSearchField")
         field.setClearButtonEnabled(True)
         field.setPlaceholderText("Search filenames")
-        field.setMinimumWidth(124)
-        field.setMaximumWidth(220)
-        field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        field.setMinimumWidth(140)
+        field.setMaximumWidth(320)
+        field.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
         return field
 
     def _build_path_combo(self, *, mode: str) -> QComboBox:
@@ -1963,9 +2008,9 @@ class MainWindow(QMainWindow):
         combo.setEditable(True)
         combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         combo.setDuplicatesEnabled(False)
-        combo.setMinimumWidth(260)
-        combo.setMaximumWidth(460)
-        combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        combo.setMinimumWidth(280)
+        combo.setMaximumWidth(640)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         combo.setToolTip("Type a folder path or choose a recent folder")
         line_edit = combo.lineEdit()
         if line_edit is not None:
@@ -1995,6 +2040,32 @@ class MainWindow(QMainWindow):
         button.setMenu(self.filter_toolbar_menu)
         return button
 
+    def _build_workspace_bar_button(self, text: str, tooltip: str, *, object_name: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName(object_name)
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.CursorShape.ArrowCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFixedSize(24, 24)
+        return button
+
+    def _build_workspace_toolbar_overflow_button(self, mode: str) -> QToolButton:
+        menu = QMenu(self)
+        menu.aboutToShow.connect(lambda target=mode: self._populate_workspace_toolbar_overflow_menu(target))
+        button = QToolButton()
+        button.setObjectName("workspacePresetsButton")
+        button.setText("More")
+        button.setToolTip("Hidden toolbar items")
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setMenu(menu)
+        button.hide()
+        self._configure_toolbar_context_target(button, mode)
+        self._workspace_toolbar_overflow_menus[mode] = menu
+        return button
+
     def _build_ai_results_menu(self) -> QMenu:
         menu = QMenu("AI Results", self)
         menu.addAction(self.actions.load_saved_ai)
@@ -2021,73 +2092,6 @@ class MainWindow(QMainWindow):
         for mode in FilterMode:
             menu.addAction(self.actions.filter_actions[mode])
         return menu
-
-    def _build_primary_toolbar_menu_button(self, text: str, menu: QMenu, *, min_width: int = 96) -> QToolButton:
-        button = QToolButton(self.primary_toolbar)
-        button.setObjectName("primaryToolbarButton")
-        button.setText(text)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setMenu(menu)
-        button.setMinimumWidth(min_width)
-        button.setToolTip(text)
-        self._configure_toolbar_context_target(button, "primary")
-        return button
-
-    def _add_primary_toolbar_action(self, action: QAction, text: str, *, min_width: int = 88) -> None:
-        action.setIconText(text)
-        self.primary_toolbar.addAction(action)
-        button = self.primary_toolbar.widgetForAction(action)
-        if isinstance(button, QToolButton):
-            button.setObjectName("primaryToolbarButton")
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setMinimumWidth(min_width)
-            self._configure_toolbar_context_target(button, "primary")
-
-    def _rebuild_primary_toolbar(self) -> None:
-        if self.primary_toolbar is None or self.actions is None:
-            return
-        self.primary_toolbar.clear()
-        action_items = {
-            "open_folder": (self.actions.open_folder, "Open", 96),
-            "refresh_folder": (self.actions.refresh_folder, "Refresh", 108),
-            "undo": (self.actions.undo, "Undo", 92),
-            "run_ai_culling": (self.actions.run_ai_culling, "Run AI", 98),
-            "command_palette": (self.actions.open_command_palette, "Command", 106),
-            "advanced_filters": (self.actions.advanced_filters, "Adv. Filters", 108),
-            "clear_filters": (self.actions.clear_filters, "Clear", 88),
-            "batch_rename": (self.actions.batch_rename_selection, "Rename", 92),
-            "batch_resize": (self.actions.batch_resize_selection, "Resize", 92),
-            "batch_convert": (self.actions.batch_convert_selection, "Convert", 98),
-            "handoff_builder": (self.actions.handoff_builder, "Handoff", 98),
-            "send_to_editor": (self.actions.send_to_editor_pipeline, "Editor", 92),
-            "best_of_set": (self.actions.best_of_set_auto_assembly, "Best Of", 92),
-            "keyboard_shortcuts": (self.actions.keyboard_shortcuts, "Shortcuts", 108),
-        }
-        menu_items = {
-            "ai_results": ("AI Results", self._build_ai_results_menu, 104),
-            "columns": ("Columns", self._build_columns_toolbar_menu, 94),
-            "sort": ("Sort", self._build_sort_toolbar_menu, 82),
-            "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu, 112),
-        }
-        for item_id in self._workspace_toolbar_layouts.get("primary", []):
-            if item_id == "separator":
-                self.primary_toolbar.addSeparator()
-                continue
-            action_entry = action_items.get(item_id)
-            if action_entry is not None:
-                action, text, min_width = action_entry
-                self._add_primary_toolbar_action(action, text, min_width=min_width)
-                continue
-            menu_entry = menu_items.get(item_id)
-            if menu_entry is not None:
-                text, menu_factory, min_width = menu_entry
-                self.primary_toolbar.addWidget(
-                    self._build_primary_toolbar_menu_button(text, menu_factory(), min_width=min_width)
-                )
-        if self.primary_toolbar.layout() is not None:
-            self.primary_toolbar.layout().setContentsMargins(2, 2, 2, 2)
-            self.primary_toolbar.layout().setSpacing(2)
 
     def _build_workspace_action_button(self, action: QAction, text: str) -> QToolButton:
         button = QToolButton()
@@ -2183,10 +2187,17 @@ class MainWindow(QMainWindow):
         raw_layouts = payload.get("toolbars", payload)
         if not isinstance(raw_layouts, dict):
             return layouts
+
+        legacy_primary_items: list[str] = []
+        raw_primary_items = raw_layouts.get("primary")
+        if isinstance(raw_primary_items, list):
+            legacy_primary_items = self._normalize_legacy_primary_toolbar_items(raw_primary_items)
         for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
             raw_items = raw_layouts.get(mode)
             if isinstance(raw_items, list):
                 layouts[mode] = self._normalize_workspace_toolbar_items(mode, raw_items)
+        if legacy_primary_items:
+            self._merge_legacy_primary_toolbar_items(layouts, legacy_primary_items)
         return layouts
 
     def _normalize_workspace_toolbar_items(self, mode: str, raw_items: list[object] | tuple[object, ...]) -> list[str]:
@@ -2197,6 +2208,32 @@ class MainWindow(QMainWindow):
                 continue
             normalized.append(item)
         return normalized
+
+    def _normalize_legacy_primary_toolbar_items(self, raw_items: list[object] | tuple[object, ...]) -> list[str]:
+        allowed = set(self.LEGACY_PRIMARY_TOOLBAR_ITEMS)
+        normalized: list[str] = []
+        for item in raw_items:
+            if not isinstance(item, str) or item not in allowed or item in normalized:
+                continue
+            normalized.append(item)
+        return normalized
+
+    def _merge_legacy_primary_toolbar_items(self, layouts: dict[str, list[str]], legacy_items: list[str]) -> None:
+        migrated: dict[str, list[str]] = {"manual": [], "ai": []}
+        for item in legacy_items:
+            if item == "separator":
+                continue
+            target_mode = "ai" if item in {"run_ai_culling", "ai_results"} else "manual"
+            allowed = self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(target_mode, ())
+            if item not in allowed or item in migrated[target_mode]:
+                continue
+            migrated[target_mode].append(item)
+
+        for mode, migrated_items in migrated.items():
+            if not migrated_items:
+                continue
+            existing = layouts.get(mode, [])
+            layouts[mode] = migrated_items + [item for item in existing if item not in migrated_items]
 
     def _save_workspace_toolbar_layouts(self) -> None:
         payload = {
@@ -2236,6 +2273,8 @@ class MainWindow(QMainWindow):
                 continue
             label.setText(text)
             label.setToolTip(tooltip)
+        self._schedule_workspace_toolbar_overflow_update("manual")
+        self._schedule_workspace_toolbar_overflow_update("ai")
 
     def _rebuild_workspace_toolbar(self, mode: str) -> None:
         if mode == "ai":
@@ -2245,13 +2284,215 @@ class MainWindow(QMainWindow):
             mode = "manual"
         self._clear_layout_items(layout)
         widgets = self._workspace_toolbar_item_widgets.get(mode, {})
+        address_widget: QWidget | None = None
+        has_search = False
         for item_id in self._workspace_toolbar_layouts.get(mode, []):
             widget = widgets.get(item_id)
             if widget is None:
                 continue
             self._configure_toolbar_context_target(widget, mode)
-            layout.addWidget(widget)
-        layout.addStretch(1)
+            if item_id == "address":
+                address_widget = widget
+                continue
+            is_search = item_id == "search"
+            has_search = has_search or is_search
+            layout.addWidget(widget, 1 if is_search else 0)
+        overflow_button = self._workspace_toolbar_overflow_buttons.get(mode)
+        if overflow_button is not None:
+            layout.addWidget(overflow_button, 0, Qt.AlignmentFlag.AlignRight)
+        if address_widget is not None:
+            if not has_search:
+                layout.addStretch(1)
+            layout.addWidget(address_widget, 0, Qt.AlignmentFlag.AlignRight)
+        elif not has_search:
+            layout.addStretch(1)
+        self._schedule_workspace_toolbar_overflow_update(mode)
+
+    def _workspace_toolbar_non_overflow_items(self) -> set[str]:
+        return {"search", "address"}
+
+    def _workspace_toolbar_minimum_width(self, widget: QWidget, item_id: str) -> int:
+        if item_id == "search":
+            return max(140, widget.minimumWidth(), widget.minimumSizeHint().width())
+        if item_id == "address":
+            return max(280, widget.minimumWidth(), widget.minimumSizeHint().width())
+        if item_id == "selection_count":
+            return max(76, widget.minimumWidth(), widget.sizeHint().width())
+        return max(widget.minimumWidth(), widget.minimumSizeHint().width(), widget.sizeHint().width())
+
+    def _workspace_toolbar_required_width(self, mode: str, hidden_items: set[str]) -> int:
+        if mode == "ai":
+            layout = self.ai_toolbar_layout
+        else:
+            layout = self.manual_toolbar_layout
+            mode = "manual"
+        margins = layout.contentsMargins()
+        item_ids = [item_id for item_id in self._workspace_toolbar_layouts.get(mode, ()) if item_id not in hidden_items]
+        width = margins.left() + margins.right()
+        spacing = layout.spacing()
+        visible_count = len(item_ids)
+        if hidden_items:
+            overflow_button = self._workspace_toolbar_overflow_buttons.get(mode)
+            if overflow_button is not None:
+                visible_count += 1
+                width += max(
+                    overflow_button.minimumWidth(),
+                    overflow_button.minimumSizeHint().width(),
+                    overflow_button.sizeHint().width(),
+                )
+        if visible_count > 1:
+            width += (visible_count - 1) * spacing
+        widgets = self._workspace_toolbar_item_widgets.get(mode, {})
+        for item_id in item_ids:
+            widget = widgets.get(item_id)
+            if widget is None:
+                continue
+            width += self._workspace_toolbar_minimum_width(widget, item_id)
+        return width
+
+    def _schedule_workspace_toolbar_overflow_update(self, mode: str) -> None:
+        normalized = mode if mode == "ai" else "manual"
+        if normalized in self._workspace_toolbar_overflow_update_pending:
+            return
+        self._workspace_toolbar_overflow_update_pending.add(normalized)
+        QTimer.singleShot(0, lambda target=normalized: self._apply_workspace_toolbar_overflow(target))
+
+    def _apply_workspace_toolbar_overflow(self, mode: str) -> None:
+        normalized = mode if mode == "ai" else "manual"
+        self._workspace_toolbar_overflow_update_pending.discard(normalized)
+        toolbar = self.ai_toolbar if normalized == "ai" else self.manual_toolbar
+        layout = self.ai_toolbar_layout if normalized == "ai" else self.manual_toolbar_layout
+        available_width = toolbar.width()
+        if available_width <= 0:
+            return
+
+        overflow_candidates = [
+            item_id
+            for item_id in reversed(self._workspace_toolbar_layouts.get(normalized, ()))
+            if item_id not in self._workspace_toolbar_non_overflow_items()
+        ]
+        hidden_items: set[str] = set()
+        required_width = self._workspace_toolbar_required_width(normalized, hidden_items)
+        for item_id in overflow_candidates:
+            if required_width <= available_width:
+                break
+            hidden_items.add(item_id)
+            required_width = self._workspace_toolbar_required_width(normalized, hidden_items)
+
+        widgets = self._workspace_toolbar_item_widgets.get(normalized, {})
+        layout_items = tuple(self._workspace_toolbar_layouts.get(normalized, ()))
+        hidden_in_display_order = tuple(
+            item_id for item_id in layout_items if item_id in hidden_items
+        )
+        self._workspace_toolbar_hidden_items[normalized] = hidden_in_display_order
+        for item_id in layout_items:
+            widget = widgets.get(item_id)
+            if widget is None:
+                continue
+            widget.setVisible(item_id not in hidden_items)
+
+        overflow_button = self._workspace_toolbar_overflow_buttons.get(normalized)
+        if overflow_button is not None:
+            overflow_button.setVisible(bool(hidden_in_display_order))
+            overflow_button.setEnabled(bool(hidden_in_display_order))
+
+        layout.invalidate()
+
+    def _populate_workspace_toolbar_overflow_menu(self, mode: str) -> None:
+        normalized = mode if mode == "ai" else "manual"
+        menu = self._workspace_toolbar_overflow_menus.get(normalized)
+        if menu is None:
+            return
+        menu.clear()
+        widgets = self._workspace_toolbar_item_widgets.get(normalized, {})
+        hidden_items = self._workspace_toolbar_hidden_items.get(normalized, ())
+        if not hidden_items:
+            empty_action = menu.addAction("No hidden toolbar items")
+            empty_action.setEnabled(False)
+            return
+
+        for item_id in hidden_items:
+            widget = widgets.get(item_id)
+            if widget is None:
+                continue
+            label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
+            if item_id == "selection_count" and isinstance(widget, QLabel):
+                action = menu.addAction(widget.text() or label)
+                action.setEnabled(False)
+                continue
+            if item_id == "ai_status":
+                status_menu = menu.addMenu(label)
+                progress_action = status_menu.addAction(self._build_ai_progress_text())
+                progress_action.setEnabled(False)
+                for line in (self.ai_status_label.toolTip() or "").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    runtime_action = status_menu.addAction(line)
+                    runtime_action.setEnabled(False)
+                continue
+            if isinstance(widget, QToolButton):
+                action = widget.defaultAction()
+                if action is not None:
+                    menu.addAction(action)
+                    continue
+                submenu = widget.menu()
+                if submenu is not None:
+                    overflow_submenu = menu.addMenu(label)
+                    for submenu_action in submenu.actions():
+                        if submenu_action.isSeparator():
+                            overflow_submenu.addSeparator()
+                        else:
+                            overflow_submenu.addAction(submenu_action)
+                    continue
+            disabled_action = menu.addAction(label)
+            disabled_action.setEnabled(False)
+
+    @staticmethod
+    def _normalize_workspace_bar_state(value: object) -> str:
+        if isinstance(value, str) and value in {"expanded", "minimized", "hidden"}:
+            return value
+        return "expanded"
+
+    def _handle_workspace_toolbar_visibility_action(self, checked: bool) -> None:
+        self._set_workspace_bar_state("expanded" if checked else "hidden")
+
+    def _toggle_workspace_bar_collapsed(self) -> None:
+        if self._workspace_bar_state == "minimized":
+            self._set_workspace_bar_state("expanded")
+            return
+        self._set_workspace_bar_state("minimized")
+
+    def _set_workspace_bar_state(self, state: str) -> None:
+        normalized = self._normalize_workspace_bar_state(state)
+        self._workspace_bar_state = normalized
+        self._settings.setValue(self.WORKSPACE_BAR_STATE_KEY, normalized)
+        self._apply_workspace_bar_state()
+
+    def _apply_workspace_bar_state(self) -> None:
+        workspace_bar = getattr(self, "workspace_bar", None)
+        if workspace_bar is None:
+            return
+
+        hidden = self._workspace_bar_state == "hidden"
+        minimized = self._workspace_bar_state == "minimized"
+
+        workspace_bar.setVisible(not hidden)
+        self.toolbar_stack.setVisible(not hidden and not minimized)
+
+        toggle_text = "+" if minimized else "\u2212"
+        toggle_tooltip = "Expand workspace toolbar" if minimized else "Minimize workspace toolbar"
+        self.workspace_bar_toggle_button.setText(toggle_text)
+        self.workspace_bar_toggle_button.setToolTip(toggle_tooltip)
+
+        if self.actions is not None:
+            action = self.actions.show_workspace_toolbar
+            action.blockSignals(True)
+            action.setChecked(not hidden)
+            action.blockSignals(False)
+        if not hidden:
+            self._schedule_workspace_toolbar_overflow_update("manual")
+            self._schedule_workspace_toolbar_overflow_update("ai")
 
     def _enter_toolbar_edit_mode(self) -> None:
         self._show_workspace_toolbar_editor(self._ui_mode)
@@ -2269,7 +2510,6 @@ class MainWindow(QMainWindow):
             return
         self._workspace_toolbar_layouts = dialog.toolbar_layouts()
         self._save_workspace_toolbar_layouts()
-        self._rebuild_primary_toolbar()
         self._rebuild_workspace_toolbar("manual")
         self._rebuild_workspace_toolbar("ai")
         self._update_ai_toolbar_state()
@@ -2284,7 +2524,6 @@ class MainWindow(QMainWindow):
             if layout is not None:
                 self._clear_layout_items(layout, delete_widgets=True)
             self._toolbar_edit_overlay.hide()
-        self._rebuild_primary_toolbar()
         self._rebuild_workspace_toolbar("manual")
         self._rebuild_workspace_toolbar("ai")
         self._set_workspace_toolbar_controls_enabled(True)
@@ -2315,9 +2554,6 @@ class MainWindow(QMainWindow):
         self._rebuild_workspace_toolbar_editor()
 
     def _rebuild_toolbar_for_mode(self, mode: str) -> None:
-        if mode == "primary":
-            self._rebuild_primary_toolbar()
-            return
         if mode in {"manual", "ai"}:
             self._rebuild_workspace_toolbar(mode)
 
@@ -2361,8 +2597,6 @@ class MainWindow(QMainWindow):
         self._rebuild_workspace_toolbar_editor()
 
     def _toolbar_editor_parent_for_mode(self, mode: str) -> QWidget:
-        if mode == "primary" and self.primary_toolbar is not None:
-            return self.primary_toolbar
         return self.workspace_bar
 
     def _rebuild_workspace_toolbar_editor(self) -> None:
@@ -2384,9 +2618,8 @@ class MainWindow(QMainWindow):
         self._clear_layout_items(overlay_layout, delete_widgets=True)
 
         title_text = {
-            "primary": "Top Toolbar",
-            "manual": "Manual Toolbar",
-            "ai": "AI Toolbar",
+            "manual": "Manual Review Toolbar",
+            "ai": "AI Review Toolbar",
         }.get(mode, "Toolbar")
         title = QLabel(title_text, self._toolbar_edit_overlay)
         title.setObjectName("toolbarEditTitle")
@@ -2396,7 +2629,7 @@ class MainWindow(QMainWindow):
         mode_row_layout = QHBoxLayout(mode_row)
         mode_row_layout.setContentsMargins(0, 0, 0, 0)
         mode_row_layout.setSpacing(4)
-        for target_mode, label in (("primary", "Top"), ("manual", "Manual"), ("ai", "AI")):
+        for target_mode, label in (("manual", "Manual"), ("ai", "AI Review")):
             mode_button = QToolButton(mode_row)
             mode_button.setObjectName("toolbarEditModeButton")
             mode_button.setText(label)
@@ -2650,51 +2883,23 @@ class MainWindow(QMainWindow):
 
     def _load_saved_workflow_recipes(self) -> list[WorkflowRecipe]:
         raw = self._settings.value(self.WORKFLOW_RECIPES_KEY, "", str)
-        if not raw:
-            return []
-        try:
-            payload = json.loads(raw)
-        except (TypeError, ValueError):
-            return []
-        recipes: list[WorkflowRecipe] = []
-        seen: set[str] = set()
-        if not isinstance(payload, list):
-            return recipes
-        for item in payload:
-            recipe = deserialize_workflow_recipe(item if isinstance(item, dict) else None)
-            if recipe is None or recipe.key in seen:
-                continue
-            seen.add(recipe.key)
-            recipes.append(recipe)
-        return recipes
+        return load_saved_workflow_recipes(raw)
 
     def _save_saved_workflow_recipes(self) -> None:
-        payload = [serialize_workflow_recipe(recipe) for recipe in self._saved_workflow_recipes]
-        self._settings.setValue(self.WORKFLOW_RECIPES_KEY, json.dumps(payload))
+        self._settings.setValue(
+            self.WORKFLOW_RECIPES_KEY,
+            dump_saved_workflow_recipes(self._saved_workflow_recipes),
+        )
 
     def _load_saved_workspace_presets(self) -> list[WorkspacePreset]:
         raw = self._settings.value(self.WORKSPACE_PRESETS_KEY, "", str)
-        if not raw:
-            return []
-        try:
-            payload = json.loads(raw)
-        except (TypeError, ValueError):
-            return []
-        presets: list[WorkspacePreset] = []
-        seen: set[str] = set()
-        if not isinstance(payload, list):
-            return presets
-        for item in payload:
-            preset = deserialize_workspace_preset(item if isinstance(item, dict) else None)
-            if preset is None or preset.key in seen:
-                continue
-            seen.add(preset.key)
-            presets.append(preset)
-        return presets
+        return load_saved_workspace_presets(raw)
 
     def _save_saved_workspace_presets(self) -> None:
-        payload = [serialize_workspace_preset(preset) for preset in self._saved_workspace_presets]
-        self._settings.setValue(self.WORKSPACE_PRESETS_KEY, json.dumps(payload))
+        self._settings.setValue(
+            self.WORKSPACE_PRESETS_KEY,
+            dump_saved_workspace_presets(self._saved_workspace_presets),
+        )
 
     def _load_shortcut_overrides(self) -> dict[str, str]:
         raw = self._settings.value(self.SHORTCUT_OVERRIDES_KEY, "", str)
@@ -3523,6 +3728,8 @@ class MainWindow(QMainWindow):
         self.grid.apply_theme(self._theme)
         self.preview.apply_theme(self._theme)
         self._refresh_mode_tabs_width()
+        self._schedule_workspace_toolbar_overflow_update("manual")
+        self._schedule_workspace_toolbar_overflow_update("ai")
         self._update_action_states()
 
     def _refresh_mode_tabs_width(self) -> None:
@@ -3999,9 +4206,8 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         action = self.actions.customize_workspace_toolbar if self.actions is not None else None
         toolbar_label = {
-            "primary": "Top Toolbar",
-            "manual": "Manual Toolbar",
-            "ai": "AI Toolbar",
+            "manual": "Manual Review Toolbar",
+            "ai": "AI Review Toolbar",
         }.get(target_mode, "Toolbar")
         customize_action = menu.addAction(self._menu_text_with_action_shortcut(f"Customize {toolbar_label}...", action))
         chosen = menu.exec(global_pos)
@@ -4026,18 +4232,20 @@ class MainWindow(QMainWindow):
             if hasattr(self, "central_container") and watched is self.central_container:
                 if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
                     self._position_workspace_toolbar_editor()
-            if hasattr(self, "primary_toolbar") and watched is self.primary_toolbar:
-                if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
-                    self._position_workspace_toolbar_editor()
-                if event.type() == QEvent.Type.MouseButtonDblClick:
-                    self._show_workspace_toolbar_editor("primary")
-                    return True
             if hasattr(self, "workspace_bar") and watched is self.workspace_bar:
                 if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
                     self._position_workspace_toolbar_editor()
                 if event.type() == QEvent.Type.MouseButtonDblClick:
                     self._show_workspace_toolbar_editor(self._ui_mode)
                     return True
+            if hasattr(self, "workspace_bar") and event.type() == QEvent.Type.Resize:
+                if watched is self.workspace_bar or watched is self.toolbar_stack:
+                    self._schedule_workspace_toolbar_overflow_update("manual")
+                    self._schedule_workspace_toolbar_overflow_update("ai")
+                elif watched is self.manual_toolbar:
+                    self._schedule_workspace_toolbar_overflow_update("manual")
+                elif watched is self.ai_toolbar:
+                    self._schedule_workspace_toolbar_overflow_update("ai")
             if hasattr(self, "toolbar_stack") and watched is self.toolbar_stack and event.type() == QEvent.Type.MouseButtonDblClick:
                 self._show_workspace_toolbar_editor(self._ui_mode)
                 return True
@@ -5526,6 +5734,7 @@ class MainWindow(QMainWindow):
     def _handle_mode_tab_changed(self, index: int) -> None:
         self._ui_mode = "ai" if index == 1 else "manual"
         self.toolbar_stack.setCurrentIndex(index)
+        self._schedule_workspace_toolbar_overflow_update(self._ui_mode)
         self._refresh_viewport_mode()
         self._update_ai_toolbar_state()
         if self._ui_mode == "ai":
@@ -6759,23 +6968,13 @@ class MainWindow(QMainWindow):
         return sources
 
     def _workflow_destination_dir(self, recipe: WorkflowRecipe, destination_root: str | None = None) -> str:
-        root = normalize_filesystem_path(destination_root or self._current_folder or "")
-        if not root:
-            return ""
-        if recipe.destination_subfolder:
-            return normalize_filesystem_path(str(Path(root) / recipe.destination_subfolder))
-        return root
+        return workflow_destination_dir(recipe, destination_root or self._current_folder or "")
 
     def _workflow_archive_path(self, recipe: WorkflowRecipe, destination_root: str | None = None) -> str:
-        root = normalize_filesystem_path(destination_root or self._current_folder or "")
-        if not root:
-            return ""
-        archive_format = archive_format_for_key(recipe.archive_format)
-        base_name = recipe.destination_subfolder.strip() or recipe.name or "handoff"
-        return str(Path(root) / f"{base_name}{archive_format.suffix}")
+        return workflow_archive_path(recipe, destination_root or self._current_folder or "")
 
     def _workflow_record_folder_name(self, record: ImageRecord) -> str:
-        return Path(record.name).stem or "record"
+        return workflow_record_folder_name(record.name)
 
     def _run_workflow_recipe(
         self,
@@ -10192,6 +10391,7 @@ class MainWindow(QMainWindow):
             runtime_lines.append(f"Hidden cache: {ai_paths.hidden_root}")
         self.ai_status_label.setToolTip("\n".join(runtime_lines))
         self._refresh_ai_progress_bar()
+        self._schedule_workspace_toolbar_overflow_update("ai")
         self._update_action_states()
 
     def _run_ai_pipeline(self) -> None:
@@ -10990,7 +11190,7 @@ class MainWindow(QMainWindow):
 
         self.inspector_panel.set_context(
             folder=self._scope_display_label(),
-            mode_label="AI Culling" if self._ui_mode == "ai" else "Manual Review",
+            mode_label="AI Review" if self._ui_mode == "ai" else "Manual Review",
             selected_count=self.grid.selected_count() if self._records else 0,
             current_record=current_record,
             display_path=display_path,
@@ -11464,6 +11664,8 @@ class MainWindow(QMainWindow):
 
     def _reset_window_layout(self) -> None:
         clear_window_layout(self._settings, self.GEOMETRY_KEY, self.STATE_KEY)
+        self._settings.remove(self.WORKSPACE_BAR_STATE_KEY)
+        self._set_workspace_bar_state("expanded")
         self.resize(1600, 960)
         self._apply_default_workspace()
         self.statusBar().showMessage("Reset window layout")
