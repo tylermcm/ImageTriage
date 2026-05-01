@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""SQLite-backed persistent cache and query surface for Image Triage.
+
+The catalog repository is intentionally a backend service rather than a UI
+object. It stores bundle-aware folder snapshots plus the expensive downstream
+results built from those snapshots: review grouping, review scoring, AI bundle
+loads, AI workflow stage reuse, and per-record feature caches.
+"""
+
 import json
 import os
 import sqlite3
@@ -22,6 +30,7 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True, frozen=True)
 class CatalogStats:
+    """Summary counters used by settings/debug surfaces to explain catalog state."""
     db_path: Path
     folder_count: int = 0
     record_count: int = 0
@@ -36,6 +45,7 @@ class CatalogStats:
 
 @dataclass(slots=True, frozen=True)
 class ReviewScoringCacheEntry:
+    """Cached taste profile and burst recommendations for one folder/session."""
     cache_key: str
     provider_id: str
     taste_profile: TasteProfile
@@ -44,6 +54,7 @@ class ReviewScoringCacheEntry:
 
 @dataclass(slots=True, frozen=True)
 class ReviewGroupingCacheEntry:
+    """Cached review-intelligence bundle for one folder and algorithm signature."""
     cache_key: str
     provider_id: str
     bundle: ReviewIntelligenceBundle
@@ -51,12 +62,14 @@ class ReviewGroupingCacheEntry:
 
 @dataclass(slots=True, frozen=True)
 class AIBundleCacheEntry:
+    """Cached parsed AI report bundle for one source export."""
     cache_key: str
     bundle: AIBundle
 
 
 @dataclass(slots=True, frozen=True)
 class AIWorkflowCacheEntry:
+    """Cached stage-reuse metadata for the external AI pipeline."""
     embedding_cache_key: str
     cluster_cache_key: str
     report_cache_key: str
@@ -65,6 +78,7 @@ class AIWorkflowCacheEntry:
 
 
 def catalog_cache_env_override() -> bool | None:
+    """Read the environment override that forces catalog cache on or off."""
     value = os.environ.get("IMAGE_TRIAGE_USE_CATALOG_CACHE", "").strip().casefold()
     if not value:
         return None
@@ -76,15 +90,23 @@ def catalog_cache_env_override() -> bool | None:
 
 
 def catalog_cache_enabled(default: bool = True) -> bool:
+    """Resolve whether catalog caching is enabled after environment overrides."""
     override = catalog_cache_env_override()
     return default if override is None else override
 
 
 class CatalogRepository:
+    """Small repository layer over the catalog SQLite schema.
+
+    The repository keeps SQL out of the window layer and gives the rest of the
+    app a stable API for folder snapshots, derived-cache reuse, and lightweight
+    catalog diagnostics.
+    """
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path is not None else default_catalog_db_path()
 
     def list_folder_paths(self) -> tuple[str, ...]:
+        """List indexed folder paths, newest first, for catalog browsing surfaces."""
         if not self.db_path.exists():
             return ()
         try:
@@ -102,6 +124,7 @@ class CatalogRepository:
         return tuple(str(row["folder_path"]) for row in rows if str(row["folder_path"] or "").strip())
 
     def stats(self) -> CatalogStats:
+        """Return aggregate counters describing what the catalog currently holds."""
         if not self.db_path.exists():
             return CatalogStats(db_path=self.db_path)
         try:
@@ -144,6 +167,7 @@ class CatalogRepository:
         )
 
     def load_folder_records(self, folder: str) -> list[ImageRecord] | None:
+        """Load the bundle-aware record snapshot for one indexed folder."""
         folder_path = _normalize_filesystem_path(folder)
         folder_key = _normalized_path_key(folder_path)
         try:
@@ -214,6 +238,7 @@ class CatalogRepository:
         *,
         source: str = "scan",
     ) -> bool:
+        """Persist one folder's current scan result into the catalog snapshot tables."""
         folder_path = _normalize_filesystem_path(folder)
         folder_key = _normalized_path_key(folder_path)
         try:
@@ -263,6 +288,7 @@ class CatalogRepository:
         session_id: str,
         cache_key: str,
     ) -> ReviewScoringCacheEntry | None:
+        """Load cached workflow scoring for a folder/session if the key matches."""
         from ..review_workflows import BurstRecommendation, TasteProfile
 
         folder_path = _normalize_filesystem_path(folder)
@@ -354,6 +380,7 @@ class CatalogRepository:
         taste_profile: TasteProfile,
         recommendations: dict[str, BurstRecommendation],
     ) -> bool:
+        """Persist workflow scoring outputs for a folder/session cache key."""
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return False

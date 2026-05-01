@@ -620,7 +620,7 @@ def _load_raw_image(path: str, target_size: QSize, *, prefer_embedded: bool, suf
 
     try:
         with rawpy.imread(path) as raw:
-            use_embedded_preview = prefer_embedded and suffix != ".dng"
+            use_embedded_preview = prefer_embedded
             if use_embedded_preview:
                 embedded = _load_embedded_thumbnail(raw, target_size)
                 if embedded is not None:

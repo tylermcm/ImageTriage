@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from image_triage.models import ImageRecord
 from image_triage.imaging import FitsDisplaySettings
-from image_triage.preview import FullScreenPreview, PreviewEntry
+from image_triage.preview import FullScreenPreview, PreviewEntry, PreviewRequest
 
 
 def _ensure_app() -> QApplication:
@@ -139,6 +139,63 @@ class PreviewPollingTests(unittest.TestCase):
 
         image_key = preview._image_cache_key(0, QImage(32, 24, QImage.Format.Format_RGB32))
         self.assertEqual(image_key[-1], ("auto",))
+        preview.close()
+
+    def test_single_entry_preview_does_not_seed_placeholder_image(self) -> None:
+        preview = FullScreenPreview()
+        path = "C:/temp/sample.nef"
+        entry = _entry(path)
+        preview._entries = [entry]
+        preview._source_entries = [entry]
+        placeholder = QImage(1200, 800, QImage.Format.Format_RGB32)
+        placeholder.fill(0x112233)
+        preview._current_images = [QImage()]
+        preview._current_metadata = [None]
+        preview._current_placeholder_flags = [False]
+        preview._current_image_display_tokens = [()]
+        preview._source_versions = [(1, 1)]
+        preview._panes = [preview._panes[0]] if preview._panes else []
+        preview._seed_entry_images_from_placeholders()
+
+        self.assertTrue(preview._current_images[0].isNull())
+        self.assertFalse(preview._current_placeholder_flags[0])
+        preview.close()
+
+    def test_single_entry_ready_result_replaces_loading_state_normally(self) -> None:
+        preview = FullScreenPreview()
+        path = "C:/temp/sample.nef"
+        entry = _entry(path)
+        preview._entries = [entry]
+        preview._source_entries = [entry]
+        loaded = QImage(1600, 900, QImage.Format.Format_RGB32)
+        loaded.fill(0x445566)
+        preview._current_images = [QImage()]
+        preview._current_metadata = [None]
+        preview._current_placeholder_flags = [False]
+        preview._current_image_display_tokens = [()]
+        preview._source_versions = [(1, 1)]
+        preview._focused_slot = 0
+        preview._load_token = 7
+        preview._pending_requests = 1
+        request = PreviewRequest(
+            path=path,
+            token=7,
+            slot=0,
+            target_size=QSize(1600, 900),
+            source_signature=(2, 2),
+            prefer_embedded=True,
+            load_metadata=False,
+        )
+        preview._result_queue.put(("ready", request, loaded, None))
+
+        with patch.object(preview, "_render_pane") as render_pane, patch.object(preview, "_update_analysis_panel") as update_panel:
+            preview._drain_results()
+
+        self.assertFalse(preview._current_images[0].isNull())
+        self.assertEqual(preview._current_images[0].pixelColor(0, 0).rgb(), loaded.pixelColor(0, 0).rgb())
+        self.assertFalse(preview._current_placeholder_flags[0])
+        render_pane.assert_called_once()
+        update_panel.assert_called_once()
         preview.close()
 
 

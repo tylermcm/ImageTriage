@@ -100,6 +100,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._meta_cache: dict[str, str] = {}
         self._meta_with_ai_cache: dict[str, str] = {}
         self._capture_cache: dict[str, str] = {}
+        self._display_aspect_ratio_by_path: dict[str, float] = {}
         self._pixmap_cache: OrderedDict[ThumbnailKey, tuple[QPixmap, int]] = OrderedDict()
         self._pixmap_cache_bytes = 0
         self._pixmap_cache_limit = 192 * 1024 * 1024
@@ -196,6 +197,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._marquee_active = False
         self._wheel_angle_remainder = 0
         self._wheel_pixel_remainder = 0
+        self._zoom_wheel_angle_remainder = 0
+        self._zoom_wheel_pixel_remainder = 0
+        self._zoom_index = -1
+        self._zoom_factor = 1.0
+        self._zoom_focus = (0.5, 0.5)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -265,6 +271,7 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def set_items(self, items: list[ImageRecord]) -> None:
         previous_variant_indexes = dict(self._variant_indexes)
+        self._reset_image_zoom()
         self._items = items
         self._burst_groups_by_path = {}
         self._burst_groups = []
@@ -300,13 +307,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._ai_result_cache.clear()
         self._normalized_path_cache.clear()
         self._meta_with_ai_cache.clear()
+        self._display_aspect_ratio_by_path.clear()
         self._clear_pixmap_cache()
         self._current_index = 0 if items else -1
         self._selected_indexes = {0} if items else set()
         self._selection_anchor = self._current_index
         self._reset_pointer_interaction(clear_marquee=True)
         self._rebuild_visible_items()
-        self._update_scrollbar()
+        self._refresh_layout_after_visible_items_changed()
         self._prime_visible_text_caches()
         self.viewport().update()
         self._schedule_visible_thumbnail_requests(immediate=True)
@@ -330,7 +338,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._variant_path_to_index[variant.path] = index
                 self._fast_path_to_index[_fast_path_key(variant.path)] = index
         self._rebuild_visible_items()
-        self._update_scrollbar()
+        self._refresh_layout_after_visible_items_changed()
         self._prime_visible_text_caches(limit=120)
         self.viewport().update()
         self._schedule_visible_thumbnail_requests()
@@ -369,7 +377,9 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._capture_cache[variant.path] = self._format_capture_line(self.metadata_manager.get_cached(variant))
                 self._meta_with_ai_cache.pop(variant.path, None)
                 self._failed_paths.discard(variant.path)
+                self._display_aspect_ratio_by_path.pop(variant.path, None)
             self._ai_result_cache.pop(record.path, None)
+            self._display_aspect_ratio_by_path.pop(record.path, None)
 
         if patch.selection_anchor is not None and 0 <= patch.selection_anchor < len(self._items):
             self._selection_anchor = patch.selection_anchor
@@ -488,7 +498,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._burst_group_anchor_by_index[index] = anchor
         self._normalize_burst_stack_selection()
         self._rebuild_visible_items()
-        self._update_scrollbar()
+        self._refresh_layout_after_visible_items_changed()
         self._schedule_visible_thumbnail_requests(immediate=True)
         self.viewport().update()
 
@@ -499,7 +509,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._burst_stack_mode = normalized
         self._normalize_burst_stack_selection()
         self._rebuild_visible_items()
-        self._update_scrollbar()
+        self._refresh_layout_after_visible_items_changed()
         self._schedule_visible_thumbnail_requests(immediate=True)
         self.viewport().update()
 
@@ -671,6 +681,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._schedule_visible_thumbnail_requests()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and self._handle_zoom_wheel(event):
+            event.accept()
+            return
+
         row_height = self._row_height()
         if not self._items or row_height <= 0:
             super().wheelEvent(event)
@@ -830,6 +844,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         index = self._index_at(point.x(), point.y())
         if index < 0:
             super().contextMenuEvent(event)
+            return
+        if self._zoom_index == index and self._zoom_factor > 1.0:
+            self._reset_image_zoom()
+            event.accept()
             return
         if self._tool_checkbox_mode:
             self._set_current_index(index)
@@ -1115,7 +1133,125 @@ class ThumbnailGridView(QAbstractScrollArea):
         if key == Qt.Key.Key_X and review_shortcut_allowed:
             self.reject_requested.emit(index)
             return
+        if key == Qt.Key.Key_Escape and self._zoom_factor > 1.0:
+            self._reset_image_zoom()
+            return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Control and self._zoom_factor > 1.0:
+            self._reset_image_zoom()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def _handle_zoom_wheel(self, event: QWheelEvent) -> bool:
+        if not self._items:
+            return False
+        point = event.position().toPoint()
+        index = self._index_at(point.x(), point.y())
+        if index < 0:
+            return False
+        rect = self._item_rect(index)
+        image_rect = self._image_rect(rect)
+        if not image_rect.contains(point):
+            return False
+        record = self._items[index]
+        variant = self._current_variant(record)
+        target = self._thumbnail_target_size()
+        image = self.thumbnail_manager.get_cached(variant, target)
+        if image is None or image.isNull():
+            return False
+        key = self.thumbnail_manager.make_key(variant, target)
+        pixmap = self._pixmap_for(key, image)
+        if pixmap is None or pixmap.isNull():
+            return False
+        draw_rect = self._image_draw_rect(image_rect, pixmap)
+        if not draw_rect.contains(point):
+            return False
+        steps = self._zoom_wheel_steps(event)
+        if steps == 0:
+            return True
+        previous_index = self._zoom_index
+        changed = self._apply_image_zoom(index, draw_rect, pixmap, point, steps)
+        if self._zoom_index == index and self._zoom_factor > 1.0:
+            self.thumbnail_manager.request_thumbnail(
+                variant,
+                self._zoom_thumbnail_target_size(image_rect),
+                priority=20_000,
+            )
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if changed:
+            dirty_indexes = {index}
+            if previous_index >= 0:
+                dirty_indexes.add(previous_index)
+            self._update_selection_tiles(dirty_indexes)
+        return True
+
+    def _zoom_wheel_steps(self, event: QWheelEvent) -> int:
+        angle_y = event.angleDelta().y()
+        if angle_y:
+            if self._zoom_wheel_angle_remainder and (self._zoom_wheel_angle_remainder > 0) != (angle_y > 0):
+                self._zoom_wheel_angle_remainder = 0
+            self._zoom_wheel_angle_remainder += angle_y
+            steps = int(abs(self._zoom_wheel_angle_remainder) // 120)
+            if steps <= 0:
+                return 0
+            direction = 1 if self._zoom_wheel_angle_remainder > 0 else -1
+            self._zoom_wheel_angle_remainder -= (120 * steps) if self._zoom_wheel_angle_remainder > 0 else (-120 * steps)
+            self._zoom_wheel_pixel_remainder = 0
+            return direction * steps
+
+        pixel_y = event.pixelDelta().y()
+        if not pixel_y:
+            return 0
+        if self._zoom_wheel_pixel_remainder and (self._zoom_wheel_pixel_remainder > 0) != (pixel_y > 0):
+            self._zoom_wheel_pixel_remainder = 0
+        self._zoom_wheel_pixel_remainder += pixel_y
+        threshold = 48
+        steps = int(abs(self._zoom_wheel_pixel_remainder) // threshold)
+        if steps <= 0:
+            return 0
+        direction = 1 if self._zoom_wheel_pixel_remainder > 0 else -1
+        self._zoom_wheel_pixel_remainder -= threshold * steps if self._zoom_wheel_pixel_remainder > 0 else -threshold * steps
+        self._zoom_wheel_angle_remainder = 0
+        return direction * steps
+
+    def _apply_image_zoom(
+        self,
+        index: int,
+        draw_rect: QRect,
+        pixmap: QPixmap,
+        point: QPoint,
+        steps: int,
+    ) -> bool:
+        if steps == 0 or pixmap.isNull() or draw_rect.width() <= 0 or draw_rect.height() <= 0:
+            return False
+        previous_state = (self._zoom_index, round(self._zoom_factor, 4), self._zoom_focus)
+        base_factor = self._zoom_factor if index == self._zoom_index else 1.0
+        new_factor = max(1.0, min(4.0, base_factor + (0.25 * steps)))
+        if new_factor <= 1.0:
+            self._reset_image_zoom()
+            return previous_state != (self._zoom_index, round(self._zoom_factor, 4), self._zoom_focus)
+        width = max(1, draw_rect.width() - 1)
+        height = max(1, draw_rect.height() - 1)
+        focus_x = max(0.0, min(1.0, (point.x() - draw_rect.left()) / width))
+        focus_y = max(0.0, min(1.0, (point.y() - draw_rect.top()) / height))
+        self._zoom_index = index
+        self._zoom_factor = new_factor
+        self._zoom_focus = (focus_x, focus_y)
+        return previous_state != (self._zoom_index, round(self._zoom_factor, 4), self._zoom_focus)
+
+    def _reset_image_zoom(self) -> None:
+        previous_index = self._zoom_index
+        had_zoom = previous_index >= 0 or self._zoom_factor != 1.0
+        self._zoom_index = -1
+        self._zoom_factor = 1.0
+        self._zoom_focus = (0.5, 0.5)
+        self._zoom_wheel_angle_remainder = 0
+        self._zoom_wheel_pixel_remainder = 0
+        if had_zoom and previous_index >= 0:
+            self.viewport().update(self._item_rect(previous_index))
 
     def _handle_scroll_value_changed(self) -> None:
         self._schedule_visible_thumbnail_requests()
@@ -1123,6 +1259,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _handle_thumbnail_ready(self, key: ThumbnailKey, _image: QImage) -> None:
         self._failed_paths.discard(key.path)
         self._failed_messages.pop(key.path, None)
+        if _image.width() > 0 and _image.height() > 0:
+            self._display_aspect_ratio_by_path[key.path] = _image.width() / _image.height()
         target = self._thumbnail_target_size()
         if key.width != target.width() or key.height != target.height():
             return
@@ -1132,6 +1270,10 @@ class ThumbnailGridView(QAbstractScrollArea):
             return
 
         rect = self._item_rect(index)
+        if self._should_fit_single_visible_tile() and self._single_visible_item_matches_path(key.path):
+            self._refresh_layout_after_visible_items_changed()
+            self._schedule_visible_thumbnail_requests(immediate=True)
+            rect = self._item_rect(index)
         if rect.intersects(self.viewport().rect()):
             self._cache_pixmap(key, _image)
             self.viewport().update(rect)
@@ -1151,6 +1293,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         if index is None:
             return
         self._capture_cache[key.path] = self._format_capture_line(metadata)
+        if metadata.width > 0 and metadata.height > 0:
+            self._display_aspect_ratio_by_path[key.path] = metadata.width / metadata.height
+        if self._should_fit_single_visible_tile() and self._single_visible_item_matches_path(key.path):
+            self._refresh_layout_after_visible_items_changed()
+            self._schedule_visible_thumbnail_requests(immediate=True)
         rect = self._item_rect(index)
         if rect.intersects(self.viewport().rect()):
             self.viewport().update(rect)
@@ -1200,9 +1347,15 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.drawRoundedRect(QRectF(image_rect), 10, 10)
 
         if pixmap is not None and not pixmap.isNull():
-            draw_rect = QRect(0, 0, pixmap.width(), pixmap.height())
-            draw_rect.moveCenter(image_rect.center())
-            painter.drawPixmap(draw_rect, pixmap)
+            draw_rect = self._image_draw_rect(image_rect, pixmap)
+            zoom_pixmap = self._zoom_pixmap_for_tile(index, record, variant, image_rect)
+            if index == self._zoom_index and self._zoom_factor > 1.0:
+                zoom_source = zoom_pixmap if zoom_pixmap is not None and not zoom_pixmap.isNull() else pixmap
+                source_rect = self._zoom_source_rect(zoom_source, self._zoom_factor, self._zoom_focus)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                painter.drawPixmap(draw_rect, zoom_source, source_rect)
+            else:
+                painter.drawPixmap(draw_rect, pixmap)
         elif variant.path in self._failed_paths:
             painter.setPen(self._failed_text_color)
             painter.setFont(self._placeholder_font)
@@ -1670,6 +1823,58 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._image_height(),
         )
 
+    def _image_draw_rect(self, image_rect: QRect, pixmap: QPixmap) -> QRect:
+        draw_size = pixmap.size()
+        if draw_size.width() > image_rect.width() or draw_size.height() > image_rect.height():
+            draw_size.scale(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        draw_rect = QRect(QPoint(0, 0), draw_size)
+        if self._columns == 1:
+            draw_rect.moveTop(image_rect.top())
+            draw_rect.moveLeft(image_rect.left() + max(0, (image_rect.width() - draw_rect.width()) // 2))
+        else:
+            draw_rect.moveCenter(image_rect.center())
+        return draw_rect
+
+    def _zoom_source_rect(self, pixmap: QPixmap, factor: float, focus: tuple[float, float]) -> QRect:
+        if factor <= 1.0 or pixmap.isNull():
+            return pixmap.rect()
+        crop_width = max(1, min(pixmap.width(), int(round(pixmap.width() / factor))))
+        crop_height = max(1, min(pixmap.height(), int(round(pixmap.height() / factor))))
+        focus_x = max(0.0, min(1.0, float(focus[0])))
+        focus_y = max(0.0, min(1.0, float(focus[1])))
+        center_x = int(round((pixmap.width() - 1) * focus_x))
+        center_y = int(round((pixmap.height() - 1) * focus_y))
+        left = max(0, min(pixmap.width() - crop_width, center_x - crop_width // 2))
+        top = max(0, min(pixmap.height() - crop_height, center_y - crop_height // 2))
+        return QRect(left, top, crop_width, crop_height)
+
+    def _zoom_pixmap_for_tile(
+        self,
+        index: int,
+        record: ImageRecord,
+        variant: ImageVariant,
+        image_rect: QRect,
+    ) -> QPixmap | None:
+        if index != self._zoom_index or self._zoom_factor <= 1.0:
+            return None
+        zoom_target = self._zoom_thumbnail_target_size(image_rect)
+        if not zoom_target.isValid():
+            return None
+        key = self.thumbnail_manager.make_key(variant, zoom_target)
+        image = self.thumbnail_manager.get_cached(variant, zoom_target)
+        if image is None:
+            self.thumbnail_manager.request_thumbnail(variant, zoom_target, priority=20_000)
+            return None
+        return self._pixmap_for(key, image)
+
+    def _zoom_thumbnail_target_size(self, image_rect: QRect) -> QSize:
+        if image_rect.width() <= 0 or image_rect.height() <= 0:
+            return QSize()
+        scale = max(2.0, min(4.0, self._zoom_factor))
+        width = min(2048, max(image_rect.width(), int(round(image_rect.width() * scale))))
+        height = min(2048, max(image_rect.height(), int(round(image_rect.height() * scale))))
+        return QSize(width, height)
+
     def _capture_rect(self, tile_rect: QRect) -> QRect:
         if self._compact_card_mode:
             return QRect()
@@ -1828,7 +2033,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if current_display != index:
             self._burst_display_member_by_anchor[anchor] = index
             self._rebuild_visible_items()
-            self._update_scrollbar()
+            self._refresh_layout_after_visible_items_changed()
             self._schedule_visible_thumbnail_requests(immediate=True)
             self.viewport().update()
         return index
@@ -1888,6 +2093,45 @@ class ThumbnailGridView(QAbstractScrollArea):
             item_index: slot
             for slot, item_index in enumerate(self._visible_item_indexes)
         }
+
+    def _refresh_layout_after_visible_items_changed(self) -> None:
+        self._recalculate_metrics()
+        self._update_scrollbar()
+
+    def _should_fit_single_visible_tile(self) -> bool:
+        return self._columns == 1 and len(self._visible_item_indexes) == 1
+
+    def _single_visible_item(self) -> tuple[int, ImageRecord, ImageVariant] | None:
+        if not self._should_fit_single_visible_tile():
+            return None
+        index = self._visible_item_indexes[0]
+        if not 0 <= index < len(self._items):
+            return None
+        record = self._items[index]
+        return index, record, self._current_variant(record)
+
+    def _single_visible_item_matches_path(self, path: str) -> bool:
+        single_item = self._single_visible_item()
+        if single_item is None:
+            return False
+        _, record, variant = single_item
+        return path == variant.path or path == record.path
+
+    def _single_visible_item_aspect_ratio(self) -> float | None:
+        single_item = self._single_visible_item()
+        if single_item is None:
+            return None
+        _, record, variant = single_item
+        for candidate in (variant.path, record.path):
+            aspect_ratio = self._display_aspect_ratio_by_path.get(candidate)
+            if aspect_ratio is not None and aspect_ratio > 0:
+                return aspect_ratio
+            cached_metadata = self.metadata_manager.get_cached(variant if candidate == variant.path else record)
+            if cached_metadata is not None and cached_metadata.width > 0 and cached_metadata.height > 0:
+                aspect_ratio = cached_metadata.width / cached_metadata.height
+                self._display_aspect_ratio_by_path[candidate] = aspect_ratio
+                return aspect_ratio
+        return None
 
     def _current_visible_slot(self) -> int:
         if not self._visible_item_indexes:
@@ -2190,18 +2434,26 @@ class ThumbnailGridView(QAbstractScrollArea):
         available = max(320, self.viewport().width() - (self._margin * 2) - ((self._columns - 1) * self._spacing))
         minimum_tile_width = (180 if self._columns <= 4 else 108) if self._compact_card_mode else (220 if self._columns <= 4 else 120)
         minimum_image_height = (128 if self._columns <= 4 else 72) if self._compact_card_mode else (180 if self._columns <= 4 else 90)
-        self._tile_width_value = max(minimum_tile_width, available // self._columns)
         image_ratio = 0.64 if self._compact_card_mode else 0.72
-        self._image_height_value = max(minimum_image_height, int(self._tile_width_value * image_ratio))
-        self._tile_height_value = (
+        footer_height = 12 if self._compact_card_mode else 20
+        card_chrome_height = (
             self._image_padding * 2
-            + self._image_height_value
             + self._caption_height
             + self._action_height
             + self._capture_height
             + self._meta_height
-            + (12 if self._compact_card_mode else 20)
+            + footer_height
         )
+        default_tile_width = max(minimum_tile_width, available // self._columns)
+        default_image_height = max(minimum_image_height, int(default_tile_width * image_ratio))
+        if self._columns == 1:
+            self._tile_width_value = available
+            max_tile_height = max(160, self.viewport().height() - (self._margin * 2))
+            self._image_height_value = max(64, max_tile_height - card_chrome_height)
+        else:
+            self._tile_width_value = default_tile_width
+            self._image_height_value = default_image_height
+        self._tile_height_value = card_chrome_height + self._image_height_value
         self._row_height_value = self._tile_height_value + self._spacing
         self._thumbnail_target_size_value = QSize(
             max(64, self._tile_width_value - (self._image_padding * 2)),

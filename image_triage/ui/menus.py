@@ -188,7 +188,9 @@ def build_main_menu_bar(
     _add_workspace_presets_menu(settings_menu, actions, workspace_preset_menu)
 
     window_menu = menu_bar.addMenu("&Window")
+    window_menu.addAction(actions.show_workspace_toolbar)
     if dock_actions:
+        window_menu.addSeparator()
         for key in ("library", "inspector"):
             action = dock_actions.get(key)
             if action is not None:

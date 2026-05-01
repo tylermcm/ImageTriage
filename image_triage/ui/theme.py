@@ -286,6 +286,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             spacing: 2px;
             padding: 0px 4px;
         }}
+        QToolBar#primaryToolbar[toolbarMerged="true"] {{
+            background-color: transparent;
+            border: none;
+            border-radius: 0px;
+            padding: 0px;
+        }}
         QToolBar#primaryToolbar::separator {{
             width: 1px;
             background: {theme.border_muted.css};
@@ -450,6 +456,18 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.toolbar_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 12px;
+        }}
+        QFrame#workspaceBarDivider {{
+            background-color: {theme.border_muted.css};
+            border: none;
+            min-width: 1px;
+            max-width: 1px;
+            min-height: 24px;
+            margin: 2px 0px;
+        }}
+        QWidget#workspaceBarChrome {{
+            background-color: transparent;
+            border: none;
         }}
         QFrame#toolbarEditOverlay {{
             background-color: rgba(0, 0, 0, 132);

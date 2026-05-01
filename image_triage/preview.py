@@ -17,14 +17,16 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from .ai_results import AIImageResult, build_ai_explanation_lines
-from .formats import FITS_SUFFIXES, suffix_for_path
+from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord, JPEG_SUFFIXES
@@ -518,68 +520,37 @@ class FullScreenPreview(QDialog):
         root_layout.setSpacing(12)
 
         self.header_widget = QWidget()
-        self.header_widget.setObjectName("previewHeaderBar")
+        self.header_widget.setObjectName("workspaceBar")
         header_layout = QHBoxLayout(self.header_widget)
         header_layout.setContentsMargins(12, 8, 12, 8)
         header_layout.setSpacing(10)
 
-        self.compare_toggle_button = QPushButton("Compare")
+        self.header_identity = QWidget()
+        self.header_identity.setObjectName("workspaceControls")
+        header_identity_layout = QVBoxLayout(self.header_identity)
+        header_identity_layout.setContentsMargins(0, 0, 0, 0)
+        header_identity_layout.setSpacing(0)
+        self.header_title_label = QLabel("Preview")
+        self.header_title_label.setObjectName("paneTitle")
+        self.header_subtitle_label = QLabel("Navigation, compare, and inspection controls")
+        self.header_subtitle_label.setObjectName("panelHeaderSubtitle")
+        self.header_subtitle_label.setWordWrap(True)
+        header_identity_layout.addWidget(self.header_title_label)
+        header_identity_layout.addWidget(self.header_subtitle_label)
+
+        self.command_palette_button = self._build_header_tool_button("Command")
+        self.command_palette_button.setToolTip("Open preview commands")
+        self.command_palette_button.clicked.connect(self.command_palette_requested.emit)
+
+        self.compare_toggle_button = self._build_header_tool_button("Compare")
         self.compare_toggle_button.setCheckable(True)
         self.compare_toggle_button.setChecked(False)
-        self.compare_toggle_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.compare_toggle_button.toggled.connect(self._handle_compare_button_toggled)
-        self.compare_toggle_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                color: #f2f5f8;
-                padding: 4px 12px;
-            }
-            QPushButton:checked {
-                background-color: #2563eb;
-                border-color: #2563eb;
-                color: #ffffff;
-            }
-            QPushButton:hover {
-                border-color: #6f7f95;
-            }
-            QPushButton:checked:hover {
-                background-color: #1d4ed8;
-                border-color: #1d4ed8;
-            }
-            """
-        )
 
-        self.auto_bracket_button = QPushButton("Auto-Bracket")
+        self.auto_bracket_button = self._build_header_tool_button("Auto-Bracket")
         self.auto_bracket_button.setCheckable(True)
         self.auto_bracket_button.setChecked(False)
-        self.auto_bracket_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.auto_bracket_button.toggled.connect(self._handle_auto_bracket_button_toggled)
-        self.auto_bracket_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                color: #f2f5f8;
-                padding: 4px 12px;
-            }
-            QPushButton:checked {
-                background-color: #2563eb;
-                border-color: #2563eb;
-                color: #ffffff;
-            }
-            QPushButton:hover {
-                border-color: #6f7f95;
-            }
-            QPushButton:checked:hover {
-                background-color: #1d4ed8;
-                border-color: #1d4ed8;
-            }
-            """
-        )
 
         self.compare_count_combo = QComboBox()
         for count in COMPARE_COUNTS:
@@ -590,51 +561,12 @@ class FullScreenPreview(QDialog):
         self.compare_count_combo.currentIndexChanged.connect(self._handle_compare_count_changed)
         self.compare_count_combo.setEnabled(False)
 
-        self.photoshop_button = QPushButton("Photoshop")
-        self.photoshop_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.photoshop_button = self._build_header_tool_button("Photoshop")
         self.photoshop_button.clicked.connect(self._handle_photoshop_button_clicked)
-        self.photoshop_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                color: #f2f5f8;
-                padding: 4px 12px;
-            }
-            QPushButton:hover {
-                border-color: #6f7f95;
-            }
-            QPushButton:disabled {
-                color: #7d8897;
-                border-color: #313a47;
-            }
-            """
-        )
 
-        self.before_after_button = QPushButton("Before/After")
+        self.before_after_button = self._build_header_tool_button("Before/After")
         self.before_after_button.setCheckable(True)
-        self.before_after_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.before_after_button.toggled.connect(self._handle_before_after_button_toggled)
-        self.before_after_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                color: #f2f5f8;
-                padding: 4px 12px;
-            }
-            QPushButton:checked {
-                background-color: #2563eb;
-                border-color: #2563eb;
-                color: #ffffff;
-            }
-            QPushButton:hover {
-                border-color: #6f7f95;
-            }
-            """
-        )
 
         self.focus_assist_button = QPushButton("Off")
         self.focus_assist_button.setCheckable(True)
@@ -707,66 +639,62 @@ class FullScreenPreview(QDialog):
             self.focus_assist_strength_combo.setCurrentIndex(strength_index)
         self.focus_assist_strength_combo.currentIndexChanged.connect(self._handle_focus_assist_strength_changed)
 
-        self.next_edit_button = QPushButton("Edit 1/1")
-        self.next_edit_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.next_edit_button = self._build_header_tool_button("Edit 1/1")
         self.next_edit_button.clicked.connect(self._cycle_edited_variant)
         self.next_edit_button.hide()
-        self.next_edit_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                color: #f2f5f8;
-                padding: 4px 12px;
-            }
-            QPushButton:hover {
-                border-color: #6f7f95;
-            }
-            QPushButton:disabled {
-                color: #7d8897;
-                border-color: #313a47;
-            }
-            """
-        )
 
         self.review_group = QWidget()
-        self.review_group.setObjectName("previewToolbarGroup")
+        self.review_group.setObjectName("workspaceControls")
         review_group_layout = QHBoxLayout(self.review_group)
         review_group_layout.setContentsMargins(0, 0, 0, 0)
         review_group_layout.setSpacing(8)
         self.review_group_label = QLabel("Review")
-        self.review_group_label.setObjectName("previewHeaderLabel")
+        self.review_group_label.setObjectName("sectionLabel")
         review_group_layout.addWidget(self.review_group_label)
         review_group_layout.addWidget(self.compare_toggle_button)
         review_group_layout.addWidget(self.auto_bracket_button)
         review_group_layout.addWidget(self.before_after_button)
 
         self.edit_group = QWidget()
-        self.edit_group.setObjectName("previewToolbarGroup")
+        self.edit_group.setObjectName("workspaceControls")
         edit_group_layout = QHBoxLayout(self.edit_group)
         edit_group_layout.setContentsMargins(0, 0, 0, 0)
         edit_group_layout.setSpacing(8)
         self.edit_group_label = QLabel("Edit")
-        self.edit_group_label.setObjectName("previewHeaderLabel")
+        self.edit_group_label.setObjectName("sectionLabel")
         edit_group_layout.addWidget(self.edit_group_label)
         edit_group_layout.addWidget(self.next_edit_button)
         edit_group_layout.addWidget(self.photoshop_button)
 
         self.layout_group = QWidget()
-        self.layout_group.setObjectName("previewToolbarGroup")
+        self.layout_group.setObjectName("workspaceControls")
         layout_group_layout = QHBoxLayout(self.layout_group)
         layout_group_layout.setContentsMargins(0, 0, 0, 0)
         layout_group_layout.setSpacing(8)
         self.layout_group_label = QLabel("Layout")
-        self.layout_group_label.setObjectName("previewHeaderLabel")
+        self.layout_group_label.setObjectName("sectionLabel")
         layout_group_layout.addWidget(self.layout_group_label)
         layout_group_layout.addWidget(self.compare_count_combo)
 
-        header_layout.addStretch(1)
+        self.preview_header_overflow_menu = QMenu(self)
+        self.preview_header_overflow_menu.aboutToShow.connect(self._populate_header_overflow_menu)
+        self.preview_header_more_button = self._build_header_tool_button("More")
+        self.preview_header_more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.preview_header_more_button.setMenu(self.preview_header_overflow_menu)
+        self.preview_header_more_button.hide()
+        self._preview_header_group_base_visibility = {
+            "review": True,
+            "edit": True,
+            "layout": False,
+        }
+        self._preview_header_overflow_hidden_groups: tuple[str, ...] = ()
+
+        header_layout.addWidget(self.header_identity, 1)
+        header_layout.addWidget(self.command_palette_button)
         header_layout.addWidget(self.review_group)
         header_layout.addWidget(self.edit_group)
         header_layout.addWidget(self.layout_group)
+        header_layout.addWidget(self.preview_header_more_button)
 
         self.content_widget = QWidget()
         self._content_layout = QHBoxLayout(self.content_widget)
@@ -946,6 +874,14 @@ class FullScreenPreview(QDialog):
         self._sync_preview_controls()
         self.apply_theme(self._theme)
 
+    def _build_header_tool_button(self, text: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("workspacePresetsButton")
+        button.setText(text)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        return button
+
     def _toggle_button_style(self) -> str:
         return f"""
             QPushButton {{
@@ -1015,6 +951,133 @@ class FullScreenPreview(QDialog):
             }}
         """
 
+    def _update_header_summary(self) -> None:
+        subtitle = "Navigation, compare, and inspection controls"
+        if self._winner_ladder_mode:
+            subtitle = "Winner Ladder"
+        elif self._before_after_enabled and self._entries:
+            subtitle = f"Before/After | {self._entries[0].record.name}"
+        elif self._compare_mode and self._entries:
+            subtitle = f"Compare {len(self._entries)}-Up"
+        elif self._entries:
+            subtitle = self._entries[0].record.name
+        self.header_subtitle_label.setText(subtitle)
+
+    def _visible_header_groups(self) -> list[tuple[str, QWidget]]:
+        return [
+            ("review", self.review_group),
+            ("edit", self.edit_group),
+            ("layout", self.layout_group),
+        ]
+
+    def _header_group_required_width(self, widget: QWidget) -> int:
+        return max(widget.minimumWidth(), widget.minimumSizeHint().width(), widget.sizeHint().width())
+
+    def _apply_header_overflow(self) -> None:
+        available_width = self.header_widget.width()
+        if available_width <= 0:
+            return
+
+        layout = self.header_widget.layout()
+        if not isinstance(layout, QHBoxLayout):
+            return
+        margins = layout.contentsMargins()
+        spacing = layout.spacing()
+
+        active_groups = [
+            (group_id, widget)
+            for group_id, widget in self._visible_header_groups()
+            if self._preview_header_group_base_visibility.get(group_id, False)
+        ]
+        hidden_groups: list[str] = []
+        overflow_order = ("layout", "edit", "review")
+
+        def required_width(group_ids_hidden: set[str]) -> int:
+            width = margins.left() + margins.right()
+            visible_widgets = [self.header_identity, self.command_palette_button]
+            for group_id, widget in active_groups:
+                if group_id not in group_ids_hidden:
+                    visible_widgets.append(widget)
+            if group_ids_hidden:
+                visible_widgets.append(self.preview_header_more_button)
+            if len(visible_widgets) > 1:
+                width += (len(visible_widgets) - 1) * spacing
+            width += max(180, self.header_title_label.minimumSizeHint().width())
+            width += max(
+                self.command_palette_button.minimumSizeHint().width(),
+                self.command_palette_button.sizeHint().width(),
+            )
+            for group_id, widget in active_groups:
+                if group_id in group_ids_hidden:
+                    continue
+                width += self._header_group_required_width(widget)
+            if group_ids_hidden:
+                width += max(
+                    self.preview_header_more_button.minimumSizeHint().width(),
+                    self.preview_header_more_button.sizeHint().width(),
+                )
+            return width
+
+        hidden_set: set[str] = set()
+        current_required_width = required_width(hidden_set)
+        for group_id in overflow_order:
+            if current_required_width <= available_width:
+                break
+            if group_id not in {active_id for active_id, _widget in active_groups}:
+                continue
+            hidden_set.add(group_id)
+            hidden_groups.append(group_id)
+            current_required_width = required_width(hidden_set)
+
+        self._preview_header_overflow_hidden_groups = tuple(hidden_groups)
+        for group_id, widget in self._visible_header_groups():
+            widget.setVisible(self._preview_header_group_base_visibility.get(group_id, False) and group_id not in hidden_set)
+        self.preview_header_more_button.setVisible(bool(hidden_groups))
+
+    def _populate_header_overflow_menu(self) -> None:
+        self.preview_header_overflow_menu.clear()
+        if not self._preview_header_overflow_hidden_groups:
+            empty_action = self.preview_header_overflow_menu.addAction("No hidden controls")
+            empty_action.setEnabled(False)
+            return
+
+        if "review" in self._preview_header_overflow_hidden_groups:
+            review_menu = self.preview_header_overflow_menu.addMenu("Review")
+            compare_action = review_menu.addAction("Compare")
+            compare_action.setCheckable(True)
+            compare_action.setChecked(self._compare_mode)
+            compare_action.triggered.connect(lambda checked: self.compare_toggle_button.setChecked(checked))
+            auto_bracket_action = review_menu.addAction("Auto-Bracket")
+            auto_bracket_action.setCheckable(True)
+            auto_bracket_action.setChecked(self._auto_bracket_enabled)
+            auto_bracket_action.triggered.connect(lambda checked: self.auto_bracket_button.setChecked(checked))
+            before_after_action = review_menu.addAction("Before/After")
+            before_after_action.setCheckable(True)
+            before_after_action.setChecked(self._before_after_enabled)
+            before_after_action.setEnabled(not self.before_after_button.isHidden())
+            before_after_action.triggered.connect(lambda checked: self.before_after_button.setChecked(checked))
+
+        if "edit" in self._preview_header_overflow_hidden_groups:
+            edit_menu = self.preview_header_overflow_menu.addMenu("Edit")
+            next_edit_action = edit_menu.addAction(self.next_edit_button.text())
+            next_edit_action.setEnabled((not self.next_edit_button.isHidden()) and self.next_edit_button.isEnabled())
+            next_edit_action.triggered.connect(self._cycle_edited_variant)
+            photoshop_action = edit_menu.addAction("Photoshop")
+            photoshop_action.setEnabled(self.photoshop_button.isEnabled())
+            photoshop_action.triggered.connect(self._handle_photoshop_button_clicked)
+
+        if "layout" in self._preview_header_overflow_hidden_groups:
+            layout_menu = self.preview_header_overflow_menu.addMenu("Layout")
+            if not self._compare_mode:
+                idle_action = layout_menu.addAction("Compare count is available in Compare mode")
+                idle_action.setEnabled(False)
+            else:
+                for count in COMPARE_COUNTS:
+                    action = layout_menu.addAction(f"{count}-Up")
+                    action.setCheckable(True)
+                    action.setChecked(count == self._compare_count)
+                    action.triggered.connect(lambda _checked=False, target=count: self.set_compare_count(target))
+
     def _entry_supports_fits_stf(self, entry: PreviewEntry | None) -> bool:
         if entry is None or not entry.source_path:
             return False
@@ -1050,7 +1113,6 @@ class FullScreenPreview(QDialog):
         edited_candidates = self._edited_candidates_for_entry(self._source_entries[0]) if self._source_entries else ()
         before_after_visible = (not self._compare_mode) and len(self._source_entries) == 1 and bool(edited_candidates)
         self.before_after_button.setVisible(before_after_visible)
-        self.layout_group.setVisible(self._compare_mode)
         self.compare_count_combo.setVisible(self._compare_mode)
         self.focus_assist_button.setText("On" if self._focus_assist_enabled else "Off")
         self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
@@ -1082,45 +1144,24 @@ class FullScreenPreview(QDialog):
         if fits_controls_visible:
             hint_text = "Histogram follows the focused pane. FITS display stretch changes the preview only."
         self.inspection_hint_label.setText(hint_text)
+        self._preview_header_group_base_visibility["review"] = True
+        self._preview_header_group_base_visibility["edit"] = True
+        self._preview_header_group_base_visibility["layout"] = self._compare_mode
+        self._update_header_summary()
+        self._apply_header_overflow()
         for pane in self._panes[: len(self._entries)]:
             pane.set_minimal(False)
 
     def apply_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
         self.setStyleSheet(f"background-color: {theme.image_bg.css}; color: {theme.text_primary.css};")
-        self.header_widget.setStyleSheet(
-            f"""
-            QWidget#previewHeaderBar {{
-                background-color: {theme.toolbar_bg.css};
-                border: 1px solid {theme.border.css};
-                border-radius: 12px;
-            }}
-            QWidget#previewToolbarGroup {{
-                background-color: transparent;
-                border: none;
-            }}
-            QLabel#previewHeaderLabel {{
-                color: {theme.text_muted.css};
-                font-size: 11px;
-                font-weight: 600;
-                background-color: transparent;
-                padding: 0 2px 0 0;
-            }}
-            """
-        )
         self.content_widget.setStyleSheet("background-color: transparent;")
         self.info_label.setStyleSheet(f"font-size: 14px; color: {theme.text_secondary.css};")
-        self.compare_toggle_button.setStyleSheet(self._toggle_button_style())
-        self.auto_bracket_button.setStyleSheet(self._toggle_button_style())
-        self.before_after_button.setStyleSheet(self._toggle_button_style())
         self.focus_assist_button.setStyleSheet(self._toggle_button_style())
         self.focus_assist_background_button.setStyleSheet(self._toggle_button_style())
-        self.photoshop_button.setStyleSheet(self._action_button_style())
-        self.next_edit_button.setStyleSheet(self._action_button_style())
         combo_style = self._combo_box_style()
         self.focus_assist_color_combo.setStyleSheet(combo_style)
         self.focus_assist_strength_combo.setStyleSheet(combo_style)
-        self.compare_count_combo.setStyleSheet(combo_style)
         self.fits_stf_combo.setStyleSheet(combo_style)
         self.analysis_panel.setStyleSheet(
             f"""
@@ -1478,6 +1519,7 @@ class FullScreenPreview(QDialog):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        self._apply_header_overflow()
         self._render_all()
 
     def _handle_compare_count_changed(self) -> None:
@@ -1680,6 +1722,8 @@ class FullScreenPreview(QDialog):
     def _should_use_placeholder_image(self, slot: int, image: QImage) -> bool:
         if image.isNull():
             return False
+        if len(self._entries) == 1:
+            return False
         if len(self._entries) != 1:
             return True
         if not 0 <= slot < len(self._panes):
@@ -1688,6 +1732,19 @@ class FullScreenPreview(QDialog):
         minimum_width = max(720, int(target.width() * 0.66))
         minimum_height = max(420, int(target.height() * 0.66))
         return image.width() >= minimum_width and image.height() >= minimum_height
+
+    def _should_preserve_raw_placeholder_visual(self, slot: int, path: str, *, prefer_embedded: bool) -> bool:
+        if not prefer_embedded or self._manual_zoom:
+            return False
+        if suffix_for_path(path) not in RAW_SUFFIXES:
+            return False
+        if not 0 <= slot < len(self._current_placeholder_flags):
+            return False
+        if not self._current_placeholder_flags[slot]:
+            return False
+        if not 0 <= slot < len(self._current_images):
+            return False
+        return not self._current_images[slot].isNull()
 
     def _before_source_path(self, record: ImageRecord) -> str:
         for path in record.companion_paths:
@@ -1780,22 +1837,31 @@ class FullScreenPreview(QDialog):
             )
             cached_image = self._cached_preview_image(cache_key)
             should_load_metadata = force_metadata or entry.source_path not in self._metadata_cache
+            preserve_placeholder = self._should_preserve_raw_placeholder_visual(
+                slot,
+                entry.source_path,
+                prefer_embedded=prefer_embedded,
+            )
             if cached_image is not None and not cached_image.isNull():
-                self._current_images[slot] = cached_image
-                if slot < len(self._current_image_display_tokens):
-                    self._current_image_display_tokens[slot] = self._fits_display_cache_key_for_path(
-                        entry.source_path,
-                        fits_display_settings,
-                    )
-                if slot < len(self._current_placeholder_flags):
-                    self._current_placeholder_flags[slot] = False
+                if not preserve_placeholder:
+                    self._current_images[slot] = cached_image
+                    if slot < len(self._current_image_display_tokens):
+                        self._current_image_display_tokens[slot] = self._fits_display_cache_key_for_path(
+                            entry.source_path,
+                            fits_display_settings,
+                        )
+                    if slot < len(self._current_placeholder_flags):
+                        self._current_placeholder_flags[slot] = False
                 if slot < len(self._source_versions):
                     self._source_versions[slot] = source_signature
                 metadata = self._metadata_cache.get(entry.source_path)
                 if metadata is not None:
                     self._current_metadata[slot] = metadata
-                self._render_pane(slot)
-                if slot == self._focused_slot:
+                if not preserve_placeholder:
+                    self._render_pane(slot)
+                    if slot == self._focused_slot:
+                        self._update_analysis_panel()
+                elif slot == self._focused_slot and metadata is not None:
                     self._update_analysis_panel()
                 if not should_load_metadata:
                     continue
@@ -1851,20 +1917,29 @@ class FullScreenPreview(QDialog):
                 if state == "ready":
                     image = payload[0]
                     metadata = payload[1] if len(payload) > 1 else None
-                    self._current_images[request.slot] = image
-                    if request.slot < len(self._current_image_display_tokens):
-                        self._current_image_display_tokens[request.slot] = self._fits_display_cache_key_for_path(
-                            request.path,
-                            request.fits_display_settings,
-                        )
-                    if request.slot < len(self._current_placeholder_flags):
-                        self._current_placeholder_flags[request.slot] = False
+                    preserve_placeholder = self._should_preserve_raw_placeholder_visual(
+                        request.slot,
+                        request.path,
+                        prefer_embedded=request.prefer_embedded,
+                    )
+                    if not preserve_placeholder:
+                        self._current_images[request.slot] = image
+                        if request.slot < len(self._current_image_display_tokens):
+                            self._current_image_display_tokens[request.slot] = self._fits_display_cache_key_for_path(
+                                request.path,
+                                request.fits_display_settings,
+                            )
+                        if request.slot < len(self._current_placeholder_flags):
+                            self._current_placeholder_flags[request.slot] = False
                     if request.slot < len(self._source_versions):
                         self._source_versions[request.slot] = request.source_signature
                     if metadata is not None:
                         self._current_metadata[request.slot] = metadata
-                    self._render_pane(request.slot)
-                    if request.slot == self._focused_slot:
+                    if not preserve_placeholder:
+                        self._render_pane(request.slot)
+                        if request.slot == self._focused_slot:
+                            self._update_analysis_panel()
+                    elif request.slot == self._focused_slot and metadata is not None:
                         self._update_analysis_panel()
                 else:
                     if self._current_images[request.slot].isNull():
@@ -2249,14 +2324,20 @@ class FullScreenPreview(QDialog):
             cached_image = self._cached_preview_image(cache_key)
             if cached_image is None or cached_image.isNull():
                 continue
-            self._current_images[slot] = cached_image
-            if slot < len(self._current_image_display_tokens):
-                self._current_image_display_tokens[slot] = self._fits_display_cache_key_for_path(
-                    entry.source_path,
-                    self._fits_display_settings_for_entry(entry),
-                )
-            if slot < len(self._current_placeholder_flags):
-                self._current_placeholder_flags[slot] = False
+            preserve_placeholder = self._should_preserve_raw_placeholder_visual(
+                slot,
+                entry.source_path,
+                prefer_embedded=not self._manual_zoom,
+            )
+            if not preserve_placeholder:
+                self._current_images[slot] = cached_image
+                if slot < len(self._current_image_display_tokens):
+                    self._current_image_display_tokens[slot] = self._fits_display_cache_key_for_path(
+                        entry.source_path,
+                        self._fits_display_settings_for_entry(entry),
+                    )
+                if slot < len(self._current_placeholder_flags):
+                    self._current_placeholder_flags[slot] = False
             metadata = self._metadata_cache.get(entry.source_path)
             if metadata is not None and slot < len(self._current_metadata):
                 self._current_metadata[slot] = metadata
@@ -2760,8 +2841,10 @@ class FullScreenPreview(QDialog):
 
     def _update_info_label(self) -> None:
         if not self._entries:
+            self._update_header_summary()
             self.info_label.clear()
             return
+        self._update_header_summary()
         if self._before_after_enabled:
             prefix = f"Before/After | {self._entries[0].record.name}"
         elif self._compare_mode:

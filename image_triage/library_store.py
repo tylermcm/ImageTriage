@@ -37,6 +37,7 @@ COLLECTION_KINDS: tuple[str, ...] = (
 
 @dataclass(slots=True, frozen=True)
 class VirtualCollection:
+    """A named set of file references stored without moving the source files."""
     id: str
     name: str
     description: str = ""
@@ -49,6 +50,7 @@ class VirtualCollection:
 
 @dataclass(slots=True, frozen=True)
 class CatalogRoot:
+    """One user-configured root folder that participates in cross-folder cataloging."""
     path: str
     enabled: bool = True
     indexed_folder_count: int = 0
@@ -59,6 +61,7 @@ class CatalogRoot:
 
 @dataclass(slots=True, frozen=True)
 class CatalogRefreshSummary:
+    """Outcome summary returned after re-indexing one or more catalog roots."""
     root_count: int
     folder_count: int
     record_count: int
@@ -67,6 +70,13 @@ class CatalogRefreshSummary:
 
 
 class LibraryStore:
+    """Persistent store for virtual collections and optional catalog roots.
+
+    This store is separate from the catalog cache on purpose:
+
+    - `library.sqlite3` tracks user-facing collections and catalog-root settings
+    - the catalog repository tracks per-folder caches and expensive derived data
+    """
     SCHEMA_VERSION = 2
 
     def __init__(self) -> None:
@@ -76,6 +86,7 @@ class LibraryStore:
         self._initialize()
 
     def list_collections(self) -> list[VirtualCollection]:
+        """List collection headers without loading every stored item path."""
         with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
@@ -110,6 +121,7 @@ class LibraryStore:
         ]
 
     def load_collection(self, collection_id: str) -> VirtualCollection | None:
+        """Load one collection and all item paths in stored order."""
         normalized_id = (collection_id or "").strip()
         if not normalized_id:
             return None
@@ -147,6 +159,7 @@ class LibraryStore:
         )
 
     def find_collection_by_name(self, name: str) -> VirtualCollection | None:
+        """Find a collection by case-insensitive display name."""
         normalized_name = " ".join((name or "").split())
         if not normalized_name:
             return None
@@ -173,6 +186,7 @@ class LibraryStore:
         kind: str = "Custom",
         item_paths: tuple[str, ...] | list[str] = (),
     ) -> VirtualCollection:
+        """Create a new virtual collection and seed it with optional item paths."""
         normalized_name = " ".join((name or "").split())
         if not normalized_name:
             raise ValueError("Choose a collection name.")
@@ -195,6 +209,7 @@ class LibraryStore:
         return collection
 
     def update_collection(self, collection: VirtualCollection) -> VirtualCollection:
+        """Update collection metadata such as name, description, or kind."""
         normalized_id = (collection.id or "").strip()
         normalized_name = " ".join((collection.name or "").split())
         if not normalized_id or not normalized_name:
@@ -226,6 +241,7 @@ class LibraryStore:
         return updated
 
     def replace_collection_paths(self, collection_id: str, item_paths: tuple[str, ...] | list[str]) -> VirtualCollection | None:
+        """Replace all stored items for a collection with a new ordered path list."""
         normalized_id = (collection_id or "").strip()
         if not normalized_id:
             return None
@@ -244,6 +260,7 @@ class LibraryStore:
         return self.load_collection(normalized_id)
 
     def add_paths_to_collection(self, collection_id: str, item_paths: tuple[str, ...] | list[str]) -> VirtualCollection | None:
+        """Append new paths to a collection while preserving existing order."""
         normalized_id = (collection_id or "").strip()
         normalized_paths = _unique_paths(item_paths)
         if not normalized_id or not normalized_paths:
@@ -279,6 +296,7 @@ class LibraryStore:
         return self.load_collection(normalized_id)
 
     def remove_paths_from_collection(self, collection_id: str, item_paths: tuple[str, ...] | list[str]) -> VirtualCollection | None:
+        """Remove paths from a collection and resequence the remaining items."""
         normalized_id = (collection_id or "").strip()
         normalized_paths = _unique_paths(item_paths)
         if not normalized_id or not normalized_paths:
@@ -305,6 +323,7 @@ class LibraryStore:
         return self.load_collection(normalized_id)
 
     def delete_collection(self, collection_id: str) -> bool:
+        """Delete a virtual collection and all of its stored item references."""
         normalized_id = (collection_id or "").strip()
         if not normalized_id:
             return False
@@ -315,6 +334,7 @@ class LibraryStore:
         return deleted
 
     def list_catalog_roots(self) -> list[CatalogRoot]:
+        """List configured cross-folder catalog roots and their index status."""
         with self._connect() as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
@@ -344,6 +364,7 @@ class LibraryStore:
         ]
 
     def is_catalog_root(self, path: str) -> bool:
+        """Return whether a path is already registered as a catalog root."""
         normalized = normalize_filesystem_path(path)
         if not normalized:
             return False
@@ -360,6 +381,7 @@ class LibraryStore:
         return row is not None
 
     def add_catalog_root(self, path: str, *, enabled: bool = True) -> CatalogRoot:
+        """Add or update one catalog root entry."""
         normalized = normalize_filesystem_path(path)
         if not normalized:
             raise ValueError("Choose a folder to catalog.")
@@ -378,6 +400,7 @@ class LibraryStore:
         return next(root for root in self.list_catalog_roots() if normalized_path_key(root.path) == normalized_path_key(normalized))
 
     def remove_catalog_root(self, path: str) -> bool:
+        """Remove a catalog root and its library-store index snapshots."""
         normalized = normalize_filesystem_path(path)
         if not normalized:
             return False
@@ -396,6 +419,7 @@ class LibraryStore:
         *,
         progress_callback=None,
     ) -> CatalogRefreshSummary:
+        """Re-scan configured roots and rebuild their lightweight library index rows."""
         requested_roots = _unique_paths(root_paths or [root.path for root in self.list_catalog_roots() if root.enabled])
         if not requested_roots:
             return CatalogRefreshSummary(root_count=0, folder_count=0, record_count=0)

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from image_triage.ai_workflow import _run_command_with_live_output, default_ai_workflow_runtime
+from image_triage.ai_workflow import AIWorkflowRuntime, _resolve_stage_command, _run_command_with_live_output, default_ai_workflow_runtime
 
 
 class AIWorkflowStreamingTests(unittest.TestCase):
@@ -128,6 +128,62 @@ class AIWorkflowStreamingTests(unittest.TestCase):
                 runtime = default_ai_workflow_runtime()
 
             self.assertEqual(runtime.python_executable, Path(sys.executable).resolve())
+
+    def test_resolve_stage_command_uses_repo_runner_script_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir)
+            engine_root = workspace_root / "AICullingPipeline"
+            scripts_dir = engine_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            script_path = scripts_dir / "extract_embeddings.py"
+            script_path.write_text("print('ok')\n", encoding="utf-8")
+            runner_script = workspace_root / "packaging" / "ai_python_runner.py"
+            runner_script.parent.mkdir(parents=True)
+            runner_script.write_text("print('runner')\n", encoding="utf-8")
+            runtime = AIWorkflowRuntime(
+                engine_root=engine_root,
+                python_executable=Path(sys.executable).resolve(),
+                model_name="model",
+                checkpoint_path=workspace_root / "checkpoint.pt",
+                extraction_config_path=workspace_root / "extract.json",
+                clustering_config_path=workspace_root / "cluster.json",
+                report_config_path=workspace_root / "report.json",
+            )
+
+            command = _resolve_stage_command(
+                runtime,
+                script_relative_path="scripts/extract_embeddings.py",
+                stage_args=["--batch-size", "8"],
+            )
+
+        self.assertEqual(command[0], str(Path(sys.executable).resolve()))
+        self.assertEqual(command[1], str(runner_script.resolve()))
+        self.assertEqual(command[2], str(script_path.resolve()))
+        self.assertEqual(command[3:], ["--batch-size", "8"])
+
+    def test_repo_runner_loads_dependencies_from_build_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir)
+            runner_script = Path(__file__).resolve().parents[1] / "packaging" / "ai_python_runner.py"
+            engine_root = workspace_root / "AICullingPipeline"
+            scripts_dir = engine_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            script_path = scripts_dir / "import_case.py"
+            script_path.write_text(
+                "import ai_only_dependency\nprint(ai_only_dependency.VALUE)\n",
+                encoding="utf-8",
+            )
+            staged_site_packages = workspace_root / "build_assets" / "ai_site_packages"
+            staged_site_packages.mkdir(parents=True)
+            (staged_site_packages / "ai_only_dependency.py").write_text("VALUE = 7\n", encoding="utf-8")
+
+            completed = _run_command_with_live_output(
+                [sys.executable, str(runner_script), str(script_path)],
+                cwd=engine_root,
+            )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("7", completed.stdout)
 
 
 if __name__ == "__main__":

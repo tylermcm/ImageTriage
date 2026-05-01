@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""External AI culling pipeline orchestration and stage caching.
+
+This module owns the contract between Image Triage and the separate
+AICullingPipeline runtime. It resolves runtime paths, stages supported images,
+builds deterministic cache keys for each AI stage, and executes the extraction,
+grouping, and report commands on worker threads.
+"""
+
 import ctypes
 import csv
 import json
@@ -42,15 +50,18 @@ TQDM_PROGRESS_PATTERN = re.compile(
 )
 AI_RUNTIME_DIR_NAME = "ai_runtime"
 AI_RUNNER_TARGET_NAME = "ai_python_runner.exe" if os.name == "nt" else "ai_python_runner"
+AI_RUNNER_SCRIPT_RELATIVE_PATH = Path("packaging") / "ai_python_runner.py"
 REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
     "scripts/extract_embeddings.py",
     "scripts/cluster_embeddings.py",
     "scripts/export_ranked_report.py",
 )
+MISSING_MODULE_PATTERN = re.compile(r"ModuleNotFoundError:\s+No module named ['\"](?P<module>[^'\"]+)['\"]")
 
 
 @dataclass(slots=True, frozen=True)
 class AIWorkflowRuntime:
+    """Fully resolved runtime configuration for the external AI pipeline."""
     engine_root: Path
     python_executable: Path | None
     model_name: str
@@ -67,6 +78,7 @@ class AIWorkflowRuntime:
     local_stage_root: Path | None = None
 
     def validate(self) -> None:
+        """Fail fast if the configured runtime cannot actually execute."""
         missing: list[str] = []
         for label, path in (
             ("engine root", self.engine_root),
@@ -128,6 +140,7 @@ class AIWorkflowRuntime:
 
 @dataclass(slots=True, frozen=True)
 class AIWorkflowPaths:
+    """Folder-local filesystem layout for AI artifacts and ranked reports."""
     folder: Path
     hidden_root: Path
     artifacts_dir: Path
@@ -138,12 +151,14 @@ class AIWorkflowPaths:
 
 @dataclass(slots=True, frozen=True)
 class AIStageCacheKeys:
+    """Deterministic signatures for extract, cluster, and report reuse."""
     embedding_cache_key: str
     cluster_cache_key: str
     report_cache_key: str
 
 
 class AIRunSignals(QObject):
+    """Signals emitted while the external AI pipeline is running."""
     started = Signal(str)
     stage = Signal(str, int, int, str)
     progress = Signal(str, str, int, int, str)
@@ -152,6 +167,7 @@ class AIRunSignals(QObject):
 
 
 class AIRunTask(QRunnable):
+    """Worker that runs the AI pipeline stages for one folder."""
     def __init__(
         self,
         *,
@@ -295,14 +311,17 @@ class AIRunTask(QRunnable):
                 ),
             )
             if completed.returncode != 0:
-                error_parts = [stage_message + " failed."]
                 stderr = (completed.stderr or "").strip()
                 stdout = (completed.stdout or "").strip()
-                if stderr:
-                    error_parts.append(stderr)
-                elif stdout:
-                    error_parts.append(stdout)
-                self.signals.failed.emit(folder_text, "\n\n".join(error_parts))
+                self.signals.failed.emit(
+                    folder_text,
+                    _build_stage_failure_message(
+                        runtime=self.runtime,
+                        stage_message=stage_message,
+                        stderr=stderr,
+                        stdout=stdout,
+                    ),
+                )
                 return
             if staged_input_dir is not None and stage_name == "extract":
                 rewrite_extraction_artifact_paths(
@@ -318,6 +337,7 @@ class AIRunTask(QRunnable):
 
 
 def default_ai_workflow_runtime() -> AIWorkflowRuntime:
+    """Resolve the default engine, Python, model, and checkpoint runtime paths."""
     workspace_root = Path(__file__).resolve().parents[1]
     runtime_root = _application_runtime_root(workspace_root)
     bundled_engine_root = runtime_root / AI_RUNTIME_DIR_NAME / "AICullingPipeline"
@@ -378,6 +398,7 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
 
 
 def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
+    """Resolve the hidden AI artifact/report layout for a real folder."""
     folder_path = Path(folder).expanduser().resolve()
     hidden_root = folder_path / HIDDEN_ROOT_NAME
     artifacts_dir = hidden_root / ARTIFACTS_DIR_NAME
@@ -393,6 +414,7 @@ def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
 
 
 def prepare_hidden_ai_workspace(folder: str | Path) -> AIWorkflowPaths:
+    """Create the hidden AI artifact/report directories for a folder if needed."""
     paths = build_ai_workflow_paths(folder)
     paths.hidden_root.mkdir(parents=True, exist_ok=True)
     paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -402,6 +424,7 @@ def prepare_hidden_ai_workspace(folder: str | Path) -> AIWorkflowPaths:
 
 
 def existing_hidden_ai_report_dir(folder: str | Path) -> Path | None:
+    """Return the report directory only when a ranked export already exists."""
     paths = build_ai_workflow_paths(folder)
     if paths.ranked_export_path.exists():
         return paths.report_dir
@@ -415,6 +438,7 @@ def build_ai_stage_cache_keys(
     labels_dir: Path | None = None,
     reference_bank_path: Path | None = None,
 ) -> AIStageCacheKeys:
+    """Build stage-specific cache keys from inputs, configs, labels, and checkpoint."""
     embedding_payload = {
         "records": _records_signature(records),
         "model_name": runtime.model_name,
@@ -442,6 +466,7 @@ def build_ai_stage_cache_keys(
 
 
 def ai_embedding_artifacts_ready(paths: AIWorkflowPaths) -> bool:
+    """Return whether embedding-stage artifacts already exist for a folder."""
     return all(
         (
             (paths.artifacts_dir / "images.csv").exists(),
@@ -452,10 +477,12 @@ def ai_embedding_artifacts_ready(paths: AIWorkflowPaths) -> bool:
 
 
 def ai_cluster_artifacts_ready(paths: AIWorkflowPaths) -> bool:
+    """Return whether clustering outputs exist on top of embedding artifacts."""
     return ai_embedding_artifacts_ready(paths) and (paths.artifacts_dir / "clusters.csv").exists()
 
 
 def ai_report_artifacts_ready(paths: AIWorkflowPaths) -> bool:
+    """Return whether the ranked AI report export exists for a folder."""
     return paths.ranked_export_path.exists()
 
 
@@ -465,6 +492,7 @@ def stage_supported_images(
     runtime: AIWorkflowRuntime,
     progress_callback: Callable[[int, int, str, str], None] | None = None,
 ) -> Path:
+    """Copy supported images into a local staging workspace for faster AI processing."""
     stage_root, stage_root_message = _ensure_stage_root(runtime.local_stage_root)
     if stage_root_message and progress_callback is not None:
         progress_callback(0, 0, "", stage_root_message)
@@ -746,6 +774,13 @@ def _resolve_stage_command(
     root_stage_executable = runtime_root / stage_executable.name
     if root_stage_executable.exists():
         return [str(root_stage_executable), *stage_args]
+    runner_script_path = _runtime_runner_script(runtime_root)
+    if runner_script_path is not None:
+        if runtime.python_executable is None:
+            raise FileNotFoundError(f"No Python runner configured for AI tool: {script_path}")
+        if not runtime.python_executable.exists():
+            raise FileNotFoundError(f"Python runner does not exist: {runtime.python_executable}")
+        return [str(runtime.python_executable), str(runner_script_path), str(script_path), *stage_args]
     if runtime.python_executable is None:
         raise FileNotFoundError(f"No Python runner configured for AI tool: {script_path}")
     if not runtime.python_executable.exists():
@@ -757,6 +792,59 @@ def _runtime_root_from_engine_root(engine_root: Path) -> Path:
     if engine_root.name == "AICullingPipeline" and engine_root.parent.name == AI_RUNTIME_DIR_NAME:
         return engine_root.parent.parent
     return engine_root.parent
+
+
+def _runtime_runner_script(runtime_root: Path) -> Path | None:
+    candidate = runtime_root / AI_RUNNER_SCRIPT_RELATIVE_PATH
+    if candidate.exists():
+        return candidate.resolve()
+    return None
+
+
+def _build_stage_failure_message(
+    *,
+    runtime: AIWorkflowRuntime,
+    stage_message: str,
+    stderr: str,
+    stdout: str,
+) -> str:
+    combined_output = "\n".join(part for part in (stderr, stdout) if part).strip()
+    missing_module_match = MISSING_MODULE_PATTERN.search(combined_output)
+    if missing_module_match is not None:
+        module_name = missing_module_match.group("module")
+        runtime_root = _runtime_root_from_engine_root(runtime.engine_root)
+        staged_site_packages = [
+            path
+            for path in (
+                runtime_root / "ai_site_packages",
+                runtime_root / "build_assets" / "ai_site_packages",
+            )
+            if path.exists()
+        ]
+        message_lines = [
+            f"{stage_message} failed.",
+            f"The AI runtime could not import the Python module '{module_name}'.",
+            f"Python runner: {runtime.python_executable}",
+            f"Engine root: {runtime.engine_root}",
+        ]
+        if staged_site_packages:
+            message_lines.append("Staged AI packages:")
+            message_lines.extend(str(path) for path in staged_site_packages)
+        else:
+            message_lines.append(
+                "Expected staged AI packages either next to the app executable or under build_assets/ai_site_packages."
+            )
+        message_lines.append(
+            "Refresh the staged AI runtime assets, or set AICULLING_PYTHON to a Python environment that already has the missing dependency installed."
+        )
+        return "\n".join(message_lines)
+
+    error_parts = [stage_message + " failed."]
+    if stderr:
+        error_parts.append(stderr)
+    elif stdout:
+        error_parts.append(stdout)
+    return "\n\n".join(error_parts)
 
 
 def _mark_hidden(path: Path) -> None:
