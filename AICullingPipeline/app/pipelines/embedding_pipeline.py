@@ -107,14 +107,18 @@ class EmbeddingExtractionPipeline:
         """Run batched inference and return the final embedding matrix."""
 
         dataset = ImageDataset(valid_records, extractor.transform)
-        dataloader = DataLoader(
-            dataset,
+        loader_kwargs = dict(
+            dataset=dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
             num_workers=self.config.num_workers,
             pin_memory=extractor.device.type == "cuda",
             collate_fn=collate_image_batch,
         )
+        if self.config.num_workers > 0:
+            loader_kwargs["persistent_workers"] = True
+            loader_kwargs["prefetch_factor"] = 2
+        dataloader = DataLoader(**loader_kwargs)
 
         embedding_batches: list[np.ndarray] = []
         next_embedding_index = 0

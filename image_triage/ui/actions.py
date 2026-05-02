@@ -49,10 +49,13 @@ class MainWindowActions:
     install_ai_runtime: QAction
     download_ai_model: QAction
     run_ai_culling: QAction
+    apply_ai_culling: QAction
+    reset_ai_review_cache: QAction
     load_saved_ai: QAction
     load_ai_results: QAction
     clear_ai_results: QAction
     open_ai_report: QAction
+    show_ai_review_summary: QAction
     prepare_ai_training_data: QAction
     open_ai_data_selection: QAction
     run_full_ai_training_pipeline: QAction
@@ -97,6 +100,7 @@ class MainWindowActions:
     clear_filters: QAction
     keyboard_help: QAction
     ai_guide: QAction
+    ai_review_tag_legend: QAction
     advanced_help: QAction
     about: QAction
     appearance_actions: dict[AppearanceMode, QAction] = field(default_factory=dict)
@@ -258,14 +262,25 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         run_ai_culling=_create_action(
             window,
-            "Run AI Culling",
+            "Run AI Review",
             slot=window._run_ai_pipeline,
             icon=QStyle.StandardPixmap.SP_MediaPlay,
+        ),
+        apply_ai_culling=_create_action(
+            window,
+            "Apply AI Culling",
+            slot=window._apply_ai_culling,
+        ),
+        reset_ai_review_cache=_create_action(
+            window,
+            "Reset AI Review Cache...",
+            slot=window._reset_ai_review_cache,
         ),
         load_saved_ai=_create_action(window, "Load Saved AI For Folder", slot=window._load_hidden_ai_results_for_current_folder),
         load_ai_results=_create_action(window, "Load AI Results...", slot=window._choose_ai_results),
         clear_ai_results=_create_action(window, "Clear AI Results", slot=window._clear_ai_results),
         open_ai_report=_create_action(window, "Open AI Report", slot=window._open_ai_report),
+        show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._show_last_ai_review_summary),
         prepare_ai_training_data=_create_action(window, "Prepare Training Data", slot=window._prepare_ai_training_data),
         open_ai_data_selection=_create_action(
             window,
@@ -456,6 +471,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         clear_filters=_create_action(window, "Clear Filters", slot=window._clear_record_filters, shortcut="Ctrl+Shift+X"),
         keyboard_help=_create_action(window, "Quick Help", slot=window._show_help),
         ai_guide=_create_action(window, "AI Guide", slot=window._show_ai_guide),
+        ai_review_tag_legend=_create_action(window, "AI Review Tag Legend", slot=window._show_ai_review_tag_legend),
         advanced_help=_create_action(window, "Advanced Help", slot=window._show_advanced_help),
         about=_create_action(window, "About Image Triage", slot=window._show_about_dialog),
     )

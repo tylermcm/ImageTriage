@@ -7,10 +7,12 @@ from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QApplication
 
+from image_triage.ai_results import AIConfidenceBucket, AIImageResult
 from image_triage.cache import ThumbnailKey
 from image_triage.grid import ThumbnailGridView
 from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord
+from image_triage.review_workflows import RecordWorkflowInsight
 from image_triage.thumbnails import ThumbnailManager
 
 
@@ -149,6 +151,83 @@ class GridFailureTests(unittest.TestCase):
         self.assertEqual(draw_rect.top(), image_rect.top())
         self.assertGreaterEqual(draw_rect.left(), image_rect.left())
         self.assertLessEqual(draw_rect.right(), image_rect.right())
+        grid.deleteLater()
+
+    def test_primary_ai_badge_shows_needs_review_label(self) -> None:
+        grid = ThumbnailGridView(ThumbnailManager())
+        grid.set_show_ai_annotations(True)
+        result = AIImageResult(
+            image_id="review-1",
+            file_path="C:/temp/review.jpg",
+            file_name="review.jpg",
+            group_id="group-a",
+            group_size=2,
+            rank_in_group=1,
+            score=0.5,
+            confidence_bucket=AIConfidenceBucket.NEEDS_REVIEW,
+            confidence_summary="Model signals are mixed enough to warrant a human pass.",
+        )
+
+        badge = grid._primary_ai_badge(result)
+
+        self.assertIsNotNone(badge)
+        assert badge is not None
+        self.assertEqual(badge[0], "Needs Review")
+        grid.deleteLater()
+
+    def test_primary_ai_badge_uses_single_ai_pick_badge_for_top_pick(self) -> None:
+        grid = ThumbnailGridView(ThumbnailManager())
+        grid.set_show_ai_annotations(True)
+        result = AIImageResult(
+            image_id="pick-1",
+            file_path="C:/temp/pick.jpg",
+            file_name="pick.jpg",
+            group_id="group-a",
+            group_size=3,
+            rank_in_group=1,
+            score=0.95,
+            confidence_bucket=AIConfidenceBucket.OBVIOUS_WINNER,
+            confidence_summary="Clear lead inside its AI group.",
+        )
+
+        badge = grid._primary_ai_badge(result)
+
+        self.assertIsNotNone(badge)
+        assert badge is not None
+        self.assertEqual(badge[0], "AI Pick")
+        grid.deleteLater()
+
+    def test_primary_ai_badge_is_hidden_when_ai_annotations_are_disabled(self) -> None:
+        grid = ThumbnailGridView(ThumbnailManager())
+        result = AIImageResult(
+            image_id="pick-1",
+            file_path="C:/temp/pick.jpg",
+            file_name="pick.jpg",
+            group_id="group-a",
+            group_size=3,
+            rank_in_group=1,
+            score=0.95,
+            confidence_bucket=AIConfidenceBucket.OBVIOUS_WINNER,
+            confidence_summary="Clear lead inside its AI group.",
+        )
+
+        badge = grid._primary_ai_badge(result)
+
+        self.assertIsNone(badge)
+        grid.deleteLater()
+
+    def test_workflow_summary_hides_ai_only_workflow_badges_when_ai_annotations_are_disabled(self) -> None:
+        grid = ThumbnailGridView(ThumbnailManager())
+        insight = RecordWorkflowInsight(
+            best_in_group=True,
+            disagreement_level="moderate",
+            disagreement_summary="You kept a frame AI bucketed as likely reject.",
+            summary_text="Pass 2 | Best Frame | AI Disagreement",
+        )
+
+        summary = grid._visible_workflow_summary(insight)
+
+        self.assertEqual("Pass 2", summary)
         grid.deleteLater()
 
 

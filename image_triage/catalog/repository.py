@@ -883,6 +883,23 @@ class CatalogRepository:
             return False
         return True
 
+    def delete_ai_workflow_cache(self, folder: str) -> bool:
+        folder_path = _normalize_filesystem_path(folder)
+        if not folder_path:
+            return False
+        folder_key = _normalized_path_key(folder_path)
+        try:
+            with closing(connect_catalog_db(self.db_path)) as connection:
+                apply_catalog_migrations(connection)
+                with connection:
+                    connection.execute(
+                        "DELETE FROM catalog_ai_workflow_cache WHERE folder_key = ?",
+                        (folder_key,),
+                    )
+        except sqlite3.DatabaseError:
+            return False
+        return True
+
     def save_ai_bundle(
         self,
         folder: str,
@@ -980,6 +997,27 @@ class CatalogRepository:
                                 result.confidence_summary,
                             ),
                         )
+        except sqlite3.DatabaseError:
+            return False
+        return True
+
+    def delete_ai_bundle_cache(self, folder: str) -> bool:
+        folder_path = _normalize_filesystem_path(folder)
+        if not folder_path:
+            return False
+        folder_key = _normalized_path_key(folder_path)
+        try:
+            with closing(connect_catalog_db(self.db_path)) as connection:
+                apply_catalog_migrations(connection)
+                with connection:
+                    connection.execute(
+                        "DELETE FROM catalog_ai_results WHERE folder_key = ?",
+                        (folder_key,),
+                    )
+                    connection.execute(
+                        "DELETE FROM catalog_ai_bundle_cache WHERE folder_key = ?",
+                        (folder_key,),
+                    )
         except sqlite3.DatabaseError:
             return False
         return True

@@ -30,6 +30,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 
 from .ai_model import AIModelInstallation, resolve_ai_model_installation
 from .ai_runtime_packages import load_ai_runtime_installation_status
+from .formats import RAW_SUFFIXES
 
 if TYPE_CHECKING:
     from .models import ImageRecord
@@ -44,7 +45,20 @@ STAGE_WORKSPACES_DIR_NAME = "workspaces"
 STAGE_INPUT_DIR_NAME = "input"
 STAGE_MANIFEST_FILENAME = "stage_manifest.json"
 FILE_ATTRIBUTE_HIDDEN = 0x2
-DEFAULT_STAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+DEFAULT_STAGE_EXTENSIONS = tuple(
+    sorted(
+        {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".bmp",
+            ".tif",
+            ".tiff",
+            ".webp",
+            *RAW_SUFFIXES,
+        }
+    )
+)
 DRIVE_UNKNOWN = 0
 DRIVE_NO_ROOT_DIR = 1
 DRIVE_REMOVABLE = 2
@@ -61,7 +75,7 @@ DEFAULT_BUNDLED_CHECKPOINT_RELATIVE_PATH = (
     Path("outputs") / DEFAULT_RANKER_RUN_DIR_NAME / "best_ranker.pt"
 )
 LEGACY_BUNDLED_CHECKPOINT_RELATIVE_PATH = (
-    Path("outputs") / "china26_full" / DEFAULT_RANKER_RUN_DIR_NAME / "best_ranker.pt"
+    Path("outputs") / "legacy_default" / DEFAULT_RANKER_RUN_DIR_NAME / "best_ranker.pt"
 )
 REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
     "scripts/extract_embeddings.py",
@@ -439,6 +453,8 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     model_name = model_name_override or (
         model_installation.model_name if model_installation is not None else ""
     )
+    batch_size = _positive_int_env("AICULLING_BATCH_SIZE", 16)
+    num_workers = _nonnegative_int_env("AICULLING_NUM_WORKERS", _default_ai_dataloader_workers())
     local_stage_mode = (os.environ.get("AICULLING_LOCAL_STAGE_MODE", "auto") or "auto").strip().lower()
     local_stage_root = Path(
         os.environ.get(
@@ -459,9 +475,38 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
         report_config_path=engine_root_path / "configs" / "export_ranked_report.json",
         model_installation=model_installation,
         checkpoint_download_url=checkpoint_download_url,
+        batch_size=batch_size,
+        num_workers=num_workers,
         local_stage_mode=local_stage_mode,
         local_stage_root=local_stage_root.expanduser().resolve(),
     )
+
+
+def _default_ai_dataloader_workers() -> int:
+    cpu_count = os.cpu_count() or 4
+    return max(2, min(8, max(1, cpu_count // 2)))
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = (os.environ.get(name, "") or "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _nonnegative_int_env(name: str, default: int) -> int:
+    raw_value = (os.environ.get(name, "") or "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
@@ -501,6 +546,27 @@ def existing_hidden_ai_report_dir(folder: str | Path) -> Path | None:
     if paths.ranked_export_path.exists():
         return paths.report_dir
     return None
+
+
+def reset_hidden_ai_review_cache(
+    folder_or_paths: str | Path | AIWorkflowPaths,
+    *,
+    clear_logs: bool = False,
+) -> AIWorkflowPaths:
+    """Delete folder-local AI review outputs without touching labels or training data."""
+
+    paths = folder_or_paths if isinstance(folder_or_paths, AIWorkflowPaths) else build_ai_workflow_paths(folder_or_paths)
+    _remove_tree_if_present(paths.artifacts_dir)
+    _remove_tree_if_present(paths.report_dir)
+    if clear_logs:
+        log_path = ai_run_log_path(paths)
+        _remove_path_if_present(log_path)
+        logs_dir = log_path.parent
+        if logs_dir.exists() and not any(logs_dir.iterdir()):
+            logs_dir.rmdir()
+    if paths.hidden_root.exists():
+        _mark_hidden(paths.hidden_root)
+    return paths
 
 
 def build_ai_stage_cache_keys(
@@ -556,6 +622,24 @@ def ai_cluster_artifacts_ready(paths: AIWorkflowPaths) -> bool:
 def ai_report_artifacts_ready(paths: AIWorkflowPaths) -> bool:
     """Return whether the ranked AI report export exists for a folder."""
     return paths.ranked_export_path.exists()
+
+
+def _remove_tree_if_present(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_file() or path.is_symlink():
+        path.unlink()
+        return
+    shutil.rmtree(path)
+
+
+def _remove_path_if_present(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+        return
+    path.unlink()
 
 
 def stage_supported_images(
