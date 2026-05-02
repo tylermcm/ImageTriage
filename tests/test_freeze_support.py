@@ -106,14 +106,14 @@ class FreezeSupportTests(unittest.TestCase):
             self.assertTrue((layout.ai_stdlib_stage_root / "json.py").exists())
             self.assertTrue((layout.ai_binary_modules_stage_root / "_struct.pyd").exists())
 
-    def test_prepare_ai_build_assets_stages_legacy_ranker_into_generic_output_path(self) -> None:
+    def test_prepare_ai_build_assets_stages_generic_legacy_ranker_into_default_output_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             ai_source = root / "AICullingPipeline"
             scripts_dir = ai_source / "scripts"
             config_dir = ai_source / "configs"
             app_dir = ai_source / "app"
-            legacy_ranker_dir = ai_source / "outputs" / "china26_full" / "ranker_run_mlp_100ep"
+            legacy_ranker_dir = ai_source / "outputs" / "legacy_default" / "ranker_run_mlp_100ep"
             app_dir.mkdir(parents=True)
             config_dir.mkdir(parents=True)
             scripts_dir.mkdir(parents=True)

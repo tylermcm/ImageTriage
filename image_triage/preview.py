@@ -410,6 +410,7 @@ class FullScreenPreview(QDialog):
     compare_mode_changed = Signal(bool)
     auto_bracket_mode_changed = Signal(bool)
     compare_count_changed = Signal(int)
+    ai_cull_queue_toggled = Signal(bool)
     command_palette_requested = Signal()
     photoshop_requested = Signal(str)
     winner_requested = Signal(str)
@@ -474,6 +475,7 @@ class FullScreenPreview(QDialog):
         self._pending_right_close = False
         self._auto_advance_enabled = True
         self._winner_ladder_mode = False
+        self._ai_cull_queue_available = False
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
         self._result_queue: SimpleQueue = SimpleQueue()
@@ -568,6 +570,11 @@ class FullScreenPreview(QDialog):
         self.before_after_button.setCheckable(True)
         self.before_after_button.toggled.connect(self._handle_before_after_button_toggled)
 
+        self.ai_cull_queue_button = self._build_header_tool_button("AI Cull Queue")
+        self.ai_cull_queue_button.setCheckable(True)
+        self.ai_cull_queue_button.toggled.connect(self.ai_cull_queue_toggled.emit)
+        self.ai_cull_queue_button.hide()
+
         self.focus_assist_button = QPushButton("Off")
         self.focus_assist_button.setCheckable(True)
         self.focus_assist_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -654,6 +661,7 @@ class FullScreenPreview(QDialog):
         review_group_layout.addWidget(self.compare_toggle_button)
         review_group_layout.addWidget(self.auto_bracket_button)
         review_group_layout.addWidget(self.before_after_button)
+        review_group_layout.addWidget(self.ai_cull_queue_button)
 
         self.edit_group = QWidget()
         self.edit_group.setObjectName("workspaceControls")
@@ -960,7 +968,8 @@ class FullScreenPreview(QDialog):
         elif self._compare_mode and self._entries:
             subtitle = f"Compare {len(self._entries)}-Up"
         elif self._entries:
-            subtitle = self._entries[0].record.name
+            label = self._entries[0].label.strip()
+            subtitle = f"{label} | {self._entries[0].record.name}" if label else self._entries[0].record.name
         self.header_subtitle_label.setText(subtitle)
 
     def _visible_header_groups(self) -> list[tuple[str, QWidget]]:
@@ -1113,6 +1122,9 @@ class FullScreenPreview(QDialog):
         edited_candidates = self._edited_candidates_for_entry(self._source_entries[0]) if self._source_entries else ()
         before_after_visible = (not self._compare_mode) and len(self._source_entries) == 1 and bool(edited_candidates)
         self.before_after_button.setVisible(before_after_visible)
+        ai_cull_queue_visible = self._ai_cull_queue_available
+        self.ai_cull_queue_button.setVisible(ai_cull_queue_visible)
+        self.ai_cull_queue_button.setEnabled(ai_cull_queue_visible and not self._compare_mode)
         self.compare_count_combo.setVisible(self._compare_mode)
         self.focus_assist_button.setText("On" if self._focus_assist_enabled else "Off")
         self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
@@ -1269,6 +1281,13 @@ class FullScreenPreview(QDialog):
             self.photoshop_button.setText("Photoshop")
         else:
             self.photoshop_button.setText("Photoshop Not Found")
+
+    def set_ai_cull_queue_available(self, available: bool, *, checked: bool = False, text: str = "AI Cull Queue") -> None:
+        self._ai_cull_queue_available = bool(available)
+        self.ai_cull_queue_button.setText(text)
+        with QSignalBlocker(self.ai_cull_queue_button):
+            self.ai_cull_queue_button.setChecked(bool(available and checked))
+        self._sync_preview_controls()
 
     def show_entries(self, entries: list[PreviewEntry]) -> None:
         self._source_entries = list(entries)

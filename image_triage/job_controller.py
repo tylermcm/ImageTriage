@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Qt
-from PySide6.QtWidgets import QMainWindow, QProgressDialog
+from PySide6.QtWidgets import QLabel, QMainWindow, QProgressDialog
 
 
 @dataclass(slots=True, frozen=True)
@@ -15,6 +15,7 @@ class JobSpec:
     window_modality: Qt.WindowModality = Qt.WindowModality.WindowModal
     stays_on_top: bool = False
     minimum_width: int = 420
+    fixed_width: int | None = None
 
 
 class JobController(QObject):
@@ -61,17 +62,19 @@ class JobController(QObject):
             dialog.setMinimumDuration(0)
             dialog.setAutoClose(False)
             dialog.setAutoReset(False)
-            dialog.setMinimumWidth(max(280, int(self._spec.minimum_width)))
+            dialog.setSizeGripEnabled(False)
+            if self._spec.fixed_width is not None:
+                dialog.setFixedWidth(max(280, int(self._spec.fixed_width)))
+            else:
+                dialog.setMinimumWidth(max(280, int(self._spec.minimum_width)))
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._spec.stays_on_top)
+            label = dialog.findChild(QLabel)
+            if label is not None:
+                label.setWordWrap(True)
             self._dialog = dialog
-        else:
-            self._dialog.setWindowTitle(self._spec.title)
-            self._dialog.setWindowModality(self._spec.window_modality)
-            self._dialog.setMinimumWidth(max(280, int(self._spec.minimum_width)))
-            self._dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._spec.stays_on_top)
-        self._dialog.show()
-        if hasattr(self._window, "_center_window_dialog"):
-            # Keep dialog placement behavior consistent with existing UI helpers.
-            self._window._center_window_dialog(self._dialog)  # type: ignore[attr-defined]
-        self._dialog.raise_()
+            self._dialog.show()
+            if hasattr(self._window, "_center_window_dialog"):
+                # Keep dialog placement behavior consistent with existing UI helpers.
+                self._window._center_window_dialog(self._dialog)  # type: ignore[attr-defined]
+            self._dialog.raise_()
         return self._dialog

@@ -11,7 +11,7 @@ from PySide6.QtCore import QMimeData, QPoint, QRect, QRectF, QSize, Qt, QTimer, 
 from PySide6.QtGui import QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea
 
-from .ai_results import AIImageResult
+from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
 from .models import ImageRecord, ImageVariant, SessionAnnotation
@@ -109,6 +109,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._selection_anchor = -1
         self._tool_checkbox_mode = False
         self._action_mode = "normal"
+        self._show_ai_annotations = False
         self._compact_card_mode = False
         self._columns = 3
         self._margin = 18
@@ -526,6 +527,7 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def set_review_insights(self, insights_by_path: dict[str, object]) -> None:
         self._review_insights_by_path = dict(insights_by_path)
+        self._ai_result_cache.clear()
         self._meta_with_ai_cache.clear()
         self.viewport().update()
 
@@ -571,6 +573,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._action_mode == normalized:
             return
         self._action_mode = normalized
+        self.viewport().update()
+
+    def set_show_ai_annotations(self, enabled: bool) -> None:
+        normalized = bool(enabled)
+        if self._show_ai_annotations == normalized:
+            return
+        self._show_ai_annotations = normalized
+        self._meta_with_ai_cache.clear()
         self.viewport().update()
 
     def set_tool_checkbox_mode(self, enabled: bool, *, clear_selection: bool = False) -> None:
@@ -1416,7 +1426,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                     self._workflow_round_badge_text,
                 )
                 left_badge_y += 30
-        if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
+        if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
             self._paint_state_badge(
                 painter,
                 QRect(left_badge_x, left_badge_y, 94, 24),
@@ -1425,7 +1435,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._workflow_best_badge_text,
             )
             left_badge_y += 30
-        if workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
+        if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
             fill, text = self._workflow_disagreement_palette(getattr(workflow_insight, "disagreement_level", ""))
             self._paint_state_badge(
                 painter,
@@ -1455,27 +1465,18 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
             badge_y += 30
 
-        if ai_result is not None and ai_result.is_top_pick:
+        ai_badge = self._primary_ai_badge(ai_result)
+        if ai_badge is not None:
+            badge_text, fill, text, badge_width = ai_badge
             self._paint_state_badge(
                 painter,
-                QRect(image_rect.right() - 104, badge_y, 94, 24),
-                "AI Pick",
-                self._ai_pick_badge_fill,
-                self._ai_pick_badge_text,
-            )
-            badge_y += 30
-
-        if ai_result is not None and ai_result.confidence_bucket_short_label != "Review":
-            fill, text = self._confidence_badge_palette(ai_result.confidence_bucket_short_label)
-            self._paint_state_badge(
-                painter,
-                QRect(image_rect.right() - 116, badge_y, 106, 24),
-                ai_result.confidence_bucket_short_label,
+                QRect(image_rect.right() - (badge_width + 10), badge_y, badge_width, 24),
+                badge_text,
                 fill,
                 text,
             )
 
-        if ai_result is not None:
+        if self._show_ai_annotations and ai_result is not None:
             score_badge_rect = QRect(image_rect.right() - 92, image_rect.bottom() - 30, 82, 24)
             self._paint_state_badge(
                 painter,
@@ -1630,9 +1631,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         parts = [base]
         if review_insight is not None and getattr(review_insight, "has_group", False):
             parts.append(getattr(review_insight, "summary_text", ""))
-        if workflow_insight is not None and getattr(workflow_insight, "summary_text", ""):
-            parts.append(getattr(workflow_insight, "summary_text", ""))
-        if ai_result is not None:
+        workflow_summary = self._visible_workflow_summary(workflow_insight)
+        if workflow_summary:
+            parts.append(workflow_summary)
+        if self._show_ai_annotations and ai_result is not None:
             ai_parts = [f"AI {ai_result.display_score_text}", ai_result.confidence_bucket_label]
             if ai_result.group_id:
                 ai_parts.append(ai_result.group_id)
@@ -1646,6 +1648,18 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _workflow_insight_for(self, record: ImageRecord):
         return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(_fast_path_key(record.path))
+
+    def _visible_workflow_summary(self, workflow_insight) -> str:
+        if workflow_insight is None:
+            return ""
+        summary = str(getattr(workflow_insight, "summary_text", "") or "").strip()
+        if not summary:
+            return ""
+        if self._show_ai_annotations:
+            return summary
+        parts = [part.strip() for part in summary.split("|")]
+        visible_parts = [part for part in parts if part and part not in {"AI Disagreement", "Best Frame"}]
+        return " | ".join(visible_parts)
 
     def _group_badge_palette(self, kind: str) -> tuple[QColor, QColor]:
         if kind == "exact_duplicate":
@@ -1661,7 +1675,23 @@ class ThumbnailGridView(QAbstractScrollArea):
             return QColor(34, 96, 64, 220), QColor("#ebfff2")
         if short_label == "Keeper":
             return QColor(28, 82, 120, 220), QColor("#e8f4ff")
+        if short_label in {"Needs Review", "Review"}:
+            return self._workflow_review_badge_fill, self._workflow_review_badge_text
         return QColor(118, 54, 48, 220), QColor("#fff0ee")
+
+    def _primary_ai_badge(self, ai_result: AIImageResult | None) -> tuple[str, QColor, QColor, int] | None:
+        if not self._show_ai_annotations:
+            return None
+        if ai_result is None:
+            return None
+        if ai_result.is_top_pick:
+            return ("AI Pick", self._ai_pick_badge_fill, self._ai_pick_badge_text, 94)
+        if ai_result.confidence_bucket == AIConfidenceBucket.NEEDS_REVIEW:
+            fill, text = self._confidence_badge_palette("Needs Review")
+            return ("Needs Review", fill, text, 116)
+        label = ai_result.confidence_bucket_short_label
+        fill, text = self._confidence_badge_palette(label)
+        return (label, fill, text, 106)
 
     def _workflow_disagreement_palette(self, level: str) -> tuple[QColor, QColor]:
         if level == "strong":
@@ -1686,8 +1716,9 @@ class ThumbnailGridView(QAbstractScrollArea):
                     self._normalized_path_cache[candidate] = normalized
                 result = self._ai_results_by_path.get(normalized)
             if result is not None:
-                self._ai_result_cache[item.path] = result
-                return result
+                refined = refine_ai_result_with_review_insight(result, self._review_insight_for(record))
+                self._ai_result_cache[item.path] = refined
+                return refined
         self._ai_result_cache[item.path] = None
         return None
 

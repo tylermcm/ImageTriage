@@ -44,6 +44,7 @@ def build_primary_toolbar(window, actions: MainWindowActions) -> QToolBar:
     ai_results_menu.addAction(actions.load_saved_ai)
     ai_results_menu.addAction(actions.load_ai_results)
     ai_results_menu.addAction(actions.clear_ai_results)
+    ai_results_menu.addAction(actions.reset_ai_review_cache)
     ai_results_menu.addSeparator()
     ai_results_menu.addAction(actions.open_ai_report)
     _add_toolbar_menu(toolbar, text="AI Results", menu=ai_results_menu, min_width=104)

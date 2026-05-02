@@ -1,16 +1,41 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from image_triage.ai_results import AIConfidenceBucket, AIImageResult, build_ai_bundle_from_results, inspect_ai_bundle_source
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QGridLayout, QListWidgetItem, QMessageBox, QWidget
+
+from image_triage.ai_results import (
+    AIConfidenceBucket,
+    AIImageResult,
+    ai_review_tag_definitions,
+    build_ai_bundle_from_results,
+    inspect_ai_bundle_source,
+)
 from image_triage.catalog import CatalogRepository
 from image_triage.models import ImageRecord
 from image_triage.review_workflows import BurstRecommendation, TasteProfile, build_review_scoring_cache_key
-from image_triage.window import AITrainingExecutionContext, MainWindow, ScopeEnrichmentTask, _build_ai_training_action_availability
+from image_triage.window import (
+    AIReviewCompleteDialog,
+    AITrainingExecutionContext,
+    MainWindow,
+    ScopeEnrichmentTask,
+    _DirectorySuggestionController,
+    _build_ai_training_action_availability,
+)
+
+
+def _ensure_app() -> QApplication:
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
 
 
 def _record(path: str, *, name: str, size: int, modified_ns: int) -> ImageRecord:
@@ -121,6 +146,9 @@ class _SettingsStub:
 
     def setValue(self, key: str, value: object) -> None:
         self.values[key] = value
+
+    def remove(self, key: str) -> None:
+        self.values.pop(key, None)
 
 
 class _WindowAiLoadStub:
@@ -279,15 +307,76 @@ class _WindowAiRunFinishedStub:
         self._ai_progress_eta_text = ""
         self.mode_tabs = _ModeTabsStub()
         self.load_ai_calls: list[tuple[str, bool]] = []
+        self.completion_dialog_calls: list[dict[str, object]] = []
         self.status_messages: list[str] = []
         self.toolbar_updates = 0
+        self._ai_bundle = None
 
     def _load_ai_results(self, report_dir: str, *, show_message: bool = True) -> bool:
         self.load_ai_calls.append((report_dir, show_message))
         return True
 
+    def _show_ai_review_complete_dialog(self, **kwargs) -> None:
+        self.completion_dialog_calls.append(kwargs)
+
     def _update_ai_toolbar_state(self) -> None:
         self.toolbar_updates += 1
+
+    def statusBar(self):
+        return self
+
+    def showMessage(self, message: str) -> None:
+        self.status_messages.append(message)
+
+
+class _WindowAiResetStub:
+    AI_RESULTS_KEY = MainWindow.AI_RESULTS_KEY
+
+    def __init__(self, repository: CatalogRepository, folder: str) -> None:
+        self._catalog_repository = repository
+        self._current_folder = folder
+        self._active_ai_task = None
+        self._active_ai_runtime_task = None
+        self._active_ai_training_task = None
+        self._active_ai_model_task = None
+        self._ai_bundle = object()
+        self._ai_stage_index = 1
+        self._ai_stage_total = 3
+        self._ai_stage_message = "Loaded"
+        self._ai_progress_current = 1
+        self._ai_progress_total = 1
+        self._ai_progress_eta_text = ""
+        self._settings = _SettingsStub()
+        self._settings.setValue(self.AI_RESULTS_KEY, folder)
+        self.refresh_calls = 0
+        self.status_messages: list[str] = []
+
+    def _clear_ai_results_state(self, *, preserve_setting: bool = False) -> None:
+        MainWindow._clear_ai_results_state(self, preserve_setting=preserve_setting)
+
+    def _refresh_ai_state(self) -> None:
+        self.refresh_calls += 1
+
+    def statusBar(self):
+        return self
+
+    def showMessage(self, message: str) -> None:
+        self.status_messages.append(message)
+
+
+class _WindowAiSummaryStub:
+    def __init__(self) -> None:
+        self._last_ai_review_summary: dict[str, object] | None = None
+        self._ai_bundle = None
+        self._current_folder = ""
+        self.summary_calls: list[dict[str, object]] = []
+        self.status_messages: list[str] = []
+
+    def _last_ai_review_summary_for_current_state(self):
+        return MainWindow._last_ai_review_summary_for_current_state(self)
+
+    def _show_ai_review_complete_dialog(self, **kwargs) -> None:
+        self.summary_calls.append(kwargs)
 
     def statusBar(self):
         return self
@@ -395,6 +484,10 @@ class _WorkflowInsightCacheStub:
 
 
 class WindowCatalogCacheTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        _ensure_app()
+
     def test_ai_training_action_availability_allows_general_training_without_local_labels(self) -> None:
         availability = _build_ai_training_action_availability(
             local_pairwise_labels=0,
@@ -706,7 +799,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertEqual(1, window.load_hidden_calls)
             self.assertIsNone(window._ai_run_pool.started_task)
             self.assertEqual(1, window.mode_tabs.index)
-            self.assertIn("reused cached ai culling results", window.status_messages[-1].casefold())
+            self.assertIn("reused cached ai review results", window.status_messages[-1].casefold())
 
     def test_run_ai_pipeline_skips_extract_and_cluster_when_cluster_cache_matches(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_ai_cache_") as temp_dir:
@@ -766,7 +859,202 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertEqual("cluster-finished", cached.cluster_cache_key)
             self.assertEqual("report-finished", cached.report_cache_key)
             self.assertEqual([(str(paths), False)], window.load_ai_calls)
+            self.assertEqual(1, len(window.completion_dialog_calls))
+            self.assertTrue(window.completion_dialog_calls[0]["same_folder"])
+            self.assertEqual(str(paths), window.completion_dialog_calls[0]["report_dir"])
             self.assertEqual(1, window.mode_tabs.index)
+
+    def test_ai_review_complete_dialog_starts_with_collapsed_outputs_and_two_column_legend(self) -> None:
+        dialog = AIReviewCompleteDialog(
+            folder=r"K:\Photography\Canada 10-25\AiTest",
+            hidden_root=r"K:\Photography\Canada 10-25\AiTest\.image_triage_ai",
+            artifacts_dir=r"K:\Photography\Canada 10-25\AiTest\.image_triage_ai\artifacts",
+            report_dir=r"K:\Photography\Canada 10-25\AiTest\.image_triage_ai\ranker_report",
+            export_csv_path=r"K:\Photography\Canada 10-25\AiTest\.image_triage_ai\ranker_report\ranked_clusters_export.csv",
+            report_html_path=r"K:\Photography\Canada 10-25\AiTest\.image_triage_ai\ranker_report\ranked_clusters_report.html",
+            same_folder=True,
+        )
+
+        self.assertFalse(dialog.outputs_toggle.isChecked())
+        self.assertFalse(dialog.outputs_body.isVisible())
+
+        output_entries = dialog.outputs_body.findChildren(QFrame, "aiOutputEntry")
+        self.assertEqual(5, len(output_entries))
+
+        legend_host = dialog.findChild(QWidget, "aiReviewLegendHost")
+        self.assertIsNotNone(legend_host)
+        assert legend_host is not None
+        legend_layout = legend_host.layout()
+        self.assertIsInstance(legend_layout, QGridLayout)
+        assert isinstance(legend_layout, QGridLayout)
+
+        legend_entries = legend_host.findChildren(QFrame, "aiLegendEntry")
+        self.assertEqual(len(ai_review_tag_definitions()), len(legend_entries))
+        columns = {
+            legend_layout.getItemPosition(legend_layout.indexOf(entry))[1]
+            for entry in legend_entries
+            if legend_layout.indexOf(entry) >= 0
+        }
+        self.assertEqual({0, 1}, columns)
+
+    def test_show_last_ai_review_summary_uses_cached_payload(self) -> None:
+        window = _WindowAiSummaryStub()
+        window._last_ai_review_summary = {
+            "folder": r"K:\Photography\Canada 10-25\AiTest",
+            "report_dir": r"K:\Photography\Canada 10-25\AiTest\.image_triage_ai\ranker_report",
+            "html_report_path": r"K:\Photography\Canada 10-25\AiTest\.image_triage_ai\ranker_report\ranked_clusters_report.html",
+            "same_folder": True,
+            "bundle": None,
+        }
+
+        MainWindow._show_last_ai_review_summary(window)
+
+        self.assertEqual(1, len(window.summary_calls))
+        self.assertEqual(window._last_ai_review_summary["report_dir"], window.summary_calls[0]["report_dir"])
+
+    def test_show_last_ai_review_summary_rebuilds_payload_from_loaded_bundle(self) -> None:
+        window = _WindowAiSummaryStub()
+        folder = r"K:\Photography\Canada 10-25\AiTest"
+        report_dir = rf"{folder}\.image_triage_ai\ranker_report"
+        export_csv_path = rf"{report_dir}\ranked_clusters_export.csv"
+        report_html_path = rf"{report_dir}\ranked_clusters_report.html"
+        window._current_folder = folder
+        window._ai_bundle = build_ai_bundle_from_results(
+            source_path=report_dir,
+            export_csv_path=export_csv_path,
+            report_html_path=report_html_path,
+            summary_json_path=rf"{report_dir}\ranked_clusters_summary.json",
+            results=[],
+            summary={"model": "cached"},
+        )
+
+        MainWindow._show_last_ai_review_summary(window)
+
+        self.assertEqual(1, len(window.summary_calls))
+        self.assertEqual(folder, window.summary_calls[0]["folder"])
+        self.assertEqual(report_dir, window.summary_calls[0]["report_dir"])
+        self.assertEqual(report_html_path, window.summary_calls[0]["html_report_path"])
+        self.assertIs(window._ai_bundle, window.summary_calls[0]["bundle"])
+
+    def test_directory_suggestion_controller_lists_only_child_directories(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_path_suggest_") as temp_dir:
+            root = Path(temp_dir)
+            (root / "Alpha").mkdir()
+            (root / "Beta").mkdir()
+            (root / ".Hidden").mkdir()
+            (root / "notes.txt").write_text("x", encoding="utf-8")
+
+            suggestions = _DirectorySuggestionController._list_directory_suggestions(f"{root}{os.sep}")
+
+            self.assertEqual(["Alpha", "Beta"], [name for name, _path in suggestions])
+
+    def test_directory_suggestion_controller_filters_the_last_path_segment(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_path_filter_") as temp_dir:
+            root = Path(temp_dir)
+            (root / "Canada 10-25").mkdir()
+            (root / "Canada 11-02").mkdir()
+            (root / "Japan '23").mkdir()
+
+            suggestions = _DirectorySuggestionController._list_directory_suggestions(
+                str(root / "Can")
+            )
+
+            self.assertEqual(
+                ["Canada 10-25", "Canada 11-02"],
+                [name for name, _path in suggestions],
+            )
+
+    def test_directory_suggestion_controller_accepts_to_navigation_callback(self) -> None:
+        combo = QComboBox()
+        combo.setEditable(True)
+        accepted_paths: list[str] = []
+        controller = _DirectorySuggestionController(combo, on_accept_path=accepted_paths.append)
+        item = QListWidgetItem("Canada 10-25")
+        item.setData(Qt.ItemDataRole.UserRole, r"K:\Photography\Canada 10-25")
+
+        controller._accept_item(item)
+
+        self.assertEqual([r"K:\Photography\Canada 10-25"], accepted_paths)
+
+    def test_directory_suggestion_controller_does_not_double_advance_on_down_arrow(self) -> None:
+        combo = QComboBox()
+        combo.setEditable(True)
+        controller = _DirectorySuggestionController(combo)
+        controller._list.addItem(QListWidgetItem("Alaska"))
+        controller._list.addItem(QListWidgetItem("Alaska Aug '21"))
+        controller._list.addItem(QListWidgetItem("Astrophotos"))
+        controller._list.setCurrentRow(0)
+        controller._popup.show()
+        line_edit = combo.lineEdit()
+        assert line_edit is not None
+
+        shortcut_event = QKeyEvent(QEvent.Type.ShortcutOverride, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+        self.assertTrue(controller.eventFilter(line_edit, shortcut_event))
+        self.assertEqual(0, controller._list.currentRow())
+
+        keypress_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+        self.assertTrue(controller.eventFilter(line_edit, keypress_event))
+        self.assertEqual(1, controller._list.currentRow())
+        controller.hide_popup()
+
+    def test_reset_ai_review_cache_removes_folder_artifacts_and_catalog_entries(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_ai_reset_") as temp_dir:
+            db_path = Path(temp_dir) / "catalog.sqlite3"
+            repository = CatalogRepository(db_path)
+            folder_path = Path(temp_dir) / "shots"
+            folder_path.mkdir()
+            folder = str(folder_path)
+            artifacts_dir = folder_path / ".image_triage_ai" / "artifacts"
+            report_dir = folder_path / ".image_triage_ai" / "ranker_report"
+            artifacts_dir.mkdir(parents=True)
+            report_dir.mkdir(parents=True)
+            (artifacts_dir / "embeddings.npy").write_bytes(b"embed")
+            export_path = report_dir / "ranked_clusters_export.csv"
+            export_path.write_text("file_path\n", encoding="utf-8")
+            report_html = report_dir / "ranked_clusters_report.html"
+            report_html.write_text("<html></html>\n", encoding="utf-8")
+            repository.save_ai_workflow_cache(
+                folder,
+                embedding_cache_key="embed-1",
+                cluster_cache_key="cluster-1",
+                report_cache_key="report-1",
+                artifacts_dir=str(artifacts_dir),
+                report_dir=str(report_dir),
+            )
+            bundle = build_ai_bundle_from_results(
+                source_path=str(report_dir),
+                export_csv_path=str(export_path),
+                summary_json_path=str(report_dir / "ranked_clusters_summary.json"),
+                report_html_path=str(report_html),
+                results=[
+                    AIImageResult(
+                        image_id="frame_01",
+                        file_path=str(folder_path / "frame_01.jpg"),
+                        file_name="frame_01.jpg",
+                        group_id="group-a",
+                        group_size=1,
+                        rank_in_group=1,
+                        score=0.9,
+                        confidence_bucket=AIConfidenceBucket.LIKELY_KEEPER,
+                        confidence_summary="test",
+                    )
+                ],
+                summary={"model": "cached"},
+            )
+            repository.save_ai_bundle(folder, cache_key="report-1", bundle=bundle)
+            window = _WindowAiResetStub(repository, folder)
+
+            with patch("image_triage.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                MainWindow._reset_ai_review_cache(window)
+
+            self.assertFalse(artifacts_dir.exists())
+            self.assertFalse(report_dir.exists())
+            self.assertIsNone(repository.load_ai_workflow_cache(folder))
+            self.assertIsNone(repository.load_ai_bundle(folder, cache_key="report-1"))
+            self.assertIsNone(window._ai_bundle)
+            self.assertNotIn(window.AI_RESULTS_KEY, window._settings.values)
+            self.assertEqual(1, window.refresh_calls)
+            self.assertIn("reset ai review cache", window.status_messages[-1].casefold())
 
     def test_scope_enrichment_task_uses_cached_review_scoring(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_scope_cache_") as temp_dir:

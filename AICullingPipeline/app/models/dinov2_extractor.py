@@ -65,6 +65,12 @@ class DINOv2EmbeddingExtractor:
         self.model = self.model.to(self.device)
         self.model.eval()
         self.model.requires_grad_(False)
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+        if self.device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
 
         if self._backend == "transformers":
             resolved_size = int(self._transformers_image_size or 518)
@@ -187,16 +193,11 @@ class DINOv2EmbeddingExtractor:
         """Encode a batch of images into one embedding per image."""
 
         batch = pixel_values.to(self.device, non_blocking=self.device.type == "cuda")
-        if self._backend == "transformers":
-            outputs = self.model(pixel_values=batch)
-            embeddings = getattr(outputs, "pooler_output", None)
-            if embeddings is None:
-                last_hidden_state = getattr(outputs, "last_hidden_state", None)
-                if last_hidden_state is None:
-                    raise TypeError("Transformers DINOv2 model did not return pooled embeddings.")
-                embeddings = last_hidden_state[:, 0, :]
+        if self.device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                embeddings = self._forward_batch(batch)
         else:
-            embeddings = self.model(batch)
+            embeddings = self._forward_batch(batch)
 
         if not isinstance(embeddings, torch.Tensor):
             raise TypeError(
@@ -209,6 +210,18 @@ class DINOv2EmbeddingExtractor:
             )
 
         return embeddings.detach().cpu().to(torch.float32)
+
+    def _forward_batch(self, batch: torch.Tensor) -> torch.Tensor:
+        if self._backend == "transformers":
+            outputs = self.model(pixel_values=batch)
+            embeddings = getattr(outputs, "pooler_output", None)
+            if embeddings is None:
+                last_hidden_state = getattr(outputs, "last_hidden_state", None)
+                if last_hidden_state is None:
+                    raise TypeError("Transformers DINOv2 model did not return pooled embeddings.")
+                embeddings = last_hidden_state[:, 0, :]
+            return embeddings
+        return self.model(batch)
 
 
 def build_eval_transform(

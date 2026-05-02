@@ -7,10 +7,13 @@ from hashlib import sha1
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from .models import ImageRecord
 from .scanner import normalized_path_key
+
+if TYPE_CHECKING:
+    from .review_intelligence import ReviewInsight
 
 
 PREFERRED_EXPORT_FILENAMES = (
@@ -42,6 +45,62 @@ class AIConfidenceBucket(str, Enum):
     LIKELY_REJECT = "likely_reject"
 
 
+class AICullBucket(str, Enum):
+    AI_PICK = "ai_pick"
+    REJECT = "reject"
+    KEEPER = "keeper"
+    NEEDS_REVIEW = "needs_review"
+    UNRATED = "unrated"
+
+
+_EXTREME_LOW_DETAIL_THRESHOLD = 8.0
+_LOW_DETAIL_REVIEW_THRESHOLD = 14.0
+_LOW_DETAIL_REJECT_SAFE_PERCENTILE = 92.0
+_WEAK_CLUSTER_LEADER_REJECT_PERCENTILE = 15.0
+_OBVIOUS_WINNER_NORMALIZED_THRESHOLD = 78.0
+_OBVIOUS_WINNER_GAP_THRESHOLD = 0.12
+_LIKELY_KEEPER_GROUP_NORMALIZED_THRESHOLD = 58.0
+_LIKELY_KEEPER_GROUP_PERCENTILE_THRESHOLD = 70.0
+_SECOND_PLACE_REVIEW_GAP_THRESHOLD = 0.25
+_SECOND_PLACE_REVIEW_NORMALIZED_THRESHOLD = 74.0
+_SECOND_PLACE_REVIEW_PERCENTILE_THRESHOLD = 60.0
+_THIRD_PLACE_REVIEW_GAP_THRESHOLD = 0.18
+_THIRD_PLACE_REVIEW_PERCENTILE_THRESHOLD = 80.0
+_SINGLETON_KEEPER_PERCENTILE_THRESHOLD = 84.0
+_SINGLETON_REJECT_PERCENTILE_THRESHOLD = 28.0
+
+AI_REVIEW_TAG_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    (
+        "AI Pick",
+        "The strongest automatic keep. Apply AI Culling moves these frames into _winners without another prompt.",
+    ),
+    (
+        "Keeper",
+        "A strong frame, but not decisive enough to file automatically. Review these manually before committing them.",
+    ),
+    (
+        "Needs Review",
+        "The model saw mixed signals here. This is a deliberate human-review bucket, not a silent failure.",
+    ),
+    (
+        "Reject",
+        "A low-confidence frame that Apply AI Culling can move into the program recycle bin.",
+    ),
+    (
+        "Best Frame",
+        "The burst or similarity workflow thinks this is the strongest frame inside a local capture group.",
+    ),
+    (
+        "AI Review",
+        "Your manual state and the AI bucket disagree enough that the image deserves a second look.",
+    ),
+    (
+        "AI Miss",
+        "A strong disagreement between your review and the AI call, usually a keep versus reject conflict.",
+    ),
+)
+
+
 @dataclass(slots=True, frozen=True)
 class AIImageResult:
     image_id: str
@@ -61,8 +120,19 @@ class AIImageResult:
     confidence_summary: str = ""
 
     @property
-    def is_top_pick(self) -> bool:
+    def is_rank_leader(self) -> bool:
         return self.rank_in_group == 1 and self.group_size > 1
+
+    @property
+    def is_top_pick(self) -> bool:
+        return self.is_rank_leader and self.confidence_bucket in {
+            AIConfidenceBucket.OBVIOUS_WINNER,
+            AIConfidenceBucket.LIKELY_KEEPER,
+        }
+
+    @property
+    def is_weak_cluster_leader(self) -> bool:
+        return self.is_rank_leader and self.confidence_bucket == AIConfidenceBucket.LIKELY_REJECT
 
     @property
     def score_text(self) -> str:
@@ -149,6 +219,49 @@ class AIBundle:
 
     def count_matches(self, records: Iterable[ImageRecord]) -> int:
         return sum(1 for record in records if find_ai_result_for_record(self, record) is not None)
+
+
+def refine_ai_result_with_review_insight(
+    result: AIImageResult | None,
+    review_insight: "ReviewInsight | None",
+) -> AIImageResult | None:
+    if result is None or review_insight is None:
+        return result
+
+    detail_score = float(getattr(review_insight, "detail_score", 0.0) or 0.0)
+    if detail_score <= 0.0:
+        return result
+
+    if detail_score <= _EXTREME_LOW_DETAIL_THRESHOLD:
+        if result.group_size > 1 or (result.folder_percentile or 0.0) < _LOW_DETAIL_REJECT_SAFE_PERCENTILE:
+            summary = _combine_confidence_summaries(
+                result.confidence_summary,
+                "Technical review flags this as an extremely low-detail frame, which usually means blur, obstruction, or a low-information miss.",
+            )
+            return _replace_confidence(result, AIConfidenceBucket.LIKELY_REJECT, summary)
+        if result.confidence_bucket in {
+            AIConfidenceBucket.OBVIOUS_WINNER,
+            AIConfidenceBucket.LIKELY_KEEPER,
+        }:
+            summary = _combine_confidence_summaries(
+                result.confidence_summary,
+                "Technical review flags this as an extremely low-detail frame, so the rank should be checked manually.",
+            )
+            return _replace_confidence(result, AIConfidenceBucket.NEEDS_REVIEW, summary)
+
+    if (
+        detail_score <= _LOW_DETAIL_REVIEW_THRESHOLD
+        and result.confidence_bucket in {
+            AIConfidenceBucket.OBVIOUS_WINNER,
+            AIConfidenceBucket.LIKELY_KEEPER,
+        }
+    ):
+        summary = _combine_confidence_summaries(
+            result.confidence_summary,
+            "Technical review sees very limited detail here, which undercuts an automatic keep call.",
+        )
+        return _replace_confidence(result, AIConfidenceBucket.NEEDS_REVIEW, summary)
+    return result
 
 
 def load_ai_bundle(path: str | Path) -> AIBundle:
@@ -502,6 +615,40 @@ def _score_gap_to_top(result: AIImageResult, group_results: tuple[AIImageResult,
     return top.score - result.score
 
 
+def _replace_confidence(
+    result: AIImageResult,
+    confidence_bucket: AIConfidenceBucket,
+    confidence_summary: str,
+) -> AIImageResult:
+    if (
+        result.confidence_bucket == confidence_bucket
+        and result.confidence_summary.strip() == confidence_summary.strip()
+    ):
+        return result
+    return replace(
+        result,
+        confidence_bucket=confidence_bucket,
+        confidence_summary=confidence_summary,
+    )
+
+
+def _combine_confidence_summaries(*parts: str) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        normalized = (part or "").strip().rstrip(".")
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    if not merged:
+        return ""
+    return ". ".join(merged) + "."
+
+
 def _confidence_context_for_result(
     result: AIImageResult,
     group_results: tuple[AIImageResult, ...],
@@ -512,18 +659,57 @@ def _confidence_context_for_result(
     score_gap_to_top: float | None,
 ) -> tuple[AIConfidenceBucket, str]:
     if result.group_size > 1:
-        if result.rank_in_group == 1 and normalized_score is not None and normalized_score >= 78.0 and (score_gap_to_next or 0.0) >= 0.12:
+        percentile = folder_percentile if folder_percentile is not None else 50.0
+        normalized = normalized_score if normalized_score is not None else 0.0
+        gap_to_next = score_gap_to_next or 0.0
+        gap_to_top = score_gap_to_top or 0.0
+
+        if result.rank_in_group == 1 and percentile <= _WEAK_CLUSTER_LEADER_REJECT_PERCENTILE:
+            return AIConfidenceBucket.LIKELY_REJECT, (
+                "Leads its cluster, but the whole cluster still scores near the bottom of the folder."
+            )
+        if (
+            result.rank_in_group == 1
+            and normalized_score is not None
+            and normalized >= _OBVIOUS_WINNER_NORMALIZED_THRESHOLD
+            and gap_to_next >= _OBVIOUS_WINNER_GAP_THRESHOLD
+        ):
             return AIConfidenceBucket.OBVIOUS_WINNER, "Clear lead inside its AI group."
-        if result.rank_in_group == 1 and ((normalized_score is not None and normalized_score >= 58.0) or (folder_percentile or 0.0) >= 70.0):
+        if (
+            result.rank_in_group == 1
+            and (
+                (normalized_score is not None and normalized >= _LIKELY_KEEPER_GROUP_NORMALIZED_THRESHOLD)
+                or percentile >= _LIKELY_KEEPER_GROUP_PERCENTILE_THRESHOLD
+            )
+        ):
             return AIConfidenceBucket.LIKELY_KEEPER, "Strong group rank without a runaway margin."
-        if (normalized_score is not None and normalized_score <= 26.0) or ((folder_percentile or 100.0) <= 24.0 and (score_gap_to_top or 0.0) >= 0.18):
-            return AIConfidenceBucket.LIKELY_REJECT, "Trails the stronger frames in its group."
+
+        if result.rank_in_group >= 4:
+            return AIConfidenceBucket.LIKELY_REJECT, "Falls too far behind the stronger frames in its group."
+
+        if result.rank_in_group == 3:
+            if percentile >= _THIRD_PLACE_REVIEW_PERCENTILE_THRESHOLD and gap_to_top <= _THIRD_PLACE_REVIEW_GAP_THRESHOLD:
+                return AIConfidenceBucket.NEEDS_REVIEW, "Third-place frame is unusually close inside a strong cluster."
+            return AIConfidenceBucket.LIKELY_REJECT, "Third-place and lower frames usually do not justify a manual pass."
+
+        if result.rank_in_group == 2:
+            if (
+                gap_to_top <= _SECOND_PLACE_REVIEW_GAP_THRESHOLD
+                or (
+                    normalized_score is not None
+                    and normalized >= _SECOND_PLACE_REVIEW_NORMALIZED_THRESHOLD
+                    and percentile >= _SECOND_PLACE_REVIEW_PERCENTILE_THRESHOLD
+                )
+            ):
+                return AIConfidenceBucket.NEEDS_REVIEW, "Close second-place frame inside a strong cluster."
+            return AIConfidenceBucket.LIKELY_REJECT, "Second-place frame still trails the leader by a meaningful margin."
+
         return AIConfidenceBucket.NEEDS_REVIEW, "Model signals are mixed enough to warrant a human pass."
 
     percentile = folder_percentile if folder_percentile is not None else 50.0
-    if percentile >= 86.0:
+    if percentile >= _SINGLETON_KEEPER_PERCENTILE_THRESHOLD:
         return AIConfidenceBucket.LIKELY_KEEPER, "High single-image score compared with the rest of the folder."
-    if percentile <= 20.0:
+    if percentile <= _SINGLETON_REJECT_PERCENTILE_THRESHOLD:
         return AIConfidenceBucket.LIKELY_REJECT, "Single-image score lands near the bottom of the folder."
     return AIConfidenceBucket.NEEDS_REVIEW, "Single-image score does not imply a decisive winner on its own."
 
@@ -548,6 +734,55 @@ def confidence_bucket_short_label(bucket: AIConfidenceBucket | str) -> str:
     if resolved == AIConfidenceBucket.LIKELY_REJECT:
         return "Reject"
     return "Review"
+
+
+def ai_cull_bucket_for_result(result: AIImageResult | None) -> AICullBucket:
+    if result is None:
+        return AICullBucket.UNRATED
+    if result.is_top_pick:
+        return AICullBucket.AI_PICK
+    if result.confidence_bucket == AIConfidenceBucket.LIKELY_REJECT:
+        return AICullBucket.REJECT
+    if result.confidence_bucket == AIConfidenceBucket.LIKELY_KEEPER:
+        return AICullBucket.KEEPER
+    return AICullBucket.NEEDS_REVIEW
+
+
+def ai_review_badge_label(result: AIImageResult | None) -> str:
+    bucket = ai_cull_bucket_for_result(result)
+    if bucket == AICullBucket.AI_PICK:
+        return "AI Pick"
+    if bucket == AICullBucket.REJECT:
+        return "Reject"
+    if bucket == AICullBucket.KEEPER:
+        return "Keeper"
+    if bucket == AICullBucket.NEEDS_REVIEW:
+        return "Needs Review"
+    return "Unrated"
+
+
+def ai_manual_cull_sort_key(result: AIImageResult | None) -> tuple[float, ...]:
+    bucket = ai_cull_bucket_for_result(result)
+    priority = {
+        AICullBucket.AI_PICK: 0.0,
+        AICullBucket.REJECT: 1.0,
+        AICullBucket.KEEPER: 2.0,
+        AICullBucket.NEEDS_REVIEW: 3.0,
+        AICullBucket.UNRATED: 4.0,
+    }[bucket]
+    if result is None:
+        return (priority, 0.0, 0.0, 0.0)
+
+    folder_percentile = float(result.folder_percentile or 0.0)
+    score = float(result.score)
+    rank = float(max(1, result.rank_in_group))
+    if bucket == AICullBucket.REJECT:
+        return (priority, folder_percentile, score, rank)
+    return (priority, -folder_percentile, -score, rank)
+
+
+def ai_review_tag_definitions() -> tuple[tuple[str, str], ...]:
+    return AI_REVIEW_TAG_DEFINITIONS
 
 
 def build_ai_explanation_lines(

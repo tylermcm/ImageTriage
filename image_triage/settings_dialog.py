@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +38,7 @@ class WorkflowSettingsResult:
     catalog_cache_enabled: bool = True
     watch_current_folder: bool = True
     ai_auto_profile_enabled: bool = False
+    ai_embed_batch_size: int = 0
     presets: tuple[WorkflowPreset, ...] = ()
 
 
@@ -51,6 +53,7 @@ class WorkflowSettingsDialog(QDialog):
         catalog_cache_enabled: bool = True,
         watch_current_folder: bool = True,
         ai_auto_profile_enabled: bool = False,
+        ai_embed_batch_size: int = 0,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
@@ -133,6 +136,31 @@ class WorkflowSettingsDialog(QDialog):
         catalog_layout.addWidget(self.catalog_summary_label)
 
         layout.addWidget(catalog_group)
+
+        ai_review_group = QGroupBox("AI Review Performance")
+        ai_review_layout = QFormLayout(ai_review_group)
+        ai_review_layout.setContentsMargins(12, 14, 12, 12)
+        ai_review_layout.setSpacing(10)
+
+        self.ai_embed_batch_size_spin = QSpinBox()
+        self.ai_embed_batch_size_spin.setRange(0, 256)
+        self.ai_embed_batch_size_spin.setSingleStep(8)
+        self.ai_embed_batch_size_spin.setSpecialValueText("Auto")
+        self.ai_embed_batch_size_spin.setValue(max(0, int(ai_embed_batch_size)))
+        self.ai_embed_batch_size_spin.setToolTip(
+            "Batch size used during AI embedding extraction. Lower it if your GPU runs out of memory."
+        )
+        ai_review_layout.addRow("Embedding batch size", self.ai_embed_batch_size_spin)
+
+        ai_review_note = QLabel(
+            "Auto uses a safer default on CPU installs and a larger default when GPU runtime packages are available. "
+            "Raise it on stronger GPUs, or lower it if VRAM is tight."
+        )
+        ai_review_note.setWordWrap(True)
+        ai_review_note.setObjectName("mutedText")
+        ai_review_note.setStyleSheet("font-size: 11px;")
+        ai_review_layout.addRow(ai_review_note)
+        layout.addWidget(ai_review_group)
 
         ai_group = QGroupBox("AI Training")
         ai_layout = QVBoxLayout(ai_group)
@@ -286,5 +314,6 @@ class WorkflowSettingsDialog(QDialog):
             catalog_cache_enabled=self.catalog_cache_checkbox.isChecked(),
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
             ai_auto_profile_enabled=self.ai_auto_profile_checkbox.isChecked(),
+            ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
             presets=tuple(self._presets) if include_presets else (),
         )

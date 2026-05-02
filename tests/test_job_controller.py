@@ -21,7 +21,15 @@ class JobControllerTests(unittest.TestCase):
         _ensure_app()
 
     def test_start_progress_indeterminate_and_close(self) -> None:
-        window = QMainWindow()
+        class _TrackingWindow(QMainWindow):
+            def __init__(self) -> None:
+                super().__init__()
+                self.center_calls = 0
+
+            def _center_window_dialog(self, dialog) -> None:
+                self.center_calls += 1
+
+        window = _TrackingWindow()
         controller = JobController(
             window,
             JobSpec(
@@ -32,6 +40,7 @@ class JobControllerTests(unittest.TestCase):
                 window_modality=Qt.WindowModality.NonModal,
                 stays_on_top=True,
                 minimum_width=480,
+                fixed_width=640,
             ),
         )
 
@@ -40,16 +49,20 @@ class JobControllerTests(unittest.TestCase):
         self.assertEqual(dialog.maximum(), 5)
         self.assertTrue(dialog.windowModality() == Qt.WindowModality.NonModal)
         self.assertTrue(dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
-        self.assertGreaterEqual(dialog.minimumWidth(), 480)
+        self.assertEqual(dialog.minimumWidth(), 640)
+        self.assertEqual(dialog.maximumWidth(), 640)
+        self.assertEqual(window.center_calls, 1)
 
         controller.progress(3, 5, "Processing...")
         self.assertEqual(dialog.value(), 3)
         self.assertEqual(dialog.labelText(), "Processing...")
+        self.assertEqual(window.center_calls, 1)
 
         controller.indeterminate()
         self.assertEqual(dialog.minimum(), 0)
         self.assertEqual(dialog.maximum(), 0)
         self.assertEqual(dialog.labelText(), "Finalizing...")
+        self.assertEqual(window.center_calls, 1)
 
         controller.close()
         QApplication.processEvents()

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .ai_results import AIBundle, AIImageResult, find_ai_result_for_record
+from .ai_results import AIBundle, AIConfidenceBucket, AIImageResult, find_ai_result_for_record
 from .cache import ThumbnailKey
 from .models import ImageRecord, SessionAnnotation
 from .thumbnails import ThumbnailManager
@@ -407,6 +407,8 @@ class AIClusterView(QScrollArea):
                 subtitle_parts.append(f"reason: {top_result.cluster_reason}")
             if top_pick:
                 subtitle_parts.append(f"top pick: {top_pick}")
+            elif top_result and top_result.rank_in_group == 1 and top_result.confidence_bucket == AIConfidenceBucket.LIKELY_REJECT:
+                subtitle_parts.append("no keeper")
             section = AIClusterSection(group_id, " | ".join(subtitle_parts), cards)
             section.set_annotations(annotations)
             section.set_current_index(self._current_index)
