@@ -34,6 +34,10 @@ def _prepend_path_entry(path: Path) -> None:
 
 
 def _prepend_ai_site_packages(script_path: Path) -> None:
+    device = _requested_device_from_argv()
+    for site_packages_dir in _cached_runtime_site_packages(script_path, device=device):
+        if site_packages_dir.exists():
+            _prepend_path_entry(site_packages_dir)
     for root in _candidate_runtime_roots(script_path):
         site_packages_dir = root / "ai_site_packages"
         if site_packages_dir.exists():
@@ -48,6 +52,12 @@ def _prepend_ai_stdlib(script_path: Path) -> None:
 
 
 def _prepend_ai_binary_modules(script_path: Path) -> None:
+    device = _requested_device_from_argv()
+    for site_packages_dir in _cached_runtime_site_packages(script_path, device=device):
+        if site_packages_dir.exists():
+            _register_binary_search_path(site_packages_dir / "torch" / "lib")
+            for libs_dir in site_packages_dir.glob("*.libs"):
+                _register_binary_search_path(libs_dir)
     for root in _candidate_runtime_roots(script_path):
         candidate_dirs = [root / "lib", root / "ai_python_dlls"]
         site_packages_dir = root / "ai_site_packages"
@@ -85,6 +95,31 @@ def _prepend_engine_root(script_path: Path) -> None:
     cwd_text = str(Path.cwd())
     if cwd_text not in sys.path:
         sys.path.insert(0, cwd_text)
+
+
+def _requested_device_from_argv() -> str:
+    args = sys.argv[2:]
+    for index, value in enumerate(args):
+        if value == "--device" and index + 1 < len(args):
+            return str(args[index + 1]).strip().lower() or "auto"
+    return "auto"
+
+
+def _cached_runtime_site_packages(script_path: Path, *, device: str) -> tuple[Path, ...]:
+    _ = script_path
+    candidate_roots = [Path(__file__).resolve().parents[1], Path.cwd()]
+    for root in candidate_roots:
+        root_text = str(root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
+    try:
+        from image_triage.ai_runtime_packages import resolve_ai_runtime_site_packages
+    except Exception:
+        return ()
+    try:
+        return tuple(resolve_ai_runtime_site_packages(device=device))
+    except Exception:
+        return ()
 
 
 def main() -> int:

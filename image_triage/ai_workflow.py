@@ -13,11 +13,13 @@ import csv
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.request
 from dataclasses import dataclass
 from hashlib import sha1
@@ -27,6 +29,7 @@ from typing import TYPE_CHECKING, Callable
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from .ai_model import AIModelInstallation, resolve_ai_model_installation
+from .ai_runtime_packages import load_ai_runtime_installation_status
 
 if TYPE_CHECKING:
     from .models import ImageRecord
@@ -35,6 +38,8 @@ if TYPE_CHECKING:
 HIDDEN_ROOT_NAME = ".image_triage_ai"
 ARTIFACTS_DIR_NAME = "artifacts"
 REPORT_DIR_NAME = "ranker_report"
+LOGS_DIR_NAME = "logs"
+LATEST_AI_RUN_LOG_FILENAME = "latest_ai_culling.log"
 STAGE_WORKSPACES_DIR_NAME = "workspaces"
 STAGE_INPUT_DIR_NAME = "input"
 STAGE_MANIFEST_FILENAME = "stage_manifest.json"
@@ -51,12 +56,20 @@ TQDM_PROGRESS_PATTERN = re.compile(
 AI_RUNTIME_DIR_NAME = "ai_runtime"
 AI_RUNNER_TARGET_NAME = "ai_python_runner.exe" if os.name == "nt" else "ai_python_runner"
 AI_RUNNER_SCRIPT_RELATIVE_PATH = Path("packaging") / "ai_python_runner.py"
+DEFAULT_RANKER_RUN_DIR_NAME = "ranker_run_mlp_100ep"
+DEFAULT_BUNDLED_CHECKPOINT_RELATIVE_PATH = (
+    Path("outputs") / DEFAULT_RANKER_RUN_DIR_NAME / "best_ranker.pt"
+)
+LEGACY_BUNDLED_CHECKPOINT_RELATIVE_PATH = (
+    Path("outputs") / "china26_full" / DEFAULT_RANKER_RUN_DIR_NAME / "best_ranker.pt"
+)
 REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
     "scripts/extract_embeddings.py",
     "scripts/cluster_embeddings.py",
     "scripts/export_ranked_report.py",
 )
 MISSING_MODULE_PATTERN = re.compile(r"ModuleNotFoundError:\s+No module named ['\"](?P<module>[^'\"]+)['\"]")
+FAILURE_OUTPUT_TAIL_LINE_COUNT = 80
 
 
 @dataclass(slots=True, frozen=True)
@@ -71,7 +84,7 @@ class AIWorkflowRuntime:
     report_config_path: Path
     model_installation: AIModelInstallation | None = None
     checkpoint_download_url: str | None = None
-    device: str = "cuda"
+    device: str = "auto"
     batch_size: int = 16
     num_workers: int = 4
     local_stage_mode: str = "auto"
@@ -193,147 +206,200 @@ class AIRunTask(QRunnable):
     def run(self) -> None:
         folder_text = str(self.folder)
         staged_input_dir: Path | None = None
+        log_path = ai_run_log_path(self.paths)
         self.signals.started.emit(folder_text)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _log_line(handle, text: str = "") -> None:
+            handle.write(text + "\n")
+            handle.flush()
+
+        def _log_chunk(handle, chunk: str) -> None:
+            handle.write(chunk)
+            handle.flush()
+
         try:
-            self.runtime.validate()
-            prepare_hidden_ai_workspace(self.folder)
-        except Exception as exc:
-            self.signals.failed.emit(folder_text, str(exc))
-            return
+            with log_path.open("w", encoding="utf-8", newline="") as log_handle:
+                _log_line(log_handle, f"AI culling started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+                _log_line(log_handle, f"Folder: {self.folder}")
+                _log_line(log_handle, f"Engine root: {self.runtime.engine_root}")
+                _log_line(log_handle, f"Python: {self.runtime.python_executable}")
+                _log_line(log_handle, f"Checkpoint: {self.runtime.checkpoint_path}")
+                _log_line(log_handle, f"Model: {self.runtime.model_name}")
+                _log_line(log_handle, f"Local staging: {self.runtime.local_stage_mode}")
+                if self.runtime.local_stage_root is not None:
+                    _log_line(log_handle, f"Stage root: {self.runtime.local_stage_root}")
+                _log_line(log_handle, f"Artifacts dir: {self.paths.artifacts_dir}")
+                _log_line(log_handle, f"Report dir: {self.paths.report_dir}")
 
-        commands: list[tuple[str, str, str, list[str]]] = []
-        if not self.skip_extract:
-            commands.append(
-                (
-                    "extract",
-                    "Extracting embeddings",
-                    "scripts/extract_embeddings.py",
-                    [
-                        "--config",
-                        str(self.runtime.extraction_config_path),
-                        "--input-dir",
-                        "",
-                        "--output-dir",
-                        str(self.paths.artifacts_dir),
-                        "--batch-size",
-                        str(self.runtime.batch_size),
-                        "--model-name",
-                        self.runtime.model_name,
-                        "--device",
-                        self.runtime.device,
-                        "--num-workers",
-                        str(self.runtime.num_workers),
-                    ],
-                )
-            )
-        if not self.skip_cluster:
-            commands.append(
-                (
-                    "cluster",
-                    "Building culling groups",
-                    "scripts/cluster_embeddings.py",
-                    [
-                        "--config",
-                        str(self.runtime.clustering_config_path),
-                        "--artifacts-dir",
-                        str(self.paths.artifacts_dir),
-                        "--output-dir",
-                        str(self.paths.artifacts_dir),
-                    ],
-                )
-            )
-        report_args = [
-            "--config",
-            str(self.runtime.report_config_path),
-            "--artifacts-dir",
-            str(self.paths.artifacts_dir),
-            "--checkpoint-path",
-            str(self.runtime.checkpoint_path),
-            "--output-dir",
-            str(self.paths.report_dir),
-            "--device",
-            self.runtime.device,
-        ]
-        commands.append(
-            (
-                "report",
-                "Scoring groups and building report",
-                "scripts/export_ranked_report.py",
-                report_args,
-            )
-        )
+                try:
+                    self.runtime.validate()
+                    prepare_hidden_ai_workspace(self.folder)
+                except Exception as exc:
+                    _log_line(log_handle)
+                    _log_line(log_handle, "Validation or workspace preparation failed.")
+                    _log_line(log_handle, traceback.format_exc().rstrip())
+                    self.signals.failed.emit(folder_text, _append_log_path(str(exc), log_path))
+                    return
 
-        if self.labels_dir is not None and self.labels_dir.exists():
-            report_args.extend(["--labels-dir", str(self.labels_dir)])
-        if self.reference_bank_path is not None and self.reference_bank_path.exists():
-            report_args.extend(["--reference-bank-path", str(self.reference_bank_path)])
-
-        use_local_stage = not self.skip_extract and _should_use_local_staging(self.folder, self.runtime)
-        total_stages = len(commands) + (1 if use_local_stage else 0)
-
-        if use_local_stage:
-            self.signals.stage.emit(folder_text, 1, total_stages, "Staging images locally")
-            staged_input_dir = stage_supported_images(
-                source_folder=self.folder,
-                runtime=self.runtime,
-                progress_callback=lambda current, total, eta_text, message: self.signals.progress.emit(
-                    folder_text,
-                    message,
-                    current,
-                    total,
-                    eta_text,
-                ),
-            )
-            if commands and commands[0][0] == "extract":
-                commands[0][3][commands[0][3].index("--input-dir") + 1] = str(staged_input_dir)
-        elif commands and commands[0][0] == "extract":
-            commands[0][3][commands[0][3].index("--input-dir") + 1] = str(self.folder)
-
-        for stage_index, (stage_name, stage_message, script_relative_path, stage_args) in enumerate(
-            commands,
-            start=(2 if use_local_stage else 1),
-        ):
-            self.signals.stage.emit(folder_text, stage_index, total_stages, stage_message)
-            command = _resolve_stage_command(
-                self.runtime,
-                script_relative_path=script_relative_path,
-                stage_args=stage_args,
-            )
-            completed = _run_command_with_live_output(
-                command,
-                cwd=self.runtime.engine_root,
-                progress_callback=(
-                    lambda line, *, _folder_text=folder_text: _emit_tqdm_progress(
-                        signals=self.signals,
-                        folder_text=_folder_text,
-                        line=line,
+                commands: list[tuple[str, str, str, list[str]]] = []
+                if not self.skip_extract:
+                    commands.append(
+                        (
+                            "extract",
+                            "Extracting embeddings",
+                            "scripts/extract_embeddings.py",
+                            [
+                                "--config",
+                                str(self.runtime.extraction_config_path),
+                                "--input-dir",
+                                "",
+                                "--output-dir",
+                                str(self.paths.artifacts_dir),
+                                "--batch-size",
+                                str(self.runtime.batch_size),
+                                "--model-name",
+                                self.runtime.model_name,
+                                "--device",
+                                self.runtime.device,
+                                "--num-workers",
+                                str(self.runtime.num_workers),
+                            ],
+                        )
                     )
-                ),
-            )
-            if completed.returncode != 0:
-                stderr = (completed.stderr or "").strip()
-                stdout = (completed.stdout or "").strip()
-                self.signals.failed.emit(
-                    folder_text,
-                    _build_stage_failure_message(
-                        runtime=self.runtime,
-                        stage_message=stage_message,
-                        stderr=stderr,
-                        stdout=stdout,
-                    ),
-                )
-                return
-            if staged_input_dir is not None and stage_name == "extract":
-                rewrite_extraction_artifact_paths(
-                    artifacts_dir=self.paths.artifacts_dir,
-                    source_folder=self.folder,
+                if not self.skip_cluster:
+                    commands.append(
+                        (
+                            "cluster",
+                            "Building culling groups",
+                            "scripts/cluster_embeddings.py",
+                            [
+                                "--config",
+                                str(self.runtime.clustering_config_path),
+                                "--artifacts-dir",
+                                str(self.paths.artifacts_dir),
+                                "--output-dir",
+                                str(self.paths.artifacts_dir),
+                            ],
+                        )
+                    )
+                report_args = [
+                    "--config",
+                    str(self.runtime.report_config_path),
+                    "--artifacts-dir",
+                    str(self.paths.artifacts_dir),
+                    "--checkpoint-path",
+                    str(self.runtime.checkpoint_path),
+                    "--output-dir",
+                    str(self.paths.report_dir),
+                    "--device",
+                    self.runtime.device,
+                ]
+                commands.append(
+                    (
+                        "report",
+                        "Scoring groups and building report",
+                        "scripts/export_ranked_report.py",
+                        report_args,
+                    )
                 )
 
-        self.signals.finished.emit(
-            folder_text,
-            str(self.paths.report_dir),
-            str(self.paths.html_report_path),
-        )
+                if self.labels_dir is not None and self.labels_dir.exists():
+                    report_args.extend(["--labels-dir", str(self.labels_dir)])
+                if self.reference_bank_path is not None and self.reference_bank_path.exists():
+                    report_args.extend(["--reference-bank-path", str(self.reference_bank_path)])
+
+                use_local_stage = not self.skip_extract and _should_use_local_staging(self.folder, self.runtime)
+                total_stages = len(commands) + (1 if use_local_stage else 0)
+
+                if use_local_stage:
+                    self.signals.stage.emit(folder_text, 1, total_stages, "Staging images locally")
+
+                    def _stage_progress(current: int, total: int, eta_text: str, message: str) -> None:
+                        self.signals.progress.emit(folder_text, message, current, total, eta_text)
+                        _log_line(
+                            log_handle,
+                            f"[staging] {message} | {current}/{total}" + (f" | eta {eta_text}" if eta_text else ""),
+                        )
+
+                    staged_input_dir = stage_supported_images(
+                        source_folder=self.folder,
+                        runtime=self.runtime,
+                        progress_callback=_stage_progress,
+                    )
+                    if commands and commands[0][0] == "extract":
+                        commands[0][3][commands[0][3].index("--input-dir") + 1] = str(staged_input_dir)
+                elif commands and commands[0][0] == "extract":
+                    commands[0][3][commands[0][3].index("--input-dir") + 1] = str(self.folder)
+
+                for stage_index, (stage_name, stage_message, script_relative_path, stage_args) in enumerate(
+                    commands,
+                    start=(2 if use_local_stage else 1),
+                ):
+                    self.signals.stage.emit(folder_text, stage_index, total_stages, stage_message)
+                    command = _resolve_stage_command(
+                        self.runtime,
+                        script_relative_path=script_relative_path,
+                        stage_args=stage_args,
+                    )
+                    _log_line(log_handle)
+                    _log_line(log_handle, f"[stage {stage_index}/{total_stages}] {stage_name}: {stage_message}")
+                    _log_line(log_handle, f"cwd: {self.runtime.engine_root}")
+                    _log_line(log_handle, f"command: {_format_command_for_log(command)}")
+                    completed = _run_command_with_live_output(
+                        command,
+                        cwd=self.runtime.engine_root,
+                        progress_callback=(
+                            lambda line, *, _folder_text=folder_text: _emit_tqdm_progress(
+                                signals=self.signals,
+                                folder_text=_folder_text,
+                                line=line,
+                            )
+                        ),
+                        output_callback=lambda chunk: _log_chunk(log_handle, chunk),
+                    )
+                    _log_line(log_handle)
+                    _log_line(log_handle, f"return code: {completed.returncode}")
+                    if completed.returncode != 0:
+                        stderr = (completed.stderr or "").strip()
+                        stdout = (completed.stdout or "").strip()
+                        self.signals.failed.emit(
+                            folder_text,
+                            _build_stage_failure_message(
+                                runtime=self.runtime,
+                                stage_message=stage_message,
+                                stderr=stderr,
+                                stdout=stdout,
+                                log_path=log_path,
+                            ),
+                        )
+                        return
+                    if staged_input_dir is not None and stage_name == "extract":
+                        rewrite_extraction_artifact_paths(
+                            artifacts_dir=self.paths.artifacts_dir,
+                            source_folder=self.folder,
+                        )
+
+                _log_line(log_handle)
+                _log_line(log_handle, "AI culling completed successfully.")
+                self.signals.finished.emit(
+                    folder_text,
+                    str(self.paths.report_dir),
+                    str(self.paths.html_report_path),
+                )
+        except Exception as exc:
+            stack_text = traceback.format_exc().rstrip()
+            try:
+                with log_path.open("a", encoding="utf-8", newline="") as log_handle:
+                    _log_line(log_handle)
+                    _log_line(log_handle, "Unexpected AI culling error.")
+                    _log_line(log_handle, stack_text)
+            except OSError:
+                pass
+            self.signals.failed.emit(
+                folder_text,
+                _append_log_path(f"Unexpected AI culling failure.\n\n{exc}", log_path),
+            )
 
 
 def default_ai_workflow_runtime() -> AIWorkflowRuntime:
@@ -362,7 +428,8 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     checkpoint_path = _first_existing_path(
         [
             os.environ.get("AICULLING_CHECKPOINT", ""),
-            str(Path(engine_root) / "outputs" / "china26_full" / "ranker_run_mlp_100ep" / "best_ranker.pt"),
+            str(Path(engine_root) / DEFAULT_BUNDLED_CHECKPOINT_RELATIVE_PATH),
+            str(Path(engine_root) / LEGACY_BUNDLED_CHECKPOINT_RELATIVE_PATH),
             str(checkpoint_cache_path),
         ]
     )
@@ -411,6 +478,11 @@ def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
         ranked_export_path=report_dir / "ranked_clusters_export.csv",
         html_report_path=report_dir / "ranked_clusters_report.html",
     )
+
+
+def ai_run_log_path(paths: AIWorkflowPaths) -> Path:
+    """Return the stable log file path for the latest AI run in a folder."""
+    return paths.hidden_root / LOGS_DIR_NAME / LATEST_AI_RUN_LOG_FILENAME
 
 
 def prepare_hidden_ai_workspace(folder: str | Path) -> AIWorkflowPaths:
@@ -807,15 +879,18 @@ def _build_stage_failure_message(
     stage_message: str,
     stderr: str,
     stdout: str,
+    log_path: Path | None = None,
 ) -> str:
     combined_output = "\n".join(part for part in (stderr, stdout) if part).strip()
     missing_module_match = MISSING_MODULE_PATTERN.search(combined_output)
     if missing_module_match is not None:
         module_name = missing_module_match.group("module")
         runtime_root = _runtime_root_from_engine_root(runtime.engine_root)
+        runtime_status = load_ai_runtime_installation_status()
         staged_site_packages = [
             path
             for path in (
+                *(profile.site_packages_dir for profile in runtime_status.profiles.values()),
                 runtime_root / "ai_site_packages",
                 runtime_root / "build_assets" / "ai_site_packages",
             )
@@ -827,24 +902,50 @@ def _build_stage_failure_message(
             f"Python runner: {runtime.python_executable}",
             f"Engine root: {runtime.engine_root}",
         ]
+        message_lines.append(f"Runtime cache root: {runtime_status.directories.root}")
         if staged_site_packages:
-            message_lines.append("Staged AI packages:")
+            message_lines.append("AI package search roots:")
             message_lines.extend(str(path) for path in staged_site_packages)
         else:
             message_lines.append(
-                "Expected staged AI packages either next to the app executable or under build_assets/ai_site_packages."
+                "Expected AI runtime packages either in the user cache or next to the app executable."
             )
         message_lines.append(
-            "Refresh the staged AI runtime assets, or set AICULLING_PYTHON to a Python environment that already has the missing dependency installed."
+            "Install the AI runtime from the app, refresh the staged runtime assets, or set AICULLING_PYTHON to a Python environment that already has the missing dependency installed."
         )
+        if log_path is not None:
+            message_lines.append(f"AI run log: {log_path}")
         return "\n".join(message_lines)
 
     error_parts = [stage_message + " failed."]
-    if stderr:
-        error_parts.append(stderr)
-    elif stdout:
-        error_parts.append(stdout)
+    output_excerpt = _summarize_failure_output(combined_output)
+    if output_excerpt:
+        error_parts.append(output_excerpt)
+    if log_path is not None:
+        error_parts.append(f"AI run log: {log_path}")
     return "\n\n".join(error_parts)
+
+
+def _append_log_path(message: str, log_path: Path | None) -> str:
+    if log_path is None:
+        return message
+    return f"{message}\n\nAI run log: {log_path}"
+
+
+def _summarize_failure_output(output_text: str) -> str:
+    if not output_text:
+        return ""
+    lines = output_text.splitlines()
+    if len(lines) <= FAILURE_OUTPUT_TAIL_LINE_COUNT:
+        return output_text
+    excerpt = "\n".join(lines[-FAILURE_OUTPUT_TAIL_LINE_COUNT:])
+    return f"Showing last {FAILURE_OUTPUT_TAIL_LINE_COUNT} output lines:\n{excerpt}"
+
+
+def _format_command_for_log(command: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(command)
+    return " ".join(shlex.quote(part) for part in command)
 
 
 def _mark_hidden(path: Path) -> None:
@@ -876,6 +977,7 @@ def _run_command_with_live_output(
     *,
     cwd: Path,
     progress_callback: Callable[[str], None] | None = None,
+    output_callback: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
@@ -898,6 +1000,8 @@ def _run_command_with_live_output(
                 break
             if not chunk:
                 continue
+            if output_callback is not None:
+                output_callback(chunk)
             chunks.append(chunk)
             normalized = chunk.replace("\r", "\n")
             segments = normalized.split("\n")

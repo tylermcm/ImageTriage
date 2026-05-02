@@ -225,6 +225,9 @@ class _WindowAiRunStub:
     def _ensure_ai_model_available(self, *, title: str) -> bool:
         return True
 
+    def _ensure_ai_runtime_available(self, *, title: str) -> bool:
+        return True
+
     def _ai_training_paths_for_folder(self, folder: str | None = None):
         return None
 
