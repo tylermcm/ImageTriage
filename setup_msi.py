@@ -18,6 +18,8 @@ build_exe_options = {
         "astropy",
         "astropy.io.fits",
         "astropy.visualization",
+        "pip",
+        "pip._internal",
         "uuid",
     ],
     "include_files": freeze_assets.include_files,
@@ -27,7 +29,6 @@ build_exe_options = {
         "tests",
         "unittest",
         "benchmarks",
-        "pip",
         "setuptools",
         "wheel",
         *AI_FREEZE_EXCLUDES,
@@ -37,7 +38,6 @@ build_exe_options = {
 msi_data = {
     "Directory": [
         ("ProgramMenuFolder", "TARGETDIR", "."),
-        ("ImageTriageProgramMenu", "ProgramMenuFolder", "IMAGET~1|Image Triage"),
     ],
 }
 
@@ -59,12 +59,18 @@ executables = [
         target_name="ImageTriage.exe",
         icon=str(APP_ICON_WINDOWS_PATH),
         shortcut_name="Image Triage",
-        shortcut_dir="ImageTriageProgramMenu",
+        shortcut_dir="ProgramMenuFolder",
     ),
     Executable(
         script="packaging/ai_python_runner.py",
         base=None,
         target_name="ai_python_runner.exe",
+        icon=str(APP_ICON_WINDOWS_PATH),
+    ),
+    Executable(
+        script="packaging/ai_runtime_installer.py",
+        base=None,
+        target_name="ai_runtime_installer.exe",
         icon=str(APP_ICON_WINDOWS_PATH),
     ),
 ]

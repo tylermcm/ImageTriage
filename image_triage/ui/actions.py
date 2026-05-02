@@ -46,6 +46,7 @@ class MainWindowActions:
     compact_cards: QAction
     manual_mode: QAction
     ai_mode: QAction
+    install_ai_runtime: QAction
     download_ai_model: QAction
     run_ai_culling: QAction
     load_saved_ai: QAction
@@ -245,6 +246,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         manual_mode=_create_action(window, "Manual Review", slot=lambda _checked=False: window._set_ui_mode("manual"), checkable=True),
         ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
+        install_ai_runtime=_create_action(
+            window,
+            "Install AI Runtime...",
+            slot=window._install_ai_runtime,
+        ),
         download_ai_model=_create_action(
             window,
             "Download AI Model...",

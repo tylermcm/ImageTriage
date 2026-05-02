@@ -152,6 +152,7 @@ def build_main_menu_bar(
         workflow_menu.addMenu(workflow_recipe_menu)
 
     ai_menu = menu_bar.addMenu("&AI")
+    ai_menu.addAction(actions.install_ai_runtime)
     ai_menu.addAction(actions.download_ai_model)
     ai_menu.addSeparator()
     ai_menu.addAction(actions.run_ai_culling)

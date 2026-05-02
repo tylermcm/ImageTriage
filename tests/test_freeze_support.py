@@ -84,6 +84,7 @@ class FreezeSupportTests(unittest.TestCase):
                 ai_site_packages_source=site_packages,
                 ai_stdlib_source=stdlib,
                 ai_binary_modules_source=binary_modules,
+                bundle_ai_site_packages=True,
                 ai_stage_root=root / "stage" / "ai_runtime" / "AICullingPipeline",
                 ai_site_packages_stage_root=root / "stage" / "ai_site_packages",
                 ai_stdlib_stage_root=root / "stage" / "ai_stdlib",
@@ -104,6 +105,116 @@ class FreezeSupportTests(unittest.TestCase):
             self.assertTrue((layout.ai_site_packages_stage_root / "requests" / "__init__.py").exists())
             self.assertTrue((layout.ai_stdlib_stage_root / "json.py").exists())
             self.assertTrue((layout.ai_binary_modules_stage_root / "_struct.pyd").exists())
+
+    def test_prepare_ai_build_assets_stages_legacy_ranker_into_generic_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ai_source = root / "AICullingPipeline"
+            scripts_dir = ai_source / "scripts"
+            config_dir = ai_source / "configs"
+            app_dir = ai_source / "app"
+            legacy_ranker_dir = ai_source / "outputs" / "china26_full" / "ranker_run_mlp_100ep"
+            app_dir.mkdir(parents=True)
+            config_dir.mkdir(parents=True)
+            scripts_dir.mkdir(parents=True)
+            legacy_ranker_dir.mkdir(parents=True)
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
+            for script_name in (
+                "extract_embeddings.py",
+                "cluster_embeddings.py",
+                "export_ranked_report.py",
+            ):
+                (scripts_dir / script_name).write_text("print('hello')\n", encoding="utf-8")
+            (legacy_ranker_dir / "best_ranker.pt").write_bytes(b"best")
+            (legacy_ranker_dir / "last_ranker.pt").write_bytes(b"last")
+
+            site_packages = root / "site-packages"
+            site_packages.mkdir(parents=True)
+            (site_packages / "typing_extensions.py").write_text("# stub\n", encoding="utf-8")
+
+            stdlib = root / "stdlib"
+            stdlib.mkdir(parents=True)
+            (stdlib / "json.py").write_text("# stub\n", encoding="utf-8")
+
+            binary_modules = root / "binary-modules"
+            binary_modules.mkdir(parents=True)
+            (binary_modules / "_struct.pyd").write_bytes(b"binary")
+
+            layout = FreezeAssetLayout(
+                ai_source=ai_source,
+                ai_site_packages_source=site_packages,
+                ai_stdlib_source=stdlib,
+                ai_binary_modules_source=binary_modules,
+                bundle_ai_site_packages=True,
+                ai_stage_root=root / "stage" / "ai_runtime" / "AICullingPipeline",
+                ai_site_packages_stage_root=root / "stage" / "ai_site_packages",
+                ai_stdlib_stage_root=root / "stage" / "ai_stdlib",
+                ai_binary_modules_stage_root=root / "stage" / "lib",
+            )
+
+            with patch("freeze_support.AI_SITE_PACKAGES_ENTRIES", ("typing_extensions.py",)), patch(
+                "freeze_support.AI_SITE_PACKAGES_OPTIONAL_ENTRIES",
+                (),
+            ), patch("freeze_support.INCLUDE_DEFAULT_RANKER", True):
+                prepare_ai_build_assets(layout)
+
+            self.assertEqual(
+                (layout.ai_stage_root / "outputs" / "ranker_run_mlp_100ep" / "best_ranker.pt").read_bytes(),
+                b"best",
+            )
+            self.assertEqual(
+                (layout.ai_stage_root / "outputs" / "ranker_run_mlp_100ep" / "last_ranker.pt").read_bytes(),
+                b"last",
+            )
+
+    def test_prepare_ai_build_assets_can_skip_bundled_site_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ai_source = root / "AICullingPipeline"
+            scripts_dir = ai_source / "scripts"
+            config_dir = ai_source / "configs"
+            app_dir = ai_source / "app"
+            app_dir.mkdir(parents=True)
+            config_dir.mkdir(parents=True)
+            scripts_dir.mkdir(parents=True)
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
+            for script_name in (
+                "extract_embeddings.py",
+                "cluster_embeddings.py",
+                "export_ranked_report.py",
+            ):
+                (scripts_dir / script_name).write_text("print('hello')\n", encoding="utf-8")
+
+            stdlib = root / "stdlib"
+            stdlib.mkdir(parents=True)
+            (stdlib / "json.py").write_text("# stub\n", encoding="utf-8")
+
+            binary_modules = root / "binary-modules"
+            binary_modules.mkdir(parents=True)
+            (binary_modules / "_struct.pyd").write_bytes(b"binary")
+
+            layout = FreezeAssetLayout(
+                ai_source=ai_source,
+                ai_site_packages_source=root / "missing-site-packages",
+                ai_stdlib_source=stdlib,
+                ai_binary_modules_source=binary_modules,
+                bundle_ai_site_packages=False,
+                ai_stage_root=root / "stage" / "ai_runtime" / "AICullingPipeline",
+                ai_site_packages_stage_root=root / "stage" / "ai_site_packages",
+                ai_stdlib_stage_root=root / "stage" / "ai_stdlib",
+                ai_binary_modules_stage_root=root / "stage" / "lib",
+            )
+
+            prepare_ai_build_assets(layout)
+
+            self.assertFalse(layout.ai_site_packages_stage_root.exists())
+            self.assertTrue((layout.ai_stdlib_stage_root / "json.py").exists())
 
 
 if __name__ == "__main__":

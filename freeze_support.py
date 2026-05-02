@@ -24,6 +24,11 @@ AI_SITE_PACKAGES_ENV = "IMAGE_TRIAGE_AI_SITE_PACKAGES"
 AI_STDLIB_ENV = "IMAGE_TRIAGE_AI_STDLIB"
 AI_BINARY_MODULES_ENV_NAMES = ("IMAGE_TRIAGE_AI_DLLS", "IMAGE_TRIAGE_AI_BINARY_MODULES")
 AI_SOURCE_ENV_NAMES = ("IMAGE_TRIAGE_AI_SOURCE", "AICULLING_ENGINE_ROOT")
+DEFAULT_RANKER_RUN_DIR_NAME = "ranker_run_mlp_100ep"
+DEFAULT_RANKER_OUTPUT_RELATIVE_DIR = Path("outputs") / DEFAULT_RANKER_RUN_DIR_NAME
+LEGACY_DEFAULT_RANKER_OUTPUT_RELATIVE_DIR = (
+    Path("outputs") / "china26_full" / DEFAULT_RANKER_RUN_DIR_NAME
+)
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -31,6 +36,7 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+BUNDLE_AI_RUNTIME_SITE_PACKAGES = _env_flag("IMAGE_TRIAGE_BUNDLE_AI_RUNTIME_SITE_PACKAGES")
 INCLUDE_LOCAL_BACKBONE = _env_flag("IMAGE_TRIAGE_INCLUDE_LOCAL_MODEL")
 INCLUDE_DEFAULT_RANKER = _env_flag("IMAGE_TRIAGE_INCLUDE_DEFAULT_RANKER")
 
@@ -81,6 +87,7 @@ AI_FREEZE_EXCLUDES = (
     "timm",
     "scipy",
     "sklearn",
+    "sympy",
 )
 SCRIPT_BOOTSTRAP_MARKER = "# image_triage-bootstrap: ensure bundled AI pipeline imports resolve"
 SCRIPT_BOOTSTRAP = f"""{SCRIPT_BOOTSTRAP_MARKER}
@@ -115,6 +122,7 @@ class FreezeAssetLayout:
     ai_site_packages_source: Path
     ai_stdlib_source: Path
     ai_binary_modules_source: Path
+    bundle_ai_site_packages: bool = BUNDLE_AI_RUNTIME_SITE_PACKAGES
     ai_stage_root: Path = AI_STAGE_ROOT
     ai_site_packages_stage_root: Path = AI_SITE_PACKAGES_STAGE_ROOT
     ai_stdlib_stage_root: Path = AI_STDLIB_STAGE_ROOT
@@ -122,12 +130,14 @@ class FreezeAssetLayout:
 
     @property
     def include_files(self) -> list[tuple[str, str]]:
-        return [
+        include_files = [
             (str(self.ai_stage_root.parent), "ai_runtime"),
-            (str(self.ai_site_packages_stage_root), "ai_site_packages"),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
             (str(self.ai_binary_modules_stage_root), "lib"),
         ]
+        if self.bundle_ai_site_packages:
+            include_files.append((str(self.ai_site_packages_stage_root), "ai_site_packages"))
+        return include_files
 
 
 def read_project_version() -> str:
@@ -161,7 +171,13 @@ def resolve_freeze_asset_layout() -> FreezeAssetLayout:
 def prepare_ai_build_assets(layout: FreezeAssetLayout | None = None) -> FreezeAssetLayout:
     resolved = layout or resolve_freeze_asset_layout()
     stage_ai_runtime(resolved)
-    stage_ai_site_packages(resolved)
+    if resolved.bundle_ai_site_packages:
+        stage_ai_site_packages(resolved)
+    else:
+        print(
+            "Skipping bundled AI site-packages; the packaged app will install "
+            "PyTorch and other large AI dependencies on demand."
+        )
     stage_ai_stdlib(resolved)
     stage_ai_binary_modules(resolved)
     return resolved
@@ -246,6 +262,15 @@ def _copy_file(source: Path, target: Path) -> None:
     shutil.copy2(source, target)
 
 
+def _copy_first_existing_file(sources: tuple[Path, ...], target: Path) -> None:
+    for source in sources:
+        if source.exists():
+            _copy_file(source, target)
+            return
+    source_text = "\n".join(str(source) for source in sources)
+    raise FileNotFoundError(f"Missing AI source file. Checked:\n{source_text}")
+
+
 def _inject_stage_script_bootstrap(script_path: Path) -> None:
     source_text = script_path.read_text(encoding="utf-8")
     if SCRIPT_BOOTSTRAP_MARKER in source_text:
@@ -322,11 +347,18 @@ def stage_ai_runtime(layout: FreezeAssetLayout) -> None:
         )
 
     if INCLUDE_DEFAULT_RANKER:
-        for relative_file in (
-            Path("outputs/china26_full/ranker_run_mlp_100ep/best_ranker.pt"),
-            Path("outputs/china26_full/ranker_run_mlp_100ep/last_ranker.pt"),
+        for checkpoint_name in (
+            "best_ranker.pt",
+            "last_ranker.pt",
         ):
-            _copy_file(layout.ai_source / relative_file, layout.ai_stage_root / relative_file)
+            target_relative_file = DEFAULT_RANKER_OUTPUT_RELATIVE_DIR / checkpoint_name
+            _copy_first_existing_file(
+                (
+                    layout.ai_source / target_relative_file,
+                    layout.ai_source / LEGACY_DEFAULT_RANKER_OUTPUT_RELATIVE_DIR / checkpoint_name,
+                ),
+                layout.ai_stage_root / target_relative_file,
+            )
     else:
         print(
             "Skipping bundled default ranker checkpoint; set IMAGE_TRIAGE_INCLUDE_DEFAULT_RANKER=1 "
