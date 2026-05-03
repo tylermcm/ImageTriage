@@ -140,6 +140,33 @@ class _ScopeStartStub:
         self._active_scope_enrichment_task = task
 
 
+class _WindowStateFixupStub:
+    def __init__(self, *, startup_state: str, maximized: bool = False, fullscreen: bool = False) -> None:
+        self._startup_window_state = startup_state
+        self._maximized = maximized
+        self._fullscreen = fullscreen
+        self.calls: list[str] = []
+
+    def isMaximized(self) -> bool:
+        return self._maximized
+
+    def isFullScreen(self) -> bool:
+        return self._fullscreen
+
+    def showNormal(self) -> None:
+        self.calls.append("normal")
+        self._maximized = False
+        self._fullscreen = False
+
+    def showMaximized(self) -> None:
+        self.calls.append("maximized")
+        self._maximized = True
+
+    def showFullScreen(self) -> None:
+        self.calls.append("fullscreen")
+        self._fullscreen = True
+
+
 class _SettingsStub:
     def __init__(self) -> None:
         self.values: dict[str, object] = {}
@@ -1203,6 +1230,22 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertEqual(computed_taste_profile, loaded.taste_profile)
             self.assertEqual(computed_recommendation, loaded.recommendations[records[0].path])
             self.assertEqual("live", cache_status_payloads[0]["source"])
+
+    def test_apply_startup_window_state_fixup_forces_real_windows_maximize(self) -> None:
+        stub = _WindowStateFixupStub(startup_state="maximized", maximized=True)
+
+        MainWindow._apply_startup_window_state_fixup(stub)
+
+        self.assertEqual(["normal", "maximized"], stub.calls)
+        self.assertTrue(stub.isMaximized())
+
+    def test_apply_startup_window_state_fixup_maximizes_when_not_currently_maximized(self) -> None:
+        stub = _WindowStateFixupStub(startup_state="maximized", maximized=False)
+
+        MainWindow._apply_startup_window_state_fixup(stub)
+
+        self.assertEqual(["maximized"], stub.calls)
+        self.assertTrue(stub.isMaximized())
 
 
 if __name__ == "__main__":

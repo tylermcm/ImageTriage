@@ -2101,6 +2101,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
         self._settings = QSettings()
+        self._startup_window_state = "normal"
+        self._startup_window_state_fixup_applied = False
         self._workspace_toolbar_layouts = self._load_workspace_toolbar_layouts()
         self._workspace_bar_state = self._normalize_workspace_bar_state(
             self._settings.value(self.WORKSPACE_BAR_STATE_KEY, "expanded", str)
@@ -4693,7 +4695,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Appearance set to {normalized.value}")
 
     def _restore_window_state(self) -> None:
-        restored = restore_window_layout(self, self._settings, self.GEOMETRY_KEY, self.STATE_KEY, self.workspace_docks)
+        restored, window_state = restore_window_layout(
+            self,
+            self._settings,
+            self.GEOMETRY_KEY,
+            self.STATE_KEY,
+            self.workspace_docks,
+        )
+        self._startup_window_state = window_state
         if not restored:
             self._apply_default_workspace()
 
@@ -5247,6 +5256,38 @@ class MainWindow(QMainWindow):
         self._cleanup_child_sync_state()
         self._save_window_state()
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._startup_window_state_fixup_applied:
+            return
+        self._startup_window_state_fixup_applied = True
+        if self._startup_window_state in {"maximized", "fullscreen"}:
+            QTimer.singleShot(0, self._apply_startup_window_state_fixup)
+
+    def _apply_startup_window_state_fixup(self) -> None:
+        if self._startup_window_state == "fullscreen":
+            if self.isMaximized():
+                self.showNormal()
+            if not self.isFullScreen():
+                self.showFullScreen()
+                return
+            if os.name == "nt":
+                self.showNormal()
+                self.showFullScreen()
+            return
+
+        if self._startup_window_state != "maximized":
+            return
+
+        if self.isFullScreen():
+            self.showNormal()
+        if not self.isMaximized():
+            self.showMaximized()
+            return
+        if os.name == "nt":
+            self.showNormal()
+            self.showMaximized()
 
     def _load_start_folder(self) -> None:
         last_folder = self._settings.value(self.LAST_FOLDER_KEY, "", str)
