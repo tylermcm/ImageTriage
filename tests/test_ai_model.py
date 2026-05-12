@@ -6,7 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from image_triage.ai_model import download_ai_model, resolve_ai_model_installation
+from image_triage.ai_model import (
+    SEMANTIC_MODEL_REQUIRED_FILENAMES,
+    download_ai_model,
+    download_semantic_model,
+    resolve_ai_model_installation,
+    resolve_semantic_model_installation,
+)
 
 
 class _FakeResponse:
@@ -38,6 +44,34 @@ class AIModelTests(unittest.TestCase):
                 installation = resolve_ai_model_installation()
 
         self.assertEqual(installation.install_dir.name, "custom-model")
+
+    def test_default_ai_model_installation_uses_model_name_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_ai_model_installation(repo_id="owner/DinoV2")
+
+        self.assertEqual(installation.install_dir.name, "DinoV2")
+        self.assertEqual(installation.install_dir.parent.name, "models")
+
+    def test_default_ai_model_installation_uses_local_appdata_without_home_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                with patch("image_triage.ai_model.Path.home", side_effect=RuntimeError("no home")):
+                    installation = resolve_ai_model_installation(repo_id="owner/DinoV2")
+
+        self.assertTrue(str(installation.install_dir).startswith(temp_dir))
+
+    def test_default_semantic_model_installation_uses_model_name_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_semantic_model_installation(repo_id="owner/clip-vit-base-patch32")
+
+        self.assertEqual(installation.install_dir.name, "clip-vit-base-patch32")
+        self.assertEqual(installation.install_dir.parent.name, "models")
+        self.assertEqual(installation.required_filenames, SEMANTIC_MODEL_REQUIRED_FILENAMES)
 
     def test_ai_model_installation_requires_all_expected_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -90,6 +124,33 @@ class AIModelTests(unittest.TestCase):
             )
             self.assertEqual((installation.install_dir / "model.safetensors").read_bytes(), b"weights")
             self.assertTrue(any(filename == "model.safetensors" for filename, _, _ in seen_progress))
+
+    def test_download_semantic_model_fetches_required_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = resolve_semantic_model_installation(
+                install_dir=Path(temp_dir) / "downloaded-semantic-model",
+                repo_id="owner/clip",
+                revision="main",
+            )
+            payloads = {filename: filename.encode("utf-8") for filename in SEMANTIC_MODEL_REQUIRED_FILENAMES}
+            seen_progress: list[tuple[str, int, int]] = []
+
+            def fake_urlopen(request):
+                url = getattr(request, "full_url", str(request))
+                filename = url.split("?", 1)[0].rsplit("/", 1)[-1]
+                return _FakeResponse(payloads[filename])
+
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                download_semantic_model(
+                    installation,
+                    progress_callback=lambda filename, current, total: seen_progress.append(
+                        (filename, current, total)
+                    ),
+                )
+
+            self.assertTrue(installation.is_installed)
+            self.assertEqual((installation.install_dir / "pytorch_model.bin").read_bytes(), b"pytorch_model.bin")
+            self.assertTrue(any(filename == "pytorch_model.bin" for filename, _, _ in seen_progress))
 
 
 if __name__ == "__main__":

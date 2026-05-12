@@ -12,6 +12,7 @@ to hold the reusable backend logic whenever a behavior can be isolated cleanly.
 import ctypes
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -22,8 +23,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from textwrap import dedent
 
-from PySide6.QtCore import QByteArray, QDir, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QRunnable, QSettings, QSignalBlocker, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QCursor, QGuiApplication, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSettings, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QStatusBar,
+    QStyle,
     QTabBar,
     QToolButton,
     QTreeView,
@@ -61,8 +63,10 @@ from PySide6.QtWidgets import (
 from .ai_model import (
     AIModelInstallation,
     DEFAULT_AI_MODEL_SIZE_MB,
+    DEFAULT_SEMANTIC_MODEL_SIZE_MB,
     download_ai_model as download_managed_ai_model,
     resolve_ai_model_installation,
+    resolve_semantic_model_installation,
 )
 from .ai_runtime_packages import (
     AI_RUNTIME_BOTH_VARIANT,
@@ -70,6 +74,9 @@ from .ai_runtime_packages import (
     AI_RUNTIME_GPU_VARIANT,
     AIRuntimeInstallationStatus,
     ai_runtime_variant_label,
+    directory_size_bytes,
+    estimate_ai_runtime_download_size_mb,
+    estimate_ai_runtime_installed_size_mb,
     load_ai_runtime_installation_status,
 )
 from .archive_ops import (
@@ -115,6 +122,7 @@ from .ai_workflow import (
     ai_cluster_artifacts_ready,
     ai_embedding_artifacts_ready,
     ai_report_artifacts_ready,
+    ai_semantic_artifacts_ready,
     build_ai_stage_cache_keys,
     build_ai_workflow_paths,
     default_ai_workflow_runtime,
@@ -141,6 +149,7 @@ from .brackets import BracketDetector
 from .bursts import find_burst_groups
 from .catalog import CatalogRepository, catalog_cache_env_override
 from .decision_store import DecisionStore
+from .details_view import PhotoDetailsView
 from .file_ops import FileMove, copy_paths, create_folder, delete_folder, move_folder, move_paths, rename_bundle_paths, rename_folder, unique_destination
 from .filtering import (
     AIStateFilter,
@@ -189,7 +198,7 @@ from .workflows import (
     workflow_destination_dir,
     workflow_record_folder_name,
 )
-from .review_tools import FOCUS_ASSIST_COLORS, FOCUS_ASSIST_STRENGTHS
+from .review_tools import FOCUS_ASSIST_COLORS, FOCUS_ASSIST_STRENGTHS, InspectionStats, build_inspection_stats
 from .records_view_cache import RecordsViewCache, ViewInvalidationReason
 from .review_intelligence import BuildReviewIntelligenceTask, ReviewIntelligenceBundle
 from .review_workflows import (
@@ -212,8 +221,9 @@ from .review_workflows import (
     review_scoring_provider_id,
     review_round_label,
 )
-from .scanner import FolderScanTask, discover_edited_paths, normalize_filesystem_path, normalized_path_key, scan_folder
+from .scanner import FolderScanTask, discover_edited_paths, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
+from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
 from .thumbnails import ThumbnailManager
 from .ui import (
@@ -244,6 +254,7 @@ from .ui import (
     build_app_stylesheet,
     build_main_menu_bar,
     build_main_window_actions,
+    build_pin_icon,
     build_workspace_docks,
     clear_window_layout,
     parse_appearance_mode,
@@ -347,7 +358,12 @@ class AISetupSelection:
     """Captures the optional AI components the user chose to install."""
     install_runtime: bool
     runtime_variant: str
-    download_model: bool
+    download_dino_model: bool
+    download_semantic_model: bool
+
+    @property
+    def download_model(self) -> bool:
+        return self.download_dino_model or self.download_semantic_model
 
 
 @dataclass(slots=True)
@@ -742,6 +758,7 @@ class ToolbarCustomizerDialog(QDialog):
             "burst_groups": "Groups",
             "burst_stacks": "Stacks",
             "compact_cards": "Compact",
+            "show_hidden_folders": "Hidden",
             "selection_count": "3 selected",
             "accept_selection": "Accept",
             "reject_selection": "Reject",
@@ -1760,36 +1777,45 @@ class AIModelDownloadSignals(QObject):
     failed = Signal(str)
 
 
+@dataclass(slots=True, frozen=True)
+class AIModelDownloadRequest:
+    """One managed Hugging Face model to fetch through the shared installer."""
+    label: str
+    installation: AIModelInstallation
+    force: bool = False
+
+
 class AIModelDownloadTask(QRunnable):
-    """Downloads the managed AI model bundle on a background worker thread."""
+    """Downloads selected managed AI model bundles on a background worker thread."""
     def __init__(
         self,
         *,
-        installation: AIModelInstallation,
-        force: bool = False,
+        requests: tuple[AIModelDownloadRequest, ...],
     ) -> None:
         super().__init__()
-        self.installation = installation
-        self.force = force
+        self.requests = requests
         self.signals = AIModelDownloadSignals()
         self.setAutoDelete(True)
 
     def run(self) -> None:
         try:
-            self.signals.started.emit(str(self.installation.install_dir))
-            download_managed_ai_model(
-                self.installation,
-                force=self.force,
-                progress_callback=lambda filename, current, total: self.signals.progress.emit(
-                    filename,
-                    current,
-                    total,
-                ),
-            )
+            completed: list[str] = []
+            for request in self.requests:
+                self.signals.started.emit(f"{request.label}: {request.installation.install_dir}")
+
+                def emit_progress(filename: str, current: int, total: int, *, label: str = request.label) -> None:
+                    self.signals.progress.emit(f"{label}: {filename}", current, total)
+
+                download_managed_ai_model(
+                    request.installation,
+                    force=request.force,
+                    progress_callback=emit_progress,
+                )
+                completed.append(f"{request.label}: {request.installation.install_dir}")
         except Exception as exc:
             self.signals.failed.emit(str(exc))
             return
-        self.signals.finished.emit(str(self.installation.install_dir))
+        self.signals.finished.emit("\n".join(completed))
 
 
 class AIRuntimeInstallSignals(QObject):
@@ -1860,6 +1886,31 @@ class AIRuntimeInstallTask(QRunnable):
         self.signals.finished.emit(str(self.install_root), self.variant_choice)
 
 
+PIP_RAW_PROGRESS_PATTERN = re.compile(r"Progress\s+(?P<current>\d+)\s+of\s+(?P<total>\d+)", re.IGNORECASE)
+
+
+def _parse_pip_raw_progress(message: str) -> tuple[int, int] | None:
+    match = PIP_RAW_PROGRESS_PATTERN.search(message or "")
+    if match is None:
+        return None
+    current = int(match.group("current"))
+    total = int(match.group("total"))
+    if total <= 0:
+        return None
+    return current, total
+
+
+def _format_bytes(size: int) -> str:
+    value = float(max(0, int(size)))
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if value < 1024.0 or unit == "TB":
+            if unit == "bytes":
+                return f"{int(value)} bytes"
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} TB"
+
+
 class MainWindow(QMainWindow):
     """Top-level application window.
 
@@ -1887,6 +1938,7 @@ class MainWindow(QMainWindow):
     CATALOG_WATCH_CURRENT_FOLDER_KEY = "catalog/watch_current_folder"
     AI_AUTO_PROFILE_ENABLED_KEY = "ai/auto_profile_enabled"
     AI_EMBED_BATCH_SIZE_KEY = "ai/embed_batch_size"
+    AI_SEMANTIC_SIDECAR_ENABLED_KEY = "ai/semantic_sidecar_enabled"
     FAST_RATING_HINT_DISABLED_KEY = "workflow/fast_rating_hint_disabled"
     FAST_RATING_HINT_SESSIONS_KEY = "workflow/fast_rating_hint_sessions"
     FAST_RATING_HINT_SIZE_BYTES = 20 * 1024 * 1024
@@ -1900,6 +1952,7 @@ class MainWindow(QMainWindow):
     WORKSPACE_TOOLBAR_LAYOUT_KEY = "workspace/toolbar_items"
     WORKSPACE_TOOLBAR_LAYOUT_VERSION = 3
     WORKSPACE_BAR_STATE_KEY = "workspace/bar_state"
+    WORKSPACE_BAR_POSITION_KEY = "workspace/bar_position"
     LEGACY_PRIMARY_TOOLBAR_ITEMS = (
         "open_folder",
         "refresh_folder",
@@ -1927,8 +1980,15 @@ class MainWindow(QMainWindow):
     AI_REFERENCE_BANK_KEY = "ai/reference_bank_path"
     BURST_GROUPS_KEY = "view/burst_groups"
     BURST_STACKS_KEY = "view/burst_stacks"
+    AUTO_ADVANCE_KEY = "view/auto_advance"
     VIEW_COLUMNS_KEY = "view/columns"
     COMPACT_CARDS_KEY = "view/compact_cards"
+    FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
+    SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
+    BROWSER_VIEW_MODE_KEY = "view/browser_mode"
+    DETAILS_PREVIEW_PANE_KEY = "view/details_preview_pane"
+    ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
+    TOOLBAR_STYLE_KEY = "view/toolbar_style"
     FOLDER_VIEW_STATE_KEY = "view/folder_state"
     DIALOG_GEOMETRY_KEY_PREFIX = "dialogs/geometry"
     AUTO_REVIEW_INTELLIGENCE_MAX_RECORDS = 2400
@@ -1941,11 +2001,12 @@ class MainWindow(QMainWindow):
     WORKSPACE_TOOLBAR_DEFAULTS = {
         "manual": ("open_folder", "undo", "review", "view", "selection_count", "search", "filters", "address"),
         "ai": (
+            "ai_status",
             "run_ai_culling",
             "apply_ai_culling",
+            "sort_ai_semantic_folders",
             "reset_ai_review_cache",
             "ai_results",
-            "ai_status",
             "review",
             "view",
             "selection_count",
@@ -1970,6 +2031,7 @@ class MainWindow(QMainWindow):
             "burst_groups",
             "burst_stacks",
             "compact_cards",
+            "show_hidden_folders",
             "selection_count",
             "open_folder",
             "refresh_folder",
@@ -1995,6 +2057,7 @@ class MainWindow(QMainWindow):
             "ai_status",
             "run_ai_culling",
             "apply_ai_culling",
+            "sort_ai_semantic_folders",
             "reset_ai_review_cache",
             "ai_results",
             "review",
@@ -2011,6 +2074,7 @@ class MainWindow(QMainWindow):
             "burst_groups",
             "burst_stacks",
             "compact_cards",
+            "show_hidden_folders",
             "selection_count",
             "next_ai_pick",
             "next_unreviewed_ai_pick",
@@ -2049,6 +2113,7 @@ class MainWindow(QMainWindow):
         "separator": "Separator",
         "run_ai_culling": "Run AI Review",
         "apply_ai_culling": "Apply AI Culling",
+        "sort_ai_semantic_folders": "Semantic Sort",
         "reset_ai_review_cache": "Reset AI Cache",
         "ai_results": "AI Results",
         "command_palette": "Command Palette",
@@ -2073,6 +2138,7 @@ class MainWindow(QMainWindow):
         "burst_groups": "Smart Groups",
         "burst_stacks": "Smart Stacks",
         "compact_cards": "Compact Cards",
+        "show_hidden_folders": "Show Hidden Folders",
         "selection_count": "Selected Count",
         "accept_selection": "Accept",
         "reject_selection": "Reject",
@@ -2093,6 +2159,59 @@ class MainWindow(QMainWindow):
         "review_ai_disagreements": "AI Disagreements",
         "taste_calibration": "Calibration",
     }
+    WORKSPACE_TOOLBAR_FLUENT_ICONS = {
+        "open_folder": ("F89A", None),
+        "refresh_folder": ("E8F7", None),
+        "undo": ("E7A7", None),
+        "run_ai_culling": ("F5B0", "E99A"),
+        "apply_ai_culling": ("F13E", "E99A"),
+        "sort_ai_semantic_folders": ("F207", "F1D5"),
+        "reset_ai_review_cache": ("EA99", "E99A"),
+        "ai_results": ("E8BC", "E99A"),
+        "command_palette": ("E756", None),
+        "columns": ("F246", None),
+        "sort": ("E8CB", None),
+        "quick_filter": ("E71C", None),
+        "advanced_filters": ("E9E9", None),
+        "clear_filters": ("E8E6", "E71C"),
+        "batch_rename": ("E8AC", None),
+        "batch_resize": ("E799", None),
+        "batch_convert": ("EE71", None),
+        "handoff_builder": ("E7B8", None),
+        "send_to_editor": ("E7AC", None),
+        "best_of_set": ("E735", None),
+        "keyboard_shortcuts": ("EDA7", None),
+        "review": ("E8FF", None),
+        "view": ("E890", None),
+        "search": ("E721", None),
+        "filters": ("E71C", None),
+        "compare": ("E89A", None),
+        "auto_advance": ("E72A", "EDB5"),
+        "burst_groups": ("E902", None),
+        "burst_stacks": ("E7AA", None),
+        "compact_cards": ("F232", None),
+        "show_hidden_folders": ("F78D", "E8B7"),
+        "selection_count": ("E762", None),
+        "accept_selection": ("E8FB", None),
+        "reject_selection": ("E711", None),
+        "keep_selection": ("E8E1", None),
+        "move_selection": ("E8DE", None),
+        "delete_selection": ("E74D", None),
+        "reveal_in_explorer": ("E8DA", None),
+        "open_in_photoshop": ("PS", None),
+        "address": ("E71B", None),
+        "ai_status": ("F13F", "E99A"),
+        "load_saved_ai": ("E896", "E99A"),
+        "load_ai_results": ("E8B5", "E99A"),
+        "clear_ai_results": ("E894", "E99A"),
+        "open_ai_report": ("E9F9", "E99A"),
+        "next_ai_pick": ("E893", "E99A"),
+        "next_unreviewed_ai_pick": ("F142", "E99A"),
+        "compare_ai_group": ("E89A", "E99A"),
+        "review_ai_disagreements": ("E8DF", "E7BA"),
+        "taste_calibration": ("F272", "F1D5"),
+        "more": ("E712", None),
+    }
 
     def __init__(self, launch_target: str | None = None) -> None:
         super().__init__()
@@ -2107,6 +2226,11 @@ class MainWindow(QMainWindow):
         self._workspace_bar_state = self._normalize_workspace_bar_state(
             self._settings.value(self.WORKSPACE_BAR_STATE_KEY, "expanded", str)
         )
+        self._workspace_bar_position = self._normalize_workspace_bar_position(
+            self._settings.value(self.WORKSPACE_BAR_POSITION_KEY, "top", str)
+        )
+        self._workspace_bar_drag_start: QPoint | None = None
+        self._workspace_bar_dragging = False
         self._toolbar_edit_mode = False
         self._toolbar_edit_target_mode = "manual"
         self._toolbar_edit_overlay: QFrame | None = None
@@ -2138,10 +2262,15 @@ class MainWindow(QMainWindow):
         self._bracket_detector = BracketDetector()
         self._photoshop_executable = detect_photoshop_executable()
         self.grid = ThumbnailGridView(self.thumbnail_manager)
+        self.details_view = PhotoDetailsView(
+            self.thumbnail_manager,
+            ai_text_provider=self._details_ai_text_for_record,
+        )
         self.preview = FullScreenPreview(self)
         self.preview.navigation_requested.connect(self._navigate_preview)
         self.preview.set_photoshop_available(bool(self._photoshop_executable))
         self._ai_model_installation = resolve_ai_model_installation()
+        self._semantic_model_installation = resolve_semantic_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
         if self._ai_runtime.model_installation is not None:
             self._ai_model_installation = self._ai_runtime.model_installation
@@ -2238,7 +2367,8 @@ class MainWindow(QMainWindow):
         self._archive_job_key = "archive:create"
         self._ai_runtime_job_key = "ai:runtime"
         self._ai_model_job_key = "ai:model"
-        self._pending_ai_model_download_after_runtime = False
+        self._pending_ai_dino_model_download_after_runtime = False
+        self._pending_ai_semantic_model_download_after_runtime = False
         self._current_folder = ""
         self._scope_kind = "folder"
         self._scope_id = ""
@@ -2246,9 +2376,11 @@ class MainWindow(QMainWindow):
         self._scan_in_progress = False
         self._all_records: list[ImageRecord] = []
         self._all_records_by_path: dict[str, ImageRecord] = {}
+        self._folder_records: list[ImageRecord] = []
         self._records: list[ImageRecord] = []
         self._record_index_by_path: dict[str, int] = {}
         self._edited_candidates_cache: dict[str, tuple[str, ...]] = {}
+        self._inspection_stats_cache: dict[tuple[str, int, int, int, int], InspectionStats] = {}
         self._visible_review_group_rows_by_id: dict[str, list[int]] = {}
         self._visible_ai_group_rows_by_id: dict[str, list[int]] = {}
         self._accepted_count = 0
@@ -2280,31 +2412,48 @@ class MainWindow(QMainWindow):
         self._records_view_chunk_post_load_enrichment = ""
         self._winner_ladder_state: dict[str, object] | None = None
         self._ui_mode = "manual"
+        self._browser_view_mode = self._normalize_browser_view_mode(self._settings.value(self.BROWSER_VIEW_MODE_KEY, "grid", str))
+        self._details_preview_pane_enabled = self._settings.value(self.DETAILS_PREVIEW_PANE_KEY, True, bool)
+        self._syncing_browser_selection = False
+        self._zen_mode_enabled = False
+        self._zen_restore_state: dict[str, object] = {}
+        self._zen_menu_pinned = self._settings.value(self.ZEN_MENU_PINNED_KEY, False, bool)
+        self._zen_menu_visible = False
+        self._zen_menu_reveal_timer = QTimer(self)
+        self._zen_menu_reveal_timer.setInterval(80)
+        self._zen_menu_reveal_timer.timeout.connect(self._refresh_zen_menu_visibility)
         self._ai_stage_index = 0
         self._ai_stage_total = 3
         self._ai_stage_message = "Ready to run AI review"
         self._ai_progress_current = 0
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
+        self._ai_status_visible = False
+        self._ai_status_terminal_notice_key = ""
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
         self._active_ai_report_cache_key = ""
+        self._active_ai_semantic_cache_key = ""
         self._sort_mode = SortMode.NAME
         self._filter_query = RecordFilterQuery()
         self._pending_search_text = ""
-        self._auto_advance_enabled = True
+        self._auto_advance_enabled = self._settings.value(self.AUTO_ADVANCE_KEY, True, bool)
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
         self._compare_enabled = False
         self._auto_bracket_enabled = self._settings.value(self.AUTO_BRACKET_KEY, True, bool)
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
         self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, False, bool)
+        self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
+        self._show_hidden_folders = self._settings.value(self.SHOW_HIDDEN_FOLDERS_KEY, False, bool)
+        self._toolbar_style = self._normalize_toolbar_style(self._settings.value(self.TOOLBAR_STYLE_KEY, "text", str))
         self._catalog_cache_enabled = self._settings.value(self.CATALOG_CACHE_ENABLED_KEY, True, bool)
         self._watch_current_folder_enabled = self._settings.value(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, True, bool)
         self._ai_auto_profile_enabled = self._settings.value(self.AI_AUTO_PROFILE_ENABLED_KEY, False, bool)
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(
             self._settings.value(self.AI_EMBED_BATCH_SIZE_KEY, self.AI_EMBED_BATCH_SIZE_AUTO, int)
         )
+        self._ai_semantic_sidecar_enabled = self._settings.value(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, True, bool)
         self._catalog_load_source = "idle"
         self._catalog_load_detail = "Ready"
         self._review_grouping_cache_source = "idle"
@@ -2316,6 +2465,7 @@ class MainWindow(QMainWindow):
         self._watched_folder_path = ""
         self._folder_watch_refresh_pending = False
         self.grid.set_compact_card_mode(self._compact_cards_enabled)
+        self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         self._refresh_ai_runtime_preferences()
         self._session_id = self._decision_store.ensure_session(
             self._settings.value(self.SESSION_KEY, DecisionStore.DEFAULT_SESSION, str)
@@ -2389,7 +2539,7 @@ class MainWindow(QMainWindow):
         self._folder_watch_refresh_timer.timeout.connect(self._run_watched_folder_refresh)
 
         self.folder_model = QFileSystemModel(self)
-        self.folder_model.setFilter(QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot | QDir.Filter.Drives)
+        self.folder_model.setFilter(self._folder_tree_filter())
         self.folder_model.setRootPath("")
 
         self.folder_tree = QTreeView()
@@ -2467,12 +2617,29 @@ class MainWindow(QMainWindow):
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
         self.actions = build_main_window_actions(self)
+        self.actions.zen_mode.setShortcut(QKeySequence())
         self._setup_command_palette_shortcuts()
+        self._zen_toggle_shortcut = QShortcut(QKeySequence("F11"), self)
+        self._zen_toggle_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._zen_toggle_shortcut.setAutoRepeat(False)
+        self._zen_toggle_shortcut.activated.connect(self._handle_zen_toggle_shortcut)
+        self._zen_escape_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self._zen_escape_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._zen_escape_shortcut.setAutoRepeat(False)
+        self._zen_escape_shortcut.setEnabled(False)
+        self._zen_escape_shortcut.activated.connect(self._handle_zen_escape_shortcut)
         self._register_shortcut_targets()
         self._apply_shortcut_overrides()
         self._build_record_filter_actions()
         self.inspector_panel = InspectorPanel()
         self.inspector_panel.setMinimumWidth(260)
+        self.inspector_panel.keep_requested.connect(lambda: self.actions.accept_selection.trigger())
+        self.inspector_panel.reject_requested.connect(lambda: self.actions.reject_selection.trigger())
+        self.inspector_panel.compare_requested.connect(lambda: self.actions.compare_ai_group.trigger())
+        self.inspector_panel.best_of_set_requested.connect(lambda: self.actions.best_of_set_auto_assembly.trigger())
+        self.inspector_panel.open_editor_requested.connect(lambda: self.actions.send_to_editor_pipeline.trigger())
+        self.inspector_panel.reveal_requested.connect(lambda: self.actions.reveal_in_explorer.trigger())
+        self.thumbnail_manager.thumbnail_ready.connect(self._handle_inspector_thumbnail_ready)
         self.workspace_preset_menu = QMenu(self)
         self.workflow_recipe_menu = QMenu("Run Recipe", self)
         self.collections_menu = QMenu("Collections", self)
@@ -2531,6 +2698,11 @@ class MainWindow(QMainWindow):
         ai_status_layout.addWidget(self._build_section_label("AI Status"))
         ai_status_layout.addWidget(self.ai_progress_bar)
         ai_status_layout.addWidget(self.ai_status_label)
+        self.ai_status_widget.hide()
+        self._ai_status_hide_timer = QTimer(self)
+        self._ai_status_hide_timer.setSingleShot(True)
+        self._ai_status_hide_timer.setInterval(8000)
+        self._ai_status_hide_timer.timeout.connect(lambda: self._set_ai_status_visible(False))
 
         self.ai_toolbar = QWidget()
         self.ai_toolbar.setObjectName("workspaceControls")
@@ -2593,6 +2765,12 @@ class MainWindow(QMainWindow):
         workspace_bar_layout = QHBoxLayout(self.workspace_bar)
         workspace_bar_layout.setContentsMargins(12, 8, 12, 8)
         workspace_bar_layout.setSpacing(10)
+        self.workspace_bar_drag_handle = QLabel("\u22EE\u22EE")
+        self.workspace_bar_drag_handle.setObjectName("workspaceBarDragHandle")
+        self.workspace_bar_drag_handle.setToolTip("Drag toolbar to snap it to the top or bottom")
+        self.workspace_bar_drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.workspace_bar_drag_handle.installEventFilter(self)
+        workspace_bar_layout.addWidget(self.workspace_bar_drag_handle, 0, Qt.AlignmentFlag.AlignVCenter)
         workspace_bar_layout.addWidget(self.mode_tabs, 0, Qt.AlignmentFlag.AlignVCenter)
         workspace_bar_layout.addWidget(self.toolbar_stack, 1)
         workspace_bar_layout.addWidget(self.workspace_bar_chrome, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -2611,13 +2789,16 @@ class MainWindow(QMainWindow):
         self.tool_mode_help.setWordWrap(True)
         self.tool_mode_selection = QLabel("0 selected")
         self.tool_mode_selection.setObjectName("secondaryText")
+        self.tool_mode_add_all_button = QPushButton("Add All")
         self.tool_mode_run_button = QPushButton("Run")
         self.tool_mode_cancel_button = QPushButton("Cancel")
+        self.tool_mode_add_all_button.clicked.connect(self._add_all_for_active_tool_mode)
         self.tool_mode_run_button.clicked.connect(self._run_active_tool_mode)
         self.tool_mode_cancel_button.clicked.connect(self._cancel_tool_mode)
         tool_mode_layout.addWidget(self.tool_mode_title)
         tool_mode_layout.addWidget(self.tool_mode_help, 1)
         tool_mode_layout.addWidget(self.tool_mode_selection)
+        tool_mode_layout.addWidget(self.tool_mode_add_all_button)
         tool_mode_layout.addWidget(self.tool_mode_run_button)
         tool_mode_layout.addWidget(self.tool_mode_cancel_button)
         self.tool_mode_bar.hide()
@@ -2625,11 +2806,18 @@ class MainWindow(QMainWindow):
         center_column = QWidget()
         center_column.setObjectName("workspaceCenterColumn")
         center_layout = QVBoxLayout(center_column)
+        self.workspace_center_layout = center_layout
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(8)
+        self.browser_stack = QStackedWidget()
+        self.browser_stack.addWidget(self.grid)
+        self.browser_stack.addWidget(self.details_view)
+        self.details_view.set_preview_visible(self._details_preview_pane_enabled)
+        self.browser_stack.setCurrentIndex(1 if self._browser_view_mode == "details" else 0)
         center_layout.addWidget(self.workspace_bar)
         center_layout.addWidget(self.tool_mode_bar)
-        center_layout.addWidget(self.grid, 1)
+        center_layout.addWidget(self.browser_stack, 1)
+        self._apply_workspace_bar_position()
 
         self.workspace_docks = build_workspace_docks(self, self.left_panel, self.inspector_panel, center_column)
         self._refresh_workspace_preset_menu()
@@ -2645,6 +2833,21 @@ class MainWindow(QMainWindow):
             collections_menu=self.collections_menu,
             catalog_menu=self.catalog_menu,
         )
+        self.zen_menu_pin_button = QToolButton()
+        self.zen_menu_pin_button.setObjectName("zenMenuPinButton")
+        self.zen_menu_pin_button.setIcon(build_pin_icon(QColor(178, 188, 202), QColor(245, 247, 252), pixel_size=20))
+        self.zen_menu_pin_button.setIconSize(QSize(20, 20))
+        self.zen_menu_pin_button.setText("")
+        self.zen_menu_pin_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.zen_menu_pin_button.setToolTip("Keep the menu visible in Zen Mode")
+        self.zen_menu_pin_button.setCheckable(True)
+        self.zen_menu_pin_button.setChecked(self._zen_menu_pinned)
+        self.zen_menu_pin_button.toggled.connect(self._handle_zen_menu_pin_toggled)
+        self.zen_menu_pin_button.hide()
+        self.menuBar().setCornerWidget(self.zen_menu_pin_button, Qt.Corner.TopRightCorner)
+        self._zen_menu_animation = QPropertyAnimation(self.menuBar(), b"maximumHeight", self)
+        self._zen_menu_animation.setDuration(145)
+        self._zen_menu_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self.summary_strip = QWidget()
         self.summary_strip.setObjectName("summaryStrip")
@@ -2718,6 +2921,18 @@ class MainWindow(QMainWindow):
         self.grid.context_menu_requested.connect(self._show_grid_context_menu)
         self.grid.selection_changed.connect(self._handle_grid_selection_changed)
         self.grid.verticalScrollBar().valueChanged.connect(self._schedule_metadata_scroll_prefetch)
+        self.details_view.current_changed.connect(self._handle_details_current_changed)
+        self.details_view.selection_changed.connect(self._handle_details_selection_changed)
+        self.details_view.preview_requested.connect(self._open_preview)
+        self.details_view.context_menu_requested.connect(self._show_grid_context_menu)
+        self.details_view.delete_requested.connect(self._delete_record)
+        self.details_view.keep_requested.connect(self._keep_record)
+        self.details_view.move_requested.connect(self._move_record_prompt)
+        self.details_view.rate_requested.connect(self._rate_record)
+        self.details_view.tag_requested.connect(self._tag_record)
+        self.details_view.winner_requested.connect(self._toggle_winner)
+        self.details_view.reject_requested.connect(self._toggle_reject)
+        self.details_view.preview_toggle.toggled.connect(self._handle_details_preview_toggled)
         self.preview.compare_mode_changed.connect(self._handle_preview_compare_mode_changed)
         self.preview.auto_bracket_mode_changed.connect(self._handle_preview_auto_bracket_mode_changed)
         self.preview.compare_count_changed.connect(self._handle_preview_compare_count_changed)
@@ -2797,6 +3012,7 @@ class MainWindow(QMainWindow):
 
         menu.addSeparator()
         menu.addAction(self.actions.compact_cards)
+        menu.addAction(self.actions.show_hidden_folders)
 
         return menu
 
@@ -2853,6 +3069,75 @@ class MainWindow(QMainWindow):
         button.setMenu(self.filter_toolbar_menu)
         return button
 
+    @staticmethod
+    def _normalize_toolbar_style(value: object) -> str:
+        normalized = str(value or "text").strip().casefold().replace("-", "_").replace(" ", "_")
+        return normalized if normalized in {"text", "icons", "large_icons"} else "text"
+
+    def _workspace_toolbar_icon(self, item_id: str) -> QIcon:
+        glyphs = self.WORKSPACE_TOOLBAR_FLUENT_ICONS.get(item_id)
+        if glyphs is None:
+            return QIcon()
+        primary, secondary = glyphs
+        return self._fluent_toolbar_icon(primary, secondary)
+
+    def _fluent_toolbar_icon(self, primary: str, secondary: str | None = None) -> QIcon:
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        color = QColor(218, 226, 238)
+        accent = QColor(105, 147, 255)
+
+        def draw_glyph(glyph: str, *, x: int, y: int, size: int, selected_color: QColor) -> None:
+            font_family = "Segoe MDL2 Assets" if len(glyph) > 2 else "Segoe UI"
+            font = QFont(font_family, size, QFont.Weight.DemiBold if len(glyph) <= 2 else QFont.Weight.Normal)
+            font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+            painter.setFont(font)
+            painter.setPen(selected_color)
+            if len(glyph) > 2:
+                text = chr(int(glyph, 16))
+            else:
+                text = glyph
+            painter.drawText(QRect(x, y, 64 - x, 64 - y), Qt.AlignmentFlag.AlignCenter, text)
+
+        draw_glyph(primary, x=0, y=0, size=31 if len(primary) > 2 else 24, selected_color=color)
+        if secondary:
+            draw_glyph(secondary, x=30, y=30, size=19, selected_color=accent)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _configure_workspace_toolbar_button(self, button: QToolButton, *, item_id: str, text: str) -> None:
+        style = self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text"))
+        icon = self._workspace_toolbar_icon(item_id)
+        action = button.defaultAction()
+        button.setToolTip(button.toolTip() or text)
+        button.setCursor(Qt.CursorShape.ArrowCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        if style == "text":
+            button.setObjectName("workspacePresetsButton")
+            button.setText(text)
+            button.setIcon(QIcon())
+            if action is not None:
+                action.setIcon(QIcon())
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.setAutoRaise(False)
+            button.setMinimumSize(0, 0)
+            button.setMaximumSize(16777215, 16777215)
+            return
+        icon_size = 32 if style == "large_icons" else 22
+        button.setObjectName("workspaceIconButton")
+        if action is not None:
+            action.setIcon(icon)
+        button.setIcon(icon)
+        button.setText("")
+        button.setIconSize(QSize(icon_size, icon_size))
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setAutoRaise(True)
+        side = 42 if style == "large_icons" else 32
+        button.setFixedSize(side, side)
+
     def _build_workspace_bar_button(self, text: str, tooltip: str, *, object_name: str) -> QToolButton:
         button = QToolButton()
         button.setObjectName(object_name)
@@ -2868,12 +3153,11 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.aboutToShow.connect(lambda target=mode: self._populate_workspace_toolbar_overflow_menu(target))
         button = QToolButton()
-        button.setObjectName("workspacePresetsButton")
         button.setText("More")
         button.setToolTip("Hidden toolbar items")
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         button.setMenu(menu)
+        self._configure_workspace_toolbar_button(button, item_id="more", text="More")
         button.hide()
         self._configure_toolbar_context_target(button, mode)
         self._workspace_toolbar_overflow_menus[mode] = menu
@@ -2882,6 +3166,7 @@ class MainWindow(QMainWindow):
     def _build_ai_results_menu(self) -> QMenu:
         menu = QMenu("AI Results", self)
         menu.addAction(self.actions.apply_ai_culling)
+        menu.addAction(self.actions.sort_ai_semantic_folders)
         menu.addSeparator()
         menu.addAction(self.actions.load_saved_ai)
         menu.addAction(self.actions.load_ai_results)
@@ -2911,14 +3196,31 @@ class MainWindow(QMainWindow):
             menu.addAction(self.actions.filter_actions[mode])
         return menu
 
-    def _build_workspace_action_button(self, action: QAction, text: str) -> QToolButton:
+    def _build_workspace_action_button(self, action: QAction, text: str, *, item_id: str) -> QToolButton:
         button = QToolButton()
-        button.setObjectName("workspacePresetsButton")
-        button.setDefaultAction(action)
-        button.setText(text)
         button.setToolTip(action.toolTip() or text)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        if self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text")) == "text":
+            button.setDefaultAction(action)
+        else:
+            button.setProperty("workspaceAction", action)
+            button.clicked.connect(lambda _checked=False, source=action: source.trigger())
+            action.changed.connect(lambda target=button, source=action, target_item=item_id, label=text: self._sync_workspace_action_button(target, source, target_item, label))
+        self._configure_workspace_toolbar_button(button, item_id=item_id, text=text)
+        if button.defaultAction() is None:
+            self._sync_workspace_action_button(button, action, item_id, text)
         return button
+
+    def _sync_workspace_action_button(self, button: QToolButton, action: QAction, item_id: str, text: str) -> None:
+        try:
+            if self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text")) == "text":
+                return
+            button.setEnabled(action.isEnabled())
+            button.setCheckable(action.isCheckable())
+            button.setChecked(action.isChecked())
+            button.setToolTip(action.toolTip() or text)
+            self._configure_workspace_toolbar_button(button, item_id=item_id, text=text)
+        except RuntimeError:
+            return
 
     def _build_workspace_toolbar_widgets(self, mode: str) -> dict[str, QWidget]:
         if mode == "ai":
@@ -2940,6 +3242,14 @@ class MainWindow(QMainWindow):
                 "address": self.manual_path_combo,
                 "selection_count": self.manual_selection_count_label,
             }
+        for item_id in ("review", "view", "filters"):
+            widget = widgets.get(item_id)
+            if isinstance(widget, QToolButton):
+                self._configure_workspace_toolbar_button(
+                    widget,
+                    item_id=item_id,
+                    text=self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id),
+                )
 
         menu_factories = {
             "columns": ("Columns", self._build_columns_toolbar_menu),
@@ -2948,7 +3258,9 @@ class MainWindow(QMainWindow):
             "ai_results": ("AI Results", self._build_ai_results_menu),
         }
         for item_id, (text, factory) in menu_factories.items():
-            widgets[item_id] = self._build_popup_button(text, factory())
+            button = self._build_popup_button(text, factory())
+            self._configure_workspace_toolbar_button(button, item_id=item_id, text=text)
+            widgets[item_id] = button
 
         action_items = {
             "open_folder": (self.actions.open_folder, "Open"),
@@ -2956,6 +3268,7 @@ class MainWindow(QMainWindow):
             "undo": (self.actions.undo, "Undo"),
             "run_ai_culling": (self.actions.run_ai_culling, "Run Review"),
             "apply_ai_culling": (self.actions.apply_ai_culling, "Apply Cull"),
+            "sort_ai_semantic_folders": (self.actions.sort_ai_semantic_folders, "Semantic Sort"),
             "reset_ai_review_cache": (self.actions.reset_ai_review_cache, "Reset AI"),
             "command_palette": (self.actions.open_command_palette, "Command"),
             "advanced_filters": (self.actions.advanced_filters, "Adv. Filters"),
@@ -2972,6 +3285,7 @@ class MainWindow(QMainWindow):
             "burst_groups": (self.actions.burst_groups, "Groups"),
             "burst_stacks": (self.actions.burst_stacks, "Stacks"),
             "compact_cards": (self.actions.compact_cards, "Compact"),
+            "show_hidden_folders": (self.actions.show_hidden_folders, "Hidden"),
             "accept_selection": (self.actions.accept_selection, "Accept"),
             "reject_selection": (self.actions.reject_selection, "Reject"),
             "keep_selection": (self.actions.keep_selection, "Keep"),
@@ -2990,7 +3304,7 @@ class MainWindow(QMainWindow):
             "taste_calibration": (self.actions.taste_calibration_wizard, "Calibrate"),
         }
         for item_id, (action, text) in action_items.items():
-            widgets[item_id] = self._build_workspace_action_button(action, text)
+            widgets[item_id] = self._build_workspace_action_button(action, text, item_id=item_id)
         return widgets
 
     def _load_workspace_toolbar_layouts(self) -> dict[str, list[str]]:
@@ -3024,6 +3338,8 @@ class MainWindow(QMainWindow):
 
     def _ensure_workspace_toolbar_migrations(self, layouts: dict[str, list[str]]) -> None:
         ai_items = list(layouts.get("ai", ()))
+        ai_items = [item for item in ai_items if item != "ai_status"]
+        ai_items.insert(0, "ai_status")
         if "apply_ai_culling" not in ai_items:
             if "run_ai_culling" in ai_items:
                 insert_at = ai_items.index("run_ai_culling") + 1
@@ -3039,6 +3355,15 @@ class MainWindow(QMainWindow):
                 ai_items.insert(insert_at, "reset_ai_review_cache")
             else:
                 ai_items.insert(0, "reset_ai_review_cache")
+        if "sort_ai_semantic_folders" not in ai_items:
+            if "apply_ai_culling" in ai_items:
+                insert_at = ai_items.index("apply_ai_culling") + 1
+                ai_items.insert(insert_at, "sort_ai_semantic_folders")
+            elif "run_ai_culling" in ai_items:
+                insert_at = ai_items.index("run_ai_culling") + 1
+                ai_items.insert(insert_at, "sort_ai_semantic_folders")
+            else:
+                ai_items.insert(0, "sort_ai_semantic_folders")
         layouts["ai"] = self._normalize_workspace_toolbar_items("ai", ai_items)
 
     def _normalize_workspace_toolbar_items(self, mode: str, raw_items: list[object] | tuple[object, ...]) -> list[str]:
@@ -3150,7 +3475,7 @@ class MainWindow(QMainWindow):
         self._schedule_workspace_toolbar_overflow_update(mode)
 
     def _workspace_toolbar_non_overflow_items(self) -> set[str]:
-        return {"search", "address"}
+        return {"ai_status", "search", "address"}
 
     def _workspace_toolbar_minimum_width(self, widget: QWidget, item_id: str) -> int:
         if item_id == "search":
@@ -3168,7 +3493,11 @@ class MainWindow(QMainWindow):
             layout = self.manual_toolbar_layout
             mode = "manual"
         margins = layout.contentsMargins()
-        item_ids = [item_id for item_id in self._workspace_toolbar_layouts.get(mode, ()) if item_id not in hidden_items]
+        item_ids = [
+            item_id
+            for item_id in self._workspace_toolbar_layouts.get(mode, ())
+            if item_id not in hidden_items and not (item_id == "ai_status" and not getattr(self, "_ai_status_visible", True))
+        ]
         width = margins.left() + margins.right()
         spacing = layout.spacing()
         visible_count = len(item_ids)
@@ -3230,7 +3559,10 @@ class MainWindow(QMainWindow):
             widget = widgets.get(item_id)
             if widget is None:
                 continue
-            widget.setVisible(item_id not in hidden_items)
+            visible = item_id not in hidden_items
+            if item_id == "ai_status" and not getattr(self, "_ai_status_visible", True):
+                visible = False
+            widget.setVisible(visible)
 
         overflow_button = self._workspace_toolbar_overflow_buttons.get(normalized)
         if overflow_button is not None:
@@ -3274,6 +3606,9 @@ class MainWindow(QMainWindow):
                 continue
             if isinstance(widget, QToolButton):
                 action = widget.defaultAction()
+                if action is None:
+                    candidate = widget.property("workspaceAction")
+                    action = candidate if isinstance(candidate, QAction) else None
                 if action is not None:
                     menu.addAction(action)
                     continue
@@ -3294,6 +3629,40 @@ class MainWindow(QMainWindow):
         if isinstance(value, str) and value in {"expanded", "minimized", "hidden"}:
             return value
         return "expanded"
+
+    @staticmethod
+    def _normalize_workspace_bar_position(value: object) -> str:
+        if isinstance(value, str) and value in {"top", "bottom"}:
+            return value
+        return "top"
+
+    def _set_workspace_bar_position(self, position: str) -> None:
+        normalized = self._normalize_workspace_bar_position(position)
+        if self._workspace_bar_position == normalized:
+            return
+        self._workspace_bar_position = normalized
+        self._settings.setValue(self.WORKSPACE_BAR_POSITION_KEY, normalized)
+        self._apply_workspace_bar_position()
+        self.statusBar().showMessage(f"Workspace toolbar moved to {normalized}")
+
+    def _apply_workspace_bar_position(self) -> None:
+        layout = getattr(self, "workspace_center_layout", None)
+        workspace_bar = getattr(self, "workspace_bar", None)
+        tool_mode_bar = getattr(self, "tool_mode_bar", None)
+        browser_stack = getattr(self, "browser_stack", None)
+        if layout is None or workspace_bar is None or tool_mode_bar is None or browser_stack is None:
+            return
+        layout.removeWidget(workspace_bar)
+        layout.removeWidget(tool_mode_bar)
+        layout.removeWidget(browser_stack)
+        if self._workspace_bar_position == "bottom":
+            layout.addWidget(tool_mode_bar)
+            layout.addWidget(browser_stack, 1)
+            layout.addWidget(workspace_bar)
+        else:
+            layout.addWidget(workspace_bar)
+            layout.addWidget(tool_mode_bar)
+            layout.addWidget(browser_stack, 1)
 
     def _handle_workspace_toolbar_visibility_action(self, checked: bool) -> None:
         self._set_workspace_bar_state("expanded" if checked else "hidden")
@@ -3676,6 +4045,10 @@ class MainWindow(QMainWindow):
         register_action("review.keep_selection", self.actions.keep_selection, label="Move Selection To _keep", section="Review")
         register_action("review.move_selection", self.actions.move_selection, label="Move Selection", section="Review")
         register_action("review.delete_selection", self.actions.delete_selection, label="Delete Selection", section="Review")
+        register_action("view.grid_view", self.actions.grid_view, label="Grid View", section="View")
+        register_action("view.details_view", self.actions.details_view, label="Details View", section="View")
+        register_action("view.details_preview_pane", self.actions.details_preview_pane, label="Details Preview Pane", section="View")
+        register_action("view.zen_mode", self.actions.zen_mode, label="Zen Mode", section="View")
         register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
         register_action("ai.compare_group", self.actions.compare_ai_group, label="Compare Current AI Group", section="AI")
         register_action("workflow.handoff_builder", self.actions.handoff_builder, label="Deliver / Handoff Builder", section="Workflow")
@@ -4021,8 +4394,13 @@ class MainWindow(QMainWindow):
             add_action_command("review.photoshop", self.actions.open_in_photoshop, section="Review", keywords=("edit in photoshop",))
             add_action_command("review.compare_mode", self.actions.compare_mode, section="Review", subtitle=self._toggle_state_text(self._compare_enabled), keywords=("toggle compare",))
             add_action_command("review.auto_advance", self.actions.auto_advance, section="Review", subtitle=self._toggle_state_text(self._auto_advance_enabled), keywords=("toggle auto advance",))
+            add_action_command("view.grid_view", self.actions.grid_view, section="View", subtitle="Current view" if self._browser_view_mode == "grid" else "", keywords=("grid", "thumbnail grid", "tiles"))
+            add_action_command("view.details_view", self.actions.details_view, section="View", subtitle="Current view" if self._browser_view_mode == "details" else "", keywords=("details", "list view", "file explorer"))
+            add_action_command("view.details_preview_pane", self.actions.details_preview_pane, section="View", subtitle=self._toggle_state_text(self._details_preview_pane_enabled), keywords=("preview pane", "details preview"))
+            add_action_command("view.zen_mode", self.actions.zen_mode, section="View", subtitle=self._toggle_state_text(self._zen_mode_enabled), keywords=("fullscreen", "focus mode", "hide panels"))
             add_action_command("view.burst_groups", self.actions.burst_groups, section="View", subtitle=self._toggle_state_text(self._burst_groups_enabled), keywords=("burst grouping", "burst shots", "toggle bursts", "capture sequence"))
             add_action_command("view.burst_stacks", self.actions.burst_stacks, section="View", subtitle=self._toggle_state_text(self._burst_stacks_enabled), keywords=("smart stacks", "cycle group", "stack shots", "duplicate stack"))
+            add_action_command("view.show_hidden_folders", self.actions.show_hidden_folders, section="View", subtitle=self._toggle_state_text(self._show_hidden_folders), keywords=("hidden folders", "show hidden", "dot folders", "system folders"))
             add_action_command("search.advanced_filters", self.actions.advanced_filters, section="Search", keywords=("metadata filters", "search filters"))
             add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
             add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
@@ -4031,6 +4409,7 @@ class MainWindow(QMainWindow):
             add_action_command("ai.download_model", self.actions.download_ai_model, section="AI", keywords=("download ai model", "install ai model", "enable ai"))
             add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run ai review", "run model"))
             add_action_command("ai.apply_culling", self.actions.apply_ai_culling, section="AI", keywords=("apply ai culling", "auto cull", "move ai picks", "recycle ai rejects"))
+            add_action_command("ai.sort_semantic_folders", self.actions.sort_ai_semantic_folders, section="AI", keywords=("semantic folders", "classify folders", "sort by ai class", "sort by semantic label"))
             add_action_command("ai.reset_cache", self.actions.reset_ai_review_cache, section="AI", keywords=("reset ai cache", "rerun ai from scratch", "clear embeddings", "delete ai artifacts"))
             add_action_command("ai.load_saved", self.actions.load_saved_ai, section="AI", keywords=("load cached ai",))
             add_action_command("ai.load_results", self.actions.load_ai_results, section="AI", keywords=("import ai results",))
@@ -4589,7 +4968,8 @@ class MainWindow(QMainWindow):
     def _update_dynamic_action_icons(self) -> None:
         if self.actions is None or self._theme is None:
             return
-        self.actions.undo.setIcon(QIcon())
+        if self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text")) == "text":
+            self.actions.undo.setIcon(QIcon())
 
     def _prepare_child_sync_state_path(self) -> Path:
         base_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
@@ -4724,6 +5104,9 @@ class MainWindow(QMainWindow):
             return runtime_installation
         return self._ai_model_installation
 
+    def _managed_semantic_model_installation(self) -> AIModelInstallation:
+        return self._semantic_model_installation
+
     def _managed_ai_runtime_status(self) -> AIRuntimeInstallationStatus:
         return load_ai_runtime_installation_status()
 
@@ -4762,9 +5145,17 @@ class MainWindow(QMainWindow):
         return f"Auto ({self._configured_ai_embed_batch_size()})"
 
     def _refresh_ai_runtime_preferences(self) -> None:
+        semantic_model_name = self._ai_runtime.semantic_model_name
+        semantic_installation = self._managed_semantic_model_installation()
+        if (
+            not (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
+            and semantic_installation.is_installed
+        ):
+            semantic_model_name = semantic_installation.model_name
         self._ai_runtime = replace(
             self._ai_runtime,
             batch_size=self._configured_ai_embed_batch_size(),
+            semantic_model_name=semantic_model_name,
         )
 
     def _ai_runtime_available(self) -> bool:
@@ -4775,13 +5166,26 @@ class MainWindow(QMainWindow):
         installed = ", ".join(ai_runtime_variant_label(variant) for variant in status.installed_variants)
         if not installed:
             installed = "None yet"
+        gpu_download = estimate_ai_runtime_download_size_mb(AI_RUNTIME_GPU_VARIANT)
+        gpu_installed = estimate_ai_runtime_installed_size_mb(AI_RUNTIME_GPU_VARIANT)
+        cpu_download = estimate_ai_runtime_download_size_mb(AI_RUNTIME_CPU_VARIANT)
+        cpu_installed = estimate_ai_runtime_installed_size_mb(AI_RUNTIME_CPU_VARIANT)
+        actual_size = directory_size_bytes(status.directories.root)
+        actual_line = ""
+        if actual_size > 0:
+            actual_line = f"\nCurrent installed runtime cache: {_format_bytes(actual_size)}"
         return (
             "Image Triage can install PyTorch and the larger AI support packages on demand.\n\n"
             "This keeps the MSI much smaller and moves heavy dependencies into your local AI cache. "
             "The runtime install includes PyTorch, torchvision, transformers, timm, scikit-learn, "
             "and OpenCV.\n\n"
+            f"Estimated GPU runtime download: about {gpu_download / 1024:.1f} GB "
+            f"({gpu_installed / 1024:.1f} GB installed)\n"
+            f"Estimated CPU runtime download: about {cpu_download / 1024:.1f} GB "
+            f"({cpu_installed / 1024:.1f} GB installed)\n"
             f"Current profiles: {installed}\n"
             f"Install location:\n{status.directories.root}"
+            f"{actual_line}"
         )
 
     def _ai_model_available(self) -> bool:
@@ -4801,8 +5205,21 @@ class MainWindow(QMainWindow):
             return True
         return True
 
+    def _semantic_model_available(self) -> bool:
+        explicit_model_name = (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
+        if explicit_model_name:
+            path = Path(explicit_model_name).expanduser()
+            if path.is_absolute() or "/" in explicit_model_name or "\\" in explicit_model_name or explicit_model_name.startswith("."):
+                return path.exists()
+            return True
+        return self._managed_semantic_model_installation().is_installed
+
     def _ai_model_explanation_text(self) -> str:
         installation = self._managed_ai_model_installation()
+        installed_size = directory_size_bytes(installation.install_dir)
+        installed_line = ""
+        if installed_size > 0:
+            installed_line = f"\nCurrent model cache: {_format_bytes(installed_size)}"
         return (
             "Image Triage uses a local DINOv2 model for AI review, training-data preparation, "
             "and reference-bank extraction.\n\n"
@@ -4810,6 +5227,23 @@ class MainWindow(QMainWindow):
             "still open any AI results that were already generated.\n\n"
             f"Download size: about {DEFAULT_AI_MODEL_SIZE_MB} MB\n"
             f"Install location:\n{installation.install_dir}"
+            f"{installed_line}"
+        )
+
+    def _semantic_model_explanation_text(self) -> str:
+        installation = self._managed_semantic_model_installation()
+        installed_size = directory_size_bytes(installation.install_dir)
+        installed_line = ""
+        if installed_size > 0:
+            installed_line = f"\nCurrent semantic model cache: {_format_bytes(installed_size)}"
+        return (
+            "The semantic sidecar uses a local CLIP model to classify images into descriptive "
+            "labels alongside DINOv2 ranking.\n\n"
+            "When the semantic sidecar is enabled, this model is required before running a new "
+            "AI review so the classifier does not start an untracked background download.\n\n"
+            f"Download size: about {DEFAULT_SEMANTIC_MODEL_SIZE_MB} MB\n"
+            f"Install location:\n{installation.install_dir}"
+            f"{installed_line}"
         )
 
     def _show_ai_setup_dialog(
@@ -4821,7 +5255,8 @@ class MainWindow(QMainWindow):
         allow_runtime: bool,
         allow_model: bool,
         default_install_runtime: bool,
-        default_download_model: bool,
+        default_download_dino_model: bool,
+        default_download_semantic_model: bool,
     ) -> AISetupSelection | None:
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
@@ -4859,17 +5294,31 @@ class MainWindow(QMainWindow):
             runtime_checkbox.toggled.connect(runtime_details.setEnabled)
             layout.addWidget(runtime_details)
 
-        model_checkbox: QCheckBox | None = None
+        dino_model_checkbox: QCheckBox | None = None
+        semantic_model_checkbox: QCheckBox | None = None
         if allow_model:
-            model_checkbox = QCheckBox("Download the DINOv2 AI model now", dialog)
-            model_checkbox.setChecked(default_download_model)
-            layout.addWidget(model_checkbox)
+            dino_status = "Installed" if self._ai_model_available() else "Missing"
+            semantic_status = "Installed" if self._semantic_model_available() else "Missing"
 
-            model_details = QLabel(self._ai_model_explanation_text(), dialog)
-            model_details.setWordWrap(True)
-            model_details.setEnabled(default_download_model)
-            model_checkbox.toggled.connect(model_details.setEnabled)
-            layout.addWidget(model_details)
+            dino_model_checkbox = QCheckBox(f"DINOv2 ranking model ({dino_status})", dialog)
+            dino_model_checkbox.setChecked(default_download_dino_model)
+            layout.addWidget(dino_model_checkbox)
+
+            dino_model_details = QLabel(self._ai_model_explanation_text(), dialog)
+            dino_model_details.setWordWrap(True)
+            dino_model_details.setEnabled(default_download_dino_model)
+            dino_model_checkbox.toggled.connect(dino_model_details.setEnabled)
+            layout.addWidget(dino_model_details)
+
+            semantic_model_checkbox = QCheckBox(f"Semantic CLIP classification model ({semantic_status})", dialog)
+            semantic_model_checkbox.setChecked(default_download_semantic_model)
+            layout.addWidget(semantic_model_checkbox)
+
+            semantic_model_details = QLabel(self._semantic_model_explanation_text(), dialog)
+            semantic_model_details.setWordWrap(True)
+            semantic_model_details.setEnabled(default_download_semantic_model)
+            semantic_model_checkbox.toggled.connect(semantic_model_details.setEnabled)
+            layout.addWidget(semantic_model_details)
 
         button_box = QDialogButtonBox(dialog)
         button_box.addButton(
@@ -4895,7 +5344,8 @@ class MainWindow(QMainWindow):
         return AISetupSelection(
             install_runtime=bool(runtime_checkbox and runtime_checkbox.isChecked()),
             runtime_variant=runtime_variant,
-            download_model=bool(model_checkbox and model_checkbox.isChecked()),
+            download_dino_model=bool(dino_model_checkbox and dino_model_checkbox.isChecked()),
+            download_semantic_model=bool(semantic_model_checkbox and semantic_model_checkbox.isChecked()),
         )
 
     def _ensure_ai_runtime_available(self, *, title: str) -> bool:
@@ -4921,23 +5371,26 @@ class MainWindow(QMainWindow):
         if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
             self.statusBar().showMessage("An AI component install is already running.")
             return False
-        prompt = QMessageBox.question(
-            self,
-            title,
-            self._ai_model_explanation_text() + "\n\nDownload the AI model now?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if prompt == QMessageBox.StandardButton.Yes:
-            self._prompt_for_ai_model_install(automatic=False)
+        self._prompt_for_ai_model_install(automatic=False)
+        return False
+
+    def _ensure_semantic_model_available(self, *, title: str) -> bool:
+        if not self._ai_semantic_sidecar_enabled or self._semantic_model_available():
+            return True
+        if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
+            self.statusBar().showMessage("An AI component install is already running.")
+            return False
+        self.statusBar().showMessage("Semantic AI model is required before running AI review.")
+        self._prompt_for_ai_model_install(automatic=False)
         return False
 
     def _maybe_prompt_for_ai_setup(self) -> None:
         if not getattr(sys, "frozen", False):
             return
         runtime_missing = not self._ai_runtime_available()
-        model_missing = self._ai_runtime.model_installation is not None and not self._ai_model_available()
-        if not runtime_missing and not model_missing:
+        dino_model_missing = self._ai_runtime.model_installation is not None and not self._ai_model_available()
+        semantic_model_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
+        if not runtime_missing and not dino_model_missing and not semantic_model_missing:
             return
         if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
             return
@@ -4952,9 +5405,10 @@ class MainWindow(QMainWindow):
                 "Choose which AI components to install now."
             ),
             allow_runtime=runtime_missing,
-            allow_model=model_missing,
+            allow_model=dino_model_missing or semantic_model_missing,
             default_install_runtime=runtime_missing,
-            default_download_model=model_missing,
+            default_download_dino_model=dino_model_missing,
+            default_download_semantic_model=semantic_model_missing,
         )
         if selection is None:
             self.statusBar().showMessage("AI setup skipped for now.")
@@ -4963,57 +5417,41 @@ class MainWindow(QMainWindow):
             self._start_ai_runtime_install(
                 selection.runtime_variant,
                 force=False,
-                download_model_after=selection.download_model and model_missing,
+                download_dino_model_after=selection.download_dino_model and dino_model_missing,
+                download_semantic_model_after=selection.download_semantic_model and semantic_model_missing,
             )
             return
-        if selection.download_model and model_missing:
-            self._start_ai_model_download(force=False)
+        if selection.download_model:
+            self._start_ai_model_download(
+                download_dino=selection.download_dino_model and dino_model_missing,
+                download_semantic=selection.download_semantic_model and semantic_model_missing,
+                force=False,
+            )
             return
         self.statusBar().showMessage("AI setup skipped for now.")
 
     def _prompt_for_ai_model_install(self, *, automatic: bool) -> None:
-        if automatic:
-            selection = self._show_ai_setup_dialog(
-                automatic=True,
-                title="Install AI Model",
-                prompt_text="Install the DINOv2 AI model now?",
-                allow_runtime=False,
-                allow_model=True,
-                default_install_runtime=False,
-                default_download_model=True,
-            )
-            if selection is None or not selection.download_model:
-                self.statusBar().showMessage("AI model download skipped for now.")
-                return
-            self._start_ai_model_download(force=self._managed_ai_model_installation().is_installed)
-            return
-
-        installation = self._managed_ai_model_installation()
-        dialog = QMessageBox(self)
-        dialog.setIcon(QMessageBox.Icon.Information)
-        dialog.setWindowTitle("Install AI Model")
-        dialog.setText("Install the DINOv2 AI model now?")
-        dialog.setInformativeText(self._ai_model_explanation_text())
-        checkbox = QCheckBox("Download the AI model now (recommended)", dialog)
-        checkbox.setChecked(True)
-        dialog.setCheckBox(checkbox)
-        continue_button = dialog.addButton(
-            "Continue" if automatic else "Start Download",
-            QMessageBox.ButtonRole.AcceptRole,
+        dino_missing = not self._ai_model_available()
+        semantic_missing = not self._semantic_model_available()
+        selection = self._show_ai_setup_dialog(
+            automatic=automatic,
+            title="Install AI Model",
+            prompt_text="Choose which AI models to download.",
+            allow_runtime=False,
+            allow_model=True,
+            default_install_runtime=False,
+            default_download_dino_model=dino_missing,
+            default_download_semantic_model=semantic_missing,
         )
-        dialog.addButton(
-            "Later" if automatic else "Cancel",
-            QMessageBox.ButtonRole.RejectRole,
-        )
-        dialog.exec()
-        if dialog.clickedButton() != continue_button:
+        if selection is None or not selection.download_model:
             self.statusBar().showMessage("AI model download skipped for now.")
             return
-        if not checkbox.isChecked():
-            self.statusBar().showMessage("AI model download skipped for now.")
-            return
-        force_download = installation.is_installed
-        self._start_ai_model_download(force=force_download)
+        self._start_ai_model_download(
+            download_dino=selection.download_dino_model,
+            download_semantic=selection.download_semantic_model,
+            force_dino=self._managed_ai_model_installation().is_installed,
+            force_semantic=self._managed_semantic_model_installation().is_installed,
+        )
 
     def _install_ai_runtime(self) -> None:
         if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
@@ -5026,7 +5464,8 @@ class MainWindow(QMainWindow):
             allow_runtime=True,
             allow_model=False,
             default_install_runtime=True,
-            default_download_model=False,
+            default_download_dino_model=False,
+            default_download_semantic_model=False,
         )
         if selection is None or not selection.install_runtime:
             self.statusBar().showMessage("AI runtime install skipped for now.")
@@ -5034,7 +5473,8 @@ class MainWindow(QMainWindow):
         self._start_ai_runtime_install(
             selection.runtime_variant,
             force=self._ai_runtime_available(),
-            download_model_after=False,
+            download_dino_model_after=False,
+            download_semantic_model_after=False,
         )
 
     def _start_ai_runtime_install(
@@ -5042,7 +5482,8 @@ class MainWindow(QMainWindow):
         variant_choice: str,
         *,
         force: bool = False,
-        download_model_after: bool = False,
+        download_dino_model_after: bool = False,
+        download_semantic_model_after: bool = False,
     ) -> None:
         install_root = self._managed_ai_runtime_status().directories.root
         workspace_root = Path(__file__).resolve().parents[1]
@@ -5073,7 +5514,8 @@ class MainWindow(QMainWindow):
         task.signals.finished.connect(self._handle_ai_runtime_install_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_ai_runtime_install_failed, Qt.ConnectionType.QueuedConnection)
         self._active_ai_runtime_task = task
-        self._pending_ai_model_download_after_runtime = bool(download_model_after)
+        self._pending_ai_dino_model_download_after_runtime = bool(download_dino_model_after)
+        self._pending_ai_semantic_model_download_after_runtime = bool(download_semantic_model_after)
         controller = self._show_job_progress_dialog(
             key=self._ai_runtime_job_key,
             total_steps=1,
@@ -5123,9 +5565,16 @@ class MainWindow(QMainWindow):
                 fixed_width=760,
             ),
         )
-        controller.setRange(0, 0)
-        controller.setValue(0)
-        controller.setLabelText(message)
+        parsed = _parse_pip_raw_progress(message)
+        if parsed is not None:
+            current, total = parsed
+            controller.setRange(0, total)
+            controller.setValue(min(current, total))
+            controller.setLabelText(f"Downloading AI runtime packages ({_format_bytes(current)} / {_format_bytes(total)})")
+        else:
+            controller.setRange(0, 0)
+            controller.setValue(0)
+            controller.setLabelText(message)
 
     def _handle_ai_runtime_install_finished(self, install_root: str, variant_choice: str) -> None:
         self._active_ai_runtime_task = None
@@ -5134,11 +5583,21 @@ class MainWindow(QMainWindow):
         self._update_action_states()
         self._update_ai_toolbar_state()
         self.statusBar().showMessage("AI runtime installed.")
-        if self._pending_ai_model_download_after_runtime and not self._ai_model_available():
-            self._pending_ai_model_download_after_runtime = False
-            self._start_ai_model_download(force=False)
+        download_dino = self._pending_ai_dino_model_download_after_runtime and not self._ai_model_available()
+        download_semantic = (
+            self._pending_ai_semantic_model_download_after_runtime and not self._semantic_model_available()
+        )
+        if download_dino or download_semantic:
+            self._pending_ai_dino_model_download_after_runtime = False
+            self._pending_ai_semantic_model_download_after_runtime = False
+            self._start_ai_model_download(
+                download_dino=download_dino,
+                download_semantic=download_semantic,
+                force=False,
+            )
             return
-        self._pending_ai_model_download_after_runtime = False
+        self._pending_ai_dino_model_download_after_runtime = False
+        self._pending_ai_semantic_model_download_after_runtime = False
         QMessageBox.information(
             self,
             "AI Runtime Installed",
@@ -5147,7 +5606,8 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_runtime_install_failed(self, message: str) -> None:
         self._active_ai_runtime_task = None
-        self._pending_ai_model_download_after_runtime = False
+        self._pending_ai_dino_model_download_after_runtime = False
+        self._pending_ai_semantic_model_download_after_runtime = False
         self._close_job_progress_dialog(self._ai_runtime_job_key)
         self._update_action_states()
         self._update_ai_toolbar_state()
@@ -5160,9 +5620,37 @@ class MainWindow(QMainWindow):
             return
         self._prompt_for_ai_model_install(automatic=False)
 
-    def _start_ai_model_download(self, *, force: bool = False) -> None:
-        installation = self._managed_ai_model_installation()
-        task = AIModelDownloadTask(installation=installation, force=force)
+    def _start_ai_model_download(
+        self,
+        *,
+        download_dino: bool = True,
+        download_semantic: bool = False,
+        force: bool = False,
+        force_dino: bool | None = None,
+        force_semantic: bool | None = None,
+    ) -> None:
+        requests: list[AIModelDownloadRequest] = []
+        if download_dino:
+            requests.append(
+                AIModelDownloadRequest(
+                    label="DINOv2",
+                    installation=self._managed_ai_model_installation(),
+                    force=force if force_dino is None else force_dino,
+                )
+            )
+        if download_semantic:
+            requests.append(
+                AIModelDownloadRequest(
+                    label="Semantic CLIP",
+                    installation=self._managed_semantic_model_installation(),
+                    force=force if force_semantic is None else force_semantic,
+                )
+            )
+        if not requests:
+            self.statusBar().showMessage("No AI models selected for download.")
+            return
+
+        task = AIModelDownloadTask(requests=tuple(requests))
         task.signals.started.connect(self._handle_ai_model_download_started, Qt.ConnectionType.QueuedConnection)
         task.signals.progress.connect(self._handle_ai_model_download_progress, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(self._handle_ai_model_download_finished, Qt.ConnectionType.QueuedConnection)
@@ -5200,7 +5688,7 @@ class MainWindow(QMainWindow):
         )
         controller.setRange(0, 0)
         controller.setValue(0)
-        controller.setLabelText(f"Downloading AI model to\n{install_dir}")
+        controller.setLabelText(f"Downloading AI model:\n{install_dir}")
         self.statusBar().showMessage("Downloading AI model...")
 
     def _handle_ai_model_download_progress(self, filename: str, current: int, total: int) -> None:
@@ -5229,13 +5717,14 @@ class MainWindow(QMainWindow):
     def _handle_ai_model_download_finished(self, install_dir: str) -> None:
         self._active_ai_model_task = None
         self._close_job_progress_dialog(self._ai_model_job_key)
+        self._refresh_ai_runtime_preferences()
         self._update_action_states()
         self._update_ai_toolbar_state()
-        self.statusBar().showMessage("AI model installed.")
+        self.statusBar().showMessage("AI model download finished.")
         QMessageBox.information(
             self,
-            "AI Model Installed",
-            f"The AI model is ready.\n\nInstalled to:\n{install_dir}",
+            "AI Model Downloaded",
+            f"The selected AI model download is ready.\n\nInstalled to:\n{install_dir}",
         )
 
     def _handle_ai_model_download_failed(self, message: str) -> None:
@@ -5247,6 +5736,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("AI model download failed.")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._zen_mode_enabled:
+            self._set_zen_mode(False)
         self._remember_current_folder_view_state()
         self._folder_watch_refresh_timer.stop()
         if self._folder_watcher.directories():
@@ -5468,8 +5959,16 @@ class MainWindow(QMainWindow):
             if hasattr(self, "workspace_bar") and watched is self.workspace_bar:
                 if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
                     self._position_workspace_toolbar_editor()
+                if self._handle_workspace_bar_drag_event(event):
+                    return True
                 if event.type() == QEvent.Type.MouseButtonDblClick:
                     self._show_workspace_toolbar_editor(self._ui_mode)
+                    return True
+            if hasattr(self, "workspace_bar_drag_handle") and watched is self.workspace_bar_drag_handle:
+                if self._handle_workspace_bar_drag_event(event):
+                    return True
+            if hasattr(self, "toolbar_stack") and watched is self.toolbar_stack:
+                if self._handle_workspace_bar_drag_event(event):
                     return True
             if hasattr(self, "workspace_bar") and event.type() == QEvent.Type.Resize:
                 if watched is self.workspace_bar or watched is self.toolbar_stack:
@@ -5501,6 +6000,38 @@ class MainWindow(QMainWindow):
             return super().eventFilter(watched, event)
         except RuntimeError:
             return False
+
+    def _handle_workspace_bar_drag_event(self, event) -> bool:
+        event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._workspace_bar_drag_start = event.globalPosition().toPoint()
+            self._workspace_bar_dragging = False
+            return False
+        if event_type == QEvent.Type.MouseMove and self._workspace_bar_drag_start is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            current = event.globalPosition().toPoint()
+            if not self._workspace_bar_dragging and (current - self._workspace_bar_drag_start).manhattanLength() < QApplication.startDragDistance():
+                return False
+            self._workspace_bar_dragging = True
+            return True
+        if event_type == QEvent.Type.MouseButtonRelease and self._workspace_bar_drag_start is not None:
+            was_dragging = self._workspace_bar_dragging
+            self._workspace_bar_drag_start = None
+            self._workspace_bar_dragging = False
+            if not was_dragging:
+                return False
+            self._snap_workspace_bar_to_release(event.globalPosition().toPoint())
+            return True
+        return False
+
+    def _snap_workspace_bar_to_release(self, global_pos: QPoint) -> None:
+        center_widget = getattr(self, "workspace_docks", None)
+        shell = center_widget.shell if center_widget is not None else None
+        if shell is None:
+            return
+        top_left = shell.mapToGlobal(QPoint(0, 0))
+        shell_rect = QRect(top_left, shell.size())
+        midpoint = shell_rect.top() + (shell_rect.height() // 2)
+        self._set_workspace_bar_position("bottom" if global_pos.y() >= midpoint else "top")
 
     def _handle_record_drop_event(self, event, *, source: str) -> bool | None:
         event_type = event.type()
@@ -7110,6 +7641,11 @@ class MainWindow(QMainWindow):
             columns = default
         return max(1, min(8, columns))
 
+    @staticmethod
+    def _normalize_browser_view_mode(value: object) -> str:
+        text = str(value or "").strip().casefold()
+        return "details" if text == "details" else "grid"
+
     def _set_column_count(self, count: int) -> None:
         columns = self._normalize_column_count(count)
         combo_index = self.columns_combo.findData(columns)
@@ -7121,20 +7657,221 @@ class MainWindow(QMainWindow):
         self._remember_current_folder_view_state()
         self._update_action_states()
 
+    def _set_browser_view_mode(self, mode: str) -> None:
+        normalized = self._normalize_browser_view_mode(mode)
+        if self._browser_view_mode == normalized and getattr(self, "browser_stack", None) is not None:
+            self.browser_stack.setCurrentIndex(1 if normalized == "details" else 0)
+            self._sync_details_view_from_grid()
+            self._update_action_states()
+            return
+        current_index = self.grid.current_index()
+        selected_indexes = self.grid.selected_indexes()
+        self._browser_view_mode = normalized
+        self._settings.setValue(self.BROWSER_VIEW_MODE_KEY, normalized)
+        if getattr(self, "browser_stack", None) is not None:
+            self.browser_stack.setCurrentIndex(1 if normalized == "details" else 0)
+        if normalized == "details":
+            self.details_view.set_selected_indexes(selected_indexes, current_index=current_index)
+            self.details_view.table.setFocus()
+        else:
+            self.grid.setFocus()
+        self._update_action_states()
+
+    def _handle_details_preview_toggled(self, checked: bool) -> None:
+        self._details_preview_pane_enabled = bool(checked)
+        self._settings.setValue(self.DETAILS_PREVIEW_PANE_KEY, self._details_preview_pane_enabled)
+        self.details_view.set_preview_visible(self._details_preview_pane_enabled)
+        self._update_action_states()
+
+    def _sync_details_view_from_grid(self) -> None:
+        if getattr(self, "details_view", None) is None or self._syncing_browser_selection:
+            return
+        self._syncing_browser_selection = True
+        try:
+            self.details_view.set_selected_indexes(
+                self.grid.selected_indexes(),
+                current_index=self.grid.current_index(),
+            )
+        finally:
+            self._syncing_browser_selection = False
+
+    def _handle_details_current_changed(self, index: int) -> None:
+        if self._syncing_browser_selection:
+            return
+        if not 0 <= index < len(self._records):
+            return
+        selected_indexes = self.details_view.selected_indexes()
+        if index not in selected_indexes:
+            selected_indexes = [index]
+        self._syncing_browser_selection = True
+        try:
+            self.grid.set_logical_selection(selected_indexes, current_index=index)
+        finally:
+            self._syncing_browser_selection = False
+        self._update_action_states()
+        self._update_status(index=index)
+        self._update_inspector_context(index)
+
+    def _handle_details_selection_changed(self) -> None:
+        if self._syncing_browser_selection:
+            return
+        current_index = self.details_view.current_index()
+        selected_indexes = self.details_view.selected_indexes()
+        self._syncing_browser_selection = True
+        try:
+            self.grid.set_logical_selection(selected_indexes, current_index=current_index)
+        finally:
+            self._syncing_browser_selection = False
+        self._update_action_states()
+        self._update_status(index=current_index)
+        self._update_inspector_context(current_index)
+
+    def _handle_zen_mode_toggled(self, checked: bool) -> None:
+        self._set_zen_mode(bool(checked))
+
+    def _handle_zen_toggle_shortcut(self) -> None:
+        self._set_zen_mode(not self._zen_mode_enabled)
+
+    def _handle_zen_escape_shortcut(self) -> None:
+        if self._zen_mode_enabled:
+            self._set_zen_mode(False)
+
+    def _handle_zen_menu_pin_toggled(self, checked: bool) -> None:
+        self._zen_menu_pinned = bool(checked)
+        self._settings.setValue(self.ZEN_MENU_PINNED_KEY, self._zen_menu_pinned)
+        if self._zen_mode_enabled:
+            self._set_zen_menu_visible(self._zen_menu_pinned)
+
+    def _set_zen_menu_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        previous_visible = self._zen_menu_visible
+        self._zen_menu_visible = visible
+        if not self._zen_mode_enabled:
+            return
+        menu_bar = self.menuBar()
+        target_height = max(28, menu_bar.sizeHint().height()) if visible else 0
+        if previous_visible == visible and menu_bar.maximumHeight() == target_height:
+            return
+        if visible:
+            menu_bar.setMinimumHeight(0)
+            menu_bar.show()
+        if hasattr(self, "zen_menu_pin_button"):
+            self.zen_menu_pin_button.setVisible(True)
+        current_height = max(0, menu_bar.height() if menu_bar.isVisible() else 0)
+        self._zen_menu_animation.stop()
+        menu_bar.setMaximumHeight(current_height)
+        self._zen_menu_animation.setStartValue(current_height)
+        self._zen_menu_animation.setEndValue(target_height)
+        self._zen_menu_animation.start()
+
+    def _refresh_zen_menu_visibility(self) -> None:
+        if not self._zen_mode_enabled:
+            self._zen_menu_reveal_timer.stop()
+            return
+        if self._zen_menu_pinned or QApplication.activePopupWidget() is not None:
+            self._set_zen_menu_visible(True)
+            return
+        local_pos = self.mapFromGlobal(QCursor.pos())
+        if not QRect(QPoint(0, 0), self.size()).contains(local_pos):
+            self._set_zen_menu_visible(False)
+            return
+        menu_height = max(28, self.menuBar().sizeHint().height())
+        if local_pos.y() <= 8:
+            self._set_zen_menu_visible(True)
+        elif self._zen_menu_visible and local_pos.y() > menu_height + 10:
+            self._set_zen_menu_visible(False)
+
+    def _set_zen_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._zen_mode_enabled == enabled:
+            self._update_action_states()
+            return
+        if enabled:
+            self._zen_restore_state = {
+                "window_state": self.windowState(),
+                "geometry": self.saveGeometry(),
+                "maximized": self.isMaximized(),
+                "fullscreen": self.isFullScreen(),
+                "menu_visible": self.menuBar().isVisible(),
+                "status_visible": self.statusBar().isVisible(),
+                "workspace_bar_visible": self.workspace_bar.isVisible(),
+                "tool_mode_bar_visible": self.tool_mode_bar.isVisible(),
+                "workspace_state": self.workspace_docks.save_state() if self.workspace_docks is not None else None,
+            }
+            self._zen_mode_enabled = True
+            self.menuBar().setMinimumHeight(0)
+            if hasattr(self, "zen_menu_pin_button"):
+                with QSignalBlocker(self.zen_menu_pin_button):
+                    self.zen_menu_pin_button.setChecked(self._zen_menu_pinned)
+            self._set_zen_menu_visible(self._zen_menu_pinned)
+            self._zen_menu_reveal_timer.start()
+            self._zen_escape_shortcut.setEnabled(True)
+            self.statusBar().hide()
+            self.workspace_bar.hide()
+            self.tool_mode_bar.hide()
+            if self.workspace_docks is not None:
+                self.workspace_docks.hide_panel("library")
+                self.workspace_docks.hide_panel("inspector")
+            self.showFullScreen()
+            self.statusBar().showMessage("Zen Mode enabled")
+        else:
+            restore_state = self._zen_restore_state or {}
+            self._zen_mode_enabled = False
+            self._zen_menu_reveal_timer.stop()
+            self._zen_menu_animation.stop()
+            self._zen_escape_shortcut.setEnabled(False)
+            if hasattr(self, "zen_menu_pin_button"):
+                self.zen_menu_pin_button.hide()
+            self.menuBar().setMinimumHeight(0)
+            self.menuBar().setMaximumHeight(16777215)
+            window_state = restore_state.get("window_state")
+            geometry = restore_state.get("geometry")
+            if bool(restore_state.get("fullscreen", False)):
+                pass
+            elif bool(restore_state.get("maximized", False)):
+                self.showMaximized()
+            else:
+                self.showNormal()
+                if isinstance(geometry, QByteArray) and not geometry.isEmpty():
+                    self.restoreGeometry(geometry)
+                elif isinstance(window_state, Qt.WindowState):
+                    self.setWindowState(Qt.WindowState(window_state.value & ~Qt.WindowState.WindowFullScreen.value))
+            self.menuBar().setVisible(bool(restore_state.get("menu_visible", True)))
+            self.statusBar().setVisible(bool(restore_state.get("status_visible", True)))
+            self.workspace_bar.setVisible(bool(restore_state.get("workspace_bar_visible", True)))
+            self.tool_mode_bar.setVisible(bool(restore_state.get("tool_mode_bar_visible", True)))
+            workspace_state = restore_state.get("workspace_state")
+            if self.workspace_docks is not None and isinstance(workspace_state, dict):
+                self.workspace_docks.restore_state(workspace_state)
+            self._zen_restore_state = {}
+            self.statusBar().showMessage("Zen Mode disabled")
+        self._update_action_states()
+
     def _scroll_active_view_to_top(self) -> None:
-        self.grid.verticalScrollBar().setValue(0)
+        if getattr(self, "_browser_view_mode", "grid") == "details":
+            self.details_view.table.scrollToTop()
+        else:
+            self.grid.verticalScrollBar().setValue(0)
 
     def _set_annotation_views(self, changed_paths: list[str] | tuple[str, ...] | set[str] | None = None) -> None:
         if changed_paths:
             if getattr(self.grid, "_annotations", None) is not self._annotations:
                 self.grid.set_annotations(self._annotations)
+                self.details_view.set_annotations(self._annotations)
             self.grid.update_annotations(changed_paths)
+            changed_rows = {
+                self._record_index_by_path[path]
+                for path in changed_paths
+                if path in self._record_index_by_path
+            }
+            self.details_view.refresh_rows(changed_rows)
             if self.preview.isVisible():
                 for path in changed_paths:
                     annotation = self._annotations.get(path, SessionAnnotation())
                     self.preview.set_annotation_state(path, annotation.winner, annotation.reject)
             return
         self.grid.set_annotations(self._annotations)
+        self.details_view.set_annotations(self._annotations)
 
     def _refresh_viewport_mode(self) -> None:
         return
@@ -7208,6 +7945,16 @@ class MainWindow(QMainWindow):
             self.actions.burst_stacks.setChecked(self._burst_stacks_enabled)
         with QSignalBlocker(self.actions.compact_cards):
             self.actions.compact_cards.setChecked(self._compact_cards_enabled)
+        with QSignalBlocker(self.actions.show_hidden_folders):
+            self.actions.show_hidden_folders.setChecked(self._show_hidden_folders)
+        with QSignalBlocker(self.actions.grid_view):
+            self.actions.grid_view.setChecked(self._browser_view_mode == "grid")
+        with QSignalBlocker(self.actions.details_view):
+            self.actions.details_view.setChecked(self._browser_view_mode == "details")
+        with QSignalBlocker(self.actions.details_preview_pane):
+            self.actions.details_preview_pane.setChecked(self._details_preview_pane_enabled)
+        with QSignalBlocker(self.actions.zen_mode):
+            self.actions.zen_mode.setChecked(self._zen_mode_enabled)
         with QSignalBlocker(self.actions.mode_actions["manual"]):
             self.actions.mode_actions["manual"].setChecked(self._ui_mode == "manual")
         with QSignalBlocker(self.actions.mode_actions["ai"]):
@@ -7233,6 +7980,11 @@ class MainWindow(QMainWindow):
         self.actions.burst_groups.setEnabled(bool(self._current_folder and self._all_records))
         self.actions.burst_stacks.setEnabled(bool(self._current_folder and self._all_records))
         self.actions.compact_cards.setEnabled(True)
+        self.actions.show_hidden_folders.setEnabled(True)
+        self.actions.grid_view.setEnabled(True)
+        self.actions.details_view.setEnabled(True)
+        self.actions.details_preview_pane.setEnabled(self._browser_view_mode == "details")
+        self.actions.zen_mode.setEnabled(True)
         self.actions.rename_selection.setEnabled(current_record is not None and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.batch_rename_selection.setEnabled(bool(self._current_folder and self._all_records) and not in_recycle_folder and not in_winners_folder)
         has_resizeable_records = self._records_have_resizable
@@ -7892,13 +8644,13 @@ class MainWindow(QMainWindow):
             self._resize_record_prompt(current_index)
 
     def _record_supports_resize(self, record: ImageRecord | None) -> bool:
-        if record is None:
+        if record is None or record.is_folder:
             return False
         suffix = suffix_for_path(record.path)
         return suffix not in RAW_SUFFIXES and suffix not in FITS_SUFFIXES and suffix not in MODEL_SUFFIXES
 
     def _record_supports_convert(self, record: ImageRecord | None) -> bool:
-        if record is None:
+        if record is None or record.is_folder:
             return False
         suffix = suffix_for_path(record.path)
         return suffix not in RAW_SUFFIXES and suffix not in FITS_SUFFIXES and suffix not in MODEL_SUFFIXES
@@ -7955,9 +8707,9 @@ class MainWindow(QMainWindow):
         if self._active_tool_mode and self._active_tool_mode != "batch_resize":
             self._cancel_tool_mode(show_message=False)
         self._active_tool_mode = "batch_resize"
-        self.grid.set_tool_checkbox_mode(True, clear_selection=True)
+        self.grid.set_tool_checkbox_mode(True, clear_selection=True, toggle_on_image_click=True)
         self._refresh_tool_mode_ui()
-        self.statusBar().showMessage("Batch Resize tool active. Use the top-left checkboxes to choose images, then click Run.")
+        self.statusBar().showMessage("Batch Resize tool active. Click thumbnails or checkboxes to choose images, then click Run.")
 
     def _start_batch_convert_tool_mode(self) -> None:
         if not self._current_folder or not self._all_records or self._is_recycle_folder():
@@ -7973,6 +8725,24 @@ class MainWindow(QMainWindow):
         self.grid.set_tool_checkbox_mode(True, clear_selection=True)
         self._refresh_tool_mode_ui()
         self.statusBar().showMessage("Batch Convert tool active. Use the top-left checkboxes to choose images, then click Run.")
+
+    def _add_all_for_active_tool_mode(self) -> None:
+        if self._active_tool_mode != "batch_resize":
+            return
+        indexes = [
+            index
+            for index, record in enumerate(self._records)
+            if self._record_supports_resize(record)
+        ]
+        if not indexes:
+            self.statusBar().showMessage("No resize-eligible images are available in this folder.")
+            return
+        current_index = self.grid.current_index()
+        if current_index not in indexes:
+            current_index = indexes[0]
+        self.grid.set_selected_indexes(indexes, current_index=current_index)
+        self._refresh_tool_mode_ui()
+        self.statusBar().showMessage(f"Added {len(indexes)} resize-eligible image(s).")
 
     def _run_active_tool_mode(self) -> None:
         if self._active_tool_mode == "batch_rename":
@@ -8055,6 +8825,7 @@ class MainWindow(QMainWindow):
             return
         selected_count = len(self._selected_records_for_tool_mode())
         if self._active_tool_mode == "batch_rename":
+            self.tool_mode_add_all_button.hide()
             self.tool_mode_title.setText("Batch Rename")
             self.tool_mode_help.setText("Select images with the checkboxes, then run the rename tool.")
             self.tool_mode_run_button.setText("Run Batch Rename")
@@ -8063,8 +8834,11 @@ class MainWindow(QMainWindow):
         elif self._active_tool_mode == "batch_resize":
             eligible_count = len(self._selected_resize_sources_for_tool_mode())
             skipped_raw_count = max(0, selected_count - eligible_count)
+            total_eligible_count = sum(1 for record in self._records if self._record_supports_resize(record))
+            self.tool_mode_add_all_button.show()
+            self.tool_mode_add_all_button.setEnabled(total_eligible_count > 0)
             self.tool_mode_title.setText("Batch Resize")
-            self.tool_mode_help.setText("Select images with the checkboxes, then run the resize tool. RAW files are skipped.")
+            self.tool_mode_help.setText("Click thumbnails or checkboxes to select images, then run the resize tool. RAW files are skipped.")
             self.tool_mode_run_button.setText("Run Batch Resize")
             if skipped_raw_count:
                 self.tool_mode_selection.setText(f"{eligible_count} eligible | {skipped_raw_count} RAW skipped")
@@ -8072,6 +8846,7 @@ class MainWindow(QMainWindow):
                 self.tool_mode_selection.setText(f"{eligible_count} eligible")
             self.tool_mode_run_button.setEnabled(eligible_count > 0)
         elif self._active_tool_mode == "batch_convert":
+            self.tool_mode_add_all_button.hide()
             eligible_count = len(self._selected_convert_sources_for_tool_mode())
             skipped_raw_count = max(0, selected_count - eligible_count)
             self.tool_mode_title.setText("Batch Convert")
@@ -8083,6 +8858,7 @@ class MainWindow(QMainWindow):
                 self.tool_mode_selection.setText(f"{eligible_count} eligible")
             self.tool_mode_run_button.setEnabled(eligible_count > 0)
         else:
+            self.tool_mode_add_all_button.hide()
             self.tool_mode_title.setText("Tool")
             self.tool_mode_help.setText("Select images, then run the active tool.")
             self.tool_mode_run_button.setText("Run")
@@ -8093,7 +8869,7 @@ class MainWindow(QMainWindow):
         return [
             self._records[index]
             for index in self.grid.selected_indexes()
-            if 0 <= index < len(self._records)
+            if 0 <= index < len(self._records) and not self._records[index].is_folder
         ]
 
     def _resize_source_for_index(self, index: int) -> ResizeSourceItem | None:
@@ -9910,12 +10686,34 @@ class MainWindow(QMainWindow):
         self._refresh_favorites_panel()
         self.statusBar().showMessage(f"Removed from favorites: {folder}")
 
+    def _folder_tree_filter(self):
+        filters = QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot | QDir.Filter.Drives
+        if self._show_hidden_folders:
+            filters |= QDir.Filter.Hidden
+        return filters
+
+    def _handle_show_hidden_folders_toggled(self, checked: bool) -> None:
+        self._show_hidden_folders = bool(checked)
+        self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
+        self.folder_model.setFilter(self._folder_tree_filter())
+        if self._current_folder and self._scope_kind == "folder":
+            current_path = self._current_path_for_index(self.grid.current_index())
+            self._folder_records = scan_child_folders(
+                self._current_folder,
+                include_hidden=self._show_hidden_folders,
+            )
+            self._apply_records_view(current_path=current_path)
+        self._update_action_states()
+        state = "shown" if self._show_hidden_folders else "hidden"
+        self.statusBar().showMessage(f"Hidden folders {state}")
+
     def _handle_columns_changed(self) -> None:
         columns = self._normalize_column_count(self.columns_combo.currentData())
         self._set_column_count(columns)
 
     def _handle_auto_advance_toggled(self, checked: bool) -> None:
         self._auto_advance_enabled = checked
+        self._settings.setValue(self.AUTO_ADVANCE_KEY, checked)
         self.preview.set_auto_advance_enabled(checked)
         self._update_action_states()
         mode = "on" if checked else "off"
@@ -10523,6 +11321,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Scanning {folder}...")
         self._all_records = []
         self._all_records_by_path = {}
+        self._folder_records = scan_child_folders(folder, include_hidden=self._show_hidden_folders)
         self._records = []
         self._last_view_record_paths = ()
         self._record_index_by_path = {}
@@ -10547,6 +11346,7 @@ class MainWindow(QMainWindow):
         self._metadata_request_timer.stop()
         self.grid.set_empty_message(f"Scanning {Path(folder).name}...")
         self.grid.set_items([])
+        self.details_view.set_records([])
         self._set_annotation_views()
         self._refresh_viewport_mode()
         self._update_ai_toolbar_state()
@@ -10595,6 +11395,7 @@ class MainWindow(QMainWindow):
             self._active_review_intelligence_task = None
         self._pending_folder_focus_path = ""
         self._current_folder = ""
+        self._folder_records = []
         self._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
         self._refresh_current_folder_watch()
         self._scan_showed_cached = False
@@ -11134,6 +11935,9 @@ class MainWindow(QMainWindow):
                 self._update_filter_summary()
         else:
             self._update_filter_summary()
+        current_record = self._record_at(self.grid.current_index())
+        if current_record is not None and current_record.path == record.path:
+            self._update_inspector_context()
         if self._filter_metadata_queue and not self._metadata_request_timer.isActive():
             self._metadata_request_timer.start()
 
@@ -11395,8 +12199,7 @@ class MainWindow(QMainWindow):
             chunked_view=chunked_view,
             current_path=self._pending_folder_focus_path or None,
         )
-        if self._ui_mode == "ai":
-            self._load_hidden_ai_results_for_current_folder(show_message=False)
+        self._load_hidden_ai_results_for_current_folder(show_message=False)
         cache_label = self._catalog_source_label(source)
         self.statusBar().showMessage(f"Loaded {cache_label.lower()} for {self._current_folder}, refreshing from disk...")
 
@@ -11418,8 +12221,7 @@ class MainWindow(QMainWindow):
                 self._catalog_load_detail = "Live scan confirmed the current folder contents."
             self._refresh_catalog_status_indicator()
             self._schedule_loaded_records_enrichment()
-            if self._ui_mode == "ai":
-                self._load_hidden_ai_results_for_current_folder(show_message=False)
+            self._load_hidden_ai_results_for_current_folder(show_message=False)
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
@@ -11436,8 +12238,7 @@ class MainWindow(QMainWindow):
         else:
             self._catalog_load_detail = "Loaded directly from a live folder scan."
         self._refresh_catalog_status_indicator()
-        if self._ui_mode == "ai":
-            self._load_hidden_ai_results_for_current_folder(show_message=False)
+        self._load_hidden_ai_results_for_current_folder(show_message=False)
         if self._scan_showed_cached:
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
         if self._folder_watch_refresh_pending:
@@ -11468,6 +12269,7 @@ class MainWindow(QMainWindow):
         self._review_chunk_dirty_paths.clear()
         self._all_records = []
         self._all_records_by_path = {}
+        self._folder_records = []
         self._records = []
         self._last_view_record_paths = ()
         self._record_index_by_path = {}
@@ -11495,6 +12297,7 @@ class MainWindow(QMainWindow):
         self._metadata_scroll_prefetch_timer.stop()
         self.grid.set_empty_message("Could not scan this folder.")
         self.grid.set_items([])
+        self.details_view.set_records([])
         self._refresh_recycle_button()
         self._update_action_states()
         self._catalog_load_source = "failed"
@@ -11505,13 +12308,24 @@ class MainWindow(QMainWindow):
             self._folder_watch_refresh_timer.start(450)
 
     def _handle_current_changed(self, index: int) -> None:
+        self._sync_details_view_from_grid()
         self._enqueue_filter_metadata_paths(self.grid.visible_item_paths(limit=200), front=True)
         self._update_action_states()
         self._update_status(index=index)
         if not self.preview.isVisible():
             self._schedule_preview_preload(index)
 
+    def _handle_inspector_thumbnail_ready(self, key, _image) -> None:
+        current_record = self._record_at(self.grid.current_index())
+        if current_record is None or current_record.is_folder:
+            return
+        displayed_path = self.grid.displayed_variant_path(self.grid.current_index()) or current_record.path
+        if normalized_path_key(getattr(key, "path", "")) != normalized_path_key(displayed_path):
+            return
+        self._update_inspector_context()
+
     def _handle_grid_selection_changed(self) -> None:
+        self._sync_details_view_from_grid()
         self._update_action_states()
         self._update_status()
         self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(lookahead=100), front=True)
@@ -11525,6 +12339,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         run_action = menu.addAction(self.actions.run_ai_culling)
         apply_action = menu.addAction(self.actions.apply_ai_culling)
+        semantic_sort_action = menu.addAction(self.actions.sort_ai_semantic_folders)
         reset_action = menu.addAction(self.actions.reset_ai_review_cache)
         load_hidden_action = menu.addAction(self.actions.load_saved_ai)
         load_action = menu.addAction(self.actions.load_ai_results)
@@ -11568,7 +12383,7 @@ class MainWindow(QMainWindow):
         self._ai_bundle = None
         if self._active_ai_task is None:
             self._ai_stage_index = 0
-            self._ai_stage_total = 3
+            self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
             self._ai_stage_message = "Ready to run AI review"
             self._ai_progress_current = 0
             self._ai_progress_total = 0
@@ -11742,6 +12557,7 @@ class MainWindow(QMainWindow):
     def _refresh_ai_state(self) -> None:
         ai_results = self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {}
         self.grid.set_ai_results(ai_results)
+        self.details_view.refresh_rows()
         if self._ai_bundle is None and self._preview_ai_cull_queue_enabled:
             self._clear_preview_ai_cull_queue()
         self._start_scope_enrichment_task()
@@ -11758,6 +12574,7 @@ class MainWindow(QMainWindow):
         self._update_ai_toolbar_state()
         self._update_preview_ai_cull_controls()
         self._update_status()
+        self._update_inspector_context()
         if self.preview.isVisible():
             index = self.grid.current_index()
             if index >= 0:
@@ -11768,6 +12585,7 @@ class MainWindow(QMainWindow):
         ai_loaded = self._ai_bundle is not None
         ai_runtime_ready = self._ai_runtime_available()
         ai_model_ready = self._ai_model_available()
+        semantic_model_ready = self._semantic_model_available()
         ai_paths = self._hidden_ai_paths_for_current_folder()
         saved_exists = False
         if self._ui_mode == "ai":
@@ -11796,10 +12614,27 @@ class MainWindow(QMainWindow):
                 and not self._is_winners_folder()
                 and not self._is_recycle_folder()
             )
+            can_sort_semantic = (
+                current_folder
+                and self._active_ai_task is None
+                and self._active_ai_runtime_task is None
+                and self._active_ai_training_task is None
+                and self._active_ai_model_task is None
+                and not self._is_winners_folder()
+                and not self._is_recycle_folder()
+                and bool(
+                    ai_paths
+                    and (
+                        ai_semantic_artifacts_ready(ai_paths)
+                        or ai_report_artifacts_ready(ai_paths)
+                    )
+                )
+            )
             self.actions.install_ai_runtime.setEnabled(self._active_ai_runtime_task is None and self._active_ai_model_task is None)
             self.actions.download_ai_model.setEnabled(self._active_ai_model_task is None and self._active_ai_runtime_task is None)
             self.actions.run_ai_culling.setEnabled(can_use_ai_tools)
             self.actions.apply_ai_culling.setEnabled(can_apply_ai_cull)
+            self.actions.sort_ai_semantic_folders.setEnabled(can_sort_semantic)
             self.actions.reset_ai_review_cache.setEnabled(
                 current_folder
                 and self._active_ai_task is None
@@ -11845,6 +12680,8 @@ class MainWindow(QMainWindow):
             self.ai_status_label.setText("AI runtime not installed")
         elif not ai_model_ready:
             self.ai_status_label.setText("AI model not installed")
+        elif self._ai_semantic_sidecar_enabled and not semantic_model_ready:
+            self.ai_status_label.setText("Semantic AI model not installed")
         elif ai_loaded and self._ai_bundle is not None:
             export_name = Path(self._ai_bundle.export_csv_path).name
             self.ai_status_label.setText(f"Loaded {export_name}")
@@ -11862,10 +12699,13 @@ class MainWindow(QMainWindow):
             f"Runtime installed: {ai_runtime_ready}",
             f"Model: {self._ai_runtime.model_name}",
             f"Model installed: {ai_model_ready}",
+            f"Semantic model: {self._ai_runtime.semantic_model_name}",
+            f"Semantic model installed: {semantic_model_ready}",
             f"Checkpoint: {active_checkpoint or self._ai_runtime.checkpoint_path}",
             f"Embedding batch size: {self._ai_embed_batch_size_label()}",
             f"Embedding workers: {self._ai_runtime.num_workers}",
             f"Local staging: {self._ai_runtime.local_stage_mode}",
+            f"Semantic sidecar: {'enabled' if self._ai_semantic_sidecar_enabled else 'disabled'}",
         ]
         runtime_status = self._managed_ai_runtime_status()
         runtime_lines.append(f"Runtime cache: {runtime_status.directories.root}")
@@ -11876,6 +12716,7 @@ class MainWindow(QMainWindow):
         managed_installation = self._ai_runtime.model_installation
         if managed_installation is not None:
             runtime_lines.append(f"Managed model dir: {managed_installation.install_dir}")
+        runtime_lines.append(f"Managed semantic model dir: {self._managed_semantic_model_installation().install_dir}")
         if self._active_reference_bank_path:
             runtime_lines.append(f"Reference bank: {self._active_reference_bank_path}")
         if self._ai_runtime.local_stage_root is not None:
@@ -11888,6 +12729,16 @@ class MainWindow(QMainWindow):
         tooltip_text = "\n".join(runtime_lines)
         self.ai_status_label.setToolTip(tooltip_text)
         self.ai_status_widget.setToolTip(tooltip_text)
+        active_ai_status = any(
+            task is not None
+            for task in (
+                self._active_ai_task,
+                self._active_ai_runtime_task,
+                self._active_ai_model_task,
+                self._active_ai_training_task,
+            )
+        )
+        self._sync_ai_status_visibility(active=active_ai_status, message=self._ai_stage_message)
         self._refresh_ai_progress_bar()
         self._schedule_workspace_toolbar_overflow_update("ai")
         self._update_action_states()
@@ -11900,6 +12751,9 @@ class MainWindow(QMainWindow):
             return
         if not self._ensure_ai_model_available(title="Run AI Review"):
             return
+        if not self._ensure_semantic_model_available(title="Run AI Review"):
+            return
+        self._refresh_ai_runtime_preferences()
         if self._active_ai_task is not None:
             self.statusBar().showMessage("AI review is already running for the current folder")
             return
@@ -11913,6 +12767,7 @@ class MainWindow(QMainWindow):
             active_checkpoint = self._current_trained_checkpoint_path()
             if active_checkpoint is not None:
                 runtime = replace(runtime, checkpoint_path=active_checkpoint)
+            runtime = replace(runtime, semantic_sidecar_enabled=self._ai_semantic_sidecar_enabled)
             cache_keys = build_ai_stage_cache_keys(
                 self._all_records,
                 runtime,
@@ -11924,10 +12779,17 @@ class MainWindow(QMainWindow):
                 cached_ai_workflow is not None
                 and cached_ai_workflow.report_cache_key == cache_keys.report_cache_key
                 and ai_report_artifacts_ready(paths)
+                and (
+                    not self._ai_semantic_sidecar_enabled
+                    or (
+                        cached_ai_workflow.semantic_cache_key == cache_keys.semantic_cache_key
+                        and ai_semantic_artifacts_ready(paths)
+                    )
+                )
             ):
                 if self._load_hidden_ai_results_for_current_folder(show_message=False):
-                    self._ai_stage_index = 3
-                    self._ai_stage_total = 3
+                    self._ai_stage_index = 4 if self._ai_semantic_sidecar_enabled else 3
+                    self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
                     self._ai_stage_message = "Reused cached AI results"
                     self._ai_progress_current = 1
                     self._ai_progress_total = 1
@@ -11951,6 +12813,13 @@ class MainWindow(QMainWindow):
                 and ai_embedding_artifacts_ready(paths)
             ):
                 skip_extract = True
+            elif cached_ai_workflow is None and ai_cluster_artifacts_ready(paths):
+                # Interrupted runs can leave valid folder-local DINO artifacts before the
+                # catalog cache is saved. Reuse them so semantic recovery does not start over.
+                skip_extract = True
+                skip_cluster = True
+            elif cached_ai_workflow is None and ai_embedding_artifacts_ready(paths):
+                skip_extract = True
             task = AIRunTask(
                 folder=Path(self._current_folder),
                 runtime=runtime,
@@ -11973,8 +12842,9 @@ class MainWindow(QMainWindow):
         self._active_ai_embedding_cache_key = cache_keys.embedding_cache_key
         self._active_ai_cluster_cache_key = cache_keys.cluster_cache_key
         self._active_ai_report_cache_key = cache_keys.report_cache_key
+        self._active_ai_semantic_cache_key = cache_keys.semantic_cache_key
         self._ai_stage_index = 0
-        self._ai_stage_total = 3
+        self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
         if skip_cluster:
             self._ai_stage_message = "Queued AI review (reusing cached embeddings and clusters)"
         elif skip_extract:
@@ -12101,11 +12971,90 @@ class MainWindow(QMainWindow):
         if follow_up == QMessageBox.StandardButton.Yes:
             self._open_ai_cull_follow_up_review(reviewable_paths)
 
+    def _sort_images_into_semantic_folders(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Open a source folder before sorting semantic classifications.")
+            return
+        if self._is_winners_folder() or self._is_recycle_folder():
+            self.statusBar().showMessage("Semantic folder sorting runs from the source folder.")
+            return
+        if self._active_ai_task is not None:
+            self.statusBar().showMessage("Wait for the current AI review run to finish before sorting.")
+            return
+        paths = build_ai_workflow_paths(self._current_folder)
+        if not ai_semantic_artifacts_ready(paths):
+            if ai_report_artifacts_ready(paths):
+                rerun = QMessageBox.question(
+                    self,
+                    "Semantic Sort",
+                    (
+                        "Semantic classifications are missing or incomplete for this folder.\n\n"
+                        "Run AI Review again now to generate the semantic classifications? "
+                        "Existing DINO embeddings and clusters will be reused when possible."
+                    ),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if rerun == QMessageBox.StandardButton.Yes:
+                    self._run_ai_pipeline()
+                return
+            self.statusBar().showMessage("Run AI Review with Semantic sidecar enabled before sorting into semantic folders.")
+            return
+        try:
+            classifications = load_semantic_classifications(paths.semantic_export_path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Semantic Folder Sort", f"Could not load semantic classifications.\n\n{exc}")
+            return
+
+        grouped: dict[str, list[ImageRecord]] = {}
+        for record in self._all_records:
+            if record.is_folder:
+                continue
+            classification = semantic_classification_for_record(record, classifications)
+            if classification is None:
+                continue
+            folder_name = semantic_folder_name(classification.primary_label)
+            grouped.setdefault(folder_name, []).append(record)
+
+        total = sum(len(records) for records in grouped.values())
+        if not total:
+            self.statusBar().showMessage("No semantic classifications matched the current folder.")
+            return
+
+        destination_root = Path(self._current_folder) / "_semantic"
+        confirmation = QMessageBox.question(
+            self,
+            "Sort Into Semantic Folders",
+            (
+                f"Move {total} image bundle(s) into {len(grouped)} semantic subfolder(s) under:\n"
+                f"{destination_root}\n\n"
+                "This uses the semantic classification CSV from the last AI Review and can be undone with Undo."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        moved = 0
+        for folder_name, records in sorted(grouped.items(), key=lambda item: item[0].casefold()):
+            destination_dir = str(destination_root / folder_name)
+            os.makedirs(destination_dir, exist_ok=True)
+            for record in records:
+                if self._move_record_to_path(record.path, destination_dir):
+                    moved += 1
+        if moved:
+            self._remember_recent_destination(str(destination_root))
+            self._refresh_recycle_button()
+            self.statusBar().showMessage(f"Moved {moved} image bundle(s) into semantic folders")
+            return
+        self.statusBar().showMessage("No images were moved into semantic folders.")
+
     def _handle_ai_run_started(self, folder: str) -> None:
         if normalized_path_key(folder) != normalized_path_key(self._current_folder):
             return
         self._ai_stage_index = 0
-        self._ai_stage_total = 3
+        self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
         self._ai_stage_message = "Preparing AI review"
         self._ai_progress_current = 0
         self._ai_progress_total = 0
@@ -12267,6 +13216,7 @@ class MainWindow(QMainWindow):
         embedding_cache_key = self._active_ai_embedding_cache_key
         cluster_cache_key = self._active_ai_cluster_cache_key
         report_cache_key = self._active_ai_report_cache_key
+        semantic_cache_key = self._active_ai_semantic_cache_key
         if embedding_cache_key and cluster_cache_key and report_cache_key:
             paths = build_ai_workflow_paths(folder)
             self._catalog_repository.save_ai_workflow_cache(
@@ -12276,10 +13226,12 @@ class MainWindow(QMainWindow):
                 report_cache_key=report_cache_key,
                 artifacts_dir=str(paths.artifacts_dir),
                 report_dir=str(paths.report_dir),
+                semantic_cache_key=semantic_cache_key,
             )
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
         self._active_ai_report_cache_key = ""
+        self._active_ai_semantic_cache_key = ""
         self._ai_stage_index = self._ai_stage_total
         self._ai_stage_message = "AI review complete"
         if self._ai_progress_total <= 0:
@@ -12309,12 +13261,42 @@ class MainWindow(QMainWindow):
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
         self._active_ai_report_cache_key = ""
+        self._active_ai_semantic_cache_key = ""
         self._ai_stage_message = "AI review failed"
         self._ai_progress_eta_text = ""
         self._update_ai_toolbar_state()
         if normalized_path_key(folder) == normalized_path_key(self._current_folder):
             QMessageBox.warning(self, "AI Review Failed", message)
             self.statusBar().showMessage("AI review failed")
+
+    def _set_ai_status_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        if self._ai_status_visible == visible:
+            return
+        self._ai_status_visible = visible
+        self.ai_status_widget.setVisible(visible)
+        self._schedule_workspace_toolbar_overflow_update("ai")
+
+    def _sync_ai_status_visibility(self, *, active: bool, message: str) -> None:
+        terminal_messages = {
+            "AI review complete",
+            "AI review failed",
+            "Reused cached AI results",
+        }
+        if active:
+            self._ai_status_terminal_notice_key = ""
+            self._ai_status_hide_timer.stop()
+            self._set_ai_status_visible(True)
+            return
+        if message in terminal_messages:
+            if self._ai_status_terminal_notice_key != message:
+                self._ai_status_terminal_notice_key = message
+                self._set_ai_status_visible(True)
+                self._ai_status_hide_timer.start()
+            return
+        self._ai_status_terminal_notice_key = ""
+        if not self._ai_status_hide_timer.isActive():
+            self._set_ai_status_visible(False)
 
     def _refresh_ai_progress_bar(self) -> None:
         if self._active_ai_task is not None:
@@ -12519,6 +13501,20 @@ class MainWindow(QMainWindow):
             return None
         result = find_ai_result_for_record(self._ai_bundle, record, preferred_path=preferred_path)
         return refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
+
+    def _details_ai_text_for_record(self, record: ImageRecord) -> str:
+        if record is None or record.is_folder:
+            return "-"
+        ai_result = self._ai_result_for_record(record, preferred_path=record.path)
+        if ai_result is None:
+            return "-"
+        parts = [ai_result.confidence_bucket_short_label or ai_result.confidence_bucket_label]
+        score = ai_result.display_score_text
+        if score:
+            parts.append(score)
+        if ai_result.group_size > 1:
+            parts.append(ai_result.rank_text)
+        return " | ".join(part for part in parts if part) or "-"
 
     def _ai_result_for_index(self, index: int):
         record = self._record_at(index)
@@ -12917,6 +13913,10 @@ class MainWindow(QMainWindow):
         display_path = ""
         annotation = None
         ai_result = None
+        metadata = None
+        inspection_stats = None
+        review_insight = None
+        workflow_insight = None
         review_summary = ""
         workflow_summary = ""
         workflow_details: tuple[str, ...] = ()
@@ -12924,6 +13924,15 @@ class MainWindow(QMainWindow):
             display_path = self.grid.displayed_variant_path(index) or current_record.path
             annotation = self._annotations.get(current_record.path, SessionAnnotation())
             ai_result = self._ai_result_for_record(current_record, preferred_path=display_path)
+            review_insight = self._review_insight_for_record(current_record)
+            workflow_insight = self._workflow_insight_for_record(current_record)
+            thumbnail = self.grid.thumbnail_for(index)
+            if thumbnail is not None and not thumbnail.isNull() and not current_record.is_folder:
+                inspection_stats = self._inspection_stats_for_thumbnail(current_record, display_path, thumbnail)
+            if not current_record.is_folder:
+                metadata = self._filter_metadata_manager.get_cached(current_record)
+                if metadata is None:
+                    self._enqueue_filter_metadata_paths((current_record.path,), front=True)
             review_summary = self._review_summary_for_record(current_record)
             workflow_summary = self._workflow_summary_for_record(current_record)
             workflow_details = self._workflow_detail_lines_for_record(current_record)
@@ -12936,10 +13945,32 @@ class MainWindow(QMainWindow):
             display_path=display_path,
             annotation=annotation,
             ai_result=ai_result,
+            metadata=metadata,
+            inspection_stats=inspection_stats,
+            review_insight=review_insight,
+            workflow_insight=workflow_insight,
             review_summary=review_summary,
             workflow_summary=workflow_summary,
             workflow_details=workflow_details,
         )
+
+    def _inspection_stats_for_thumbnail(self, record: ImageRecord, display_path: str, thumbnail) -> InspectionStats:
+        cache_path = display_path or record.path
+        cache_key = (
+            normalized_path_key(cache_path),
+            int(record.modified_ns or 0),
+            int(record.size or 0),
+            int(thumbnail.width()),
+            int(thumbnail.height()),
+        )
+        cached = self._inspection_stats_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        stats = build_inspection_stats(thumbnail)
+        if len(self._inspection_stats_cache) >= 2048:
+            self._inspection_stats_cache.clear()
+        self._inspection_stats_cache[cache_key] = stats
+        return stats
 
     def _is_unreviewed_record(self, record: ImageRecord) -> bool:
         annotation = self._annotations.get(record.path, SessionAnnotation())
@@ -13430,7 +14461,9 @@ class MainWindow(QMainWindow):
     def _reset_window_layout(self) -> None:
         clear_window_layout(self._settings, self.GEOMETRY_KEY, self.STATE_KEY)
         self._settings.remove(self.WORKSPACE_BAR_STATE_KEY)
+        self._settings.remove(self.WORKSPACE_BAR_POSITION_KEY)
         self._set_workspace_bar_state("expanded")
+        self._set_workspace_bar_position("top")
         self.resize(1600, 960)
         self._apply_default_workspace()
         self.statusBar().showMessage("Reset window layout")
@@ -13445,16 +14478,28 @@ class MainWindow(QMainWindow):
             current_session=self._session_id,
             winner_mode=self._winner_mode,
             delete_mode=self._delete_mode,
+            toolbar_style=self._toolbar_style,
+            compact_cards_enabled=self._compact_cards_enabled,
+            free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
+            show_hidden_folders=self._show_hidden_folders,
+            auto_advance_enabled=self._auto_advance_enabled,
+            burst_groups_enabled=self._burst_groups_enabled,
+            burst_stacks_enabled=self._burst_stacks_enabled,
             catalog_cache_enabled=self._catalog_cache_enabled,
             watch_current_folder=self._watch_current_folder_enabled,
             ai_auto_profile_enabled=self._ai_auto_profile_enabled,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
+            ai_semantic_sidecar_enabled=self._ai_semantic_sidecar_enabled,
             catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
             preset_save_callback=persist_workflow_presets,
+            file_associations_callback=self._open_file_associations_dialog,
+            keyboard_shortcuts_callback=self._open_keyboard_shortcuts_dialog,
+            toolbar_callback=self._show_workspace_toolbar_editor,
+            reset_layout_callback=self._reset_window_layout,
             parent=self,
         )
-        if self._exec_dialog_with_geometry(dialog, "workflow_settings") != dialog.DialogCode.Accepted:
+        if self._exec_dialog_with_geometry(dialog, "settings_compact") != dialog.DialogCode.Accepted:
             return
 
         result = dialog.result_settings()
@@ -13464,28 +14509,75 @@ class MainWindow(QMainWindow):
         session_changed = new_session != self._session_id
         winner_changed = result.winner_mode != self._winner_mode
         delete_changed = result.delete_mode != self._delete_mode
+        toolbar_style_changed = self._normalize_toolbar_style(result.toolbar_style) != self._toolbar_style
+        compact_changed = result.compact_cards_enabled != self._compact_cards_enabled
+        free_scroll_changed = result.free_smooth_scroll_enabled != self._free_smooth_scroll_enabled
+        hidden_changed = result.show_hidden_folders != self._show_hidden_folders
+        auto_advance_changed = result.auto_advance_enabled != self._auto_advance_enabled
+        burst_groups_changed = result.burst_groups_enabled != self._burst_groups_enabled
+        burst_stacks_changed = result.burst_stacks_enabled != self._burst_stacks_enabled
         catalog_changed = result.catalog_cache_enabled != self._catalog_cache_enabled
         watch_changed = result.watch_current_folder != self._watch_current_folder_enabled
         auto_profile_changed = result.ai_auto_profile_enabled != self._ai_auto_profile_enabled
         ai_batch_changed = result.ai_embed_batch_size != self._ai_embed_batch_size_setting
+        ai_semantic_changed = result.ai_semantic_sidecar_enabled != self._ai_semantic_sidecar_enabled
 
         self._session_id = new_session
         self._winner_mode = result.winner_mode
         self._delete_mode = result.delete_mode
+        self._toolbar_style = self._normalize_toolbar_style(result.toolbar_style)
+        self._compact_cards_enabled = result.compact_cards_enabled
+        self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
+        self._show_hidden_folders = result.show_hidden_folders
+        self._auto_advance_enabled = result.auto_advance_enabled
+        self._burst_groups_enabled = result.burst_groups_enabled
+        self._burst_stacks_enabled = result.burst_stacks_enabled
         self._catalog_cache_enabled = result.catalog_cache_enabled
         self._watch_current_folder_enabled = result.watch_current_folder
         self._ai_auto_profile_enabled = result.ai_auto_profile_enabled
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
+        self._ai_semantic_sidecar_enabled = result.ai_semantic_sidecar_enabled
         self._refresh_ai_runtime_preferences()
         self._settings.setValue(self.SESSION_KEY, self._session_id)
         self._settings.setValue(self.WINNER_MODE_KEY, self._winner_mode.value)
         self._settings.setValue(self.DELETE_MODE_KEY, self._delete_mode.value)
+        self._settings.setValue(self.TOOLBAR_STYLE_KEY, self._toolbar_style)
+        self._settings.setValue(self.COMPACT_CARDS_KEY, self._compact_cards_enabled)
+        self._settings.setValue(self.FREE_SMOOTH_SCROLL_KEY, self._free_smooth_scroll_enabled)
+        self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
+        self._settings.setValue(self.AUTO_ADVANCE_KEY, self._auto_advance_enabled)
+        self._settings.setValue(self.BURST_GROUPS_KEY, self._burst_groups_enabled)
+        self._settings.setValue(self.BURST_STACKS_KEY, self._burst_stacks_enabled)
         self._settings.setValue(self.CATALOG_CACHE_ENABLED_KEY, self._catalog_cache_enabled)
         self._settings.setValue(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, self._watch_current_folder_enabled)
         self._settings.setValue(self.AI_AUTO_PROFILE_ENABLED_KEY, self._ai_auto_profile_enabled)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
+        self._settings.setValue(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, self._ai_semantic_sidecar_enabled)
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Session: {self._session_id}")
+        self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
+        self.grid.set_compact_card_mode(self._compact_cards_enabled)
+        self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
+        if toolbar_style_changed:
+            self._workspace_toolbar_item_widgets = {
+                "manual": self._build_workspace_toolbar_widgets("manual"),
+                "ai": self._build_workspace_toolbar_widgets("ai"),
+            }
+            self._workspace_toolbar_overflow_buttons = {
+                "manual": self._build_workspace_toolbar_overflow_button("manual"),
+                "ai": self._build_workspace_toolbar_overflow_button("ai"),
+            }
+            self._rebuild_workspace_toolbar("manual")
+            self._rebuild_workspace_toolbar("ai")
+        self.folder_model.setFilter(self._folder_tree_filter())
+        if hidden_changed and self._current_folder and self._scope_kind == "folder":
+            current_path = self._current_path_for_index(self.grid.current_index())
+            self._folder_records = scan_child_folders(self._current_folder, include_hidden=self._show_hidden_folders)
+            self._apply_records_view(current_path=current_path)
+        if compact_changed:
+            self._remember_current_folder_view_state()
+        if burst_groups_changed or burst_stacks_changed:
+            self._refresh_burst_group_view()
         self._refresh_current_folder_watch()
         self._refresh_catalog_status_indicator()
         self._update_ai_toolbar_state()
@@ -13503,6 +14595,27 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Delete behavior set to {self._delete_mode.value}")
         elif session_changed:
             self.statusBar().showMessage(f"Switched to session: {self._session_id}")
+        elif toolbar_style_changed:
+            label = {"text": "text", "icons": "icons", "large_icons": "large icons"}.get(self._toolbar_style, "text")
+            self.statusBar().showMessage(f"Toolbar style set to {label}")
+        elif compact_changed:
+            state = "enabled" if self._compact_cards_enabled else "disabled"
+            self.statusBar().showMessage(f"Compact cards {state}")
+        elif free_scroll_changed:
+            state = "enabled" if self._free_smooth_scroll_enabled else "disabled"
+            self.statusBar().showMessage(f"Free smooth scrolling {state}")
+        elif hidden_changed:
+            state = "shown" if self._show_hidden_folders else "hidden"
+            self.statusBar().showMessage(f"Hidden folders {state}")
+        elif auto_advance_changed:
+            state = "enabled" if self._auto_advance_enabled else "disabled"
+            self.statusBar().showMessage(f"Auto-advance {state}")
+        elif burst_groups_changed:
+            state = "enabled" if self._burst_groups_enabled else "disabled"
+            self.statusBar().showMessage(f"Smart groups {state}")
+        elif burst_stacks_changed:
+            state = "enabled" if self._burst_stacks_enabled else "disabled"
+            self.statusBar().showMessage(f"Smart stacks {state}")
         elif catalog_changed:
             state = "enabled" if self._catalog_cache_enabled else "disabled"
             self.statusBar().showMessage(f"Catalog cache reads {state}")
@@ -13514,6 +14627,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Training profile suggestion {state}")
         elif ai_batch_changed:
             self.statusBar().showMessage(f"AI embedding batch size set to {self._ai_embed_batch_size_label()}")
+        elif ai_semantic_changed:
+            state = "enabled" if self._ai_semantic_sidecar_enabled else "disabled"
+            self.statusBar().showMessage(f"Semantic AI sidecar {state}")
 
     def _empty_recycle_bin(self) -> None:
         recycle_root = self._recycle_root_for_folder()
@@ -13593,7 +14709,7 @@ class MainWindow(QMainWindow):
             "Workflow is set to copy winners.\n\n"
             "For quicker rating with RAW or large files, consider changing Accepted handling to "
             "'Link To _winners'.\n\n"
-            "Navigate to File > Workflow Settings to change it."
+            "Open Settings to change it."
         )
         continue_button = message.addButton("Continue", QMessageBox.ButtonRole.AcceptRole)
         dont_show_button = message.addButton("Don't Show Again", QMessageBox.ButtonRole.ActionRole)
@@ -14059,6 +15175,10 @@ class MainWindow(QMainWindow):
     def _open_preview(self, index: int) -> None:
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
+        record = self._record_at(index)
+        if record is not None and record.is_folder:
+            self._select_folder(record.path)
+            return
         if self._preview_ai_cull_queue_enabled:
             current_path = self._preview_path_for_index(index)
             self._open_preview_ai_cull_queue_path(current_path)
@@ -14182,7 +15302,11 @@ class MainWindow(QMainWindow):
         selected_indexes = self.grid.selected_indexes()
         if index not in selected_indexes:
             selected_indexes = [index]
-        return [self._records[item_index] for item_index in selected_indexes if 0 <= item_index < len(self._records)]
+        return [
+            self._records[item_index]
+            for item_index in selected_indexes
+            if 0 <= item_index < len(self._records) and not self._records[item_index].is_folder
+        ]
 
     def _delete_record_by_path(self, path: str) -> bool:
         index = self._record_index_for_path(path)
@@ -14747,6 +15871,37 @@ class MainWindow(QMainWindow):
         self._decision_store.move_annotation(self._session_id, record.path, moved_record, annotation)
 
     def _show_grid_context_menu(self, index: int, global_pos) -> None:
+        current_record = self._record_at(index)
+        if current_record is not None and current_record.is_folder:
+            menu = QMenu(self)
+            open_action = menu.addAction(self._menu_text_with_hint("Open", "Space / Enter"))
+            open_file_manager_label = "Open In File Explorer" if os.name == "nt" else "Open In File Manager"
+            open_file_manager_action = menu.addAction(open_file_manager_label)
+            reveal_label = "Reveal In File Explorer" if os.name == "nt" else "Reveal In File Manager"
+            reveal_action = menu.addAction(reveal_label)
+            menu.addSeparator()
+            copy_path_action = menu.addAction("Copy Path")
+            copy_name_action = menu.addAction("Copy Folder Name")
+
+            chosen = menu.exec(global_pos)
+            if chosen is None:
+                return
+            if chosen == open_action:
+                self._select_folder(current_record.path)
+                return
+            if chosen == open_file_manager_action:
+                open_in_file_explorer(current_record.path)
+                return
+            if chosen == reveal_action:
+                reveal_in_file_explorer(current_record.path)
+                return
+            if chosen == copy_path_action:
+                QApplication.clipboard().setText(current_record.path)
+                return
+            if chosen == copy_name_action:
+                QApplication.clipboard().setText(current_record.name)
+                return
+
         records = self._selected_records_for_context(index)
         if not records:
             return
@@ -15088,6 +16243,7 @@ class MainWindow(QMainWindow):
         current_path: str | None,
     ) -> None:
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
+        self.details_view.refresh_rows()
         self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
         self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
         self._rebuild_visible_preview_group_indexes()
@@ -15105,6 +16261,7 @@ class MainWindow(QMainWindow):
         self._last_view_record_paths = next_record_paths
         self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
         self._refresh_viewport_mode()
+        self._sync_details_view_from_grid()
         self._update_action_states()
         self._update_status()
         if self._pending_folder_scroll_value is not None:
@@ -15128,8 +16285,10 @@ class MainWindow(QMainWindow):
         self._visible_ai_group_rows_by_id = {}
         self._last_view_record_paths = ()
         self.grid.set_items([])
+        self.details_view.set_records([])
         self._set_annotation_views()
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
+        self.details_view.refresh_rows()
         self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
         self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
         self._apply_records_view_action_mode()
@@ -15148,6 +16307,7 @@ class MainWindow(QMainWindow):
             self._records = list(batch)
             self._record_index_by_path = {record.path: index for index, record in enumerate(self._records)}
             self.grid.set_items(list(self._records))
+            self.details_view.set_records(list(self._records))
             self._set_annotation_views()
         else:
             offset = len(self._records)
@@ -15155,6 +16315,7 @@ class MainWindow(QMainWindow):
             for index, record in enumerate(batch, start=offset):
                 self._record_index_by_path[record.path] = index
             self.grid.append_items(list(batch))
+            self.details_view.append_records(list(batch))
         self._records_view_chunk_next_index = end
         if end < len(records):
             self._update_status()
@@ -15200,6 +16361,11 @@ class MainWindow(QMainWindow):
             )
 
         sorted_records = sort_records(list(self._all_records), self._sort_mode)
+        visible_folder_records = (
+            sort_records(list(self._folder_records), self._sort_mode)
+            if self._scope_kind == "folder" and not self._filter_query.has_active_filters
+            else []
+        )
         needs_ai = self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
         needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
         needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
@@ -15208,9 +16374,9 @@ class MainWindow(QMainWindow):
         needs_workflow = needs_workflow or bool(normalize_review_round(self._filter_query.review_round))
         needs_metadata = self._filter_query.requires_metadata
         if not self._filter_query.has_active_filters:
-            records = sorted_records
+            records = [*visible_folder_records, *sorted_records]
         else:
-            records = []
+            records = list(visible_folder_records)
             for record in sorted_records:
                 annotation = self._annotations.get(record.path, SessionAnnotation())
                 ai_result = self._ai_result_for_record(record) if needs_ai else None
@@ -15253,6 +16419,7 @@ class MainWindow(QMainWindow):
                 )
                 return False
             self.grid.set_items(records)
+            self.details_view.set_records(records)
             self._set_annotation_views()
         else:
             changed_visible_paths = tuple(path for path in dirty_paths if path in self._record_index_by_path)
@@ -15263,6 +16430,14 @@ class MainWindow(QMainWindow):
                     preserve_pixmap_cache=True,
                 )
             )
+            if changed_visible_paths:
+                self.details_view.refresh_rows(
+                    {
+                        self._record_index_by_path[path]
+                        for path in changed_visible_paths
+                        if path in self._record_index_by_path
+                    }
+                )
             if changed_visible_paths:
                 self._set_annotation_views(changed_visible_paths)
         self._finalize_records_view_display(

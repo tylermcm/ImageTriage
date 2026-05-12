@@ -44,6 +44,10 @@ except ImportError:  # pragma: no cover - depends on local environment
 
 _DEFAULT_THUMBNAIL_SIZE = QSize(512, 512)
 _MAX_STL_TRIANGLES = 5000
+_BYTES_PER_MIB = 1024 * 1024
+THUMBNAIL_SKIP_PSD_BYTES = 100 * _BYTES_PER_MIB
+THUMBNAIL_SKIP_GENERAL_BYTES = 500 * _BYTES_PER_MIB
+THUMBNAIL_SKIP_MAX_PIXELS = 160_000_000
 _ASTROPY_IMPORT_ATTEMPTED = False
 _ASTROPY_FITS = None
 _ASTROPY_ZSCALE_INTERVAL = None
@@ -210,6 +214,56 @@ def load_image_for_display(
     if provider is None:
         return _load_with_fallbacks(path, target_size)
     return provider.load_for_display(request)
+
+
+def thumbnail_skip_reason(path: str, target_size: QSize) -> str:
+    """Return a user-facing reason when thumbnail decode should be skipped."""
+    suffix = suffix_for_path(path)
+    try:
+        file_size = os.path.getsize(path)
+    except OSError:
+        file_size = 0
+
+    if suffix in PSD_SUFFIXES and file_size > THUMBNAIL_SKIP_PSD_BYTES:
+        return "Large PSD placeholder"
+    if file_size > THUMBNAIL_SKIP_GENERAL_BYTES:
+        return "Large file placeholder"
+
+    if suffix not in PSD_SUFFIXES:
+        source_size = QImageReader(path).size()
+        if source_size.isValid():
+            pixels = int(source_size.width()) * int(source_size.height())
+            if pixels > THUMBNAIL_SKIP_MAX_PIXELS and _has_target(target_size):
+                return "Large image placeholder"
+    return ""
+
+
+def sanitize_display_error(message: str | None, *, path: str = "") -> str:
+    """Collapse decoder-specific failures into short text safe for tile UI."""
+    raw = (message or "").strip()
+    if not raw:
+        return "Could not decode image."
+
+    lowered = raw.casefold()
+    suffix = suffix_for_path(path) if path else ""
+    if "qt image decoder skipped due allocation limit" in lowered:
+        return "Image is too large to preview safely."
+    if suffix in PSD_SUFFIXES and (
+        "not a psd" in lowered
+        or "not a psb" in lowered
+        or "psd" in lowered
+        or "psb" in lowered
+    ):
+        return "Could not decode PSD composite."
+    if "cannot identify image file" in lowered:
+        return "Could not decode image."
+    if "truncated" in lowered or "broken data stream" in lowered:
+        return "Image file appears incomplete or corrupt."
+    if "permission" in lowered or "access is denied" in lowered:
+        return "Could not access image file."
+    if len(raw) > 160:
+        return raw[:157].rstrip() + "..."
+    return raw
 
 
 def load_image_for_resize(path: str, *, target_size: QSize | None = None, ignore_orientation: bool = False) -> tuple[QImage, str | None]:

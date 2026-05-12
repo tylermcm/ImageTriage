@@ -28,7 +28,12 @@ from typing import TYPE_CHECKING, Callable
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .ai_model import AIModelInstallation, resolve_ai_model_installation
+from .ai_model import (
+    DEFAULT_SEMANTIC_MODEL_REPO_ID,
+    AIModelInstallation,
+    resolve_ai_model_installation,
+    resolve_semantic_model_installation,
+)
 from .ai_runtime_packages import load_ai_runtime_installation_status
 from .formats import RAW_SUFFIXES
 
@@ -65,7 +70,7 @@ DRIVE_REMOVABLE = 2
 DRIVE_FIXED = 3
 DRIVE_REMOTE = 4
 TQDM_PROGRESS_PATTERN = re.compile(
-    r"^(?P<label>Scanning images|Extracting embeddings):.*?\|\s*(?P<current>\d+)/(?P<total>\d+)\s*\[(?P<timing>[^\]]+)\]"
+    r"^(?P<label>Scanning images|Extracting embeddings|Classifying images):.*?\|\s*(?:[^|]*\|\s*)?(?P<current>\d+)/(?P<total>\d+)\s*\[(?P<timing>[^\]]+)\]"
 )
 AI_RUNTIME_DIR_NAME = "ai_runtime"
 AI_RUNNER_TARGET_NAME = "ai_python_runner.exe" if os.name == "nt" else "ai_python_runner"
@@ -96,6 +101,7 @@ class AIWorkflowRuntime:
     extraction_config_path: Path
     clustering_config_path: Path
     report_config_path: Path
+    semantic_config_path: Path = Path()
     model_installation: AIModelInstallation | None = None
     checkpoint_download_url: str | None = None
     device: str = "auto"
@@ -103,6 +109,9 @@ class AIWorkflowRuntime:
     num_workers: int = 4
     local_stage_mode: str = "auto"
     local_stage_root: Path | None = None
+    semantic_sidecar_enabled: bool = False
+    semantic_model_name: str = "openai/clip-vit-base-patch32"
+    semantic_batch_size: int = 16
 
     def validate(self) -> None:
         """Fail fast if the configured runtime cannot actually execute."""
@@ -115,6 +124,15 @@ class AIWorkflowRuntime:
         ):
             if not path.exists():
                 missing.append(f"{label}: {path}")
+        if self.semantic_sidecar_enabled:
+            if not self.semantic_config_path.exists():
+                missing.append(f"semantic config: {self.semantic_config_path}")
+            semantic_script = self.engine_root / "scripts/classify_images.py"
+            semantic_executable = semantic_script.with_suffix(".exe")
+            if not semantic_executable.exists() and not semantic_script.exists():
+                missing.append(f"semantic tool: {semantic_script}")
+            if not self.semantic_model_name:
+                missing.append("semantic model: (missing)")
         for script_relative_path in REQUIRED_AI_SCRIPT_RELATIVE_PATHS:
             script_path = self.engine_root / script_relative_path
             script_executable = script_path.with_suffix(".exe")
@@ -174,6 +192,8 @@ class AIWorkflowPaths:
     report_dir: Path
     ranked_export_path: Path
     html_report_path: Path
+    semantic_export_path: Path
+    semantic_summary_path: Path
 
 
 @dataclass(slots=True, frozen=True)
@@ -182,6 +202,7 @@ class AIStageCacheKeys:
     embedding_cache_key: str
     cluster_cache_key: str
     report_cache_key: str
+    semantic_cache_key: str = ""
 
 
 class AIRunSignals(QObject):
@@ -241,6 +262,9 @@ class AIRunTask(QRunnable):
                 _log_line(log_handle, f"Checkpoint: {self.runtime.checkpoint_path}")
                 _log_line(log_handle, f"Model: {self.runtime.model_name}")
                 _log_line(log_handle, f"Local staging: {self.runtime.local_stage_mode}")
+                _log_line(log_handle, f"Semantic sidecar: {self.runtime.semantic_sidecar_enabled}")
+                if self.runtime.semantic_sidecar_enabled:
+                    _log_line(log_handle, f"Semantic model: {self.runtime.semantic_model_name}")
                 if self.runtime.local_stage_root is not None:
                     _log_line(log_handle, f"Stage root: {self.runtime.local_stage_root}")
                 _log_line(log_handle, f"Artifacts dir: {self.paths.artifacts_dir}")
@@ -317,6 +341,28 @@ class AIRunTask(QRunnable):
                         report_args,
                     )
                 )
+                if self.runtime.semantic_sidecar_enabled:
+                    commands.append(
+                        (
+                            "semantic",
+                            "Classifying images semantically",
+                            "scripts/classify_images.py",
+                            [
+                                "--config",
+                                str(self.runtime.semantic_config_path),
+                                "--artifacts-dir",
+                                str(self.paths.artifacts_dir),
+                                "--output-dir",
+                                str(self.paths.report_dir),
+                                "--model-name",
+                                self.runtime.semantic_model_name,
+                                "--batch-size",
+                                str(self.runtime.semantic_batch_size),
+                                "--device",
+                                self.runtime.device,
+                            ],
+                        )
+                    )
 
                 if self.labels_dir is not None and self.labels_dir.exists():
                     report_args.extend(["--labels-dir", str(self.labels_dir)])
@@ -462,6 +508,13 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
             str(cache_root / "stage"),
         )
     )
+    semantic_sidecar_enabled = _bool_env("AICULLING_SEMANTIC_SIDECAR", False)
+    semantic_model_override = (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
+    semantic_installation = resolve_semantic_model_installation()
+    semantic_model_name = semantic_model_override or (
+        semantic_installation.model_name if semantic_installation.is_installed else DEFAULT_SEMANTIC_MODEL_REPO_ID
+    )
+    semantic_batch_size = _positive_int_env("AICULLING_SEMANTIC_BATCH_SIZE", 16)
 
     engine_root_path = Path(engine_root).expanduser().resolve()
     python_path = Path(python_executable).expanduser().resolve() if python_executable else None
@@ -473,12 +526,16 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
         extraction_config_path=engine_root_path / "configs" / "extract_embeddings.json",
         clustering_config_path=engine_root_path / "configs" / "cluster_embeddings.json",
         report_config_path=engine_root_path / "configs" / "export_ranked_report.json",
+        semantic_config_path=engine_root_path / "configs" / "semantic_classification.json",
         model_installation=model_installation,
         checkpoint_download_url=checkpoint_download_url,
         batch_size=batch_size,
         num_workers=num_workers,
         local_stage_mode=local_stage_mode,
         local_stage_root=local_stage_root.expanduser().resolve(),
+        semantic_sidecar_enabled=semantic_sidecar_enabled,
+        semantic_model_name=semantic_model_name,
+        semantic_batch_size=semantic_batch_size,
     )
 
 
@@ -509,6 +566,17 @@ def _nonnegative_int_env(name: str, default: int) -> int:
     return parsed if parsed >= 0 else default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw_value = (os.environ.get(name, "") or "").strip().casefold()
+    if not raw_value:
+        return default
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
     """Resolve the hidden AI artifact/report layout for a real folder."""
     folder_path = Path(folder).expanduser().resolve()
@@ -522,6 +590,8 @@ def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
         report_dir=report_dir,
         ranked_export_path=report_dir / "ranked_clusters_export.csv",
         html_report_path=report_dir / "ranked_clusters_report.html",
+        semantic_export_path=report_dir / "semantic_classifications.csv",
+        semantic_summary_path=report_dir / "semantic_classification_summary.json",
     )
 
 
@@ -594,12 +664,27 @@ def build_ai_stage_cache_keys(
         "checkpoint": _path_signature(runtime.checkpoint_path),
         "labels_dir": _path_signature(labels_dir),
         "reference_bank": _path_signature(reference_bank_path),
+        "semantic_sidecar_enabled": runtime.semantic_sidecar_enabled,
     }
+    if runtime.semantic_sidecar_enabled:
+        report_payload["semantic_model_name"] = runtime.semantic_model_name
+        report_payload["semantic_config"] = _path_signature(runtime.semantic_config_path)
+        report_payload["semantic_batch_size"] = runtime.semantic_batch_size
     report_cache_key = _hash_payload(report_payload)
+    semantic_cache_key = ""
+    if runtime.semantic_sidecar_enabled:
+        semantic_cache_key = _hash_payload(
+            {
+                "report_cache_key": report_cache_key,
+                "semantic_model_name": runtime.semantic_model_name,
+                "semantic_config": _path_signature(runtime.semantic_config_path),
+            }
+        )
     return AIStageCacheKeys(
         embedding_cache_key=embedding_cache_key,
         cluster_cache_key=cluster_cache_key,
         report_cache_key=report_cache_key,
+        semantic_cache_key=semantic_cache_key,
     )
 
 
@@ -622,6 +707,11 @@ def ai_cluster_artifacts_ready(paths: AIWorkflowPaths) -> bool:
 def ai_report_artifacts_ready(paths: AIWorkflowPaths) -> bool:
     """Return whether the ranked AI report export exists for a folder."""
     return paths.ranked_export_path.exists()
+
+
+def ai_semantic_artifacts_ready(paths: AIWorkflowPaths) -> bool:
+    """Return whether the semantic sidecar export exists for a folder."""
+    return paths.semantic_export_path.exists() and paths.semantic_summary_path.exists()
 
 
 def _remove_tree_if_present(path: Path) -> None:
@@ -776,7 +866,8 @@ def load_supported_extensions(config_path: Path) -> tuple[str, ...]:
 
 
 def _default_stage_root() -> Path:
-    local_appdata = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    local_appdata_value = os.environ.get("LOCALAPPDATA")
+    local_appdata = Path(local_appdata_value) if local_appdata_value else Path.home() / "AppData" / "Local"
     return local_appdata / "image_triage_ai_cache" / "stage"
 
 
@@ -892,8 +983,10 @@ def _application_runtime_root(workspace_root: Path) -> Path:
 
 def _default_user_cache_root() -> Path:
     if os.name == "nt":
-        return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    return Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        return Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    return Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
 
 
 def _download_asset(source: str, destination: Path) -> None:

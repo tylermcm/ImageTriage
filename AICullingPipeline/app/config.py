@@ -21,6 +21,26 @@ DEFAULT_EXTENSIONS = (
     ".webp",
 )
 DEFAULT_REFERENCE_BUCKETS = ("terrible", "bad", "okay", "good", "great")
+DEFAULT_SEMANTIC_MODEL_NAME = "openai/clip-vit-base-patch32"
+DEFAULT_SEMANTIC_LABELS = (
+    "portrait",
+    "group photo",
+    "wedding",
+    "sports action",
+    "wildlife",
+    "pet",
+    "landscape",
+    "architecture",
+    "interior",
+    "food",
+    "product",
+    "vehicle",
+    "document",
+    "screenshot",
+    "astrophotography",
+    "macro",
+    "low quality image",
+)
 
 
 @dataclass
@@ -513,6 +533,92 @@ class ReferenceBankBuildConfig:
         payload["output_dir"] = str(self.output_dir)
         payload["supported_extensions"] = list(self.supported_extensions)
         payload["reference_buckets"] = list(self.reference_buckets)
+        return payload
+
+
+@dataclass
+class SemanticClassificationConfig:
+    """Serializable runtime configuration for optional semantic image classification."""
+
+    artifacts_dir: Path
+    output_dir: Path
+    model_name: str = DEFAULT_SEMANTIC_MODEL_NAME
+    metadata_filename: str = "images.csv"
+    semantic_export_filename: str = "semantic_classifications.csv"
+    semantic_summary_filename: str = "semantic_classification_summary.json"
+    labels: tuple[str, ...] = DEFAULT_SEMANTIC_LABELS
+    batch_size: int = 16
+    device: str = "auto"
+    top_k: int = 3
+    log_level: str = "INFO"
+
+    @classmethod
+    def from_file(cls, path: Union[str, Path]) -> "SemanticClassificationConfig":
+        """Load semantic classification configuration from a JSON file."""
+
+        config_path = Path(path).expanduser().resolve()
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        return cls.from_dict(payload, base_dir=config_path.parent)
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: dict[str, Any],
+        *,
+        base_dir: Optional[Path] = None,
+    ) -> "SemanticClassificationConfig":
+        """Create a semantic classification config from a dictionary payload."""
+
+        base_dir = base_dir or Path.cwd()
+        normalized: dict[str, Any] = dict(payload)
+        normalized["artifacts_dir"] = _resolve_path(normalized["artifacts_dir"], base_dir)
+        normalized["output_dir"] = _resolve_path(normalized["output_dir"], base_dir)
+        if "labels" in normalized:
+            normalized["labels"] = tuple(str(label).strip() for label in normalized["labels"] if str(label).strip())
+
+        config = cls(**normalized)
+        config.validate()
+        return config
+
+    def apply_overrides(self, **overrides: Any) -> "SemanticClassificationConfig":
+        """Return a new semantic config with non-null override values applied."""
+
+        updated = asdict(self)
+        for key, value in overrides.items():
+            if value is None:
+                continue
+            if key in {"artifacts_dir", "output_dir"}:
+                updated[key] = _resolve_path(value, Path.cwd())
+            elif key == "labels":
+                updated[key] = tuple(str(label).strip() for label in value if str(label).strip())
+            else:
+                updated[key] = value
+
+        config = SemanticClassificationConfig(**updated)
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        """Validate semantic classification values."""
+
+        if not self.model_name:
+            raise ValueError("model_name must be provided.")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be greater than 0.")
+        if self.top_k <= 0:
+            raise ValueError("top_k must be greater than 0.")
+        if self.device not in {"auto", "cpu"} and not self.device.startswith("cuda"):
+            raise ValueError("device must be 'auto', 'cpu', or a cuda device string.")
+        if not self.labels:
+            raise ValueError("labels must not be empty.")
+
+    def to_serializable_dict(self) -> dict[str, Any]:
+        """Convert the semantic config to a JSON-safe dictionary."""
+
+        payload = asdict(self)
+        payload["artifacts_dir"] = str(self.artifacts_dir)
+        payload["output_dir"] = str(self.output_dir)
+        payload["labels"] = list(self.labels)
         return payload
 
 

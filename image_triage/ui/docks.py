@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QSizeGrip,
     QSplitter,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -18,15 +25,91 @@ from PySide6.QtWidgets import (
 
 from ..ai_results import build_ai_explanation_lines
 from ..formats import suffix_for_path
+from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats
 from ..review_workflows import review_round_label
 from .theme import ThemePalette, default_theme
 
 if TYPE_CHECKING:
     from ..ai_results import AIImageResult
+    from ..metadata import CaptureMetadata
     from ..models import ImageRecord, SessionAnnotation
 
 
 TAB_WIDTH = 34
+
+
+class InspectorHistogram(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._stats = EMPTY_INSPECTION_STATS
+        self.setObjectName("inspectorHistogram")
+        self.setMinimumHeight(54)
+        self.setMaximumHeight(70)
+
+    def set_stats(self, stats: InspectionStats | None) -> None:
+        self._stats = stats or EMPTY_INSPECTION_STATS
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.fillRect(rect, QColor(18, 20, 24))
+        painter.setPen(QPen(QColor(54, 58, 66), 1))
+        painter.drawRoundedRect(rect, 5, 5)
+
+        histogram = self._stats.histogram_luma
+        max_value = max(histogram) if histogram else 0
+        if max_value <= 0:
+            painter.setPen(QColor(126, 132, 144))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Histogram not available")
+            return
+
+        plot = rect.adjusted(6, 5, -6, -5)
+        width = max(1, plot.width())
+        height = max(1, plot.height())
+        painter.setPen(QPen(QColor(162, 172, 190), 1))
+        for x in range(width):
+            start = int((x / width) * len(histogram))
+            end = max(start + 1, int(((x + 1) / width) * len(histogram)))
+            value = max(histogram[start:end])
+            bar_height = int((value / max_value) * height)
+            painter.drawLine(plot.left() + x, plot.bottom(), plot.left() + x, plot.bottom() - bar_height)
+
+
+class SnapPreviewOverlay(QWidget):
+    def __init__(self, parent=None) -> None:
+        flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        super().__init__(parent, flags)
+        self.setObjectName("snapPreviewOverlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.hide()
+
+    def show_global_rect(self, rect: QRect | None) -> None:
+        if rect is None or rect.isNull() or not rect.isValid():
+            self.hide()
+            return
+        self.setGeometry(rect)
+        self.show()
+        self.raise_()
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 8, 8)
+        painter.fillPath(path, QColor(43, 126, 255, 72))
+        painter.setPen(QPen(QColor(96, 170, 255, 230), 2))
+        painter.drawPath(path)
 
 
 def _encode_qbytearray(value: QByteArray) -> str:
@@ -103,6 +186,8 @@ class WorkspacePanelHeader(QWidget):
     collapse_requested = Signal()
     popout_requested = Signal()
     close_requested = Signal()
+    drag_popout_requested = Signal(object, object)
+    drag_move_requested = Signal(object)
     drag_release_requested = Signal(object)
 
     def __init__(self, title: str, subtitle: str, *, variant: str, parent=None) -> None:
@@ -113,6 +198,7 @@ class WorkspacePanelHeader(QWidget):
         self._drag_start: QPoint | None = None
         self._dragging = False
         self.setObjectName(f"{variant}PanelHeader")
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 10, 10)
@@ -124,6 +210,7 @@ class WorkspacePanelHeader(QWidget):
 
         self.title_label = QLabel(title)
         self.title_label.setObjectName("paneTitle")
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         title_row.addWidget(self.title_label)
         title_row.addStretch(1)
 
@@ -143,6 +230,7 @@ class WorkspacePanelHeader(QWidget):
         self.subtitle_label = QLabel(subtitle)
         self.subtitle_label.setObjectName("panelHeaderSubtitle")
         self.subtitle_label.setWordWrap(False)
+        self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(self.subtitle_label)
 
         self._sync_tooltips()
@@ -160,23 +248,43 @@ class WorkspacePanelHeader(QWidget):
 
     def set_floating_state(self, floating: bool, *, maximized: bool = False) -> None:
         self._floating = floating
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
         self._sync_tooltips()
 
     def _sync_tooltips(self) -> None:
         if self._floating:
-            self.minimize_button.setToolTip(f"Minimize {self._title}")
+            self.minimize_button.setText("\u00AB")
+            self.maximize_button.setText("\u21A9")
+            self.minimize_button.setToolTip(f"Collapse {self._title} palette")
             self.maximize_button.setToolTip(f"Dock {self._title} back into the workspace")
-            self.close_button.setToolTip(f"Close {self._title}")
+            self.close_button.setToolTip(f"Hide {self._title}")
             return
+        self.minimize_button.setText("\u2212")
+        self.maximize_button.setText("\u25A1")
         self.minimize_button.setToolTip(f"Collapse {self._title}")
         self.maximize_button.setToolTip(f"Pop out {self._title}")
         self.close_button.setToolTip(f"Hide {self._title}")
-        self.maximize_button.setText("\u25A1")
+
+    def _floating_palette_window(self) -> QWidget:
+        widget = self.parentWidget()
+        while widget is not None:
+            if widget.objectName() == "floatingPanelPalette":
+                return widget
+            widget = widget.parentWidget()
+        return self.window()
+
+    def start_floating_drag(self, global_pos: QPoint) -> None:
+        top_level = self._floating_palette_window()
+        self._drag_offset = global_pos - top_level.frameGeometry().topLeft()
+        self._drag_start = global_pos
+        self._dragging = True
 
     def mousePressEvent(self, event) -> None:
-        if self._floating and event.button() == Qt.MouseButton.LeftButton:
-            top_level = self.window()
-            self._drag_offset = event.globalPosition().toPoint() - top_level.frameGeometry().topLeft()
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._floating:
+                self.start_floating_drag(event.globalPosition().toPoint())
+            else:
+                self._drag_offset = event.position().toPoint()
             self._drag_start = event.globalPosition().toPoint()
             self._dragging = False
             event.accept()
@@ -185,8 +293,10 @@ class WorkspacePanelHeader(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         if self._floating and self._dragging and self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            top_level = self.window()
-            top_level.move(event.globalPosition().toPoint() - self._drag_offset)
+            top_level = self._floating_palette_window()
+            current = event.globalPosition().toPoint()
+            top_level.move(current - self._drag_offset)
+            self.drag_move_requested.emit(current)
             event.accept()
             return
         if self._floating and self._drag_offset is not None and self._drag_start is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -195,8 +305,18 @@ class WorkspacePanelHeader(QWidget):
                 event.accept()
                 return
             self._dragging = True
-            top_level = self.window()
+            top_level = self._floating_palette_window()
             top_level.move(current - self._drag_offset)
+            self.drag_move_requested.emit(current)
+            event.accept()
+            return
+        if not self._floating and self._drag_offset is not None and self._drag_start is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            current = event.globalPosition().toPoint()
+            if not self._dragging and (current - self._drag_start).manhattanLength() < QApplication.startDragDistance():
+                event.accept()
+                return
+            self._dragging = True
+            self.drag_popout_requested.emit(current, self._drag_offset)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -219,34 +339,182 @@ class FloatingPanelWindow(QWidget):
     close_requested = Signal()
     maximized_changed = Signal(bool)
 
-    def __init__(self, title: str) -> None:
-        super().__init__(None, Qt.WindowType.Window)
+    def __init__(self, title: str, parent=None) -> None:
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(title)
-        self.resize(420, 860)
+        self.setObjectName("floatingPanelPalette")
+        self.setMinimumSize(260, 220)
+        self.resize(360, 720)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
 
-    def set_card(self, widget: QWidget) -> None:
-        layout = self.layout()
-        if layout is None:
-            return
-        while layout.count():
-            item = layout.takeAt(0)
-            child = item.widget()
-            if child is not None:
-                child.setParent(None)
-        layout.addWidget(widget)
+        self._splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._splitter.setObjectName("floatingPanelSplitter")
+        self._splitter.setChildrenCollapsible(False)
+        layout.addWidget(self._splitter, 1)
 
-    def take_card(self) -> QWidget | None:
-        layout = self.layout()
-        if layout is None or layout.count() == 0:
+        grip_row = QWidget(self)
+        grip_row.setObjectName("floatingPanelResizeRow")
+        grip_layout = QHBoxLayout(grip_row)
+        grip_layout.setContentsMargins(0, 0, 2, 2)
+        grip_layout.setSpacing(0)
+        grip_layout.addStretch(1)
+        self._size_grip = QSizeGrip(grip_row)
+        self._size_grip.setObjectName("floatingPanelSizeGrip")
+        grip_layout.addWidget(self._size_grip, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        layout.addWidget(grip_row)
+
+    def set_card(self, key: str, title: str, widget: QWidget, *, target_key: str | None = None) -> None:
+        existing_index = self.index_for_key(key)
+        if existing_index >= 0:
+            existing = self.take_card(key)
+            if existing is not None and existing is not widget:
+                existing.setParent(None)
+        widget.setProperty("workspacePanelKey", key)
+        host = self._host_for_key(target_key) if target_key else None
+        if host is None:
+            host = self._first_host() or self._create_host()
+        host.addTab(widget, title)
+        host.setCurrentWidget(widget)
+        self._sync_hosts()
+
+    def split_card(self, key: str, title: str, widget: QWidget, *, target_key: str | None, placement: str) -> None:
+        existing = self.take_card(key)
+        if existing is not None and existing is not widget:
+            existing.setParent(None)
+        target_host = self._host_for_key(target_key) or self._first_host()
+        target_index = self._host_index(target_host)
+        insert_index = self._splitter.count()
+        if target_index >= 0:
+            insert_index = target_index if placement in {"top", "left"} else target_index + 1
+        host = self._create_host(insert_index=insert_index)
+        widget.setProperty("workspacePanelKey", key)
+        host.addTab(widget, title)
+        host.setCurrentWidget(widget)
+        self._sync_tab_bar()
+        self._equalize_split_sizes()
+
+    def take_card(self, key: str | None = None) -> QWidget | None:
+        if self._splitter.count() == 0:
             return None
-        item = layout.takeAt(0)
-        widget = item.widget()
+        host = self._host_for_key(key) if key is not None else self._first_host()
+        if host is None:
+            return None
+        index = self._index_in_host(host, key) if key is not None else host.currentIndex()
+        if index < 0:
+            return None
+        widget = host.widget(index)
+        host.removeTab(index)
         if widget is not None:
             widget.setParent(None)
+        self._remove_empty_hosts()
+        self._sync_hosts()
         return widget
+
+    def contains_key(self, key: str) -> bool:
+        return self.index_for_key(key) >= 0
+
+    def index_for_key(self, key: str | None) -> int:
+        host = self._host_for_key(key)
+        if host is not None:
+            return self._index_in_host(host, key)
+        return -1
+
+    def keys(self) -> tuple[str, ...]:
+        keys: list[str] = []
+        for host in self._hosts():
+            for index in range(host.count()):
+                widget = host.widget(index)
+                key = str(widget.property("workspacePanelKey") or "") if widget is not None else ""
+                if key:
+                    keys.append(key)
+        return tuple(keys)
+
+    def card_count(self) -> int:
+        return sum(host.count() for host in self._hosts())
+
+    def key_at_global_pos(self, global_pos: QPoint) -> str | None:
+        host = self.host_at_global_pos(global_pos)
+        if host is None:
+            return None
+        widget = host.currentWidget()
+        return str(widget.property("workspacePanelKey") or "") if widget is not None else None
+
+    def host_at_global_pos(self, global_pos: QPoint) -> QTabWidget | None:
+        for host in self._hosts():
+            host_rect = QRect(host.mapToGlobal(QPoint(0, 0)), host.size())
+            if host_rect.contains(global_pos):
+                return host
+        return None
+
+    def _create_host(self, *, insert_index: int | None = None) -> QTabWidget:
+        host = QTabWidget(self._splitter)
+        host.setObjectName("floatingPanelTabs")
+        host.setDocumentMode(True)
+        host.setMovable(True)
+        if insert_index is None or insert_index >= self._splitter.count():
+            self._splitter.addWidget(host)
+        else:
+            self._splitter.insertWidget(max(0, insert_index), host)
+        return host
+
+    def _hosts(self) -> tuple[QTabWidget, ...]:
+        hosts: list[QTabWidget] = []
+        for index in range(self._splitter.count()):
+            widget = self._splitter.widget(index)
+            if isinstance(widget, QTabWidget):
+                hosts.append(widget)
+        return tuple(hosts)
+
+    def _first_host(self) -> QTabWidget | None:
+        hosts = self._hosts()
+        return hosts[0] if hosts else None
+
+    def _host_for_key(self, key: str | None) -> QTabWidget | None:
+        if key is None:
+            return None
+        for host in self._hosts():
+            if self._index_in_host(host, key) >= 0:
+                return host
+        return None
+
+    def _host_index(self, host: QTabWidget | None) -> int:
+        if host is None:
+            return -1
+        for index in range(self._splitter.count()):
+            if self._splitter.widget(index) is host:
+                return index
+        return -1
+
+    def _index_in_host(self, host: QTabWidget, key: str | None) -> int:
+        if key is None:
+            return -1
+        for index in range(host.count()):
+            widget = host.widget(index)
+            if widget is not None and widget.property("workspacePanelKey") == key:
+                return index
+        return -1
+
+    def _remove_empty_hosts(self) -> None:
+        for host in self._hosts():
+            if host.count() == 0:
+                host.setParent(None)
+                host.deleteLater()
+
+    def _sync_hosts(self) -> None:
+        self._remove_empty_hosts()
+        self._sync_tab_bar()
+
+    def _sync_tab_bar(self) -> None:
+        for host in self._hosts():
+            host.tabBar().setVisible(host.count() > 1)
+
+    def _equalize_split_sizes(self) -> None:
+        count = self._splitter.count()
+        if count <= 1:
+            return
+        self._splitter.setSizes([1 for _ in range(count)])
 
     def changeEvent(self, event) -> None:
         if event.type() == QEvent.Type.WindowStateChange:
@@ -263,6 +531,8 @@ class WorkspacePanel(QWidget):
     popout_requested = Signal(str)
     close_requested = Signal(str)
     expand_requested = Signal(str)
+    drag_popout_requested = Signal(str, object, object)
+    drag_move_requested = Signal(str, object)
     dock_drop_requested = Signal(str, object)
 
     def __init__(
@@ -303,6 +573,8 @@ class WorkspacePanel(QWidget):
         self.header.collapse_requested.connect(lambda: self.collapse_requested.emit(self.key))
         self.header.popout_requested.connect(lambda: self.popout_requested.emit(self.key))
         self.header.close_requested.connect(lambda: self.close_requested.emit(self.key))
+        self.header.drag_popout_requested.connect(lambda point, offset: self.drag_popout_requested.emit(self.key, point, offset))
+        self.header.drag_move_requested.connect(lambda point: self.drag_move_requested.emit(self.key, point))
         self.header.drag_release_requested.connect(lambda point: self.dock_drop_requested.emit(self.key, point))
         frame_layout.addWidget(self.header)
 
@@ -417,10 +689,33 @@ class WorkspaceDocks:
         self.inspector = inspector
         self.toggle_actions: dict[str, QAction] = {}
         self._floating_windows: dict[str, FloatingPanelWindow] = {}
+        self._snap_preview = SnapPreviewOverlay(self.shell.window())
+        self._snap_distance = 28
         self._panel_map = {
             "library": self.library,
             "inspector": self.inspector,
         }
+        self._side_columns = {
+            "left": QSplitter(Qt.Orientation.Vertical, self.splitter),
+            "right": QSplitter(Qt.Orientation.Vertical, self.splitter),
+        }
+        self._side_columns["left"].setObjectName("leftDockedPanelColumn")
+        self._side_columns["right"].setObjectName("rightDockedPanelColumn")
+        for column in self._side_columns.values():
+            column.setChildrenCollapsible(False)
+        self._side_orders = {
+            "left": ["library"],
+            "right": ["inspector"],
+        }
+        self._side_tab_groups: dict[str, list[str]] = {"left": [], "right": []}
+        self._side_tab_widgets = {
+            "left": QTabWidget(self._side_columns["left"]),
+            "right": QTabWidget(self._side_columns["right"]),
+        }
+        for tab_widget in self._side_tab_widgets.values():
+            tab_widget.setObjectName("dockedPanelTabs")
+            tab_widget.setDocumentMode(True)
+            tab_widget.setMovable(True)
         self._default_sizes = [self.library.expanded_width, 1240, self.inspector.expanded_width]
         self._wiring_complete = False
 
@@ -429,6 +724,8 @@ class WorkspaceDocks:
             panel.popout_requested.connect(self.pop_out_panel)
             panel.close_requested.connect(self.hide_panel)
             panel.expand_requested.connect(self.expand_panel)
+            panel.drag_popout_requested.connect(self._handle_panel_drag_popout)
+            panel.drag_move_requested.connect(self._handle_floating_drag_move)
             panel.dock_drop_requested.connect(self._handle_floating_drop)
             action = QAction(f"Show {panel.title}", self.shell)
             action.setCheckable(True)
@@ -449,6 +746,8 @@ class WorkspaceDocks:
             self._dock_floating_panel(key, show_after=True)
         self.library.set_side("left")
         self.inspector.set_side("right")
+        self._side_orders = {"left": ["library"], "right": ["inspector"]}
+        self._side_tab_groups = {"left": [], "right": []}
         self._sync_splitter_order()
         self.library.show_expanded()
         self.inspector.show_expanded()
@@ -467,9 +766,19 @@ class WorkspaceDocks:
                 "floating_geometry": _encode_qbytearray(window.saveGeometry()) if window is not None else "",
             }
         return {
-            "version": 2,
+            "version": 3,
             "splitter_state": _encode_qbytearray(self.splitter.saveState()),
             "panels": panels_state,
+            "side_orders": {
+                side: [key for key in order if key in self._panel_map]
+                for side, order in self._side_orders.items()
+                if side in {"left", "right"}
+            },
+            "side_tab_groups": {
+                side: [key for key in keys if key in self._panel_map]
+                for side, keys in self._side_tab_groups.items()
+                if side in {"left", "right"}
+            },
         }
 
     def restore_state(self, payload: dict[str, Any] | None) -> bool:
@@ -488,7 +797,8 @@ class WorkspaceDocks:
             side = panel_state.get("side")
             if side in {"left", "right"}:
                 panel.set_side(side)
-        self._normalize_panel_sides()
+        self._side_orders = self._validated_side_map(payload.get("side_orders"), default=self._side_orders)
+        self._side_tab_groups = self._validated_side_map(payload.get("side_tab_groups"), default={"left": [], "right": []})
         self._sync_splitter_order()
 
         for key, panel_state in panels_state.items():
@@ -513,6 +823,20 @@ class WorkspaceDocks:
             self._rebalance_sizes()
         return True
 
+    def _validated_side_map(self, payload: object, *, default: dict[str, list[str]]) -> dict[str, list[str]]:
+        result = {
+            "left": list(default.get("left", [])),
+            "right": list(default.get("right", [])),
+        }
+        if not isinstance(payload, dict):
+            return result
+        for side in ("left", "right"):
+            keys = payload.get(side)
+            if not isinstance(keys, list):
+                continue
+            result[side] = [key for key in keys if isinstance(key, str) and key in self._panel_map]
+        return result
+
     def expand_panel(self, key: str) -> None:
         panel = self._panel_map[key]
         if key in self._floating_windows:
@@ -523,7 +847,20 @@ class WorkspaceDocks:
 
     def collapse_panel(self, key: str) -> None:
         if key in self._floating_windows:
-            self._floating_windows[key].showMinimized()
+            panel = self._panel_map[key]
+            window = self._floating_windows[key]
+            if window.card_count() > 1:
+                return
+            if panel.viewport.isVisible():
+                panel.viewport.hide()
+                collapsed_height = max(64, panel.header.sizeHint().height() + 10)
+                window.setMinimumHeight(collapsed_height)
+                window.resize(window.width(), collapsed_height)
+            else:
+                panel.viewport.show()
+                window.setMinimumHeight(220)
+                if window.height() < 360:
+                    window.resize(window.width(), 720)
             return
         panel = self._panel_map[key]
         if panel.mode == "expanded":
@@ -544,19 +881,28 @@ class WorkspaceDocks:
         self._set_action_checked(key, False)
         self._rebalance_sizes()
 
-    def pop_out_panel(self, key: str, geometry: str | None = None) -> None:
+    def pop_out_panel(
+        self,
+        key: str,
+        geometry: str | None = None,
+        *,
+        drag_global_pos: QPoint | None = None,
+        header_drag_offset: QPoint | None = None,
+    ) -> FloatingPanelWindow | None:
         if key in self._floating_windows:
-            self.dock_to_side(key, self._panel_map[key].side, show_after=True)
-            return
+            if drag_global_pos is None:
+                self.dock_to_side(key, self._panel_map[key].side, show_after=True)
+            return self._floating_windows.get(key)
 
         panel = self._panel_map[key]
         if panel.mode == "expanded":
             panel.set_expanded_width(panel.width())
 
-        window = FloatingPanelWindow(panel.title)
-        window.close_requested.connect(lambda target=key: self._handle_floating_close_request(target))
+        start_pos = panel.mapToGlobal(QPoint(12, 32))
+        window = FloatingPanelWindow(panel.title, parent=self.shell.window())
+        window.close_requested.connect(lambda target=window: self._handle_floating_close_request(target))
         window.maximized_changed.connect(lambda maximized, target=key: self._handle_floating_maximize_request(target, maximized))
-        window.set_card(panel.detach_frame())
+        window.set_card(key, panel.title, panel.detach_frame())
         self._floating_windows[key] = window
 
         panel.set_floating()
@@ -568,20 +914,25 @@ class WorkspaceDocks:
             floating_geometry = _decode_qbytearray(geometry)
             if not floating_geometry.isEmpty():
                 window.restoreGeometry(floating_geometry)
+        else:
+            window.move(self._clamped_palette_position(start_pos, window.size()))
         window.show()
+        if drag_global_pos is not None and header_drag_offset is not None:
+            header_global = panel.header.mapToGlobal(header_drag_offset)
+            target_pos = window.pos() + (drag_global_pos - header_global)
+            window.move(self._clamped_palette_position(target_pos, window.size()))
+            panel.header.start_floating_drag(drag_global_pos)
         window.raise_()
         window.activateWindow()
+        return window
 
     def dock_to_side(self, key: str, side: str, *, show_after: bool = True) -> None:
         panel = self._panel_map[key]
         if side not in {"left", "right"}:
             side = panel.side
-        opposite = "right" if side == "left" else "left"
-        for other_key, other_panel in self._panel_map.items():
-            if other_key != key and other_panel.side == side:
-                other_panel.set_side(opposite)
         panel.set_side(side)
-        self._normalize_panel_sides()
+        self._move_side_order(key, side)
+        self._remove_from_tab_groups(key)
         self._sync_splitter_order()
 
         if key in self._floating_windows:
@@ -596,14 +947,28 @@ class WorkspaceDocks:
             self._set_action_checked(key, False)
         self._rebalance_sizes()
 
+    def swap_sides(self) -> None:
+        self.library.set_side("right" if self.library.side == "left" else "left")
+        self.inspector.set_side("right" if self.inspector.side == "left" else "left")
+        self._side_orders = {
+            "left": [key for key, panel in self._panel_map.items() if panel.side == "left"],
+            "right": [key for key, panel in self._panel_map.items() if panel.side == "right"],
+        }
+        self._side_tab_groups = {"left": [], "right": []}
+        self._sync_splitter_order()
+        self._rebalance_sizes()
+
     def _dock_floating_panel(self, key: str, *, show_after: bool) -> None:
         panel = self._panel_map[key]
-        window = self._floating_windows.pop(key, None)
+        window = self._floating_windows.get(key)
         frame = None
         if window is not None:
-            frame = window.take_card()
-            window.hide()
-            window.deleteLater()
+            frame = window.take_card(key)
+            self._floating_windows.pop(key, None)
+            if window.card_count() == 0:
+                window.hide()
+                window.deleteLater()
+        panel.viewport.show()
         panel.attach_frame(frame)
         if show_after:
             panel.show_expanded()
@@ -612,10 +977,21 @@ class WorkspaceDocks:
             panel.hide_panel()
             self._set_action_checked(key, False)
         panel.set_floating_state(False)
+        self._move_side_order(key, panel.side)
+        self._remove_from_tab_groups(key)
+        self._sync_splitter_order()
         self._rebalance_sizes()
 
-    def _handle_floating_close_request(self, key: str) -> None:
-        self._dock_floating_panel(key, show_after=False)
+    def _handle_floating_close_request(self, window: FloatingPanelWindow) -> None:
+        for key in window.keys():
+            self._dock_floating_panel(key, show_after=False)
+
+    def _handle_panel_drag_popout(self, key: str, global_pos: QPoint, header_offset: QPoint) -> None:
+        self.pop_out_panel(key, drag_global_pos=global_pos, header_drag_offset=header_offset)
+        self._show_snap_preview_for_drag(key, global_pos)
+
+    def _handle_floating_drag_move(self, key: str, global_pos: QPoint) -> None:
+        self._show_snap_preview_for_drag(key, global_pos)
 
     def _handle_floating_maximize_request(self, key: str, maximized: bool) -> None:
         if not maximized or key not in self._floating_windows:
@@ -623,10 +999,19 @@ class WorkspaceDocks:
         QTimer.singleShot(0, lambda target=key: self._dock_floating_to_stored_side(target))
 
     def _handle_floating_drop(self, key: str, global_pos) -> None:
+        self._hide_snap_preview()
+        if self._snap_floating_panel(key, global_pos):
+            return
         dock_side = self._resolve_drop_side(global_pos)
         if dock_side is None:
             return
         self.dock_to_side(key, dock_side, show_after=True)
+
+    def _show_snap_preview_for_drag(self, key: str, global_pos: QPoint) -> None:
+        self._snap_preview.show_global_rect(self._snap_preview_rect_for_drag(key, global_pos))
+
+    def _hide_snap_preview(self) -> None:
+        self._snap_preview.hide()
 
     def _dock_floating_to_stored_side(self, key: str) -> None:
         if key not in self._floating_windows:
@@ -648,50 +1033,118 @@ class WorkspaceDocks:
         sizes = self.splitter.sizes()
         if len(sizes) != 3:
             return
-        left_panel = self._panel_for_side("left")
-        right_panel = self._panel_for_side("right")
-        if left_panel.mode == "expanded" and sizes[0] > TAB_WIDTH:
-            left_panel.set_expanded_width(sizes[0])
-        if right_panel.mode == "expanded" and sizes[2] > TAB_WIDTH:
-            right_panel.set_expanded_width(sizes[2])
+        for panel in self._panels_for_side("left"):
+            if panel.mode == "expanded" and sizes[0] > TAB_WIDTH:
+                panel.set_expanded_width(sizes[0])
+        for panel in self._panels_for_side("right"):
+            if panel.mode == "expanded" and sizes[2] > TAB_WIDTH:
+                panel.set_expanded_width(sizes[2])
 
     def _rebalance_sizes(self) -> None:
         total = max(sum(self.splitter.sizes()), self.splitter.width(), 1200)
-        left_panel = self._panel_for_side("left")
-        right_panel = self._panel_for_side("right")
-        left = 0
-        right = 0
-        if left_panel.mode == "expanded":
-            left = left_panel.expanded_width
-        elif left_panel.mode == "collapsed":
-            left = TAB_WIDTH
-        if right_panel.mode == "expanded":
-            right = right_panel.expanded_width
-        elif right_panel.mode == "collapsed":
-            right = TAB_WIDTH
+        left = self._side_width("left")
+        right = self._side_width("right")
         center = max(720, total - left - right)
         self.splitter.setSizes([left, center, right])
 
-    def _panel_for_side(self, side: str) -> WorkspacePanel:
-        for panel in self._panel_map.values():
-            if panel.side == side:
-                return panel
-        return self.library if side == "left" else self.inspector
+    def _side_width(self, side: str) -> int:
+        widths: list[int] = []
+        for panel in self._panels_for_side(side):
+            if panel.mode == "expanded":
+                widths.append(panel.expanded_width)
+            elif panel.mode == "collapsed":
+                widths.append(TAB_WIDTH)
+        return max(widths) if widths else 0
 
-    def _normalize_panel_sides(self) -> None:
-        sides = {panel.side for panel in self._panel_map.values()}
-        if sides == {"left", "right"}:
-            return
-        self.library.set_side("left")
-        self.inspector.set_side("right")
+    def _panels_for_side(self, side: str) -> list[WorkspacePanel]:
+        panels: list[WorkspacePanel] = []
+        seen: set[str] = set()
+        for key in self._side_orders.get(side, []):
+            panel = self._panel_map.get(key)
+            if panel is not None and panel.side == side:
+                panels.append(panel)
+                seen.add(key)
+        for key, panel in self._panel_map.items():
+            if key not in seen and panel.side == side:
+                panels.append(panel)
+        return panels
 
     def _sync_splitter_order(self) -> None:
-        left_panel = self._panel_for_side("left")
-        right_panel = self._panel_for_side("right")
-        self.splitter.insertWidget(0, left_panel)
+        self._sync_side_column("left")
+        self._sync_side_column("right")
+        self.splitter.insertWidget(0, self._side_columns["left"])
         if self.center is not None:
             self.splitter.insertWidget(1, self.center)
-        self.splitter.insertWidget(2, right_panel)
+        self.splitter.insertWidget(2, self._side_columns["right"])
+        self._side_columns["left"].show()
+        self._side_columns["right"].show()
+        self.splitter.updateGeometry()
+        self.splitter.update()
+
+    def _sync_side_column(self, side: str) -> None:
+        column = self._side_columns[side]
+        self._clear_splitter(column)
+        panels = [panel for panel in self._panels_for_side(side) if panel.mode != "floating"]
+        visible_panels = [panel for panel in panels if panel.mode != "hidden"]
+        tab_keys = [key for key in self._side_tab_groups.get(side, []) if self._panel_map.get(key) in visible_panels]
+        tab_widget = self._side_tab_widgets[side]
+        self._clear_tabs(tab_widget)
+
+        tabbed = set(tab_keys) if len(tab_keys) > 1 else set()
+        for panel in visible_panels:
+            key = panel.key
+            if key in tabbed:
+                if tab_widget.parent() is not column:
+                    tab_widget.setParent(column)
+                if column.indexOf(tab_widget) < 0:
+                    column.addWidget(tab_widget)
+                tab_widget.addTab(panel, panel.title)
+                panel.show()
+                if key == tab_keys[-1]:
+                    tab_widget.setCurrentWidget(panel)
+                continue
+            column.addWidget(panel)
+            panel.show()
+        tab_widget.tabBar().setVisible(len(tabbed) > 1)
+        tab_widget.setVisible(len(tabbed) > 0)
+        column.setVisible(bool(visible_panels))
+        if column.count() > 1:
+            column.setSizes([1 for _ in range(column.count())])
+        column.updateGeometry()
+        column.update()
+
+    @staticmethod
+    def _clear_splitter(splitter: QSplitter) -> None:
+        while splitter.count():
+            widget = splitter.widget(0)
+            if widget is None:
+                break
+            widget.setParent(None)
+
+    @staticmethod
+    def _clear_tabs(tab_widget: QTabWidget) -> None:
+        while tab_widget.count():
+            widget = tab_widget.widget(0)
+            tab_widget.removeTab(0)
+            if widget is not None:
+                widget.setParent(None)
+
+    def _move_side_order(self, key: str, side: str, *, target_key: str | None = None, placement: str = "bottom") -> None:
+        for order in self._side_orders.values():
+            if key in order:
+                order.remove(key)
+        order = self._side_orders.setdefault(side, [])
+        if target_key in order:
+            target_index = order.index(target_key)
+            insert_index = target_index if placement in {"top", "left"} else target_index + 1
+            order.insert(insert_index, key)
+        else:
+            order.append(key)
+
+    def _remove_from_tab_groups(self, key: str) -> None:
+        for side, keys in self._side_tab_groups.items():
+            if key in keys:
+                self._side_tab_groups[side] = [item for item in keys if item != key]
 
     def _resolve_drop_side(self, global_pos) -> str | None:
         if self.shell is None:
@@ -709,6 +1162,304 @@ class WorkspaceDocks:
             return "right"
         return None
 
+    def _snap_preview_rect_for_drag(self, key: str, global_pos: QPoint) -> QRect | None:
+        window = self._floating_windows.get(key)
+        if window is None:
+            return None
+        dragged_rect = window.frameGeometry()
+        for other_window in self._unique_floating_windows(excluding=window):
+            other_rect = other_window.frameGeometry()
+            operation = self._snap_operation_for_window(global_pos, dragged_rect, other_window)
+            if operation is not None:
+                action, placement, _target_key = operation
+                return self._preview_rect_for_operation(dragged_rect, other_rect, action, placement)
+            snapped_pos = self._snap_position_for_rects(dragged_rect, other_rect)
+            if snapped_pos is not None:
+                return QRect(snapped_pos, dragged_rect.size())
+
+        for target_key, target_panel in self._panel_map.items():
+            if target_key == key or target_key in self._floating_windows or target_panel.mode not in {"expanded", "collapsed"}:
+                continue
+            target_rect = QRect(target_panel.frame.mapToGlobal(QPoint(0, 0)), target_panel.frame.size())
+            operation = self._snap_operation_for_rect(global_pos, dragged_rect, target_rect, target_key)
+            if operation is not None:
+                action, placement, _target_key = operation
+                return self._preview_rect_for_operation(dragged_rect, target_rect, action, placement)
+
+        dock_side = self._resolve_drop_side(global_pos)
+        if dock_side is not None:
+            return self._dock_side_preview_rect(dock_side)
+        return None
+
+    def _preview_rect_for_operation(self, dragged_rect: QRect, target_rect: QRect, action: str, placement: str) -> QRect | None:
+        if action == "stack":
+            height = min(72, max(44, target_rect.height() // 6))
+            return QRect(target_rect.left(), target_rect.top(), target_rect.width(), height)
+        if action == "split":
+            if placement == "top":
+                return QRect(target_rect.left(), target_rect.top(), target_rect.width(), max(96, target_rect.height() // 2))
+            if placement == "bottom":
+                height = max(96, target_rect.height() // 2)
+                return QRect(target_rect.left(), target_rect.bottom() - height + 1, target_rect.width(), height)
+        if action == "move":
+            snapped_pos = self._snap_position_for_rects(dragged_rect, target_rect)
+            if snapped_pos is not None:
+                return QRect(snapped_pos, dragged_rect.size())
+        return None
+
+    def _dock_side_preview_rect(self, side: str) -> QRect | None:
+        if self.shell is None:
+            return None
+        shell_top_left = self.shell.mapToGlobal(QPoint(0, 0))
+        shell_rect = QRect(shell_top_left, self.shell.size())
+        zone_width = max(88, min(180, shell_rect.width() // 6))
+        if side == "left":
+            return QRect(shell_rect.left(), shell_rect.top(), zone_width, shell_rect.height())
+        if side == "right":
+            return QRect(shell_rect.right() - zone_width + 1, shell_rect.top(), zone_width, shell_rect.height())
+        return None
+
+    def _snap_floating_panel(self, key: str, global_pos: QPoint) -> bool:
+        window = self._floating_windows.get(key)
+        if window is None:
+            return False
+        dragged_rect = window.frameGeometry()
+        for other_window in self._unique_floating_windows(excluding=window):
+            other_rect = other_window.frameGeometry()
+            operation = self._snap_operation_for_window(global_pos, dragged_rect, other_window)
+            if operation is not None:
+                action, placement, target_key = operation
+                if action == "stack":
+                    self._stack_floating_panel(key, other_window, target_key=target_key)
+                elif action == "split":
+                    self._split_floating_panel(key, other_window, placement=placement, target_key=target_key)
+                else:
+                    snapped_pos = self._snap_position_for_rects(dragged_rect, other_rect)
+                    if snapped_pos is not None:
+                        window.move(snapped_pos)
+                return True
+            snapped_pos = self._snap_position_for_rects(dragged_rect, other_rect)
+            if snapped_pos is not None:
+                window.move(snapped_pos)
+                return True
+        for target_key, target_panel in self._panel_map.items():
+            if target_key == key or target_key in self._floating_windows or target_panel.mode not in {"expanded", "collapsed"}:
+                continue
+            target_rect = QRect(target_panel.frame.mapToGlobal(QPoint(0, 0)), target_panel.frame.size())
+            operation = self._snap_operation_for_rect(global_pos, dragged_rect, target_rect, target_key)
+            if operation is None:
+                continue
+            action, placement, snapped_target_key = operation
+            if action == "stack":
+                self._dock_floating_panel_to_docked_target(
+                    key,
+                    target_key,
+                    placement=placement,
+                    target_key_for_order=snapped_target_key,
+                    tabbed=True,
+                )
+            elif action == "split":
+                self._dock_floating_panel_to_docked_target(
+                    key,
+                    target_key,
+                    placement=placement,
+                    target_key_for_order=snapped_target_key,
+                    tabbed=False,
+                )
+            else:
+                snapped_pos = self._snap_position_for_rects(dragged_rect, target_rect)
+                if snapped_pos is not None:
+                    window.move(snapped_pos)
+            return True
+        return False
+
+    def _snap_operation_for_window(
+        self,
+        global_pos: QPoint,
+        dragged_rect: QRect,
+        target_window: FloatingPanelWindow,
+    ) -> tuple[str, str, str | None] | None:
+        target_rect = target_window.frameGeometry()
+        target_key = target_window.key_at_global_pos(global_pos)
+        if target_key is None:
+            keys = target_window.keys()
+            target_key = keys[0] if keys else None
+        return self._snap_operation_for_rect(global_pos, dragged_rect, target_rect, target_key)
+
+    def _snap_operation_for_rect(
+        self,
+        global_pos: QPoint,
+        dragged_rect: QRect,
+        target_rect: QRect,
+        target_key: str | None,
+    ) -> tuple[str, str, str | None] | None:
+        distance = self._snap_distance
+        if not target_rect.adjusted(-distance, -distance, distance, distance).contains(global_pos):
+            return None
+        tab_zone_height = min(74, max(46, target_rect.height() // 6))
+        tab_zone = QRect(target_rect.left(), target_rect.top(), target_rect.width(), tab_zone_height)
+        if tab_zone.adjusted(0, -distance, 0, distance // 2).contains(global_pos):
+            return ("stack", "tabs", target_key)
+
+        horizontal_overlap = min(dragged_rect.right(), target_rect.right()) - max(dragged_rect.left(), target_rect.left())
+        vertical_overlap = min(dragged_rect.bottom(), target_rect.bottom()) - max(dragged_rect.top(), target_rect.top())
+        if horizontal_overlap > 64:
+            if abs(dragged_rect.top() - target_rect.bottom()) <= distance or global_pos.y() >= target_rect.center().y():
+                return ("split", "bottom", target_key)
+            if abs(dragged_rect.bottom() - target_rect.top()) <= distance or global_pos.y() > target_rect.top() + tab_zone_height:
+                return ("split", "top", target_key)
+        if vertical_overlap > 64:
+            if abs(dragged_rect.left() - target_rect.right()) <= distance:
+                return ("move", "right", target_key)
+            if abs(dragged_rect.right() - target_rect.left()) <= distance:
+                return ("move", "left", target_key)
+        return None
+
+    def _dock_floating_panel_to_docked_target(
+        self,
+        key: str,
+        docked_target_key: str,
+        *,
+        placement: str,
+        target_key_for_order: str | None,
+        tabbed: bool,
+    ) -> None:
+        source_window = self._floating_windows.get(key)
+        target_panel = self._panel_map.get(docked_target_key)
+        panel = self._panel_map.get(key)
+        if source_window is None or target_panel is None or panel is None:
+            return
+        frame = source_window.take_card(key)
+        self._floating_windows.pop(key, None)
+        if source_window.card_count() == 0:
+            source_window.hide()
+            source_window.deleteLater()
+        if frame is None:
+            return
+
+        side = target_panel.side
+        panel.attach_frame(frame)
+        panel.viewport.show()
+        panel.set_side(side)
+        panel.set_floating_state(False)
+        panel.show_expanded()
+        self._set_action_checked(key, True)
+        self._move_side_order(key, side, target_key=target_key_for_order or docked_target_key, placement=placement)
+        if tabbed:
+            group = list(self._side_tab_groups.get(side, []))
+            if docked_target_key not in group:
+                group = [docked_target_key]
+            if key in group:
+                group.remove(key)
+            group.append(key)
+            self._side_tab_groups[side] = group
+        else:
+            self._remove_from_tab_groups(key)
+            self._remove_from_tab_groups(docked_target_key)
+        self._sync_splitter_order()
+        self._rebalance_sizes()
+
+    def _unique_floating_windows(self, *, excluding: FloatingPanelWindow | None = None) -> tuple[FloatingPanelWindow, ...]:
+        windows: list[FloatingPanelWindow] = []
+        for window in self._floating_windows.values():
+            if window is excluding or window in windows:
+                continue
+            windows.append(window)
+        return tuple(windows)
+
+    def _stack_floating_panel(self, key: str, target_window: FloatingPanelWindow, *, target_key: str | None = None) -> None:
+        source_window = self._floating_windows.get(key)
+        if source_window is None or source_window is target_window:
+            return
+        panel = self._panel_map[key]
+        frame = source_window.take_card(key)
+        self._floating_windows.pop(key, None)
+        if source_window.card_count() == 0:
+            source_window.hide()
+            source_window.deleteLater()
+        if frame is None:
+            return
+        panel.viewport.show()
+        target_window.set_card(key, panel.title, frame, target_key=target_key)
+        self._floating_windows[key] = target_window
+        target_window.raise_()
+        target_window.activateWindow()
+
+    def _split_floating_panel(
+        self,
+        key: str,
+        target_window: FloatingPanelWindow,
+        *,
+        placement: str,
+        target_key: str | None = None,
+    ) -> None:
+        source_window = self._floating_windows.get(key)
+        if source_window is None or source_window is target_window:
+            return
+        panel = self._panel_map[key]
+        source_rect = source_window.frameGeometry()
+        target_rect = target_window.frameGeometry()
+        frame = source_window.take_card(key)
+        self._floating_windows.pop(key, None)
+        if source_window.card_count() == 0:
+            source_window.hide()
+            source_window.deleteLater()
+        if frame is None:
+            return
+
+        panel.viewport.show()
+        target_window.split_card(key, panel.title, frame, target_key=target_key, placement=placement)
+        self._floating_windows[key] = target_window
+        if placement in {"top", "bottom"}:
+            target_window.setGeometry(self._shared_column_geometry(source_rect, target_rect, placement))
+        target_window.raise_()
+        target_window.activateWindow()
+
+    def _shared_column_geometry(self, source: QRect, target: QRect, placement: str) -> QRect:
+        width = max(source.width(), target.width(), 300)
+        if placement == "top":
+            top = min(source.top(), target.top())
+            bottom = max(target.bottom(), source.bottom())
+        else:
+            top = min(target.top(), source.top())
+            bottom = max(source.bottom(), target.bottom())
+        height = max(bottom - top + 1, min(900, target.height() + max(220, source.height() // 2)))
+        left = target.left()
+        return QRect(left, top, width, height)
+
+    def _snap_position_for_rects(self, dragged: QRect, target: QRect) -> QPoint | None:
+        distance = self._snap_distance
+        vertical_overlap = min(dragged.bottom(), target.bottom()) - max(dragged.top(), target.top())
+        horizontal_overlap = min(dragged.right(), target.right()) - max(dragged.left(), target.left())
+        if vertical_overlap > 48:
+            if abs(dragged.left() - target.right()) <= distance:
+                return QPoint(target.right() + 1, target.top())
+            if abs(dragged.right() - target.left()) <= distance:
+                return QPoint(target.left() - dragged.width() - 1, target.top())
+            if abs(dragged.left() - target.left()) <= distance:
+                return QPoint(target.left(), dragged.top())
+            if abs(dragged.right() - target.right()) <= distance:
+                return QPoint(target.right() - dragged.width() + 1, dragged.top())
+        if horizontal_overlap > 48:
+            if abs(dragged.top() - target.bottom()) <= distance:
+                return QPoint(target.left(), target.bottom() + 1)
+            if abs(dragged.bottom() - target.top()) <= distance:
+                return QPoint(target.left(), target.top() - dragged.height() - 1)
+            if abs(dragged.top() - target.top()) <= distance:
+                return QPoint(dragged.left(), target.top())
+            if abs(dragged.bottom() - target.bottom()) <= distance:
+                return QPoint(dragged.left(), target.bottom() - dragged.height() + 1)
+        return None
+
+    def _clamped_palette_position(self, global_pos: QPoint, size: QSize) -> QPoint:
+        if self.shell is None:
+            return global_pos
+        shell_top_left = self.shell.mapToGlobal(QPoint(0, 0))
+        shell_rect = QRect(shell_top_left, self.shell.size()).adjusted(12, 12, -12, -12)
+        x = min(max(global_pos.x(), shell_rect.left()), max(shell_rect.left(), shell_rect.right() - size.width()))
+        y = min(max(global_pos.y(), shell_rect.top()), max(shell_rect.top(), shell_rect.bottom() - size.height()))
+        return QPoint(x, y)
+
     def _set_action_checked(self, key: str, checked: bool) -> None:
         action = self.toggle_actions[key]
         if action.isChecked() == checked:
@@ -719,51 +1470,228 @@ class WorkspaceDocks:
 
 
 class InspectorPanel(QWidget):
+    keep_requested = Signal()
+    reject_requested = Signal()
+    compare_requested = Signal()
+    best_of_set_requested = Signal()
+    open_editor_requested = Signal()
+    reveal_requested = Signal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("inspectorPanelContent")
 
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setObjectName("inspectorScrollArea")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        root_layout.addWidget(scroll)
+
+        content = QWidget(scroll)
+        content.setObjectName("inspectorBody")
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
-        self.folder_section = self._make_pair(layout, "Folder")
-        self.mode_section = self._make_pair(layout, "Mode")
-        self.selection_section = self._make_pair(layout, "Selection")
-        self.file_section = self._make_pair(layout, "Current File")
-        self.details_section = self._make_pair(layout, "Details")
-        self.review_section = self._make_pair(layout, "Review")
-        self.workflow_section = self._make_pair(layout, "Workflow")
-        self.ai_section = self._make_pair(layout, "AI")
+        self.title_label = QLabel("No Selection")
+        self.title_label.setObjectName("inspectorTitle")
+        self.title_label.setWordWrap(True)
+        self.title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.title_label)
 
-        self.hint_label = QLabel("Move docks around to shape your workspace. More inspector tools can plug into this panel later.")
-        self.hint_label.setObjectName("inspectorHint")
-        self.hint_label.setWordWrap(True)
-        layout.addWidget(self.hint_label)
+        self.subtitle_label = QLabel("")
+        self.subtitle_label.setObjectName("inspectorSubtitle")
+        self.subtitle_label.setWordWrap(True)
+        self.subtitle_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.subtitle_label)
+
+        self.culling_rows = self._make_section(layout, "Culling", ("Decision", "Rating", "AI Suggestion", "Confidence", "Reason"))
+        self.quality_rows = self._make_section(layout, "Quality", ("Detail", "Focus", "Motion Blur", "Noise", "Exposure", "Confidence"))
+        self.group_rows = self._make_section(
+            layout,
+            "Group Comparison",
+            ("Group Size", "Rank", "Best Candidate", "Similar Files", "Duplicate Risk", "Why"),
+        )
+        self.edit_rows = self._make_section(layout, "Edit Potential", ("Worth Editing", "Main Issue", "Fixes Needed", "Effort", "Notes"))
+        self.capture_summary = QLabel("")
+        self.capture_summary.setObjectName("inspectorValue")
+        self.capture_summary.setWordWrap(True)
+        self.capture_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._make_custom_section(layout, "Capture", self.capture_summary)
+        self.histogram_widget = InspectorHistogram(self)
+        self._make_custom_section(layout, "Histogram", self.histogram_widget)
+        self.quick_action_buttons = self._make_quick_actions(layout)
+        self.file_details_button = QToolButton(self)
+        self.file_details_button.setObjectName("inspectorDisclosureButton")
+        self.file_details_button.setText("File Details")
+        self.file_details_button.setCheckable(True)
+        self.file_details_button.setChecked(False)
+        self.file_details_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.file_details_button.setArrowType(Qt.ArrowType.RightArrow)
+        self.file_details_button.toggled.connect(self._set_file_details_visible)
+        layout.addWidget(self.file_details_button)
+        self.file_details_section = QWidget(self)
+        self.file_details_rows = self._make_section(
+            layout,
+            "",
+            ("Path", "Folder", "Modified", "Mode", "Selection", "Stack", "Companions", "Workflow"),
+            section=self.file_details_section,
+        )
+        self.file_details_section.hide()
+
         layout.addStretch(1)
+        scroll.setWidget(content)
 
         self.clear()
 
-    def _make_pair(self, layout: QVBoxLayout, title: str) -> QLabel:
-        label = QLabel(title)
-        label.setObjectName("sectionLabel")
-        value = QLabel("")
-        value.setObjectName("inspectorValue")
-        value.setWordWrap(True)
-        value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(label)
-        layout.addWidget(value)
-        return value
+    def _make_custom_section(self, layout: QVBoxLayout, title: str, widget: QWidget) -> QWidget:
+        section = QWidget(self)
+        section.setObjectName("inspectorSection")
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(6)
+        body = QWidget(section)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        body_layout.addWidget(widget)
+        self._add_section_header(section_layout, title, body)
+        section_layout.addWidget(body)
+        layout.addWidget(section)
+        return section
+
+    def _add_section_header(self, layout: QVBoxLayout, title: str, body: QWidget) -> None:
+        header = QWidget(self)
+        header.setObjectName("inspectorSectionHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("inspectorSectionTitle")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header_layout.addWidget(title_label, 1)
+
+        toggle = QToolButton(header)
+        toggle.setObjectName("inspectorSectionToggle")
+        toggle.setCheckable(True)
+        toggle.setChecked(True)
+        toggle.setArrowType(Qt.ArrowType.DownArrow)
+        toggle.setAutoRaise(True)
+        toggle.setToolTip(f"Collapse {title}")
+
+        def update_section(visible: bool, *, target: QWidget = body, button: QToolButton = toggle, label: str = title) -> None:
+            target.setVisible(visible)
+            button.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
+            button.setToolTip(f"{'Collapse' if visible else 'Expand'} {label}")
+
+        toggle.toggled.connect(update_section)
+        header_layout.addWidget(toggle, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(header)
+
+    def _make_section(
+        self,
+        layout: QVBoxLayout,
+        title: str,
+        rows: tuple[str, ...],
+        *,
+        section: QWidget | None = None,
+    ) -> dict[str, QLabel]:
+        target = section or QWidget(self)
+        target.setObjectName("inspectorSection")
+        section_layout = QVBoxLayout(target)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(6)
+
+        body = QWidget(target)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(5)
+        values: dict[str, QLabel] = {}
+        for row_index, row_name in enumerate(rows):
+            label = QLabel(row_name)
+            label.setObjectName("inspectorKey")
+            label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            value = QLabel("")
+            value.setObjectName("inspectorValue")
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(label, row_index, 0)
+            grid.addWidget(value, row_index, 1)
+            values[row_name] = value
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+        body.setLayout(grid)
+        if title:
+            self._add_section_header(section_layout, title, body)
+        section_layout.addWidget(body)
+        layout.addWidget(target)
+        return values
+
+    def _make_quick_actions(self, layout: QVBoxLayout) -> dict[str, QPushButton]:
+        section = QWidget(self)
+        section.setObjectName("inspectorSection")
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(6)
+
+        body = QWidget(section)
+        row = QGridLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setHorizontalSpacing(6)
+        row.setVerticalSpacing(6)
+        buttons = {
+            "keep": self._quick_button("Keep", self.keep_requested),
+            "reject": self._quick_button("Reject", self.reject_requested),
+            "editor": self._quick_button("Open in Editor", self.open_editor_requested),
+            "reveal": self._quick_button("Reveal File", self.reveal_requested),
+        }
+        for index, button in enumerate(buttons.values()):
+            row.addWidget(button, index // 2, index % 2)
+        body.setLayout(row)
+        self._add_section_header(section_layout, "Quick Actions", body)
+        section_layout.addWidget(body)
+        layout.addWidget(section)
+        return buttons
+
+    def _quick_button(self, text: str, signal: Signal | None) -> QPushButton:
+        button = QPushButton(text, self)
+        button.setObjectName("inspectorActionButton")
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        if signal is not None:
+            button.clicked.connect(lambda _checked=False, target=signal: target.emit())
+        return button
 
     def clear(self) -> None:
-        self.folder_section.setText("No folder selected")
-        self.mode_section.setText("Manual Review")
-        self.selection_section.setText("Nothing selected")
-        self.file_section.setText("Choose an image to see details.")
-        self.details_section.setText("Stack, edits, and file format details will appear here.")
-        self.review_section.setText("Accepted, rejected, ratings, and tags appear here.")
-        self.workflow_section.setText("Burst picks, disagreements, and review pass details appear here.")
-        self.ai_section.setText("AI details appear when an image has a matched result.")
+        self.title_label.setText("No Selection")
+        self.subtitle_label.setText("Open a folder and select an item.")
+        for rows in (
+            self.culling_rows,
+            self.quality_rows,
+            self.group_rows,
+            self.edit_rows,
+            self.file_details_rows,
+        ):
+            for value in rows.values():
+                value.setText("-")
+        self.culling_rows["Decision"].setText("Unreviewed")
+        self.culling_rows["AI Suggestion"].setText("No AI result loaded")
+        self.quality_rows["Detail"].setText("Not analyzed")
+        self.quality_rows["Focus"].setText("Not analyzed")
+        self.quality_rows["Motion Blur"].setText("Not analyzed")
+        self.quality_rows["Noise"].setText("Not analyzed")
+        self.quality_rows["Exposure"].setText("Not analyzed")
+        self.quality_rows["Confidence"].setText("Not analyzed")
+        self.group_rows["Group Size"].setText("Single image / No similar group")
+        self.edit_rows["Worth Editing"].setText("Not analyzed")
+        self.capture_summary.setText("-")
+        self.histogram_widget.set_stats(None)
+        self._set_quick_actions_enabled(False, grouped=False)
 
     def set_context(
         self,
@@ -775,70 +1703,314 @@ class InspectorPanel(QWidget):
         display_path: str,
         annotation: "SessionAnnotation | None",
         ai_result: "AIImageResult | None",
+        metadata: "CaptureMetadata | None" = None,
+        inspection_stats: InspectionStats | None = None,
+        review_insight: object | None = None,
+        workflow_insight: object | None = None,
         review_summary: str = "",
         workflow_summary: str = "",
         workflow_details: tuple[str, ...] = (),
     ) -> None:
-        self.folder_section.setText(folder or "No folder selected")
-        self.mode_section.setText(mode_label)
-        self.selection_section.setText(f"{selected_count} selected" if selected_count else "Nothing selected")
-
         if current_record is None:
-            self.file_section.setText("Choose an image to see details.")
-            self.details_section.setText("Stack, edits, and file format details will appear here.")
-            self.review_section.setText("Accepted, rejected, ratings, and tags appear here.")
-            self.workflow_section.setText("Burst picks, disagreements, and review pass details appear here.")
-            self.ai_section.setText("AI details appear when an image has a matched result.")
+            self.clear()
+            self.file_details_rows["Folder"].setText(self._safe_text(folder, "No folder selected"))
+            self.file_details_rows["Mode"].setText(self._safe_text(mode_label))
+            self.file_details_rows["Selection"].setText(f"{selected_count} selected" if selected_count else "Nothing selected")
             return
 
         active_path = display_path or current_record.path
         suffix = suffix_for_path(active_path)
-        bundle_text = current_record.bundle_label or suffix[1:].upper() if suffix else "File"
-        self.file_section.setText(f"{Path(active_path).name}\n{active_path}")
+        file_type = "Folder" if current_record.is_folder else ((suffix[1:].upper() if suffix else "File"))
+        size_text = self._format_size(current_record.size)
+        decision = self._decision_text(annotation)
+        self.title_label.setText(Path(active_path).name)
+        self.title_label.setToolTip(active_path)
+        self.subtitle_label.setText(f"{decision} | {file_type} | {size_text}")
+        self.subtitle_label.setToolTip(active_path)
 
-        detail_parts = [bundle_text]
-        if current_record.has_variant_stack:
-            detail_parts.append(f"{current_record.stack_count} variants")
-        if current_record.has_edits:
-            detail_parts.append(f"{len(current_record.edited_paths)} edited")
-        if current_record.companion_paths and not current_record.bundle_label:
-            detail_parts.append(f"{len(current_record.all_paths)} linked files")
-        self.details_section.setText(" | ".join(detail_parts))
-
-        review_parts: list[str] = []
-        if annotation is not None:
-            if annotation.winner:
-                review_parts.append("Accepted")
-            if annotation.reject:
-                review_parts.append("Rejected")
-            if annotation.rating:
-                review_parts.append(f"Rating {annotation.rating}/5")
-            if annotation.tags:
-                review_parts.append(f"Tags: {', '.join(annotation.tags)}")
-            round_label = review_round_label(annotation.review_round)
-            if round_label:
-                review_parts.append(round_label)
-        self.review_section.setText(" | ".join(review_parts) if review_parts else "Unreviewed")
-        workflow_text = "\n".join(workflow_details) if workflow_details else (workflow_summary or "No workflow insight for this file yet.")
-        self.workflow_section.setText(workflow_text)
-
-        if ai_result is None:
-            self.ai_section.setText(review_summary or "No AI result loaded for this file.")
-            return
-
-        ai_parts = [f"Score {ai_result.display_score_with_scale_text}", ai_result.confidence_bucket_label]
-        if ai_result.group_id:
-            ai_parts.append(ai_result.group_id)
-        if ai_result.group_size > 1:
-            ai_parts.append(ai_result.rank_text)
-            if ai_result.is_top_pick:
-                ai_parts.append("Top pick")
+        self.culling_rows["Decision"].setText(decision)
+        self.culling_rows["Rating"].setText(self._rating_text(annotation))
+        self.culling_rows["AI Suggestion"].setText(self._ai_suggestion_text(ai_result))
+        self.culling_rows["Confidence"].setText(self._ai_confidence_text(ai_result))
         explanation = build_ai_explanation_lines(ai_result, review_summary=review_summary)
-        explanation_text = "\n".join(explanation[:3])
-        if explanation_text:
-            self.ai_section.setText(" | ".join(ai_parts) + "\n" + explanation_text)
-            return
-        self.ai_section.setText(" | ".join(ai_parts))
+        reason = self._first_text(
+            getattr(ai_result, "confidence_summary", "") if ai_result is not None else "",
+            getattr(ai_result, "cluster_reason", "") if ai_result is not None else "",
+            *(explanation[:2] if ai_result is not None else ()),
+            workflow_summary,
+        )
+        self.culling_rows["Reason"].setText(reason or "-")
+
+        stats = inspection_stats or EMPTY_INSPECTION_STATS
+        detail_score = stats.detail_score or self._float_attr(review_insight, "detail_score")
+        self.quality_rows["Detail"].setText(self._quality_level(detail_score, stats))
+        self.quality_rows["Focus"].setText(self._focus_level(detail_score, stats))
+        self.quality_rows["Motion Blur"].setText(self._motion_blur_level(stats.motion_blur_score, analyzed=stats.width > 0, stats=stats))
+        self.quality_rows["Noise"].setText(self._noise_level(stats.noise_score, analyzed=stats.width > 0))
+        self.quality_rows["Exposure"].setText(self._exposure_label(stats))
+        self.quality_rows["Confidence"].setText(self._quality_confidence_label(stats))
+
+        group_size = max(
+            int(getattr(ai_result, "group_size", 0) or 0) if ai_result is not None else 0,
+            int(getattr(workflow_insight, "group_size", 0) or 0) if workflow_insight is not None else 0,
+            current_record.stack_count if current_record.has_variant_stack else 0,
+        )
+        is_grouped = group_size > 1
+        self.group_rows["Group Size"].setText(f"{group_size} images" if is_grouped else "Single image / No similar group")
+        self.group_rows["Rank"].setText(ai_result.rank_text if ai_result is not None and ai_result.group_size > 1 else "-")
+        best_candidate = self._best_candidate_text(ai_result, workflow_insight)
+        self.group_rows["Best Candidate"].setText(best_candidate)
+        self.group_rows["Similar Files"].setText(str(max(0, group_size - 1)) if is_grouped else "0")
+        duplicate_risk = "High" if bool(getattr(review_insight, "is_duplicate", False)) else ("Low" if is_grouped else "-")
+        self.group_rows["Duplicate Risk"].setText(duplicate_risk)
+        self.group_rows["Why"].setText(self._first_text(*(workflow_details[:2]), getattr(ai_result, "confidence_summary", "")) or "-")
+
+        self.edit_rows["Worth Editing"].setText(self._worth_editing_text(annotation, ai_result, workflow_insight))
+        self.edit_rows["Main Issue"].setText("-")
+        self.edit_rows["Fixes Needed"].setText("-")
+        self.edit_rows["Effort"].setText("Not analyzed")
+        self.edit_rows["Notes"].setText(self._first_text(workflow_summary, review_summary) or "-")
+
+        self.capture_summary.setText(self._capture_summary(metadata, current_record, file_type, size_text))
+        self.histogram_widget.set_stats(stats)
+
+        self.file_details_rows["Path"].setText(active_path)
+        self.file_details_rows["Path"].setToolTip(active_path)
+        self.file_details_rows["Folder"].setText(self._safe_text(folder, "-"))
+        self.file_details_rows["Folder"].setToolTip(folder)
+        self.file_details_rows["Modified"].setText(self._format_modified(current_record.modified_ns))
+        self.file_details_rows["Mode"].setText(self._safe_text(mode_label))
+        self.file_details_rows["Selection"].setText(f"{selected_count} selected" if selected_count else "Nothing selected")
+        self.file_details_rows["Stack"].setText(f"{current_record.stack_count} variant(s)" if current_record.has_variant_stack else "Single item")
+        companion_text = self._path_names((*current_record.companion_paths, *current_record.edited_paths))
+        self.file_details_rows["Companions"].setText(companion_text or "-")
+        self.file_details_rows["Workflow"].setText("\n".join(workflow_details) if workflow_details else "-")
+        self._set_quick_actions_enabled(not current_record.is_folder, grouped=is_grouped)
+
+    def _set_file_details_visible(self, visible: bool) -> None:
+        self.file_details_button.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
+        self.file_details_section.setVisible(visible)
+
+    def _set_quick_actions_enabled(self, enabled: bool, *, grouped: bool) -> None:
+        for key, button in self.quick_action_buttons.items():
+            button.setEnabled(enabled)
+
+    @staticmethod
+    def _safe_text(value: object, fallback: str = "-") -> str:
+        text = str(value or "").strip()
+        return text if text and text.lower() not in {"none", "null"} else fallback
+
+    @staticmethod
+    def _first_text(*values: object) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text and text.lower() not in {"none", "null"}:
+                return text
+        return ""
+
+    @staticmethod
+    def _float_attr(source: object | None, name: str) -> float | None:
+        if source is None:
+            return None
+        try:
+            value = getattr(source, name)
+        except AttributeError:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _decision_text(annotation: "SessionAnnotation | None") -> str:
+        if annotation is None:
+            return "Unreviewed"
+        if annotation.winner:
+            return "Keep"
+        if annotation.reject:
+            return "Reject"
+        if annotation.rating and annotation.rating >= 3:
+            return "Maybe"
+        return "Unreviewed"
+
+    @staticmethod
+    def _rating_text(annotation: "SessionAnnotation | None") -> str:
+        if annotation is None or not annotation.rating:
+            return "-"
+        return f"{annotation.rating}/5"
+
+    @staticmethod
+    def _ai_suggestion_text(ai_result: "AIImageResult | None") -> str:
+        if ai_result is None:
+            return "No AI result loaded"
+        bucket = str(getattr(ai_result, "confidence_bucket", "") or "")
+        if "reject" in bucket:
+            return "Reject"
+        if "winner" in bucket or "keeper" in bucket:
+            return "Keep"
+        return "Maybe"
+
+    @staticmethod
+    def _ai_confidence_text(ai_result: "AIImageResult | None") -> str:
+        if ai_result is None:
+            return "-"
+        normalized = getattr(ai_result, "normalized_score", None)
+        try:
+            return f"{float(normalized):.0f}%" if normalized is not None else "-"
+        except (TypeError, ValueError):
+            return "-"
+
+    @staticmethod
+    def _quality_level(score: float | None, stats: InspectionStats | None = None) -> str:
+        if stats is not None and stats.width > 0 and stats.detail_valid_tile_count < 4:
+            return "Low-detail frame"
+        if score is None or score <= 0:
+            return "Not analyzed"
+        if score >= 70:
+            return "High"
+        if score >= 40:
+            return "Moderate"
+        return "Low"
+
+    @staticmethod
+    def _focus_level(score: float | None, stats: InspectionStats | None = None) -> str:
+        if stats is not None and stats.width > 0 and stats.detail_valid_tile_count < 4:
+            return "Inconclusive"
+        if score is None or score <= 0:
+            return "Not analyzed"
+        if score >= 70:
+            return "Sharp"
+        if score >= 40:
+            return "Acceptable"
+        return "Inconclusive"
+
+    @staticmethod
+    def _motion_blur_level(score: float, *, analyzed: bool, stats: InspectionStats | None = None) -> str:
+        if not analyzed:
+            return "Not analyzed"
+        if stats is not None and stats.detail_valid_tile_count < 4:
+            return "Not detected"
+        if score >= 70:
+            return "Possible"
+        if score >= 40:
+            return "Possible"
+        return "Not detected"
+
+    @staticmethod
+    def _noise_level(score: float, *, analyzed: bool) -> str:
+        if not analyzed:
+            return "Not analyzed"
+        if score >= 65:
+            return "High"
+        if score >= 32:
+            return "Moderate"
+        return "Low"
+
+    @staticmethod
+    def _exposure_label(stats: InspectionStats) -> str:
+        if stats.width <= 0 or stats.height <= 0:
+            return "Not analyzed"
+        if stats.highlight_clip_pct >= 2.0 or stats.median_luminance >= 190:
+            return "Overexposed"
+        if stats.shadow_clip_pct >= 4.0 or stats.median_luminance <= 55:
+            return "Underexposed"
+        return "Properly exposed"
+
+    @staticmethod
+    def _quality_confidence_label(stats: InspectionStats) -> str:
+        if stats.width <= 0 or stats.height <= 0:
+            return "Not analyzed"
+        if stats.detail_valid_tile_count < 4:
+            return "Low"
+        if stats.detail_confidence >= 70:
+            return "Medium"
+        return "Low"
+
+    @staticmethod
+    def _best_candidate_text(ai_result: "AIImageResult | None", workflow_insight: object | None) -> str:
+        if bool(getattr(workflow_insight, "best_in_group", False)):
+            return "Yes"
+        if ai_result is not None and bool(getattr(ai_result, "is_top_pick", False)):
+            return "Yes"
+        if ai_result is not None and getattr(ai_result, "group_size", 0) > 1:
+            return "No"
+        return "-"
+
+    @staticmethod
+    def _worth_editing_text(
+        annotation: "SessionAnnotation | None",
+        ai_result: "AIImageResult | None",
+        workflow_insight: object | None,
+    ) -> str:
+        if annotation is not None:
+            if annotation.winner or annotation.rating >= 4:
+                return "Yes"
+            if annotation.reject:
+                return "No"
+        if bool(getattr(workflow_insight, "best_in_group", False)):
+            return "Yes"
+        if ai_result is not None and bool(getattr(ai_result, "is_top_pick", False)):
+            return "Yes"
+        return "Not analyzed"
+
+    def _capture_summary(self, metadata: "CaptureMetadata | None", record: "ImageRecord", file_type: str, size_text: str) -> str:
+        dimensions = "-"
+        captured = ""
+        camera_line = "-"
+        exposure_line = "-"
+        if metadata is not None and metadata.path:
+            lens = self._safe_text(getattr(metadata, "lens", ""), "")
+            focal = self._safe_text(getattr(metadata, "focal_length", ""), "")
+            lens_or_focal = lens or focal
+            camera = self._safe_text(getattr(metadata, "camera", ""), "")
+            camera_line = " | ".join(part for part in (camera, lens_or_focal) if part) or "-"
+            exposure_line = self._safe_text(getattr(metadata, "summary", ""), "-")
+            if getattr(metadata, "width", 0) and getattr(metadata, "height", 0):
+                dimensions = f"{metadata.width} x {metadata.height}"
+            captured = self._safe_text(getattr(metadata, "captured_at", ""), "")
+        if not captured:
+            captured = f"Modified {self._format_modified(record.modified_ns)}" if record.modified_ns > 0 else ""
+        lines = [
+            camera_line,
+            exposure_line,
+            f"{dimensions} | {file_type} | {size_text}",
+        ]
+        if captured:
+            lines.append(f"Captured {captured}" if metadata is not None and metadata.path and getattr(metadata, "captured_at", "") else captured)
+        return "\n".join(line for line in lines if line and line != "-") or "-"
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        if size <= 0:
+            return "-"
+        units = ("B", "KB", "MB", "GB", "TB")
+        value = float(size)
+        unit = units[0]
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                break
+            value /= 1024
+        if unit == "B":
+            return f"{int(value)} {unit}"
+        return f"{value:.1f} {unit}"
+
+    @staticmethod
+    def _format_modified(modified_ns: int) -> str:
+        if modified_ns <= 0:
+            return "-"
+        try:
+            return datetime.fromtimestamp(modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M")
+        except (OSError, OverflowError, ValueError):
+            return "-"
+
+    @staticmethod
+    def _path_names(paths: tuple[str, ...]) -> str:
+        if not paths:
+            return ""
+        names = [Path(path).name for path in paths[:6]]
+        if len(paths) > 6:
+            names.append(f"+{len(paths) - 6} more")
+        return "\n".join(names)
 
 
 def build_workspace_docks(

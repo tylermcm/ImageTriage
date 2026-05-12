@@ -386,6 +386,19 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             outline: none;
             selection-background-color: {theme.selection_fill.css};
         }}
+        QComboBox#settingsSessionCombo {{
+            padding-left: 0px;
+            padding-right: 10px;
+        }}
+        QLineEdit#settingsSessionLineEdit,
+        QComboBox#settingsSessionCombo QLineEdit {{
+            background-color: transparent;
+            border: none;
+            padding: 0px;
+            margin: 0px;
+            color: {theme.text_primary.css};
+            selection-background-color: {theme.selection_fill.css};
+        }}
         QTreeView, QListWidget {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -397,6 +410,71 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#workspaceCenterColumn {{
             background-color: transparent;
             border: none;
+        }}
+        QWidget#floatingPanelPalette {{
+            background-color: {theme.panel_bg.css};
+            border: 1px solid {theme.border.css};
+        }}
+        QWidget#floatingPanelCardHost {{
+            background-color: transparent;
+            border: none;
+        }}
+        QWidget#floatingPanelResizeRow {{
+            background-color: {theme.panel_bg.css};
+            border-top: 1px solid {theme.border_muted.css};
+            max-height: 10px;
+        }}
+        QTabWidget#floatingPanelTabs::pane {{
+            border: none;
+            background-color: transparent;
+        }}
+        QTabWidget#floatingPanelTabs QTabBar::tab {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-bottom: none;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 650;
+            padding: 6px 12px;
+        }}
+        QTabWidget#floatingPanelTabs QTabBar::tab:selected {{
+            background-color: {theme.panel_bg.css};
+            color: {theme.text_primary.css};
+            border-color: {theme.border.css};
+        }}
+        QTabWidget#floatingPanelTabs QTabBar::tab:hover:!selected {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_secondary.css};
+        }}
+        QTabWidget#dockedPanelTabs::pane {{
+            border: none;
+            background-color: transparent;
+        }}
+        QTabWidget#dockedPanelTabs QTabBar::tab {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-bottom: none;
+            border-top-left-radius: 7px;
+            border-top-right-radius: 7px;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 650;
+            padding: 6px 12px;
+        }}
+        QTabWidget#dockedPanelTabs QTabBar::tab:selected {{
+            background-color: {theme.panel_bg.css};
+            color: {theme.text_primary.css};
+            border-color: {theme.border.css};
+            margin-bottom: -1px;
+            padding-bottom: 7px;
+        }}
+        QTabWidget#dockedPanelTabs QTabBar::tab:hover:!selected {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_secondary.css};
+        }}
+        QTabWidget#dockedPanelTabs QWidget#libraryWorkspacePanel,
+        QTabWidget#dockedPanelTabs QWidget#inspectorWorkspacePanel {{
+            border-top-left-radius: 0px;
         }}
         QWidget#libraryWorkspacePanel {{
             background-color: {theme.panel_bg.css};
@@ -428,6 +506,78 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
         }}
+        QScrollArea#inspectorScrollArea, QWidget#inspectorBody {{
+            background-color: transparent;
+            border: none;
+        }}
+        QLabel#inspectorTitle {{
+            color: {theme.text_primary.css};
+            font-size: 15px;
+            font-weight: 650;
+        }}
+        QLabel#inspectorSubtitle {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+        }}
+        QWidget#inspectorSection {{
+            background-color: transparent;
+            border-top: 1px solid {theme.border_muted.css};
+            padding-top: 8px;
+        }}
+        QWidget#inspectorSectionHeader {{
+            background-color: transparent;
+        }}
+        QLabel#inspectorSectionTitle {{
+            color: {theme.text_secondary.css};
+            font-size: 12px;
+            font-weight: 650;
+            padding: 0px;
+        }}
+        QToolButton#inspectorSectionToggle {{
+            background-color: transparent;
+            border: none;
+            color: {theme.text_muted.css};
+            min-width: 14px;
+            max-width: 14px;
+            min-height: 14px;
+            max-height: 14px;
+            padding: 0px;
+        }}
+        QToolButton#inspectorSectionToggle:hover {{
+            color: {theme.text_primary.css};
+        }}
+        QLabel#inspectorKey {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            min-width: 64px;
+        }}
+        QLabel#inspectorValue {{
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+        }}
+        QPushButton#inspectorActionButton {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 6px;
+            color: {theme.text_primary.css};
+            min-height: 24px;
+            padding: 4px 8px;
+            text-align: center;
+        }}
+        QPushButton#inspectorActionButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QPushButton#inspectorActionButton:disabled {{
+            color: {theme.text_disabled.css};
+            border-color: {theme.border_muted.css};
+        }}
+        QToolButton#inspectorDisclosureButton {{
+            background-color: transparent;
+            border: none;
+            color: {theme.text_secondary.css};
+            padding: 4px 0px;
+            text-align: left;
+        }}
         QTreeView#folderTree, QListWidget#favoritesList {{
             background-color: transparent;
             border: none;
@@ -439,6 +589,56 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QTreeView::item:selected, QListWidget::item:selected {{
             background-color: {theme.selection_fill.css};
             color: {theme.text_primary.css};
+        }}
+        QTableView#detailsTableView {{
+            background-color: {theme.chrome_bg.css};
+            alternate-background-color: {theme.panel_alt_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 6px;
+            color: {theme.text_primary.css};
+            gridline-color: transparent;
+            outline: none;
+            selection-background-color: {theme.selection_fill.css};
+            selection-color: {theme.text_primary.css};
+        }}
+        QTableView#detailsTableView QTableCornerButton::section {{
+            background-color: {theme.panel_alt_bg.css};
+            border: none;
+            border-top-left-radius: 6px;
+            border-bottom: 1px solid {theme.border.css};
+        }}
+        QTableView#detailsTableView QHeaderView::section:first {{
+            border-top-left-radius: 6px;
+        }}
+        QTableView#detailsTableView QHeaderView::section:last {{
+            border-top-right-radius: 6px;
+        }}
+        QTableView#detailsTableView QHeaderView::section {{
+            min-height: 38px;
+            padding-top: 6px;
+            padding-bottom: 4px;
+        }}
+        QTableView#detailsTableView::item {{
+            border: none;
+            padding: 5px 8px;
+        }}
+        QTableView#detailsTableView::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QWidget#detailsPreviewPane {{
+            background-color: {theme.panel_alt_bg.css};
+            border-left: 1px solid {theme.border_muted.css};
+        }}
+        QLabel#detailsPreviewImage {{
+            background-color: {theme.image_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 6px;
+            color: {theme.text_muted.css};
+        }}
+        QCheckBox#detailsPreviewToggle {{
+            color: {theme.text_secondary.css};
+            spacing: 6px;
         }}
         QHeaderView::section {{
             background-color: {theme.panel_alt_bg.css};
@@ -468,6 +668,15 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#workspaceBarChrome {{
             background-color: transparent;
             border: none;
+        }}
+        QLabel#workspaceBarDragHandle {{
+            color: {theme.text_muted.css};
+            font-size: 14px;
+            font-weight: 700;
+            padding: 0px 2px;
+        }}
+        QLabel#workspaceBarDragHandle:hover {{
+            color: {theme.text_secondary.css};
         }}
         QFrame#toolbarEditOverlay {{
             background-color: rgba(0, 0, 0, 132);
@@ -603,6 +812,26 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
         }}
+        QToolButton#zenMenuPinButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 0px;
+            color: {theme.text_secondary.css};
+            margin: 2px 10px 2px 6px;
+            min-width: 30px;
+            min-height: 30px;
+            padding: 0px;
+        }}
+        QToolButton#zenMenuPinButton:hover {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#zenMenuPinButton:checked {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.text_primary.css};
+        }}
         QToolButton#workspacePanelCloseButton:hover {{
             background-color: {theme.danger_soft.css};
             border-color: {theme.danger.css};
@@ -728,6 +957,19 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#workspaceFiltersButton, QToolButton#workspacePresetsButton {{
             min-height: 28px;
             padding: 4px 10px;
+        }}
+        QToolButton#workspaceIconButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 8px;
+            padding: 3px;
+        }}
+        QToolButton#workspaceIconButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QToolButton#workspaceIconButton:pressed,
+        QToolButton#workspaceIconButton:checked {{
+            background-color: {theme.accent_soft.css};
         }}
         QToolButton#statusFilterClearButton {{
             padding: 2px 8px;

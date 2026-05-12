@@ -26,6 +26,7 @@ from app.config import (
     RankingReportConfig,
     RankingScoreConfig,
     RankingTrainConfig,
+    SemanticClassificationConfig,
 )
 from app.labeling.loaders import load_labeling_dataset
 from app.labeling.models import ClusterItem, DatasetBundle, ImageItem, PairCandidate
@@ -58,6 +59,7 @@ __all__ = [
     "RankingReportConfig",
     "RankingScoreConfig",
     "RankingTrainConfig",
+    "SemanticClassificationConfig",
     "build_artifact_contract",
     "build_cluster_report",
     "build_culling_groups",
@@ -77,6 +79,7 @@ __all__ = [
     "run_similarity_clustering",
     "score_images",
     "score_cluster_artifacts",
+    "classify_images_semantically",
     "train_ranker",
 ]
 
@@ -103,6 +106,7 @@ _LAZY_EXPORTS = {
     "rank_cluster": ("app.engine.ranking", "rank_cluster"),
     "score_images": ("app.engine.ranking", "score_images"),
     "score_cluster_artifacts": ("app.engine.ranking", "score_cluster_artifacts"),
+    "classify_images_semantically": ("app.engine.semantic", "classify_images_semantically"),
     "train_ranker": ("app.engine.ranking", "train_ranker"),
 }
 

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
@@ -108,6 +108,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._selected_indexes: set[int] = set()
         self._selection_anchor = -1
         self._tool_checkbox_mode = False
+        self._tool_tile_toggle_mode = False
+        self._free_smooth_scroll_enabled = False
         self._action_mode = "normal"
         self._show_ai_annotations = False
         self._compact_card_mode = False
@@ -200,6 +202,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._wheel_pixel_remainder = 0
         self._zoom_wheel_angle_remainder = 0
         self._zoom_wheel_pixel_remainder = 0
+        self._smooth_scroll_target: int | None = None
+        self._smooth_scroll_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
+        self._smooth_scroll_animation.setDuration(150)
+        self._smooth_scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._smooth_scroll_animation.finished.connect(self._handle_smooth_scroll_finished)
         self._zoom_index = -1
         self._zoom_factor = 1.0
         self._zoom_focus = (0.5, 0.5)
@@ -561,10 +568,20 @@ class ThumbnailGridView(QAbstractScrollArea):
     def compact_card_mode(self) -> bool:
         return self._compact_card_mode
 
+    def set_free_smooth_scroll_enabled(self, enabled: bool) -> None:
+        normalized = bool(enabled)
+        if self._free_smooth_scroll_enabled == normalized:
+            return
+        self._free_smooth_scroll_enabled = normalized
+        self._wheel_angle_remainder = 0
+        self._wheel_pixel_remainder = 0
+        self._stop_smooth_scroll()
+
     def current_scroll_value(self) -> int:
         return self.verticalScrollBar().value()
 
     def restore_scroll_value(self, value: int) -> None:
+        self._stop_smooth_scroll()
         scrollbar = self.verticalScrollBar()
         scrollbar.setValue(max(scrollbar.minimum(), min(scrollbar.maximum(), int(value))))
 
@@ -583,10 +600,17 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._meta_with_ai_cache.clear()
         self.viewport().update()
 
-    def set_tool_checkbox_mode(self, enabled: bool, *, clear_selection: bool = False) -> None:
+    def set_tool_checkbox_mode(
+        self,
+        enabled: bool,
+        *,
+        clear_selection: bool = False,
+        toggle_on_image_click: bool = False,
+    ) -> None:
         normalized = bool(enabled)
         changed = self._tool_checkbox_mode != normalized
         self._tool_checkbox_mode = normalized
+        self._tool_tile_toggle_mode = normalized and bool(toggle_on_image_click)
         if clear_selection:
             self.clear_selection(keep_current=True)
         if changed:
@@ -639,6 +663,18 @@ class ThumbnailGridView(QAbstractScrollArea):
         if previous_selection != self._selected_indexes:
             self.selection_changed.emit()
 
+    def set_logical_selection(self, indexes: list[int], *, current_index: int | None = None) -> None:
+        valid = sorted({index for index in indexes if 0 <= index < len(self._items)})
+        if current_index is not None and 0 <= current_index < len(self._items):
+            focus_index = current_index
+        elif valid:
+            focus_index = valid[0]
+        else:
+            focus_index = -1
+        self._selected_indexes = set(valid)
+        self._current_index = focus_index
+        self._selection_anchor = focus_index
+
     def selected_count(self) -> int:
         return len(self.selected_indexes())
 
@@ -675,6 +711,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     def thumbnail_for(self, index: int) -> QImage | None:
         if not 0 <= index < len(self._items):
             return None
+        if self._items[index].is_folder:
+            return None
         target = self._thumbnail_target_size()
         return self.thumbnail_manager.get_cached(self._current_variant(self._items[index]), target)
 
@@ -700,6 +738,13 @@ class ThumbnailGridView(QAbstractScrollArea):
             super().wheelEvent(event)
             return
 
+        if self._free_smooth_scroll_enabled:
+            scroll_delta = self._wheel_scroll_delta_pixels(event, row_height)
+            if scroll_delta:
+                self._scroll_by_pixels(scroll_delta)
+            event.accept()
+            return
+
         steps = self._wheel_row_steps(event, row_height)
         if steps == 0:
             event.accept()
@@ -723,9 +768,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                 continue
             record = self._items[index]
             variant = self._current_variant(record)
-            key = self.thumbnail_manager.make_key(variant, target_size)
-            image = self.thumbnail_manager.get_cached(variant, target_size)
-            pixmap = self._pixmap_for(key, image)
+            pixmap = None
+            if not record.is_folder:
+                key = self.thumbnail_manager.make_key(variant, target_size)
+                image = self.thumbnail_manager.get_cached(variant, target_size)
+                pixmap = self._pixmap_for(key, image)
             self._paint_tile(painter, index, rect, record, pixmap)
 
         if self._marquee_active and not self._marquee_rect.isNull():
@@ -786,7 +833,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._press_on_interactive_control = True
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 return
-            if self._winner_button_rect(rect).contains(point):
+            if not self._items[index].is_folder and self._winner_button_rect(rect).contains(point):
                 if self._tool_checkbox_mode:
                     self._set_current_index(index)
                 else:
@@ -795,7 +842,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._press_on_interactive_control = True
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 return
-            if self._reject_button_rect(rect).contains(point):
+            if not self._items[index].is_folder and self._reject_button_rect(rect).contains(point):
                 if self._tool_checkbox_mode:
                     self._set_current_index(index)
                 else:
@@ -805,8 +852,20 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 return
             if self._tool_checkbox_mode:
-                self._set_current_index(index)
-                self._selection_anchor = index
+                if (
+                    self._tool_tile_toggle_mode
+                    and not self._items[index].is_folder
+                    and self._image_rect(rect).contains(point)
+                ):
+                    modifiers = event.modifiers()
+                    if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                        self._select_range(index)
+                    else:
+                        self._toggle_selection(index)
+                    self._press_on_interactive_control = True
+                else:
+                    self._set_current_index(index)
+                    self._selection_anchor = index
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 return
             modifiers = event.modifiers()
@@ -1123,24 +1182,38 @@ class ThumbnailGridView(QAbstractScrollArea):
             self.preview_requested.emit(index)
             return
         if key == Qt.Key.Key_Delete and review_shortcut_allowed:
+            if self._items[index].is_folder:
+                return
             self.delete_requested.emit(index)
             return
         if key == Qt.Key.Key_K and review_shortcut_allowed:
+            if self._items[index].is_folder:
+                return
             self.keep_requested.emit(index)
             return
         if key == Qt.Key.Key_M and review_shortcut_allowed:
+            if self._items[index].is_folder:
+                return
             self.move_requested.emit(index)
             return
         if Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
+            if self._items[index].is_folder:
+                return
             self.rate_requested.emit(index, key - Qt.Key.Key_0)
             return
         if key == Qt.Key.Key_T and review_shortcut_allowed:
+            if self._items[index].is_folder:
+                return
             self.tag_requested.emit(index)
             return
         if key == Qt.Key.Key_W and review_shortcut_allowed:
+            if self._items[index].is_folder:
+                return
             self.winner_requested.emit(index)
             return
         if key == Qt.Key.Key_X and review_shortcut_allowed:
+            if self._items[index].is_folder:
+                return
             self.reject_requested.emit(index)
             return
         if key == Qt.Key.Key_Escape and self._zoom_factor > 1.0:
@@ -1366,6 +1439,8 @@ class ThumbnailGridView(QAbstractScrollArea):
                 painter.drawPixmap(draw_rect, zoom_source, source_rect)
             else:
                 painter.drawPixmap(draw_rect, pixmap)
+        elif record.is_folder:
+            self._paint_folder_thumbnail(painter, image_rect)
         elif variant.path in self._failed_paths:
             painter.setPen(self._failed_text_color)
             painter.setFont(self._placeholder_font)
@@ -1518,18 +1593,19 @@ class ThumbnailGridView(QAbstractScrollArea):
         title_option.setWrapMode(QTextOption.WrapMode.WordWrap)
         painter.drawText(QRectF(title_text_rect), variant.name if record.has_variant_stack else record.name, title_option)
 
-        self._paint_winner_button(
-            painter,
-            self._winner_button_rect(rect),
-            annotation.winner if annotation else False,
-            index == self._hovered_winner_index,
-        )
-        self._paint_reject_button(
-            painter,
-            self._reject_button_rect(rect),
-            annotation.reject if annotation else False,
-            index == self._hovered_reject_index,
-        )
+        if not record.is_folder:
+            self._paint_winner_button(
+                painter,
+                self._winner_button_rect(rect),
+                annotation.winner if annotation else False,
+                index == self._hovered_winner_index,
+            )
+            self._paint_reject_button(
+                painter,
+                self._reject_button_rect(rect),
+                annotation.reject if annotation else False,
+                index == self._hovered_reject_index,
+            )
 
         if not self._compact_card_mode:
             painter.setPen(self._capture_color)
@@ -1606,6 +1682,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         return metadata.summary
 
     def _format_meta_line(self, record: ImageRecord, variant: ImageVariant | None = None) -> str:
+        if record.is_folder:
+            if record.modified_ns > 0:
+                return "Folder  |  " + datetime.fromtimestamp(record.modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M")
+            return "Folder"
         if record.has_variant_stack:
             item = variant or self._current_variant(record)
             size_bytes = item.size
@@ -1817,6 +1897,60 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.setPen(foreground)
         painter.setFont(self._meta_font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
+
+    def _paint_folder_thumbnail(self, painter: QPainter, image_rect: QRect) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        bounds = image_rect.adjusted(
+            max(12, image_rect.width() // 12),
+            max(12, image_rect.height() // 8),
+            -max(12, image_rect.width() // 12),
+            -max(12, image_rect.height() // 8),
+        )
+        if bounds.width() <= 0 or bounds.height() <= 0:
+            painter.restore()
+            return
+
+        tab_height = max(18, bounds.height() // 4)
+        tab_width = max(58, bounds.width() // 3)
+        body_top = bounds.top() + tab_height // 2
+        folder_path = QPainterPath()
+        folder_path.moveTo(bounds.left(), body_top)
+        folder_path.lineTo(bounds.left(), bounds.top() + tab_height)
+        folder_path.quadTo(bounds.left(), bounds.top(), bounds.left() + tab_height, bounds.top())
+        folder_path.lineTo(bounds.left() + tab_width, bounds.top())
+        folder_path.quadTo(
+            bounds.left() + tab_width + tab_height // 3,
+            bounds.top(),
+            bounds.left() + tab_width + tab_height // 2,
+            bounds.top() + tab_height // 2,
+        )
+        folder_path.lineTo(bounds.right() - tab_height, bounds.top() + tab_height // 2)
+        folder_path.quadTo(bounds.right(), bounds.top() + tab_height // 2, bounds.right(), bounds.top() + tab_height)
+        folder_path.lineTo(bounds.right(), bounds.bottom() - tab_height // 2)
+        folder_path.quadTo(bounds.right(), bounds.bottom(), bounds.right() - tab_height // 2, bounds.bottom())
+        folder_path.lineTo(bounds.left() + tab_height // 2, bounds.bottom())
+        folder_path.quadTo(bounds.left(), bounds.bottom(), bounds.left(), bounds.bottom() - tab_height // 2)
+        folder_path.closeSubpath()
+
+        painter.setPen(QPen(QColor("#e2a900"), 2))
+        painter.setBrush(QColor("#ffc83d"))
+        painter.drawPath(folder_path)
+
+        pocket = QRect(
+            bounds.left() + max(8, bounds.width() // 18),
+            bounds.top() + tab_height,
+            bounds.width() - max(16, bounds.width() // 9),
+            max(24, bounds.height() // 2),
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 230, 150, 190))
+        painter.drawRoundedRect(QRectF(pocket), 6, 6)
+
+        front = QRect(bounds.left(), body_top + tab_height, bounds.width(), max(28, bounds.height() - tab_height))
+        painter.setBrush(QColor("#ffd862"))
+        painter.drawRoundedRect(QRectF(front), 10, 10)
         painter.restore()
 
     def _paint_tool_checkbox(self, painter: QPainter, rect: QRect, *, checked: bool, hovered: bool) -> None:
@@ -2363,19 +2497,61 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._wheel_angle_remainder = 0
         return direction * steps
 
+    def _wheel_scroll_delta_pixels(self, event: QWheelEvent, row_height: int) -> int:
+        pixel_y = event.pixelDelta().y()
+        if pixel_y:
+            self._wheel_angle_remainder = 0
+            return -pixel_y
+
+        angle_y = event.angleDelta().y()
+        if not angle_y:
+            return 0
+        self._wheel_pixel_remainder = 0
+        free_step = max(90, int(row_height * 0.55))
+        return int(round((-angle_y / 120.0) * free_step))
+
+    def _scroll_by_pixels(self, delta: int) -> None:
+        if delta == 0:
+            return
+        scrollbar = self.verticalScrollBar()
+        current = self._smooth_scroll_target if self._smooth_scroll_target is not None else scrollbar.value()
+        target = current + int(delta)
+        self._animate_scroll_to(target)
+
     def _scroll_by_aligned_rows(self, row_delta: int) -> None:
         row_height = self._row_height()
         if row_delta == 0 or row_height <= 0:
             return
         scrollbar = self.verticalScrollBar()
-        current = scrollbar.value()
+        current = self._smooth_scroll_target if self._smooth_scroll_target is not None else scrollbar.value()
         if row_delta > 0:
             row = current // row_height + row_delta
         else:
             row = math.ceil(current / row_height) + row_delta
         row = max(0, min(max(0, self._row_count() - 1), row))
         target = max(scrollbar.minimum(), min(scrollbar.maximum(), row * row_height))
-        scrollbar.setValue(target)
+        self._animate_scroll_to(target)
+
+    def _animate_scroll_to(self, target: int) -> None:
+        scrollbar = self.verticalScrollBar()
+        target = max(scrollbar.minimum(), min(scrollbar.maximum(), int(target)))
+        if target == scrollbar.value():
+            self._stop_smooth_scroll()
+            return
+        self._smooth_scroll_target = target
+        if self._smooth_scroll_animation.state() == QAbstractAnimation.State.Running:
+            self._smooth_scroll_animation.stop()
+        self._smooth_scroll_animation.setStartValue(scrollbar.value())
+        self._smooth_scroll_animation.setEndValue(target)
+        self._smooth_scroll_animation.start()
+
+    def _stop_smooth_scroll(self) -> None:
+        if self._smooth_scroll_animation.state() == QAbstractAnimation.State.Running:
+            self._smooth_scroll_animation.stop()
+        self._smooth_scroll_target = None
+
+    def _handle_smooth_scroll_finished(self) -> None:
+        self._smooth_scroll_target = None
 
     def _update_scrollbar(self) -> None:
         rows = self._row_count()
@@ -2400,6 +2576,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         for index in visible:
             distance = abs(index - center)
             priority = max(1, 10_000 - distance)
+            if self._items[index].is_folder:
+                continue
             variant = self._current_variant(self._items[index])
             if variant.path in self._failed_paths:
                 continue

@@ -47,6 +47,20 @@ def _add_workspace_presets_menu(
     menu.addAction(actions.save_workspace_preset)
 
 
+def _add_panel_layout_menu(menu: QMenu, window, panel_key: str, title: str) -> None:
+    docks = getattr(window, "workspace_docks", None)
+    if docks is None:
+        return
+    panel_menu = menu.addMenu(title)
+    panel_menu.addAction("Show Expanded", lambda _checked=False, key=panel_key: docks.expand_panel(key))
+    panel_menu.addAction("Collapse To Tab", lambda _checked=False, key=panel_key: docks.collapse_panel(key))
+    panel_menu.addAction("Hide", lambda _checked=False, key=panel_key: docks.hide_panel(key))
+    panel_menu.addSeparator()
+    panel_menu.addAction("Dock Left", lambda _checked=False, key=panel_key: docks.dock_to_side(key, "left", show_after=True))
+    panel_menu.addAction("Dock Right", lambda _checked=False, key=panel_key: docks.dock_to_side(key, "right", show_after=True))
+    panel_menu.addAction("Pop Out", lambda _checked=False, key=panel_key: docks.pop_out_panel(key))
+
+
 def build_main_menu_bar(
     window,
     actions: MainWindowActions,
@@ -78,11 +92,26 @@ def build_main_menu_bar(
     for mode in (AppearanceMode.DARK, AppearanceMode.MIDNIGHT, AppearanceMode.LIGHT, AppearanceMode.AUTO):
         appearance_menu.addAction(actions.appearance_actions[mode])
 
+    layout_menu = view_menu.addMenu("Layout")
+    columns_menu = layout_menu.addMenu("Columns")
+    for count in range(1, 9):
+        columns_menu.addAction(actions.column_actions[count])
+    layout_menu.addAction(actions.compact_cards)
+    layout_menu.addAction(actions.show_hidden_folders)
+    layout_menu.addSeparator()
+    layout_menu.addAction(actions.grid_view)
+    layout_menu.addAction(actions.details_view)
+    layout_menu.addAction(actions.details_preview_pane)
+    layout_menu.addSeparator()
+    layout_menu.addAction(actions.zen_mode)
+    layout_menu.addSeparator()
+    layout_menu.addAction(actions.show_workspace_toolbar)
+
     sort_menu = view_menu.addMenu("Sort")
     for action in actions.sort_actions.values():
         sort_menu.addAction(action)
 
-    filter_menu = view_menu.addMenu("Filter")
+    filter_menu = view_menu.addMenu("Filters")
     for action in actions.filter_actions.values():
         filter_menu.addAction(action)
     filter_menu.addSeparator()
@@ -91,17 +120,13 @@ def build_main_menu_bar(
     filter_menu.addAction(actions.delete_filter_preset)
     filter_menu.addAction(actions.clear_filters)
 
-    columns_menu = view_menu.addMenu("Columns")
-    for count in range(1, 9):
-        columns_menu.addAction(actions.column_actions[count])
+    review_view_menu = view_menu.addMenu("Review View")
+    review_view_menu.addAction(actions.burst_groups)
+    review_view_menu.addAction(actions.burst_stacks)
+    review_view_menu.addAction(actions.compare_mode)
+    review_view_menu.addAction(actions.auto_advance)
 
-    view_menu.addSeparator()
-    view_menu.addAction(actions.burst_groups)
-    view_menu.addAction(actions.burst_stacks)
-    view_menu.addAction(actions.compact_cards)
-    view_menu.addAction(actions.compare_mode)
-    view_menu.addAction(actions.auto_advance)
-    mode_menu = view_menu.addMenu("Workspace Mode")
+    mode_menu = view_menu.addMenu("Mode")
     mode_menu.addAction(actions.manual_mode)
     mode_menu.addAction(actions.ai_mode)
 
@@ -152,28 +177,36 @@ def build_main_menu_bar(
         workflow_menu.addMenu(workflow_recipe_menu)
 
     ai_menu = menu_bar.addMenu("&AI")
-    ai_menu.addAction(actions.install_ai_runtime)
-    ai_menu.addAction(actions.download_ai_model)
-    ai_menu.addSeparator()
+    setup_menu = ai_menu.addMenu("Setup")
+    setup_menu.addAction(actions.install_ai_runtime)
+    setup_menu.addAction(actions.download_ai_model)
+
     ai_menu.addAction(actions.run_ai_culling)
     ai_menu.addAction(actions.apply_ai_culling)
-    ai_menu.addAction(actions.reset_ai_review_cache)
-    ai_menu.addAction(actions.load_saved_ai)
-    ai_menu.addAction(actions.load_ai_results)
-    ai_menu.addAction(actions.clear_ai_results)
-    ai_menu.addAction(actions.open_ai_report)
-    ai_menu.addAction(actions.show_ai_review_summary)
-    ai_menu.addAction(actions.ai_review_tag_legend)
-    ai_menu.addSeparator()
-    ai_menu.addAction(actions.next_ai_pick)
-    ai_menu.addAction(actions.next_unreviewed_ai_pick)
-    ai_menu.addAction(actions.compare_ai_group)
-    ai_menu.addAction(actions.review_ai_disagreements)
-    ai_menu.addAction(actions.taste_calibration_wizard)
-    ai_menu.addSeparator()
+    ai_menu.addAction(actions.sort_ai_semantic_folders)
+
+    results_menu = ai_menu.addMenu("Results")
+    results_menu.addAction(actions.load_saved_ai)
+    results_menu.addAction(actions.load_ai_results)
+    results_menu.addAction(actions.clear_ai_results)
+    results_menu.addSeparator()
+    results_menu.addAction(actions.open_ai_report)
+    results_menu.addAction(actions.show_ai_review_summary)
+    results_menu.addAction(actions.ai_review_tag_legend)
+
+    review_tools_menu = ai_menu.addMenu("Review Tools")
+    review_tools_menu.addAction(actions.next_ai_pick)
+    review_tools_menu.addAction(actions.next_unreviewed_ai_pick)
+    review_tools_menu.addAction(actions.compare_ai_group)
+    review_tools_menu.addAction(actions.review_ai_disagreements)
+    review_tools_menu.addAction(actions.taste_calibration_wizard)
+
     training_menu = ai_menu.addMenu("Training")
     _add_ai_training_actions(training_menu, actions)
-    _add_ai_training_management_actions(ai_menu, actions)
+    _add_ai_training_management_actions(training_menu, actions)
+
+    cache_menu = ai_menu.addMenu("Cache")
+    cache_menu.addAction(actions.reset_ai_review_cache)
 
     tools_menu = menu_bar.addMenu("&Tools")
     tools_menu.addAction(actions.open_command_palette)
@@ -186,21 +219,25 @@ def build_main_menu_bar(
 
     settings_menu = menu_bar.addMenu("&Settings")
     settings_menu.addAction(actions.workflow_settings)
-    settings_menu.addAction(actions.file_associations)
-    settings_menu.addAction(actions.keyboard_shortcuts)
-    settings_menu.addSeparator()
-    settings_menu.addAction(actions.customize_workspace_toolbar)
-    _add_workspace_presets_menu(settings_menu, actions, workspace_preset_menu)
 
     window_menu = menu_bar.addMenu("&Window")
     window_menu.addAction(actions.show_workspace_toolbar)
+    toolbar_position_menu = window_menu.addMenu("Toolbar Position")
+    toolbar_position_menu.addAction("Top", lambda _checked=False: window._set_workspace_bar_position("top"))
+    toolbar_position_menu.addAction("Bottom", lambda _checked=False: window._set_workspace_bar_position("bottom"))
     if dock_actions:
-        window_menu.addSeparator()
+        panels_menu = window_menu.addMenu("Panels")
         for key in ("library", "inspector"):
             action = dock_actions.get(key)
             if action is not None:
-                window_menu.addAction(action)
-        window_menu.addSeparator()
+                panels_menu.addAction(action)
+        layout_menu = window_menu.addMenu("Panel Layout")
+        _add_panel_layout_menu(layout_menu, window, "library", "Library")
+        _add_panel_layout_menu(layout_menu, window, "inspector", "Inspector")
+        layout_menu.addSeparator()
+        layout_menu.addAction("Swap Left And Right Panels", lambda _checked=False: window.workspace_docks.swap_sides())
+        layout_menu.addSeparator()
+        _add_workspace_presets_menu(layout_menu, actions, workspace_preset_menu)
     window_menu.addAction(actions.reset_layout)
 
     help_menu = menu_bar.addMenu("&Help")

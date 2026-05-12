@@ -13,7 +13,7 @@ from .filter_dialog import AdvancedFilterDialog
 from .file_associations_dialog import FileAssociationsDialog
 from .handoff_dialog import HandoffBuilderDialog
 from .help_dialog import HelpMarkdownDialog
-from .icons import build_symbol_icon, build_undo_icon
+from .icons import build_pin_icon, build_symbol_icon, build_undo_icon
 from .keyboard_dialog import KeyboardShortcutDialog
 from .layout_state import clear_window_layout, restore_window_layout, save_window_layout
 from .menus import build_main_menu_bar
@@ -64,6 +64,7 @@ __all__ = [
     "build_main_menu_bar",
     "build_main_window_actions",
     "build_primary_toolbar",
+    "build_pin_icon",
     "build_workspace_docks",
     "build_symbol_icon",
     "build_undo_icon",

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from image_triage.ai_runtime_packages import (
     AI_RUNTIME_CPU_VARIANT,
     AI_RUNTIME_GPU_VARIANT,
     AI_RUNTIME_REQUIRED_MODULE_NAMES,
     build_ai_runtime_pip_install_args,
+    directory_size_bytes,
+    estimate_ai_runtime_download_size_mb,
+    estimate_ai_runtime_installed_size_mb,
     install_ai_runtime,
     load_ai_runtime_installation_status,
     resolve_ai_runtime_site_packages,
@@ -63,6 +68,31 @@ class AIRuntimePackageTests(unittest.TestCase):
         )
         self.assertIn("--force-reinstall", args)
         self.assertIn("https://download.pytorch.org/whl/cpu", args)
+        self.assertIn("--progress-bar", args)
+        self.assertIn("raw", args)
+
+    def test_runtime_size_estimates_are_available_for_setup_copy(self) -> None:
+        self.assertGreater(estimate_ai_runtime_download_size_mb(AI_RUNTIME_GPU_VARIANT), 3000)
+        self.assertGreater(estimate_ai_runtime_installed_size_mb(AI_RUNTIME_GPU_VARIANT), 5000)
+
+    def test_runtime_install_root_uses_local_appdata_without_home_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                with patch("image_triage.ai_runtime_packages.Path.home", side_effect=RuntimeError("no home")):
+                    status = load_ai_runtime_installation_status()
+
+        self.assertTrue(str(status.directories.root).startswith(temp_dir))
+
+    def test_directory_size_bytes_sums_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "a").write_bytes(b"123")
+            nested = root / "nested"
+            nested.mkdir()
+            (nested / "b").write_bytes(b"45")
+
+            self.assertEqual(directory_size_bytes(root), 5)
 
     def test_load_status_without_installation_reports_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

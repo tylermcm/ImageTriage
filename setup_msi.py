@@ -39,6 +39,24 @@ msi_data = {
     "Directory": [
         ("ProgramMenuFolder", "TARGETDIR", "."),
     ],
+    "CustomAction": [
+        (
+            "CleanupPreviousImageTriageData",
+            34,
+            "TARGETDIR",
+            r'"[TARGETDIR]image_triage_cleanup.exe" --mode previous-install --yes --quiet',
+        ),
+        (
+            "CleanupImageTriageDataOnUninstall",
+            34,
+            "TARGETDIR",
+            r'"[TARGETDIR]image_triage_cleanup.exe" --mode uninstall --yes --quiet',
+        ),
+    ],
+    "InstallExecuteSequence": [
+        ("CleanupImageTriageDataOnUninstall", 'REMOVE="ALL"', 3499),
+        ("CleanupPreviousImageTriageData", "NOT Installed", 4001),
+    ],
 }
 
 bdist_msi_options = {
@@ -71,6 +89,12 @@ executables = [
         script="packaging/ai_runtime_installer.py",
         base=None,
         target_name="ai_runtime_installer.exe",
+        icon=str(APP_ICON_WINDOWS_PATH),
+    ),
+    Executable(
+        script="packaging/image_triage_cleanup.py",
+        base=None,
+        target_name="image_triage_cleanup.exe",
         icon=str(APP_ICON_WINDOWS_PATH),
     ),
 ]

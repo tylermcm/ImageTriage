@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from .ai_results import AIImageResult, build_ai_explanation_lines
 from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
-from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display
+from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display, sanitize_display_error
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord, JPEG_SUFFIXES
 from .review_tools import (
@@ -95,7 +95,7 @@ class PreviewTask(QRunnable):
             fits_display_settings=self.request.fits_display_settings,
         )
         if image.isNull():
-            self.result_queue.put(("failed", self.request, error or "Could not decode image."))
+            self.result_queue.put(("failed", self.request, sanitize_display_error(error, path=self.request.path)))
             return
         metadata = load_capture_metadata(self.request.path) if self.request.load_metadata else None
         self.result_queue.put(("ready", self.request, image, metadata))
