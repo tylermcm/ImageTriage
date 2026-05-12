@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +65,48 @@ def scan_folder(folder: str) -> list[ImageRecord]:
 
 def scan_folder_quick(folder: str) -> list[ImageRecord]:
     return _scan_folder_impl(folder, include_stat=False)
+
+
+def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[ImageRecord]:
+    folder = normalize_filesystem_path(folder)
+    records: list[ImageRecord] = []
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return records
+    for entry in entries:
+        try:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            stat_result = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if not include_hidden and _is_hidden_directory_entry(entry, stat_result):
+            continue
+        path = normalize_filesystem_path(entry.path)
+        records.append(
+            ImageRecord(
+                path=path,
+                name=entry.name,
+                size=0,
+                modified_ns=getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000)),
+                is_folder=True,
+            )
+        )
+    return sort_records(records, SortMode.NAME)
+
+
+def _is_hidden_directory_entry(entry: os.DirEntry[str], stat_result: os.stat_result | None = None) -> bool:
+    if entry.name.startswith("."):
+        return True
+    hidden_attribute = getattr(stat, "FILE_ATTRIBUTE_HIDDEN", 0)
+    if not hidden_attribute:
+        return False
+    try:
+        resolved_stat = stat_result if stat_result is not None else entry.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return bool(getattr(resolved_stat, "st_file_attributes", 0) & hidden_attribute)
 
 
 def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
@@ -418,4 +461,4 @@ class FolderScanTask(QRunnable):
         self._catalog.save_folder_records(self.folder, records, source="scan")
 
 
-__all__ = ["FolderScanTask", "discover_edited_paths", "ImageRecord", "normalize_filesystem_path", "normalized_path_key", "scan_folder", "scan_folder_quick"]
+__all__ = ["FolderScanTask", "discover_edited_paths", "ImageRecord", "normalize_filesystem_path", "normalized_path_key", "scan_child_folders", "scan_folder", "scan_folder_quick"]

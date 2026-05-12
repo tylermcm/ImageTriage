@@ -44,12 +44,18 @@ class MainWindowActions:
     burst_groups: QAction
     burst_stacks: QAction
     compact_cards: QAction
+    show_hidden_folders: QAction
+    grid_view: QAction
+    details_view: QAction
+    details_preview_pane: QAction
+    zen_mode: QAction
     manual_mode: QAction
     ai_mode: QAction
     install_ai_runtime: QAction
     download_ai_model: QAction
     run_ai_culling: QAction
     apply_ai_culling: QAction
+    sort_ai_semantic_folders: QAction
     reset_ai_review_cache: QAction
     load_saved_ai: QAction
     load_ai_results: QAction
@@ -161,7 +167,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         new_folder=_create_action(window, "New Folder...", slot=window._create_folder_in_current_folder, shortcut="Ctrl+Shift+N"),
         workflow_settings=_create_action(
             window,
-            "Workflow Settings...",
+            "Settings...",
             slot=window._show_settings,
             shortcut="Ctrl+,",
         ),
@@ -248,6 +254,39 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=window._handle_compact_cards_toggled,
             checkable=True,
         ),
+        show_hidden_folders=_create_action(
+            window,
+            "Show Hidden Folders",
+            slot=window._handle_show_hidden_folders_toggled,
+            checkable=True,
+        ),
+        grid_view=_create_action(
+            window,
+            "Grid View",
+            slot=lambda _checked=False: window._set_browser_view_mode("grid"),
+            checkable=True,
+            shortcut="Ctrl+1",
+        ),
+        details_view=_create_action(
+            window,
+            "Details View",
+            slot=lambda _checked=False: window._set_browser_view_mode("details"),
+            checkable=True,
+            shortcut="Ctrl+2",
+        ),
+        details_preview_pane=_create_action(
+            window,
+            "Details Preview Pane",
+            slot=window._handle_details_preview_toggled,
+            checkable=True,
+        ),
+        zen_mode=_create_action(
+            window,
+            "Zen Mode",
+            slot=window._handle_zen_mode_toggled,
+            checkable=True,
+            shortcut="F11",
+        ),
         manual_mode=_create_action(window, "Manual Review", slot=lambda _checked=False: window._set_ui_mode("manual"), checkable=True),
         ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
         install_ai_runtime=_create_action(
@@ -270,6 +309,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Apply AI Culling",
             slot=window._apply_ai_culling,
+        ),
+        sort_ai_semantic_folders=_create_action(
+            window,
+            "Sort Into Semantic Folders...",
+            slot=window._sort_images_into_semantic_folders,
         ),
         reset_ai_review_cache=_create_action(
             window,

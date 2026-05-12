@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,14 @@ AI_RUNTIME_REQUIRED_MODULE_NAMES = (
     "yaml",
     "tqdm",
 )
+AI_RUNTIME_ESTIMATED_DOWNLOAD_MB = {
+    AI_RUNTIME_CPU_VARIANT: 2600,
+    AI_RUNTIME_GPU_VARIANT: 6200,
+}
+AI_RUNTIME_ESTIMATED_INSTALLED_MB = {
+    AI_RUNTIME_CPU_VARIANT: 4300,
+    AI_RUNTIME_GPU_VARIANT: 8800,
+}
 
 PipRunner = Callable[[list[str], Path], int]
 
@@ -102,6 +111,35 @@ def ai_runtime_variant_label(variant: str) -> str:
     if normalized == AI_RUNTIME_GPU_VARIANT:
         return "GPU (CUDA)"
     return "CPU Only"
+
+
+def estimate_ai_runtime_download_size_mb(variant_choice: str) -> int:
+    normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
+    if normalized_choice == AI_RUNTIME_BOTH_VARIANT:
+        return sum(AI_RUNTIME_ESTIMATED_DOWNLOAD_MB.values())
+    return AI_RUNTIME_ESTIMATED_DOWNLOAD_MB[normalize_ai_runtime_variant(normalized_choice)]
+
+
+def estimate_ai_runtime_installed_size_mb(variant_choice: str) -> int:
+    normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
+    if normalized_choice == AI_RUNTIME_BOTH_VARIANT:
+        return sum(AI_RUNTIME_ESTIMATED_INSTALLED_MB.values())
+    return AI_RUNTIME_ESTIMATED_INSTALLED_MB[normalize_ai_runtime_variant(normalized_choice)]
+
+
+def directory_size_bytes(path: str | Path) -> int:
+    root = Path(path)
+    if not root.exists():
+        return 0
+    total = 0
+    for child in root.rglob("*"):
+        if not child.is_file():
+            continue
+        try:
+            total += child.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 def default_ai_runtime_install_root() -> Path:
@@ -239,6 +277,8 @@ def build_ai_runtime_pip_install_args(
         "--disable-pip-version-check",
         "--no-input",
         "--no-warn-script-location",
+        "--progress-bar",
+        "raw",
         "--prefer-binary",
         "--only-binary=:all:",
         "--target",
@@ -255,15 +295,12 @@ def build_ai_runtime_pip_install_args(
 
 
 def _default_pip_runner(args: list[str], cwd: Path) -> int:
-    from pip._internal.cli.main import main as pip_main
-
-    _ = cwd
-    try:
-        result = pip_main(args)
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 1
-        return code
-    return int(result or 0)
+    process = subprocess.run(
+        [sys.executable, "-m", "pip", *args],
+        cwd=str(cwd),
+        text=True,
+    )
+    return int(process.returncode)
 
 
 def _profile_status(directories: AIRuntimeDirectories, variant: str) -> AIRuntimeProfileStatus:
@@ -328,8 +365,10 @@ def _module_present(site_packages_dir: Path, module_name: str) -> bool:
 
 def _default_user_cache_root() -> Path:
     if os.name == "nt":
-        return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    return Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        return Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    return Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
 
 
 def _python_runtime_tag() -> str:

@@ -11,11 +11,26 @@ from typing import Callable
 DEFAULT_AI_MODEL_REPO_ID = "Skulleton12/DinoV2"
 DEFAULT_AI_MODEL_REVISION = "main"
 DEFAULT_AI_MODEL_SIZE_MB = 346
+DEFAULT_SEMANTIC_MODEL_REPO_ID = "openai/clip-vit-base-patch32"
+DEFAULT_SEMANTIC_MODEL_REVISION = "main"
+DEFAULT_SEMANTIC_MODEL_SIZE_MB = 610
 AI_MODEL_DIR_ENV = "AICULLING_MODEL_DIR"
 AI_MODEL_REPO_ENV = "AICULLING_MODEL_REPO_ID"
 AI_MODEL_REVISION_ENV = "AICULLING_MODEL_REVISION"
+SEMANTIC_MODEL_DIR_ENV = "AICULLING_SEMANTIC_MODEL_DIR"
+SEMANTIC_MODEL_REPO_ENV = "AICULLING_SEMANTIC_MODEL_REPO_ID"
+SEMANTIC_MODEL_REVISION_ENV = "AICULLING_SEMANTIC_MODEL_REVISION"
 AI_MODEL_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 AI_MODEL_REQUIRED_FILENAMES = ("config.json", "model.safetensors")
+SEMANTIC_MODEL_REQUIRED_FILENAMES = (
+    "config.json",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "pytorch_model.bin",
+)
 AI_MODEL_USER_AGENT = "ImageTriage/0.1"
 
 AIModelProgressCallback = Callable[[str, int, int], None]
@@ -78,9 +93,44 @@ def resolve_ai_model_installation(
     )
 
 
+def resolve_semantic_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(SEMANTIC_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_SEMANTIC_MODEL_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(SEMANTIC_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_SEMANTIC_MODEL_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(SEMANTIC_MODEL_DIR_ENV, "") or "").strip()
+        or default_semantic_model_install_dir(repo_id=resolved_repo_id)
+    )
+    resolved_dir = Path(resolved_dir_value).expanduser().resolve()
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=resolved_dir,
+        required_filenames=SEMANTIC_MODEL_REQUIRED_FILENAMES,
+    )
+
+
 def default_ai_model_install_dir(*, repo_id: str = DEFAULT_AI_MODEL_REPO_ID) -> Path:
-    owner, name = _repo_path_parts(repo_id)
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / owner / name
+    _owner, name = _repo_path_parts(repo_id)
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
+
+
+def default_semantic_model_install_dir(*, repo_id: str = DEFAULT_SEMANTIC_MODEL_REPO_ID) -> Path:
+    _owner, name = _repo_path_parts(repo_id)
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
 
 
 def download_ai_model(
@@ -104,6 +154,19 @@ def download_ai_model(
         )
 
     return resolved
+
+
+def download_semantic_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_semantic_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
 
 
 def remove_ai_model(installation: AIModelInstallation | None = None) -> None:
@@ -146,8 +209,10 @@ def _download_file(
 
 def _default_user_cache_root() -> Path:
     if os.name == "nt":
-        return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    return Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        return Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    return Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
 
 
 def _repo_path_parts(repo_id: str) -> tuple[str, str]:

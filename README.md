@@ -85,7 +85,7 @@ The Linux build and the Windows MSI now share the same AI runtime staging logic 
 On first launch, the app offers to download the AI model into:
 
 ```text
-~/.cache/image_triage_ai_cache/models/Skulleton12/DinoV2
+~/.cache/image_triage_ai_cache/models/DinoV2
 ```
 
 If the user skips that step, the AI actions stay unavailable until they use `AI > Download AI Model...`.

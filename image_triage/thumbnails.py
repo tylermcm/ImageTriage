@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from queue import Empty, SimpleQueue
 
-from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygon
 
 from .cache import DiskThumbnailCache, MemoryThumbnailCache, ThumbnailKey
-from .imaging import load_image_for_display
+from .formats import suffix_for_path
+from .imaging import load_image_for_display, sanitize_display_error, thumbnail_skip_reason
 from .models import ImageRecord
 
 
@@ -45,13 +46,25 @@ class ThumbnailTask(QRunnable):
             self.result_queue.put(("ready", self.request.key, disk_image))
             return
 
+        skip_reason = thumbnail_skip_reason(self.request.path, self.request.target_size)
+        if skip_reason:
+            image = _placeholder_thumbnail(self.request.path, self.request.target_size, skip_reason)
+            self.memory_cache.put(self.request.key, image)
+            self.disk_cache.save(self.request.key, image)
+            self.result_queue.put(("ready", self.request.key, image))
+            return
+
         image, error = load_image_for_display(
             self.request.path,
             self.request.target_size,
             prefer_embedded=True,
         )
         if image.isNull():
-            self.result_queue.put(("failed", self.request.key, error or "Could not decode image."))
+            message = sanitize_display_error(error, path=self.request.path)
+            image = _placeholder_thumbnail(self.request.path, self.request.target_size, message)
+            self.memory_cache.put(self.request.key, image)
+            self.disk_cache.save(self.request.key, image)
+            self.result_queue.put(("ready", self.request.key, image))
             return
 
         if image.size().width() > self.request.target_size.width() or image.size().height() > self.request.target_size.height():
@@ -135,3 +148,55 @@ class ThumbnailManager(QObject):
 
         if not self._pending and processed == 0:
             self._drain_timer.stop()
+
+
+def _placeholder_thumbnail(path: str, target_size: QSize, message: str) -> QImage:
+    width = max(96, target_size.width() if target_size.isValid() else 256)
+    height = max(96, target_size.height() if target_size.isValid() else 192)
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(QColor("#202733"))
+
+    suffix = suffix_for_path(path).lstrip(".").upper() or "FILE"
+    headline = suffix[:5]
+    detail = (message or "Preview unavailable").strip()
+
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    margin = max(10, min(width, height) // 12)
+    card = image.rect().adjusted(margin, margin, -margin, -margin)
+    painter.setPen(QPen(QColor("#5b697b"), 2))
+    painter.setBrush(QColor("#2b3442"))
+    painter.drawRoundedRect(card, 8, 8)
+
+    fold = max(18, min(card.width(), card.height()) // 5)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#394657"))
+    painter.drawPolygon(
+        QPolygon(
+            [
+                card.topRight(),
+                QPoint(card.right() - fold, card.top()),
+                QPoint(card.right(), card.top() + fold),
+            ]
+        )
+    )
+    painter.setPen(QPen(QColor("#6f7f92"), 1))
+    painter.drawLine(card.right() - fold, card.top(), card.right(), card.top() + fold)
+    painter.drawLine(card.right() - fold, card.top(), card.right() - fold, card.top() + fold)
+    painter.drawLine(card.right() - fold, card.top() + fold, card.right(), card.top() + fold)
+
+    painter.setPen(QColor("#d8e2ef"))
+    title_font = QFont("Segoe UI", max(13, min(width, height) // 7), QFont.Weight.Bold)
+    painter.setFont(title_font)
+    painter.drawText(card.adjusted(8, 10, -8, -card.height() // 2), Qt.AlignmentFlag.AlignCenter, headline)
+
+    painter.setPen(QColor("#aebbd0"))
+    detail_font = QFont("Segoe UI", max(8, min(width, height) // 16))
+    painter.setFont(detail_font)
+    painter.drawText(
+        card.adjusted(10, card.height() // 2 - 8, -10, -10),
+        Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+        detail,
+    )
+    painter.end()
+    return image

@@ -231,6 +231,13 @@ CATALOG_MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        7,
+        """
+        ALTER TABLE catalog_ai_workflow_cache
+        ADD COLUMN semantic_cache_key TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 )
 
 LATEST_CATALOG_SCHEMA_VERSION = CATALOG_MIGRATIONS[-1][0]

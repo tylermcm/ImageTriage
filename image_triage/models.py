@@ -25,6 +25,7 @@ class ImageRecord:
     companion_paths: tuple[str, ...] = ()
     edited_paths: tuple[str, ...] = ()
     variants: tuple[ImageVariant, ...] = ()
+    is_folder: bool = False
 
     @property
     def all_paths(self) -> tuple[str, ...]:
@@ -145,11 +146,12 @@ class DeleteMode(str, Enum):
 
 
 def sort_records(records: list[ImageRecord], sort_mode: SortMode) -> list[ImageRecord]:
+    folder_rank = lambda record: 0 if record.is_folder else 1
     if sort_mode == SortMode.DATE:
-        return sorted(records, key=lambda record: (-record.modified_ns, _natural_name_key(record.name)))
+        return sorted(records, key=lambda record: (folder_rank(record), -record.modified_ns, _natural_name_key(record.name)))
     if sort_mode == SortMode.SIZE:
-        return sorted(records, key=lambda record: (-record.size, _natural_name_key(record.name)))
-    return sorted(records, key=lambda record: _natural_name_key(record.name))
+        return sorted(records, key=lambda record: (folder_rank(record), -record.size, _natural_name_key(record.name)))
+    return sorted(records, key=lambda record: (folder_rank(record), _natural_name_key(record.name)))
 
 
 def _natural_name_key(value: str) -> tuple[tuple[int, object], ...]:

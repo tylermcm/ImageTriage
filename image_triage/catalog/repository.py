@@ -73,6 +73,7 @@ class AIWorkflowCacheEntry:
     embedding_cache_key: str
     cluster_cache_key: str
     report_cache_key: str
+    semantic_cache_key: str
     artifacts_dir: str
     report_dir: str
 
@@ -813,6 +814,7 @@ class CatalogRepository:
                         embedding_cache_key,
                         cluster_cache_key,
                         report_cache_key,
+                        semantic_cache_key,
                         artifacts_dir,
                         report_dir
                     FROM catalog_ai_workflow_cache
@@ -828,6 +830,7 @@ class CatalogRepository:
             embedding_cache_key=str(row["embedding_cache_key"] or ""),
             cluster_cache_key=str(row["cluster_cache_key"] or ""),
             report_cache_key=str(row["report_cache_key"] or ""),
+            semantic_cache_key=str(row["semantic_cache_key"] or ""),
             artifacts_dir=str(row["artifacts_dir"] or ""),
             report_dir=str(row["report_dir"] or ""),
         )
@@ -841,6 +844,7 @@ class CatalogRepository:
         report_cache_key: str,
         artifacts_dir: str,
         report_dir: str,
+        semantic_cache_key: str = "",
     ) -> bool:
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
@@ -857,15 +861,17 @@ class CatalogRepository:
                             embedding_cache_key,
                             cluster_cache_key,
                             report_cache_key,
+                            semantic_cache_key,
                             artifacts_dir,
                             report_dir,
                             updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(folder_key) DO UPDATE SET
                             embedding_cache_key = excluded.embedding_cache_key,
                             cluster_cache_key = excluded.cluster_cache_key,
                             report_cache_key = excluded.report_cache_key,
+                            semantic_cache_key = excluded.semantic_cache_key,
                             artifacts_dir = excluded.artifacts_dir,
                             report_dir = excluded.report_dir,
                             updated_at = CURRENT_TIMESTAMP
@@ -875,6 +881,7 @@ class CatalogRepository:
                             embedding_cache_key,
                             cluster_cache_key,
                             report_cache_key,
+                            semantic_cache_key,
                             artifacts_dir,
                             report_dir,
                         ),

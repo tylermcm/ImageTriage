@@ -5,22 +5,32 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from image_triage.ai_workflow import (
     AIWorkflowRuntime,
     _build_stage_failure_message,
+    _parse_tqdm_progress,
     _resolve_stage_command,
     _run_command_with_live_output,
+    ai_semantic_artifacts_ready,
+    build_ai_stage_cache_keys,
     build_ai_workflow_paths,
     default_ai_workflow_runtime,
     load_supported_extensions,
     reset_hidden_ai_review_cache,
 )
+from image_triage.models import ImageRecord
 
 
 class AIWorkflowStreamingTests(unittest.TestCase):
+    def test_parse_tqdm_progress_accepts_progress_bar_segment(self) -> None:
+        parsed = _parse_tqdm_progress("Extracting embeddings:   6%|6         | 32/513 [00:57<14:23,  1.80s/image]")
+
+        self.assertEqual(("Extracting embeddings", 32, 513, "14:23"), parsed)
+
     def test_run_command_streams_lines_and_flushes_trailing_partial(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "stream_case.py"
@@ -264,6 +274,39 @@ class AIWorkflowStreamingTests(unittest.TestCase):
             self.assertFalse(paths.report_dir.exists())
             self.assertTrue(labels_dir.exists())
             self.assertTrue(training_dir.exists())
+
+    def test_semantic_artifact_check_requires_export_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = build_ai_workflow_paths(Path(temp_dir) / "shots")
+            paths.report_dir.mkdir(parents=True)
+
+            self.assertFalse(ai_semantic_artifacts_ready(paths))
+            paths.semantic_export_path.write_text("file_path,primary_label\n", encoding="utf-8")
+            self.assertFalse(ai_semantic_artifacts_ready(paths))
+            paths.semantic_summary_path.write_text("{}", encoding="utf-8")
+
+            self.assertTrue(ai_semantic_artifacts_ready(paths))
+
+    def test_semantic_cache_key_changes_when_sidecar_config_changes(self) -> None:
+        record = ImageRecord(path="C:/shots/a.jpg", name="a.jpg", size=10, modified_ns=20)
+        runtime = AIWorkflowRuntime(
+            engine_root=Path.cwd(),
+            python_executable=Path(sys.executable).resolve(),
+            model_name="mock-model",
+            checkpoint_path=Path.cwd() / "checkpoint.pt",
+            extraction_config_path=Path.cwd() / "extract.json",
+            clustering_config_path=Path.cwd() / "cluster.json",
+            report_config_path=Path.cwd() / "report.json",
+            semantic_sidecar_enabled=True,
+            semantic_model_name="openai/clip-vit-base-patch32",
+            semantic_batch_size=8,
+        )
+
+        first = build_ai_stage_cache_keys([record], runtime)
+        second = build_ai_stage_cache_keys([record], replace(runtime, semantic_batch_size=16))
+
+        self.assertTrue(first.semantic_cache_key)
+        self.assertNotEqual(first.semantic_cache_key, second.semantic_cache_key)
 
     def test_default_runtime_falls_back_to_generic_legacy_checkpoint_location(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

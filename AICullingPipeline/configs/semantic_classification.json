@@ -1,0 +1,31 @@
+{
+  "artifacts_dir": "../outputs/my_test_run",
+  "output_dir": "../outputs/my_test_run/ranker_report",
+  "model_name": "openai/clip-vit-base-patch32",
+  "metadata_filename": "images.csv",
+  "semantic_export_filename": "semantic_classifications.csv",
+  "semantic_summary_filename": "semantic_classification_summary.json",
+  "labels": [
+    "portrait",
+    "group photo",
+    "wedding",
+    "sports action",
+    "wildlife",
+    "pet",
+    "landscape",
+    "architecture",
+    "interior",
+    "food",
+    "product",
+    "vehicle",
+    "document",
+    "screenshot",
+    "astrophotography",
+    "macro",
+    "low quality image"
+  ],
+  "batch_size": 16,
+  "device": "auto",
+  "top_k": 3,
+  "log_level": "INFO"
+}
