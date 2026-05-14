@@ -36,6 +36,7 @@ from .ai_model import (
 )
 from .ai_runtime_packages import load_ai_runtime_installation_status
 from .formats import RAW_SUFFIXES
+from .perf import perf_logger
 
 if TYPE_CHECKING:
     from .models import ImageRecord
@@ -239,9 +240,22 @@ class AIRunTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        task_start = time.perf_counter() if logger.enabled else 0.0
         folder_text = str(self.folder)
         staged_input_dir: Path | None = None
         log_path = ai_run_log_path(self.paths)
+        if logger.enabled:
+            logger.log(
+                "ai.task.started",
+                folder=folder_text,
+                skip_extract=self.skip_extract,
+                skip_cluster=self.skip_cluster,
+                semantic_sidecar=self.runtime.semantic_sidecar_enabled,
+                batch_size=self.runtime.batch_size,
+                num_workers=self.runtime.num_workers,
+                device=self.runtime.device,
+            )
         self.signals.started.emit(folder_text)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -277,6 +291,15 @@ class AIRunTask(QRunnable):
                     _log_line(log_handle)
                     _log_line(log_handle, "Validation or workspace preparation failed.")
                     _log_line(log_handle, traceback.format_exc().rstrip())
+                    if logger.enabled:
+                        logger.duration(
+                            "ai.task.failed",
+                            (time.perf_counter() - task_start) * 1000.0,
+                            folder=folder_text,
+                            phase="validate",
+                            error=str(exc),
+                            log_path=str(log_path),
+                        )
                     self.signals.failed.emit(folder_text, _append_log_path(str(exc), log_path))
                     return
 
@@ -374,6 +397,7 @@ class AIRunTask(QRunnable):
 
                 if use_local_stage:
                     self.signals.stage.emit(folder_text, 1, total_stages, "Staging images locally")
+                    stage_start = time.perf_counter() if logger.enabled else 0.0
 
                     def _stage_progress(current: int, total: int, eta_text: str, message: str) -> None:
                         self.signals.progress.emit(folder_text, message, current, total, eta_text)
@@ -387,6 +411,13 @@ class AIRunTask(QRunnable):
                         runtime=self.runtime,
                         progress_callback=_stage_progress,
                     )
+                    if logger.enabled:
+                        logger.duration(
+                            "ai.stage.local_staging",
+                            (time.perf_counter() - stage_start) * 1000.0,
+                            folder=folder_text,
+                            output_dir=str(staged_input_dir),
+                        )
                     if commands and commands[0][0] == "extract":
                         commands[0][3][commands[0][3].index("--input-dir") + 1] = str(staged_input_dir)
                 elif commands and commands[0][0] == "extract":
@@ -406,6 +437,7 @@ class AIRunTask(QRunnable):
                     _log_line(log_handle, f"[stage {stage_index}/{total_stages}] {stage_name}: {stage_message}")
                     _log_line(log_handle, f"cwd: {self.runtime.engine_root}")
                     _log_line(log_handle, f"command: {_format_command_for_log(command)}")
+                    stage_start = time.perf_counter() if logger.enabled else 0.0
                     completed = _run_command_with_live_output(
                         command,
                         cwd=self.runtime.engine_root,
@@ -418,6 +450,18 @@ class AIRunTask(QRunnable):
                         ),
                         output_callback=lambda chunk: _log_chunk(log_handle, chunk),
                     )
+                    if logger.enabled:
+                        logger.duration(
+                            "ai.stage.command",
+                            (time.perf_counter() - stage_start) * 1000.0,
+                            folder=folder_text,
+                            stage=stage_name,
+                            stage_index=stage_index,
+                            stage_total=total_stages,
+                            return_code=completed.returncode,
+                            stdout_bytes=len(completed.stdout or ""),
+                            stderr_bytes=len(completed.stderr or ""),
+                        )
                     _log_line(log_handle)
                     _log_line(log_handle, f"return code: {completed.returncode}")
                     if completed.returncode != 0:
@@ -433,6 +477,15 @@ class AIRunTask(QRunnable):
                                 log_path=log_path,
                             ),
                         )
+                        if logger.enabled:
+                            logger.duration(
+                                "ai.task.failed",
+                                (time.perf_counter() - task_start) * 1000.0,
+                                folder=folder_text,
+                                phase=stage_name,
+                                return_code=completed.returncode,
+                                log_path=str(log_path),
+                            )
                         return
                     if staged_input_dir is not None and stage_name == "extract":
                         rewrite_extraction_artifact_paths(
@@ -442,6 +495,15 @@ class AIRunTask(QRunnable):
 
                 _log_line(log_handle)
                 _log_line(log_handle, "AI culling completed successfully.")
+                if logger.enabled:
+                    logger.duration(
+                        "ai.task.finished",
+                        (time.perf_counter() - task_start) * 1000.0,
+                        folder=folder_text,
+                        stages=total_stages,
+                        report_dir=str(self.paths.report_dir),
+                        log_path=str(log_path),
+                    )
                 self.signals.finished.emit(
                     folder_text,
                     str(self.paths.report_dir),
@@ -456,6 +518,15 @@ class AIRunTask(QRunnable):
                     _log_line(log_handle, stack_text)
             except OSError:
                 pass
+            if logger.enabled:
+                logger.duration(
+                    "ai.task.failed",
+                    (time.perf_counter() - task_start) * 1000.0,
+                    folder=folder_text,
+                    phase="unexpected",
+                    error=str(exc),
+                    log_path=str(log_path),
+                )
             self.signals.failed.emit(
                 folder_text,
                 _append_log_path(f"Unexpected AI culling failure.\n\n{exc}", log_path),

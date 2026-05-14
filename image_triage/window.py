@@ -21,6 +21,7 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass, replace
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from textwrap import dedent
 
 from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSettings, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
@@ -173,6 +174,7 @@ from .keyboard_mapping import ShortcutBinding, normalize_shortcut_text, serializ
 from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoot, LibraryStore, VirtualCollection
 from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
 from .models import DeleteMode, FilterMode, ImageRecord, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
+from .perf import perf_logger, performance_log_dir
 from .preview import FullScreenPreview, PreviewEntry
 from .workflows import (
     BEST_OF_BALANCED,
@@ -221,7 +223,7 @@ from .review_workflows import (
     review_scoring_provider_id,
     review_round_label,
 )
-from .scanner import FolderScanTask, discover_edited_paths, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
+from .scanner import FolderScanTask, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
 from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
@@ -281,6 +283,44 @@ class UndoAction:
     source_paths: tuple[str, ...] = ()
     session_id: str = ""
     winner_mode: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class InspectorStatsRequest:
+    """Background request for lightweight Inspector quality statistics."""
+    cache_key: tuple[str, int, int, int, int]
+    image: object
+
+
+class InspectorStatsTask(QRunnable):
+    def __init__(self, request: InspectorStatsRequest, result_queue: SimpleQueue) -> None:
+        super().__init__()
+        self.request = request
+        self.result_queue = result_queue
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        try:
+            stats = build_inspection_stats(self.request.image)
+        except Exception as exc:  # pragma: no cover - defensive worker boundary
+            if logger.enabled:
+                logger.duration(
+                    "inspector.stats.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    error=str(exc),
+                )
+            self.result_queue.put(("failed", self.request.cache_key, str(exc)))
+            return
+        if logger.enabled:
+            logger.duration(
+                "inspector.stats",
+                (time.perf_counter() - start) * 1000.0,
+                width=self.request.image.width() if hasattr(self.request.image, "width") else 0,
+                height=self.request.image.height() if hasattr(self.request.image, "height") else 0,
+            )
+        self.result_queue.put(("ready", self.request.cache_key, stats))
 
 
 @dataclass(slots=True)
@@ -1606,6 +1646,9 @@ class AnnotationHydrationTask(QRunnable):
         return hydrated
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        hydrated_count = 0
         try:
             if self._cancelled:
                 return
@@ -1617,6 +1660,7 @@ class AnnotationHydrationTask(QRunnable):
                     return
                 chunk = self._hydrate_records_batch(store, batch)
                 if chunk:
+                    hydrated_count += len(chunk)
                     self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
 
             for batch in self._record_batches(remaining_records, self.BACKGROUND_BATCH_SIZE):
@@ -1624,12 +1668,33 @@ class AnnotationHydrationTask(QRunnable):
                     return
                 chunk = self._hydrate_records_batch(store, batch)
                 if chunk:
+                    hydrated_count += len(chunk)
                     self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
 
             if self._cancelled:
                 return
+            if logger.enabled:
+                logger.duration(
+                    "annotation.hydration",
+                    (time.perf_counter() - start) * 1000.0,
+                    scope=self.scope_key,
+                    token=self.token,
+                    records=len(self.records),
+                    hydrated=hydrated_count,
+                    prioritized=len(self.prioritized_paths),
+                )
             self.signals.finished.emit(self.scope_key, self.token)
         except Exception as exc:  # pragma: no cover - desktop/runtime path
+            if logger.enabled:
+                logger.duration(
+                    "annotation.hydration.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    scope=self.scope_key,
+                    token=self.token,
+                    records=len(self.records),
+                    hydrated=hydrated_count,
+                    error=str(exc),
+                )
             self.signals.failed.emit(self.scope_key, self.token, str(exc))
 
 
@@ -1673,6 +1738,8 @@ class ScopeEnrichmentTask(QRunnable):
         self._cancelled = True
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         try:
             if self._cancelled:
                 return
@@ -1716,6 +1783,17 @@ class ScopeEnrichmentTask(QRunnable):
                         cached_entry.taste_profile,
                         cached_entry.recommendations,
                     )
+                    if logger.enabled:
+                        logger.duration(
+                            "workflow.enrichment",
+                            (time.perf_counter() - start) * 1000.0,
+                            scope=self.scope_key,
+                            token=self.token,
+                            records=len(self.records),
+                            source="catalog",
+                            corrections=len(correction_events),
+                            recommendations=len(cached_entry.recommendations),
+                        )
                     return
             taste_profile, recommendations = build_burst_recommendations(
                 list(self.records),
@@ -1765,7 +1843,27 @@ class ScopeEnrichmentTask(QRunnable):
                 taste_profile,
                 recommendations,
             )
+            if logger.enabled:
+                logger.duration(
+                    "workflow.enrichment",
+                    (time.perf_counter() - start) * 1000.0,
+                    scope=self.scope_key,
+                    token=self.token,
+                    records=len(self.records),
+                    source="live",
+                    corrections=len(correction_events),
+                    recommendations=len(recommendations),
+                )
         except Exception as exc:  # pragma: no cover - desktop/runtime path
+            if logger.enabled:
+                logger.duration(
+                    "workflow.enrichment.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    scope=self.scope_key,
+                    token=self.token,
+                    records=len(self.records),
+                    error=str(exc),
+                )
             self.signals.failed.emit(self.scope_key, self.token, str(exc))
 
 
@@ -1798,6 +1896,8 @@ class AIModelDownloadTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         try:
             completed: list[str] = []
             for request in self.requests:
@@ -1813,8 +1913,22 @@ class AIModelDownloadTask(QRunnable):
                 )
                 completed.append(f"{request.label}: {request.installation.install_dir}")
         except Exception as exc:
+            if logger.enabled:
+                logger.duration(
+                    "ai.model_download.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    requests=len(self.requests),
+                    error=str(exc),
+                )
             self.signals.failed.emit(str(exc))
             return
+        if logger.enabled:
+            logger.duration(
+                "ai.model_download",
+                (time.perf_counter() - start) * 1000.0,
+                requests=len(self.requests),
+                completed=len(completed),
+            )
         self.signals.finished.emit("\n".join(completed))
 
 
@@ -1845,6 +1959,8 @@ class AIRuntimeInstallTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         output_lines: list[str] = []
         try:
             self.signals.started.emit(str(self.install_root), self.variant_choice)
@@ -1860,6 +1976,14 @@ class AIRuntimeInstallTask(QRunnable):
                 **_headless_background_popen_kwargs(),
             )
         except Exception as exc:
+            if logger.enabled:
+                logger.duration(
+                    "ai.runtime_install.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    install_root=str(self.install_root),
+                    variant=self.variant_choice,
+                    error=str(exc),
+                )
             self.signals.failed.emit(str(exc))
             return
 
@@ -1873,6 +1997,15 @@ class AIRuntimeInstallTask(QRunnable):
                 self.signals.progress.emit(text)
         return_code = process.wait()
         if return_code != 0:
+            if logger.enabled:
+                logger.duration(
+                    "ai.runtime_install.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    install_root=str(self.install_root),
+                    variant=self.variant_choice,
+                    return_code=return_code,
+                    output_lines=len(output_lines),
+                )
             tail = "\n".join(output_lines[-30:])
             if tail:
                 self.signals.failed.emit(
@@ -1883,6 +2016,14 @@ class AIRuntimeInstallTask(QRunnable):
                     f"Could not install the AI runtime (exit code {return_code})."
                 )
             return
+        if logger.enabled:
+            logger.duration(
+                "ai.runtime_install",
+                (time.perf_counter() - start) * 1000.0,
+                install_root=str(self.install_root),
+                variant=self.variant_choice,
+                output_lines=len(output_lines),
+            )
         self.signals.finished.emit(str(self.install_root), self.variant_choice)
 
 
@@ -1987,6 +2128,13 @@ class MainWindow(QMainWindow):
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
     BROWSER_VIEW_MODE_KEY = "view/browser_mode"
     DETAILS_PREVIEW_PANE_KEY = "view/details_preview_pane"
+    DETAILS_PREVIEW_ON_HOVER_KEY = "view/details_preview_on_hover"
+    DETAILS_ROW_DENSITY_KEY = "view/details_row_density"
+    DETAILS_SPLITTER_STATE_KEY = "view/details_splitter_state"
+    DETAILS_HEADER_STATE_KEY = "view/details_header_state"
+    DETAILS_SORT_COLUMN_KEY = "view/details_sort_column"
+    DETAILS_SORT_ORDER_KEY = "view/details_sort_order"
+    PERFORMANCE_LOGGING_KEY = "diagnostics/performance_logging"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
     TOOLBAR_STYLE_KEY = "view/toolbar_style"
     FOLDER_VIEW_STATE_KEY = "view/folder_state"
@@ -2381,6 +2529,13 @@ class MainWindow(QMainWindow):
         self._record_index_by_path: dict[str, int] = {}
         self._edited_candidates_cache: dict[str, tuple[str, ...]] = {}
         self._inspection_stats_cache: dict[tuple[str, int, int, int, int], InspectionStats] = {}
+        self._inspection_stats_pending_keys: set[tuple[str, int, int, int, int]] = set()
+        self._inspection_stats_result_queue: SimpleQueue = SimpleQueue()
+        self._inspection_stats_pool = QThreadPool(self)
+        self._inspection_stats_pool.setMaxThreadCount(1)
+        self._inspection_stats_drain_timer = QTimer(self)
+        self._inspection_stats_drain_timer.setInterval(25)
+        self._inspection_stats_drain_timer.timeout.connect(self._drain_inspector_stats_results)
         self._visible_review_group_rows_by_id: dict[str, list[int]] = {}
         self._visible_ai_group_rows_by_id: dict[str, list[int]] = {}
         self._accepted_count = 0
@@ -2414,6 +2569,12 @@ class MainWindow(QMainWindow):
         self._ui_mode = "manual"
         self._browser_view_mode = self._normalize_browser_view_mode(self._settings.value(self.BROWSER_VIEW_MODE_KEY, "grid", str))
         self._details_preview_pane_enabled = self._settings.value(self.DETAILS_PREVIEW_PANE_KEY, True, bool)
+        self._details_preview_on_hover_enabled = self._settings.value(self.DETAILS_PREVIEW_ON_HOVER_KEY, False, bool)
+        self._details_row_density = self._normalize_details_row_density(
+            self._settings.value(self.DETAILS_ROW_DENSITY_KEY, "comfortable", str)
+        )
+        self._performance_logging_enabled = self._settings.value(self.PERFORMANCE_LOGGING_KEY, False, bool)
+        perf_logger().set_enabled(self._performance_logging_enabled, reason="startup")
         self._syncing_browser_selection = False
         self._zen_mode_enabled = False
         self._zen_restore_state: dict[str, object] = {}
@@ -2813,6 +2974,9 @@ class MainWindow(QMainWindow):
         self.browser_stack.addWidget(self.grid)
         self.browser_stack.addWidget(self.details_view)
         self.details_view.set_preview_visible(self._details_preview_pane_enabled)
+        self.details_view.set_preview_on_hover_enabled(self._details_preview_on_hover_enabled)
+        self.details_view.set_row_density(self._details_row_density)
+        self.details_view.layout_state_changed.connect(self._save_details_view_state)
         self.browser_stack.setCurrentIndex(1 if self._browser_view_mode == "details" else 0)
         center_layout.addWidget(self.workspace_bar)
         center_layout.addWidget(self.tool_mode_bar)
@@ -2882,8 +3046,16 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         layout.addWidget(self.workspace_docks.shell, 1)
         self.setCentralWidget(container)
+        self.zen_hint_overlay = QLabel("Zen Mode  |  F11 or Esc to exit", container)
+        self.zen_hint_overlay.setObjectName("zenHintOverlay")
+        self.zen_hint_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zen_hint_overlay.hide()
+        self.zen_hint_hide_timer = QTimer(self)
+        self.zen_hint_hide_timer.setSingleShot(True)
+        self.zen_hint_hide_timer.timeout.connect(self.zen_hint_overlay.hide)
         self.summary_strip.hide()
         self._apply_default_workspace()
+        QTimer.singleShot(0, self._restore_details_view_state)
 
         status = QStatusBar()
         status.showMessage("Ready")
@@ -4274,8 +4446,9 @@ class MainWindow(QMainWindow):
         dialog.configure(
             commands,
             recent_command_ids=tuple(self._recent_command_ids),
-            title="Preview Commands" if palette_context == "preview" else "Command Palette",
+            title="Zen Commands" if self._zen_mode_enabled else ("Preview Commands" if palette_context == "preview" else "Command Palette"),
         )
+        dialog.set_prominent(self._zen_mode_enabled)
         self._command_palette_open = True
         self._active_command_palette = dialog
         self._set_command_palette_shortcuts_enabled(False)
@@ -4362,6 +4535,8 @@ class MainWindow(QMainWindow):
             add_action_command("tools.batch_resize", self.actions.batch_resize_selection, section="Tools", keywords=("batch resize tool", "resize many", "convert size"))
             add_action_command("tools.batch_convert", self.actions.batch_convert_selection, section="Tools", keywords=("batch convert tool", "convert format", "png jpg webp"))
             add_action_command("tools.extract_archive", self.actions.extract_archive, section="Tools", keywords=("extract archive", "unzip", "decompress", "7z"))
+            add_action_command("tools.performance_logging", self.actions.performance_logging, section="Tools", subtitle=self._toggle_state_text(self._performance_logging_enabled), keywords=("diagnostics", "profiler", "performance log", "speed"))
+            add_action_command("tools.open_performance_logs", self.actions.open_performance_log_folder, section="Tools", keywords=("diagnostics", "profiler", "logs", "performance"))
             add_action_command("workflow.handoff_builder", self.actions.handoff_builder, section="Workflow", keywords=("delivery", "handoff", "export workflow"))
             add_action_command("workflow.send_to_editor", self.actions.send_to_editor_pipeline, section="Workflow", keywords=("retouch", "editor queue", "send to editor"))
             add_action_command("workflow.best_of", self.actions.best_of_set_auto_assembly, section="Workflow", keywords=("best of", "shortlist", "auto assembly"))
@@ -4397,6 +4572,12 @@ class MainWindow(QMainWindow):
             add_action_command("view.grid_view", self.actions.grid_view, section="View", subtitle="Current view" if self._browser_view_mode == "grid" else "", keywords=("grid", "thumbnail grid", "tiles"))
             add_action_command("view.details_view", self.actions.details_view, section="View", subtitle="Current view" if self._browser_view_mode == "details" else "", keywords=("details", "list view", "file explorer"))
             add_action_command("view.details_preview_pane", self.actions.details_preview_pane, section="View", subtitle=self._toggle_state_text(self._details_preview_pane_enabled), keywords=("preview pane", "details preview"))
+            add_action_command("view.details_preview_on_hover", self.actions.details_preview_on_hover, section="View", subtitle=self._toggle_state_text(self._details_preview_on_hover_enabled), keywords=("preview on hover", "details hover preview"))
+            add_action_command("view.details_density_compact", self.actions.details_density_compact, section="View", subtitle="Current density" if self._details_row_density == "compact" else "", keywords=("details density", "compact rows", "row density"))
+            add_action_command("view.details_density_comfortable", self.actions.details_density_comfortable, section="View", subtitle="Current density" if self._details_row_density == "comfortable" else "", keywords=("details density", "comfortable rows", "row density"))
+            add_action_command("view.details_next_unreviewed", self.actions.details_next_unreviewed, section="View", keywords=("details next unreviewed", "jump unreviewed"))
+            add_action_command("view.details_next_kept", self.actions.details_next_kept, section="View", keywords=("details next kept", "jump kept", "jump winner"))
+            add_action_command("view.details_next_rejected", self.actions.details_next_rejected, section="View", keywords=("details next rejected", "jump rejected"))
             add_action_command("view.zen_mode", self.actions.zen_mode, section="View", subtitle=self._toggle_state_text(self._zen_mode_enabled), keywords=("fullscreen", "focus mode", "hide panels"))
             add_action_command("view.burst_groups", self.actions.burst_groups, section="View", subtitle=self._toggle_state_text(self._burst_groups_enabled), keywords=("burst grouping", "burst shots", "toggle bursts", "capture sequence"))
             add_action_command("view.burst_stacks", self.actions.burst_stacks, section="View", subtitle=self._toggle_state_text(self._burst_stacks_enabled), keywords=("smart stacks", "cycle group", "stack shots", "duplicate stack"))
@@ -5087,7 +5268,35 @@ class MainWindow(QMainWindow):
             self._apply_default_workspace()
 
     def _save_window_state(self) -> None:
+        self._save_details_view_state()
         save_window_layout(self, self._settings, self.GEOMETRY_KEY, self.STATE_KEY, self.workspace_docks)
+
+    def _restore_details_view_state(self) -> None:
+        splitter_state = self._settings.value(self.DETAILS_SPLITTER_STATE_KEY, QByteArray())
+        if isinstance(splitter_state, QByteArray):
+            self.details_view.restore_splitter_state(splitter_state)
+        header_state = self._settings.value(self.DETAILS_HEADER_STATE_KEY, QByteArray())
+        if isinstance(header_state, QByteArray):
+            self.details_view.restore_header_state(header_state)
+        try:
+            sort_column = int(self._settings.value(self.DETAILS_SORT_COLUMN_KEY, 0, int))
+        except (TypeError, ValueError):
+            sort_column = 0
+        sort_order_raw = str(self._settings.value(self.DETAILS_SORT_ORDER_KEY, "asc", str) or "asc")
+        sort_order = Qt.SortOrder.DescendingOrder if sort_order_raw == "desc" else Qt.SortOrder.AscendingOrder
+        self.details_view.set_sort_state(sort_column, sort_order)
+
+    def _save_details_view_state(self) -> None:
+        if getattr(self, "details_view", None) is None:
+            return
+        self._settings.setValue(self.DETAILS_SPLITTER_STATE_KEY, self.details_view.save_splitter_state())
+        self._settings.setValue(self.DETAILS_HEADER_STATE_KEY, self.details_view.save_header_state())
+        sort_column, sort_order = self.details_view.sort_state()
+        self._settings.setValue(self.DETAILS_SORT_COLUMN_KEY, sort_column)
+        self._settings.setValue(
+            self.DETAILS_SORT_ORDER_KEY,
+            "desc" if sort_order == Qt.SortOrder.DescendingOrder else "asc",
+        )
 
     def _finish_startup_restore(self) -> None:
         if self._startup_launch_target and self._open_launch_target(self._startup_launch_target, chunked_restore=True):
@@ -5746,6 +5955,8 @@ class MainWindow(QMainWindow):
         self._shutdown_child_processes()
         self._cleanup_child_sync_state()
         self._save_window_state()
+        perf_logger().log("app.close")
+        perf_logger().flush()
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:
@@ -5881,6 +6092,13 @@ class MainWindow(QMainWindow):
         chunked_restore: bool = False,
         preferred_record_path: str | None = None,
     ) -> None:
+        perf_logger().log(
+            "folder.select",
+            folder=folder,
+            sync_tree=sync_tree,
+            chunked_restore=chunked_restore,
+            preferred_record_path=preferred_record_path or "",
+        )
         if sync_tree:
             index = self.folder_model.index(folder)
             if index.isValid():
@@ -5956,6 +6174,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "central_container") and watched is self.central_container:
                 if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
                     self._position_workspace_toolbar_editor()
+                if event.type() == QEvent.Type.Resize and hasattr(self, "zen_hint_overlay"):
+                    self._position_zen_hint_overlay()
             if hasattr(self, "workspace_bar") and watched is self.workspace_bar:
                 if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
                     self._position_workspace_toolbar_editor()
@@ -7646,6 +7866,11 @@ class MainWindow(QMainWindow):
         text = str(value or "").strip().casefold()
         return "details" if text == "details" else "grid"
 
+    @staticmethod
+    def _normalize_details_row_density(value: object) -> str:
+        text = str(value or "").strip().casefold()
+        return text if text in {"compact", "comfortable"} else "comfortable"
+
     def _set_column_count(self, count: int) -> None:
         columns = self._normalize_column_count(count)
         combo_index = self.columns_combo.findData(columns)
@@ -7682,6 +7907,40 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.DETAILS_PREVIEW_PANE_KEY, self._details_preview_pane_enabled)
         self.details_view.set_preview_visible(self._details_preview_pane_enabled)
         self._update_action_states()
+
+    def _handle_details_preview_on_hover_toggled(self, checked: bool) -> None:
+        self._details_preview_on_hover_enabled = bool(checked)
+        self._settings.setValue(self.DETAILS_PREVIEW_ON_HOVER_KEY, self._details_preview_on_hover_enabled)
+        self.details_view.set_preview_on_hover_enabled(self._details_preview_on_hover_enabled)
+        state = "on" if self._details_preview_on_hover_enabled else "off"
+        self.statusBar().showMessage(f"Details preview on hover {state}")
+        self._update_action_states()
+
+    def _set_details_row_density(self, density: str) -> None:
+        normalized = self._normalize_details_row_density(density)
+        self._details_row_density = normalized
+        self._settings.setValue(self.DETAILS_ROW_DENSITY_KEY, normalized)
+        self.details_view.set_row_density(normalized)
+        label = "compact" if normalized == "compact" else "comfortable"
+        self.statusBar().showMessage(f"Details row density set to {label}")
+        self._update_action_states()
+
+    def _handle_performance_logging_toggled(self, checked: bool) -> None:
+        self._performance_logging_enabled = bool(checked)
+        self._settings.setValue(self.PERFORMANCE_LOGGING_KEY, self._performance_logging_enabled)
+        perf_logger().set_enabled(self._performance_logging_enabled, reason="menu_toggle")
+        if self._performance_logging_enabled:
+            path = perf_logger().path
+            self.statusBar().showMessage(f"Performance logging enabled: {path}")
+        else:
+            self.statusBar().showMessage("Performance logging disabled")
+        self._update_action_states()
+
+    def _open_performance_log_folder(self) -> None:
+        path = perf_logger().path
+        target = path.parent if path is not None else performance_log_dir()
+        target.mkdir(parents=True, exist_ok=True)
+        open_in_file_explorer(str(target))
 
     def _sync_details_view_from_grid(self) -> None:
         if getattr(self, "details_view", None) is None or self._syncing_browser_selection:
@@ -7726,6 +7985,34 @@ class MainWindow(QMainWindow):
         self._update_status(index=current_index)
         self._update_inspector_context(current_index)
 
+    def _jump_details_to_review_state(self, target: str) -> None:
+        if not self._records:
+            return
+        start = self.grid.current_index()
+        total = len(self._records)
+
+        def matches(record: ImageRecord) -> bool:
+            annotation = self._annotations.get(record.path, SessionAnnotation())
+            if target == "kept":
+                return annotation.winner and not record.is_folder
+            if target == "rejected":
+                return annotation.reject and not record.is_folder
+            return not annotation.winner and not annotation.reject and not record.is_folder
+
+        for offset in range(1, total + 1):
+            index = (max(0, start) + offset) % total
+            record = self._record_at(index)
+            if record is not None and matches(record):
+                if self._browser_view_mode != "details":
+                    self._set_browser_view_mode("details")
+                self.details_view.set_selected_indexes([index], current_index=index)
+                self.grid.set_logical_selection([index], current_index=index)
+                self._update_status(index=index)
+                self.statusBar().showMessage(f"Details jumped to {record.name}")
+                return
+        label = {"kept": "kept", "rejected": "rejected"}.get(target, "unreviewed")
+        self.statusBar().showMessage(f"No {label} image found in Details View")
+
     def _handle_zen_mode_toggled(self, checked: bool) -> None:
         self._set_zen_mode(bool(checked))
 
@@ -7735,6 +8022,25 @@ class MainWindow(QMainWindow):
     def _handle_zen_escape_shortcut(self) -> None:
         if self._zen_mode_enabled:
             self._set_zen_mode(False)
+
+    def _position_zen_hint_overlay(self) -> None:
+        if not hasattr(self, "zen_hint_overlay") or not hasattr(self, "central_container"):
+            return
+        hint = self.zen_hint_overlay
+        hint.adjustSize()
+        width = max(250, hint.width() + 28)
+        height = max(34, hint.height() + 10)
+        x = max(12, (self.central_container.width() - width) // 2)
+        y = 18
+        hint.setGeometry(x, y, width, height)
+
+    def _show_zen_hint_overlay(self) -> None:
+        if not self._zen_mode_enabled or not hasattr(self, "zen_hint_overlay"):
+            return
+        self._position_zen_hint_overlay()
+        self.zen_hint_overlay.show()
+        self.zen_hint_overlay.raise_()
+        self.zen_hint_hide_timer.start(1800)
 
     def _handle_zen_menu_pin_toggled(self, checked: bool) -> None:
         self._zen_menu_pinned = bool(checked)
@@ -7813,6 +8119,7 @@ class MainWindow(QMainWindow):
                 self.workspace_docks.hide_panel("library")
                 self.workspace_docks.hide_panel("inspector")
             self.showFullScreen()
+            QTimer.singleShot(120, self._show_zen_hint_overlay)
             self.statusBar().showMessage("Zen Mode enabled")
         else:
             restore_state = self._zen_restore_state or {}
@@ -7822,6 +8129,9 @@ class MainWindow(QMainWindow):
             self._zen_escape_shortcut.setEnabled(False)
             if hasattr(self, "zen_menu_pin_button"):
                 self.zen_menu_pin_button.hide()
+            if hasattr(self, "zen_hint_overlay"):
+                self.zen_hint_hide_timer.stop()
+                self.zen_hint_overlay.hide()
             self.menuBar().setMinimumHeight(0)
             self.menuBar().setMaximumHeight(16777215)
             window_state = restore_state.get("window_state")
@@ -7953,8 +8263,16 @@ class MainWindow(QMainWindow):
             self.actions.details_view.setChecked(self._browser_view_mode == "details")
         with QSignalBlocker(self.actions.details_preview_pane):
             self.actions.details_preview_pane.setChecked(self._details_preview_pane_enabled)
+        with QSignalBlocker(self.actions.details_preview_on_hover):
+            self.actions.details_preview_on_hover.setChecked(self._details_preview_on_hover_enabled)
+        with QSignalBlocker(self.actions.details_density_compact):
+            self.actions.details_density_compact.setChecked(self._details_row_density == "compact")
+        with QSignalBlocker(self.actions.details_density_comfortable):
+            self.actions.details_density_comfortable.setChecked(self._details_row_density == "comfortable")
         with QSignalBlocker(self.actions.zen_mode):
             self.actions.zen_mode.setChecked(self._zen_mode_enabled)
+        with QSignalBlocker(self.actions.performance_logging):
+            self.actions.performance_logging.setChecked(self._performance_logging_enabled)
         with QSignalBlocker(self.actions.mode_actions["manual"]):
             self.actions.mode_actions["manual"].setChecked(self._ui_mode == "manual")
         with QSignalBlocker(self.actions.mode_actions["ai"]):
@@ -7984,7 +8302,15 @@ class MainWindow(QMainWindow):
         self.actions.grid_view.setEnabled(True)
         self.actions.details_view.setEnabled(True)
         self.actions.details_preview_pane.setEnabled(self._browser_view_mode == "details")
+        self.actions.details_preview_on_hover.setEnabled(self._browser_view_mode == "details" and self._details_preview_pane_enabled)
+        self.actions.details_density_compact.setEnabled(True)
+        self.actions.details_density_comfortable.setEnabled(True)
+        self.actions.details_next_unreviewed.setEnabled(bool(self._records))
+        self.actions.details_next_kept.setEnabled(bool(self._records))
+        self.actions.details_next_rejected.setEnabled(bool(self._records))
         self.actions.zen_mode.setEnabled(True)
+        self.actions.performance_logging.setEnabled(True)
+        self.actions.open_performance_log_folder.setEnabled(True)
         self.actions.rename_selection.setEnabled(current_record is not None and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.batch_rename_selection.setEnabled(bool(self._current_folder and self._all_records) and not in_recycle_folder and not in_winners_folder)
         has_resizeable_records = self._records_have_resizable
@@ -12184,6 +12510,8 @@ class MainWindow(QMainWindow):
         self._review_scoring_cache_detail = "Ready"
 
     def _handle_scan_cached(self, folder: str, token: int, records: list[ImageRecord], source: str) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder) or not records:
             return
         self._scan_showed_cached = True
@@ -12202,8 +12530,12 @@ class MainWindow(QMainWindow):
         self._load_hidden_ai_results_for_current_folder(show_message=False)
         cache_label = self._catalog_source_label(source)
         self.statusBar().showMessage(f"Loaded {cache_label.lower()} for {self._current_folder}, refreshing from disk...")
+        if logger.enabled:
+            logger.duration("scan.cached_applied", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records), chunked=chunked_view)
 
     def _handle_scan_finished(self, folder: str, token: int, records: list[ImageRecord], source: str) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self._active_scan_tasks.pop(token, None)
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
             self._chunked_load_scan_tokens.discard(token)
@@ -12226,6 +12558,8 @@ class MainWindow(QMainWindow):
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
             self._pending_folder_focus_path = ""
+            if logger.enabled:
+                logger.duration("scan.finished_confirmed_cache", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records))
             return
         self._apply_loaded_records(
             records,
@@ -12244,8 +12578,11 @@ class MainWindow(QMainWindow):
         if self._folder_watch_refresh_pending:
             self._folder_watch_refresh_timer.start(250)
         self._pending_folder_focus_path = ""
+        if logger.enabled:
+            logger.duration("scan.finished_applied", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records), chunked=chunked_view)
 
     def _handle_scan_failed(self, folder: str, token: int, message: str) -> None:
+        perf_logger().log("scan.failed", folder=folder, token=token, message=message)
         self._active_scan_tasks.pop(token, None)
         if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
             self._chunked_load_scan_tokens.discard(token)
@@ -12308,12 +12645,16 @@ class MainWindow(QMainWindow):
             self._folder_watch_refresh_timer.start(450)
 
     def _handle_current_changed(self, index: int) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self._sync_details_view_from_grid()
         self._enqueue_filter_metadata_paths(self.grid.visible_item_paths(limit=200), front=True)
         self._update_action_states()
         self._update_status(index=index)
         if not self.preview.isVisible():
             self._schedule_preview_preload(index)
+        if logger.enabled:
+            logger.duration("window.current_changed", (time.perf_counter() - start) * 1000.0, index=index, view=self._browser_view_mode)
 
     def _handle_inspector_thumbnail_ready(self, key, _image) -> None:
         current_record = self._record_at(self.grid.current_index())
@@ -12325,10 +12666,14 @@ class MainWindow(QMainWindow):
         self._update_inspector_context()
 
     def _handle_grid_selection_changed(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self._sync_details_view_from_grid()
         self._update_action_states()
         self._update_status()
         self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(lookahead=100), front=True)
+        if logger.enabled:
+            logger.duration("window.selection_changed", (time.perf_counter() - start) * 1000.0, selected=self.grid.selected_count(), view=self._browser_view_mode)
 
     def _show_ai_menu(self) -> None:
         if self.actions is None:
@@ -12744,6 +13089,8 @@ class MainWindow(QMainWindow):
         self._update_action_states()
 
     def _run_ai_pipeline(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before running AI review")
             return
@@ -12862,6 +13209,16 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Queued AI review for {self._current_folder}")
         self._ai_run_pool.start(task)
+        if logger.enabled:
+            logger.duration(
+                "ai.run_queued",
+                (time.perf_counter() - start) * 1000.0,
+                folder=self._current_folder,
+                records=len(self._all_records),
+                skip_extract=skip_extract,
+                skip_cluster=skip_cluster,
+                semantic_sidecar=self._ai_semantic_sidecar_enabled,
+            )
 
     def _ai_cull_record_groups(self, records: list[ImageRecord] | tuple[ImageRecord, ...] | None = None) -> dict[AICullBucket, list[ImageRecord]]:
         grouped: dict[AICullBucket, list[ImageRecord]] = {bucket: [] for bucket in AICullBucket}
@@ -13051,6 +13408,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("No images were moved into semantic folders.")
 
     def _handle_ai_run_started(self, folder: str) -> None:
+        perf_logger().log("ai.run_started", folder=folder)
         if normalized_path_key(folder) != normalized_path_key(self._current_folder):
             return
         self._ai_stage_index = 0
@@ -13063,6 +13421,7 @@ class MainWindow(QMainWindow):
         self._update_ai_toolbar_state()
 
     def _handle_ai_run_stage(self, folder: str, stage_index: int, stage_total: int, message: str) -> None:
+        perf_logger().log("ai.stage", folder=folder, stage_index=stage_index, stage_total=stage_total, message=message)
         if normalized_path_key(folder) != normalized_path_key(self._current_folder):
             return
         self._ai_stage_index = max(0, stage_index)
@@ -13083,6 +13442,7 @@ class MainWindow(QMainWindow):
         total: int,
         eta_text: str,
     ) -> None:
+        perf_logger().log("ai.progress", folder=folder, message=message, current=current, total=total, eta=eta_text)
         if normalized_path_key(folder) != normalized_path_key(self._current_folder):
             return
         self._ai_stage_message = message
@@ -13212,6 +13572,8 @@ class MainWindow(QMainWindow):
         self._exec_dialog_with_geometry(dialog, "ai_review_complete")
 
     def _handle_ai_run_finished(self, folder: str, report_dir: str, html_report_path: str) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self._active_ai_task = None
         embedding_cache_key = self._active_ai_embedding_cache_key
         cluster_cache_key = self._active_ai_cluster_cache_key
@@ -13255,8 +13617,17 @@ class MainWindow(QMainWindow):
             same_folder=same_folder,
             bundle=completion_bundle,
         )
+        if logger.enabled:
+            logger.duration(
+                "ai.run_finished_handler",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder,
+                report_dir=report_dir,
+                same_folder=same_folder,
+            )
 
     def _handle_ai_run_failed(self, folder: str, message: str) -> None:
+        perf_logger().log("ai.run_failed", folder=folder, message=message)
         self._active_ai_task = None
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
@@ -13928,7 +14299,9 @@ class MainWindow(QMainWindow):
             workflow_insight = self._workflow_insight_for_record(current_record)
             thumbnail = self.grid.thumbnail_for(index)
             if thumbnail is not None and not thumbnail.isNull() and not current_record.is_folder:
-                inspection_stats = self._inspection_stats_for_thumbnail(current_record, display_path, thumbnail)
+                inspection_stats = self._cached_inspection_stats_for_thumbnail(current_record, display_path, thumbnail)
+                if inspection_stats is None:
+                    self._schedule_inspection_stats_for_thumbnail(current_record, display_path, thumbnail)
             if not current_record.is_folder:
                 metadata = self._filter_metadata_manager.get_cached(current_record)
                 if metadata is None:
@@ -13954,15 +14327,56 @@ class MainWindow(QMainWindow):
             workflow_details=workflow_details,
         )
 
-    def _inspection_stats_for_thumbnail(self, record: ImageRecord, display_path: str, thumbnail) -> InspectionStats:
+    def _inspection_stats_cache_key(self, record: ImageRecord, display_path: str, thumbnail) -> tuple[str, int, int, int, int]:
         cache_path = display_path or record.path
-        cache_key = (
+        return (
             normalized_path_key(cache_path),
             int(record.modified_ns or 0),
             int(record.size or 0),
             int(thumbnail.width()),
             int(thumbnail.height()),
         )
+
+    def _cached_inspection_stats_for_thumbnail(self, record: ImageRecord, display_path: str, thumbnail) -> InspectionStats | None:
+        cache_key = self._inspection_stats_cache_key(record, display_path, thumbnail)
+        cached = self._inspection_stats_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        return None
+
+    def _schedule_inspection_stats_for_thumbnail(self, record: ImageRecord, display_path: str, thumbnail) -> None:
+        cache_key = self._inspection_stats_cache_key(record, display_path, thumbnail)
+        if cache_key in self._inspection_stats_cache or cache_key in self._inspection_stats_pending_keys:
+            return
+        self._inspection_stats_pending_keys.add(cache_key)
+        request = InspectorStatsRequest(cache_key=cache_key, image=thumbnail.copy())
+        self._inspection_stats_pool.start(InspectorStatsTask(request, self._inspection_stats_result_queue), 0)
+        if not self._inspection_stats_drain_timer.isActive():
+            self._inspection_stats_drain_timer.start()
+
+    def _drain_inspector_stats_results(self) -> None:
+        processed = 0
+        changed = False
+        while processed < 8:
+            try:
+                state, cache_key, payload = self._inspection_stats_result_queue.get_nowait()
+            except Empty:
+                break
+            self._inspection_stats_pending_keys.discard(cache_key)
+            if state == "ready":
+                if len(self._inspection_stats_cache) >= 2048:
+                    self._inspection_stats_cache.clear()
+                self._inspection_stats_cache[cache_key] = payload
+                changed = True
+            processed += 1
+
+        if changed:
+            self._update_inspector_context()
+        if processed == 0 and not self._inspection_stats_pending_keys:
+            self._inspection_stats_drain_timer.stop()
+
+    def _inspection_stats_for_thumbnail(self, record: ImageRecord, display_path: str, thumbnail) -> InspectionStats:
+        cache_key = self._inspection_stats_cache_key(record, display_path, thumbnail)
         cached = self._inspection_stats_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -14893,6 +15307,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Moved {record.name} to {destination_dir}")
 
     def _rate_record(self, index: int, rating: int) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         record = self._record_at(index)
         if record is None:
             return
@@ -14922,6 +15338,8 @@ class MainWindow(QMainWindow):
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="rating")
         self._apply_annotation_change_effects([record.path], current_path=record.path)
         self.statusBar().showMessage(f"Rated {record.name}: {rating}/5")
+        if logger.enabled:
+            logger.duration("annotation.rating", (time.perf_counter() - start) * 1000.0, path=record.path, rating=rating)
 
     def _tag_record(self, index: int) -> None:
         record = self._record_at(index)
@@ -15014,12 +15432,16 @@ class MainWindow(QMainWindow):
         current_path: str | None = None,
         counts_already_updated: bool = False,
     ) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         paths = [path for path in changed_paths if path]
         if not paths:
             return
         self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=paths)
         if self._annotation_change_affects_active_filter():
             self._apply_records_view(current_path=current_path)
+            if logger.enabled:
+                logger.duration("annotation.change_effects", (time.perf_counter() - start) * 1000.0, paths=len(paths), reapply_view=True)
             return
         self._refresh_workflow_insights_cache(changed_paths=set(paths))
         self._set_annotation_views(paths)
@@ -15036,6 +15458,8 @@ class MainWindow(QMainWindow):
         if not current_change_emitted:
             self._update_action_states()
             self._update_status()
+        if logger.enabled:
+            logger.duration("annotation.change_effects", (time.perf_counter() - start) * 1000.0, paths=len(paths), reapply_view=False)
 
     def _toggle_winner(
         self,
@@ -15044,6 +15468,8 @@ class MainWindow(QMainWindow):
         advance_override: bool | None = None,
         current_path_override: str | None = None,
     ) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         record = self._record_at(index)
         if record is None:
             return
@@ -15106,6 +15532,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Winner added: {record.name}")
         else:
             self.statusBar().showMessage(f"Winner removed: {record.name}")
+        if logger.enabled:
+            logger.duration("annotation.winner_toggle", (time.perf_counter() - start) * 1000.0, path=record.path, winner=annotation.winner, advance=should_advance)
 
     def _toggle_reject(
         self,
@@ -15114,6 +15542,8 @@ class MainWindow(QMainWindow):
         advance_override: bool | None = None,
         current_path_override: str | None = None,
     ) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         record = self._record_at(index)
         if record is None:
             return
@@ -15171,8 +15601,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Rejected: {record.name}")
         else:
             self.statusBar().showMessage(f"Reject removed: {record.name}")
+        if logger.enabled:
+            logger.duration("annotation.reject_toggle", (time.perf_counter() - start) * 1000.0, path=record.path, reject=annotation.reject, advance=should_advance)
 
     def _open_preview(self, index: int) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
         record = self._record_at(index)
@@ -15196,6 +15630,16 @@ class MainWindow(QMainWindow):
         self._update_preview_ai_cull_controls()
         self.preview.show_entries(entries)
         self._schedule_preview_preload(anchor_index if anchor_index >= 0 else index)
+        if logger.enabled:
+            logger.duration(
+                "window.open_preview",
+                (time.perf_counter() - start) * 1000.0,
+                index=index,
+                entry_count=len(entries),
+                effective_count=effective_count,
+                anchor_index=anchor_index,
+                compare=self._compare_enabled,
+            )
 
     def _navigate_preview(self, delta: int) -> None:
         if not self._records:
@@ -15287,10 +15731,7 @@ class MainWindow(QMainWindow):
             edited_candidates = tuple(record.edited_paths)
             self._edited_candidates_cache[record.path] = edited_candidates
         else:
-            edited_candidates = self._edited_candidates_cache.get(record.path)
-            if edited_candidates is None:
-                edited_candidates = tuple(discover_edited_paths(record))
-                self._edited_candidates_cache[record.path] = edited_candidates
+            edited_candidates = self._edited_candidates_cache.get(record.path, ())
         if displayed_path and displayed_path in edited_candidates:
             return (displayed_path, *[path for path in edited_candidates if path != displayed_path])
         return tuple(edited_candidates)
@@ -16242,6 +16683,8 @@ class MainWindow(QMainWindow):
         structural_changed: bool,
         current_path: str | None,
     ) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
         self.details_view.refresh_rows()
         self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
@@ -16266,6 +16709,14 @@ class MainWindow(QMainWindow):
         self._update_status()
         if self._pending_folder_scroll_value is not None:
             QTimer.singleShot(0, self._restore_pending_folder_scroll)
+        if logger.enabled:
+            logger.duration(
+                "records_view.finalize",
+                (time.perf_counter() - start) * 1000.0,
+                records=len(records),
+                structural_changed=structural_changed,
+                current_path=current_path or "",
+            )
 
     def _start_records_view_chunk(
         self,
@@ -16274,6 +16725,7 @@ class MainWindow(QMainWindow):
         current_path: str | None,
         post_load_enrichment: str,
     ) -> None:
+        perf_logger().log("records_view.chunk_start", records=len(records), current_path=current_path or "", post_load_enrichment=post_load_enrichment)
         self._records_view_chunk_timer.stop()
         self._records_view_chunk_records = records
         self._records_view_chunk_next_index = 0
@@ -16296,6 +16748,8 @@ class MainWindow(QMainWindow):
         self._records_view_chunk_timer.start(0)
 
     def _drain_records_view_chunk(self) -> None:
+        logger = perf_logger()
+        start_time = time.perf_counter() if logger.enabled else 0.0
         records = self._records_view_chunk_records
         if not records:
             return
@@ -16320,6 +16774,8 @@ class MainWindow(QMainWindow):
         if end < len(records):
             self._update_status()
             self._records_view_chunk_timer.start(0)
+            if logger.enabled:
+                logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=False)
             return
 
         current_path = self._records_view_chunk_current_path
@@ -16339,6 +16795,8 @@ class MainWindow(QMainWindow):
             self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=True)
         elif post_load_enrichment == "start":
             self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=False)
+        if logger.enabled:
+            logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=True)
 
     def _apply_records_view(
         self,
@@ -16347,6 +16805,8 @@ class MainWindow(QMainWindow):
         chunked: bool = False,
         post_load_enrichment: str = "",
     ) -> bool:
+        logger = perf_logger()
+        start_time = time.perf_counter() if logger.enabled else 0.0
         if self._records_view_chunk_active() or not chunked:
             self._cancel_records_view_chunk()
         reasons, dirty_paths = self._records_view_cache.consume()
@@ -16417,6 +16877,15 @@ class MainWindow(QMainWindow):
                     current_path=current_path,
                     post_load_enrichment=post_load_enrichment,
                 )
+                if logger.enabled:
+                    logger.duration(
+                        "records_view.apply",
+                        (time.perf_counter() - start_time) * 1000.0,
+                        records=len(records),
+                        structural_changed=structural_changed,
+                        chunked=True,
+                        reasons=[reason.name for reason in reasons],
+                    )
                 return False
             self.grid.set_items(records)
             self.details_view.set_records(records)
@@ -16446,6 +16915,16 @@ class MainWindow(QMainWindow):
             structural_changed=structural_changed,
             current_path=current_path,
         )
+        if logger.enabled:
+            logger.duration(
+                "records_view.apply",
+                (time.perf_counter() - start_time) * 1000.0,
+                records=len(records),
+                structural_changed=structural_changed,
+                chunked=False,
+                reasons=[reason.name for reason in reasons],
+                dirty_paths=len(dirty_paths),
+            )
         return True
 
     def _refresh_burst_group_view(self) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 from .catalog import CatalogRepository, catalog_cache_enabled
 from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ROOT_PRIMARY_PRIORITY, suffix_for_path
 from .models import ImageRecord, ImageVariant, SortMode, sort_records
+from .perf import perf_logger
 
 
 JPEG_PAIR_DIRECTORIES = {
@@ -431,21 +433,56 @@ class FolderScanTask(QRunnable):
         self.setAutoDelete(False)
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         try:
             cached_records, cache_source = self._load_cached_records()
+            if logger.enabled:
+                logger.duration(
+                    "folder_scan.cache_lookup",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    cache_source=cache_source,
+                    record_count=len(cached_records) if cached_records is not None else 0,
+                )
             if cached_records is not None:
+                cached_sort_start = time.perf_counter() if logger.enabled else 0.0
                 sorted_cached = sort_records(cached_records, self.sort_mode)
+                if logger.enabled:
+                    logger.duration(
+                        "folder_scan.cache_sort",
+                        (time.perf_counter() - cached_sort_start) * 1000.0,
+                        folder=self.folder,
+                        record_count=len(sorted_cached),
+                    )
                 if self.prefer_cached_only:
                     self.signals.finished.emit(self.folder, self.token, sorted_cached, cache_source)
+                    if logger.enabled:
+                        logger.duration("folder_scan.total", (time.perf_counter() - start) * 1000.0, folder=self.folder, source=cache_source, record_count=len(sorted_cached))
                     return
                 if sorted_cached:
                     self.signals.cached.emit(self.folder, self.token, sorted_cached, cache_source)
+            live_start = time.perf_counter() if logger.enabled else 0.0
             records = sort_records(scan_folder(self.folder), self.sort_mode)
+            if logger.enabled:
+                logger.duration(
+                    "folder_scan.live_scan",
+                    (time.perf_counter() - live_start) * 1000.0,
+                    folder=self.folder,
+                    record_count=len(records),
+                )
+            persist_start = time.perf_counter() if logger.enabled else 0.0
             self._persist_scan_records(records)
+            if logger.enabled:
+                logger.duration("folder_scan.persist", (time.perf_counter() - persist_start) * 1000.0, folder=self.folder, record_count=len(records))
         except Exception as exc:  # pragma: no cover - legacy UI error path
+            if logger.enabled:
+                logger.duration("folder_scan.failed", (time.perf_counter() - start) * 1000.0, folder=self.folder, error=str(exc))
             self.signals.failed.emit(self.folder, self.token, str(exc))
             return
 
+        if logger.enabled:
+            logger.duration("folder_scan.total", (time.perf_counter() - start) * 1000.0, folder=self.folder, source="live", record_count=len(records))
         self.signals.finished.emit(self.folder, self.token, records, "live")
 
     def _load_cached_records(self) -> tuple[list[ImageRecord] | None, str]:

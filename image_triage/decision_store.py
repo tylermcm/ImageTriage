@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
 
 from .models import ImageRecord, SessionAnnotation
+from .perf import perf_logger
 
 
 class DecisionStore:
@@ -32,6 +34,8 @@ class DecisionStore:
         records_by_path: dict[str, ImageRecord],
         paths: list[str] | tuple[str, ...] | set[str],
     ) -> dict[str, SessionAnnotation]:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if not records_by_path or not paths:
             return {}
 
@@ -82,12 +86,22 @@ class DecisionStore:
                     if annotation.is_empty:
                         continue
                     loaded[record.path] = annotation
+        if logger.enabled:
+            logger.duration(
+                "decision_store.load_annotations",
+                (time.perf_counter() - start) * 1000.0,
+                requested=len(ordered_paths),
+                loaded=len(loaded),
+                session=normalized_session,
+            )
         return loaded
 
     def save_annotation(self, session_id: str, record: ImageRecord, annotation: SessionAnnotation) -> None:
         if annotation.is_empty:
             self.delete_annotation(session_id, record.path)
             return
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
         with sqlite3.connect(self._db_path) as connection:
             self._ensure_session_row(connection, normalized_session)
@@ -119,6 +133,13 @@ class DecisionStore:
                 ),
             )
             connection.commit()
+        if logger.enabled:
+            logger.duration(
+                "decision_store.save_annotation",
+                (time.perf_counter() - start) * 1000.0,
+                path=record.path,
+                session=normalized_session,
+            )
 
     def save_annotations(
         self,
@@ -127,6 +148,8 @@ class DecisionStore:
     ) -> None:
         if not entries:
             return
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
         with sqlite3.connect(self._db_path) as connection:
             self._ensure_session_row(connection, normalized_session)
@@ -165,6 +188,13 @@ class DecisionStore:
                     ),
                 )
             connection.commit()
+        if logger.enabled:
+            logger.duration(
+                "decision_store.save_annotations",
+                (time.perf_counter() - start) * 1000.0,
+                entries=len(entries),
+                session=normalized_session,
+            )
 
     def move_annotation(self, session_id: str, old_path: str, record: ImageRecord, annotation: SessionAnnotation) -> None:
         if annotation.is_empty:
@@ -250,10 +280,19 @@ class DecisionStore:
             connection.commit()
 
     def delete_annotation(self, session_id: str, path: str) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
         with sqlite3.connect(self._db_path) as connection:
             connection.execute("DELETE FROM decisions WHERE session_id = ? AND path = ?", (normalized_session, path))
             connection.commit()
+        if logger.enabled:
+            logger.duration(
+                "decision_store.delete_annotation",
+                (time.perf_counter() - start) * 1000.0,
+                path=path,
+                session=normalized_session,
+            )
 
     def list_sessions(self) -> list[str]:
         with sqlite3.connect(self._db_path) as connection:
@@ -274,6 +313,8 @@ class DecisionStore:
         return sessions
 
     def load_correction_events(self, session_id: str, folder_path: str = "") -> list[dict[str, object]]:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         normalized_session = self._normalize_session_id(session_id)
         with sqlite3.connect(self._db_path) as connection:
             connection.row_factory = sqlite3.Row
@@ -331,6 +372,14 @@ class DecisionStore:
                     "payload": payload if isinstance(payload, dict) else {},
                     "created_at": str(row["created_at"] or ""),
                 }
+            )
+        if logger.enabled:
+            logger.duration(
+                "decision_store.load_correction_events",
+                (time.perf_counter() - start) * 1000.0,
+                session=normalized_session,
+                folder=folder_path,
+                events=len(loaded),
             )
         return loaded
 

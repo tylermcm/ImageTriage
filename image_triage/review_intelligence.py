@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha1
 import json
 from pathlib import Path
+import time
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, Signal
@@ -16,6 +17,7 @@ from .formats import FITS_SUFFIXES, suffix_for_path
 from .imaging import load_image_for_display
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata, metadata_provider_id_for_path
 from .models import ImageRecord
+from .perf import perf_logger
 from .plugins import ReviewGroupingRequest, register_review_grouping_provider, resolve_review_grouping_provider
 from .review_tools import build_inspection_stats
 from .scanner import normalized_path_key
@@ -156,7 +158,17 @@ class BuildReviewIntelligenceTask(QRunnable):
         self._cancelled = True
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         total = len(self.records)
+        if logger.enabled:
+            logger.log(
+                "review_intelligence.task.started",
+                folder=self.folder,
+                token=self.token,
+                records=total,
+                catalog=bool(self.folder_path),
+            )
         self.signals.started.emit(self.folder, self.token, total)
         try:
             repository = CatalogRepository(self.catalog_db_path) if self.folder_path else None
@@ -197,6 +209,18 @@ class BuildReviewIntelligenceTask(QRunnable):
                         },
                     )
                     self.signals.finished.emit(self.folder, self.token, cached_entry.bundle)
+                    if logger.enabled:
+                        logger.duration(
+                            "review_intelligence.task",
+                            (time.perf_counter() - start) * 1000.0,
+                            folder=self.folder,
+                            token=self.token,
+                            records=total,
+                            grouping_source="catalog",
+                            feature_source="skipped",
+                            cached_features=cached_feature_count,
+                            groups=len(cached_entry.bundle.groups),
+                        )
                     return
             computed_fingerprints: list[_RecordFingerprint] = []
             bundle = build_review_intelligence(
@@ -246,10 +270,40 @@ class BuildReviewIntelligenceTask(QRunnable):
             )
         except ReviewIntelligenceCancelled:
             self.signals.cancelled.emit(self.folder, self.token)
+            if logger.enabled:
+                logger.duration(
+                    "review_intelligence.task.cancelled",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    token=self.token,
+                    records=total,
+                )
             return
         except Exception as exc:  # pragma: no cover - desktop/runtime path
             self.signals.failed.emit(self.folder, self.token, str(exc))
+            if logger.enabled:
+                logger.duration(
+                    "review_intelligence.task.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    token=self.token,
+                    records=total,
+                    error=str(exc),
+                )
             return
+        if logger.enabled:
+            logger.duration(
+                "review_intelligence.task",
+                (time.perf_counter() - start) * 1000.0,
+                folder=self.folder,
+                token=self.token,
+                records=total,
+                grouping_source="live",
+                feature_source=feature_source,
+                cached_features=cached_feature_count,
+                computed_features=computed_feature_count,
+                groups=len(bundle.groups),
+            )
         self.signals.finished.emit(self.folder, self.token, bundle)
 
 
@@ -394,7 +448,7 @@ def _build_review_intelligence_builtin(
     ordered = sorted(
         fingerprints,
         key=lambda item: (
-            item.metadata.captured_at_value or _modified_sort_key(item.record),
+            _capture_or_modified_sort_key(item),
             item.record.modified_ns,
             item.record.name.casefold(),
         ),
@@ -494,6 +548,8 @@ def _build_review_intelligence_builtin(
 
 
 def _build_fingerprint(record: ImageRecord, metadata_cache: dict[str, CaptureMetadata]) -> _RecordFingerprint:
+    logger = perf_logger()
+    start = time.perf_counter() if logger.enabled else 0.0
     source_path = _analysis_source_path(record)
     metadata = metadata_cache.get(record.path)
     if metadata is None:
@@ -516,6 +572,21 @@ def _build_fingerprint(record: ImageRecord, metadata_cache: dict[str, CaptureMet
         stats = build_inspection_stats(image)
         detail_score = stats.detail_score
         exposure_score = _exposure_balance(stats)
+    if logger.enabled:
+        logger.duration(
+            "review_intelligence.fingerprint",
+            (time.perf_counter() - start) * 1000.0,
+            path=record.path,
+            source_path=source_path,
+            file_size=record.size,
+            image_loaded=not image.isNull(),
+            image_width=image.width(),
+            image_height=image.height(),
+            has_metadata=metadata is not EMPTY_METADATA,
+            has_sha1=bool(sha1_digest),
+            detail_score=round(detail_score, 3),
+            exposure_score=round(exposure_score, 3),
+        )
 
     return _RecordFingerprint(
         record=record,
@@ -745,6 +816,28 @@ def _uses_fits_grouping_exemption(path: str) -> bool:
 
 def _modified_sort_key(record: ImageRecord) -> int:
     return int(record.modified_ns or 0)
+
+
+def _datetime_sort_key_ns(value: datetime | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        if value.tzinfo is None:
+            epoch = datetime(1970, 1, 1)
+            normalized = value
+        else:
+            epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            normalized = value.astimezone(timezone.utc)
+        return int((normalized - epoch).total_seconds() * 1_000_000_000)
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
+def _capture_or_modified_sort_key(fingerprint: _RecordFingerprint) -> int:
+    capture_ns = _datetime_sort_key_ns(fingerprint.metadata.captured_at_value)
+    if capture_ns is not None:
+        return capture_ns
+    return _modified_sort_key(fingerprint.record)
 
 
 def _record_sort_key(record: ImageRecord) -> tuple[int, str]:

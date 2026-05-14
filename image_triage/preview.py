@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
@@ -30,6 +30,7 @@ from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display, sanitize_display_error
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord, JPEG_SUFFIXES
+from .perf import perf_logger
 from .review_tools import (
     DEFAULT_FOCUS_ASSIST_COLOR_ID,
     DEFAULT_FOCUS_ASSIST_STRENGTH_ID,
@@ -88,6 +89,8 @@ class PreviewTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         image, error = load_image_for_display(
             self.request.path,
             self.request.target_size,
@@ -96,9 +99,37 @@ class PreviewTask(QRunnable):
         )
         if image.isNull():
             self.result_queue.put(("failed", self.request, sanitize_display_error(error, path=self.request.path)))
+            if logger.enabled:
+                logger.duration(
+                    "preview.task",
+                    (time.perf_counter() - start) * 1000.0,
+                    state="failed",
+                    path=self.request.path,
+                    slot=self.request.slot,
+                    width=self.request.target_size.width(),
+                    height=self.request.target_size.height(),
+                    prefer_embedded=self.request.prefer_embedded,
+                    cache_only=self.request.cache_only,
+                    error=sanitize_display_error(error, path=self.request.path),
+                )
             return
         metadata = load_capture_metadata(self.request.path) if self.request.load_metadata else None
         self.result_queue.put(("ready", self.request, image, metadata))
+        if logger.enabled:
+            logger.duration(
+                "preview.task",
+                (time.perf_counter() - start) * 1000.0,
+                state="ready",
+                path=self.request.path,
+                slot=self.request.slot,
+                width=self.request.target_size.width(),
+                height=self.request.target_size.height(),
+                image_width=image.width(),
+                image_height=image.height(),
+                prefer_embedded=self.request.prefer_embedded,
+                cache_only=self.request.cache_only,
+                metadata=self.request.load_metadata,
+            )
 
 
 class PreviewPane(QWidget):
@@ -1290,6 +1321,8 @@ class FullScreenPreview(QDialog):
         self._sync_preview_controls()
 
     def show_entries(self, entries: list[PreviewEntry]) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self._source_entries = list(entries)
         if len(entries) < 2:
             self._winner_ladder_mode = False
@@ -1312,6 +1345,15 @@ class FullScreenPreview(QDialog):
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
         QTimer.singleShot(0, self._request_preview_loads)
+        if logger.enabled:
+            logger.duration(
+                "preview.show_entries",
+                (time.perf_counter() - start) * 1000.0,
+                entry_count=len(entries),
+                compare_mode=self._compare_mode,
+                before_after=self._before_after_enabled,
+                paths=[entry.source_path for entry in entries[:8]],
+            )
 
     def eventFilter(self, watched, event) -> bool:
         pane_index = self._watched_widgets.get(watched)
@@ -1833,6 +1875,8 @@ class FullScreenPreview(QDialog):
         if not self._entries:
             return
 
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         target_slots = slots if slots is not None else list(range(len(self._entries)))
         if not target_slots:
             return
@@ -1901,8 +1945,19 @@ class FullScreenPreview(QDialog):
             self._pool.start(task, self._visible_request_priority(slot))
         if not self._drain_timer.isActive():
             self._drain_timer.start()
+        if logger.enabled:
+            logger.duration(
+                "preview.request_loads",
+                (time.perf_counter() - start) * 1000.0,
+                requested_slots=len(target_slots),
+                pending_requests=self._pending_requests,
+                force_metadata=force_metadata,
+                manual_zoom=self._manual_zoom,
+            )
 
     def _drain_results(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         processed = 0
         while processed < 16:
             try:
@@ -1967,12 +2022,22 @@ class FullScreenPreview(QDialog):
 
         if processed == 0 and self._pending_requests == 0:
             self._drain_timer.stop()
+        if logger.enabled and processed:
+            logger.duration(
+                "preview.drain_results",
+                (time.perf_counter() - start) * 1000.0,
+                processed=processed,
+                pending_requests=self._pending_requests,
+            )
 
     def preload_paths(self, paths: list[str], *, load_metadata: bool = True) -> None:
         if not paths:
             return
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         target_size = self._preload_target_size()
         max_paths = 10
+        queued = 0
         for index, path in enumerate(paths[:max_paths]):
             if not path or not os.path.exists(path):
                 continue
@@ -1988,6 +2053,7 @@ class FullScreenPreview(QDialog):
             if self._cached_preview_image(cache_key) is not None or cache_key in self._pending_cache_keys:
                 continue
             self._pending_cache_keys.add(cache_key)
+            queued += 1
             task = PreviewTask(
                 PreviewRequest(
                     path=path,
@@ -2005,6 +2071,14 @@ class FullScreenPreview(QDialog):
             self._pool.start(task, -20 - index)
         if not self._drain_timer.isActive():
             self._drain_timer.start()
+        if logger.enabled:
+            logger.duration(
+                "preview.preload_paths",
+                (time.perf_counter() - start) * 1000.0,
+                candidate_count=len(paths),
+                queued=queued,
+                load_metadata=load_metadata,
+            )
 
     def _render_all(self) -> None:
         for slot in range(len(self._entries)):
@@ -2082,6 +2156,8 @@ class FullScreenPreview(QDialog):
             self._refresh_timer.setInterval(next_interval)
 
     def _render_pane(self, slot: int) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if not 0 <= slot < len(self._entries):
             return
         pane = self._panes[slot]
@@ -2139,6 +2215,14 @@ class FullScreenPreview(QDialog):
         else:
             pane.image_label.setScaledContents(False)
             target = self._fit_target_size(pane)
+            display_key = (*self._display_render_key(slot, display_image), "fit", target.width(), target.height())
+            if (
+                slot < len(self._rendered_display_keys)
+                and self._rendered_display_keys[slot] == display_key
+                and pane.image_label.pixmap() is not None
+                and not pane.image_label.pixmap().isNull()
+            ):
+                return
             transform_mode = Qt.TransformationMode.SmoothTransformation
             fitted_size = display_image.size().scaled(target, Qt.AspectRatioMode.KeepAspectRatio)
             if fitted_size == display_image.size():
@@ -2155,9 +2239,19 @@ class FullScreenPreview(QDialog):
             pane.image_label.setPixmap(pixmap)
             pane.image_label.resize(pixmap.size())
             if slot < len(self._rendered_display_keys):
-                self._rendered_display_keys[slot] = None
+                self._rendered_display_keys[slot] = display_key
             pane.scroll_area.horizontalScrollBar().setValue(0)
             pane.scroll_area.verticalScrollBar().setValue(0)
+        if logger.enabled:
+            logger.duration(
+                "preview.render_pane",
+                (time.perf_counter() - start) * 1000.0,
+                slot=slot,
+                image_width=display_image.width(),
+                image_height=display_image.height(),
+                manual_zoom=self._manual_zoom,
+                focus_assist=self._focus_assist_enabled,
+            )
 
     def _display_image_for_slot(self, slot: int) -> QImage:
         if not 0 <= slot < len(self._current_images):
@@ -2188,9 +2282,22 @@ class FullScreenPreview(QDialog):
         cached = self._inspection_stats_cache.get(cache_key)
         if cached is not None:
             return cached
-        stats = build_inspection_stats(image)
+        stats_image = self._inspection_source_image(image)
+        stats = build_inspection_stats(stats_image)
+        if not stats_image.isNull() and stats_image.size() != image.size():
+            stats = replace(stats, width=image.width(), height=image.height())
         self._inspection_stats_cache[cache_key] = stats
         return stats
+
+    def _inspection_source_image(self, image: QImage) -> QImage:
+        max_edge = 1280
+        if image.width() <= max_edge and image.height() <= max_edge:
+            return image
+        return image.scaled(
+            QSize(max_edge, max_edge),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
 
     def _image_cache_key(self, slot: int, image: QImage) -> tuple[object, ...]:
         path = self._entries[slot].source_path if 0 <= slot < len(self._entries) else ""
@@ -2320,8 +2427,8 @@ class FullScreenPreview(QDialog):
                 min(max_edge, max(1, int(round(fit_target.width() * zoom_scale * overscan)))),
                 min(max_edge, max(1, int(round(fit_target.height() * zoom_scale * overscan)))),
             )
-        overscan = 2.0
-        max_edge = 5120 if len(self._entries) <= 1 else 4096
+        overscan = 1.25 if len(self._entries) <= 1 else 1.12
+        max_edge = 3840 if len(self._entries) <= 1 else 2560
         return QSize(
             min(max_edge, max(1, int(round(fit_target.width() * overscan)))),
             min(max_edge, max(1, int(round(fit_target.height() * overscan)))),

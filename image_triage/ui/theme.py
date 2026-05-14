@@ -628,7 +628,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QWidget#detailsPreviewPane {{
             background-color: {theme.panel_alt_bg.css};
-            border-left: 1px solid {theme.border_muted.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 6px;
         }}
         QLabel#detailsPreviewImage {{
             background-color: {theme.image_bg.css};
@@ -639,6 +640,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QCheckBox#detailsPreviewToggle {{
             color: {theme.text_secondary.css};
             spacing: 6px;
+        }}
+        QLabel#detailsStatusStrip {{
+            background-color: {theme.chrome_bg.css};
+            border-top: 1px solid {theme.border_muted.css};
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            padding: 4px 8px;
         }}
         QHeaderView::section {{
             background-color: {theme.panel_alt_bg.css};
@@ -831,6 +839,15 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border-color: transparent;
             color: {theme.text_primary.css};
+        }}
+        QLabel#zenHintOverlay {{
+            background-color: {theme.badge_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.badge_text.css};
+            font-size: 12px;
+            font-weight: 650;
+            padding: 7px 12px;
         }}
         QToolButton#workspacePanelCloseButton:hover {{
             background-color: {theme.danger_soft.css};
