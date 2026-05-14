@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from queue import Empty, SimpleQueue
+import time
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from .decision_store import DecisionStore
 from .models import ImageRecord, SessionAnnotation
+from .perf import perf_logger
 from .xmp import sync_sidecar_annotation
 
 
@@ -27,12 +29,16 @@ class _AnnotationPersistTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         store = DecisionStore()
         by_session: dict[str, list[AnnotationQueueEntry]] = {}
         for entry in self.entries:
             by_session.setdefault(entry.session_id, []).append(entry)
 
         persisted_paths: set[str] = set()
+        failed_count = 0
+        warning_count = 0
         for session_id, session_entries in by_session.items():
             try:
                 store.save_annotations(
@@ -47,6 +53,7 @@ class _AnnotationPersistTask(QRunnable):
                         else:
                             store.save_annotation(entry.session_id, entry.record, entry.annotation)
                     except Exception as exc:  # pragma: no cover - worker/runtime path
+                        failed_count += 1
                         self.result_queue.put(("failed", entry.record_path, str(exc)))
                         continue
                     persisted_paths.add(entry.record_path)
@@ -61,8 +68,19 @@ class _AnnotationPersistTask(QRunnable):
             try:
                 sync_sidecar_annotation(entry.record, entry.annotation)
             except Exception as exc:  # pragma: no cover - worker/runtime path
+                warning_count += 1
                 self.result_queue.put(("warning", entry.record_path, str(exc)))
             self.result_queue.put(("ok", entry.record_path))
+        if logger.enabled:
+            logger.duration(
+                "annotation.persist",
+                (time.perf_counter() - start) * 1000.0,
+                entries=len(self.entries),
+                sessions=len(by_session),
+                persisted=len(persisted_paths),
+                failed=failed_count,
+                warnings=warning_count,
+            )
         self.result_queue.put(("done", len(self.entries)))
 
 
@@ -115,6 +133,7 @@ class AnnotationPersistenceQueue(QObject):
         )
         if previous_annotation is not None:
             self._rollback_by_path[normalized_path] = previous
+        perf_logger().log("annotation.enqueue", path=normalized_path, pending=len(self._pending))
         self._flush_timer.start()
 
     def flush(self) -> None:
@@ -127,6 +146,7 @@ class AnnotationPersistenceQueue(QObject):
         self._pending.clear()
         self._active = True
         self._flush_requested = False
+        perf_logger().log("annotation.flush_queued", entries=len(entries))
         self._pool.start(_AnnotationPersistTask(entries, self._result_queue))
         if not self._drain_timer.isActive():
             self._drain_timer.start()
@@ -140,6 +160,8 @@ class AnnotationPersistenceQueue(QObject):
         self._drain_results()
 
     def _drain_results(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         processed = 0
         while processed < 128:
             try:
@@ -171,6 +193,14 @@ class AnnotationPersistenceQueue(QObject):
 
         if processed == 0 and not self._active:
             self._drain_timer.stop()
+        if logger.enabled and processed:
+            logger.duration(
+                "annotation.drain_results",
+                (time.perf_counter() - start) * 1000.0,
+                processed=processed,
+                active=self._active,
+                pending=len(self._pending),
+            )
 
 
 def _clone_annotation(annotation: SessionAnnotation | None) -> SessionAnnotation | None:

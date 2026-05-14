@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +16,7 @@ from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
 from .models import ImageRecord, ImageVariant, SessionAnnotation
+from .perf import perf_logger
 from .review_workflows import review_round_short_label
 from .scanner import normalized_path_key
 from .thumbnails import ThumbnailManager
@@ -278,6 +280,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self.viewport().update()
 
     def set_items(self, items: list[ImageRecord]) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         previous_variant_indexes = dict(self._variant_indexes)
         self._reset_image_zoom()
         self._items = items
@@ -328,6 +332,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._schedule_visible_thumbnail_requests(immediate=True)
         self.current_changed.emit(self._current_index)
         self.selection_changed.emit()
+        if logger.enabled:
+            logger.duration(
+                "grid.set_items",
+                (time.perf_counter() - start) * 1000.0,
+                count=len(items),
+                columns=self._columns,
+                visible_count=len(self._visible_item_indexes),
+            )
 
     def append_items(self, items: list[ImageRecord]) -> None:
         if not items:
@@ -724,18 +736,34 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._schedule_visible_thumbnail_requests(immediate=True)
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         super().scrollContentsBy(dx, dy)
         self.viewport().update()
         self._schedule_visible_thumbnail_requests()
+        if logger.enabled:
+            logger.duration(
+                "grid.scroll_contents",
+                (time.perf_counter() - start) * 1000.0,
+                dx=dx,
+                dy=dy,
+                value=self.verticalScrollBar().value(),
+            )
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier and self._handle_zoom_wheel(event):
             event.accept()
+            if logger.enabled:
+                logger.duration("grid.wheel", (time.perf_counter() - start) * 1000.0, mode="zoom")
             return
 
         row_height = self._row_height()
         if not self._items or row_height <= 0:
             super().wheelEvent(event)
+            if logger.enabled:
+                logger.duration("grid.wheel", (time.perf_counter() - start) * 1000.0, mode="default")
             return
 
         if self._free_smooth_scroll_enabled:
@@ -743,25 +771,37 @@ class ThumbnailGridView(QAbstractScrollArea):
             if scroll_delta:
                 self._scroll_by_pixels(scroll_delta)
             event.accept()
+            if logger.enabled:
+                logger.duration("grid.wheel", (time.perf_counter() - start) * 1000.0, mode="free_smooth", delta=scroll_delta)
             return
 
         steps = self._wheel_row_steps(event, row_height)
         if steps == 0:
             event.accept()
+            if logger.enabled:
+                logger.duration("grid.wheel", (time.perf_counter() - start) * 1000.0, mode="aligned", steps=0)
             return
 
         self._scroll_by_aligned_rows(steps)
         event.accept()
+        if logger.enabled:
+            logger.duration("grid.wheel", (time.perf_counter() - start) * 1000.0, mode="aligned", steps=steps)
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         painter = QPainter(self.viewport())
         painter.fillRect(self.viewport().rect(), self.palette().color(QPalette.ColorRole.Base))
 
         if not self._items:
             self._paint_empty_state(painter)
+            if logger.enabled:
+                logger.duration("grid.paint", (time.perf_counter() - start) * 1000.0, visible=0, event_width=event.rect().width(), event_height=event.rect().height())
             return
 
         target_size = self._thumbnail_target_size()
+        painted = 0
+        pixmap_hits = 0
         for index in self._visible_indexes():
             rect = self._item_rect(index)
             if not rect.intersects(event.rect()):
@@ -771,9 +811,14 @@ class ThumbnailGridView(QAbstractScrollArea):
             pixmap = None
             if not record.is_folder:
                 key = self.thumbnail_manager.make_key(variant, target_size)
-                image = self.thumbnail_manager.get_cached(variant, target_size)
-                pixmap = self._pixmap_for(key, image)
+                pixmap = self._cached_pixmap_for_key(key)
+                if pixmap is None:
+                    image = self.thumbnail_manager.get_cached(variant, target_size)
+                    pixmap = self._pixmap_for(key, image)
+                else:
+                    pixmap_hits += 1
             self._paint_tile(painter, index, rect, record, pixmap)
+            painted += 1
 
         if self._marquee_active and not self._marquee_rect.isNull():
             overlay_fill = QColor(self._border_active)
@@ -783,6 +828,16 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.setPen(QPen(overlay_border, 1, Qt.PenStyle.DashLine))
             painter.setBrush(overlay_fill)
             painter.drawRect(self._marquee_rect)
+        if logger.enabled:
+            logger.duration(
+                "grid.paint",
+                (time.perf_counter() - start) * 1000.0,
+                visible=painted,
+                pixmap_hits=pixmap_hits,
+                event_width=event.rect().width(),
+                event_height=event.rect().height(),
+                scroll_value=self.verticalScrollBar().value(),
+            )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -2581,7 +2636,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             variant = self._current_variant(self._items[index])
             if variant.path in self._failed_paths:
                 continue
-            self.thumbnail_manager.request_thumbnail(variant, target, priority=priority)
+            key = self.thumbnail_manager.make_key(variant, target)
+            if self._cached_pixmap_for_key(key) is None:
+                self.thumbnail_manager.request_thumbnail(variant, target, priority=priority)
             self.metadata_manager.request_metadata(variant, priority=priority)
 
     def _schedule_visible_thumbnail_requests(self, immediate: bool = False) -> None:
@@ -2678,6 +2735,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         if image is None or image.isNull():
             return None
         return self._cache_pixmap(key, image)
+
+    def _cached_pixmap_for_key(self, key: ThumbnailKey) -> QPixmap | None:
+        entry = self._pixmap_cache.get(key)
+        if entry is None:
+            return None
+        self._pixmap_cache.move_to_end(key)
+        return entry[0]
 
     def _cache_pixmap(self, key: ThumbnailKey, image: QImage) -> QPixmap | None:
         if image.isNull():

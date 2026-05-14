@@ -56,22 +56,23 @@ class CommandPaletteDialog(QWidget):
         self._result_code = self.DialogCode.Rejected
         self._card_width = 720
         self._card_height = 520
+        self._prominent = False
         self._debug_hook = debug_hook
 
         if parent is not None:
             parent.installEventFilter(self)
 
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(24, 28, 24, 24)
-        root_layout.setSpacing(0)
+        self._root_layout = QVBoxLayout(self)
+        self._root_layout.setContentsMargins(24, 28, 24, 24)
+        self._root_layout.setSpacing(0)
 
         self.card = QFrame(self)
         self.card.setObjectName("commandPaletteCard")
         self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.card.setMinimumSize(540, 360)
         self.card.setMaximumWidth(760)
-        root_layout.addWidget(self.card, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        root_layout.addStretch(1)
+        self._root_layout.addWidget(self.card, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self._root_layout.addStretch(1)
 
         card_layout = QVBoxLayout(self.card)
         card_layout.setContentsMargins(16, 16, 16, 16)
@@ -117,6 +118,14 @@ class CommandPaletteDialog(QWidget):
         self.search_field.clear()
         del search_blocker
         self._refresh_results("")
+
+    def set_prominent(self, prominent: bool) -> None:
+        self._prominent = bool(prominent)
+        alignment = Qt.AlignmentFlag.AlignCenter if self._prominent else Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        self._root_layout.setAlignment(self.card, alignment)
+        self.card.setMaximumWidth(940 if self._prominent else 760)
+        if self.isVisible():
+            self._sync_overlay_geometry()
 
     def present(self) -> None:
         self._result_code = self.DialogCode.Rejected
@@ -229,8 +238,12 @@ class CommandPaletteDialog(QWidget):
         if parent is None:
             return
         self.setGeometry(parent.rect())
-        width = min(760, max(540, parent.width() - 120))
-        height = min(560, max(360, parent.height() - 160))
+        max_width = 940 if self._prominent else 760
+        max_height = 680 if self._prominent else 560
+        margin_w = 180 if self._prominent else 120
+        margin_h = 220 if self._prominent else 160
+        width = min(max_width, max(540, parent.width() - margin_w))
+        height = min(max_height, max(360, parent.height() - margin_h))
         self.card.setFixedSize(QSize(width, height))
         self._debug(f"sync-geometry overlay={self.width()}x{self.height()} card={width}x{height}")
 

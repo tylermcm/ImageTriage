@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import struct
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -16,6 +17,7 @@ from .fits_support import (
     normalize_basic_fits_array,
 )
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .perf import perf_logger
 from .plugins import DisplayLoadRequest, register_display_provider, resolve_display_provider
 
 try:
@@ -209,11 +211,48 @@ def load_image_for_display(
         prefer_embedded=prefer_embedded,
         fits_display_settings=fits_display_settings,
     )
+    logger = perf_logger()
+    start = time.perf_counter() if logger.enabled else 0.0
+    provider_id = ""
     _ensure_builtin_display_providers()
-    provider = resolve_display_provider(request)
-    if provider is None:
-        return _load_with_fallbacks(path, target_size)
-    return provider.load_for_display(request)
+    try:
+        provider = resolve_display_provider(request)
+        if provider is None:
+            provider_id = "fallback"
+            image, error = _load_with_fallbacks(path, target_size)
+        else:
+            provider_id = provider.provider_id
+            image, error = provider.load_for_display(request)
+    except Exception as exc:
+        if logger.enabled:
+            logger.duration(
+                "image.load_display.failed",
+                (time.perf_counter() - start) * 1000.0,
+                path=path,
+                suffix=request.suffix,
+                provider=provider_id,
+                target_width=target_size.width(),
+                target_height=target_size.height(),
+                prefer_embedded=prefer_embedded,
+                error=str(exc),
+            )
+        raise
+    if logger.enabled:
+        logger.duration(
+            "image.load_display",
+            (time.perf_counter() - start) * 1000.0,
+            path=path,
+            suffix=request.suffix,
+            provider=provider_id,
+            target_width=target_size.width(),
+            target_height=target_size.height(),
+            prefer_embedded=prefer_embedded,
+            image_width=image.width(),
+            image_height=image.height(),
+            status="failed" if image.isNull() else "ready",
+            error=error or "",
+        )
+    return image, error
 
 
 def thumbnail_skip_reason(path: str, target_size: QSize) -> str:

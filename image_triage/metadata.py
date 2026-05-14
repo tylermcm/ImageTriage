@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from queue import Empty, SimpleQueue
+import time
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
@@ -10,6 +11,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from .fits_support import load_basic_fits_header
 from .formats import FITS_SUFFIXES, suffix_for_path
 from .models import ImageRecord
+from .perf import perf_logger
 from .plugins import MetadataLoadRequest, register_metadata_provider, resolve_metadata_provider
 
 try:
@@ -272,8 +274,19 @@ class MetadataTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         metadata = load_capture_metadata(self.key.path)
         self.result_queue.put((self.key, metadata))
+        if logger.enabled:
+            logger.duration(
+                "metadata.task",
+                (time.perf_counter() - start) * 1000.0,
+                path=self.key.path,
+                provider=metadata.provider_id,
+                width=metadata.width,
+                height=metadata.height,
+            )
 
 
 class MetadataManager(QObject):
@@ -299,8 +312,10 @@ class MetadataManager(QObject):
     def request_metadata(self, record: ImageRecord, priority: int = 0) -> MetadataKey:
         key = self.make_key(record)
         if key in self._cache or key in self._pending:
+            perf_logger().log("metadata.request", state="cache_or_pending", path=record.path, priority=priority)
             return key
         self._pending.add(key)
+        perf_logger().log("metadata.request", state="queued", path=record.path, priority=priority)
         self.pool.start(MetadataTask(key, self._result_queue), priority)
         if not self._drain_timer.isActive():
             self._drain_timer.start()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from queue import Empty, SimpleQueue
+import time
 
 from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygon
@@ -10,6 +11,7 @@ from .cache import DiskThumbnailCache, MemoryThumbnailCache, ThumbnailKey
 from .formats import suffix_for_path
 from .imaging import load_image_for_display, sanitize_display_error, thumbnail_skip_reason
 from .models import ImageRecord
+from .perf import perf_logger
 
 
 @dataclass(slots=True, frozen=True)
@@ -35,23 +37,55 @@ class ThumbnailTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        source = "decode"
         cached = self.memory_cache.get(self.request.key)
         if cached is not None:
             self.result_queue.put(("ready", self.request.key, cached))
+            if logger.enabled:
+                logger.duration(
+                    "thumbnail.task",
+                    (time.perf_counter() - start) * 1000.0,
+                    source="memory",
+                    path=self.request.path,
+                    width=self.request.target_size.width(),
+                    height=self.request.target_size.height(),
+                )
             return
 
         disk_image = self.disk_cache.load(self.request.key)
         if disk_image is not None:
             self.memory_cache.put(self.request.key, disk_image)
             self.result_queue.put(("ready", self.request.key, disk_image))
+            if logger.enabled:
+                logger.duration(
+                    "thumbnail.task",
+                    (time.perf_counter() - start) * 1000.0,
+                    source="disk",
+                    path=self.request.path,
+                    width=self.request.target_size.width(),
+                    height=self.request.target_size.height(),
+                )
             return
 
         skip_reason = thumbnail_skip_reason(self.request.path, self.request.target_size)
         if skip_reason:
+            source = "placeholder"
             image = _placeholder_thumbnail(self.request.path, self.request.target_size, skip_reason)
             self.memory_cache.put(self.request.key, image)
             self.disk_cache.save(self.request.key, image)
             self.result_queue.put(("ready", self.request.key, image))
+            if logger.enabled:
+                logger.duration(
+                    "thumbnail.task",
+                    (time.perf_counter() - start) * 1000.0,
+                    source=source,
+                    reason=skip_reason,
+                    path=self.request.path,
+                    width=self.request.target_size.width(),
+                    height=self.request.target_size.height(),
+                )
             return
 
         image, error = load_image_for_display(
@@ -65,9 +99,20 @@ class ThumbnailTask(QRunnable):
             self.memory_cache.put(self.request.key, image)
             self.disk_cache.save(self.request.key, image)
             self.result_queue.put(("ready", self.request.key, image))
+            if logger.enabled:
+                logger.duration(
+                    "thumbnail.task",
+                    (time.perf_counter() - start) * 1000.0,
+                    source="failed_placeholder",
+                    error=message,
+                    path=self.request.path,
+                    width=self.request.target_size.width(),
+                    height=self.request.target_size.height(),
+                )
             return
 
         if image.size().width() > self.request.target_size.width() or image.size().height() > self.request.target_size.height():
+            source = "decode_scale"
             image = image.scaled(
                 self.request.target_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -77,6 +122,17 @@ class ThumbnailTask(QRunnable):
         self.memory_cache.put(self.request.key, image)
         self.disk_cache.save(self.request.key, image)
         self.result_queue.put(("ready", self.request.key, image))
+        if logger.enabled:
+            logger.duration(
+                "thumbnail.task",
+                (time.perf_counter() - start) * 1000.0,
+                source=source,
+                path=self.request.path,
+                width=self.request.target_size.width(),
+                height=self.request.target_size.height(),
+                image_width=image.width(),
+                image_height=image.height(),
+            )
 
 
 class ThumbnailManager(QObject):
@@ -118,12 +174,15 @@ class ThumbnailManager(QObject):
         key = self.make_key(record, target_size)
         cached = self.memory_cache.get(key)
         if cached is not None:
+            perf_logger().log("thumbnail.request", state="memory_hit", path=record.path, width=target_size.width(), height=target_size.height(), priority=priority)
             return key
 
         if key in self._pending:
+            perf_logger().log("thumbnail.request", state="pending", path=record.path, width=target_size.width(), height=target_size.height(), priority=priority)
             return key
 
         self._pending.add(key)
+        perf_logger().log("thumbnail.request", state="queued", path=record.path, width=target_size.width(), height=target_size.height(), priority=priority)
         request = ThumbnailRequest(key=key, path=record.path, target_size=target_size)
         task = ThumbnailTask(request, self.memory_cache, self.disk_cache, self._result_queue)
         self.pool.start(task, priority)

@@ -48,6 +48,12 @@ class MainWindowActions:
     grid_view: QAction
     details_view: QAction
     details_preview_pane: QAction
+    details_preview_on_hover: QAction
+    details_density_compact: QAction
+    details_density_comfortable: QAction
+    details_next_unreviewed: QAction
+    details_next_kept: QAction
+    details_next_rejected: QAction
     zen_mode: QAction
     manual_mode: QAction
     ai_mode: QAction
@@ -100,6 +106,8 @@ class MainWindowActions:
     customize_workspace_toolbar: QAction
     show_workspace_toolbar: QAction
     open_command_palette: QAction
+    performance_logging: QAction
+    open_performance_log_folder: QAction
     advanced_filters: QAction
     save_filter_preset: QAction
     delete_filter_preset: QAction
@@ -279,6 +287,39 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Details Preview Pane",
             slot=window._handle_details_preview_toggled,
             checkable=True,
+        ),
+        details_preview_on_hover=_create_action(
+            window,
+            "Details Preview On Hover",
+            slot=window._handle_details_preview_on_hover_toggled,
+            checkable=True,
+        ),
+        details_density_compact=_create_action(
+            window,
+            "Compact Details Rows",
+            slot=lambda _checked=False: window._set_details_row_density("compact"),
+            checkable=True,
+        ),
+        details_density_comfortable=_create_action(
+            window,
+            "Comfortable Details Rows",
+            slot=lambda _checked=False: window._set_details_row_density("comfortable"),
+            checkable=True,
+        ),
+        details_next_unreviewed=_create_action(
+            window,
+            "Next Unreviewed In Details",
+            slot=lambda _checked=False: window._jump_details_to_review_state("unreviewed"),
+        ),
+        details_next_kept=_create_action(
+            window,
+            "Next Kept In Details",
+            slot=lambda _checked=False: window._jump_details_to_review_state("kept"),
+        ),
+        details_next_rejected=_create_action(
+            window,
+            "Next Rejected In Details",
+            slot=lambda _checked=False: window._jump_details_to_review_state("rejected"),
         ),
         zen_mode=_create_action(
             window,
@@ -508,6 +549,17 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Command Palette...",
             slot=window._open_command_palette,
             auto_repeat=False,
+        ),
+        performance_logging=_create_action(
+            window,
+            "Performance Logging",
+            slot=window._handle_performance_logging_toggled,
+            checkable=True,
+        ),
+        open_performance_log_folder=_create_action(
+            window,
+            "Open Performance Log Folder",
+            slot=window._open_performance_log_folder,
         ),
         advanced_filters=_create_action(window, "Advanced Filters...", slot=window._open_advanced_filters_dialog),
         save_filter_preset=_create_action(window, "Save Current Search...", slot=window._save_current_filter_preset),

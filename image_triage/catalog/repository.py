@@ -11,6 +11,7 @@ loads, AI workflow stage reuse, and per-record feature caches.
 import json
 import os
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..models import ImageRecord, ImageVariant
+from ..perf import perf_logger
 from .db import connect_catalog_db, default_catalog_db_path
 from .migrations import apply_catalog_migrations
 
@@ -169,6 +171,8 @@ class CatalogRepository:
 
     def load_folder_records(self, folder: str) -> list[ImageRecord] | None:
         """Load the bundle-aware record snapshot for one indexed folder."""
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         folder_key = _normalized_path_key(folder_path)
         try:
@@ -179,6 +183,13 @@ class CatalogRepository:
                     (folder_key,),
                 ).fetchone()
                 if folder_row is None:
+                    if logger.enabled:
+                        logger.duration(
+                            "catalog.load_folder_records",
+                            (time.perf_counter() - start) * 1000.0,
+                            folder=folder_path,
+                            state="miss",
+                        )
                     return None
                 record_rows = connection.execute(
                     """
@@ -198,7 +209,14 @@ class CatalogRepository:
                     """,
                     (folder_key,),
                 ).fetchall()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.load_folder_records.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    error=str(exc),
+                )
             return None
 
         member_paths: dict[tuple[str, str], list[sqlite3.Row]] = {}
@@ -230,6 +248,15 @@ class CatalogRepository:
                     ),
                 )
             )
+        if logger.enabled:
+            logger.duration(
+                "catalog.load_folder_records",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                state="hit",
+                records=len(records),
+                members=len(member_rows),
+            )
         return records
 
     def save_folder_records(
@@ -240,6 +267,8 @@ class CatalogRepository:
         source: str = "scan",
     ) -> bool:
         """Persist one folder's current scan result into the catalog snapshot tables."""
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         folder_key = _normalized_path_key(folder_path)
         try:
@@ -278,8 +307,25 @@ class CatalogRepository:
                         self._insert_path_members(connection, folder_key, record.path, "companion", record.companion_paths)
                         self._insert_path_members(connection, folder_key, record.path, "edit", record.edited_paths)
                         self._insert_variants(connection, folder_key, record.path, record.display_variants if record.variants else ())
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.save_folder_records.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    records=len(records),
+                    source=source,
+                    error=str(exc),
+                )
             return False
+        if logger.enabled:
+            logger.duration(
+                "catalog.save_folder_records",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                records=len(records),
+                source=source,
+            )
         return True
 
     def load_review_scoring(
@@ -292,6 +338,8 @@ class CatalogRepository:
         """Load cached workflow scoring for a folder/session if the key matches."""
         from ..review_workflows import BurstRecommendation, TasteProfile
 
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return None
@@ -315,6 +363,14 @@ class CatalogRepository:
                     (folder_key, normalized_session, cache_key),
                 ).fetchone()
                 if cache_row is None:
+                    if logger.enabled:
+                        logger.duration(
+                            "catalog.load_review_scoring",
+                            (time.perf_counter() - start) * 1000.0,
+                            folder=folder_path,
+                            session=normalized_session,
+                            state="miss",
+                        )
                     return None
                 recommendation_rows = connection.execute(
                     """
@@ -335,7 +391,15 @@ class CatalogRepository:
                     """,
                     (folder_key, normalized_session),
                 ).fetchall()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.load_review_scoring.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    session=normalized_session,
+                    error=str(exc),
+                )
             return None
 
         summary_lines = _json_string_list(cache_row["taste_summary_lines_json"])
@@ -363,6 +427,16 @@ class CatalogRepository:
                 continue
             recommendations[recommendation.path] = recommendation
             recommendations[_normalized_path_key(recommendation.path)] = recommendation
+        if logger.enabled:
+            logger.duration(
+                "catalog.load_review_scoring",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                session=normalized_session,
+                state="hit",
+                rows=len(recommendation_rows),
+                recommendations=len(recommendations) // 2,
+            )
         return ReviewScoringCacheEntry(
             cache_key=str(cache_row["cache_key"] or ""),
             provider_id=str(cache_row["provider_id"] or ""),
@@ -382,6 +456,8 @@ class CatalogRepository:
         recommendations: dict[str, BurstRecommendation],
     ) -> bool:
         """Persist workflow scoring outputs for a folder/session cache key."""
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return False
@@ -471,8 +547,27 @@ class CatalogRepository:
                                 json.dumps(list(recommendation.reasons), ensure_ascii=True),
                             ),
                         )
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.save_review_scoring.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    session=normalized_session,
+                    records=len(records),
+                    recommendations=len(recommendations),
+                    error=str(exc),
+                )
             return False
+        if logger.enabled:
+            logger.duration(
+                "catalog.save_review_scoring",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                session=normalized_session,
+                records=len(records),
+                recommendations=len(recommendations),
+            )
         return True
 
     def load_review_features(
@@ -485,6 +580,8 @@ class CatalogRepository:
         from ..metadata import CaptureMetadata
         from ..review_intelligence import _RecordFingerprint
 
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path or not records:
             return {}
@@ -531,7 +628,15 @@ class CatalogRepository:
                     """,
                     params,
                 ).fetchall()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.load_review_features.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    records=len(records),
+                    error=str(exc),
+                )
             return {}
 
         loaded: dict[str, _RecordFingerprint] = {}
@@ -577,6 +682,15 @@ class CatalogRepository:
             )
             loaded[record_path] = fingerprint
             loaded[_normalized_path_key(record_path)] = fingerprint
+        if logger.enabled:
+            logger.duration(
+                "catalog.load_review_features",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                records=len(records),
+                rows=len(rows),
+                loaded=len(loaded) // 2,
+            )
         return loaded
 
     def save_review_features(
@@ -588,6 +702,8 @@ class CatalogRepository:
     ) -> bool:
         from ..metadata import metadata_provider_id_for_path
 
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path or not fingerprints:
             return False
@@ -694,8 +810,23 @@ class CatalogRepository:
                                 fingerprint.sha1_digest,
                             ),
                         )
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.save_review_features.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    fingerprints=len(fingerprints),
+                    error=str(exc),
+                )
             return False
+        if logger.enabled:
+            logger.duration(
+                "catalog.save_review_features",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                fingerprints=len(fingerprints),
+            )
         return True
 
     def load_ai_bundle(
@@ -706,6 +837,8 @@ class CatalogRepository:
     ) -> AIBundleCacheEntry | None:
         from ..ai_results import AIConfidenceBucket, AIImageResult, build_ai_bundle_from_results
 
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return None
@@ -728,6 +861,13 @@ class CatalogRepository:
                     (folder_key, cache_key),
                 ).fetchone()
                 if cache_row is None:
+                    if logger.enabled:
+                        logger.duration(
+                            "catalog.load_ai_bundle",
+                            (time.perf_counter() - start) * 1000.0,
+                            folder=folder_path,
+                            state="miss",
+                        )
                     return None
                 result_rows = connection.execute(
                     """
@@ -753,7 +893,14 @@ class CatalogRepository:
                     """,
                     (folder_key,),
                 ).fetchall()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.load_ai_bundle.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    error=str(exc),
+                )
             return None
 
         results: list[AIImageResult] = []
@@ -795,12 +942,22 @@ class CatalogRepository:
             results=results,
             summary=summary,
         )
+        if logger.enabled:
+            logger.duration(
+                "catalog.load_ai_bundle",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                state="hit",
+                results=len(results),
+            )
         return AIBundleCacheEntry(
             cache_key=str(cache_row["cache_key"] or ""),
             bundle=bundle,
         )
 
     def load_ai_workflow_cache(self, folder: str) -> AIWorkflowCacheEntry | None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return None
@@ -822,10 +979,31 @@ class CatalogRepository:
                     """,
                     (folder_key,),
                 ).fetchone()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.load_ai_workflow_cache.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    error=str(exc),
+                )
             return None
         if row is None:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.load_ai_workflow_cache",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    state="miss",
+                )
             return None
+        if logger.enabled:
+            logger.duration(
+                "catalog.load_ai_workflow_cache",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                state="hit",
+            )
         return AIWorkflowCacheEntry(
             embedding_cache_key=str(row["embedding_cache_key"] or ""),
             cluster_cache_key=str(row["cluster_cache_key"] or ""),
@@ -846,6 +1024,8 @@ class CatalogRepository:
         report_dir: str,
         semantic_cache_key: str = "",
     ) -> bool:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return False
@@ -886,8 +1066,22 @@ class CatalogRepository:
                             report_dir,
                         ),
                     )
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.save_ai_workflow_cache.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    error=str(exc),
+                )
             return False
+        if logger.enabled:
+            logger.duration(
+                "catalog.save_ai_workflow_cache",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                has_semantic=bool(semantic_cache_key),
+            )
         return True
 
     def delete_ai_workflow_cache(self, folder: str) -> bool:
@@ -916,6 +1110,8 @@ class CatalogRepository:
     ) -> bool:
         from ..ai_results import iter_ai_bundle_results
 
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return False
@@ -1004,8 +1200,23 @@ class CatalogRepository:
                                 result.confidence_summary,
                             ),
                         )
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.save_ai_bundle.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    results=len(results),
+                    error=str(exc),
+                )
             return False
+        if logger.enabled:
+            logger.duration(
+                "catalog.save_ai_bundle",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                results=len(results),
+            )
         return True
 
     def delete_ai_bundle_cache(self, folder: str) -> bool:
@@ -1037,6 +1248,8 @@ class CatalogRepository:
     ) -> ReviewGroupingCacheEntry | None:
         from ..review_intelligence import ReviewGroup, ReviewInsight, ReviewIntelligenceBundle
 
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return None
@@ -1053,6 +1266,13 @@ class CatalogRepository:
                     (folder_key, cache_key),
                 ).fetchone()
                 if cache_row is None:
+                    if logger.enabled:
+                        logger.duration(
+                            "catalog.load_review_grouping",
+                            (time.perf_counter() - start) * 1000.0,
+                            folder=folder_path,
+                            state="miss",
+                        )
                     return None
                 group_rows = connection.execute(
                     """
@@ -1072,7 +1292,14 @@ class CatalogRepository:
                     """,
                     (folder_key,),
                 ).fetchall()
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.load_review_grouping.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    error=str(exc),
+                )
             return None
 
         members_by_group: dict[str, list[sqlite3.Row]] = {}
@@ -1115,6 +1342,15 @@ class CatalogRepository:
                 insights_by_path[path] = insight
                 insights_by_path[_normalized_path_key(path)] = insight
         bundle = ReviewIntelligenceBundle(groups=tuple(groups), insights_by_path=insights_by_path)
+        if logger.enabled:
+            logger.duration(
+                "catalog.load_review_grouping",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                state="hit",
+                groups=len(groups),
+                members=len(member_rows),
+            )
         return ReviewGroupingCacheEntry(
             cache_key=str(cache_row["cache_key"] or ""),
             provider_id=str(cache_row["provider_id"] or ""),
@@ -1129,6 +1365,8 @@ class CatalogRepository:
         provider_id: str,
         bundle: ReviewIntelligenceBundle,
     ) -> bool:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         if not folder_path:
             return False
@@ -1208,8 +1446,24 @@ class CatalogRepository:
                                     member_position,
                                 ),
                             )
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
+            if logger.enabled:
+                logger.duration(
+                    "catalog.save_review_grouping.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder_path,
+                    groups=len(bundle.groups),
+                    error=str(exc),
+                )
             return False
+        if logger.enabled:
+            logger.duration(
+                "catalog.save_review_grouping",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder_path,
+                groups=len(bundle.groups),
+                insights=len(bundle.insights_by_path),
+            )
         return True
 
     @staticmethod

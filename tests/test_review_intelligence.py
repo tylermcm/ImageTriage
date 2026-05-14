@@ -169,6 +169,47 @@ class ReviewIntelligenceTests(unittest.TestCase):
         self.assertIsNone(bundle.insight_for_path(records[0].path))
         self.assertIsNone(bundle.insight_for_path(records[1].path))
 
+    def test_mixed_capture_and_modified_dates_do_not_break_fallback_sort(self) -> None:
+        records = [
+            ImageRecord(path="C:/shots/with_exif.jpg", name="with_exif.jpg", size=1500, modified_ns=20),
+            ImageRecord(path="C:/shots/no_exif.jpg", name="no_exif.jpg", size=1510, modified_ns=10),
+        ]
+        fingerprints = {
+            records[0].path: _RecordFingerprint(
+                record=records[0],
+                source_path=records[0].path,
+                metadata=CaptureMetadata(
+                    path=records[0].path,
+                    width=4000,
+                    height=3000,
+                    captured_at_value=datetime(2022, 8, 24, 23, 23, 26),
+                ),
+                dhash=0b1111000011110000,
+                avg_luma=92.0,
+                width=4000,
+                height=3000,
+                sha1_digest="a",
+            ),
+            records[1].path: _RecordFingerprint(
+                record=records[1],
+                source_path=records[1].path,
+                metadata=CaptureMetadata(path=records[1].path, width=4000, height=3000),
+                dhash=0b0000111100001111,
+                avg_luma=88.0,
+                width=4000,
+                height=3000,
+                sha1_digest="b",
+            ),
+        }
+
+        with patch(
+            "image_triage.review_intelligence._build_fingerprint",
+            side_effect=lambda record, _metadata_cache: fingerprints[record.path],
+        ):
+            bundle = build_review_intelligence(records)
+
+        self.assertIsInstance(bundle, ReviewIntelligenceBundle)
+
     def test_build_review_intelligence_emits_progress_milestones(self) -> None:
         records = [
             ImageRecord(path=f"C:/shots/frame_{index:03d}.jpg", name=f"frame_{index:03d}.jpg", size=1000 + index, modified_ns=index)
