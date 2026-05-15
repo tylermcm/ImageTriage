@@ -29,18 +29,26 @@ class PerformanceLogger:
     def path(self) -> Path | None:
         return self._path
 
+    @property
+    def is_writing(self) -> bool:
+        return self._enabled and self._handle is not None and self._path is not None
+
     def set_enabled(self, enabled: bool, *, reason: str = "") -> None:
         normalized = bool(enabled)
-        if normalized == self._enabled:
+        if normalized and self.is_writing:
             return
         if normalized:
             self._open()
             self._enabled = True
-            self.log("perf.enabled", reason=reason, path=str(self._path or ""))
-        else:
-            self.log("perf.disabled", reason=reason)
-            self._enabled = False
-            self._close()
+            self.log("perf.enabled", reason=reason, path=str(self._path or ""), log_dir=str((_default_log_dir())))
+            self.flush()
+            return
+        if not self._enabled and self._handle is None:
+            return
+        self.log("perf.disabled", reason=reason)
+        self.flush()
+        self._enabled = False
+        self._close()
 
     def log(self, event: str, **fields: object) -> None:
         if not self._enabled:
@@ -107,6 +115,22 @@ class PerformanceLogger:
 
 
 def _default_log_dir() -> Path:
+    override = os.environ.get("IMAGE_TRIAGE_LOG_DIR")
+    if override:
+        return Path(override)
+    if os.name == "nt":
+        user_profile = os.environ.get("USERPROFILE")
+        if not user_profile:
+            home_drive = os.environ.get("HOMEDRIVE", "")
+            home_path = os.environ.get("HOMEPATH", "")
+            if home_drive and home_path:
+                user_profile = home_drive + home_path
+        if not user_profile:
+            user_profile = os.environ.get("HOME", "")
+        if user_profile:
+            # Microsoft Store Python virtualizes writes to AppData\Local. LocalLow
+            # remains visible to Explorer while keeping logs out of image folders.
+            return Path(user_profile) / "AppData" / "LocalLow" / "ImageTriage" / "logs"
     root = os.environ.get("LOCALAPPDATA")
     if root:
         return Path(root) / "ImageTriage" / "logs"

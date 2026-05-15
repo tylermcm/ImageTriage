@@ -19,6 +19,7 @@ from .fits_support import (
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .perf import perf_logger
 from .plugins import DisplayLoadRequest, register_display_provider, resolve_display_provider
+from .raw_embedded_jpeg import extract_embedded_jpeg
 
 try:
     import rawpy
@@ -708,6 +709,24 @@ def _downsample_fits_array(array: np.ndarray, target_size: QSize) -> np.ndarray:
 
 
 def _load_raw_image(path: str, target_size: QSize, *, prefer_embedded: bool, suffix: str) -> tuple[QImage, str | None]:
+    if prefer_embedded:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        embedded_jpeg = extract_embedded_jpeg(path)
+        if logger.enabled:
+            logger.duration(
+                "raw.embedded_jpeg_extract",
+                (time.perf_counter() - start) * 1000.0,
+                path=path,
+                status="hit" if embedded_jpeg is not None else "miss",
+                source=embedded_jpeg.source if embedded_jpeg is not None else "",
+                jpeg_bytes=embedded_jpeg.byte_count if embedded_jpeg is not None else 0,
+            )
+        if embedded_jpeg is not None:
+            image = _load_standard_image_from_bytes(embedded_jpeg.payload, target_size)
+            if not image.isNull():
+                return image, None
+
     if rawpy is None:
         return QImage(), "RAW support requires the rawpy package."
 
@@ -718,6 +737,7 @@ def _load_raw_image(path: str, target_size: QSize, *, prefer_embedded: bool, suf
                 embedded = _load_embedded_thumbnail(raw, target_size)
                 if embedded is not None:
                     return embedded, None
+                return QImage(), "No fast embedded RAW preview available."
 
             quality_mode = "fast" if prefer_embedded else "balanced" if _should_use_half_size(raw, target_size) else "high"
             image = _postprocess_raw(raw, target_size, quality_mode=quality_mode)

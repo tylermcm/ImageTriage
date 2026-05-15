@@ -2134,6 +2134,7 @@ class MainWindow(QMainWindow):
     DETAILS_HEADER_STATE_KEY = "view/details_header_state"
     DETAILS_SORT_COLUMN_KEY = "view/details_sort_column"
     DETAILS_SORT_ORDER_KEY = "view/details_sort_order"
+    PREVIEW_PRELOAD_BATCH_SIZE_KEY = "preview/preload_batch_size"
     PERFORMANCE_LOGGING_KEY = "diagnostics/performance_logging"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
     TOOLBAR_STYLE_KEY = "view/toolbar_style"
@@ -2143,6 +2144,8 @@ class MainWindow(QMainWindow):
     CHUNKED_RESTORE_LOAD_MIN_RECORDS = 600
     CHUNKED_RESTORE_LOAD_BATCH_SIZE = 120
     FILTER_METADATA_EAGER_CACHE_MAX_RECORDS = 400
+    PREVIEW_PRELOAD_BATCH_SIZE_DEFAULT = FullScreenPreview.DEFAULT_PRELOAD_BATCH_SIZE
+    PREVIEW_PRELOAD_BATCH_SIZE_MAX = FullScreenPreview.MAX_PRELOAD_BATCH_SIZE
     AI_EMBED_BATCH_SIZE_AUTO = 0
     AI_EMBED_BATCH_SIZE_GPU_AUTO = 32
     AI_EMBED_BATCH_SIZE_CPU_AUTO = 16
@@ -2387,8 +2390,6 @@ class MainWindow(QMainWindow):
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
         self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
         self._workspace_toolbar_overflow_update_pending: set[str] = set()
-        self._preview_ai_cull_queue_enabled = False
-        self._preview_ai_cull_source_paths: tuple[str, ...] = ()
         self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.AUTO.value, str))
         self._theme = None
         self._child_sync_state_path = self._prepare_child_sync_state_path()
@@ -2606,6 +2607,14 @@ class MainWindow(QMainWindow):
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
         self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, False, bool)
         self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
+        self._preview_preload_batch_size = self._normalize_preview_preload_batch_size(
+            self._settings.value(
+                self.PREVIEW_PRELOAD_BATCH_SIZE_KEY,
+                self.PREVIEW_PRELOAD_BATCH_SIZE_DEFAULT,
+                int,
+            )
+        )
+        self.preview.set_preload_batch_size(self._preview_preload_batch_size)
         self._show_hidden_folders = self._settings.value(self.SHOW_HIDDEN_FOLDERS_KEY, False, bool)
         self._toolbar_style = self._normalize_toolbar_style(self._settings.value(self.TOOLBAR_STYLE_KEY, "text", str))
         self._catalog_cache_enabled = self._settings.value(self.CATALOG_CACHE_ENABLED_KEY, True, bool)
@@ -3108,7 +3117,6 @@ class MainWindow(QMainWindow):
         self.preview.compare_mode_changed.connect(self._handle_preview_compare_mode_changed)
         self.preview.auto_bracket_mode_changed.connect(self._handle_preview_auto_bracket_mode_changed)
         self.preview.compare_count_changed.connect(self._handle_preview_compare_count_changed)
-        self.preview.ai_cull_queue_toggled.connect(self._handle_preview_ai_cull_queue_toggled)
         self.preview.command_palette_requested.connect(lambda: self._open_command_palette(context="preview"))
         self.preview.photoshop_requested.connect(self._open_preview_image_in_photoshop)
         self.preview.winner_requested.connect(self._handle_preview_winner_requested)
@@ -5318,6 +5326,14 @@ class MainWindow(QMainWindow):
 
     def _managed_ai_runtime_status(self) -> AIRuntimeInstallationStatus:
         return load_ai_runtime_installation_status()
+
+    @classmethod
+    def _normalize_preview_preload_batch_size(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return cls.PREVIEW_PRELOAD_BATCH_SIZE_DEFAULT
+        return max(0, min(cls.PREVIEW_PRELOAD_BATCH_SIZE_MAX, parsed))
 
     @classmethod
     def _normalize_ai_embed_batch_size(cls, value: object) -> int:
@@ -7719,7 +7735,6 @@ class MainWindow(QMainWindow):
         self.toolbar_stack.setCurrentIndex(index)
         self.grid.set_show_ai_annotations(self._ui_mode == "ai")
         self._schedule_workspace_toolbar_overflow_update(self._ui_mode)
-        self._update_preview_ai_cull_controls()
         self._refresh_viewport_mode()
         self._update_ai_toolbar_state()
         if self._ui_mode == "ai":
@@ -7930,6 +7945,8 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.PERFORMANCE_LOGGING_KEY, self._performance_logging_enabled)
         perf_logger().set_enabled(self._performance_logging_enabled, reason="menu_toggle")
         if self._performance_logging_enabled:
+            perf_logger().log("perf.menu_toggle_confirmed", log_dir=str(performance_log_dir()))
+            perf_logger().flush()
             path = perf_logger().path
             self.statusBar().showMessage(f"Performance logging enabled: {path}")
         else:
@@ -7937,6 +7954,8 @@ class MainWindow(QMainWindow):
         self._update_action_states()
 
     def _open_performance_log_folder(self) -> None:
+        if self._performance_logging_enabled and not perf_logger().is_writing:
+            perf_logger().set_enabled(True, reason="open_log_folder_resync")
         path = perf_logger().path
         target = path.parent if path is not None else performance_log_dir()
         target.mkdir(parents=True, exist_ok=True)
@@ -8273,6 +8292,8 @@ class MainWindow(QMainWindow):
             self.actions.zen_mode.setChecked(self._zen_mode_enabled)
         with QSignalBlocker(self.actions.performance_logging):
             self.actions.performance_logging.setChecked(self._performance_logging_enabled)
+        if self._performance_logging_enabled and not perf_logger().is_writing:
+            perf_logger().set_enabled(True, reason="action_state_resync")
         with QSignalBlocker(self.actions.mode_actions["manual"]):
             self.actions.mode_actions["manual"].setChecked(self._ui_mode == "manual")
         with QSignalBlocker(self.actions.mode_actions["ai"]):
@@ -11113,8 +11134,6 @@ class MainWindow(QMainWindow):
     def _handle_preview_compare_mode_changed(self, enabled: bool) -> None:
         if not enabled and self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
-        if enabled and self._preview_ai_cull_queue_enabled:
-            self._clear_preview_ai_cull_queue()
         if self._compare_enabled != enabled:
             if self.actions is not None:
                 self.actions.compare_mode.setChecked(enabled)
@@ -11138,8 +11157,6 @@ class MainWindow(QMainWindow):
         anchor_index = self._record_index_for_path(anchor_path)
         if anchor_index is not None:
             self.grid.set_current_index(anchor_index)
-        if self._preview_ai_cull_queue_enabled and annotation.winner:
-            self._advance_preview_ai_cull_queue_from(path)
 
     def _handle_preview_reject_requested(self, path: str) -> None:
         index = self._record_index_for_path(path)
@@ -11152,8 +11169,6 @@ class MainWindow(QMainWindow):
         anchor_index = self._record_index_for_path(anchor_path)
         if anchor_index is not None:
             self.grid.set_current_index(anchor_index)
-        if self._preview_ai_cull_queue_enabled and annotation.reject:
-            self._advance_preview_ai_cull_queue_from(path)
 
     def _handle_preview_keep_requested(self, path: str) -> None:
         self._dispatch_preview_action(path, self._keep_record)
@@ -11229,7 +11244,6 @@ class MainWindow(QMainWindow):
         self._show_winner_ladder_state()
 
     def _handle_preview_closed(self) -> None:
-        self._clear_preview_ai_cull_queue()
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
 
@@ -11295,132 +11309,6 @@ class MainWindow(QMainWindow):
             workflow_details=self._workflow_detail_lines_for_record(record),
             placeholder_image=self._preview_placeholder_for_index(index),
         )
-
-    def _resolved_preview_ai_cull_source_paths(self) -> tuple[str, ...]:
-        if self._preview_ai_cull_source_paths:
-            ordered: list[str] = []
-            seen: set[str] = set()
-            for path in self._preview_ai_cull_source_paths:
-                normalized = normalized_path_key(path)
-                if not normalized or normalized in seen or self._record_index_for_path(path) is None:
-                    continue
-                seen.add(normalized)
-                ordered.append(path)
-            return tuple(ordered)
-        return tuple(record.path for record in self._records)
-
-    def _ordered_preview_ai_cull_paths(self, source_paths: tuple[str, ...] | None = None) -> tuple[str, ...]:
-        candidate_paths = source_paths if source_paths is not None else self._resolved_preview_ai_cull_source_paths()
-        ranked_paths: list[tuple[tuple[float, ...], str, str]] = []
-        seen: set[str] = set()
-        for path in candidate_paths:
-            normalized = normalized_path_key(path)
-            if not normalized or normalized in seen:
-                continue
-            record = self._record_for_path(path)
-            if record is None:
-                continue
-            ai_result = self._ai_result_for_record(record)
-            if ai_result is None:
-                continue
-            seen.add(normalized)
-            ranked_paths.append((ai_manual_cull_sort_key(ai_result), ai_result.file_name.casefold(), record.path))
-        ranked_paths.sort(key=lambda item: (item[0], item[1]))
-        return tuple(path for _key, _name, path in ranked_paths)
-
-    def _preview_ai_cull_entry_label(self, path: str, *, position: int, total: int) -> str:
-        record = self._record_for_path(path)
-        ai_result = self._ai_result_for_record(record) if record is not None else None
-        return f"AI Cull {position}/{total} - {ai_review_badge_label(ai_result)}"
-
-    def _update_preview_ai_cull_controls(self) -> None:
-        if not hasattr(self, "preview"):
-            return
-        queue_paths = self._ordered_preview_ai_cull_paths()
-        available = bool(queue_paths) and (self._ai_bundle is not None) and (self._ui_mode == "manual" or self._preview_ai_cull_queue_enabled)
-        self.preview.set_ai_cull_queue_available(available, checked=available and self._preview_ai_cull_queue_enabled)
-
-    def _clear_preview_ai_cull_queue(self) -> None:
-        self._preview_ai_cull_queue_enabled = False
-        self._preview_ai_cull_source_paths = ()
-        if hasattr(self, "preview"):
-            self.preview.set_ai_cull_queue_available(False)
-
-    def _open_preview_ai_cull_queue_path(self, path: str) -> None:
-        queue_paths = self._ordered_preview_ai_cull_paths()
-        if not queue_paths:
-            self._clear_preview_ai_cull_queue()
-            self.statusBar().showMessage("No AI-ranked images are available for manual culling.")
-            return
-
-        normalized_target = normalized_path_key(path)
-        target_path = next((candidate for candidate in queue_paths if normalized_path_key(candidate) == normalized_target), queue_paths[0])
-        try:
-            position = next(index for index, candidate in enumerate(queue_paths, start=1) if normalized_path_key(candidate) == normalized_path_key(target_path))
-        except StopIteration:
-            position = 1
-        entry = self._preview_entry_for_visible_path(
-            target_path,
-            label=self._preview_ai_cull_entry_label(target_path, position=position, total=len(queue_paths)),
-        )
-        if entry is None:
-            remaining = tuple(candidate for candidate in self._resolved_preview_ai_cull_source_paths() if normalized_path_key(candidate) != normalized_path_key(target_path))
-            if not remaining:
-                self._clear_preview_ai_cull_queue()
-                self.statusBar().showMessage("No AI-ranked images remain in the manual cull queue.")
-                return
-            self._preview_ai_cull_source_paths = remaining
-            self._open_preview_ai_cull_queue_path(remaining[0])
-            return
-
-        index = self._record_index_for_path(target_path)
-        if index is not None:
-            self.grid.set_current_index(index)
-        self._preview_ai_cull_queue_enabled = True
-        self.preview.set_compare_mode(False)
-        self._update_preview_ai_cull_controls()
-        self.preview.show_entries([entry])
-        if index is not None:
-            self._schedule_preview_preload(index)
-        self.statusBar().showMessage(f"AI cull queue {position}/{len(queue_paths)}: {Path(target_path).name}")
-
-    def _advance_preview_ai_cull_queue_from(self, path: str) -> None:
-        queue_paths = self._ordered_preview_ai_cull_paths()
-        if not queue_paths:
-            self.preview.close()
-            return
-        current_index = next(
-            (index for index, candidate in enumerate(queue_paths) if normalized_path_key(candidate) == normalized_path_key(path)),
-            -1,
-        )
-        for next_path in queue_paths[current_index + 1 :]:
-            if self._record_index_for_path(next_path) is None:
-                continue
-            self._open_preview_ai_cull_queue_path(next_path)
-            return
-        self.statusBar().showMessage("Finished the AI cull queue.")
-        self.preview.close()
-
-    def _handle_preview_ai_cull_queue_toggled(self, enabled: bool) -> None:
-        if not enabled:
-            current_path = self.preview.anchor_path() or self._current_visible_record_path()
-            self._clear_preview_ai_cull_queue()
-            index = self._record_index_for_path(current_path)
-            if index is None:
-                index = self.grid.current_index()
-            if index is not None and index >= 0 and self.preview.isVisible():
-                self._open_preview(index)
-            return
-
-        if self._ai_bundle is None:
-            self._update_preview_ai_cull_controls()
-            self.statusBar().showMessage("Load AI results before using AI Cull Queue.")
-            return
-
-        if not self._preview_ai_cull_source_paths:
-            self._preview_ai_cull_source_paths = tuple(record.path for record in self._records)
-        current_path = self.preview.anchor_path() or self._current_visible_record_path()
-        self._open_preview_ai_cull_queue_path(current_path)
 
     def _start_winner_ladder(self, index: int) -> None:
         rows, source_mode, group_id = self._winner_ladder_candidate_rows(index)
@@ -12903,8 +12791,6 @@ class MainWindow(QMainWindow):
         ai_results = self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {}
         self.grid.set_ai_results(ai_results)
         self.details_view.refresh_rows()
-        if self._ai_bundle is None and self._preview_ai_cull_queue_enabled:
-            self._clear_preview_ai_cull_queue()
         self._start_scope_enrichment_task()
         current_path = self._current_visible_record_path()
         if self._all_records:
@@ -12917,7 +12803,6 @@ class MainWindow(QMainWindow):
         self._refresh_ai_summary_cache()
         self._update_ai_summary()
         self._update_ai_toolbar_state()
-        self._update_preview_ai_cull_controls()
         self._update_status()
         self._update_inspector_context()
         if self.preview.isVisible():
@@ -13240,15 +13125,16 @@ class MainWindow(QMainWindow):
         if not existing_paths:
             self.statusBar().showMessage("No Keeper or Needs Review images remain for follow-up review.")
             return
-        self._preview_ai_cull_source_paths = existing_paths
-        self._preview_ai_cull_queue_enabled = True
         self._set_ui_mode("manual")
         current_path = self._current_visible_record_path()
         target_path = next(
             (path for path in existing_paths if normalized_path_key(path) == normalized_path_key(current_path)),
             existing_paths[0],
         )
-        self._open_preview_ai_cull_queue_path(target_path)
+        index = self._record_index_for_path(target_path)
+        if index is not None:
+            self.grid.set_current_index(index)
+        self.statusBar().showMessage(f"{len(existing_paths)} Keeper or Needs Review image(s) remain for manual review.")
 
     def _apply_ai_culling(self) -> None:
         if not self._current_folder:
@@ -13320,7 +13206,7 @@ class MainWindow(QMainWindow):
             "Review Keepers And Needs Review?",
             (
                 f"{len(reviewable_paths)} image(s) remain in Keeper or Needs Review.\n\n"
-                "Open them in the popout viewer for quick manual Accept/Reject review?"
+                "Jump to the first remaining image in Manual Review?"
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
@@ -14242,11 +14128,19 @@ class MainWindow(QMainWindow):
         self.preview.preload_paths(self._likely_preview_preload_paths(index))
 
     def _likely_preview_preload_paths(self, index: int) -> list[str]:
+        limit = self._normalize_preview_preload_batch_size(
+            getattr(self, "_preview_preload_batch_size", self.PREVIEW_PRELOAD_BATCH_SIZE_DEFAULT)
+        )
+        if limit <= 0 or not self._records:
+            return []
         ordered: list[str] = []
         seen: set[str] = set()
 
         def add(candidate_index: int) -> None:
             if not 0 <= candidate_index < len(self._records):
+                return
+            record = self._record_at(candidate_index)
+            if record is None or record.is_folder:
                 return
             path = self._preview_path_for_index(candidate_index)
             if not path:
@@ -14258,21 +14152,30 @@ class MainWindow(QMainWindow):
             ordered.append(path)
 
         add(index)
-        for delta in (1, -1, 2, -2, 3, -3):
+        delta = 1
+        while len(ordered) < limit and delta < len(self._records):
             add(index + delta)
+            if len(ordered) >= limit:
+                break
+            add(index - delta)
+            delta += 1
 
         current_record = self._record_at(index)
         current_insight = self._review_insight_for_record(current_record)
         if current_insight is not None and current_insight.has_group:
             for row_index in self._visible_review_group_rows_by_id.get(current_insight.group_id, ()):
                 add(row_index)
+                if len(ordered) >= limit:
+                    break
 
         current_ai = self._ai_result_for_index(index)
         if current_ai is not None and current_ai.group_size > 1:
             for row_index in self._visible_ai_group_rows_by_id.get(current_ai.group_id, ()):
                 add(row_index)
+                if len(ordered) >= limit:
+                    break
 
-        return ordered[:10]
+        return ordered[:limit]
 
     def _update_inspector_context(self, index: int | None = None) -> None:
         if self.inspector_panel is None:
@@ -14895,6 +14798,7 @@ class MainWindow(QMainWindow):
             toolbar_style=self._toolbar_style,
             compact_cards_enabled=self._compact_cards_enabled,
             free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
+            preview_preload_batch_size=self._preview_preload_batch_size,
             show_hidden_folders=self._show_hidden_folders,
             auto_advance_enabled=self._auto_advance_enabled,
             burst_groups_enabled=self._burst_groups_enabled,
@@ -14926,6 +14830,8 @@ class MainWindow(QMainWindow):
         toolbar_style_changed = self._normalize_toolbar_style(result.toolbar_style) != self._toolbar_style
         compact_changed = result.compact_cards_enabled != self._compact_cards_enabled
         free_scroll_changed = result.free_smooth_scroll_enabled != self._free_smooth_scroll_enabled
+        new_preview_preload_batch_size = self._normalize_preview_preload_batch_size(result.preview_preload_batch_size)
+        preview_preload_changed = new_preview_preload_batch_size != self._preview_preload_batch_size
         hidden_changed = result.show_hidden_folders != self._show_hidden_folders
         auto_advance_changed = result.auto_advance_enabled != self._auto_advance_enabled
         burst_groups_changed = result.burst_groups_enabled != self._burst_groups_enabled
@@ -14942,6 +14848,7 @@ class MainWindow(QMainWindow):
         self._toolbar_style = self._normalize_toolbar_style(result.toolbar_style)
         self._compact_cards_enabled = result.compact_cards_enabled
         self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
+        self._preview_preload_batch_size = new_preview_preload_batch_size
         self._show_hidden_folders = result.show_hidden_folders
         self._auto_advance_enabled = result.auto_advance_enabled
         self._burst_groups_enabled = result.burst_groups_enabled
@@ -14958,6 +14865,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.TOOLBAR_STYLE_KEY, self._toolbar_style)
         self._settings.setValue(self.COMPACT_CARDS_KEY, self._compact_cards_enabled)
         self._settings.setValue(self.FREE_SMOOTH_SCROLL_KEY, self._free_smooth_scroll_enabled)
+        self._settings.setValue(self.PREVIEW_PRELOAD_BATCH_SIZE_KEY, self._preview_preload_batch_size)
         self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
         self._settings.setValue(self.AUTO_ADVANCE_KEY, self._auto_advance_enabled)
         self._settings.setValue(self.BURST_GROUPS_KEY, self._burst_groups_enabled)
@@ -14970,6 +14878,7 @@ class MainWindow(QMainWindow):
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Session: {self._session_id}")
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
+        self.preview.set_preload_batch_size(self._preview_preload_batch_size)
         self.grid.set_compact_card_mode(self._compact_cards_enabled)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         if toolbar_style_changed:
@@ -15018,6 +14927,11 @@ class MainWindow(QMainWindow):
         elif free_scroll_changed:
             state = "enabled" if self._free_smooth_scroll_enabled else "disabled"
             self.statusBar().showMessage(f"Free smooth scrolling {state}")
+        elif preview_preload_changed:
+            if self._preview_preload_batch_size <= 0:
+                self.statusBar().showMessage("Preview preloading disabled")
+            else:
+                self.statusBar().showMessage(f"Preview preload batch set to {self._preview_preload_batch_size} images")
         elif hidden_changed:
             state = "shown" if self._show_hidden_folders else "hidden"
             self.statusBar().showMessage(f"Hidden folders {state}")
@@ -15613,21 +15527,33 @@ class MainWindow(QMainWindow):
         if record is not None and record.is_folder:
             self._select_folder(record.path)
             return
-        if self._preview_ai_cull_queue_enabled:
-            current_path = self._preview_path_for_index(index)
-            self._open_preview_ai_cull_queue_path(current_path)
-            return
+        entries_start = time.perf_counter() if logger.enabled else 0.0
         entries, effective_count, anchor_index = self._preview_entries_for(index)
         if not entries:
             return
+        if logger.enabled:
+            logger.duration(
+                "window.open_preview.entries",
+                (time.perf_counter() - entries_start) * 1000.0,
+                index=index,
+                entry_count=len(entries),
+                effective_count=effective_count,
+                anchor_index=anchor_index,
+            )
 
+        controls_start = time.perf_counter() if logger.enabled else 0.0
         if self._compare_enabled:
             self._compare_count = effective_count
             self.preview.set_compare_count(effective_count)
             if anchor_index != index:
                 self.grid.set_current_index(anchor_index)
         self.preview.set_winner_ladder_mode(False)
-        self._update_preview_ai_cull_controls()
+        if logger.enabled:
+            logger.duration(
+                "window.open_preview.controls",
+                (time.perf_counter() - controls_start) * 1000.0,
+                compare=self._compare_enabled,
+            )
         self.preview.show_entries(entries)
         self._schedule_preview_preload(anchor_index if anchor_index >= 0 else index)
         if logger.enabled:
@@ -15643,18 +15569,6 @@ class MainWindow(QMainWindow):
 
     def _navigate_preview(self, delta: int) -> None:
         if not self._records:
-            return
-        if self._preview_ai_cull_queue_enabled:
-            queue_paths = self._ordered_preview_ai_cull_paths()
-            if not queue_paths:
-                return
-            current_path = self.preview.anchor_path() or self._current_visible_record_path()
-            current_queue_index = next(
-                (index for index, candidate in enumerate(queue_paths) if normalized_path_key(candidate) == normalized_path_key(current_path)),
-                0,
-            )
-            next_queue_index = max(0, min(len(queue_paths) - 1, current_queue_index + delta))
-            self._open_preview_ai_cull_queue_path(queue_paths[next_queue_index])
             return
 
         current = self.grid.current_index()

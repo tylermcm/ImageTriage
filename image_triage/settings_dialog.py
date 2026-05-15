@@ -42,6 +42,7 @@ class WorkflowSettingsResult:
     toolbar_style: str = "text"
     compact_cards_enabled: bool = False
     free_smooth_scroll_enabled: bool = False
+    preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
     auto_advance_enabled: bool = True
     burst_groups_enabled: bool = False
@@ -80,6 +81,7 @@ class WorkflowSettingsDialog(QDialog):
         toolbar_style: str = "text",
         compact_cards_enabled: bool = False,
         free_smooth_scroll_enabled: bool = False,
+        preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
         auto_advance_enabled: bool = True,
         burst_groups_enabled: bool = False,
@@ -195,6 +197,17 @@ class WorkflowSettingsDialog(QDialog):
         self.free_smooth_scroll_checkbox = QCheckBox("Use free smooth scrolling")
         self.free_smooth_scroll_checkbox.setChecked(free_smooth_scroll_enabled)
 
+        self.preview_preload_batch_spin = QSpinBox()
+        self.preview_preload_batch_spin.setRange(0, 128)
+        self.preview_preload_batch_spin.setSingleStep(2)
+        self.preview_preload_batch_spin.setSpecialValueText("Off")
+        self.preview_preload_batch_spin.setSuffix(" images")
+        self.preview_preload_batch_spin.setValue(max(0, min(128, int(preview_preload_batch_size))))
+        self.preview_preload_batch_spin.setMinimumWidth(120)
+        self.preview_preload_batch_spin.setToolTip(
+            "Nearby images to preload while using the popout preview. Higher values can improve rapid navigation but use more CPU and RAM."
+        )
+
         self.show_hidden_folders_checkbox = QCheckBox("Show hidden folders")
         self.show_hidden_folders_checkbox.setChecked(show_hidden_folders)
 
@@ -211,6 +224,7 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(interface_layout, "Toolbar", self.toolbar_style_combo)
         self._add_checkbox_row(interface_layout, "Grid", self.compact_cards_checkbox)
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
+        self._add_form_row(interface_layout, "Preview preload", self.preview_preload_batch_spin)
         self._add_checkbox_row(interface_layout, "Folders", self.show_hidden_folders_checkbox)
         self._add_checkbox_row(interface_layout, "Review", self.auto_advance_checkbox)
         self._add_checkbox_row(interface_layout, "Bursts", self.burst_groups_checkbox)
@@ -457,6 +471,7 @@ class WorkflowSettingsDialog(QDialog):
             toolbar_style=str(self.toolbar_style_combo.currentData() or "text"),
             compact_cards_enabled=self.compact_cards_checkbox.isChecked(),
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
+            preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
             auto_advance_enabled=self.auto_advance_checkbox.isChecked(),
             burst_groups_enabled=self.burst_groups_checkbox.isChecked(),
