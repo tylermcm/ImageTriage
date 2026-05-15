@@ -283,7 +283,7 @@ class MetadataTask(QRunnable):
                 "metadata.task",
                 (time.perf_counter() - start) * 1000.0,
                 path=self.key.path,
-                provider=metadata.provider_id,
+                provider=metadata_provider_id_for_path(self.key.path),
                 width=metadata.width,
                 height=metadata.height,
             )
