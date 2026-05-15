@@ -62,6 +62,7 @@ class PreviewRequest:
     load_metadata: bool = True
     cache_only: bool = False
     fits_display_settings: FitsDisplaySettings | None = None
+    queued_at_perf: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,6 +92,12 @@ class PreviewTask(QRunnable):
     def run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        queue_wait_ms = (
+            (start - self.request.queued_at_perf) * 1000.0
+            if logger.enabled and self.request.queued_at_perf > 0.0
+            else 0.0
+        )
+        suffix = suffix_for_path(self.request.path)
         image, error = load_image_for_display(
             self.request.path,
             self.request.target_size,
@@ -98,11 +105,13 @@ class PreviewTask(QRunnable):
             fits_display_settings=self.request.fits_display_settings,
         )
         if image.isNull():
-            self.result_queue.put(("failed", self.request, sanitize_display_error(error, path=self.request.path)))
+            failed_at = time.perf_counter() if logger.enabled else 0.0
+            display_error = sanitize_display_error(error, path=self.request.path)
+            self.result_queue.put(("failed", self.request, display_error, failed_at))
             if logger.enabled:
                 logger.duration(
                     "preview.task",
-                    (time.perf_counter() - start) * 1000.0,
+                    (failed_at - start) * 1000.0,
                     state="failed",
                     path=self.request.path,
                     slot=self.request.slot,
@@ -110,15 +119,18 @@ class PreviewTask(QRunnable):
                     height=self.request.target_size.height(),
                     prefer_embedded=self.request.prefer_embedded,
                     cache_only=self.request.cache_only,
-                    error=sanitize_display_error(error, path=self.request.path),
+                    queue_wait_ms=queue_wait_ms,
+                    active_request=not self.request.cache_only,
+                    error=display_error,
                 )
             return
-        metadata = load_capture_metadata(self.request.path) if self.request.load_metadata else None
-        self.result_queue.put(("ready", self.request, image, metadata))
+        ready_at = time.perf_counter() if logger.enabled else 0.0
+        image_ready_ms = (ready_at - start) * 1000.0 if logger.enabled else 0.0
+        self.result_queue.put(("ready", self.request, image, None, ready_at))
         if logger.enabled:
             logger.duration(
                 "preview.task",
-                (time.perf_counter() - start) * 1000.0,
+                image_ready_ms,
                 state="ready",
                 path=self.request.path,
                 slot=self.request.slot,
@@ -128,8 +140,29 @@ class PreviewTask(QRunnable):
                 image_height=image.height(),
                 prefer_embedded=self.request.prefer_embedded,
                 cache_only=self.request.cache_only,
-                metadata=self.request.load_metadata,
+                metadata=False,
+                queue_wait_ms=queue_wait_ms,
+                active_request=not self.request.cache_only,
             )
+        if self.request.load_metadata:
+            metadata_start = time.perf_counter() if logger.enabled else 0.0
+            metadata_error = ""
+            try:
+                metadata = load_capture_metadata(self.request.path)
+            except Exception as exc:  # pragma: no cover - metadata should be best-effort
+                metadata = CaptureMetadata(path=self.request.path)
+                metadata_error = str(exc)
+            self.result_queue.put(("metadata", self.request, metadata))
+            if logger.enabled:
+                logger.duration(
+                    "preview.task_metadata",
+                    (time.perf_counter() - metadata_start) * 1000.0,
+                    path=self.request.path,
+                    slot=self.request.slot,
+                    cache_only=self.request.cache_only,
+                    suffix=suffix,
+                    error=metadata_error,
+                )
 
 
 class PreviewPane(QWidget):
@@ -433,6 +466,9 @@ class HistogramWidget(QWidget):
 
 
 class FullScreenPreview(QDialog):
+    DEFAULT_PRELOAD_BATCH_SIZE = 10
+    MIN_PRELOAD_BATCH_SIZE = 0
+    MAX_PRELOAD_BATCH_SIZE = 128
     FOCUS_ASSIST_COLOR_KEY = "preview/focus_assist_color"
     FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
     FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
@@ -441,7 +477,6 @@ class FullScreenPreview(QDialog):
     compare_mode_changed = Signal(bool)
     auto_bracket_mode_changed = Signal(bool)
     compare_count_changed = Signal(int)
-    ai_cull_queue_toggled = Signal(bool)
     command_palette_requested = Signal()
     photoshop_requested = Signal(str)
     winner_requested = Signal(str)
@@ -506,7 +541,6 @@ class FullScreenPreview(QDialog):
         self._pending_right_close = False
         self._auto_advance_enabled = True
         self._winner_ladder_mode = False
-        self._ai_cull_queue_available = False
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
         self._result_queue: SimpleQueue = SimpleQueue()
@@ -514,6 +548,8 @@ class FullScreenPreview(QDialog):
         self._preview_cache_bytes = 0
         self._preview_cache_limit = 320 * 1024 * 1024
         self._pending_cache_keys: set[tuple[object, ...]] = set()
+        self._pending_metadata_requests: set[tuple[int, int, str, bool]] = set()
+        self._preload_batch_size = self.DEFAULT_PRELOAD_BATCH_SIZE
         self._current_placeholder_flags: list[bool] = []
         self._current_image_display_tokens: list[tuple[object, ...]] = []
         self._rendered_display_keys: list[tuple[object, ...] | None] = []
@@ -601,11 +637,6 @@ class FullScreenPreview(QDialog):
         self.before_after_button.setCheckable(True)
         self.before_after_button.toggled.connect(self._handle_before_after_button_toggled)
 
-        self.ai_cull_queue_button = self._build_header_tool_button("AI Cull Queue")
-        self.ai_cull_queue_button.setCheckable(True)
-        self.ai_cull_queue_button.toggled.connect(self.ai_cull_queue_toggled.emit)
-        self.ai_cull_queue_button.hide()
-
         self.focus_assist_button = QPushButton("Off")
         self.focus_assist_button.setCheckable(True)
         self.focus_assist_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -692,7 +723,6 @@ class FullScreenPreview(QDialog):
         review_group_layout.addWidget(self.compare_toggle_button)
         review_group_layout.addWidget(self.auto_bracket_button)
         review_group_layout.addWidget(self.before_after_button)
-        review_group_layout.addWidget(self.ai_cull_queue_button)
 
         self.edit_group = QWidget()
         self.edit_group.setObjectName("workspaceControls")
@@ -1153,9 +1183,6 @@ class FullScreenPreview(QDialog):
         edited_candidates = self._edited_candidates_for_entry(self._source_entries[0]) if self._source_entries else ()
         before_after_visible = (not self._compare_mode) and len(self._source_entries) == 1 and bool(edited_candidates)
         self.before_after_button.setVisible(before_after_visible)
-        ai_cull_queue_visible = self._ai_cull_queue_available
-        self.ai_cull_queue_button.setVisible(ai_cull_queue_visible)
-        self.ai_cull_queue_button.setEnabled(ai_cull_queue_visible and not self._compare_mode)
         self.compare_count_combo.setVisible(self._compare_mode)
         self.focus_assist_button.setText("On" if self._focus_assist_enabled else "Off")
         self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
@@ -1305,6 +1332,19 @@ class FullScreenPreview(QDialog):
     def set_auto_advance_enabled(self, enabled: bool) -> None:
         self._auto_advance_enabled = bool(enabled)
 
+    def set_preload_batch_size(self, value: int) -> None:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = self.DEFAULT_PRELOAD_BATCH_SIZE
+        self._preload_batch_size = max(
+            self.MIN_PRELOAD_BATCH_SIZE,
+            min(self.MAX_PRELOAD_BATCH_SIZE, parsed),
+        )
+
+    def preload_batch_size(self) -> int:
+        return self._preload_batch_size
+
     def set_photoshop_available(self, available: bool) -> None:
         self._photoshop_available = available
         self.photoshop_button.setEnabled(available)
@@ -1312,13 +1352,6 @@ class FullScreenPreview(QDialog):
             self.photoshop_button.setText("Photoshop")
         else:
             self.photoshop_button.setText("Photoshop Not Found")
-
-    def set_ai_cull_queue_available(self, available: bool, *, checked: bool = False, text: str = "AI Cull Queue") -> None:
-        self._ai_cull_queue_available = bool(available)
-        self.ai_cull_queue_button.setText(text)
-        with QSignalBlocker(self.ai_cull_queue_button):
-            self.ai_cull_queue_button.setChecked(bool(available and checked))
-        self._sync_preview_controls()
 
     def show_entries(self, entries: list[PreviewEntry]) -> None:
         logger = perf_logger()
@@ -1883,6 +1916,9 @@ class FullScreenPreview(QDialog):
         self._load_token += 1
         token = self._load_token
         self._pending_requests = 0
+        self._pending_metadata_requests = {
+            key for key in self._pending_metadata_requests if key[3]
+        }
         for slot in target_slots:
             if not 0 <= slot < len(self._entries):
                 continue
@@ -1891,14 +1927,13 @@ class FullScreenPreview(QDialog):
             target_size = self._decode_target_size(slot)
             prefer_embedded = not self._manual_zoom
             fits_display_settings = self._fits_display_settings_for_entry(entry)
-            cache_key = self._preview_cache_key(
+            cached_image, cache_key = self._cached_preview_image_with_fallback(
                 entry.source_path,
                 source_signature,
                 target_size,
                 prefer_embedded=prefer_embedded,
                 fits_display_settings=fits_display_settings,
             )
-            cached_image = self._cached_preview_image(cache_key)
             should_load_metadata = force_metadata or entry.source_path not in self._metadata_cache
             preserve_placeholder = self._should_preserve_raw_placeholder_visual(
                 slot,
@@ -1929,6 +1964,8 @@ class FullScreenPreview(QDialog):
                 if not should_load_metadata:
                     continue
             self._pending_requests += 1
+            if should_load_metadata:
+                self._pending_metadata_requests.add((token, slot, entry.source_path, False))
             task = PreviewTask(
                 PreviewRequest(
                     path=entry.source_path,
@@ -1939,6 +1976,7 @@ class FullScreenPreview(QDialog):
                     prefer_embedded=prefer_embedded,
                     load_metadata=should_load_metadata,
                     fits_display_settings=fits_display_settings,
+                    queued_at_perf=time.perf_counter() if logger.enabled else 0.0,
                 ),
                 self._result_queue,
             )
@@ -1974,9 +2012,29 @@ class FullScreenPreview(QDialog):
                 fits_display_settings=request.fits_display_settings,
             )
             self._pending_cache_keys.discard(cache_key)
+            metadata_request_key = (int(request.token), int(request.slot), request.path, bool(request.cache_only))
 
-            if not request.cache_only and request.token == self._load_token and self._pending_requests > 0:
+            if state in {"ready", "failed"} and not request.cache_only and request.token == self._load_token and self._pending_requests > 0:
                 self._pending_requests -= 1
+            if state == "failed":
+                self._pending_metadata_requests.discard(metadata_request_key)
+            if state == "metadata":
+                self._pending_metadata_requests.discard(metadata_request_key)
+                metadata = payload[0] if payload else None
+                if metadata is not None:
+                    self._metadata_cache[request.path] = metadata
+                    if (
+                        not request.cache_only
+                        and request.token == self._load_token
+                        and 0 <= request.slot < len(self._entries)
+                        and request.path == self._entries[request.slot].source_path
+                    ):
+                        self._current_metadata[request.slot] = metadata
+                        self._render_pane(request.slot)
+                        if request.slot == self._focused_slot:
+                            self._update_analysis_panel()
+                processed += 1
+                continue
             if state == "ready":
                 image = payload[0]
                 metadata = payload[1] if len(payload) > 1 else None
@@ -1987,7 +2045,19 @@ class FullScreenPreview(QDialog):
                 processed += 1
                 continue
 
-            if request.token == self._load_token and 0 <= request.slot < len(self._entries) and request.path == self._entries[request.slot].source_path:
+            active_process_start = time.perf_counter() if logger.enabled else 0.0
+            result_ready_at = 0.0
+            if state == "ready" and len(payload) > 2 and isinstance(payload[2], (int, float)):
+                result_ready_at = float(payload[2])
+            elif state == "failed" and len(payload) > 1 and isinstance(payload[1], (int, float)):
+                result_ready_at = float(payload[1])
+            is_current_result = (
+                request.token == self._load_token
+                and 0 <= request.slot < len(self._entries)
+                and request.path == self._entries[request.slot].source_path
+            )
+
+            if is_current_result:
                 if state == "ready":
                     image = payload[0]
                     metadata = payload[1] if len(payload) > 1 else None
@@ -2018,9 +2088,25 @@ class FullScreenPreview(QDialog):
                 else:
                     if self._current_images[request.slot].isNull():
                         self._show_failed(request.slot, payload[0])
+            if logger.enabled and state in {"ready", "failed"}:
+                drain_at = time.perf_counter()
+                logger.duration(
+                    "preview.active_result",
+                    (drain_at - active_process_start) * 1000.0,
+                    state=state,
+                    path=request.path,
+                    slot=request.slot,
+                    request_token=request.token,
+                    current_token=self._load_token,
+                    focused_slot=self._focused_slot,
+                    active_slot=request.slot == self._focused_slot,
+                    stale=not is_current_result,
+                    result_to_drain_ms=((active_process_start - result_ready_at) * 1000.0 if result_ready_at > 0.0 else 0.0),
+                    queue_to_drain_ms=((drain_at - request.queued_at_perf) * 1000.0 if request.queued_at_perf > 0.0 else 0.0),
+                )
             processed += 1
 
-        if processed == 0 and self._pending_requests == 0:
+        if processed == 0 and self._pending_requests == 0 and not self._pending_metadata_requests:
             self._drain_timer.stop()
         if logger.enabled and processed:
             logger.duration(
@@ -2036,12 +2122,23 @@ class FullScreenPreview(QDialog):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         target_size = self._preload_target_size()
-        max_paths = 10
+        max_paths = self._preload_batch_size
+        if max_paths <= 0:
+            if logger.enabled:
+                logger.duration(
+                    "preview.preload_paths",
+                    (time.perf_counter() - start) * 1000.0,
+                    candidate_count=len(paths),
+                    queued=0,
+                    load_metadata=load_metadata,
+                    max_paths=max_paths,
+                )
+            return
         queued = 0
         for index, path in enumerate(paths[:max_paths]):
-            if not path or not os.path.exists(path):
+            if not path:
                 continue
-            source_signature = _file_signature(path)
+            source_signature = None
             fits_display_settings = self._fits_display_settings_for_path(path)
             cache_key = self._preview_cache_key(
                 path,
@@ -2054,6 +2151,9 @@ class FullScreenPreview(QDialog):
                 continue
             self._pending_cache_keys.add(cache_key)
             queued += 1
+            should_load_metadata = load_metadata and index < 2 and path not in self._metadata_cache
+            if should_load_metadata:
+                self._pending_metadata_requests.add((0, -1, path, True))
             task = PreviewTask(
                 PreviewRequest(
                     path=path,
@@ -2062,9 +2162,10 @@ class FullScreenPreview(QDialog):
                     target_size=target_size,
                     source_signature=source_signature,
                     prefer_embedded=True,
-                    load_metadata=load_metadata and index < 2 and path not in self._metadata_cache,
+                    load_metadata=should_load_metadata,
                     cache_only=True,
                     fits_display_settings=fits_display_settings,
+                    queued_at_perf=time.perf_counter() if logger.enabled else 0.0,
                 ),
                 self._result_queue,
             )
@@ -2078,6 +2179,7 @@ class FullScreenPreview(QDialog):
                 candidate_count=len(paths),
                 queued=queued,
                 load_metadata=load_metadata,
+                max_paths=max_paths,
             )
 
     def _render_all(self) -> None:
@@ -2440,14 +2542,13 @@ class FullScreenPreview(QDialog):
         for slot, entry in enumerate(self._entries):
             source_signature = self._source_versions[slot] if slot < len(self._source_versions) else _file_signature(entry.source_path)
             target_size = self._decode_target_size(slot)
-            cache_key = self._preview_cache_key(
+            cached_image, cache_key = self._cached_preview_image_with_fallback(
                 entry.source_path,
                 source_signature,
                 target_size,
                 prefer_embedded=not self._manual_zoom,
                 fits_display_settings=self._fits_display_settings_for_entry(entry),
             )
-            cached_image = self._cached_preview_image(cache_key)
             if cached_image is None or cached_image.isNull():
                 continue
             preserve_placeholder = self._should_preserve_raw_placeholder_visual(
@@ -2506,6 +2607,37 @@ class FullScreenPreview(QDialog):
             return None
         self._preview_cache.move_to_end(cache_key)
         return cached[0]
+
+    def _cached_preview_image_with_fallback(
+        self,
+        path: str,
+        source_signature: tuple[int, int] | None,
+        target_size: QSize,
+        *,
+        prefer_embedded: bool,
+        fits_display_settings: FitsDisplaySettings | None = None,
+    ) -> tuple[QImage | None, tuple[object, ...]]:
+        cache_key = self._preview_cache_key(
+            path,
+            source_signature,
+            target_size,
+            prefer_embedded=prefer_embedded,
+            fits_display_settings=fits_display_settings,
+        )
+        cached_image = self._cached_preview_image(cache_key)
+        if cached_image is not None or source_signature is None:
+            return cached_image, cache_key
+        preload_key = self._preview_cache_key(
+            path,
+            None,
+            target_size,
+            prefer_embedded=prefer_embedded,
+            fits_display_settings=fits_display_settings,
+        )
+        cached_image = self._cached_preview_image(preload_key)
+        if cached_image is not None:
+            self._cache_preview_image(cache_key, cached_image)
+        return cached_image, cache_key
 
     def _cache_preview_image(
         self,
