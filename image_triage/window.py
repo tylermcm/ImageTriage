@@ -439,6 +439,21 @@ def _memory_path_key(path: str) -> str:
     return os.path.normpath(path).casefold()
 
 
+def _is_unc_path(path: str | None) -> bool:
+    text = str(path or "")
+    return text.startswith("\\\\") and not text.startswith("\\\\?\\") and not text.startswith("\\\\.\\")
+
+
+def _unc_share_root(path: str | None) -> str:
+    text = str(path or "").strip()
+    if not _is_unc_path(text):
+        return ""
+    parts = text.strip("\\").split("\\")
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return f"\\\\{parts[0]}\\{parts[1]}\\"
+    return "\\\\"
+
+
 def _headless_background_popen_kwargs() -> dict[str, object]:
     """Hide console windows for background helper processes on Windows."""
     if os.name != "nt":
@@ -1867,6 +1882,88 @@ class ScopeEnrichmentTask(QRunnable):
             self.signals.failed.emit(self.scope_key, self.token, str(exc))
 
 
+class HiddenAIResultsLoadSignals(QObject):
+    """Signals emitted by the hidden AI-result autoload worker."""
+    finished = Signal(str, int, object, object, str)
+    missing = Signal(str, int)
+    failed = Signal(str, int, str)
+
+
+class HiddenAIResultsLoadTask(QRunnable):
+    """Loads saved AI results without blocking folder display."""
+    def __init__(
+        self,
+        *,
+        folder: str,
+        token: int,
+        catalog_db_path: str | Path | None,
+    ) -> None:
+        super().__init__()
+        self.folder = folder
+        self.token = token
+        self.catalog_db_path = Path(catalog_db_path) if catalog_db_path else None
+        self.signals = HiddenAIResultsLoadSignals()
+        self._cancelled = False
+        self.setAutoDelete(True)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        try:
+            report_dir = existing_hidden_ai_report_dir(self.folder)
+            if self._cancelled:
+                return
+            if report_dir is None:
+                if logger.enabled:
+                    logger.duration("hidden_ai.load", (time.perf_counter() - start) * 1000.0, folder=self.folder, state="missing")
+                self.signals.missing.emit(self.folder, self.token)
+                return
+
+            source_details = inspect_ai_bundle_source(report_dir)
+            if self._cancelled:
+                return
+
+            bundle: AIBundle | None = None
+            cache_source = "file"
+            repository = CatalogRepository(self.catalog_db_path) if self.catalog_db_path is not None else CatalogRepository()
+            if source_details.cache_key:
+                cached_entry = repository.load_ai_bundle(self.folder, cache_key=source_details.cache_key)
+                if self._cancelled:
+                    return
+                if cached_entry is not None:
+                    bundle = cached_entry.bundle
+                    cache_source = "catalog"
+
+            if bundle is None:
+                bundle = load_ai_bundle(report_dir)
+                if source_details.cache_key and bundle.results_by_path:
+                    repository.save_ai_bundle(self.folder, cache_key=source_details.cache_key, bundle=bundle)
+
+            if self._cancelled:
+                return
+            if logger.enabled:
+                logger.duration(
+                    "hidden_ai.load",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    state=cache_source,
+                    results=len(bundle.results_by_path or {}),
+                )
+            self.signals.finished.emit(self.folder, self.token, bundle, source_details, cache_source)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            if logger.enabled:
+                logger.duration(
+                    "hidden_ai.load.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    error=str(exc),
+                )
+            self.signals.failed.emit(self.folder, self.token, str(exc))
+
+
 class AIModelDownloadSignals(QObject):
     """Signals for the managed AI model download worker."""
     started = Signal(str)
@@ -2418,6 +2515,11 @@ class MainWindow(QMainWindow):
         self.preview = FullScreenPreview(self)
         self.preview.navigation_requested.connect(self._navigate_preview)
         self.preview.set_photoshop_available(bool(self._photoshop_executable))
+        self._preview_preload_index: int | None = None
+        self._preview_preload_timer = QTimer(self)
+        self._preview_preload_timer.setSingleShot(True)
+        self._preview_preload_timer.setInterval(120)
+        self._preview_preload_timer.timeout.connect(self._run_preview_preload)
         self._ai_model_installation = resolve_ai_model_installation()
         self._semantic_model_installation = resolve_semantic_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
@@ -2451,6 +2553,7 @@ class MainWindow(QMainWindow):
         self._scope_enrichment_pool.setMaxThreadCount(1)
         self._annotation_hydration_pool = QThreadPool(self)
         self._annotation_hydration_pool.setMaxThreadCount(1)
+        self._drive_type_cache: dict[str, int] = {}
         self._scan_token = 0
         self._scan_showed_cached = False
         self._scan_cached_source = ""
@@ -2551,6 +2654,9 @@ class MainWindow(QMainWindow):
         self._annotations: dict[str, SessionAnnotation] = {}
         self._ai_bundle: AIBundle | None = None
         self._last_ai_review_summary: dict[str, object] | None = None
+        self._hidden_ai_results_token = 0
+        self._active_hidden_ai_results_task: HiddenAIResultsLoadTask | None = None
+        self._hidden_ai_results_checked_scope_key = ""
         self._review_intelligence: ReviewIntelligenceBundle | None = None
         self._correction_events: list[dict[str, object]] = []
         self._taste_profile = TasteProfile()
@@ -2584,6 +2690,10 @@ class MainWindow(QMainWindow):
         self._zen_menu_reveal_timer = QTimer(self)
         self._zen_menu_reveal_timer.setInterval(80)
         self._zen_menu_reveal_timer.timeout.connect(self._refresh_zen_menu_visibility)
+        self._hidden_ai_results_timer = QTimer(self)
+        self._hidden_ai_results_timer.setSingleShot(True)
+        self._hidden_ai_results_timer.setInterval(450)
+        self._hidden_ai_results_timer.timeout.connect(self._start_hidden_ai_results_load)
         self._ai_stage_index = 0
         self._ai_stage_total = 3
         self._ai_stage_message = "Ready to run AI review"
@@ -2686,6 +2796,7 @@ class MainWindow(QMainWindow):
         self._filter_metadata_loaded_paths: set[str] = set()
         self._filter_metadata_requested_paths: set[str] = set()
         self._filter_metadata_queue: deque[str] = deque()
+        self._filter_metadata_queue_keys: set[str] = set()
         self._filter_metadata_queue_limit = 720
         self._metadata_membership_dirty_paths: set[str] = set()
         self._metadata_scroll_last_value = 0
@@ -4384,7 +4495,7 @@ class MainWindow(QMainWindow):
 
     def _current_scope_key(self) -> str:
         if self._scope_kind == "folder":
-            return normalized_path_key(self._current_folder)
+            return _memory_path_key(self._current_folder)
         return f"{self._scope_kind}:{self._scope_id or self._scope_label.casefold()}"
 
     def _refresh_collections_menu(self) -> None:
@@ -6042,16 +6153,28 @@ class MainWindow(QMainWindow):
         target = folder or self._current_folder
         if not target:
             return ""
-        anchor = Path(target).anchor
-        return anchor if anchor else str(Path(target).resolve().anchor)
+        if _is_unc_path(target):
+            return _unc_share_root(target)
+        try:
+            return Path(target).anchor
+        except (OSError, ValueError):
+            return ""
 
     def _drive_type(self, root: str) -> int:
         if not root:
             return 0
+        if _is_unc_path(root):
+            return 4
+        cache_key = os.path.normpath(root).casefold()
+        cached = self._drive_type_cache.get(cache_key)
+        if cached is not None:
+            return cached
         try:
-            return int(ctypes.windll.kernel32.GetDriveTypeW(str(root)))
+            drive_type = int(ctypes.windll.kernel32.GetDriveTypeW(str(root)))
         except Exception:
-            return 0
+            drive_type = 0
+        self._drive_type_cache[cache_key] = drive_type
+        return drive_type
 
     def _is_temporary_storage_folder(self, folder: str | None = None) -> bool:
         return self._drive_type(self._folder_drive_root(folder)) == 2
@@ -6115,10 +6238,20 @@ class MainWindow(QMainWindow):
             chunked_restore=chunked_restore,
             preferred_record_path=preferred_record_path or "",
         )
-        if sync_tree:
+        slow_source = self._is_slow_source_folder(folder)
+        if sync_tree and slow_source:
+            perf_logger().log("folder.select.tree_sync_skipped", folder=folder, reason="slow_source")
+        elif sync_tree:
+            sync_start = time.perf_counter()
             index = self.folder_model.index(folder)
             if index.isValid():
                 self.folder_tree.setCurrentIndex(index)
+            perf_logger().duration(
+                "folder.select.tree_sync",
+                (time.perf_counter() - sync_start) * 1000.0,
+                folder=folder,
+                index_valid=index.isValid(),
+            )
         self._load_folder(
             folder,
             chunked_restore=chunked_restore,
@@ -7915,6 +8048,7 @@ class MainWindow(QMainWindow):
             self.details_view.table.setFocus()
         else:
             self.grid.setFocus()
+            self.grid.schedule_visible_thumbnail_requests()
         self._update_action_states()
 
     def _handle_details_preview_toggled(self, checked: bool) -> None:
@@ -7963,6 +8097,8 @@ class MainWindow(QMainWindow):
 
     def _sync_details_view_from_grid(self) -> None:
         if getattr(self, "details_view", None) is None or self._syncing_browser_selection:
+            return
+        if self._browser_view_mode != "details":
             return
         self._syncing_browser_selection = True
         try:
@@ -8244,6 +8380,8 @@ class MainWindow(QMainWindow):
         return None
 
     def _update_action_states(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if self.actions is None:
             return
 
@@ -8421,6 +8559,14 @@ class MainWindow(QMainWindow):
         self._refresh_tool_mode_ui()
         if self._toolbar_edit_mode:
             self._set_workspace_toolbar_controls_enabled(False)
+        if logger.enabled:
+            logger.duration(
+                "window.update_action_states",
+                (time.perf_counter() - start) * 1000.0,
+                selected=len(selected_records),
+                view=self._browser_view_mode,
+                records=len(self._records),
+            )
 
     def _selected_records_for_actions(self) -> list[ImageRecord]:
         current_index = self.grid.current_index()
@@ -10745,7 +10891,7 @@ class MainWindow(QMainWindow):
     def _remember_current_folder_view_state(self) -> None:
         if not getattr(self, "_current_folder", ""):
             return
-        key = normalized_path_key(self._current_folder)
+        key = _memory_path_key(self._current_folder)
         if not key:
             return
         self._folder_view_states[key] = self._current_folder_view_state()
@@ -10754,7 +10900,7 @@ class MainWindow(QMainWindow):
         self._save_folder_view_states()
 
     def _apply_folder_view_state(self, folder: str) -> None:
-        state = self._folder_view_states.get(normalized_path_key(folder))
+        state = self._folder_view_states.get(_memory_path_key(folder))
         if not state:
             self._pending_folder_scroll_value = None
             return
@@ -10785,16 +10931,16 @@ class MainWindow(QMainWindow):
         self.grid.restore_scroll_value(value)
 
     def _remember_recent_folder(self, folder: str) -> None:
-        normalized = normalize_filesystem_path(folder)
-        if not normalized or not os.path.isdir(normalized):
+        normalized = os.path.normpath(str(folder).strip())
+        if not normalized:
             return
-        normalized_key = normalized_path_key(normalized)
+        normalized_key = _memory_path_key(normalized)
         self._recent_folders = [
             normalized,
             *[
                 item
                 for item in self._recent_folders
-                if normalized_path_key(item) != normalized_key
+                if _memory_path_key(item) != normalized_key
             ],
         ][:12]
         self._save_recent_folders()
@@ -10804,9 +10950,7 @@ class MainWindow(QMainWindow):
         valid: list[str] = []
         seen: set[str] = set()
         for path in self._recent_folders:
-            if not os.path.isdir(path):
-                continue
-            key = normalized_path_key(path)
+            key = _memory_path_key(path)
             if key in seen:
                 continue
             seen.add(key)
@@ -10816,16 +10960,16 @@ class MainWindow(QMainWindow):
             self._save_recent_folders()
         if not exclude_current_folder or not self._current_folder:
             return valid
-        current_key = normalized_path_key(self._current_folder)
-        return [path for path in valid if normalized_path_key(path) != current_key]
+        current_key = _memory_path_key(self._current_folder)
+        return [path for path in valid if _memory_path_key(path) != current_key]
 
     def _open_recent_folder(self, folder: str) -> None:
         if os.path.isdir(folder):
             self._select_folder(folder)
             return
-        missing_key = normalized_path_key(folder)
+        missing_key = _memory_path_key(folder)
         self._recent_folders = [
-            path for path in self._recent_folders if normalized_path_key(path) != missing_key
+            path for path in self._recent_folders if _memory_path_key(path) != missing_key
         ]
         self._save_recent_folders()
         self._refresh_recent_folder_combos()
@@ -10864,7 +11008,7 @@ class MainWindow(QMainWindow):
             self._choose_folder()
             return
         if isinstance(value, str) and value:
-            if self._current_folder and normalized_path_key(value) == normalized_path_key(self._current_folder):
+            if self._current_folder and _memory_path_key(value) == _memory_path_key(self._current_folder):
                 self._refresh_recent_folder_combos()
                 return
             self._open_recent_folder(value)
@@ -10876,7 +11020,7 @@ class MainWindow(QMainWindow):
         if not normalized or not os.path.isdir(normalized):
             self._refresh_recent_folder_combos()
             return
-        if self._current_folder and normalized_path_key(normalized) == normalized_path_key(self._current_folder):
+        if self._current_folder and _memory_path_key(normalized) == _memory_path_key(self._current_folder):
             self._refresh_recent_folder_combos()
             return
         self._select_folder(normalized)
@@ -10891,7 +11035,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Folder not found: {folder}")
             self._refresh_recent_folder_combos()
             return
-        if self._current_folder and normalized_path_key(folder) == normalized_path_key(self._current_folder):
+        if self._current_folder and _memory_path_key(folder) == _memory_path_key(self._current_folder):
             self._refresh_recent_folder_combos()
             return
         self._select_folder(folder)
@@ -11417,7 +11561,12 @@ class MainWindow(QMainWindow):
 
     def _refresh_current_folder_watch(self) -> None:
         target = ""
-        if self._watch_current_folder_enabled and self._scope_kind == "folder" and self._current_folder:
+        if (
+            self._watch_current_folder_enabled
+            and self._scope_kind == "folder"
+            and self._current_folder
+            and not self._is_slow_source_folder(self._current_folder)
+        ):
             candidate = self._current_folder
             if os.path.isdir(candidate):
                 target = candidate
@@ -11448,7 +11597,7 @@ class MainWindow(QMainWindow):
     def _handle_watched_folder_changed(self, path: str) -> None:
         if not self._watch_current_folder_enabled or self._scope_kind != "folder" or not self._current_folder:
             return
-        if normalized_path_key(path) != normalized_path_key(self._current_folder):
+        if _memory_path_key(path) != _memory_path_key(self._current_folder):
             return
         self._queue_watched_folder_refresh()
         if self._scan_in_progress:
@@ -11484,19 +11633,24 @@ class MainWindow(QMainWindow):
     ) -> None:
         if not folder:
             return
+        logger = perf_logger()
+        pre_scan_start = time.perf_counter() if logger.enabled else 0.0
+        slow_source = self._is_slow_source_folder(folder)
         if self._active_tool_mode or self.grid.tool_checkbox_mode():
             self._cancel_tool_mode(show_message=False)
         self._cancel_records_view_chunk()
-        folder_changed = normalized_path_key(folder) != normalized_path_key(self._current_folder)
+        folder_changed = _memory_path_key(folder) != _memory_path_key(self._current_folder)
         if folder_changed:
             self._remember_current_folder_view_state()
+            self._cancel_hidden_ai_results_load()
+            self._hidden_ai_results_checked_scope_key = ""
         normalized_focus_path = normalize_filesystem_path(preferred_record_path) if preferred_record_path else ""
-        if normalized_focus_path and normalized_path_key(Path(normalized_focus_path).parent) == normalized_path_key(folder):
+        if normalized_focus_path and _memory_path_key(str(Path(normalized_focus_path).parent)) == _memory_path_key(folder):
             self._pending_folder_focus_path = normalized_focus_path
         elif folder_changed:
             self._pending_folder_focus_path = ""
         self._current_folder = folder
-        self._set_scope_state(kind="folder", scope_id=normalized_path_key(folder), label=folder)
+        self._set_scope_state(kind="folder", scope_id=_memory_path_key(folder), label=folder)
         self._refresh_current_folder_watch()
         self._settings.setValue(self.LAST_FOLDER_KEY, folder)
         self._remember_recent_folder(folder)
@@ -11529,13 +11683,29 @@ class MainWindow(QMainWindow):
             self._active_review_intelligence_task = None
         self._refresh_recycle_button()
         if folder_changed:
-            self._clear_ai_results_state(preserve_setting=True)
+            self._clear_ai_results_state(preserve_setting=True, refresh=False)
+        if logger.enabled:
+            logger.duration(
+                "folder.load.pre_scan_setup",
+                (time.perf_counter() - pre_scan_start) * 1000.0,
+                folder=folder,
+                folder_changed=folder_changed,
+                slow_source=slow_source,
+            )
         # Cache reads can be large enough to make Windows mark startup as hung. Let the
         # scanner worker emit cached records instead of loading the cache on the UI thread.
         self.statusBar().showMessage(f"Scanning {folder}...")
         self._all_records = []
         self._all_records_by_path = {}
+        child_start = time.perf_counter() if logger.enabled else 0.0
         self._folder_records = scan_child_folders(folder, include_hidden=self._show_hidden_folders)
+        if logger.enabled:
+            logger.duration(
+                "folder.load.child_folders",
+                (time.perf_counter() - child_start) * 1000.0,
+                folder=folder,
+                child_folders=len(self._folder_records),
+            )
         self._records = []
         self._last_view_record_paths = ()
         self._record_index_by_path = {}
@@ -11555,11 +11725,12 @@ class MainWindow(QMainWindow):
         self._filter_metadata_loaded_paths = set()
         self._filter_metadata_requested_paths = set()
         self._filter_metadata_queue = deque()
+        self._filter_metadata_queue_keys = set()
         self._metadata_membership_dirty_paths = set()
         self._metadata_scroll_prefetch_timer.stop()
         self._metadata_request_timer.stop()
         self.grid.set_empty_message(f"Scanning {Path(folder).name}...")
-        self.grid.set_items([])
+        self.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
         self.details_view.set_records([])
         self._set_annotation_views()
         self._refresh_viewport_mode()
@@ -11633,6 +11804,13 @@ class MainWindow(QMainWindow):
         self._records_view_chunk_next_index = 0
         self._records_view_chunk_current_path = None
         self._records_view_chunk_post_load_enrichment = ""
+
+    def _cancel_hidden_ai_results_load(self) -> None:
+        self._hidden_ai_results_timer.stop()
+        self._hidden_ai_results_token += 1
+        if self._active_hidden_ai_results_task is not None:
+            self._active_hidden_ai_results_task.cancel()
+            self._active_hidden_ai_results_task = None
 
     def _records_view_chunk_active(self) -> bool:
         return bool(self._records_view_chunk_records)
@@ -12119,6 +12297,7 @@ class MainWindow(QMainWindow):
         self._filter_metadata_loaded_paths = set()
         self._filter_metadata_requested_paths = set()
         self._filter_metadata_queue = deque()
+        self._filter_metadata_queue_keys = set()
         self._metadata_membership_dirty_paths = set()
         self._metadata_scroll_last_value = self.grid.verticalScrollBar().value()
         self._metadata_scroll_direction = 1
@@ -12199,6 +12378,10 @@ class MainWindow(QMainWindow):
                 seen.add(path)
         return ordered
 
+    @staticmethod
+    def _metadata_queue_key(path: str) -> str:
+        return os.path.normpath(path).casefold()
+
     def _enqueue_filter_metadata_paths(
         self,
         paths: list[str] | tuple[str, ...] | set[str],
@@ -12207,7 +12390,6 @@ class MainWindow(QMainWindow):
     ) -> None:
         if not paths:
             return
-        pending_keys = {normalized_path_key(path) for path in self._filter_metadata_queue}
         additions: list[str] = []
         for path in paths:
             if not path:
@@ -12216,10 +12398,10 @@ class MainWindow(QMainWindow):
                 continue
             if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
                 continue
-            key = normalized_path_key(path)
-            if key in pending_keys:
+            key = self._metadata_queue_key(path)
+            if key in self._filter_metadata_queue_keys:
                 continue
-            pending_keys.add(key)
+            self._filter_metadata_queue_keys.add(key)
             additions.append(path)
         if not additions:
             return
@@ -12230,7 +12412,8 @@ class MainWindow(QMainWindow):
             self._filter_metadata_queue.extend(additions)
         if len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
             while len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
-                self._filter_metadata_queue.pop()
+                removed = self._filter_metadata_queue.pop()
+                self._filter_metadata_queue_keys.discard(self._metadata_queue_key(removed))
         if not self._metadata_request_timer.isActive():
             self._metadata_request_timer.start()
 
@@ -12291,6 +12474,7 @@ class MainWindow(QMainWindow):
         requested = 0
         while self._filter_metadata_queue and requested < 20:
             path = self._filter_metadata_queue.popleft()
+            self._filter_metadata_queue_keys.discard(self._metadata_queue_key(path))
             if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
                 continue
             record = self._all_records_by_path.get(path)
@@ -12400,7 +12584,7 @@ class MainWindow(QMainWindow):
     def _handle_scan_cached(self, folder: str, token: int, records: list[ImageRecord], source: str) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder) or not records:
+        if token != self._scan_token or not records:
             return
         self._scan_showed_cached = True
         self._scan_cached_source = source
@@ -12415,7 +12599,7 @@ class MainWindow(QMainWindow):
             chunked_view=chunked_view,
             current_path=self._pending_folder_focus_path or None,
         )
-        self._load_hidden_ai_results_for_current_folder(show_message=False)
+        self._schedule_hidden_ai_results_load()
         cache_label = self._catalog_source_label(source)
         self.statusBar().showMessage(f"Loaded {cache_label.lower()} for {self._current_folder}, refreshing from disk...")
         if logger.enabled:
@@ -12425,7 +12609,7 @@ class MainWindow(QMainWindow):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         self._active_scan_tasks.pop(token, None)
-        if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
+        if token != self._scan_token:
             self._chunked_load_scan_tokens.discard(token)
             return
 
@@ -12441,7 +12625,7 @@ class MainWindow(QMainWindow):
                 self._catalog_load_detail = "Live scan confirmed the current folder contents."
             self._refresh_catalog_status_indicator()
             self._schedule_loaded_records_enrichment()
-            self._load_hidden_ai_results_for_current_folder(show_message=False)
+            self._schedule_hidden_ai_results_load()
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
@@ -12460,7 +12644,7 @@ class MainWindow(QMainWindow):
         else:
             self._catalog_load_detail = "Loaded directly from a live folder scan."
         self._refresh_catalog_status_indicator()
-        self._load_hidden_ai_results_for_current_folder(show_message=False)
+        self._schedule_hidden_ai_results_load()
         if self._scan_showed_cached:
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
         if self._folder_watch_refresh_pending:
@@ -12472,7 +12656,7 @@ class MainWindow(QMainWindow):
     def _handle_scan_failed(self, folder: str, token: int, message: str) -> None:
         perf_logger().log("scan.failed", folder=folder, token=token, message=message)
         self._active_scan_tasks.pop(token, None)
-        if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
+        if token != self._scan_token:
             self._chunked_load_scan_tokens.discard(token)
             return
         self._chunked_load_scan_tokens.discard(token)
@@ -12518,10 +12702,11 @@ class MainWindow(QMainWindow):
         self._filter_metadata_loaded_paths = set()
         self._filter_metadata_requested_paths = set()
         self._filter_metadata_queue = deque()
+        self._filter_metadata_queue_keys = set()
         self._metadata_membership_dirty_paths = set()
         self._metadata_scroll_prefetch_timer.stop()
         self.grid.set_empty_message("Could not scan this folder.")
-        self.grid.set_items([])
+        self.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
         self.details_view.set_records([])
         self._refresh_recycle_button()
         self._update_action_states()
@@ -12535,12 +12720,32 @@ class MainWindow(QMainWindow):
     def _handle_current_changed(self, index: int) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
         self._sync_details_view_from_grid()
+        if logger.enabled:
+            now = time.perf_counter()
+            logger.duration("window.current_changed.sync_details", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
+            step_start = now
         self._enqueue_filter_metadata_paths(self.grid.visible_item_paths(limit=200), front=True)
+        if logger.enabled:
+            now = time.perf_counter()
+            logger.duration("window.current_changed.enqueue_metadata", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
+            step_start = now
         self._update_action_states()
+        if logger.enabled:
+            now = time.perf_counter()
+            logger.duration("window.current_changed.action_states", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
+            step_start = now
         self._update_status(index=index)
+        if logger.enabled:
+            now = time.perf_counter()
+            logger.duration("window.current_changed.status", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
+            step_start = now
         if not self.preview.isVisible():
             self._schedule_preview_preload(index)
+        if logger.enabled:
+            now = time.perf_counter()
+            logger.duration("window.current_changed.preview_preload", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
         if logger.enabled:
             logger.duration("window.current_changed", (time.perf_counter() - start) * 1000.0, index=index, view=self._browser_view_mode)
 
@@ -12612,7 +12817,7 @@ class MainWindow(QMainWindow):
             return False
         return self._load_ai_results(saved_path, show_message=False)
 
-    def _clear_ai_results_state(self, *, preserve_setting: bool = False) -> None:
+    def _clear_ai_results_state(self, *, preserve_setting: bool = False, refresh: bool = True) -> None:
         self._ai_bundle = None
         if self._active_ai_task is None:
             self._ai_stage_index = 0
@@ -12623,12 +12828,93 @@ class MainWindow(QMainWindow):
             self._ai_progress_eta_text = ""
         if not preserve_setting:
             self._settings.remove(self.AI_RESULTS_KEY)
-        self._refresh_ai_state()
+        if refresh:
+            self._refresh_ai_state()
 
     def _hidden_ai_paths_for_current_folder(self):
         if not self._current_folder:
             return None
         return build_ai_workflow_paths(self._current_folder)
+
+    def _schedule_hidden_ai_results_load(self, *, delay_ms: int | None = None) -> None:
+        if not self._current_folder or not self._all_records:
+            return
+        scope_key = self._current_scope_key()
+        if self._hidden_ai_results_checked_scope_key == scope_key:
+            return
+        if self._active_hidden_ai_results_task is not None:
+            return
+        if delay_ms is None:
+            delay_ms = 450
+        self._hidden_ai_results_timer.start(max(0, int(delay_ms)))
+
+    def _start_hidden_ai_results_load(self) -> None:
+        if not self._current_folder or not self._all_records:
+            return
+        if self._scan_in_progress or self._records_view_chunk_active():
+            self._schedule_hidden_ai_results_load(delay_ms=350)
+            return
+        scope_key = self._current_scope_key()
+        if self._hidden_ai_results_checked_scope_key == scope_key:
+            return
+        if self._active_hidden_ai_results_task is not None:
+            return
+
+        self._hidden_ai_results_token += 1
+        token = self._hidden_ai_results_token
+        task = HiddenAIResultsLoadTask(
+            folder=self._current_folder,
+            token=token,
+            catalog_db_path=self._catalog_repository.db_path,
+        )
+        task.signals.finished.connect(self._handle_hidden_ai_results_loaded, Qt.ConnectionType.QueuedConnection)
+        task.signals.missing.connect(self._handle_hidden_ai_results_missing, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_hidden_ai_results_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_hidden_ai_results_task = task
+        self._hidden_ai_results_checked_scope_key = scope_key
+        QThreadPool.globalInstance().start(task, -50)
+
+    def _handle_hidden_ai_results_loaded(
+        self,
+        folder: str,
+        token: int,
+        bundle_obj: object,
+        source_details_obj: object,
+        cache_source: str,
+    ) -> None:
+        if token != self._hidden_ai_results_token:
+            return
+        self._active_hidden_ai_results_task = None
+        if not isinstance(bundle_obj, AIBundle):
+            return
+        self._ai_bundle = bundle_obj
+        source_path = getattr(source_details_obj, "source_path", "") or bundle_obj.source_path
+        if source_path:
+            self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
+        if self._active_ai_task is None:
+            self._ai_stage_index = 4 if self._ai_semantic_sidecar_enabled else 3
+            self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
+            self._ai_stage_message = "Saved AI cache loaded"
+            self._ai_progress_current = 0
+            self._ai_progress_total = 0
+            self._ai_progress_eta_text = ""
+        self._refresh_ai_state()
+        matched = bundle_obj.count_matches(self._all_records)
+        source_label = "catalog cache" if cache_source == "catalog" else "saved AI results"
+        self.statusBar().showMessage(f"Loaded {source_label} ({matched} matched image(s))")
+
+    def _handle_hidden_ai_results_missing(self, folder: str, token: int) -> None:
+        if token != self._hidden_ai_results_token:
+            return
+        self._active_hidden_ai_results_task = None
+        self._update_ai_toolbar_state()
+
+    def _handle_hidden_ai_results_failed(self, folder: str, token: int, message: str) -> None:
+        if token != self._hidden_ai_results_token:
+            return
+        self._active_hidden_ai_results_task = None
+        perf_logger().log("hidden_ai.load.failed_ui", folder=folder, message=message)
+        self._update_ai_toolbar_state()
 
     def _load_hidden_ai_results_for_current_folder(self, *, show_message: bool = True) -> bool:
         if not self._current_folder:
@@ -13759,6 +14045,30 @@ class MainWindow(QMainWindow):
         result = find_ai_result_for_record(self._ai_bundle, record, preferred_path=preferred_path)
         return refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
 
+    def _ai_result_for_record_memory(self, record: ImageRecord | None, *, preferred_path: str | None = None):
+        if record is None or self._ai_bundle is None:
+            return None
+        fast_results = self._ai_bundle.results_by_fast_path
+        if not fast_results:
+            return self._ai_result_for_record(record, preferred_path=preferred_path)
+
+        seen_keys: set[str] = set()
+        candidate_paths: list[str] = []
+        if preferred_path:
+            candidate_paths.append(preferred_path)
+        candidate_paths.extend(record.stack_paths)
+        for path in candidate_paths:
+            if not path:
+                continue
+            key = _memory_path_key(str(path))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            result = fast_results.get(key)
+            if result is not None:
+                return refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
+        return None
+
     def _details_ai_text_for_record(self, record: ImageRecord) -> str:
         if record is None or record.is_folder:
             return "-"
@@ -14114,7 +14424,7 @@ class MainWindow(QMainWindow):
             if review_insight is not None and review_insight.has_group:
                 review_rows_by_id.setdefault(review_insight.group_id, []).append(row_index)
             preferred_path = self.grid.displayed_variant_path(row_index) if record.has_variant_stack else record.path
-            ai_result = self._ai_result_for_record(record, preferred_path=preferred_path)
+            ai_result = self._ai_result_for_record_memory(record, preferred_path=preferred_path)
             if ai_result is not None and ai_result.group_size > 1:
                 ai_rows_by_id.setdefault(ai_result.group_id, []).append(row_index)
         self._visible_review_group_rows_by_id = review_rows_by_id
@@ -14125,7 +14435,16 @@ class MainWindow(QMainWindow):
             index = self.grid.current_index()
         if index < 0:
             return
-        self.preview.preload_paths(self._likely_preview_preload_paths(index))
+        self._preview_preload_index = index
+        self._preview_preload_timer.start()
+
+    def _run_preview_preload(self) -> None:
+        index = self._preview_preload_index
+        self._preview_preload_index = None
+        if index is None or index < 0 or not self.preview.isVisible():
+            return
+        paths = self._likely_preview_preload_paths(index)
+        self.preview.preload_paths(paths)
 
     def _likely_preview_preload_paths(self, index: int) -> list[str]:
         limit = self._normalize_preview_preload_batch_size(
@@ -14178,6 +14497,8 @@ class MainWindow(QMainWindow):
         return ordered[:limit]
 
     def _update_inspector_context(self, index: int | None = None) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if self.inspector_panel is None:
             return
         if index is None:
@@ -14229,6 +14550,16 @@ class MainWindow(QMainWindow):
             workflow_summary=workflow_summary,
             workflow_details=workflow_details,
         )
+        if logger.enabled:
+            logger.duration(
+                "window.update_inspector_context",
+                (time.perf_counter() - start) * 1000.0,
+                index=index,
+                has_record=current_record is not None,
+                has_metadata=metadata is not None,
+                has_ai=ai_result is not None,
+                has_review=review_insight is not None,
+            )
 
     def _inspection_stats_cache_key(self, record: ImageRecord, display_path: str, thumbnail) -> tuple[str, int, int, int, int]:
         cache_path = display_path or record.path
@@ -16599,13 +16930,35 @@ class MainWindow(QMainWindow):
     ) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
+
+        def log_step(event: str, previous: float, **fields) -> float:
+            if not logger.enabled:
+                return 0.0
+            now = time.perf_counter()
+            logger.duration(
+                event,
+                (now - previous) * 1000.0,
+                records=len(records),
+                structural_changed=structural_changed,
+                **fields,
+            )
+            return now
+
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
-        self.details_view.refresh_rows()
+        step_start = log_step("records_view.finalize.ai_results", step_start)
+        if not structural_changed:
+            self.details_view.refresh_rows()
+        step_start = log_step("records_view.finalize.details_refresh", step_start)
         self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
         self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
+        step_start = log_step("records_view.finalize.review_insights", step_start)
         self._rebuild_visible_preview_group_indexes()
-        self._refresh_burst_group_view()
+        step_start = log_step("records_view.finalize.group_indexes", step_start)
+        self._refresh_burst_group_view(request_thumbnails=False)
+        step_start = log_step("records_view.finalize.burst_groups", step_start)
         self._apply_records_view_action_mode()
+        step_start = log_step("records_view.finalize.action_mode", step_start)
 
         restored_current = False
         if current_path:
@@ -16615,14 +16968,23 @@ class MainWindow(QMainWindow):
                 restored_current = True
         if records and not restored_current and structural_changed:
             self.grid.set_current_index(0)
+        step_start = log_step("records_view.finalize.current", step_start, restored_current=restored_current)
         self._last_view_record_paths = next_record_paths
         self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
+        step_start = log_step("records_view.finalize.enqueue_metadata", step_start)
         self._refresh_viewport_mode()
         self._sync_details_view_from_grid()
+        step_start = log_step("records_view.finalize.viewport_sync", step_start, view=self._browser_view_mode)
         self._update_action_states()
+        step_start = log_step("records_view.finalize.action_states", step_start)
         self._update_status()
+        step_start = log_step("records_view.finalize.status", step_start)
+        if structural_changed and self._browser_view_mode == "grid":
+            self.grid.schedule_visible_thumbnail_requests()
+        step_start = log_step("records_view.finalize.thumbnail_schedule", step_start, view=self._browser_view_mode)
         if self._pending_folder_scroll_value is not None:
             QTimer.singleShot(0, self._restore_pending_folder_scroll)
+        step_start = log_step("records_view.finalize.pending_scroll", step_start, has_pending_scroll=self._pending_folder_scroll_value is not None)
         if logger.enabled:
             logger.duration(
                 "records_view.finalize",
@@ -16650,7 +17012,7 @@ class MainWindow(QMainWindow):
         self._visible_review_group_rows_by_id = {}
         self._visible_ai_group_rows_by_id = {}
         self._last_view_record_paths = ()
-        self.grid.set_items([])
+        self.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
         self.details_view.set_records([])
         self._set_annotation_views()
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
@@ -16674,7 +17036,7 @@ class MainWindow(QMainWindow):
         if start == 0:
             self._records = list(batch)
             self._record_index_by_path = {record.path: index for index, record in enumerate(self._records)}
-            self.grid.set_items(list(self._records))
+            self.grid.set_items(list(self._records), emit_state_signals=False, request_thumbnails=False)
             self.details_view.set_records(list(self._records))
             self._set_annotation_views()
         else:
@@ -16682,7 +17044,7 @@ class MainWindow(QMainWindow):
             self._records.extend(batch)
             for index, record in enumerate(batch, start=offset):
                 self._record_index_by_path[record.path] = index
-            self.grid.append_items(list(batch))
+            self.grid.append_items(list(batch), request_thumbnails=False)
             self.details_view.append_records(list(batch))
         self._records_view_chunk_next_index = end
         if end < len(records):
@@ -16801,7 +17163,7 @@ class MainWindow(QMainWindow):
                         reasons=[reason.name for reason in reasons],
                     )
                 return False
-            self.grid.set_items(records)
+            self.grid.set_items(records, emit_state_signals=False, request_thumbnails=False)
             self.details_view.set_records(records)
             self._set_annotation_views()
         else:
@@ -16841,7 +17203,7 @@ class MainWindow(QMainWindow):
             )
         return True
 
-    def _refresh_burst_group_view(self) -> None:
+    def _refresh_burst_group_view(self, *, request_thumbnails: bool = True) -> None:
         burst_groups: list[tuple[int, ...]] = []
         burst_group_map: dict[str, BurstVisualInfo] = {}
         if (self._burst_groups_enabled or self._burst_stacks_enabled) and self._records:
@@ -16887,8 +17249,8 @@ class MainWindow(QMainWindow):
                         )
         self._visible_burst_groups = burst_groups
         self._burst_group_map = burst_group_map
-        self.grid.set_burst_groups(burst_group_map, burst_groups)
-        self.grid.set_burst_stack_mode(self._burst_stacks_enabled)
+        self.grid.set_burst_groups(burst_group_map, burst_groups, request_thumbnails=request_thumbnails)
+        self.grid.set_burst_stack_mode(self._burst_stacks_enabled, request_thumbnails=request_thumbnails)
         self._update_filter_summary()
 
     def _move_bundle(self, source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:

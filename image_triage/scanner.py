@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from .catalog import CatalogRepository, catalog_cache_enabled
 from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ROOT_PRIMARY_PRIORITY, suffix_for_path
@@ -408,6 +408,31 @@ class FolderScanSignals(QObject):
     failed = Signal(str, int, str)
 
 
+class FolderRecordsPersistTask(QRunnable):
+    def __init__(self, folder: str, records: list[ImageRecord]) -> None:
+        super().__init__()
+        self.folder = folder
+        self.records = list(records)
+
+    def run(self) -> None:
+        logger = perf_logger()
+        persist_start = time.perf_counter() if logger.enabled else 0.0
+        try:
+            CatalogRepository().save_folder_records(self.folder, self.records, source="scan")
+        except Exception as exc:  # pragma: no cover - cache writes should not block folder display
+            if logger.enabled:
+                logger.duration(
+                    "folder_scan.persist.failed",
+                    (time.perf_counter() - persist_start) * 1000.0,
+                    folder=self.folder,
+                    record_count=len(self.records),
+                    error=str(exc),
+                )
+        else:
+            if logger.enabled:
+                logger.duration("folder_scan.persist", (time.perf_counter() - persist_start) * 1000.0, folder=self.folder, record_count=len(self.records))
+
+
 class FolderScanTask(QRunnable):
     _catalog = CatalogRepository()
 
@@ -471,10 +496,6 @@ class FolderScanTask(QRunnable):
                     folder=self.folder,
                     record_count=len(records),
                 )
-            persist_start = time.perf_counter() if logger.enabled else 0.0
-            self._persist_scan_records(records)
-            if logger.enabled:
-                logger.duration("folder_scan.persist", (time.perf_counter() - persist_start) * 1000.0, folder=self.folder, record_count=len(records))
         except Exception as exc:  # pragma: no cover - legacy UI error path
             if logger.enabled:
                 logger.duration("folder_scan.failed", (time.perf_counter() - start) * 1000.0, folder=self.folder, error=str(exc))
@@ -484,6 +505,7 @@ class FolderScanTask(QRunnable):
         if logger.enabled:
             logger.duration("folder_scan.total", (time.perf_counter() - start) * 1000.0, folder=self.folder, source="live", record_count=len(records))
         self.signals.finished.emit(self.folder, self.token, records, "live")
+        QThreadPool.globalInstance().start(FolderRecordsPersistTask(self.folder, records), -100)
 
     def _load_cached_records(self) -> tuple[list[ImageRecord] | None, str]:
         if not self.read_cached_records:
@@ -493,9 +515,5 @@ class FolderScanTask(QRunnable):
             if cached_records is not None:
                 return cached_records, "catalog"
         return None, ""
-
-    def _persist_scan_records(self, records: list[ImageRecord]) -> None:
-        self._catalog.save_folder_records(self.folder, records, source="scan")
-
 
 __all__ = ["FolderScanTask", "discover_edited_paths", "ImageRecord", "normalize_filesystem_path", "normalized_path_key", "scan_child_folders", "scan_folder", "scan_folder_quick"]

@@ -269,11 +269,14 @@ class PreviewPane(QWidget):
 
         self.caption_label = QLabel()
         self.caption_label.setStyleSheet("font-size: 12px; color: #d9e3ee;")
-        self.caption_label.setWordWrap(True)
+        self.caption_label.setWordWrap(False)
+        self.caption_label.setMinimumHeight(16)
 
         self.metadata_label = QLabel()
         self.metadata_label.setStyleSheet("font-size: 11px; color: #9fb0c5;")
-        self.metadata_label.setWordWrap(True)
+        self.metadata_label.setWordWrap(False)
+        self.metadata_label.setMinimumHeight(15)
+        self.metadata_label.setText(" ")
         self.metadata_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         text_layout.addWidget(self.caption_label)
@@ -285,6 +288,7 @@ class PreviewPane(QWidget):
 
         layout.addWidget(self.scroll_area, 1)
         layout.addWidget(self.footer)
+        self.footer.setFixedHeight(42)
         self.apply_theme(self._theme)
 
     def apply_theme(self, theme: ThemePalette) -> None:
@@ -560,6 +564,10 @@ class FullScreenPreview(QDialog):
         self._zoom_request_timer.setSingleShot(True)
         self._zoom_request_timer.setInterval(90)
         self._zoom_request_timer.timeout.connect(self._request_zoom_resolution_refresh)
+        self._analysis_update_timer = QTimer(self)
+        self._analysis_update_timer.setSingleShot(True)
+        self._analysis_update_timer.setInterval(120)
+        self._analysis_update_timer.timeout.connect(self._update_analysis_panel)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(1200)
         self._refresh_timer.timeout.connect(self._poll_source_updates)
@@ -1356,6 +1364,7 @@ class FullScreenPreview(QDialog):
     def show_entries(self, entries: list[PreviewEntry]) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        was_visible = self.isVisible()
         self._source_entries = list(entries)
         if len(entries) < 2:
             self._winner_ladder_mode = False
@@ -1372,9 +1381,16 @@ class FullScreenPreview(QDialog):
         self._edited_variant_index = 0
         self._rebuild_entries()
         self._sync_preview_controls()
-        self.showFullScreen()
-        self.raise_()
-        self.activateWindow()
+        fullscreen_reapplied = False
+        window_activated = False
+        if not was_visible:
+            self.showFullScreen()
+            self.raise_()
+            self.activateWindow()
+            window_activated = True
+        elif not self.isFullScreen():
+            self.showFullScreen()
+            fullscreen_reapplied = True
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
         QTimer.singleShot(0, self._request_preview_loads)
@@ -1385,6 +1401,9 @@ class FullScreenPreview(QDialog):
                 entry_count=len(entries),
                 compare_mode=self._compare_mode,
                 before_after=self._before_after_enabled,
+                was_visible=was_visible,
+                window_activated=window_activated,
+                fullscreen_reapplied=fullscreen_reapplied,
                 paths=[entry.source_path for entry in entries[:8]],
             )
 
@@ -1653,7 +1672,7 @@ class FullScreenPreview(QDialog):
         self._settings.setValue(self.FOCUS_ASSIST_DIM_BACKGROUND_KEY, checked)
         self._focus_assist_cache.clear()
         self._sync_preview_controls()
-        self._update_analysis_panel()
+        self._schedule_analysis_panel_update()
         if self._focus_assist_enabled:
             self._render_all()
 
@@ -1668,7 +1687,7 @@ class FullScreenPreview(QDialog):
         self._settings.setValue(self.FOCUS_ASSIST_COLOR_KEY, color.id)
         self._focus_assist_cache.clear()
         self._sync_preview_controls()
-        self._update_analysis_panel()
+        self._schedule_analysis_panel_update()
         if self._focus_assist_enabled:
             self._render_all()
 
@@ -1683,7 +1702,7 @@ class FullScreenPreview(QDialog):
         self._settings.setValue(self.FOCUS_ASSIST_STRENGTH_KEY, strength.id)
         self._focus_assist_cache.clear()
         self._sync_preview_controls()
-        self._update_analysis_panel()
+        self._schedule_analysis_panel_update()
         if self._focus_assist_enabled:
             self._render_all()
 
@@ -1717,7 +1736,7 @@ class FullScreenPreview(QDialog):
         if target_slots:
             self._request_preview_loads(target_slots)
         else:
-            self._update_analysis_panel()
+            self._schedule_analysis_panel_update()
 
     def _ensure_panes(self, count: int) -> None:
         while len(self._panes) < count:
@@ -1746,7 +1765,7 @@ class FullScreenPreview(QDialog):
         }
         self._current_images = [QImage() for _ in self._entries]
         self._current_metadata = [self._metadata_cache.get(entry.source_path, EMPTY_METADATA) for entry in self._entries]
-        self._source_versions = [_file_signature(entry.source_path) for entry in self._entries]
+        self._source_versions = [self._entry_source_signature(entry) for entry in self._entries]
         self._current_placeholder_flags = [False for _ in self._entries]
         self._current_image_display_tokens = [() for _ in self._entries]
         self._rendered_display_keys = [None for _ in self._entries]
@@ -1923,7 +1942,7 @@ class FullScreenPreview(QDialog):
             if not 0 <= slot < len(self._entries):
                 continue
             entry = self._entries[slot]
-            source_signature = _file_signature(entry.source_path)
+            source_signature = self._entry_source_signature(entry)
             target_size = self._decode_target_size(slot)
             prefer_embedded = not self._manual_zoom
             fits_display_settings = self._fits_display_settings_for_entry(entry)
@@ -1958,9 +1977,9 @@ class FullScreenPreview(QDialog):
                 if not preserve_placeholder:
                     self._render_pane(slot)
                     if slot == self._focused_slot:
-                        self._update_analysis_panel()
+                        self._schedule_analysis_panel_update()
                 elif slot == self._focused_slot and metadata is not None:
-                    self._update_analysis_panel()
+                    self._schedule_analysis_panel_update()
                 if not should_load_metadata:
                     continue
             self._pending_requests += 1
@@ -2032,7 +2051,7 @@ class FullScreenPreview(QDialog):
                         self._current_metadata[request.slot] = metadata
                         self._render_pane(request.slot)
                         if request.slot == self._focused_slot:
-                            self._update_analysis_panel()
+                            self._schedule_analysis_panel_update()
                 processed += 1
                 continue
             if state == "ready":
@@ -2082,9 +2101,9 @@ class FullScreenPreview(QDialog):
                     if not preserve_placeholder:
                         self._render_pane(request.slot)
                         if request.slot == self._focused_slot:
-                            self._update_analysis_panel()
+                            self._schedule_analysis_panel_update()
                     elif request.slot == self._focused_slot and metadata is not None:
-                        self._update_analysis_panel()
+                        self._schedule_analysis_panel_update()
                 else:
                     if self._current_images[request.slot].isNull():
                         self._show_failed(request.slot, payload[0])
@@ -2189,7 +2208,7 @@ class FullScreenPreview(QDialog):
             self._apply_zoom_to_all()
         self._update_focus_styles()
         self._update_cursor()
-        self._update_analysis_panel()
+        self._schedule_analysis_panel_update()
         self._update_info_label()
 
     def _poll_source_updates(self) -> None:
@@ -2273,6 +2292,7 @@ class FullScreenPreview(QDialog):
         if entry.ai_result is not None and entry.ai_result.is_top_pick:
             caption_text = f"{caption_text} | AI Top Pick"
         pane.caption_label.setText(caption_text)
+        pane.caption_label.setToolTip(caption_text)
 
         metadata_lines: list[str] = []
         if metadata.display_text:
@@ -2280,8 +2300,10 @@ class FullScreenPreview(QDialog):
         ai_text = _format_ai_metadata(entry.ai_result)
         if ai_text:
             metadata_lines.append(ai_text)
-        pane.metadata_label.setText("\n".join(metadata_lines))
-        pane.metadata_label.setVisible(bool(metadata_lines))
+        metadata_text = "  |  ".join(metadata_lines)
+        pane.metadata_label.setText(metadata_text or " ")
+        pane.metadata_label.setToolTip(metadata_text)
+        pane.metadata_label.setVisible(True)
         pane.heart_button.setChecked(entry.winner)
         pane.heart_button.setText(pane.HEART_SYMBOL if entry.winner else pane.HEART_OUTLINE_SYMBOL)
         pane.reject_button.setChecked(entry.reject)
@@ -2289,14 +2311,27 @@ class FullScreenPreview(QDialog):
 
         if display_image.isNull():
             pane.image_label.setScaledContents(False)
-            pane.image_label.resize(1, 1)
-            pane.image_label.clear()
+            pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            current_pixmap = pane.image_label.pixmap()
+            target = self._fit_target_size(pane)
+            has_stable_pixmap = (
+                current_pixmap is not None
+                and not current_pixmap.isNull()
+                and pane.image_label.width() <= target.width() + 4
+                and pane.image_label.height() <= target.height() + 4
+            )
+            if not has_stable_pixmap:
+                pane.image_label.resize(target)
+                pane.image_label.clear()
+                pane.image_label.setText("Loading full preview...")
             if slot < len(self._rendered_display_keys):
                 self._rendered_display_keys[slot] = None
-            pane.image_label.setText("Loading full preview...")
             return
 
         if self._manual_zoom:
+            pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             scaled_size = QSize(
                 max(1, int(round(display_image.width() * self._zoom_scale))),
                 max(1, int(round(display_image.height() * self._zoom_scale))),
@@ -2315,6 +2350,8 @@ class FullScreenPreview(QDialog):
                     self._rendered_display_keys[slot] = display_key
             pane.image_label.resize(scaled_size)
         else:
+            pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pane.image_label.setScaledContents(False)
             target = self._fit_target_size(pane)
             display_key = (*self._display_render_key(slot, display_image), "fit", target.width(), target.height())
@@ -2429,6 +2466,9 @@ class FullScreenPreview(QDialog):
             self._focus_assist_dim_background,
         )
 
+    def _schedule_analysis_panel_update(self, delay_ms: int = 120) -> None:
+        self._analysis_update_timer.start(max(0, delay_ms))
+
     def _update_analysis_panel(self) -> None:
         if not self._entries or not 0 <= self._focused_slot < len(self._entries):
             self.analysis_subtitle_label.setText("Focused image analysis")
@@ -2493,7 +2533,9 @@ class FullScreenPreview(QDialog):
             return
         pane = self._panes[slot]
         pane.image_label.setScaledContents(False)
-        pane.image_label.resize(1, 1)
+        pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        pane.image_label.resize(self._fit_target_size(pane))
         pane.image_label.clear()
         if slot < len(self._rendered_display_keys):
             self._rendered_display_keys[slot] = None
@@ -2540,7 +2582,7 @@ class FullScreenPreview(QDialog):
         if not self._entries:
             return
         for slot, entry in enumerate(self._entries):
-            source_signature = self._source_versions[slot] if slot < len(self._source_versions) else _file_signature(entry.source_path)
+            source_signature = self._source_versions[slot] if slot < len(self._source_versions) else self._entry_source_signature(entry)
             target_size = self._decode_target_size(slot)
             cached_image, cache_key = self._cached_preview_image_with_fallback(
                 entry.source_path,
@@ -2597,6 +2639,12 @@ class FullScreenPreview(QDialog):
             prefer_embedded,
             self._fits_display_cache_key_for_path(path, fits_display_settings),
         )
+
+    def _entry_source_signature(self, entry: PreviewEntry) -> tuple[int, int] | None:
+        signature = _record_path_signature(entry.record, entry.source_path)
+        if signature is not None:
+            return signature
+        return _file_signature(entry.source_path)
 
     def _cached_preview_image(
         self,
@@ -2886,7 +2934,7 @@ class FullScreenPreview(QDialog):
             return
         self._focused_slot = slot
         self._update_focus_styles()
-        self._update_analysis_panel()
+        self._schedule_analysis_panel_update()
         self._update_info_label()
 
     def _update_focus_styles(self) -> None:
@@ -2995,7 +3043,7 @@ class FullScreenPreview(QDialog):
             self._settings.setValue(self.FOCUS_ASSIST_COLOR_KEY, color.id)
             self._focus_assist_cache.clear()
             self._sync_preview_controls()
-            self._update_analysis_panel()
+            self._schedule_analysis_panel_update()
             if self._focus_assist_enabled:
                 self._render_all()
 
@@ -3019,7 +3067,7 @@ class FullScreenPreview(QDialog):
             self._settings.setValue(self.FOCUS_ASSIST_STRENGTH_KEY, strength.id)
             self._focus_assist_cache.clear()
             self._sync_preview_controls()
-            self._update_analysis_panel()
+            self._schedule_analysis_panel_update()
             if self._focus_assist_enabled:
                 self._render_all()
 
@@ -3167,6 +3215,20 @@ def _file_signature(path: str) -> tuple[int, int] | None:
     except OSError:
         return None
     return (stat.st_mtime_ns, stat.st_size)
+
+
+def _record_path_signature(record: ImageRecord, path: str) -> tuple[int, int] | None:
+    normalized_path = _normalized_path_key(path)
+    if normalized_path == _normalized_path_key(record.path):
+        return (record.modified_ns, record.size)
+    for variant in record.display_variants:
+        if normalized_path == _normalized_path_key(variant.path):
+            return (variant.modified_ns, variant.size)
+    return None
+
+
+def _normalized_path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
 
 
 def _format_ai_metadata(ai_result: AIImageResult | None) -> str:
