@@ -279,7 +279,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         self.setPalette(palette)
         self.viewport().update()
 
-    def set_items(self, items: list[ImageRecord]) -> None:
+    def set_items(
+        self,
+        items: list[ImageRecord],
+        *,
+        emit_state_signals: bool = True,
+        request_thumbnails: bool = True,
+    ) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         previous_variant_indexes = dict(self._variant_indexes)
@@ -329,9 +335,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._refresh_layout_after_visible_items_changed()
         self._prime_visible_text_caches()
         self.viewport().update()
-        self._schedule_visible_thumbnail_requests(immediate=True)
-        self.current_changed.emit(self._current_index)
-        self.selection_changed.emit()
+        if request_thumbnails:
+            self._schedule_visible_thumbnail_requests(immediate=True)
+        if emit_state_signals:
+            self.current_changed.emit(self._current_index)
+            self.selection_changed.emit()
         if logger.enabled:
             logger.duration(
                 "grid.set_items",
@@ -341,7 +349,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 visible_count=len(self._visible_item_indexes),
             )
 
-    def append_items(self, items: list[ImageRecord]) -> None:
+    def append_items(self, items: list[ImageRecord], *, request_thumbnails: bool = True) -> None:
         if not items:
             return
         start_index = len(self._items)
@@ -361,7 +369,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._refresh_layout_after_visible_items_changed()
         self._prime_visible_text_caches(limit=120)
         self.viewport().update()
-        self._schedule_visible_thumbnail_requests()
+        if request_thumbnails:
+            self._schedule_visible_thumbnail_requests()
 
     def set_annotations(self, annotations: dict[str, SessionAnnotation]) -> None:
         self._annotations = annotations
@@ -495,6 +504,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self,
         burst_groups_by_path: dict[str, BurstVisualInfo],
         burst_groups: list[tuple[int, ...]] | None = None,
+        *,
+        request_thumbnails: bool = True,
     ) -> None:
         previous_display = dict(self._burst_display_member_by_anchor)
         self._burst_groups_by_path = dict(burst_groups_by_path)
@@ -519,10 +530,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._normalize_burst_stack_selection()
         self._rebuild_visible_items()
         self._refresh_layout_after_visible_items_changed()
-        self._schedule_visible_thumbnail_requests(immediate=True)
+        if request_thumbnails:
+            self._schedule_visible_thumbnail_requests(immediate=True)
         self.viewport().update()
 
-    def set_burst_stack_mode(self, enabled: bool) -> None:
+    def set_burst_stack_mode(self, enabled: bool, *, request_thumbnails: bool = True) -> None:
         normalized = bool(enabled)
         if self._burst_stack_mode == normalized:
             return
@@ -530,8 +542,12 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._normalize_burst_stack_selection()
         self._rebuild_visible_items()
         self._refresh_layout_after_visible_items_changed()
-        self._schedule_visible_thumbnail_requests(immediate=True)
+        if request_thumbnails:
+            self._schedule_visible_thumbnail_requests(immediate=True)
         self.viewport().update()
+
+    def schedule_visible_thumbnail_requests(self, *, immediate: bool = False) -> None:
+        self._schedule_visible_thumbnail_requests(immediate=immediate)
 
     def set_ai_results(self, ai_results_by_path: dict[str, AIImageResult]) -> None:
         self._ai_results_by_path = dict(ai_results_by_path)
