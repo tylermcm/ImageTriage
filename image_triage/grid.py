@@ -1333,6 +1333,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 variant,
                 self._zoom_thumbnail_target_size(image_rect),
                 priority=20_000,
+                drop_if_not_wanted=False,
             )
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         if changed:
@@ -2636,23 +2637,30 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _request_visible_thumbnails(self) -> None:
         if not self._items:
+            self.thumbnail_manager.set_wanted_keys(set())
             return
 
         target = self._thumbnail_target_size()
         visible = self._visible_indexes()
         if not visible:
+            self.thumbnail_manager.set_wanted_keys(set())
             return
 
         center = (visible[0] + visible[-1]) // 2
+        thumbnail_requests: list[tuple[ImageRecord, ThumbnailKey, int]] = []
         for index in visible:
             distance = abs(index - center)
             priority = max(1, 10_000 - distance)
             if self._items[index].is_folder:
                 continue
             variant = self._current_variant(self._items[index])
+            key = self.thumbnail_manager.make_key(variant, target)
+            thumbnail_requests.append((variant, key, priority))
+
+        self.thumbnail_manager.set_wanted_keys({key for _, key, _ in thumbnail_requests})
+        for variant, key, priority in thumbnail_requests:
             if variant.path in self._failed_paths:
                 continue
-            key = self.thumbnail_manager.make_key(variant, target)
             if self._cached_pixmap_for_key(key) is None:
                 self.thumbnail_manager.request_thumbnail(variant, target, priority=priority)
             self.metadata_manager.request_metadata(variant, priority=priority)

@@ -51,6 +51,7 @@ _BYTES_PER_MIB = 1024 * 1024
 THUMBNAIL_SKIP_PSD_BYTES = 100 * _BYTES_PER_MIB
 THUMBNAIL_SKIP_GENERAL_BYTES = 500 * _BYTES_PER_MIB
 THUMBNAIL_SKIP_MAX_PIXELS = 160_000_000
+TIFF_SUFFIXES = frozenset({".tif", ".tiff"})
 _ASTROPY_IMPORT_ATTEMPTED = False
 _ASTROPY_FITS = None
 _ASTROPY_ZSCALE_INTERVAL = None
@@ -335,6 +336,18 @@ def _load_with_fallbacks(
     initial_error: str | None = None,
     auto_transform: bool = True,
 ) -> tuple[QImage, str | None]:
+    suffix = suffix_for_path(path)
+    if suffix in TIFF_SUFFIXES and Image is not None:
+        pillow_image, pillow_error = _load_pillow_image(path, target_size, auto_transform=auto_transform)
+        if not pillow_image.isNull():
+            return pillow_image, None
+        if initial_error:
+            return QImage(), initial_error
+        image, error = _load_standard_image(path, target_size, auto_transform=auto_transform)
+        if not image.isNull():
+            return image, None
+        return QImage(), pillow_error or error
+
     image, error = _load_standard_image(path, target_size, auto_transform=auto_transform)
     if not image.isNull():
         return image, None
@@ -350,7 +363,6 @@ def _load_with_fallbacks(
     if initial_error:
         return QImage(), initial_error
 
-    suffix = suffix_for_path(path)
     if suffix in PILLOW_FALLBACK_SUFFIXES:
         return QImage(), error or "Additional codecs are required for this format."
     return QImage(), error

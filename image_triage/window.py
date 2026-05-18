@@ -2559,6 +2559,7 @@ class MainWindow(QMainWindow):
         self._scan_cached_source = ""
         self._active_scan_tasks: dict[int, FolderScanTask] = {}
         self._active_ai_task: AIRunTask | None = None
+        self._active_ai_run_start_perf = 0.0
         self._active_ai_runtime_task: AIRuntimeInstallTask | None = None
         self._active_ai_model_task: AIModelDownloadTask | None = None
         self._active_review_intelligence_task: BuildReviewIntelligenceTask | None = None
@@ -2577,6 +2578,8 @@ class MainWindow(QMainWindow):
         self._deferred_enrichment_scheduled = False
         self._deferred_enrichment_scope_key = ""
         self._deferred_enrichment_token = 0
+        self._ai_deferred_background_work = False
+        self._ai_deferred_background_scope_key = ""
         self._review_chunk_dirty_paths: set[str] = set()
         self._review_chunk_flush_timer = QTimer(self)
         self._review_chunk_flush_timer.setSingleShot(True)
@@ -2873,8 +2876,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.folder_tree, 1)
         self._refresh_favorites_panel()
 
+        self._directory_up_buttons: list[QToolButton] = []
+        self._directory_down_buttons: list[QToolButton] = []
         self.manual_path_combo = self._build_path_combo(mode="manual")
         self.ai_path_combo = self._build_path_combo(mode="ai")
+        self.manual_path_control = self._build_path_control(self.manual_path_combo, mode="manual")
+        self.ai_path_control = self._build_path_control(self.ai_path_combo, mode="ai")
         self.manual_selection_count_label = self._build_selection_count_label(mode="manual")
         self.ai_selection_count_label = self._build_selection_count_label(mode="ai")
 
@@ -3341,6 +3348,42 @@ class MainWindow(QMainWindow):
         self._configure_toolbar_context_target(combo, mode)
         return combo
 
+    def _build_directory_nav_button(self, text: str, tooltip: str, *, mode: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("pathNavButton")
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.CursorShape.ArrowCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFixedSize(28, 28)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._configure_toolbar_context_target(button, mode)
+        return button
+
+    def _build_path_control(self, combo: QComboBox, *, mode: str) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setObjectName("pathControl")
+        wrapper.setMinimumWidth(344)
+        wrapper.setMaximumWidth(720)
+        wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        up_button = self._build_directory_nav_button("\u2191", "Open parent folder", mode=mode)
+        down_button = self._build_directory_nav_button("\u2193", "Open only child folder", mode=mode)
+        up_button.clicked.connect(self._navigate_to_parent_folder)
+        down_button.clicked.connect(self._navigate_to_only_child_folder)
+        self._directory_up_buttons.append(up_button)
+        self._directory_down_buttons.append(down_button)
+
+        layout.addWidget(up_button, 0)
+        layout.addWidget(down_button, 0)
+        layout.addWidget(combo, 1)
+        self._configure_toolbar_context_target(wrapper, mode)
+        return wrapper
+
     def _build_selection_count_label(self, *, mode: str) -> QLabel:
         label = QLabel("0 selected")
         label.setObjectName("toolbarSelectionCount")
@@ -3521,7 +3564,7 @@ class MainWindow(QMainWindow):
                 "view": self.ai_view_tools_button,
                 "search": self.ai_search_field,
                 "filters": self.ai_filter_button,
-                "address": self.ai_path_combo,
+                "address": self.ai_path_control,
                 "selection_count": self.ai_selection_count_label,
             }
         else:
@@ -3530,7 +3573,7 @@ class MainWindow(QMainWindow):
                 "view": self.manual_view_tools_button,
                 "search": self.manual_search_field,
                 "filters": self.manual_filter_button,
-                "address": self.manual_path_combo,
+                "address": self.manual_path_control,
                 "selection_count": self.manual_selection_count_label,
             }
         for item_id in ("review", "view", "filters"):
@@ -7864,18 +7907,59 @@ class MainWindow(QMainWindow):
         self._handle_mode_tab_changed(target_index)
 
     def _handle_mode_tab_changed(self, index: int) -> None:
-        self._ui_mode = "ai" if index == 1 else "manual"
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
+        previous_mode = getattr(self, "_ui_mode", "manual")
+        target_mode = "ai" if index == 1 else "manual"
+
+        def log_step(event: str, step_started: float, **fields: object) -> float:
+            if not logger.enabled:
+                return step_started
+            now = time.perf_counter()
+            logger.duration(
+                event,
+                (now - step_started) * 1000.0,
+                from_mode=previous_mode,
+                to_mode=target_mode,
+                index=index,
+                records=len(self._all_records),
+                visible_records=len(self._records),
+                ai_loaded=self._ai_bundle is not None,
+                **fields,
+            )
+            return now
+
+        self._ui_mode = target_mode
         self.toolbar_stack.setCurrentIndex(index)
         self.grid.set_show_ai_annotations(self._ui_mode == "ai")
         self._schedule_workspace_toolbar_overflow_update(self._ui_mode)
+        step_start = log_step("mode_switch.chrome", step_start)
         self._refresh_viewport_mode()
+        step_start = log_step("mode_switch.viewport", step_start)
         self._update_ai_toolbar_state()
+        step_start = log_step("mode_switch.ai_toolbar_initial", step_start)
         if self._ui_mode == "ai":
             loaded_hidden = self._load_hidden_ai_results_for_current_folder(show_message=False)
+            step_start = log_step("mode_switch.load_hidden_ai", step_start, loaded=loaded_hidden)
             if not loaded_hidden:
-                self._restore_ai_results(force=True)
+                restored = self._restore_ai_results(force=True)
+                step_start = log_step("mode_switch.restore_ai_results", step_start, restored=restored)
         self._update_action_states()
+        step_start = log_step("mode_switch.action_states", step_start)
         self._update_status()
+        step_start = log_step("mode_switch.status", step_start)
+        if logger.enabled:
+            logger.duration(
+                "mode_switch.total",
+                (time.perf_counter() - start) * 1000.0,
+                from_mode=previous_mode,
+                to_mode=target_mode,
+                index=index,
+                records=len(self._all_records),
+                visible_records=len(self._records),
+                ai_loaded=self._ai_bundle is not None,
+            )
 
     def _set_filter_mode(self, mode: FilterMode) -> None:
         self._filter_query.quick_filter = mode
@@ -8557,6 +8641,7 @@ class MainWindow(QMainWindow):
         self.actions.delete_filter_preset.setEnabled(self._matching_saved_filter_preset() is not None)
         self.actions.clear_filters.setEnabled(self._filter_query.has_active_filters)
         self._refresh_tool_mode_ui()
+        self._refresh_directory_navigation_buttons()
         if self._toolbar_edit_mode:
             self._set_workspace_toolbar_controls_enabled(False)
         if logger.enabled:
@@ -10930,6 +11015,64 @@ class MainWindow(QMainWindow):
         self._pending_folder_scroll_value = None
         self.grid.restore_scroll_value(value)
 
+    def _parent_folder_for_navigation(self) -> str:
+        folder = self._current_folder if self._scope_kind == "folder" else ""
+        if not folder:
+            return ""
+        if _is_unc_path(folder):
+            parts = str(folder).strip("\\").split("\\")
+            if len(parts) <= 2:
+                return ""
+            if len(parts) == 3:
+                return f"\\\\{parts[0]}\\{parts[1]}"
+            return "\\\\" + "\\".join(parts[:-1])
+        try:
+            current = Path(folder)
+            parent = current.parent
+        except (OSError, ValueError):
+            return ""
+        if not str(parent) or parent == current:
+            return ""
+        return os.path.normpath(str(parent))
+
+    def _only_child_folder_for_navigation(self) -> str:
+        if self._scope_kind != "folder" or not self._current_folder or len(self._folder_records) != 1:
+            return ""
+        child = self._folder_records[0]
+        if not child.is_folder or not child.name:
+            return ""
+        return os.path.normpath(os.path.join(self._current_folder, child.name))
+
+    def _refresh_directory_navigation_buttons(self) -> None:
+        parent_folder = self._parent_folder_for_navigation()
+        child_folder = self._only_child_folder_for_navigation()
+        child_count = len(self._folder_records) if self._scope_kind == "folder" and self._current_folder else 0
+
+        up_tooltip = f"Open parent folder: {parent_folder}" if parent_folder else "Already at the top of this drive"
+        if child_folder:
+            down_tooltip = f"Open only child folder: {Path(child_folder).name}"
+        elif child_count == 0:
+            down_tooltip = "No child folders"
+        else:
+            down_tooltip = f"{child_count} child folders; choose one from the folder list"
+
+        for button in getattr(self, "_directory_up_buttons", ()):
+            button.setEnabled(bool(parent_folder))
+            button.setToolTip(up_tooltip)
+        for button in getattr(self, "_directory_down_buttons", ()):
+            button.setEnabled(bool(child_folder))
+            button.setToolTip(down_tooltip)
+
+    def _navigate_to_parent_folder(self) -> None:
+        target = self._parent_folder_for_navigation()
+        if target:
+            self._select_folder(target)
+
+    def _navigate_to_only_child_folder(self) -> None:
+        target = self._only_child_folder_for_navigation()
+        if target:
+            self._select_folder(target)
+
     def _remember_recent_folder(self, folder: str) -> None:
         normalized = os.path.normpath(str(folder).strip())
         if not normalized:
@@ -11000,6 +11143,7 @@ class MainWindow(QMainWindow):
             line_edit = combo.lineEdit()
             if line_edit is not None:
                 line_edit.setToolTip(current_text)
+        self._refresh_directory_navigation_buttons()
 
     def _handle_path_combo_activated(self, combo: QComboBox, index: int) -> None:
         value = combo.itemData(index)
@@ -11650,6 +11794,7 @@ class MainWindow(QMainWindow):
         elif folder_changed:
             self._pending_folder_focus_path = ""
         self._current_folder = folder
+        self._folder_records = []
         self._set_scope_state(kind="folder", scope_id=_memory_path_key(folder), label=folder)
         self._refresh_current_folder_watch()
         self._settings.setValue(self.LAST_FOLDER_KEY, folder)
@@ -11663,6 +11808,8 @@ class MainWindow(QMainWindow):
         self._scan_showed_cached = False
         self._scan_cached_source = ""
         self._scan_in_progress = True
+        self._ai_deferred_background_work = False
+        self._ai_deferred_background_scope_key = ""
         self._catalog_load_source = "scanning"
         self._catalog_load_detail = f"Scanning {folder}..."
         self._reset_review_cache_status()
@@ -11699,6 +11846,7 @@ class MainWindow(QMainWindow):
         self._all_records_by_path = {}
         child_start = time.perf_counter() if logger.enabled else 0.0
         self._folder_records = scan_child_folders(folder, include_hidden=self._show_hidden_folders)
+        self._refresh_directory_navigation_buttons()
         if logger.enabled:
             logger.duration(
                 "folder.load.child_folders",
@@ -11764,6 +11912,8 @@ class MainWindow(QMainWindow):
         self._pending_folder_scroll_value = None
         self._scan_in_progress = False
         self._scan_token += 1
+        self._ai_deferred_background_work = False
+        self._ai_deferred_background_scope_key = ""
         self._cancel_scope_enrichment_task()
         self._annotation_hydration_token += 1
         if self._active_annotation_hydration_task is not None:
@@ -11782,6 +11932,7 @@ class MainWindow(QMainWindow):
         self._current_folder = ""
         self._folder_records = []
         self._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
+        self._refresh_directory_navigation_buttons()
         self._refresh_current_folder_watch()
         self._scan_showed_cached = False
         self._scan_cached_source = ""
@@ -11906,6 +12057,102 @@ class MainWindow(QMainWindow):
         self._start_annotation_hydration(records)
         self._start_review_intelligence_analysis()
 
+    def _mark_background_review_work_deferred_for_ai(self, *, reason: str) -> None:
+        if not self._all_records:
+            return
+        self._ai_deferred_background_work = True
+        self._ai_deferred_background_scope_key = self._current_scope_key()
+        logger = perf_logger()
+        if logger.enabled:
+            logger.log(
+                "ai.background_start_deferred",
+                reason=reason,
+                scope=self._ai_deferred_background_scope_key,
+                records=len(self._all_records),
+            )
+
+    def _defer_background_review_work_for_ai(self, *, reason: str) -> None:
+        if not self._all_records:
+            return
+        logger = perf_logger()
+        active_scope = self._active_scope_enrichment_task is not None
+        active_annotations = self._active_annotation_hydration_task is not None
+        active_review = self._active_review_intelligence_task is not None
+        self._ai_deferred_background_work = True
+        self._ai_deferred_background_scope_key = self._current_scope_key()
+        self._scope_enrichment_token += 1
+        self._cancel_scope_enrichment_task()
+        self._annotation_hydration_token += 1
+        if self._active_annotation_hydration_task is not None:
+            self._active_annotation_hydration_task.cancel()
+        self._active_annotation_hydration_task = None
+        self._annotation_hydration_dirty_paths.clear()
+        self._annotation_hydration_pending_clear_paths.clear()
+        self._annotation_reapply_timer.stop()
+        self._review_intelligence_token += 1
+        if self._active_review_intelligence_task is not None:
+            self._active_review_intelligence_task.cancel()
+            self._active_review_intelligence_task = None
+        self._review_intelligence = None
+        self._review_chunk_flush_timer.stop()
+        self._review_chunk_dirty_paths.clear()
+        self._review_scoring_cache_source = "deferred"
+        self._review_scoring_cache_detail = "Workflow scoring is deferred while AI review runs."
+        self._review_grouping_cache_source = "deferred"
+        self._review_grouping_cache_detail = "Smart groups are deferred while AI review runs."
+        self._review_feature_cache_source = "deferred"
+        self._review_feature_cache_detail = "Review feature analysis is deferred while AI review runs."
+        self._refresh_catalog_status_indicator()
+        if logger.enabled:
+            logger.log(
+                "ai.background_deferred",
+                reason=reason,
+                scope=self._ai_deferred_background_scope_key,
+                records=len(self._all_records),
+                active_scope=active_scope,
+                active_annotations=active_annotations,
+                active_review=active_review,
+            )
+
+    def _resume_deferred_background_review_work_after_ai(self, *, reason: str) -> None:
+        if not self._ai_deferred_background_work:
+            return
+        deferred_scope_key = self._ai_deferred_background_scope_key
+        self._ai_deferred_background_work = False
+        self._ai_deferred_background_scope_key = ""
+        logger = perf_logger()
+        current_scope_key = self._current_scope_key()
+        if self._active_ai_task is not None or deferred_scope_key != current_scope_key or not self._all_records:
+            self._review_scoring_cache_source = "idle"
+            self._review_scoring_cache_detail = "Ready"
+            self._review_grouping_cache_source = "idle"
+            self._review_grouping_cache_detail = "Ready"
+            self._review_feature_cache_source = "idle"
+            self._review_feature_cache_detail = "Ready"
+            self._refresh_catalog_status_indicator()
+            if logger.enabled:
+                logger.log(
+                    "ai.background_resume_skipped",
+                    reason=reason,
+                    deferred_scope=deferred_scope_key,
+                    current_scope=current_scope_key,
+                    active_ai=self._active_ai_task is not None,
+                    records=len(self._all_records),
+                )
+            return
+        records = list(self._all_records)
+        if logger.enabled:
+            logger.log(
+                "ai.background_resumed",
+                reason=reason,
+                scope=current_scope_key,
+                records=len(records),
+            )
+        self._start_annotation_hydration(records)
+        self._start_review_intelligence_analysis()
+        if self._active_scope_enrichment_task is None:
+            self._start_scope_enrichment_task(records)
+
     def _cancel_scope_enrichment_task(self) -> None:
         self._scope_enrichment_debounce_timer.stop()
         task = self._active_scope_enrichment_task
@@ -11930,6 +12177,12 @@ class MainWindow(QMainWindow):
             self._taste_profile = TasteProfile()
             self._burst_recommendations = {}
             self._workflow_insights_by_path = {}
+            return
+        if self._active_ai_task is not None:
+            self._mark_background_review_work_deferred_for_ai(reason="scope_enrichment")
+            self._review_scoring_cache_source = "deferred"
+            self._review_scoring_cache_detail = "Workflow scoring is deferred while AI review runs."
+            self._refresh_catalog_status_indicator()
             return
 
         self._cancel_scope_enrichment_task()
@@ -12005,6 +12258,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Workflow enrichment fallback active: {message}")
 
     def _start_annotation_hydration(self, records: list[ImageRecord]) -> None:
+        if not records:
+            self._annotation_hydration_token += 1
+            if self._active_annotation_hydration_task is not None:
+                self._active_annotation_hydration_task.cancel()
+            self._active_annotation_hydration_task = None
+            self._annotation_hydration_dirty_paths.clear()
+            self._annotation_hydration_pending_clear_paths.clear()
+            self._annotation_reapply_timer.stop()
+            return
+        if self._active_ai_task is not None:
+            self._mark_background_review_work_deferred_for_ai(reason="annotation_hydration")
+            return
         self._annotation_hydration_token += 1
         token = self._annotation_hydration_token
         previous_task = self._active_annotation_hydration_task
@@ -12014,8 +12279,6 @@ class MainWindow(QMainWindow):
         self._annotation_hydration_dirty_paths.clear()
         self._annotation_hydration_pending_clear_paths = {record.path for record in records if record.path in self._annotations}
         self._annotation_reapply_timer.stop()
-        if not records:
-            return
         scope_key = self._current_scope_key()
         task = AnnotationHydrationTask(
             scope_key=scope_key,
@@ -12086,6 +12349,14 @@ class MainWindow(QMainWindow):
             self._review_grouping_cache_detail = "No records loaded."
             self._review_feature_cache_source = "idle"
             self._review_feature_cache_detail = "No review features loaded."
+            self._refresh_catalog_status_indicator()
+            return
+        if self._active_ai_task is not None:
+            self._mark_background_review_work_deferred_for_ai(reason="review_intelligence")
+            self._review_grouping_cache_source = "deferred"
+            self._review_grouping_cache_detail = "Smart groups are deferred while AI review runs."
+            self._review_feature_cache_source = "deferred"
+            self._review_feature_cache_detail = "Review feature analysis is deferred while AI review runs."
             self._refresh_catalog_status_indicator()
             return
         if not force and len(self._all_records) > self.AUTO_REVIEW_INTELLIGENCE_MAX_RECORDS:
@@ -12245,7 +12516,8 @@ class MainWindow(QMainWindow):
         if current_path:
             index = self._record_index_by_path.get(current_path)
             if index is not None:
-                self.grid.set_current_index(index)
+                if index != self.grid.current_index():
+                    self.grid.set_current_index(index)
         self._update_filter_summary()
         self._update_action_states()
         self._update_status()
@@ -12501,6 +12773,8 @@ class MainWindow(QMainWindow):
             return "Mixed"
         if source == "building":
             return "Building"
+        if source == "deferred":
+            return "Deferred"
         if source == "skipped":
             return "Skipped"
         if source == "scanning":
@@ -12679,6 +12953,7 @@ class MainWindow(QMainWindow):
         self._all_records = []
         self._all_records_by_path = {}
         self._folder_records = []
+        self._refresh_directory_navigation_buttons()
         self._records = []
         self._last_view_record_paths = ()
         self._record_index_by_path = {}
@@ -12802,20 +13077,67 @@ class MainWindow(QMainWindow):
         if folder:
             self._load_ai_results(folder)
 
+    def _saved_ai_results_belong_to_current_folder(self, saved_path: str) -> bool:
+        if not self._current_folder or not saved_path:
+            return True
+
+        def key(path: str) -> str:
+            return os.path.normpath(path).casefold()
+
+        def is_same_or_child(path_key: str, parent_key: str) -> bool:
+            parent_key = parent_key.rstrip("\\/")
+            return path_key == parent_key or path_key.startswith(parent_key + os.sep)
+
+        current_key = key(str(self._current_folder))
+        saved_key = key(str(saved_path))
+        if not current_key or not saved_key:
+            return True
+        if saved_key == current_key:
+            return True
+
+        hidden_root_key = key(os.path.join(str(self._current_folder), ".image_triage_ai"))
+        return is_same_or_child(saved_key, hidden_root_key)
+
     def _restore_ai_results(self, *, force: bool = False) -> bool:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         # Keep AI bundle loading off the normal startup/manual browse path.
         if not force and self._ui_mode != "ai":
             self._refresh_ai_state()
+            if logger.enabled:
+                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="skipped_manual_mode")
             return False
         saved_path = self._settings.value(self.AI_RESULTS_KEY, "", str)
         if not saved_path:
             self._refresh_ai_state()
+            if logger.enabled:
+                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="missing_setting")
+            return False
+        if not self._saved_ai_results_belong_to_current_folder(saved_path):
+            had_ai_bundle = self._ai_bundle is not None
+            if had_ai_bundle:
+                self._clear_ai_results_state(preserve_setting=True, refresh=False)
+                self._update_ai_toolbar_state()
+            if logger.enabled:
+                logger.duration(
+                    "ai_results.restore",
+                    (time.perf_counter() - start) * 1000.0,
+                    force=force,
+                    state="foreign_folder",
+                    folder=self._current_folder,
+                    path=saved_path,
+                )
             return False
         if not Path(saved_path).exists():
             self._settings.remove(self.AI_RESULTS_KEY)
             self._refresh_ai_state()
+            if logger.enabled:
+                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="missing_file", path=saved_path)
             return False
-        return self._load_ai_results(saved_path, show_message=False)
+        loaded = self._load_ai_results(saved_path, show_message=False)
+        if logger.enabled:
+            logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="loaded" if loaded else "failed", path=saved_path)
+        return loaded
 
     def _clear_ai_results_state(self, *, preserve_setting: bool = False, refresh: bool = True) -> None:
         self._ai_bundle = None
@@ -12917,15 +13239,37 @@ class MainWindow(QMainWindow):
         self._update_ai_toolbar_state()
 
     def _load_hidden_ai_results_for_current_folder(self, *, show_message: bool = True) -> bool:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if not self._current_folder:
+            if logger.enabled:
+                logger.duration("ai_results.load_hidden_current", (time.perf_counter() - start) * 1000.0, state="no_folder")
             return False
         report_dir = existing_hidden_ai_report_dir(self._current_folder)
         if report_dir is None:
             if show_message:
                 self.statusBar().showMessage("No saved hidden AI results were found for this folder")
-            self._update_ai_toolbar_state()
+                self._update_ai_toolbar_state()
+            if logger.enabled:
+                logger.duration(
+                    "ai_results.load_hidden_current",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self._current_folder,
+                    state="missing",
+                    show_message=show_message,
+                )
             return False
-        return self._load_ai_results(report_dir, show_message=show_message)
+        loaded = self._load_ai_results(report_dir, show_message=show_message)
+        if logger.enabled:
+            logger.duration(
+                "ai_results.load_hidden_current",
+                (time.perf_counter() - start) * 1000.0,
+                folder=self._current_folder,
+                report_dir=str(report_dir),
+                state="loaded" if loaded else "failed",
+                show_message=show_message,
+            )
+        return loaded
 
     @staticmethod
     def _records_match_for_refresh(existing: list[ImageRecord], incoming: list[ImageRecord]) -> bool:
@@ -12951,28 +13295,69 @@ class MainWindow(QMainWindow):
         return True
 
     def _load_ai_results(self, path: str | Path, *, show_message: bool = True) -> bool:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
+        result_state = "failed"
+        result_count = 0
         source_details = None
         cache_source = "file"
         try:
             source_details = inspect_ai_bundle_source(path)
+            if logger.enabled:
+                now = time.perf_counter()
+                logger.duration(
+                    "ai_results.load.inspect_source",
+                    (now - step_start) * 1000.0,
+                    path=str(path),
+                    cache_key=source_details.cache_key,
+                )
+                step_start = now
             bundle = None
             if self._current_folder and source_details.cache_key:
                 cached_entry = self._catalog_repository.load_ai_bundle(
                     self._current_folder,
                     cache_key=source_details.cache_key,
                 )
+                if logger.enabled:
+                    now = time.perf_counter()
+                    logger.duration(
+                        "ai_results.load.catalog_lookup",
+                        (now - step_start) * 1000.0,
+                        folder=self._current_folder,
+                        path=str(path),
+                        hit=cached_entry is not None,
+                    )
+                    step_start = now
                 if cached_entry is not None:
                     bundle = cached_entry.bundle
                     cache_source = "catalog"
             if bundle is None:
                 bundle = load_ai_bundle(path)
+                if logger.enabled:
+                    now = time.perf_counter()
+                    logger.duration(
+                        "ai_results.load.file_read",
+                        (now - step_start) * 1000.0,
+                        path=str(path),
+                    )
+                    step_start = now
         except (FileNotFoundError, ValueError, OSError) as exc:
             if show_message:
                 QMessageBox.warning(self, "AI Results", f"Could not load AI results.\n\n{exc}")
                 self.statusBar().showMessage("AI results load failed")
+            if logger.enabled:
+                logger.duration(
+                    "ai_results.load.total",
+                    (time.perf_counter() - start) * 1000.0,
+                    path=str(path),
+                    state="failed",
+                    error=str(exc),
+                )
             return False
 
         self._ai_bundle = bundle
+        result_count = len(bundle.results_by_path or {})
         self._settings.setValue(self.AI_RESULTS_KEY, source_details.source_path if source_details is not None else str(path))
         if self._active_ai_task is None and self._ai_stage_message != "AI review complete":
             self._ai_stage_index = 0
@@ -12982,8 +13367,28 @@ class MainWindow(QMainWindow):
             self._ai_progress_total = 0
             self._ai_progress_eta_text = ""
         self._refresh_ai_state()
+        if logger.enabled:
+            now = time.perf_counter()
+            logger.duration(
+                "ai_results.load.refresh_ai_state",
+                (now - step_start) * 1000.0,
+                path=str(path),
+                source=cache_source,
+                results=result_count,
+            )
+            step_start = now
 
         matched = bundle.count_matches(self._all_records)
+        if logger.enabled:
+            now = time.perf_counter()
+            logger.duration(
+                "ai_results.load.match_records",
+                (now - step_start) * 1000.0,
+                path=str(path),
+                matched=matched,
+                records=len(self._all_records),
+            )
+            step_start = now
         if (
             cache_source != "catalog"
             and source_details is not None
@@ -12995,12 +13400,34 @@ class MainWindow(QMainWindow):
                 cache_key=source_details.cache_key,
                 bundle=bundle,
             )
+            if logger.enabled:
+                now = time.perf_counter()
+                logger.duration(
+                    "ai_results.load.catalog_save",
+                    (now - step_start) * 1000.0,
+                    folder=self._current_folder,
+                    path=str(path),
+                    results=result_count,
+                )
+                step_start = now
         if show_message:
             source_name = Path(bundle.export_csv_path).name
             if cache_source == "catalog":
                 self.statusBar().showMessage(f"Loaded AI results from catalog cache ({matched} matched image(s))")
             else:
                 self.statusBar().showMessage(f"Loaded AI results from {source_name} ({matched} matched image(s))")
+        result_state = "loaded"
+        if logger.enabled:
+            logger.duration(
+                "ai_results.load.total",
+                (time.perf_counter() - start) * 1000.0,
+                path=str(path),
+                source=cache_source,
+                state=result_state,
+                results=result_count,
+                matched=matched,
+                show_message=show_message,
+            )
         return True
 
     def _clear_ai_results(self) -> None:
@@ -13074,10 +13501,32 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Opened AI report: {report_path.name}")
 
     def _refresh_ai_state(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
+
+        def log_step(event: str, step_started: float, **fields: object) -> float:
+            if not logger.enabled:
+                return step_started
+            now = time.perf_counter()
+            logger.duration(
+                event,
+                (now - step_started) * 1000.0,
+                mode=self._ui_mode,
+                records=len(self._all_records),
+                visible_records=len(self._records),
+                ai_loaded=self._ai_bundle is not None,
+                **fields,
+            )
+            return now
+
         ai_results = self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {}
         self.grid.set_ai_results(ai_results)
+        step_start = log_step("ai_state.refresh.grid_results", step_start, results=len(ai_results))
         self.details_view.refresh_rows()
+        step_start = log_step("ai_state.refresh.details_rows", step_start)
         self._start_scope_enrichment_task()
+        step_start = log_step("ai_state.refresh.scope_enrichment", step_start)
         current_path = self._current_visible_record_path()
         if self._all_records:
             self._apply_records_view(
@@ -13085,30 +13534,74 @@ class MainWindow(QMainWindow):
                 chunked=self._records_view_chunk_active(),
                 post_load_enrichment=self._records_view_chunk_post_load_enrichment,
             )
+        step_start = log_step("ai_state.refresh.records_view", step_start, current_path=current_path or "")
         self._refresh_viewport_mode()
+        step_start = log_step("ai_state.refresh.viewport", step_start)
         self._refresh_ai_summary_cache()
+        step_start = log_step("ai_state.refresh.summary_cache", step_start)
         self._update_ai_summary()
+        step_start = log_step("ai_state.refresh.summary_ui", step_start)
         self._update_ai_toolbar_state()
+        step_start = log_step("ai_state.refresh.toolbar", step_start)
         self._update_status()
+        step_start = log_step("ai_state.refresh.status", step_start)
         self._update_inspector_context()
+        step_start = log_step("ai_state.refresh.inspector", step_start)
         if self.preview.isVisible():
             index = self.grid.current_index()
             if index >= 0:
                 self._open_preview(index)
+        step_start = log_step("ai_state.refresh.preview", step_start, preview_visible=self.preview.isVisible())
+        if logger.enabled:
+            logger.duration(
+                "ai_state.refresh.total",
+                (time.perf_counter() - start) * 1000.0,
+                mode=self._ui_mode,
+                records=len(self._all_records),
+                visible_records=len(self._records),
+                results=len(ai_results),
+            )
 
     def _update_ai_toolbar_state(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
+
+        def log_step(event: str, step_started: float, **fields: object) -> float:
+            if not logger.enabled:
+                return step_started
+            now = time.perf_counter()
+            logger.duration(
+                event,
+                (now - step_started) * 1000.0,
+                mode=self._ui_mode,
+                records=len(self._all_records),
+                ai_loaded=self._ai_bundle is not None,
+                **fields,
+            )
+            return now
+
         current_folder = bool(self._current_folder)
         ai_loaded = self._ai_bundle is not None
         ai_runtime_ready = self._ai_runtime_available()
         ai_model_ready = self._ai_model_available()
         semantic_model_ready = self._semantic_model_available()
+        step_start = log_step(
+            "ai_toolbar_state.readiness",
+            step_start,
+            runtime_ready=ai_runtime_ready,
+            model_ready=ai_model_ready,
+            semantic_ready=semantic_model_ready,
+        )
         ai_paths = self._hidden_ai_paths_for_current_folder()
         saved_exists = False
         if self._ui_mode == "ai":
             # Hidden-cache existence checks can hit slow shares; only probe them in AI mode.
             saved_exists = bool(ai_paths and ai_paths.ranked_export_path.exists())
+        step_start = log_step("ai_toolbar_state.saved_probe", step_start, saved_exists=saved_exists, has_paths=ai_paths is not None)
         current_ai = self._ai_result_for_index(self.grid.current_index())
         can_compare_group = bool(current_ai and current_ai.group_size > 1)
+        step_start = log_step("ai_toolbar_state.current_ai", step_start, can_compare_group=can_compare_group)
 
         if self.actions is not None:
             can_use_ai_tools = (
@@ -13183,8 +13676,10 @@ class MainWindow(QMainWindow):
                 self.actions.filter_actions[FilterMode.AI_TOP_PICKS].setEnabled(ai_loaded)
             if FilterMode.AI_DISAGREEMENTS in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_DISAGREEMENTS].setEnabled(ai_loaded)
+        step_start = log_step("ai_toolbar_state.actions", step_start)
         for mode, action in self._ai_state_actions.items():
             action.setEnabled(ai_loaded or mode == AIStateFilter.ALL)
+        step_start = log_step("ai_toolbar_state.filter_actions", step_start)
 
         if self._active_ai_task is not None:
             self.ai_status_label.setText(self._build_ai_progress_text())
@@ -13207,8 +13702,10 @@ class MainWindow(QMainWindow):
             self.ai_status_label.setText("AI cache stays folder-local in virtual scopes")
         else:
             self.ai_status_label.setText("No AI cache for this folder yet")
+        step_start = log_step("ai_toolbar_state.status_label", step_start)
 
         active_checkpoint = self._current_trained_checkpoint_path()
+        step_start = log_step("ai_toolbar_state.active_checkpoint", step_start, has_checkpoint=active_checkpoint is not None)
         runtime_lines = [
             f"Python: {self._ai_runtime.python_executable}",
             f"Engine: {self._ai_runtime.engine_root}",
@@ -13245,6 +13742,7 @@ class MainWindow(QMainWindow):
         tooltip_text = "\n".join(runtime_lines)
         self.ai_status_label.setToolTip(tooltip_text)
         self.ai_status_widget.setToolTip(tooltip_text)
+        step_start = log_step("ai_toolbar_state.tooltip", step_start, tooltip_lines=len(runtime_lines))
         active_ai_status = any(
             task is not None
             for task in (
@@ -13257,23 +13755,68 @@ class MainWindow(QMainWindow):
         self._sync_ai_status_visibility(active=active_ai_status, message=self._ai_stage_message)
         self._refresh_ai_progress_bar()
         self._schedule_workspace_toolbar_overflow_update("ai")
+        step_start = log_step("ai_toolbar_state.progress_overflow", step_start, active_ai_status=active_ai_status)
         self._update_action_states()
+        step_start = log_step("ai_toolbar_state.action_states", step_start)
+        if logger.enabled:
+            logger.duration(
+                "ai_toolbar_state.total",
+                (time.perf_counter() - start) * 1000.0,
+                mode=self._ui_mode,
+                records=len(self._all_records),
+                ai_loaded=ai_loaded,
+                saved_exists=saved_exists,
+            )
 
     def _run_ai_pipeline(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
+
+        def log_step(event: str, step_started: float, **fields: object) -> float:
+            if not logger.enabled:
+                return step_started
+            now = time.perf_counter()
+            logger.duration(
+                event,
+                (now - step_started) * 1000.0,
+                folder=self._current_folder,
+                records=len(self._all_records),
+                semantic_sidecar=self._ai_semantic_sidecar_enabled,
+                **fields,
+            )
+            return now
+
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before running AI review")
+            if logger.enabled:
+                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, reason="no_folder")
             return
-        if not self._ensure_ai_runtime_available(title="Run AI Review"):
+
+        runtime_available = self._ensure_ai_runtime_available(title="Run AI Review")
+        step_start = log_step("ai.run_prepare.runtime_check", step_start, available=runtime_available)
+        if not runtime_available:
+            if logger.enabled:
+                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="runtime_missing")
             return
-        if not self._ensure_ai_model_available(title="Run AI Review"):
+        model_available = self._ensure_ai_model_available(title="Run AI Review")
+        step_start = log_step("ai.run_prepare.model_check", step_start, available=model_available)
+        if not model_available:
+            if logger.enabled:
+                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="model_missing")
             return
-        if not self._ensure_semantic_model_available(title="Run AI Review"):
+        semantic_available = self._ensure_semantic_model_available(title="Run AI Review")
+        step_start = log_step("ai.run_prepare.semantic_model_check", step_start, available=semantic_available)
+        if not semantic_available:
+            if logger.enabled:
+                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="semantic_model_missing")
             return
         self._refresh_ai_runtime_preferences()
+        step_start = log_step("ai.run_prepare.refresh_preferences", step_start)
         if self._active_ai_task is not None:
             self.statusBar().showMessage("AI review is already running for the current folder")
+            if logger.enabled:
+                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="already_running")
             return
 
         try:
@@ -13281,31 +13824,71 @@ class MainWindow(QMainWindow):
             training_paths = self._ai_training_paths_for_folder(self._current_folder)
             labels_dir = training_paths.labels_dir if training_paths is not None and training_paths.labels_dir.exists() else None
             reference_bank_path = Path(self._active_reference_bank_path) if self._active_reference_bank_path else None
+            step_start = log_step(
+                "ai.run_prepare.paths",
+                step_start,
+                has_training_paths=training_paths is not None,
+                has_labels=labels_dir is not None,
+                has_reference_bank=reference_bank_path is not None,
+            )
             runtime = self._ai_runtime
             active_checkpoint = self._current_trained_checkpoint_path()
             if active_checkpoint is not None:
                 runtime = replace(runtime, checkpoint_path=active_checkpoint)
             runtime = replace(runtime, semantic_sidecar_enabled=self._ai_semantic_sidecar_enabled)
+            step_start = log_step(
+                "ai.run_prepare.runtime",
+                step_start,
+                checkpoint=str(runtime.checkpoint_path),
+                device=runtime.device,
+                batch_size=runtime.batch_size,
+                num_workers=runtime.num_workers,
+                local_stage_mode=runtime.local_stage_mode,
+            )
             cache_keys = build_ai_stage_cache_keys(
                 self._all_records,
                 runtime,
                 labels_dir=labels_dir,
                 reference_bank_path=reference_bank_path,
             )
+            step_start = log_step(
+                "ai.run_prepare.cache_keys",
+                step_start,
+                embedding_key=cache_keys.embedding_cache_key,
+                cluster_key=cache_keys.cluster_cache_key,
+                report_key=cache_keys.report_cache_key,
+                semantic_key=cache_keys.semantic_cache_key,
+            )
             cached_ai_workflow = self._catalog_repository.load_ai_workflow_cache(self._current_folder)
+            step_start = log_step(
+                "ai.run_prepare.workflow_cache_lookup",
+                step_start,
+                hit=cached_ai_workflow is not None,
+                cached_embedding_key=getattr(cached_ai_workflow, "embedding_cache_key", ""),
+                cached_cluster_key=getattr(cached_ai_workflow, "cluster_cache_key", ""),
+                cached_report_key=getattr(cached_ai_workflow, "report_cache_key", ""),
+                cached_semantic_key=getattr(cached_ai_workflow, "semantic_cache_key", ""),
+            )
+            report_ready = ai_report_artifacts_ready(paths)
+            step_start = log_step("ai.run_prepare.report_artifacts", step_start, ready=report_ready)
+            semantic_ready = False
+            if self._ai_semantic_sidecar_enabled:
+                semantic_ready = ai_semantic_artifacts_ready(paths)
+                step_start = log_step("ai.run_prepare.semantic_artifacts", step_start, ready=semantic_ready)
             if (
                 cached_ai_workflow is not None
                 and cached_ai_workflow.report_cache_key == cache_keys.report_cache_key
-                and ai_report_artifacts_ready(paths)
+                and report_ready
                 and (
                     not self._ai_semantic_sidecar_enabled
                     or (
                         cached_ai_workflow.semantic_cache_key == cache_keys.semantic_cache_key
-                        and ai_semantic_artifacts_ready(paths)
+                        and semantic_ready
                     )
                 )
             ):
                 if self._load_hidden_ai_results_for_current_folder(show_message=False):
+                    step_start = log_step("ai.run_prepare.reuse_hidden_results", step_start, reused=True)
                     self._ai_stage_index = 4 if self._ai_semantic_sidecar_enabled else 3
                     self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
                     self._ai_stage_message = "Reused cached AI results"
@@ -13315,29 +13898,43 @@ class MainWindow(QMainWindow):
                     self.mode_tabs.setCurrentIndex(1)
                     self._update_ai_toolbar_state()
                     self.statusBar().showMessage(f"Reused cached AI review results for {self._current_folder}")
+                    if logger.enabled:
+                        logger.duration(
+                            "ai.run_prepare.reused_total",
+                            (time.perf_counter() - start) * 1000.0,
+                            folder=self._current_folder,
+                            records=len(self._all_records),
+                            semantic_sidecar=self._ai_semantic_sidecar_enabled,
+                        )
                     return
+                step_start = log_step("ai.run_prepare.reuse_hidden_results", step_start, reused=False)
             skip_extract = False
             skip_cluster = False
+            cluster_ready = ai_cluster_artifacts_ready(paths)
+            step_start = log_step("ai.run_prepare.cluster_artifacts", step_start, ready=cluster_ready)
+            embedding_ready = ai_embedding_artifacts_ready(paths)
+            step_start = log_step("ai.run_prepare.embedding_artifacts", step_start, ready=embedding_ready)
             if (
                 cached_ai_workflow is not None
                 and cached_ai_workflow.cluster_cache_key == cache_keys.cluster_cache_key
-                and ai_cluster_artifacts_ready(paths)
+                and cluster_ready
             ):
                 skip_extract = True
                 skip_cluster = True
             elif (
                 cached_ai_workflow is not None
                 and cached_ai_workflow.embedding_cache_key == cache_keys.embedding_cache_key
-                and ai_embedding_artifacts_ready(paths)
+                and embedding_ready
             ):
                 skip_extract = True
-            elif cached_ai_workflow is None and ai_cluster_artifacts_ready(paths):
+            elif cached_ai_workflow is None and cluster_ready:
                 # Interrupted runs can leave valid folder-local DINO artifacts before the
                 # catalog cache is saved. Reuse them so semantic recovery does not start over.
                 skip_extract = True
                 skip_cluster = True
-            elif cached_ai_workflow is None and ai_embedding_artifacts_ready(paths):
+            elif cached_ai_workflow is None and embedding_ready:
                 skip_extract = True
+            step_start = log_step("ai.run_prepare.cache_decision", step_start, skip_extract=skip_extract, skip_cluster=skip_cluster)
             task = AIRunTask(
                 folder=Path(self._current_folder),
                 runtime=runtime,
@@ -13347,7 +13944,16 @@ class MainWindow(QMainWindow):
                 skip_extract=skip_extract,
                 skip_cluster=skip_cluster,
             )
+            step_start = log_step("ai.run_prepare.task_construct", step_start)
         except Exception as exc:
+            if logger.enabled:
+                logger.duration(
+                    "ai.run_prepare.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self._current_folder,
+                    records=len(self._all_records),
+                    error=str(exc),
+                )
             QMessageBox.warning(self, "AI Review", f"Could not prepare the AI run.\n\n{exc}")
             return
 
@@ -13356,7 +13962,11 @@ class MainWindow(QMainWindow):
         task.signals.progress.connect(self._handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(self._handle_ai_run_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_ai_run_failed, Qt.ConnectionType.QueuedConnection)
+        step_start = log_step("ai.run_prepare.signal_connect", step_start)
         self._active_ai_task = task
+        self._defer_background_review_work_for_ai(reason="run_ai_review")
+        step_start = log_step("ai.run_prepare.defer_background_work", step_start)
+        self._active_ai_run_start_perf = start if logger.enabled else 0.0
         self._active_ai_embedding_cache_key = cache_keys.embedding_cache_key
         self._active_ai_cluster_cache_key = cache_keys.cluster_cache_key
         self._active_ai_report_cache_key = cache_keys.report_cache_key
@@ -13373,6 +13983,7 @@ class MainWindow(QMainWindow):
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
         self._update_ai_toolbar_state()
+        step_start = log_step("ai.run_prepare.toolbar_state", step_start)
         if skip_cluster:
             self.statusBar().showMessage(f"Queued AI review for {self._current_folder} using cached embeddings and clusters")
         elif skip_extract:
@@ -13380,6 +13991,7 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Queued AI review for {self._current_folder}")
         self._ai_run_pool.start(task)
+        step_start = log_step("ai.run_prepare.pool_start", step_start)
         if logger.enabled:
             logger.duration(
                 "ai.run_queued",
@@ -13746,6 +14358,30 @@ class MainWindow(QMainWindow):
     def _handle_ai_run_finished(self, folder: str, report_dir: str, html_report_path: str) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        step_start = start
+
+        def log_step(event: str, step_started: float, **fields: object) -> float:
+            if not logger.enabled:
+                return step_started
+            now = time.perf_counter()
+            logger.duration(
+                event,
+                (now - step_started) * 1000.0,
+                folder=folder,
+                report_dir=report_dir,
+                same_folder=normalized_path_key(folder) == normalized_path_key(self._current_folder),
+                **fields,
+            )
+            return now
+
+        if logger.enabled and self._active_ai_run_start_perf:
+            logger.duration(
+                "ai.run_ui_total",
+                (time.perf_counter() - self._active_ai_run_start_perf) * 1000.0,
+                folder=folder,
+                report_dir=report_dir,
+                phase="worker_finished_signal",
+            )
         self._active_ai_task = None
         embedding_cache_key = self._active_ai_embedding_cache_key
         cluster_cache_key = self._active_ai_cluster_cache_key
@@ -13762,6 +14398,16 @@ class MainWindow(QMainWindow):
                 report_dir=str(paths.report_dir),
                 semantic_cache_key=semantic_cache_key,
             )
+            step_start = log_step(
+                "ai.run_finished.catalog_save",
+                step_start,
+                embedding_key=embedding_cache_key,
+                cluster_key=cluster_cache_key,
+                report_key=report_cache_key,
+                semantic_key=semantic_cache_key,
+            )
+        else:
+            step_start = log_step("ai.run_finished.catalog_save", step_start, skipped=True)
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
         self._active_ai_report_cache_key = ""
@@ -13776,12 +14422,30 @@ class MainWindow(QMainWindow):
         completion_bundle: AIBundle | None = None
         if same_folder:
             self._load_ai_results(report_dir, show_message=False)
+            step_start = log_step(
+                "ai.run_finished.load_results",
+                step_start,
+                loaded=self._ai_bundle is not None,
+                results=len(self._ai_bundle.results_by_path) if self._ai_bundle and self._ai_bundle.results_by_path else 0,
+            )
             completion_bundle = self._ai_bundle
             self.mode_tabs.setCurrentIndex(1)
+            step_start = log_step("ai.run_finished.mode_switch", step_start)
             self.statusBar().showMessage(f"AI review complete. Loaded {Path(html_report_path).name}")
         else:
             self._update_ai_toolbar_state()
+            step_start = log_step("ai.run_finished.toolbar_state", step_start)
             self.statusBar().showMessage(f"AI review complete for {folder}")
+        if logger.enabled:
+            logger.duration(
+                "ai.run_finished_handler.pre_dialog",
+                (time.perf_counter() - start) * 1000.0,
+                folder=folder,
+                report_dir=report_dir,
+                same_folder=same_folder,
+                loaded_results=completion_bundle is not None,
+            )
+        dialog_start = time.perf_counter() if logger.enabled else 0.0
         self._show_ai_review_complete_dialog(
             folder=folder,
             report_dir=report_dir,
@@ -13791,16 +14455,34 @@ class MainWindow(QMainWindow):
         )
         if logger.enabled:
             logger.duration(
+                "ai.run_finished.dialog",
+                (time.perf_counter() - dialog_start) * 1000.0,
+                folder=folder,
+                report_dir=report_dir,
+                same_folder=same_folder,
+            )
+            logger.duration(
                 "ai.run_finished_handler",
                 (time.perf_counter() - start) * 1000.0,
                 folder=folder,
                 report_dir=report_dir,
                 same_folder=same_folder,
             )
+        self._resume_deferred_background_review_work_after_ai(reason="finished")
+        self._active_ai_run_start_perf = 0.0
 
     def _handle_ai_run_failed(self, folder: str, message: str) -> None:
-        perf_logger().log("ai.run_failed", folder=folder, message=message)
+        logger = perf_logger()
+        if logger.enabled and self._active_ai_run_start_perf:
+            logger.duration(
+                "ai.run_ui_total",
+                (time.perf_counter() - self._active_ai_run_start_perf) * 1000.0,
+                folder=folder,
+                phase="failed_signal",
+            )
+        logger.log("ai.run_failed", folder=folder, message=message)
         self._active_ai_task = None
+        self._active_ai_run_start_perf = 0.0
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
         self._active_ai_report_cache_key = ""
@@ -13811,6 +14493,7 @@ class MainWindow(QMainWindow):
         if normalized_path_key(folder) == normalized_path_key(self._current_folder):
             QMessageBox.warning(self, "AI Review Failed", message)
             self.statusBar().showMessage("AI review failed")
+        self._resume_deferred_background_review_work_after_ai(reason="failed")
 
     def _set_ai_status_visible(self, visible: bool) -> None:
         visible = bool(visible)
@@ -15227,6 +15910,7 @@ class MainWindow(QMainWindow):
         if hidden_changed and self._current_folder and self._scope_kind == "folder":
             current_path = self._current_path_for_index(self.grid.current_index())
             self._folder_records = scan_child_folders(self._current_folder, include_hidden=self._show_hidden_folders)
+            self._refresh_directory_navigation_buttons()
             self._apply_records_view(current_path=current_path)
         if compact_changed:
             self._remember_current_folder_view_state()
@@ -16964,7 +17648,8 @@ class MainWindow(QMainWindow):
         if current_path:
             index = self._record_index_by_path.get(current_path)
             if index is not None:
-                self.grid.set_current_index(index)
+                if index != self.grid.current_index():
+                    self.grid.set_current_index(index)
                 restored_current = True
         if records and not restored_current and structural_changed:
             self.grid.set_current_index(0)
