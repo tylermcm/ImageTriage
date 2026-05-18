@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from queue import Empty, SimpleQueue
+from threading import Lock
 import time
+from typing import Callable
 
 from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygon
@@ -19,6 +21,7 @@ class ThumbnailRequest:
     key: ThumbnailKey
     path: str
     target_size: QSize
+    drop_if_not_wanted: bool = True
 
 
 class ThumbnailTask(QRunnable):
@@ -28,20 +31,27 @@ class ThumbnailTask(QRunnable):
         memory_cache: MemoryThumbnailCache,
         disk_cache: DiskThumbnailCache,
         result_queue: SimpleQueue,
+        is_key_wanted: Callable[[ThumbnailKey], bool] | None = None,
     ) -> None:
         super().__init__()
         self.request = request
         self.memory_cache = memory_cache
         self.disk_cache = disk_cache
         self.result_queue = result_queue
+        self.is_key_wanted = is_key_wanted
         self.setAutoDelete(True)
 
     def run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         source = "decode"
+        if self._drop_stale_result(start, "pre_cache"):
+            return
+
         cached = self.memory_cache.get(self.request.key)
         if cached is not None:
+            if self._drop_stale_result(start, "memory"):
+                return
             self.result_queue.put(("ready", self.request.key, cached))
             if logger.enabled:
                 logger.duration(
@@ -57,6 +67,8 @@ class ThumbnailTask(QRunnable):
         disk_image = self.disk_cache.load(self.request.key)
         if disk_image is not None:
             self.memory_cache.put(self.request.key, disk_image)
+            if self._drop_stale_result(start, "disk"):
+                return
             self.result_queue.put(("ready", self.request.key, disk_image))
             if logger.enabled:
                 logger.duration(
@@ -71,10 +83,14 @@ class ThumbnailTask(QRunnable):
 
         skip_reason = thumbnail_skip_reason(self.request.path, self.request.target_size)
         if skip_reason:
+            if self._drop_stale_result(start, "pre_placeholder"):
+                return
             source = "placeholder"
             image = _placeholder_thumbnail(self.request.path, self.request.target_size, skip_reason)
             self.memory_cache.put(self.request.key, image)
             self.disk_cache.save(self.request.key, image)
+            if self._drop_stale_result(start, "placeholder"):
+                return
             self.result_queue.put(("ready", self.request.key, image))
             if logger.enabled:
                 logger.duration(
@@ -98,6 +114,8 @@ class ThumbnailTask(QRunnable):
             image = _placeholder_thumbnail(self.request.path, self.request.target_size, message)
             self.memory_cache.put(self.request.key, image)
             self.disk_cache.save(self.request.key, image)
+            if self._drop_stale_result(start, "failed_placeholder"):
+                return
             self.result_queue.put(("ready", self.request.key, image))
             if logger.enabled:
                 logger.duration(
@@ -121,6 +139,8 @@ class ThumbnailTask(QRunnable):
 
         self.memory_cache.put(self.request.key, image)
         self.disk_cache.save(self.request.key, image)
+        if self._drop_stale_result(start, "decode"):
+            return
         self.result_queue.put(("ready", self.request.key, image))
         if logger.enabled:
             logger.duration(
@@ -133,6 +153,27 @@ class ThumbnailTask(QRunnable):
                 image_width=image.width(),
                 image_height=image.height(),
             )
+
+    def _drop_stale_result(self, start: float, stage: str) -> bool:
+        if (
+            not self.request.drop_if_not_wanted
+            or self.is_key_wanted is None
+            or self.is_key_wanted(self.request.key)
+        ):
+            return False
+        self.result_queue.put(("stale", self.request.key, stage))
+        logger = perf_logger()
+        if logger.enabled:
+            logger.duration(
+                "thumbnail.task",
+                (time.perf_counter() - start) * 1000.0,
+                source="stale",
+                stage=stage,
+                path=self.request.path,
+                width=self.request.target_size.width(),
+                height=self.request.target_size.height(),
+            )
+        return True
 
 
 class ThumbnailManager(QObject):
@@ -153,6 +194,9 @@ class ThumbnailManager(QObject):
         worker_count = max_workers or 2
         self.pool.setMaxThreadCount(worker_count)
         self._pending: set[ThumbnailKey] = set()
+        self._wanted_keys: set[ThumbnailKey] = set()
+        self._wanted_keys_active = False
+        self._wanted_keys_lock = Lock()
         self._result_queue: SimpleQueue = SimpleQueue()
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(12)
@@ -170,7 +214,25 @@ class ThumbnailManager(QObject):
     def get_cached(self, record: ImageRecord, target_size: QSize) -> QImage | None:
         return self.memory_cache.get(self.make_key(record, target_size))
 
-    def request_thumbnail(self, record: ImageRecord, target_size: QSize, priority: int = 0) -> ThumbnailKey:
+    def set_wanted_keys(self, keys: set[ThumbnailKey]) -> None:
+        with self._wanted_keys_lock:
+            self._wanted_keys = set(keys)
+            self._wanted_keys_active = True
+
+    def _is_key_wanted(self, key: ThumbnailKey) -> bool:
+        with self._wanted_keys_lock:
+            if not self._wanted_keys_active:
+                return True
+            return key in self._wanted_keys
+
+    def request_thumbnail(
+        self,
+        record: ImageRecord,
+        target_size: QSize,
+        priority: int = 0,
+        *,
+        drop_if_not_wanted: bool = True,
+    ) -> ThumbnailKey:
         key = self.make_key(record, target_size)
         cached = self.memory_cache.get(key)
         if cached is not None:
@@ -183,8 +245,13 @@ class ThumbnailManager(QObject):
 
         self._pending.add(key)
         perf_logger().log("thumbnail.request", state="queued", path=record.path, width=target_size.width(), height=target_size.height(), priority=priority)
-        request = ThumbnailRequest(key=key, path=record.path, target_size=target_size)
-        task = ThumbnailTask(request, self.memory_cache, self.disk_cache, self._result_queue)
+        request = ThumbnailRequest(
+            key=key,
+            path=record.path,
+            target_size=target_size,
+            drop_if_not_wanted=drop_if_not_wanted,
+        )
+        task = ThumbnailTask(request, self.memory_cache, self.disk_cache, self._result_queue, self._is_key_wanted)
         self.pool.start(task, priority)
         if not self._drain_timer.isActive():
             self._drain_timer.start()
@@ -201,7 +268,7 @@ class ThumbnailManager(QObject):
             self._pending.discard(key)
             if state == "ready":
                 self.thumbnail_ready.emit(key, payload)
-            else:
+            elif state == "failed":
                 self.thumbnail_failed.emit(key, payload)
             processed += 1
 

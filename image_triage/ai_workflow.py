@@ -437,6 +437,16 @@ class AIRunTask(QRunnable):
                     _log_line(log_handle, f"[stage {stage_index}/{total_stages}] {stage_name}: {stage_message}")
                     _log_line(log_handle, f"cwd: {self.runtime.engine_root}")
                     _log_line(log_handle, f"command: {_format_command_for_log(command)}")
+                    if logger.enabled:
+                        logger.log(
+                            "ai.stage.command_start",
+                            folder=folder_text,
+                            stage=stage_name,
+                            stage_index=stage_index,
+                            stage_total=total_stages,
+                            script=script_relative_path,
+                            command_executable=Path(command[0]).name if command else "",
+                        )
                     stage_start = time.perf_counter() if logger.enabled else 0.0
                     completed = _run_command_with_live_output(
                         command,
@@ -449,6 +459,13 @@ class AIRunTask(QRunnable):
                             )
                         ),
                         output_callback=lambda chunk: _log_chunk(log_handle, chunk),
+                        log_context={
+                            "folder": folder_text,
+                            "stage": stage_name,
+                            "stage_index": stage_index,
+                            "stage_total": total_stages,
+                            "script": script_relative_path,
+                        },
                     )
                     if logger.enabled:
                         logger.duration(
@@ -461,6 +478,14 @@ class AIRunTask(QRunnable):
                             return_code=completed.returncode,
                             stdout_bytes=len(completed.stdout or ""),
                             stderr_bytes=len(completed.stderr or ""),
+                        )
+                        logger.log(
+                            "ai.stage.artifacts",
+                            folder=folder_text,
+                            stage=stage_name,
+                            stage_index=stage_index,
+                            stage_total=total_stages,
+                            **_artifact_snapshot(self.paths),
                         )
                     _log_line(log_handle)
                     _log_line(log_handle, f"return code: {completed.returncode}")
@@ -785,6 +810,38 @@ def ai_semantic_artifacts_ready(paths: AIWorkflowPaths) -> bool:
     return paths.semantic_export_path.exists() and paths.semantic_summary_path.exists()
 
 
+def _path_size_or_zero(path: Path) -> int:
+    try:
+        return path.stat().st_size if path.exists() else 0
+    except OSError:
+        return 0
+
+
+def _artifact_snapshot(paths: AIWorkflowPaths) -> dict[str, object]:
+    embeddings_path = paths.artifacts_dir / "embeddings.npy"
+    images_path = paths.artifacts_dir / "images.csv"
+    clusters_path = paths.artifacts_dir / "clusters.csv"
+    image_ids_path = paths.artifacts_dir / "image_ids.json"
+    return {
+        "images_csv": images_path.exists(),
+        "images_csv_bytes": _path_size_or_zero(images_path),
+        "embeddings": embeddings_path.exists(),
+        "embeddings_bytes": _path_size_or_zero(embeddings_path),
+        "image_ids": image_ids_path.exists(),
+        "image_ids_bytes": _path_size_or_zero(image_ids_path),
+        "clusters": clusters_path.exists(),
+        "clusters_bytes": _path_size_or_zero(clusters_path),
+        "ranked_export": paths.ranked_export_path.exists(),
+        "ranked_export_bytes": _path_size_or_zero(paths.ranked_export_path),
+        "html_report": paths.html_report_path.exists(),
+        "html_report_bytes": _path_size_or_zero(paths.html_report_path),
+        "semantic_export": paths.semantic_export_path.exists(),
+        "semantic_export_bytes": _path_size_or_zero(paths.semantic_export_path),
+        "semantic_summary": paths.semantic_summary_path.exists(),
+        "semantic_summary_bytes": _path_size_or_zero(paths.semantic_summary_path),
+    }
+
+
 def _remove_tree_if_present(path: Path) -> None:
     if not path.exists():
         return
@@ -810,6 +867,9 @@ def stage_supported_images(
     progress_callback: Callable[[int, int, str, str], None] | None = None,
 ) -> Path:
     """Copy supported images into a local staging workspace for faster AI processing."""
+    logger = perf_logger()
+    total_start = time.perf_counter() if logger.enabled else 0.0
+    step_start = total_start
     stage_root, stage_root_message = _ensure_stage_root(runtime.local_stage_root)
     if stage_root_message and progress_callback is not None:
         progress_callback(0, 0, "", stage_root_message)
@@ -820,6 +880,17 @@ def stage_supported_images(
     supported_extensions = load_supported_extensions(runtime.extraction_config_path)
     source_folder = source_folder.resolve()
     previous_entries = _load_stage_manifest(manifest_path, source_folder)
+    if logger.enabled:
+        logger.duration(
+            "ai.staging.setup",
+            (time.perf_counter() - step_start) * 1000.0,
+            folder=str(source_folder),
+            stage_root=str(stage_root),
+            workspace_dir=str(workspace_dir),
+            previous_entries=len(previous_entries),
+            extensions=len(supported_extensions),
+        )
+        step_start = time.perf_counter()
     candidate_paths = sorted(
         (
             path
@@ -828,11 +899,21 @@ def stage_supported_images(
         ),
         key=lambda item: item.relative_to(source_folder).as_posix().casefold(),
     )
+    if logger.enabled:
+        logger.duration(
+            "ai.staging.scan",
+            (time.perf_counter() - step_start) * 1000.0,
+            folder=str(source_folder),
+            candidates=len(candidate_paths),
+        )
+        step_start = time.perf_counter()
 
     total = len(candidate_paths)
     start_time = time.monotonic()
     copied_count = 0
     reused_count = 0
+    copied_bytes = 0
+    reused_bytes = 0
     current_entries: dict[str, dict[str, int]] = {}
     if progress_callback is not None:
         progress_callback(0, total, "", f"Staging images locally (0/{total})")
@@ -850,6 +931,7 @@ def stage_supported_images(
         cached_signature = previous_entries.get(relative_key)
         if destination.exists() and cached_signature == signature:
             reused_count += 1
+            reused_bytes += signature["size"]
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
             temp_destination = destination.with_name(destination.name + ".partial")
@@ -858,6 +940,7 @@ def stage_supported_images(
             shutil.copy2(path, temp_destination)
             temp_destination.replace(destination)
             copied_count += 1
+            copied_bytes += signature["size"]
         if progress_callback is not None and (index == total or index == 1 or index % 100 == 0):
             progress_callback(
                 index,
@@ -867,10 +950,12 @@ def stage_supported_images(
             )
 
     stale_entries = set(previous_entries) - set(current_entries)
+    stale_removed = 0
     for relative_key in stale_entries:
         stale_path = input_dir / Path(relative_key)
         if stale_path.exists():
             stale_path.unlink(missing_ok=True)
+            stale_removed += 1
     _prune_empty_stage_directories(input_dir)
     _write_stage_manifest(
         manifest_path=manifest_path,
@@ -883,6 +968,19 @@ def stage_supported_images(
             total,
             "",
             f"Staging ready ({copied_count} copied, {reused_count} cached)",
+        )
+    if logger.enabled:
+        logger.duration(
+            "ai.staging.finished",
+            (time.perf_counter() - total_start) * 1000.0,
+            folder=str(source_folder),
+            input_dir=str(input_dir),
+            total=total,
+            copied=copied_count,
+            reused=reused_count,
+            stale_removed=stale_removed,
+            copied_bytes=copied_bytes,
+            reused_bytes=reused_bytes,
         )
     return input_dir
 
@@ -1226,21 +1324,54 @@ def _run_command_with_live_output(
     cwd: Path,
     progress_callback: Callable[[str], None] | None = None,
     output_callback: Callable[[str], None] | None = None,
+    log_context: dict[str, object] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    logger = perf_logger()
+    total_start = time.perf_counter() if logger.enabled else 0.0
+    context = dict(log_context or {})
+    if logger.enabled:
+        logger.log(
+            "ai.command.start",
+            cwd=str(cwd),
+            executable=Path(command[0]).name if command else "",
+            args=len(command),
+            **context,
+        )
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
-    process = subprocess.Popen(
-        command,
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=env,
-    )
+    spawn_start = time.perf_counter() if logger.enabled else 0.0
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+    except Exception as exc:
+        if logger.enabled:
+            logger.duration(
+                "ai.command.spawn_failed",
+                (time.perf_counter() - spawn_start) * 1000.0,
+                error=str(exc),
+                **context,
+            )
+        raise
+    if logger.enabled:
+        logger.duration(
+            "ai.command.spawn",
+            (time.perf_counter() - spawn_start) * 1000.0,
+            pid=process.pid,
+            **context,
+        )
 
     chunks: list[str] = []
     buffer = ""
+    output_chunks = 0
+    progress_lines = 0
+    first_output_logged = False
     assert process.stdout is not None
     try:
         for chunk in iter(process.stdout.readline, ""):
@@ -1248,6 +1379,15 @@ def _run_command_with_live_output(
                 break
             if not chunk:
                 continue
+            output_chunks += 1
+            if logger.enabled and not first_output_logged:
+                first_output_logged = True
+                logger.duration(
+                    "ai.command.first_output",
+                    (time.perf_counter() - total_start) * 1000.0,
+                    pid=process.pid,
+                    **context,
+                )
             if output_callback is not None:
                 output_callback(chunk)
             chunks.append(chunk)
@@ -1258,6 +1398,7 @@ def _run_command_with_live_output(
                 if is_terminated:
                     line = f"{buffer}{segment}".strip()
                     if line and progress_callback is not None:
+                        progress_lines += 1
                         progress_callback(line)
                     buffer = ""
                 else:
@@ -1269,12 +1410,27 @@ def _run_command_with_live_output(
             pass
 
     if buffer.strip() and progress_callback is not None:
+        progress_lines += 1
         progress_callback(buffer.strip())
 
+    return_code = process.wait()
+    stdout = "".join(chunks)
+    if logger.enabled:
+        logger.duration(
+            "ai.command.total",
+            (time.perf_counter() - total_start) * 1000.0,
+            pid=process.pid,
+            return_code=return_code,
+            stdout_bytes=len(stdout),
+            output_chunks=output_chunks,
+            progress_lines=progress_lines,
+            first_output=first_output_logged,
+            **context,
+        )
     return subprocess.CompletedProcess(
         args=command,
-        returncode=process.wait(),
-        stdout="".join(chunks),
+        returncode=return_code,
+        stdout=stdout,
         stderr="",
     )
 

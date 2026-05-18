@@ -18,6 +18,7 @@ from image_triage.ai_results import (
     build_ai_bundle_from_results,
     inspect_ai_bundle_source,
 )
+from image_triage.ai_workflow import default_ai_workflow_runtime
 from image_triage.catalog import CatalogRepository
 from image_triage.models import ImageRecord
 from image_triage.review_workflows import BurstRecommendation, TasteProfile, build_review_scoring_cache_key
@@ -110,6 +111,9 @@ class _ScopeStartStub:
         self._current_folder = ""
         self._scope_kind = "catalog"
         self._ai_bundle = None
+        self._active_ai_task = None
+        self._ai_deferred_background_work = False
+        self._ai_deferred_background_scope_key = ""
         self._review_intelligence = None
         self._scope_enrichment_token = 0
         self._active_scope_enrichment_task = None
@@ -123,6 +127,9 @@ class _ScopeStartStub:
 
     def _cancel_scope_enrichment_task(self) -> None:
         self._active_scope_enrichment_task = None
+
+    def _mark_background_review_work_deferred_for_ai(self, *, reason: str) -> None:
+        MainWindow._mark_background_review_work_deferred_for_ai(self, reason=reason)
 
     def _refresh_catalog_status_indicator(self) -> None:
         self._refresh_calls += 1
@@ -171,6 +178,9 @@ class _SettingsStub:
     def __init__(self) -> None:
         self.values: dict[str, object] = {}
 
+    def value(self, key: str, default: object = None, value_type: object = None) -> object:
+        return self.values.get(key, default)
+
     def setValue(self, key: str, value: object) -> None:
         self.values[key] = value
 
@@ -205,6 +215,38 @@ class _WindowAiLoadStub:
 
     def showMessage(self, message: str) -> None:
         self.status_messages.append(message)
+
+
+class _WindowAiRestoreStub:
+    AI_RESULTS_KEY = MainWindow.AI_RESULTS_KEY
+
+    def __init__(self, folder: str, saved_path: str) -> None:
+        self._current_folder = folder
+        self._ui_mode = "ai"
+        self._ai_bundle = None
+        self._settings = _SettingsStub()
+        self._settings.setValue(self.AI_RESULTS_KEY, saved_path)
+        self.load_ai_calls: list[tuple[str, bool]] = []
+        self.refresh_calls = 0
+        self.toolbar_updates = 0
+
+    def _load_ai_results(self, path: str, *, show_message: bool = True) -> bool:
+        self.load_ai_calls.append((path, show_message))
+        return True
+
+    def _saved_ai_results_belong_to_current_folder(self, saved_path: str) -> bool:
+        return MainWindow._saved_ai_results_belong_to_current_folder(self, saved_path)
+
+    def _clear_ai_results_state(self, *, preserve_setting: bool = False, refresh: bool = True) -> None:
+        self._ai_bundle = None
+        if refresh:
+            self._refresh_ai_state()
+
+    def _refresh_ai_state(self) -> None:
+        self.refresh_calls += 1
+
+    def _update_ai_toolbar_state(self) -> None:
+        self.toolbar_updates += 1
 
 
 class _SignalStub:
@@ -258,7 +300,8 @@ class _WindowAiRunStub:
         self._catalog_repository = repository
         self._current_folder = folder
         self._all_records = records
-        self._ai_runtime = object()
+        self._ai_runtime = default_ai_workflow_runtime()
+        self._ai_semantic_sidecar_enabled = False
         self._active_reference_bank_path = ""
         self._active_ai_task = None
         self._ai_run_pool = _AiRunPoolStub()
@@ -276,12 +319,20 @@ class _WindowAiRunStub:
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
         self._active_ai_report_cache_key = ""
+        self._active_ai_semantic_cache_key = ""
+        self.defer_background_calls = 0
 
     def _ensure_ai_model_available(self, *, title: str) -> bool:
         return True
 
+    def _ensure_semantic_model_available(self, *, title: str) -> bool:
+        return True
+
     def _ensure_ai_runtime_available(self, *, title: str) -> bool:
         return True
+
+    def _refresh_ai_runtime_preferences(self) -> None:
+        return None
 
     def _ai_training_paths_for_folder(self, folder: str | None = None):
         return None
@@ -295,6 +346,9 @@ class _WindowAiRunStub:
 
     def _update_ai_toolbar_state(self) -> None:
         self.toolbar_updates += 1
+
+    def _defer_background_review_work_for_ai(self, *, reason: str) -> None:
+        self.defer_background_calls += 1
 
     def _handle_ai_run_started(self, *args, **kwargs) -> None:
         pass
@@ -326,18 +380,22 @@ class _WindowAiRunFinishedStub:
         self._active_ai_embedding_cache_key = "embed-finished"
         self._active_ai_cluster_cache_key = "cluster-finished"
         self._active_ai_report_cache_key = "report-finished"
+        self._active_ai_semantic_cache_key = ""
+        self._ai_semantic_sidecar_enabled = False
         self._ai_stage_index = 0
         self._ai_stage_total = 3
         self._ai_stage_message = ""
         self._ai_progress_current = 0
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
+        self._ai_semantic_sidecar_enabled = False
         self.mode_tabs = _ModeTabsStub()
         self.load_ai_calls: list[tuple[str, bool]] = []
         self.completion_dialog_calls: list[dict[str, object]] = []
         self.status_messages: list[str] = []
         self.toolbar_updates = 0
         self._ai_bundle = None
+        self.resume_background_calls = 0
 
     def _load_ai_results(self, report_dir: str, *, show_message: bool = True) -> bool:
         self.load_ai_calls.append((report_dir, show_message))
@@ -348,6 +406,9 @@ class _WindowAiRunFinishedStub:
 
     def _update_ai_toolbar_state(self) -> None:
         self.toolbar_updates += 1
+
+    def _resume_deferred_background_review_work_after_ai(self, *, reason: str) -> None:
+        self.resume_background_calls += 1
 
     def statusBar(self):
         return self
@@ -373,6 +434,7 @@ class _WindowAiResetStub:
         self._ai_progress_current = 1
         self._ai_progress_total = 1
         self._ai_progress_eta_text = ""
+        self._ai_semantic_sidecar_enabled = False
         self._settings = _SettingsStub()
         self._settings.setValue(self.AI_RESULTS_KEY, folder)
         self.refresh_calls = 0
@@ -548,6 +610,33 @@ class WindowCatalogCacheTests(unittest.TestCase):
         self.assertTrue(availability.can_run_full_pipeline)
         self.assertFalse(availability.can_evaluate)
 
+    def test_restore_ai_results_skips_saved_report_from_different_folder(self) -> None:
+        window = _WindowAiRestoreStub(
+            folder=r"\\192.168.1.200\ColossalBoi\Photography\China '26\Raw Files",
+            saved_path=r"K:\Photography\Canada 10-25\.image_triage_ai\ranker_report",
+        )
+
+        restored = MainWindow._restore_ai_results(window, force=True)
+
+        self.assertFalse(restored)
+        self.assertEqual([], window.load_ai_calls)
+        self.assertEqual(0, window.refresh_calls)
+        self.assertEqual(0, window.toolbar_updates)
+        self.assertIn(window.AI_RESULTS_KEY, window._settings.values)
+
+    def test_saved_ai_results_scope_allows_current_hidden_report(self) -> None:
+        window = _WindowAiRestoreStub(
+            folder=r"K:\Photography\Canada 10-25",
+            saved_path=r"K:\Photography\Canada 10-25\.image_triage_ai\ranker_report",
+        )
+
+        self.assertTrue(
+            MainWindow._saved_ai_results_belong_to_current_folder(
+                window,
+                window._settings.value(window.AI_RESULTS_KEY, "", str),
+            )
+        )
+
     def test_handle_ai_training_finished_registers_launched_labeling_process(self) -> None:
         folder = "X:/Shots"
         process = SimpleNamespace(pid=3210)
@@ -665,6 +754,28 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertIsNotNone(window._active_scope_enrichment_task)
             self.assertEqual("building", window._review_scoring_cache_source)
             self.assertIn("2 image bundle(s)", window._review_scoring_cache_detail)
+            self.assertEqual(1, window._refresh_calls)
+
+    def test_start_scope_enrichment_defers_while_ai_review_is_running(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scope_cache_") as temp_dir:
+            db_path = Path(temp_dir) / "catalog.sqlite3"
+            records = [
+                _record(
+                    str(Path(temp_dir) / "frame_01.jpg"),
+                    name="frame_01.jpg",
+                    size=123,
+                    modified_ns=1,
+                )
+            ]
+            window = _ScopeStartStub(CatalogRepository(db_path), records)
+            window._active_ai_task = object()
+
+            MainWindow._start_scope_enrichment_task(window)
+
+            self.assertIsNone(window._active_scope_enrichment_task)
+            self.assertTrue(window._ai_deferred_background_work)
+            self.assertEqual("catalog:root", window._ai_deferred_background_scope_key)
+            self.assertEqual("deferred", window._review_scoring_cache_source)
             self.assertEqual(1, window._refresh_calls)
 
     def test_should_chunk_loaded_records_for_large_folder_without_restore_token(self) -> None:
@@ -816,6 +927,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
                     embedding_cache_key="embed-1",
                     cluster_cache_key="cluster-1",
                     report_cache_key="report-1",
+                    semantic_cache_key="semantic-1",
                 ),
             ), patch("image_triage.window.ai_report_artifacts_ready", return_value=True), patch(
                 "image_triage.window.AIRunTask",
@@ -825,6 +937,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
 
             self.assertEqual(1, window.load_hidden_calls)
             self.assertIsNone(window._ai_run_pool.started_task)
+            self.assertEqual(0, window.defer_background_calls)
             self.assertEqual(1, window.mode_tabs.index)
             self.assertIn("reused cached ai review results", window.status_messages[-1].casefold())
 
@@ -852,6 +965,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
                     embedding_cache_key="embed-1",
                     cluster_cache_key="cluster-1",
                     report_cache_key="report-new",
+                    semantic_cache_key="semantic-new",
                 ),
             ), patch("image_triage.window.ai_report_artifacts_ready", return_value=False), patch(
                 "image_triage.window.ai_cluster_artifacts_ready",
@@ -864,6 +978,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertTrue(task.kwargs["skip_extract"])
             self.assertTrue(task.kwargs["skip_cluster"])
             self.assertIs(task, window._ai_run_pool.started_task)
+            self.assertEqual(1, window.defer_background_calls)
             self.assertIn("cached embeddings and clusters", window.status_messages[-1].casefold())
 
     def test_handle_ai_run_finished_persists_ai_workflow_cache(self) -> None:
@@ -890,6 +1005,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertTrue(window.completion_dialog_calls[0]["same_folder"])
             self.assertEqual(str(paths), window.completion_dialog_calls[0]["report_dir"])
             self.assertEqual(1, window.mode_tabs.index)
+            self.assertEqual(1, window.resume_background_calls)
 
     def test_ai_review_complete_dialog_starts_with_collapsed_outputs_and_two_column_legend(self) -> None:
         dialog = AIReviewCompleteDialog(

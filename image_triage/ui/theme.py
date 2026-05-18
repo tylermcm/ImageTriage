@@ -886,6 +886,29 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border-color: {theme.accent.css};
             color: {theme.text_primary.css};
         }}
+        QWidget#pathControl {{
+            background-color: transparent;
+        }}
+        QToolButton#pathNavButton {{
+            min-width: 28px;
+            max-width: 28px;
+            min-height: 28px;
+            max-height: 28px;
+            padding: 0;
+            font-size: 15px;
+            font-weight: 700;
+            color: {theme.text_secondary.css};
+        }}
+        QToolButton#pathNavButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#pathNavButton:disabled {{
+            color: {theme.text_disabled.css};
+            background-color: transparent;
+            border-color: transparent;
+        }}
         QLabel#toolbarSelectionCount {{
             color: {theme.text_secondary.css};
             font-size: 11px;
