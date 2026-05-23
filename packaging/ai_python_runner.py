@@ -46,6 +46,8 @@ def _prepend_ai_site_packages(script_path: Path | None = None) -> None:
 
 
 def _prepend_ai_stdlib(script_path: Path | None = None) -> None:
+    if not getattr(sys, "frozen", False):
+        return
     for root in _candidate_runtime_roots(script_path):
         stdlib_dir = root / "ai_stdlib"
         if stdlib_dir.exists():

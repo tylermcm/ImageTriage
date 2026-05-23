@@ -233,7 +233,8 @@ def export_ranked_results(config: RankingReportConfig) -> Dict[str, Path]:
     """Load artifacts/checkpoint, build ranked export rows, and save report-ready outputs."""
 
     from app.engine.ranking.reporting import build_cluster_report
-    from app.engine.ranking.service import load_ranker
+    from app.engine.ranking.inference import RankerEmbeddingDimensionError
+    from app.engine.ranking.service import load_ranker, rank_clusters_by_embedding_centrality
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
     ranking_artifacts = load_ranking_artifacts(
@@ -256,10 +257,17 @@ def export_ranked_results(config: RankingReportConfig) -> Dict[str, Path]:
         device=config.device,
         reference_bank_path=config.reference_bank_path,
     )
-    ranked_clusters = service.rank_clusters(
-        ranking_artifacts,
-        batch_size=config.score_batch_size,
-    )
+    fallback_reason = ""
+    fallback_expected_dim = 0
+    try:
+        ranked_clusters = service.rank_clusters(
+            ranking_artifacts,
+            batch_size=config.score_batch_size,
+        )
+    except RankerEmbeddingDimensionError as exc:
+        fallback_reason = str(exc)
+        fallback_expected_dim = exc.expected_dim
+        ranked_clusters = rank_clusters_by_embedding_centrality(ranking_artifacts)
     rows = build_ranked_export_rows(
         ranked_clusters,
         ranking_artifacts,
@@ -274,16 +282,26 @@ def export_ranked_results(config: RankingReportConfig) -> Dict[str, Path]:
     summary = summarize_ranked_export(
         rows,
         checkpoint_path=config.checkpoint_path,
-        model_architecture=service.checkpoint_metadata["model_config"]["architecture"],
+        model_architecture=(
+            "embedding_centrality_fallback"
+            if fallback_reason
+            else service.checkpoint_metadata["model_config"]["architecture"]
+        ),
         normalize_embeddings=service.normalize_embeddings,
     )
-    summary["reference_conditioning_enabled"] = service.reference_conditioning_enabled
+    summary["embedding_feature_dim"] = ranking_artifacts.feature_dim
+    summary["ranker_expected_input_dim"] = fallback_expected_dim or service.input_dim
+    summary["ranker_fallback_enabled"] = bool(fallback_reason)
+    summary["ranker_fallback_reason"] = fallback_reason
+    summary["reference_conditioning_enabled"] = (
+        False if fallback_reason else service.reference_conditioning_enabled
+    )
     summary["reference_bank_path"] = (
         str(config.reference_bank_path)
         if config.reference_bank_path is not None
         else service.checkpoint_metadata.get("reference_conditioning", {}).get("reference_bank_path")
     )
-    summary["reference_feature_names"] = list(service.reference_feature_names)
+    summary["reference_feature_names"] = [] if fallback_reason else list(service.reference_feature_names)
     save_ranking_summary_json(summary_path, summary)
     build_cluster_report(
         html_path,

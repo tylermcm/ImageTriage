@@ -48,6 +48,7 @@ def scan_image_directory(
     supported_extensions: tuple[str, ...],
     *,
     scan_workers: int = 1,
+    include_paths: set[str] | None = None,
 ) -> tuple[list[ImageRecord], list[ImageRecord]]:
     """Scan a directory recursively and collect image metadata."""
 
@@ -57,14 +58,26 @@ def scan_image_directory(
     if not input_dir.is_dir():
         raise NotADirectoryError(f"Input path is not a directory: {input_dir}")
 
-    candidate_paths = sorted(
-        (
-            path
-            for path in input_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() in supported_extensions
-        ),
-        key=lambda item: item.relative_to(input_dir).as_posix().casefold(),
-    )
+    normalized_includes = _normalize_include_paths(include_paths or set(), input_dir=input_dir)
+    if normalized_includes:
+        candidate_paths = sorted(
+            (
+                input_dir / relative_path
+                for relative_path in normalized_includes
+                if (input_dir / relative_path).is_file()
+                and (input_dir / relative_path).suffix.lower() in supported_extensions
+            ),
+            key=lambda item: item.relative_to(input_dir).as_posix().casefold(),
+        )
+    else:
+        candidate_paths = sorted(
+            (
+                path
+                for path in input_dir.rglob("*")
+                if path.is_file() and path.suffix.lower() in supported_extensions
+            ),
+            key=lambda item: item.relative_to(input_dir).as_posix().casefold(),
+        )
 
     all_records: list[ImageRecord] = []
     valid_records: list[ImageRecord] = []
@@ -100,6 +113,25 @@ def scan_image_directory(
     )
 
     return all_records, valid_records
+
+
+def _normalize_include_paths(include_paths: set[str], *, input_dir: Path) -> set[Path]:
+    """Normalize include paths to relative Paths under input_dir."""
+
+    normalized: set[Path] = set()
+    input_root = input_dir.resolve()
+    for raw_path in include_paths:
+        text = str(raw_path or "").strip()
+        if not text:
+            continue
+        candidate = Path(text)
+        if candidate.is_absolute():
+            try:
+                candidate = candidate.resolve().relative_to(input_root)
+            except (OSError, ValueError):
+                continue
+        normalized.add(Path(candidate.as_posix()))
+    return normalized
 
 
 def _build_image_id(relative_path: str) -> str:

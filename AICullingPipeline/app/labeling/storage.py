@@ -58,6 +58,16 @@ class PairwiseLabelStore:
 
         return len(self.records_by_key)
 
+    def clear(self) -> None:
+        """Delete saved pairwise labels and reset in-memory resume state."""
+
+        self.records.clear()
+        self.records_by_key.clear()
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            self.path.write_text("", encoding="utf-8")
+
     def append(
         self,
         *,
@@ -106,6 +116,16 @@ class ClusterLabelStore:
         """Return the number of labeled clusters."""
 
         return len(self.records_by_cluster_id)
+
+    def clear(self) -> None:
+        """Delete saved cluster labels and reset in-memory resume state."""
+
+        self.records.clear()
+        self.records_by_cluster_id.clear()
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            self.path.write_text("", encoding="utf-8")
 
     def get_latest(self, cluster_id: str) -> Optional[Dict[str, object]]:
         """Return the most recent saved label for a cluster, if present."""

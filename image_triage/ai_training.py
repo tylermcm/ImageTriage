@@ -19,6 +19,7 @@ import os
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from .ai_workflow import (
     ARTIFACTS_DIR_NAME,
     REPORT_DIR_NAME,
     _parse_tqdm_progress,
+    _resolve_stage_command,
     _run_command_with_live_output,
     _should_use_local_staging,
     build_ai_workflow_paths,
@@ -44,6 +46,7 @@ from .brackets import BracketDetector
 from .bursts import burst_candidate_indices
 from .metadata import EMPTY_METADATA, CaptureMetadata, load_capture_metadata
 from .models import ImageRecord, SortMode, sort_records
+from .perf import perf_logger
 from .ranker_fit import RankerFitDiagnosis, diagnose_ranker_fit
 from .ranker_profiles import (
     DEFAULT_RANKER_PROFILE_KEY,
@@ -61,10 +64,15 @@ TRAINING_DIR_NAME = "training"
 TRAINING_RUNS_DIR_NAME = "runs"
 EVALUATION_DIR_NAME = "evaluation"
 REFERENCE_BANK_DIR_NAME = "reference_bank"
+LABEL_SOURCE_ROOT_DIR_NAME = "label_sources"
+LABEL_SOURCE_MANIFEST_FILENAME = "source.json"
+LABEL_SOURCES_INDEX_FILENAME = "sources.json"
+LEGACY_LABEL_MIGRATION_MARKER = ".legacy_labels_migrated"
 RANKER_RUN_METADATA_FILENAME = "ranker_run.json"
 ACTIVE_RANKER_FILENAME = "active_ranker.json"
 PAIRWISE_LABELS_FILENAME = "pairwise_labels.jsonl"
 CLUSTER_LABELS_FILENAME = "cluster_labels.jsonl"
+AI_DISAGREEMENT_SOURCE_MODE = "ai_disagreement"
 BEST_CHECKPOINT_FILENAME = "best_ranker.pt"
 LAST_CHECKPOINT_FILENAME = "last_ranker.pt"
 TRAINING_METRICS_FILENAME = "training_metrics.json"
@@ -127,6 +135,7 @@ class RankerTrainingOptions:
     batch_size: int = 32
     learning_rate: float = 0.001
     hidden_dim: int = 0
+    disagreement_oversample_factor: int = 3
     reference_bank_path: str = ""
     reference_top_k: int = 3
     device: str = "auto"
@@ -169,6 +178,7 @@ class RankerRunInfo:
     fit_diagnosis: "RankerFitDiagnosis"
     is_active: bool = False
     is_legacy: bool = False
+    disagreement_pair_labels: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -182,6 +192,22 @@ class GeneralTrainingPoolStatus:
     needs_retrain: bool = False
     guidance_text: str = ""
     cached: bool = False
+    disagreement_pair_labels: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class TrainingSourceInfo:
+    """One registered source folder that can contribute to General Use training."""
+    namespace: str
+    folder: str
+    display_name: str
+    enabled: bool
+    pairwise_labels: int
+    cluster_labels: int
+    disagreement_pair_labels: int
+    prepared_ready: bool
+    labels_dir: str
+    artifacts_dir: str
 
 
 class AITrainingTaskSignals(QObject):
@@ -195,22 +221,23 @@ class AITrainingTaskSignals(QObject):
 
 
 def build_ai_training_paths(folder: str | Path) -> AITrainingPaths:
-    """Resolve the folder-local training workspace derived from an image folder."""
+    """Resolve the central per-source training workspace derived from an image folder."""
     workflow_paths = build_ai_workflow_paths(folder)
-    hidden_root = workflow_paths.hidden_root
-    labeling_artifacts_dir = hidden_root / LABELING_ARTIFACTS_DIR_NAME
-    labels_dir = hidden_root / LABELS_DIR_NAME
-    training_dir = hidden_root / TRAINING_DIR_NAME
+    source_root = _central_label_source_root(workflow_paths.folder)
+    labeling_artifacts_dir = source_root / LABELING_ARTIFACTS_DIR_NAME
+    labels_dir = source_root / LABELS_DIR_NAME
+    training_dir = source_root / TRAINING_DIR_NAME
     training_runs_dir = training_dir / TRAINING_RUNS_DIR_NAME
-    evaluation_dir = hidden_root / EVALUATION_DIR_NAME
-    reference_bank_dir = hidden_root / REFERENCE_BANK_DIR_NAME
+    evaluation_dir = source_root / EVALUATION_DIR_NAME
+    reference_bank_dir = source_root / REFERENCE_BANK_DIR_NAME
+    report_dir = source_root / REPORT_DIR_NAME
     return AITrainingPaths(
         folder=workflow_paths.folder,
-        hidden_root=hidden_root,
-        artifacts_dir=workflow_paths.artifacts_dir,
-        report_dir=workflow_paths.report_dir,
-        ranked_export_path=workflow_paths.ranked_export_path,
-        html_report_path=workflow_paths.html_report_path,
+        hidden_root=source_root,
+        artifacts_dir=source_root / ARTIFACTS_DIR_NAME,
+        report_dir=report_dir,
+        ranked_export_path=report_dir / "ranked_clusters_export.csv",
+        html_report_path=report_dir / "ranked_clusters_report.html",
         labeling_artifacts_dir=labeling_artifacts_dir,
         labeling_metadata_path=labeling_artifacts_dir / "images.csv",
         labeling_image_ids_path=labeling_artifacts_dir / "image_ids.json",
@@ -235,6 +262,80 @@ def build_ai_training_paths(folder: str | Path) -> AITrainingPaths:
     )
 
 
+def discover_registered_training_source_folders() -> tuple[str, ...]:
+    """Return folders that have central label-source manifests."""
+
+    return tuple(source.folder for source in list_registered_training_sources(enabled_only=True))
+
+
+def list_registered_training_sources(*, enabled_only: bool = False) -> tuple[TrainingSourceInfo, ...]:
+    """Return central label sources with label/prepared counts for UI selection."""
+
+    source_root = _central_label_sources_root()
+    if not source_root.exists():
+        return ()
+
+    sources: list[TrainingSourceInfo] = []
+    seen: set[str] = set()
+    for manifest_path in sorted(source_root.glob(f"*/{LABEL_SOURCE_MANIFEST_FILENAME}")):
+        payload = _read_json_dict(manifest_path)
+        folder_text = str(payload.get("folder") or "").strip()
+        namespace = str(payload.get("namespace") or manifest_path.parent.name).strip()
+        if not folder_text or not namespace:
+            continue
+        try:
+            normalized = str(Path(folder_text).expanduser().resolve())
+        except OSError:
+            normalized = folder_text
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        enabled = bool(payload.get("enabled", True))
+        if enabled_only and not enabled:
+            continue
+        paths = build_ai_training_paths(normalized)
+        pairwise_count, cluster_count = count_label_records(paths)
+        disagreement_count = count_disagreement_pair_labels(paths)
+        prepared_ready = ai_training_artifacts_ready(paths) and not ai_training_source_needs_prepare(paths.folder)
+        if pairwise_count <= 0 and cluster_count <= 0 and disagreement_count <= 0 and not prepared_ready:
+            continue
+        sources.append(
+            TrainingSourceInfo(
+                namespace=namespace,
+                folder=normalized,
+                display_name=str(payload.get("display_name") or Path(normalized).name),
+                enabled=enabled,
+                pairwise_labels=pairwise_count,
+                cluster_labels=cluster_count,
+                disagreement_pair_labels=disagreement_count,
+                prepared_ready=prepared_ready,
+                labels_dir=str(paths.labels_dir),
+                artifacts_dir=str(paths.artifacts_dir),
+            )
+        )
+    return tuple(sorted(sources, key=lambda source: source.folder.casefold()))
+
+
+def set_registered_training_source_enabled(namespace: str, enabled: bool) -> None:
+    """Persist whether a registered source contributes to the General Use pool."""
+
+    namespace_text = str(namespace or "").strip()
+    if not namespace_text:
+        return
+    manifest_path = _central_label_sources_root() / namespace_text / LABEL_SOURCE_MANIFEST_FILENAME
+    payload = _read_json_dict(manifest_path)
+    if not payload:
+        return
+    payload["enabled"] = bool(enabled)
+    payload["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    try:
+        manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError:
+        return
+    _write_label_sources_index()
+
+
 def build_general_ai_training_paths() -> AITrainingPaths:
     """Resolve the shared General Use training workspace under app data."""
     root = app_data_root() / GENERAL_TRAINING_ROOT_DIR_NAME / GENERAL_TRAINING_PROFILE_DIR_NAME
@@ -245,6 +346,8 @@ def build_general_ai_training_paths() -> AITrainingPaths:
         report_dir=root / REPORT_DIR_NAME,
         ranked_export_path=(root / REPORT_DIR_NAME) / "ranked_clusters_export.csv",
         html_report_path=(root / REPORT_DIR_NAME) / "ranked_clusters_report.html",
+        semantic_export_path=(root / REPORT_DIR_NAME) / "semantic_classifications.csv",
+        semantic_summary_path=(root / REPORT_DIR_NAME) / "semantic_classification_summary.json",
     )
     hidden_root = workflow_paths.hidden_root
     labeling_artifacts_dir = hidden_root / LABELING_ARTIFACTS_DIR_NAME
@@ -285,15 +388,19 @@ def build_general_ai_training_paths() -> AITrainingPaths:
 
 
 def prepare_hidden_ai_training_workspace(folder: str | Path) -> AITrainingPaths:
-    """Ensure the folder-local training workspace exists and return its paths."""
-    prepare_hidden_ai_workspace(folder)
+    """Ensure the central per-source training workspace exists and return its paths."""
     paths = build_ai_training_paths(folder)
+    paths.hidden_root.mkdir(parents=True, exist_ok=True)
+    paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    paths.report_dir.mkdir(parents=True, exist_ok=True)
     paths.labeling_artifacts_dir.mkdir(parents=True, exist_ok=True)
     paths.labels_dir.mkdir(parents=True, exist_ok=True)
     paths.training_dir.mkdir(parents=True, exist_ok=True)
     paths.training_runs_dir.mkdir(parents=True, exist_ok=True)
     paths.evaluation_dir.mkdir(parents=True, exist_ok=True)
     paths.reference_bank_dir.mkdir(parents=True, exist_ok=True)
+    _register_training_label_source(paths)
+    _migrate_legacy_folder_labels(paths)
     return paths
 
 
@@ -323,6 +430,98 @@ def ai_training_artifacts_ready(paths: AITrainingPaths) -> bool:
     return all(path.exists() for path in required)
 
 
+def ai_training_evaluation_issues(paths: AITrainingPaths) -> tuple[str, ...]:
+    """Return blocking issues that would make ranker evaluation misleading."""
+
+    issues: list[str] = []
+    pairwise_count, cluster_count = count_label_records(paths)
+    disagreement_count = count_disagreement_pair_labels(paths)
+    if pairwise_count <= 0 and cluster_count <= 0 and disagreement_count <= 0:
+        issues.append("No saved pairwise, cluster, or AI dispute labels were found.")
+
+    required = (
+        paths.artifacts_dir / "images.csv",
+        paths.artifacts_dir / "embeddings.npy",
+        paths.artifacts_dir / "image_ids.json",
+        paths.artifacts_dir / "clusters.csv",
+    )
+    missing = [path.name for path in required if not path.exists()]
+    if missing:
+        issues.append(
+            "Prepared training artifacts are missing: "
+            + ", ".join(missing)
+            + ". Run Prepare Training Data for this source."
+        )
+        return tuple(issues)
+
+    labeled_image_ids = _collect_labeled_training_image_ids(paths)
+    artifact_image_ids = set(_read_json_list(paths.artifacts_dir / "image_ids.json"))
+    missing_image_ids = sorted(labeled_image_ids - artifact_image_ids)
+    if missing_image_ids:
+        issues.append(
+            f"Prepared artifacts are stale: {len(missing_image_ids)} labeled image(s) are missing from image_ids.json. "
+            "Run Prepare Training Data for this source."
+        )
+
+    labeled_cluster_ids = _collect_labeled_training_cluster_ids(paths)
+    if cluster_count > 0 and not labeled_cluster_ids:
+        issues.append("Cluster label records exist, but none contain usable cluster IDs.")
+    if labeled_cluster_ids:
+        artifact_cluster_ids = {
+            str(row.get("cluster_id") or "").strip()
+            for row in _read_csv_rows(paths.artifacts_dir / "clusters.csv")
+            if str(row.get("cluster_id") or "").strip()
+        }
+        missing_cluster_ids = sorted(labeled_cluster_ids - artifact_cluster_ids)
+        if missing_cluster_ids:
+            preview = ", ".join(missing_cluster_ids[:5])
+            if len(missing_cluster_ids) > 5:
+                preview += f", +{len(missing_cluster_ids) - 5} more"
+            issues.append(
+                f"Prepared cluster artifacts are stale: {len(missing_cluster_ids)} labeled cluster(s) are missing from clusters.csv "
+                f"({preview}). Run Prepare Training Data for this source."
+            )
+
+    return tuple(issues)
+
+
+def format_ai_training_evaluation_issues(folder: str | Path, issues: tuple[str, ...]) -> str:
+    """Format evaluation blockers for a user-facing dialog or task failure."""
+
+    folder_text = str(folder)
+    if not issues:
+        return ""
+    joined = "\n".join(f"- {issue}" for issue in issues)
+    return f"Cannot evaluate this training source yet:\n{folder_text}\n\n{joined}"
+
+
+def ai_training_source_needs_prepare(folder: str | Path) -> bool:
+    """Return whether a source has labels missing from prepared training artifacts."""
+
+    paths = build_ai_training_paths(folder)
+    pairwise_count, cluster_count = count_label_records(paths)
+    disagreement_count = count_disagreement_pair_labels(paths)
+    if pairwise_count <= 0 and cluster_count <= 0 and disagreement_count <= 0:
+        return False
+    if not ai_training_artifacts_ready(paths):
+        return True
+    labeled_image_ids = _collect_labeled_training_image_ids(paths)
+    if not labeled_image_ids:
+        return False
+    artifact_image_ids = set(_read_json_list(paths.artifacts_dir / "image_ids.json"))
+    if not labeled_image_ids.issubset(artifact_image_ids):
+        return True
+    labeled_cluster_ids = _collect_labeled_training_cluster_ids(paths)
+    if not labeled_cluster_ids:
+        return False
+    artifact_cluster_ids = {
+        str(row.get("cluster_id") or "").strip()
+        for row in _read_csv_rows(paths.artifacts_dir / "clusters.csv")
+        if str(row.get("cluster_id") or "").strip()
+    }
+    return not labeled_cluster_ids.issubset(artifact_cluster_ids)
+
+
 def labeling_artifacts_ready(paths: AITrainingPaths) -> bool:
     """Return whether the label-collection app can open against prepared artifacts."""
     required = (
@@ -335,7 +534,54 @@ def labeling_artifacts_ready(paths: AITrainingPaths) -> bool:
 
 def count_label_records(paths: AITrainingPaths) -> tuple[int, int]:
     """Count pairwise and cluster labels currently stored in a workspace."""
-    return _count_jsonl_lines(paths.pairwise_labels_path), _count_jsonl_lines(paths.cluster_labels_path)
+    pairwise_count = _count_jsonl_lines(paths.pairwise_labels_path)
+    cluster_count = _count_jsonl_lines(paths.cluster_labels_path)
+    if _legacy_label_migration_suppressed(paths):
+        return pairwise_count, cluster_count
+    legacy_labels_dir = build_ai_workflow_paths(paths.folder).hidden_root / LABELS_DIR_NAME
+    try:
+        is_legacy_same = _same_path(legacy_labels_dir, paths.labels_dir)
+    except OSError:
+        is_legacy_same = False
+    if not is_legacy_same:
+        pairwise_count = max(pairwise_count, _count_jsonl_lines(legacy_labels_dir / PAIRWISE_LABELS_FILENAME))
+        cluster_count = max(cluster_count, _count_jsonl_lines(legacy_labels_dir / CLUSTER_LABELS_FILENAME))
+    return pairwise_count, cluster_count
+
+
+def count_disagreement_pair_labels(paths: AITrainingPaths) -> int:
+    """Count usable pairwise labels captured from AI/user disagreement events."""
+    count = _count_pairwise_labels_by_source(paths.pairwise_labels_path, AI_DISAGREEMENT_SOURCE_MODE)
+    if _legacy_label_migration_suppressed(paths):
+        return count
+    legacy_labels_dir = build_ai_workflow_paths(paths.folder).hidden_root / LABELS_DIR_NAME
+    try:
+        is_legacy_same = _same_path(legacy_labels_dir, paths.labels_dir)
+    except OSError:
+        is_legacy_same = False
+    if not is_legacy_same:
+        count = max(
+            count,
+            _count_pairwise_labels_by_source(
+                legacy_labels_dir / PAIRWISE_LABELS_FILENAME,
+                AI_DISAGREEMENT_SOURCE_MODE,
+            ),
+        )
+    return count
+
+
+def count_ai_disagreement_events(events: list[dict[str, object]] | tuple[dict[str, object], ...]) -> int:
+    """Count captured AI disagreement feedback events without requiring a training pair."""
+    count = 0
+    for event in events:
+        payload = event.get("payload")
+        payload_dict = payload if isinstance(payload, dict) else {}
+        if str(event.get("source_mode") or "") == AI_DISAGREEMENT_SOURCE_MODE:
+            count += 1
+            continue
+        if str(payload_dict.get("disagreement_level") or "").strip():
+            count += 1
+    return count
 
 
 def preview_general_training_pool(
@@ -348,10 +594,12 @@ def preview_general_training_pool(
     sources = _collect_general_training_sources(source_folders)
     pairwise_total = sum(source["pairwise_labels"] for source in sources)
     cluster_total = sum(source["cluster_labels"] for source in sources)
+    disagreement_total = sum(source["disagreement_pair_labels"] for source in sources)
     return _general_training_pool_status(
         paths=paths,
         pairwise_total=pairwise_total,
         cluster_total=cluster_total,
+        disagreement_total=disagreement_total,
         source_count=len(sources),
         reference_run=reference_run,
         cached=False,
@@ -368,6 +616,7 @@ def prepare_general_training_pool(
     sources = _collect_general_training_sources(source_folders)
     pairwise_total = sum(source["pairwise_labels"] for source in sources)
     cluster_total = sum(source["cluster_labels"] for source in sources)
+    disagreement_total = sum(source["disagreement_pair_labels"] for source in sources)
     if not sources:
         _write_general_pool_manifest(
             paths,
@@ -376,6 +625,7 @@ def prepare_general_training_pool(
                 "source_folders": [],
                 "pairwise_labels": 0,
                 "cluster_labels": 0,
+                "disagreement_pair_labels": 0,
                 "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             },
         )
@@ -383,6 +633,7 @@ def prepare_general_training_pool(
             paths=paths,
             pairwise_total=0,
             cluster_total=0,
+            disagreement_total=0,
             source_count=0,
             reference_run=reference_run,
             cached=False,
@@ -400,6 +651,7 @@ def prepare_general_training_pool(
             paths=paths,
             pairwise_total=pairwise_total,
             cluster_total=cluster_total,
+            disagreement_total=disagreement_total,
             source_count=len(sources),
             reference_run=reference_run,
             cached=True,
@@ -413,6 +665,7 @@ def prepare_general_training_pool(
             "source_folders": [str(source["folder"]) for source in sources],
             "pairwise_labels": pairwise_total,
             "cluster_labels": cluster_total,
+            "disagreement_pair_labels": disagreement_total,
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         },
     )
@@ -420,6 +673,7 @@ def prepare_general_training_pool(
         paths=paths,
         pairwise_total=pairwise_total,
         cluster_total=cluster_total,
+        disagreement_total=disagreement_total,
         source_count=len(sources),
         reference_run=reference_run,
         cached=False,
@@ -596,10 +850,21 @@ def launch_labeling_app(
     sync_file_path: str | Path | None = None,
 ) -> subprocess.Popen[str]:
     """Spawn the label-collection UI as a detached child process."""
+    logger = perf_logger()
+    start = time.perf_counter()
     command = list(build_labeling_command(runtime, folder=folder, annotator_id=annotator_id, artifacts_dir=artifacts_dir))
+    if logger.enabled:
+        logger.log(
+            "labeling.launch.command_ready",
+            folder=str(folder),
+            artifacts_dir=str(artifacts_dir or ""),
+            command=" ".join(command[:4]),
+        )
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("IMAGE_TRIAGE_HOST_ROOT", str(Path(__file__).resolve().parents[1]))
+    if logger.enabled and logger.path is not None:
+        env["IMAGE_TRIAGE_PERFORMANCE_LOG_PATH"] = str(logger.path)
     if appearance_mode:
         env["IMAGE_TRIAGE_APPEARANCE_MODE"] = appearance_mode
     if parent_pid is not None and parent_pid > 0:
@@ -608,7 +873,7 @@ def launch_labeling_app(
         env[LABELING_READY_FILE_ENV] = str(Path(ready_file_path).expanduser().resolve())
     if sync_file_path is not None:
         env["IMAGE_TRIAGE_SYNC_FILE"] = str(Path(sync_file_path).expanduser().resolve())
-    return subprocess.Popen(
+    process = subprocess.Popen(
         command,
         cwd=str(runtime.engine_root),
         env=env,
@@ -616,6 +881,13 @@ def launch_labeling_app(
         stderr=subprocess.DEVNULL,
         text=True,
     )
+    logger.duration(
+        "labeling.launch.popen",
+        (time.perf_counter() - start) * 1000.0,
+        folder=str(folder),
+        pid=int(getattr(process, "pid", 0) or 0),
+    )
+    return process
 
 
 def _read_labeling_startup_state(path: Path) -> tuple[str, str]:
@@ -665,6 +937,8 @@ class LaunchLabelingAppTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        task_start = time.perf_counter()
         ready_path = Path(tempfile.gettempdir()) / f"image_triage_labeling_ready_{os.getpid()}_{int(time.time() * 1000)}.flag"
         try:
             ready_path.unlink(missing_ok=True)
@@ -674,6 +948,12 @@ class LaunchLabelingAppTask(QRunnable):
         self.signals.started.emit(1)
         self.signals.stage.emit(1, 1, "Opening Collect Training Labels")
         self.signals.progress.emit(0, 0, "Starting label collection window...")
+        logger.log(
+            "labeling.launch.start",
+            folder=str(self.folder),
+            artifacts_dir=str(self.artifacts_dir or ""),
+            ready_file=str(ready_path),
+        )
 
         try:
             process = launch_labeling_app(
@@ -687,23 +967,65 @@ class LaunchLabelingAppTask(QRunnable):
                 sync_file_path=self.sync_file_path,
             )
         except Exception as exc:
+            logger.duration(
+                "labeling.launch.failed",
+                (time.perf_counter() - task_start) * 1000.0,
+                folder=str(self.folder),
+                error=str(exc),
+            )
             self.signals.failed.emit(str(exc))
             return
 
         start_time = time.monotonic()
         ready_acknowledged = False
         last_status = ""
+        last_child_state = ""
+        last_child_details = ""
         while True:
             if ready_path.exists():
                 state, details = _read_labeling_startup_state(ready_path)
                 if state == "ready":
                     ready_acknowledged = True
+                    logger.duration(
+                        "labeling.launch.ready",
+                        (time.perf_counter() - task_start) * 1000.0,
+                        folder=str(self.folder),
+                        pid=int(getattr(process, "pid", 0) or 0),
+                        child_state=state,
+                    )
                     break
                 if state == "error":
+                    logger.duration(
+                        "labeling.launch.child_error",
+                        (time.perf_counter() - task_start) * 1000.0,
+                        folder=str(self.folder),
+                        pid=int(getattr(process, "pid", 0) or 0),
+                        details=details,
+                    )
                     self.signals.failed.emit(details or "Collect Training Labels failed while starting.")
                     return
+                if state and (state != last_child_state or details != last_child_details):
+                    logger.duration(
+                        "labeling.launch.child_state",
+                        (time.perf_counter() - task_start) * 1000.0,
+                        folder=str(self.folder),
+                        pid=int(getattr(process, "pid", 0) or 0),
+                        child_state=state,
+                        details=details,
+                    )
+                    self.signals.progress.emit(0, 0, details or f"Label window startup: {state}")
+                    last_child_state = state
+                    last_child_details = details
             return_code = process.poll()
             if return_code is not None:
+                logger.duration(
+                    "labeling.launch.exited_early",
+                    (time.perf_counter() - task_start) * 1000.0,
+                    folder=str(self.folder),
+                    pid=int(getattr(process, "pid", 0) or 0),
+                    return_code=int(return_code),
+                    child_state=last_child_state,
+                )
                 self.signals.failed.emit(
                     "Collect Training Labels closed before the window finished opening."
                     if return_code == 0
@@ -712,6 +1034,14 @@ class LaunchLabelingAppTask(QRunnable):
                 return
             elapsed = time.monotonic() - start_time
             if elapsed >= LABELING_READY_WAIT_TIMEOUT_SECONDS:
+                logger.duration(
+                    "labeling.launch.ready_timeout",
+                    (time.perf_counter() - task_start) * 1000.0,
+                    folder=str(self.folder),
+                    pid=int(getattr(process, "pid", 0) or 0),
+                    child_state=last_child_state,
+                    details=last_child_details,
+                )
                 break
             status_text = (
                 "Starting label collection window..."
@@ -749,37 +1079,106 @@ class PrepareLabelingCandidatesTask(QRunnable):
         self.setAutoDelete(True)
 
     def run(self) -> None:
+        logger = perf_logger()
+        task_start = time.perf_counter()
         try:
+            workspace_start = time.perf_counter()
             paths = prepare_hidden_ai_training_workspace(self.folder)
+            logger.duration(
+                "labeling.candidates.workspace",
+                (time.perf_counter() - workspace_start) * 1000.0,
+                folder=str(self.folder),
+                artifacts_dir=str(paths.labeling_artifacts_dir),
+            )
             if not self.records:
                 raise ValueError("No images are loaded for the current folder.")
         except Exception as exc:
+            logger.duration(
+                "labeling.candidates.failed",
+                (time.perf_counter() - task_start) * 1000.0,
+                folder=str(self.folder),
+                phase="workspace",
+                error=str(exc),
+            )
             self.signals.failed.emit(str(exc))
             return
 
         self.signals.started.emit(1)
         self.signals.stage.emit(1, 1, "Building label candidates")
+        logger.log("labeling.candidates.start", folder=str(self.folder), record_count=len(self.records))
 
         try:
+            sort_start = time.perf_counter()
             ordered_records = sort_records(list(self.records), SortMode.NAME)
+            logger.duration(
+                "labeling.candidates.sort",
+                (time.perf_counter() - sort_start) * 1000.0,
+                folder=str(self.folder),
+                record_count=len(ordered_records),
+            )
             metadata_by_path: dict[str, CaptureMetadata] = {}
             total = len(ordered_records)
+            metadata_start = time.perf_counter()
+            slow_metadata_count = 0
             for index, record in enumerate(ordered_records, start=1):
+                item_start = time.perf_counter()
                 metadata = load_capture_metadata(record.path)
+                item_ms = (time.perf_counter() - item_start) * 1000.0
+                if item_ms >= 250.0:
+                    slow_metadata_count += 1
+                    logger.duration(
+                        "labeling.candidates.metadata.slow",
+                        item_ms,
+                        folder=str(self.folder),
+                        path=record.path,
+                        index=index,
+                        total=total,
+                    )
                 metadata_by_path[record.path] = metadata
                 self.signals.progress.emit(index, total, f"Scanning images {index}/{total}")
+                if logger.enabled and (index == total or index % 100 == 0):
+                    logger.duration(
+                        "labeling.candidates.metadata.progress",
+                        (time.perf_counter() - metadata_start) * 1000.0,
+                        folder=str(self.folder),
+                        current=index,
+                        total=total,
+                        slow_count=slow_metadata_count,
+                    )
+            logger.duration(
+                "labeling.candidates.metadata.total",
+                (time.perf_counter() - metadata_start) * 1000.0,
+                folder=str(self.folder),
+                record_count=total,
+                slow_count=slow_metadata_count,
+            )
 
+            cluster_start = time.perf_counter()
             cluster_rows = _build_labeling_cluster_rows(
                 folder=self.folder,
                 records=ordered_records,
                 metadata_by_path=metadata_by_path,
             )
+            logger.duration(
+                "labeling.candidates.cluster_rows",
+                (time.perf_counter() - cluster_start) * 1000.0,
+                folder=str(self.folder),
+                row_count=len(cluster_rows),
+            )
+            image_rows_start = time.perf_counter()
             image_rows = _build_labeling_metadata_rows(
                 folder=self.folder,
                 records=ordered_records,
                 metadata_by_path=metadata_by_path,
             )
+            logger.duration(
+                "labeling.candidates.image_rows",
+                (time.perf_counter() - image_rows_start) * 1000.0,
+                folder=str(self.folder),
+                row_count=len(image_rows),
+            )
             image_ids = [row["image_id"] for row in image_rows]
+            write_start = time.perf_counter()
             _write_csv_rows(paths.labeling_metadata_path, image_rows, fieldnames=list(image_rows[0].keys()) if image_rows else ["image_id", "file_path", "relative_path", "file_name", "capture_timestamp", "capture_time_source"])
             paths.labeling_image_ids_path.write_text(json.dumps(image_ids, indent=2), encoding="utf-8")
             _write_csv_rows(
@@ -787,11 +1186,33 @@ class PrepareLabelingCandidatesTask(QRunnable):
                 cluster_rows,
                 fieldnames=list(cluster_rows[0].keys()) if cluster_rows else ["image_id", "cluster_id", "cluster_size", "cluster_position", "time_window_id", "window_kind", "cluster_reason", "capture_timestamp", "capture_time_source", "file_path", "relative_path", "file_name"],
             )
+            logger.duration(
+                "labeling.candidates.write_artifacts",
+                (time.perf_counter() - write_start) * 1000.0,
+                folder=str(self.folder),
+                image_rows=len(image_rows),
+                cluster_rows=len(cluster_rows),
+            )
         except Exception as exc:
+            logger.duration(
+                "labeling.candidates.failed",
+                (time.perf_counter() - task_start) * 1000.0,
+                folder=str(self.folder),
+                phase="build",
+                error=str(exc),
+            )
             self.signals.failed.emit(str(exc))
             return
 
         multi_image_groups = sum(1 for row in cluster_rows if int(row["cluster_size"]) > 1 and int(row["cluster_position"]) == 0)
+        logger.duration(
+            "labeling.candidates.total",
+            (time.perf_counter() - task_start) * 1000.0,
+            folder=str(self.folder),
+            total_images=len(image_rows),
+            cluster_rows=len(cluster_rows),
+            multi_image_groups=multi_image_groups,
+        )
         self.signals.finished.emit(
             {
                 "artifacts_dir": str(paths.labeling_artifacts_dir),
@@ -827,9 +1248,11 @@ class PrepareTrainingDataTask(QRunnable):
             self.signals.failed.emit(str(exc))
             return
 
+        include_paths_file, included_image_ids = _write_labeled_training_include_file(paths)
+        has_labeled_training_labels = bool(included_image_ids)
         staged_input_dir: Path | None = None
-        use_local_stage = _should_use_local_staging(self.folder, self.runtime)
-        total_stages = 2 + (1 if use_local_stage else 0)
+        use_local_stage = include_paths_file is None and _should_use_local_staging(self.folder, self.runtime)
+        total_stages = (1 if has_labeled_training_labels else 2) + (1 if use_local_stage else 0)
         self.signals.started.emit(total_stages)
 
         try:
@@ -852,9 +1275,8 @@ class PrepareTrainingDataTask(QRunnable):
             commands = [
                 (
                     "Extracting embeddings",
+                    "scripts/extract_embeddings.py",
                     [
-                        str(self.runtime.python_executable),
-                        "scripts/extract_embeddings.py",
                         "--config",
                         str(self.runtime.extraction_config_path),
                         "--input-dir",
@@ -871,23 +1293,33 @@ class PrepareTrainingDataTask(QRunnable):
                         str(self.runtime.num_workers),
                     ],
                 ),
-                (
-                    "Building culling groups",
-                    [
-                        str(self.runtime.python_executable),
-                        "scripts/cluster_embeddings.py",
-                        "--config",
-                        str(self.runtime.clustering_config_path),
-                        "--artifacts-dir",
-                        str(paths.artifacts_dir),
-                        "--output-dir",
-                        str(paths.artifacts_dir),
-                    ],
-                ),
             ]
+            if not has_labeled_training_labels:
+                commands.append(
+                    (
+                        "Building culling groups",
+                        "scripts/cluster_embeddings.py",
+                        [
+                            "--config",
+                            str(self.runtime.clustering_config_path),
+                            "--artifacts-dir",
+                            str(paths.artifacts_dir),
+                            "--output-dir",
+                            str(paths.artifacts_dir),
+                        ],
+                    )
+                )
+            if include_paths_file is not None:
+                commands[0][2].extend(["--include-paths-file", str(include_paths_file)])
+                self.signals.log.emit(f"Preparing training embeddings for {len(included_image_ids)} labeled images.")
 
-            for stage_index, (stage_message, command) in enumerate(commands, start=command_start_index):
+            for stage_index, (stage_message, script_relative_path, stage_args) in enumerate(commands, start=command_start_index):
                 self.signals.stage.emit(stage_index, total_stages, stage_message)
+                command = _resolve_stage_command(
+                    self.runtime,
+                    script_relative_path=script_relative_path,
+                    stage_args=stage_args,
+                )
                 completed = _run_command_with_live_output(
                     command,
                     cwd=self.runtime.engine_root,
@@ -895,11 +1327,13 @@ class PrepareTrainingDataTask(QRunnable):
                 )
                 if completed.returncode != 0:
                     raise RuntimeError(_command_failure_message(stage_message, completed.stdout))
-                if staged_input_dir is not None and command[1] == "scripts/extract_embeddings.py":
+                if staged_input_dir is not None and script_relative_path == "scripts/extract_embeddings.py":
                     rewrite_extraction_artifact_paths(
                         artifacts_dir=paths.artifacts_dir,
                         source_folder=self.folder,
                     )
+                if has_labeled_training_labels and script_relative_path == "scripts/extract_embeddings.py":
+                    _write_labeled_training_clusters(paths, included_image_ids)
         except Exception as exc:
             self.signals.failed.emit(str(exc))
             return
@@ -908,6 +1342,7 @@ class PrepareTrainingDataTask(QRunnable):
             {
                 "artifacts_dir": str(paths.artifacts_dir),
                 "labels_dir": str(paths.labels_dir),
+                "labeled_image_count": len(included_image_ids),
             }
         )
 
@@ -941,9 +1376,11 @@ class TrainRankerTask(QRunnable):
                 paths = pool_status.paths
                 pairwise_count = pool_status.pairwise_labels
                 cluster_count = pool_status.cluster_labels
+                disagreement_count = pool_status.disagreement_pair_labels
             else:
                 paths = prepare_hidden_ai_training_workspace(self.folder)
                 pairwise_count, cluster_count = count_label_records(paths)
+                disagreement_count = count_disagreement_pair_labels(paths)
             _validate_runtime_paths(
                 self.runtime,
                 required=(
@@ -961,9 +1398,7 @@ class TrainRankerTask(QRunnable):
 
         self.signals.started.emit(1)
         self.signals.stage.emit(1, 1, "Training ranker")
-        command = [
-            str(self.runtime.python_executable),
-            "scripts/train_ranker.py",
+        stage_args = [
             "--config",
             str(self.runtime.engine_root / "configs" / "train_ranker.json"),
             "--artifacts-dir",
@@ -982,12 +1417,19 @@ class TrainRankerTask(QRunnable):
             str(max(0.000001, float(self.options.learning_rate))),
             "--hidden-dim",
             str(max(0, self.options.hidden_dim)),
+            "--disagreement-oversample-factor",
+            str(max(1, min(10, self.options.disagreement_oversample_factor))),
             "--device",
             self.options.device or self.runtime.device,
         ]
         reference_bank_path = self.options.reference_bank_path.strip()
         if reference_bank_path:
-            command.extend(["--reference-bank-path", reference_bank_path])
+            stage_args.extend(["--reference-bank-path", reference_bank_path])
+        command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/train_ranker.py",
+            stage_args=stage_args,
+        )
 
         try:
             completed = _run_command_with_live_output(
@@ -1012,6 +1454,7 @@ class TrainRankerTask(QRunnable):
                 display_name=self.display_name,
                 pairwise_count=pairwise_count,
                 cluster_count=cluster_count,
+                disagreement_count=disagreement_count,
                 reference_bank_path=reference_bank_path,
                 profile_key=self.profile_key,
             )
@@ -1046,6 +1489,9 @@ class EvaluateRankerTask(QRunnable):
         reference_bank_path: str = "",
         use_general_pool: bool = False,
         general_source_folders: tuple[str, ...] = (),
+        evaluation_folder: Path | None = None,
+        evaluation_folders: tuple[Path, ...] = (),
+        evaluation_output_name: str = "",
     ) -> None:
         super().__init__()
         self.folder = folder
@@ -1054,12 +1500,22 @@ class EvaluateRankerTask(QRunnable):
         self.reference_bank_path = reference_bank_path.strip()
         self.use_general_pool = bool(use_general_pool)
         self.general_source_folders = tuple(str(folder) for folder in general_source_folders if str(folder).strip())
+        self.evaluation_folder = evaluation_folder
+        self.evaluation_folders = tuple(Path(folder) for folder in evaluation_folders)
+        self.evaluation_output_name = _slugify_run_name(evaluation_output_name)
         self.signals = AITrainingTaskSignals()
         self.setAutoDelete(True)
 
     def run(self) -> None:
         try:
-            if self.use_general_pool:
+            if self.evaluation_folders:
+                self._run_source_aware()
+                return
+
+            if self.evaluation_folder is not None:
+                paths = prepare_hidden_ai_training_workspace(self.evaluation_folder)
+                pairwise_count, cluster_count = count_label_records(paths)
+            elif self.use_general_pool:
                 pool_status = prepare_general_training_pool(self.general_source_folders)
                 paths = pool_status.paths
                 pairwise_count = pool_status.pairwise_labels
@@ -1068,6 +1524,8 @@ class EvaluateRankerTask(QRunnable):
                 paths = prepare_hidden_ai_training_workspace(self.folder)
                 pairwise_count, cluster_count = count_label_records(paths)
             evaluation_dir = evaluation_output_dir_for_checkpoint(paths, self.checkpoint_path)
+            if self.evaluation_output_name:
+                evaluation_dir = evaluation_dir / self.evaluation_output_name
             _validate_runtime_paths(
                 self.runtime,
                 required=(
@@ -1079,6 +1537,9 @@ class EvaluateRankerTask(QRunnable):
             )
             if pairwise_count <= 0 and cluster_count <= 0:
                 raise ValueError("No saved pairwise or cluster labels were found for evaluation.")
+            issues = ai_training_evaluation_issues(paths)
+            if issues:
+                raise ValueError(format_ai_training_evaluation_issues(paths.folder, issues))
             evaluation_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             self.signals.failed.emit(str(exc))
@@ -1086,9 +1547,7 @@ class EvaluateRankerTask(QRunnable):
 
         self.signals.started.emit(1)
         self.signals.stage.emit(1, 1, "Evaluating trained ranker")
-        command = [
-            str(self.runtime.python_executable),
-            "scripts/evaluate_ranker.py",
+        stage_args = [
             "--config",
             str(self.runtime.engine_root / "configs" / "evaluate_ranker.json"),
             "--artifacts-dir",
@@ -1103,7 +1562,12 @@ class EvaluateRankerTask(QRunnable):
             self.runtime.device,
         ]
         if self.reference_bank_path:
-            command.extend(["--reference-bank-path", self.reference_bank_path])
+            stage_args.extend(["--reference-bank-path", self.reference_bank_path])
+        command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/evaluate_ranker.py",
+            stage_args=stage_args,
+        )
 
         try:
             completed = _run_command_with_live_output(
@@ -1126,6 +1590,312 @@ class EvaluateRankerTask(QRunnable):
                 "log_path": str(evaluation_dir / EVALUATION_LOG_FILENAME),
             }
         )
+
+    def _run_source_aware(self) -> None:
+        """Evaluate the same checkpoint against multiple prepared source folders."""
+
+        _validate_runtime_paths(
+            self.runtime,
+            required=(
+                ("engine root", self.runtime.engine_root),
+                ("python executable", self.runtime.python_executable),
+                ("evaluate config", self.runtime.engine_root / "configs" / "evaluate_ranker.json"),
+                ("checkpoint", self.checkpoint_path),
+            ),
+        )
+
+        sources: list[tuple[Path, AITrainingPaths]] = []
+        seen: set[str] = set()
+        for folder in self.evaluation_folders:
+            paths = prepare_hidden_ai_training_workspace(folder)
+            key = str(paths.folder).casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            issues = ai_training_evaluation_issues(paths)
+            if issues:
+                raise ValueError(format_ai_training_evaluation_issues(paths.folder, issues))
+            sources.append((paths.folder, paths))
+
+        if not sources:
+            raise ValueError("No prepared evaluation sources were selected.")
+
+        base_paths = build_general_ai_training_paths() if self.use_general_pool else sources[0][1]
+        summary_dir = evaluation_output_dir_for_checkpoint(base_paths, self.checkpoint_path)
+        summary_dir = summary_dir / (self.evaluation_output_name or "source-aware-evaluation")
+        summary_dir.mkdir(parents=True, exist_ok=True)
+
+        self.signals.started.emit(len(sources))
+        source_summaries: list[dict[str, object]] = []
+        warnings: list[str] = []
+        for index, (folder, paths) in enumerate(sources, start=1):
+            source_name = folder.name or str(folder)
+            self.signals.stage.emit(index, len(sources), f"Evaluating {source_name}")
+            source_output_dir = summary_dir / f"{_slugify_run_name(source_name) or 'source'}-{_general_source_namespace(str(folder))}"
+            source_output_dir.mkdir(parents=True, exist_ok=True)
+            self._run_single_evaluation(paths=paths, evaluation_dir=source_output_dir)
+            metrics_path = source_output_dir / EVALUATION_METRICS_FILENAME
+            source_summary = _summarize_evaluation_metrics(metrics_path)
+            source_summary.update(
+                {
+                    "folder": str(folder),
+                    "display_name": source_name,
+                    "metrics_path": str(metrics_path),
+                    "pairwise_breakdown_path": str(source_output_dir / PAIRWISE_BREAKDOWN_FILENAME),
+                    "cluster_breakdown_path": str(source_output_dir / CLUSTER_BREAKDOWN_FILENAME),
+                    "log_path": str(source_output_dir / EVALUATION_LOG_FILENAME),
+                }
+            )
+            if int(source_summary.get("cluster_labeled_clusters") or 0) > 0 and int(source_summary.get("cluster_evaluated_clusters") or 0) <= 0:
+                warnings.append(f"{source_name}: cluster labels existed, but no clusters were evaluated.")
+            source_summaries.append(source_summary)
+
+        summary_payload = _build_source_aware_evaluation_summary(
+            checkpoint_path=self.checkpoint_path,
+            output_dir=summary_dir,
+            source_summaries=source_summaries,
+            warnings=warnings,
+        )
+        metrics_path = summary_dir / "source_aware_evaluation.json"
+        metrics_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+        self.signals.finished.emit(
+            {
+                "checkpoint_path": str(self.checkpoint_path),
+                "metrics_path": str(metrics_path),
+                "source_evaluation_paths": [str(summary["metrics_path"]) for summary in source_summaries],
+                "source_count": len(source_summaries),
+            }
+        )
+
+    def _run_single_evaluation(self, *, paths: AITrainingPaths, evaluation_dir: Path) -> None:
+        stage_args = [
+            "--config",
+            str(self.runtime.engine_root / "configs" / "evaluate_ranker.json"),
+            "--artifacts-dir",
+            str(paths.artifacts_dir),
+            "--labels-dir",
+            str(paths.labels_dir),
+            "--checkpoint-path",
+            str(self.checkpoint_path),
+            "--output-dir",
+            str(evaluation_dir),
+            "--device",
+            self.runtime.device,
+        ]
+        if self.reference_bank_path:
+            stage_args.extend(["--reference-bank-path", self.reference_bank_path])
+        command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/evaluate_ranker.py",
+            stage_args=stage_args,
+        )
+        completed = _run_command_with_live_output(
+            command,
+            cwd=self.runtime.engine_root,
+            progress_callback=lambda line: _emit_command_progress(self.signals, line, default_message="Evaluating ranker"),
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(_command_failure_message("Evaluating ranker", completed.stdout))
+
+
+def _summarize_evaluation_metrics(metrics_path: Path) -> dict[str, object]:
+    payload = _read_json_dict(metrics_path)
+    pairwise_all = payload.get("pairwise_evaluation", {})
+    if isinstance(pairwise_all, dict):
+        pairwise_all = pairwise_all.get("all_preferences", {})
+    if not isinstance(pairwise_all, dict):
+        pairwise_all = {}
+    cluster_eval = payload.get("cluster_evaluation", {})
+    if not isinstance(cluster_eval, dict):
+        cluster_eval = {}
+    top_k = cluster_eval.get("top_k_metrics", {})
+    top1 = top_k.get("top_1", {}) if isinstance(top_k, dict) else {}
+    if not isinstance(top1, dict):
+        top1 = {}
+    label_summary = payload.get("label_summary", {})
+    if not isinstance(label_summary, dict):
+        label_summary = {}
+    summary = {
+        "pairwise_accuracy": _coerce_float(pairwise_all.get("accuracy")),
+        "pairwise_evaluated_pairs": _coerce_int(pairwise_all.get("evaluated_pairs")),
+        "cluster_top1_hit_rate": _coerce_float(top1.get("hit_rate")),
+        "cluster_top1_eligible_clusters": _coerce_int(top1.get("eligible_clusters")),
+        "cluster_labeled_clusters": _coerce_int(cluster_eval.get("labeled_clusters")),
+        "cluster_evaluated_clusters": _coerce_int(cluster_eval.get("evaluated_clusters")),
+        "cluster_missing_ranked_clusters": _coerce_int(cluster_eval.get("missing_ranked_clusters")),
+        "label_pairwise_records": _coerce_int(label_summary.get("pairwise_label_records")),
+        "label_cluster_records": _coerce_int(label_summary.get("cluster_label_records")),
+        "label_total_preference_pairs": _coerce_int(label_summary.get("total_preference_pairs")),
+    }
+    baseline_summary = _summarize_baseline_comparison(payload)
+    if baseline_summary:
+        summary["baseline_comparison"] = baseline_summary
+    return summary
+
+
+def _build_source_aware_evaluation_summary(
+    *,
+    checkpoint_path: Path,
+    output_dir: Path,
+    source_summaries: list[dict[str, object]],
+    warnings: list[str],
+) -> dict[str, object]:
+    pairwise_values = [
+        (float(summary["pairwise_accuracy"]), int(summary.get("pairwise_evaluated_pairs") or 0))
+        for summary in source_summaries
+        if summary.get("pairwise_accuracy") is not None and int(summary.get("pairwise_evaluated_pairs") or 0) > 0
+    ]
+    cluster_values = [
+        (float(summary["cluster_top1_hit_rate"]), int(summary.get("cluster_top1_eligible_clusters") or 0))
+        for summary in source_summaries
+        if summary.get("cluster_top1_hit_rate") is not None and int(summary.get("cluster_top1_eligible_clusters") or 0) > 0
+    ]
+    return {
+        "checkpoint_path": str(checkpoint_path),
+        "evaluation_mode": "source_aware",
+        "output_dir": str(output_dir),
+        "source_count": len(source_summaries),
+        "macro_pairwise_accuracy": _mean_metric(value for value, _weight in pairwise_values),
+        "weighted_pairwise_accuracy": _weighted_mean_metric(pairwise_values),
+        "macro_cluster_top1_hit_rate": _mean_metric(value for value, _weight in cluster_values),
+        "weighted_cluster_top1_hit_rate": _weighted_mean_metric(cluster_values),
+        "total_pairwise_evaluated_pairs": sum(weight for _value, weight in pairwise_values),
+        "total_cluster_top1_eligible_clusters": sum(weight for _value, weight in cluster_values),
+        "baseline_comparison": _aggregate_source_baseline_comparison(source_summaries),
+        "warnings": warnings,
+        "sources": source_summaries,
+        "notes": [
+            "Macro metrics average each source equally, which is the best quick read on generalization.",
+            "Weighted metrics are dominated by sources with more labels and can hide weak held-out folders.",
+        ],
+    }
+
+
+def _summarize_baseline_comparison(payload: dict[str, object]) -> dict[str, object]:
+    comparison = payload.get("baseline_comparison")
+    if not isinstance(comparison, dict):
+        return {}
+    scorers = comparison.get("scorers")
+    if not isinstance(scorers, dict):
+        return {}
+    summarized: dict[str, object] = {}
+    for key, scorer_payload in scorers.items():
+        if not isinstance(scorer_payload, dict):
+            continue
+        pairwise_eval = scorer_payload.get("pairwise_evaluation", {})
+        if isinstance(pairwise_eval, dict):
+            pairwise_all = pairwise_eval.get("all_preferences", {})
+        else:
+            pairwise_all = {}
+        if not isinstance(pairwise_all, dict):
+            pairwise_all = {}
+        cluster_eval = scorer_payload.get("cluster_evaluation", {})
+        if not isinstance(cluster_eval, dict):
+            cluster_eval = {}
+        top_k = cluster_eval.get("top_k_metrics", {})
+        if not isinstance(top_k, dict):
+            top_k = {}
+        top1 = top_k.get("top_1", {})
+        top3 = top_k.get("top_3", {})
+        if not isinstance(top1, dict):
+            top1 = {}
+        if not isinstance(top3, dict):
+            top3 = {}
+        summarized[str(key)] = {
+            "display_name": str(scorer_payload.get("display_name") or key),
+            "pairwise_accuracy": _coerce_float(pairwise_all.get("accuracy")),
+            "pairwise_evaluated_pairs": _coerce_int(pairwise_all.get("evaluated_pairs")),
+            "cluster_top1_hit_rate": _coerce_float(top1.get("hit_rate")),
+            "cluster_top1_eligible_clusters": _coerce_int(top1.get("eligible_clusters")),
+            "cluster_top3_hit_rate": _coerce_float(top3.get("hit_rate")),
+            "cluster_top3_eligible_clusters": _coerce_int(top3.get("eligible_clusters")),
+            "mean_first_human_best_rank": _coerce_float(cluster_eval.get("mean_first_human_best_rank")),
+            "cluster_evaluated_clusters": _coerce_int(cluster_eval.get("evaluated_clusters")),
+        }
+    return summarized
+
+
+def _aggregate_source_baseline_comparison(source_summaries: list[dict[str, object]]) -> dict[str, object]:
+    scorer_keys: set[str] = set()
+    for summary in source_summaries:
+        comparison = summary.get("baseline_comparison")
+        if isinstance(comparison, dict):
+            scorer_keys.update(str(key) for key in comparison.keys())
+    if not scorer_keys:
+        return {}
+
+    aggregated: dict[str, object] = {}
+    for scorer_key in sorted(scorer_keys):
+        pairwise_values: list[tuple[float, int]] = []
+        top1_values: list[tuple[float, int]] = []
+        top3_values: list[tuple[float, int]] = []
+        first_rank_values: list[tuple[float, int]] = []
+        display_name = scorer_key
+        for source in source_summaries:
+            comparison = source.get("baseline_comparison")
+            if not isinstance(comparison, dict):
+                continue
+            scorer = comparison.get(scorer_key)
+            if not isinstance(scorer, dict):
+                continue
+            display_name = str(scorer.get("display_name") or display_name)
+            pairwise_acc = _coerce_float(scorer.get("pairwise_accuracy"))
+            pairwise_count = _coerce_int(scorer.get("pairwise_evaluated_pairs"))
+            if pairwise_acc is not None and pairwise_count > 0:
+                pairwise_values.append((pairwise_acc, pairwise_count))
+            top1 = _coerce_float(scorer.get("cluster_top1_hit_rate"))
+            top1_count = _coerce_int(scorer.get("cluster_top1_eligible_clusters"))
+            if top1 is not None and top1_count > 0:
+                top1_values.append((top1, top1_count))
+            top3 = _coerce_float(scorer.get("cluster_top3_hit_rate"))
+            top3_count = _coerce_int(scorer.get("cluster_top3_eligible_clusters"))
+            if top3 is not None and top3_count > 0:
+                top3_values.append((top3, top3_count))
+            first_rank = _coerce_float(scorer.get("mean_first_human_best_rank"))
+            evaluated_clusters = _coerce_int(scorer.get("cluster_evaluated_clusters"))
+            if first_rank is not None and evaluated_clusters > 0:
+                first_rank_values.append((first_rank, evaluated_clusters))
+        aggregated[scorer_key] = {
+            "display_name": display_name,
+            "macro_pairwise_accuracy": _mean_metric(value for value, _weight in pairwise_values),
+            "weighted_pairwise_accuracy": _weighted_mean_metric(pairwise_values),
+            "macro_cluster_top1_hit_rate": _mean_metric(value for value, _weight in top1_values),
+            "weighted_cluster_top1_hit_rate": _weighted_mean_metric(top1_values),
+            "macro_cluster_top3_hit_rate": _mean_metric(value for value, _weight in top3_values),
+            "weighted_cluster_top3_hit_rate": _weighted_mean_metric(top3_values),
+            "macro_mean_first_human_best_rank": _mean_metric(value for value, _weight in first_rank_values),
+            "weighted_mean_first_human_best_rank": _weighted_mean_metric(first_rank_values),
+        }
+    return aggregated
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value: object) -> int:
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mean_metric(values: Iterable[float]) -> float | None:
+    collected = [float(value) for value in values]
+    if not collected:
+        return None
+    return sum(collected) / len(collected)
+
+
+def _weighted_mean_metric(values: Iterable[tuple[float, int]]) -> float | None:
+    collected = [(float(value), int(weight)) for value, weight in values if int(weight) > 0]
+    total_weight = sum(weight for _value, weight in collected)
+    if total_weight <= 0:
+        return None
+    return sum(value * weight for value, weight in collected) / total_weight
 
 
 class ScoreCurrentFolderTask(QRunnable):
@@ -1166,9 +1936,7 @@ class ScoreCurrentFolderTask(QRunnable):
 
         self.signals.started.emit(1)
         self.signals.stage.emit(1, 1, "Scoring current folder with the trained ranker")
-        command = [
-            str(self.runtime.python_executable),
-            "scripts/export_ranked_report.py",
+        stage_args = [
             "--config",
             str(self.runtime.report_config_path),
             "--artifacts-dir",
@@ -1181,9 +1949,14 @@ class ScoreCurrentFolderTask(QRunnable):
             self.runtime.device,
         ]
         if paths.labels_dir.exists():
-            command.extend(["--labels-dir", str(paths.labels_dir)])
+            stage_args.extend(["--labels-dir", str(paths.labels_dir)])
         if self.reference_bank_path:
-            command.extend(["--reference-bank-path", self.reference_bank_path])
+            stage_args.extend(["--reference-bank-path", self.reference_bank_path])
+        command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/export_ranked_report.py",
+            stage_args=stage_args,
+        )
 
         try:
             completed = _run_command_with_live_output(
@@ -1235,9 +2008,7 @@ class BuildReferenceBankTask(QRunnable):
 
         self.signals.started.emit(1)
         self.signals.stage.emit(1, 1, "Building reference bank")
-        command = [
-            str(self.runtime.python_executable),
-            "scripts/build_reference_bank.py",
+        stage_args = [
             "--config",
             str(self.runtime.engine_root / "configs" / "build_reference_bank.json"),
             "--reference-dir",
@@ -1251,6 +2022,11 @@ class BuildReferenceBankTask(QRunnable):
             "--device",
             self.options.device or self.runtime.device,
         ]
+        command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/build_reference_bank.py",
+            stage_args=stage_args,
+        )
 
         try:
             completed = _run_command_with_live_output(
@@ -1324,6 +2100,7 @@ def _write_ranker_run_metadata(
     display_name: str,
     pairwise_count: int,
     cluster_count: int,
+    disagreement_count: int,
     reference_bank_path: str,
     profile_key: str,
 ) -> None:
@@ -1334,6 +2111,7 @@ def _write_ranker_run_metadata(
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "pairwise_labels": max(0, int(pairwise_count)),
         "cluster_labels": max(0, int(cluster_count)),
+        "disagreement_pair_labels": max(0, int(disagreement_count)),
         "reference_bank_path": reference_bank_path.strip(),
         "profile_key": resolved_profile_key,
         "profile_label": resolved_profile_label,
@@ -1404,6 +2182,11 @@ def _load_ranker_run_info(run_dir: Path, *, active_checkpoint: Path | None) -> R
         fit_diagnosis=fit_diagnosis,
         is_active=bool(active_checkpoint and checkpoint_path and _same_path(active_checkpoint, checkpoint_path)),
         is_legacy=False,
+        disagreement_pair_labels=int(
+            metadata.get("disagreement_pair_labels")
+            or metrics.get("label_summary", {}).get("source_mode_distribution", {}).get(AI_DISAGREEMENT_SOURCE_MODE, 0)
+            or 0
+        ),
     )
 
 
@@ -1458,6 +2241,10 @@ def _load_legacy_ranker_run_info(paths: AITrainingPaths, *, active_checkpoint: P
         fit_diagnosis=fit_diagnosis,
         is_active=bool(active_checkpoint and checkpoint_path and _same_path(active_checkpoint, checkpoint_path)),
         is_legacy=True,
+        disagreement_pair_labels=int(
+            metrics.get("label_summary", {}).get("source_mode_distribution", {}).get(AI_DISAGREEMENT_SOURCE_MODE, 0)
+            or 0
+        ),
     )
 
 
@@ -1466,6 +2253,7 @@ def _general_training_pool_status(
     paths: AITrainingPaths,
     pairwise_total: int,
     cluster_total: int,
+    disagreement_total: int,
     source_count: int,
     reference_run: RankerRunInfo | None,
     cached: bool,
@@ -1479,7 +2267,8 @@ def _general_training_pool_status(
     elif reference_run is None:
         guidance_text = (
             f"General Use can train from {source_count} labeled folder(s): "
-            f"{pairwise_total} pairwise and {cluster_total} cluster labels."
+            f"{pairwise_total} pairwise, {cluster_total} cluster, "
+            f"and {disagreement_total} AI dispute labels."
         )
     elif labels_added <= 0:
         guidance_text = "General Use is up to date with the pooled labels."
@@ -1502,7 +2291,344 @@ def _general_training_pool_status(
         needs_retrain=needs_retrain,
         guidance_text=guidance_text,
         cached=cached,
+        disagreement_pair_labels=disagreement_total,
     )
+
+
+def _central_label_sources_root() -> Path:
+    """Return the app-data root that stores per-folder label streams."""
+
+    return app_data_root() / GENERAL_TRAINING_ROOT_DIR_NAME / LABEL_SOURCE_ROOT_DIR_NAME
+
+
+def _central_label_source_root(folder: str | Path) -> Path:
+    """Return the app-data workspace for labels collected from one image folder."""
+
+    normalized = str(Path(folder).expanduser().resolve())
+    return _central_label_sources_root() / _general_source_namespace(normalized)
+
+
+def _register_training_label_source(paths: AITrainingPaths) -> None:
+    """Persist the source-folder mapping for central label discovery."""
+
+    source_root = paths.labels_dir.parent
+    source_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = source_root / LABEL_SOURCE_MANIFEST_FILENAME
+    existing = _read_json_dict(manifest_path)
+    enabled = existing.get("enabled")
+    if not isinstance(enabled, bool):
+        enabled = True
+    payload = {
+        "folder": str(paths.folder),
+        "display_name": paths.folder.name,
+        "namespace": _general_source_namespace(str(paths.folder)),
+        "enabled": enabled,
+        "labels_dir": str(paths.labels_dir),
+        "labeling_artifacts_dir": str(paths.labeling_artifacts_dir),
+        "artifacts_dir": str(paths.artifacts_dir),
+        "training_dir": str(paths.training_dir),
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    try:
+        manifest_path.write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+    _write_label_sources_index()
+
+
+def _write_label_sources_index() -> None:
+    """Refresh the aggregate source index used by future training-source filters."""
+
+    source_root = _central_label_sources_root()
+    sources: list[dict[str, object]] = []
+    if source_root.exists():
+        for manifest_path in sorted(source_root.glob(f"*/{LABEL_SOURCE_MANIFEST_FILENAME}")):
+            payload = _read_json_dict(manifest_path)
+            folder_text = str(payload.get("folder") or "").strip()
+            namespace = str(payload.get("namespace") or manifest_path.parent.name).strip()
+            if not folder_text or not namespace:
+                continue
+            sources.append(
+                {
+                    "folder": folder_text,
+                    "display_name": str(payload.get("display_name") or Path(folder_text).name),
+                    "namespace": namespace,
+                    "enabled": bool(payload.get("enabled", True)),
+                    "labels_dir": str(payload.get("labels_dir") or ""),
+                    "labeling_artifacts_dir": str(payload.get("labeling_artifacts_dir") or ""),
+                    "artifacts_dir": str(payload.get("artifacts_dir") or ""),
+                    "training_dir": str(payload.get("training_dir") or ""),
+                    "updated_at": str(payload.get("updated_at") or ""),
+                }
+            )
+    try:
+        source_root.mkdir(parents=True, exist_ok=True)
+        (source_root / LABEL_SOURCES_INDEX_FILENAME).write_text(
+            json.dumps({"sources": sources}, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def _migrate_legacy_folder_labels(paths: AITrainingPaths) -> None:
+    """Copy older folder-local labels into the central label-source workspace."""
+
+    if _legacy_label_migration_suppressed(paths):
+        return
+    legacy_labels_dir = build_ai_workflow_paths(paths.folder).hidden_root / LABELS_DIR_NAME
+    try:
+        if _same_path(legacy_labels_dir, paths.labels_dir):
+            return
+    except OSError:
+        pass
+    if not legacy_labels_dir.exists():
+        return
+
+    migrated_any_file = False
+    for filename in (PAIRWISE_LABELS_FILENAME, CLUSTER_LABELS_FILENAME):
+        source = legacy_labels_dir / filename
+        destination = paths.labels_dir / filename
+        if source.exists():
+            migrated_any_file = True
+            _merge_jsonl_file(source, destination)
+    if not migrated_any_file:
+        return
+    try:
+        (paths.labels_dir / LEGACY_LABEL_MIGRATION_MARKER).write_text(
+            "legacy folder-local labels migrated or intentionally skipped\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def _legacy_label_migration_suppressed(paths: AITrainingPaths) -> bool:
+    """Return whether old folder-local labels should be ignored after deletion."""
+
+    marker = paths.labels_dir / LEGACY_LABEL_MIGRATION_MARKER
+    try:
+        text = marker.read_text(encoding="utf-8", errors="ignore").casefold()
+    except OSError:
+        return False
+    return "suppressed after label deletion" in text
+
+
+def _merge_jsonl_file(source: Path, destination: Path) -> None:
+    """Append missing JSONL lines from source to destination without duplicating exact lines."""
+
+    try:
+        source_lines = [line.strip() for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return
+    if not source_lines:
+        return
+    existing: set[str] = set()
+    if destination.exists():
+        try:
+            existing = {
+                line.strip()
+                for line in destination.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            }
+        except OSError:
+            existing = set()
+    missing = [line for line in source_lines if line not in existing]
+    if not missing:
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("a", encoding="utf-8") as handle:
+        for line in missing:
+            handle.write(line)
+            handle.write("\n")
+
+
+def _write_labeled_training_include_file(paths: AITrainingPaths) -> tuple[Path | None, set[str]]:
+    """Write the relative-path include list for images that appear in saved labels."""
+
+    labeled_image_ids = _collect_labeled_training_image_ids(paths)
+    if not labeled_image_ids:
+        return None, set()
+
+    metadata_rows = _read_csv_rows(paths.labeling_metadata_path)
+    if not metadata_rows:
+        metadata_rows = _read_csv_rows(paths.artifacts_dir / "images.csv")
+    relative_paths_by_id = {
+        str(row.get("image_id") or "").strip(): str(row.get("relative_path") or "").strip()
+        for row in metadata_rows
+        if str(row.get("image_id") or "").strip() and str(row.get("relative_path") or "").strip()
+    }
+    included_paths = sorted(
+        {
+            relative_paths_by_id[image_id].replace("\\", "/").lstrip("./")
+            for image_id in labeled_image_ids
+            if image_id in relative_paths_by_id
+        },
+        key=str.casefold,
+    )
+    if not included_paths:
+        return None, labeled_image_ids
+
+    include_file = paths.artifacts_dir / "labeled_include_paths.txt"
+    include_file.parent.mkdir(parents=True, exist_ok=True)
+    include_file.write_text("\n".join(included_paths) + "\n", encoding="utf-8")
+    included_image_ids = {
+        image_id for image_id, relative_path in relative_paths_by_id.items() if relative_path.replace("\\", "/").lstrip("./") in included_paths
+    }
+    return include_file, included_image_ids
+
+
+def _collect_labeled_training_image_ids(paths: AITrainingPaths) -> set[str]:
+    """Return image IDs that have direct pairwise or cluster labels."""
+
+    image_ids: set[str] = set()
+    for record in _iter_jsonl_records(paths.pairwise_labels_path):
+        for key in ("image_a_id", "image_b_id", "preferred_image_id"):
+            value = str(record.get(key) or "").strip()
+            if value:
+                image_ids.add(value)
+    for record in _iter_jsonl_records(paths.cluster_labels_path):
+        for key in ("best_image_ids", "acceptable_image_ids", "reject_image_ids"):
+            values = record.get(key)
+            if isinstance(values, list):
+                image_ids.update(str(value).strip() for value in values if str(value or "").strip())
+    return image_ids
+
+
+def _collect_labeled_training_cluster_ids(paths: AITrainingPaths) -> set[str]:
+    """Return cluster IDs referenced by saved cluster labels."""
+
+    cluster_ids: set[str] = set()
+    for record in _iter_jsonl_records(paths.cluster_labels_path):
+        value = str(record.get("cluster_id") or "").strip()
+        if value:
+            cluster_ids.add(value)
+    return cluster_ids
+
+
+def _write_labeled_training_clusters(paths: AITrainingPaths, included_image_ids: set[str]) -> None:
+    """Preserve labeling cluster IDs for the subset of images embedded for training."""
+
+    embedded_rows = _read_csv_rows(paths.artifacts_dir / "images.csv")
+    embedded_rows_by_id = {
+        str(row.get("image_id") or "").strip(): dict(row)
+        for row in embedded_rows
+        if str(row.get("image_id") or "").strip()
+    }
+    embedded_ids = {
+        str(row.get("image_id") or "").strip()
+        for row in embedded_rows
+        if str(row.get("image_id") or "").strip()
+    }
+    target_ids = embedded_ids & set(included_image_ids)
+    if not target_ids:
+        target_ids = embedded_ids
+
+    source_rows = [
+        dict(row)
+        for row in _read_csv_rows(paths.labeling_clusters_path)
+        if str(row.get("image_id") or "").strip() in target_ids
+    ]
+    rows_by_image_id = {str(row.get("image_id") or "").strip(): row for row in source_rows}
+    for record in _iter_jsonl_records(paths.cluster_labels_path):
+        cluster_id = str(record.get("cluster_id") or "").strip()
+        if not cluster_id:
+            continue
+        labeled_ids: list[str] = []
+        seen_labeled_ids: set[str] = set()
+        for key in ("best_image_ids", "acceptable_image_ids", "reject_image_ids"):
+            values = record.get(key)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                image_id = str(value or "").strip()
+                if image_id and image_id not in seen_labeled_ids:
+                    seen_labeled_ids.add(image_id)
+                    labeled_ids.append(image_id)
+        for position, image_id in enumerate(labeled_ids):
+            if image_id not in target_ids:
+                continue
+            metadata_row = embedded_rows_by_id.get(image_id)
+            if metadata_row is None:
+                continue
+            row = _synthetic_cluster_row_from_metadata(metadata_row)
+            row["cluster_id"] = cluster_id
+            row["cluster_position"] = str(position)
+            row["cluster_reason"] = "saved_training_label"
+            rows_by_image_id[image_id] = row
+    for row in embedded_rows:
+        image_id = str(row.get("image_id") or "").strip()
+        if not image_id or image_id in rows_by_image_id:
+            continue
+        rows_by_image_id[image_id] = _synthetic_cluster_row_from_metadata(row)
+
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows_by_image_id.values():
+        cluster_id = str(row.get("cluster_id") or "").strip() or f"label_cluster_{len(grouped):04d}"
+        row["cluster_id"] = cluster_id
+        grouped.setdefault(cluster_id, []).append(row)
+
+    output_rows: list[dict[str, str]] = []
+    for cluster_id in sorted(grouped, key=str.casefold):
+        rows = sorted(
+            grouped[cluster_id],
+            key=lambda item: (
+                _safe_int(item.get("cluster_position"), default=999999),
+                str(item.get("file_name") or "").casefold(),
+            ),
+        )
+        for position, row in enumerate(rows):
+            normalized = {str(key): str(value or "") for key, value in row.items()}
+            normalized["cluster_id"] = cluster_id
+            normalized["cluster_size"] = str(len(rows))
+            normalized["cluster_position"] = str(position)
+            output_rows.append(normalized)
+
+    fieldnames = [
+        "image_id",
+        "cluster_id",
+        "cluster_size",
+        "cluster_position",
+        "time_window_id",
+        "window_kind",
+        "cluster_reason",
+        "capture_timestamp",
+        "capture_time_source",
+        "file_path",
+        "relative_path",
+        "file_name",
+    ]
+    for row in output_rows:
+        fieldnames = _merge_fieldnames(fieldnames, row)
+    _write_csv_rows(paths.artifacts_dir / "clusters.csv", output_rows, fieldnames=fieldnames)
+
+
+def _synthetic_cluster_row_from_metadata(row: dict[str, str]) -> dict[str, str]:
+    image_id = str(row.get("image_id") or "").strip()
+    return {
+        "image_id": image_id,
+        "cluster_id": f"label_single_{image_id[:12]}",
+        "cluster_size": "1",
+        "cluster_position": "0",
+        "time_window_id": f"label_single_{image_id[:12]}",
+        "window_kind": "singleton",
+        "cluster_reason": "labeled_training_singleton",
+        "capture_timestamp": str(row.get("capture_timestamp") or ""),
+        "capture_time_source": str(row.get("capture_time_source") or ""),
+        "file_path": str(row.get("file_path") or ""),
+        "relative_path": str(row.get("relative_path") or ""),
+        "file_name": str(row.get("file_name") or ""),
+    }
+
+
+def _safe_int(value: object, *, default: int = 0) -> int:
+    try:
+        return int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def _collect_general_training_sources(source_folders: list[str] | tuple[str, ...]) -> list[dict[str, object]]:
@@ -1519,7 +2645,10 @@ def _collect_general_training_sources(source_folders: list[str] | tuple[str, ...
         paths = build_ai_training_paths(normalized_folder)
         if not ai_training_artifacts_ready(paths):
             continue
+        _register_training_label_source(paths)
+        _migrate_legacy_folder_labels(paths)
         pairwise_count, cluster_count = count_label_records(paths)
+        disagreement_count = count_disagreement_pair_labels(paths)
         if pairwise_count <= 0 and cluster_count <= 0:
             continue
         collected.append(
@@ -1529,6 +2658,7 @@ def _collect_general_training_sources(source_folders: list[str] | tuple[str, ...
                 "namespace": _general_source_namespace(normalized_folder),
                 "pairwise_labels": pairwise_count,
                 "cluster_labels": cluster_count,
+                "disagreement_pair_labels": disagreement_count,
                 "signatures": tuple(
                     _path_signature(candidate)
                     for candidate in (
@@ -1552,6 +2682,7 @@ def _general_pool_cache_key(sources: list[dict[str, object]]) -> str:
             "namespace": str(source["namespace"]),
             "pairwise_labels": int(source["pairwise_labels"]),
             "cluster_labels": int(source["cluster_labels"]),
+            "disagreement_pair_labels": int(source["disagreement_pair_labels"]),
             "signatures": list(source["signatures"]),
         }
         for source in sources
@@ -1715,8 +2846,17 @@ def _read_json_dict(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
+        raw = path.read_bytes()
+    except OSError:
+        return {}
+    data = None
+    for encoding in ("utf-8", "utf-8-sig", "utf-16"):
+        try:
+            data = json.loads(raw.decode(encoding))
+            break
+        except (UnicodeDecodeError, ValueError, TypeError):
+            continue
+    if data is None:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -1821,6 +2961,16 @@ def _count_jsonl_lines(path: Path) -> int:
             return sum(1 for line in handle if line.strip())
     except OSError:
         return 0
+
+
+def _count_pairwise_labels_by_source(path: Path, source_mode: str) -> int:
+    if not path.exists():
+        return 0
+    count = 0
+    for record in _iter_jsonl_records(path):
+        if str(record.get("source_mode") or "") == source_mode:
+            count += 1
+    return count
 
 
 def _merge_eta(message: str, eta_text: str) -> str:

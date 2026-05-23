@@ -54,6 +54,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, help="Override the optimizer learning rate.")
     parser.add_argument("--hidden-dim", type=int, help="Use a one-hidden-layer MLP when greater than 0.")
     parser.add_argument(
+        "--disagreement-oversample-factor",
+        type=int,
+        help="How many total copies of AI disagreement pairs to include in the training split.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         help="Override the device: auto, cpu, cuda, or cuda:N.",
@@ -75,6 +80,7 @@ def main() -> None:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         hidden_dim=args.hidden_dim,
+        disagreement_oversample_factor=args.disagreement_oversample_factor,
         device=args.device,
     )
 

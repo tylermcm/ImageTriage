@@ -51,7 +51,7 @@ def _load_with_image_triage(path_text: str, max_side: int) -> QImage | None:
 
     target_size = QSize(max_side, max_side) if max_side > 0 else None
     try:
-        image, _error = loader(path_text, target_size=target_size, ignore_orientation=False)
+        image, _error = loader(path_text, target_size=target_size)
     except Exception:
         return None
 
@@ -74,10 +74,18 @@ def _resolve_image_triage_loader() -> Callable[..., tuple[QImage, str | None]] |
         sys.path.insert(0, str(host_root))
 
     try:
-        from image_triage.imaging import load_image_for_resize
+        from image_triage.imaging import load_image_for_display
     except Exception:
         return None
-    return load_image_for_resize
+
+    def _load_preview(path_text: str, *, target_size: QSize | None = None) -> tuple[QImage, str | None]:
+        return load_image_for_display(
+            path_text,
+            target_size or QSize(),
+            prefer_embedded=True,
+        )
+
+    return _load_preview
 
 
 def _pillow_lanczos():

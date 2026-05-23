@@ -23,6 +23,18 @@ class ScoreBreakdown:
     reference_feature_names: tuple[str, ...]
 
 
+class RankerEmbeddingDimensionError(ValueError):
+    """Raised when saved embeddings do not match the trained ranker input width."""
+
+    def __init__(self, *, expected_dim: int, actual_dim: int) -> None:
+        self.expected_dim = expected_dim
+        self.actual_dim = actual_dim
+        super().__init__(
+            f"Ranker checkpoint expects {expected_dim}-dimensional embeddings, "
+            f"but the artifact set contains {actual_dim}-dimensional embeddings."
+        )
+
+
 def resolve_device(requested_device: str) -> torch.device:
     """Resolve an explicit or automatic device request."""
 

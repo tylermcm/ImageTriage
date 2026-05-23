@@ -25,6 +25,20 @@ def _add_ai_training_management_actions(menu: QMenu, actions: MainWindowActions)
     menu.addAction(actions.run_full_ai_training_pipeline)
 
 
+def _add_ranker_training_menu(menu: QMenu, actions: MainWindowActions) -> None:
+    menu.addAction(actions.manage_ai_rankers)
+    menu.addAction(actions.open_ai_data_selection)
+    menu.addAction(actions.run_full_ai_training_pipeline)
+    menu.addSeparator()
+    menu.addAction(actions.prepare_ai_training_data)
+    menu.addAction(actions.train_ai_ranker)
+    menu.addAction(actions.evaluate_ai_ranker)
+    menu.addAction(actions.score_ai_with_trained_ranker)
+    menu.addAction(actions.build_ai_reference_bank)
+    menu.addSeparator()
+    menu.addAction(actions.clear_ai_trained_model)
+
+
 def _add_selection_actions(menu: QMenu, actions: MainWindowActions) -> None:
     menu.addAction(actions.rename_selection)
     menu.addAction(actions.accept_selection)
@@ -192,6 +206,8 @@ def build_main_menu_bar(
     ai_menu.addAction(actions.run_ai_culling)
     ai_menu.addAction(actions.apply_ai_culling)
     ai_menu.addAction(actions.sort_ai_semantic_folders)
+    ai_menu.addSeparator()
+    ai_menu.addAction(actions.manage_ai_rankers)
 
     results_menu = ai_menu.addMenu("Results")
     results_menu.addAction(actions.load_saved_ai)
@@ -215,6 +231,9 @@ def build_main_menu_bar(
 
     cache_menu = ai_menu.addMenu("Cache")
     cache_menu.addAction(actions.reset_ai_review_cache)
+
+    training_menu = menu_bar.addMenu("&Training")
+    _add_ranker_training_menu(training_menu, actions)
 
     tools_menu = menu_bar.addMenu("&Tools")
     tools_menu.addAction(actions.open_command_palette)

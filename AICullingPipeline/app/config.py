@@ -57,6 +57,7 @@ class ExtractionConfig:
     scan_workers: int = field(default_factory=lambda: max(1, min(8, os.cpu_count() or 4)))
     device: str = "auto"
     image_size: Optional[int] = None
+    include_paths_file: Optional[Path] = None
     supported_extensions: tuple[str, ...] = DEFAULT_EXTENSIONS
     metadata_filename: str = "images.csv"
     embeddings_filename: str = "embeddings.npy"
@@ -108,7 +109,7 @@ class ExtractionConfig:
             if value is None:
                 continue
 
-            if key in {"input_dir", "output_dir"}:
+            if key in {"input_dir", "output_dir", "include_paths_file"}:
                 updated[key] = _resolve_path(value, Path.cwd())
             elif key in {"model_name", "fallback_model_name"}:
                 updated[key] = _resolve_optional_model_reference(value, Path.cwd())
@@ -136,6 +137,9 @@ class ExtractionConfig:
         if self.image_size is not None and self.image_size <= 0:
             raise ValueError("image_size must be null or greater than 0.")
 
+        if self.include_paths_file is not None and not self.include_paths_file.exists():
+            raise FileNotFoundError(f"include_paths_file does not exist: {self.include_paths_file}")
+
         if not self.model_name:
             raise ValueError("model_name must be provided.")
 
@@ -151,6 +155,7 @@ class ExtractionConfig:
         payload = asdict(self)
         payload["input_dir"] = str(self.input_dir)
         payload["output_dir"] = str(self.output_dir)
+        payload["include_paths_file"] = str(self.include_paths_file) if self.include_paths_file is not None else None
         payload["supported_extensions"] = list(self.supported_extensions)
         return payload
 
@@ -338,6 +343,8 @@ class LabelingConfig:
     pair_preview_max_height: int = 900
     cluster_preview_height: int = 280
     cluster_grid_columns: int = 3
+    cluster_auto_advance_cards: bool = True
+    cluster_auto_advance_clusters: bool = True
     random_seed: int = 7
     default_arbitrary_singletons_only: bool = True
     log_level: str = "INFO"
@@ -647,6 +654,7 @@ class RankingTrainConfig:
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
     hidden_dim: int = 0
+    disagreement_oversample_factor: int = 3
     dropout: float = 0.0
     loss_name: str = "logistic"
     device: str = "auto"
@@ -728,6 +736,9 @@ class RankingTrainConfig:
 
         if self.hidden_dim < 0:
             raise ValueError("hidden_dim must be 0 or greater.")
+
+        if self.disagreement_oversample_factor <= 0:
+            raise ValueError("disagreement_oversample_factor must be greater than 0.")
 
         if self.dropout < 0.0 or self.dropout >= 1.0:
             raise ValueError("dropout must be in the range [0.0, 1.0).")

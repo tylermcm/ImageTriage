@@ -457,6 +457,12 @@ def _build_labeling_stylesheet(theme: ThemePalette) -> str:
         QLabel#hintText {{
             color: {theme.text_muted.css};
         }}
+        QCheckBox#labelFlowToggle {{
+            color: {theme.text_secondary.css};
+            font-size: 12px;
+            font-weight: 600;
+            spacing: 6px;
+        }}
         QFrame#clusterCard {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -466,8 +472,27 @@ def _build_labeling_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.accent_soft.css};
             border: 2px solid {theme.accent.css};
         }}
-        QComboBox#labelAssignmentCombo {{
-            font-weight: 600;
+        QPushButton#labelAssignmentButton {{
+            min-height: 30px;
+            padding: 5px 8px;
+            font-weight: 700;
+            border-radius: 8px;
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+        }}
+        QPushButton#labelAssignmentButton:hover {{
+            border-color: {theme.accent.css};
+            background-color: {theme.accent_soft.css};
+        }}
+        QPushButton#labelAssignmentButton[assignmentSelected="true"] {{
+            background-color: {theme.accent.css};
+            border-color: {theme.accent.css};
+            color: white;
+        }}
+        QPushButton#labelAssignmentButton[assignmentRole="reject"][assignmentSelected="true"] {{
+            background-color: {theme.danger.css};
+            border-color: {theme.danger.css};
+            color: white;
         }}
         QPushButton#primaryActionButton {{
             background-color: {theme.accent.css};

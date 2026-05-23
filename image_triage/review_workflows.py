@@ -22,6 +22,7 @@ REVIEW_ROUND_FIRST_PASS = "first_pass_rejects"
 REVIEW_ROUND_SECOND_PASS = "second_pass_keepers"
 REVIEW_ROUND_THIRD_PASS = "third_pass_finalists"
 REVIEW_ROUND_HERO = "final_hero_selects"
+AI_DISAGREEMENT_SOURCE_MODE = "ai_disagreement"
 
 REVIEW_ROUND_PRESETS: tuple[tuple[str, str, str], ...] = (
     (REVIEW_ROUND_FIRST_PASS, "First Pass Rejects", "Pass 1"),
@@ -536,6 +537,28 @@ def disagreement_level_for(annotation: SessionAnnotation | None, ai_result: AIIm
     if annotation.rating <= 1 and ai_result.confidence_bucket == AIConfidenceBucket.OBVIOUS_WINNER:
         return "moderate"
     return ""
+
+
+def ai_disagreement_group_leader_path(
+    current_path: str,
+    ai_result: AIImageResult | None,
+    group_results: Iterable[AIImageResult],
+) -> str:
+    """Return the AI-ranked group leader when the user preferred another frame."""
+
+    if not current_path or ai_result is None or ai_result.group_size <= 1 or ai_result.rank_in_group == 1:
+        return ""
+    same_group = [
+        result
+        for result in group_results
+        if result.group_id == ai_result.group_id and normalized_path_key(result.file_path) != normalized_path_key(current_path)
+    ]
+    if not same_group:
+        return ""
+    leader = min(same_group, key=lambda result: max(1, int(result.rank_in_group or 999999)))
+    if leader.rank_in_group != 1:
+        return ""
+    return leader.file_path
 
 
 def disagreement_summary_for(

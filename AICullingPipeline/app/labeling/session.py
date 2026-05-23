@@ -11,6 +11,8 @@ from app.labeling.models import ClusterItem, PairCandidate
 from app.labeling.sampling import PairSampler
 from app.labeling.storage import ClusterLabelStore, PairwiseLabelStore
 
+LEGACY_LABEL_MIGRATION_MARKER = ".legacy_labels_migrated"
+
 
 class LabelingSession:
     """High-level controller that coordinates data loading, sampling, and saves."""
@@ -111,6 +113,29 @@ class LabelingSession:
             reject_image_ids=reject_image_ids,
             annotator_id=self.config.annotator_id,
         )
+
+    def delete_all_labels(self) -> Dict[str, int]:
+        """Delete saved labels for this labeling workspace and reset samplers."""
+
+        deleted = {
+            "pairwise": self.pair_store.count(),
+            "clusters": self.cluster_store.count(),
+        }
+        self.pair_store.clear()
+        self.cluster_store.clear()
+        try:
+            (self.config.output_dir / LEGACY_LABEL_MIGRATION_MARKER).write_text(
+                "legacy migration intentionally suppressed after label deletion\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        self.pair_sampler = PairSampler(
+            self.dataset,
+            self.pair_store,
+            random_seed=self.config.random_seed,
+        )
+        return deleted
 
     def next_unlabeled_cluster_index(self, start_index: int = 0) -> int:
         """Return the next unlabeled cluster index, or the final index if all are labeled."""

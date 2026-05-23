@@ -101,6 +101,26 @@ def main() -> None:
             "evaluated_clusters: "
             f"{summary['cluster_evaluation']['evaluated_clusters']}"
         )
+        comparison = summary.get("baseline_comparison", {}).get("scorers", {})
+        if comparison:
+            print("")
+            print("Baseline comparison:")
+            for key in ("random_expected", "file_order", "dino_centrality", "trained_ranker"):
+                scorer = comparison.get(key)
+                if not isinstance(scorer, dict):
+                    continue
+                pairwise = scorer.get("pairwise_evaluation", {}).get("all_preferences", {})
+                cluster = scorer.get("cluster_evaluation", {})
+                top_k = cluster.get("top_k_metrics", {})
+                top1 = top_k.get("top_1", {})
+                top3 = top_k.get("top_3", {})
+                print(
+                    f"{scorer.get('display_name', key)}: "
+                    f"pairwise={_format_metric(pairwise.get('accuracy'))} "
+                    f"top1={_format_metric(top1.get('hit_rate'))} "
+                    f"top3={_format_metric(top3.get('hit_rate'))} "
+                    f"mean_best_rank={_format_metric(cluster.get('mean_first_human_best_rank'))}"
+                )
     finally:
         logging.shutdown()
 
