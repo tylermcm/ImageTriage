@@ -385,7 +385,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=window._train_ai_ranker,
             shortcut="Ctrl+Shift+T",
         ),
-        manage_ai_rankers=_create_action(window, "Ranker Center...", slot=window._manage_ai_rankers),
+        manage_ai_rankers=_create_action(
+            window,
+            "Ranker Workflow...",
+            slot=window._manage_ai_rankers,
+            shortcut="Ctrl+Shift+K",
+        ),
         evaluate_ai_ranker=_create_action(window, "Evaluate Trained Ranker", slot=window._evaluate_ai_ranker),
         score_ai_with_trained_ranker=_create_action(
             window,

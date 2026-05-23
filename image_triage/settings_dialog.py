@@ -52,6 +52,7 @@ class WorkflowSettingsResult:
     ai_auto_profile_enabled: bool = False
     ai_embed_batch_size: int = 0
     ai_semantic_sidecar_enabled: bool = True
+    ai_review_detail_progress_enabled: bool = False
     presets: tuple[WorkflowPreset, ...] = ()
 
 
@@ -91,6 +92,7 @@ class WorkflowSettingsDialog(QDialog):
         ai_auto_profile_enabled: bool = False,
         ai_embed_batch_size: int = 0,
         ai_semantic_sidecar_enabled: bool = True,
+        ai_review_detail_progress_enabled: bool = False,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
@@ -259,12 +261,19 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_semantic_sidecar_checkbox = QCheckBox("Run semantic classification during AI Review")
         self.ai_semantic_sidecar_checkbox.setChecked(ai_semantic_sidecar_enabled)
 
+        self.ai_review_detail_progress_checkbox = QCheckBox("Show detailed AI Review activity")
+        self.ai_review_detail_progress_checkbox.setChecked(ai_review_detail_progress_enabled)
+        self.ai_review_detail_progress_checkbox.setToolTip(
+            "Shows model loading, library loading, and per-stage technical activity in the AI Review progress window."
+        )
+
         self.ai_auto_profile_checkbox = QCheckBox("Suggest a training profile before training")
         self.ai_auto_profile_checkbox.setChecked(ai_auto_profile_enabled)
 
         ai_page, ai_layout = self._build_settings_page("AI")
         self._add_form_row(ai_layout, "Embedding batch size", self.ai_embed_batch_size_spin)
         self._add_checkbox_row(ai_layout, "Semantic sidecar", self.ai_semantic_sidecar_checkbox)
+        self._add_checkbox_row(ai_layout, "Progress details", self.ai_review_detail_progress_checkbox)
         self._add_checkbox_row(ai_layout, "Training profile", self.ai_auto_profile_checkbox)
         ai_layout.addStretch(1)
         self._add_settings_page("AI", ai_page)
@@ -481,5 +490,6 @@ class WorkflowSettingsDialog(QDialog):
             ai_auto_profile_enabled=self.ai_auto_profile_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
             ai_semantic_sidecar_enabled=self.ai_semantic_sidecar_checkbox.isChecked(),
+            ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
             presets=tuple(self._presets) if include_presets else (),
         )

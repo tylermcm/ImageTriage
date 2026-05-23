@@ -17,6 +17,8 @@ from image_triage.review_workflows import (
     build_calibration_pairs,
     build_pairwise_label_payload,
     build_record_workflow_insight,
+    ai_disagreement_group_leader_path,
+    disagreement_level_for,
     stable_image_id_for_path,
 )
 from image_triage.scanner import normalized_path_key
@@ -79,6 +81,72 @@ def _review_bundle(
 
 
 class ReviewWorkflowTests(unittest.TestCase):
+    def test_disagreement_level_flags_user_keep_against_ai_reject(self) -> None:
+        annotation = SessionAnnotation(winner=True, rating=5)
+        ai_result = _ai_result(
+            "C:/shots/keep.jpg",
+            group_id="ai-1",
+            group_size=1,
+            rank_in_group=1,
+            score=0.12,
+            normalized_score=10.0,
+            bucket=AIConfidenceBucket.LIKELY_REJECT,
+        )
+
+        self.assertEqual("strong", disagreement_level_for(annotation, ai_result))
+
+    def test_disagreement_level_flags_user_reject_against_ai_pick(self) -> None:
+        annotation = SessionAnnotation(reject=True)
+        ai_result = _ai_result(
+            "C:/shots/reject.jpg",
+            group_id="ai-1",
+            group_size=3,
+            rank_in_group=1,
+            score=0.95,
+            normalized_score=98.0,
+            bucket=AIConfidenceBucket.OBVIOUS_WINNER,
+        )
+
+        self.assertEqual("strong", disagreement_level_for(annotation, ai_result))
+
+    def test_ai_disagreement_group_leader_targets_ai_top_frame_only_for_non_leader(self) -> None:
+        user_pick = _ai_result(
+            "C:/shots/frame_02.jpg",
+            group_id="ai-1",
+            group_size=3,
+            rank_in_group=2,
+            score=0.65,
+            normalized_score=62.0,
+            bucket=AIConfidenceBucket.NEEDS_REVIEW,
+        )
+        ai_pick = _ai_result(
+            "C:/shots/frame_01.jpg",
+            group_id="ai-1",
+            group_size=3,
+            rank_in_group=1,
+            score=0.91,
+            normalized_score=94.0,
+            bucket=AIConfidenceBucket.OBVIOUS_WINNER,
+        )
+
+        self.assertEqual(
+            ai_pick.file_path,
+            ai_disagreement_group_leader_path(user_pick.file_path, user_pick, (user_pick, ai_pick)),
+        )
+
+    def test_ai_disagreement_group_leader_omits_single_image_without_fake_pair(self) -> None:
+        single = _ai_result(
+            "C:/shots/single.jpg",
+            group_id="ai-1",
+            group_size=1,
+            rank_in_group=1,
+            score=0.1,
+            normalized_score=8.0,
+            bucket=AIConfidenceBucket.LIKELY_REJECT,
+        )
+
+        self.assertEqual("", ai_disagreement_group_leader_path(single.file_path, single, (single,)))
+
     def test_build_record_workflow_insight_surfaces_best_frame_and_ai_disagreement(self) -> None:
         recommendation = BurstRecommendation(
             path="C:/shots/hero.jpg",

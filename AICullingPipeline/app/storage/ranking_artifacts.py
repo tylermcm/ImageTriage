@@ -265,6 +265,7 @@ def load_preference_labels(
     summary["total_preference_pairs"] = len(preferences)
     summary["pair_source_distribution"] = _count_by_field(preferences, "label_origin")
     summary["source_mode_distribution"] = _count_by_field(preferences, "source_mode")
+    summary["ai_disagreement_preference_pairs"] = summary["source_mode_distribution"].get("ai_disagreement", 0)
     return LoadedPreferenceLabels(preferences=preferences, summary=summary)
 
 

@@ -20,6 +20,10 @@ from app.engine.ranking.datasets import (
 )
 from app.engine.ranking.inference import l2_normalize_embeddings, resolve_device
 from app.engine.ranking.models import architecture_name, build_ranker
+from app.engine.ranking.preference_sampling import (
+    AI_DISAGREEMENT_SOURCE_MODE,
+    oversample_disagreement_preferences,
+)
 from app.engine.ranking.reference_bank import build_reference_feature_matrix, summarize_reference_bank
 from app.storage.reference_bank import load_reference_bank
 from app.storage.ranking_artifacts import (
@@ -97,6 +101,14 @@ class PairwiseRankerTrainer:
         )
         if not train_preferences:
             raise ValueError("The training split is empty. Add more labels or reduce validation_fraction.")
+        original_train_pair_count = len(train_preferences)
+        disagreement_train_pairs = sum(
+            1 for preference in train_preferences if preference.source_mode == AI_DISAGREEMENT_SOURCE_MODE
+        )
+        train_preferences = oversample_disagreement_preferences(
+            train_preferences,
+            factor=self.config.disagreement_oversample_factor,
+        )
 
         model = build_ranker(
             input_dim=ranking_artifacts.feature_dim,
@@ -219,8 +231,14 @@ class PairwiseRankerTrainer:
             "reference_summary": reference_summary,
             "loss_name": self.config.loss_name,
             "total_preference_pairs": len(loaded_labels.preferences),
+            "original_train_pairs": original_train_pair_count,
             "train_pairs": len(train_preferences),
             "validation_pairs": len(validation_preferences),
+            "disagreement_train_pairs": disagreement_train_pairs,
+            "disagreement_oversample_factor": self.config.disagreement_oversample_factor,
+            "effective_disagreement_train_pairs": sum(
+                1 for preference in train_preferences if preference.source_mode == AI_DISAGREEMENT_SOURCE_MODE
+            ),
             "best_epoch": best_epoch,
             "best_validation_loss": best_validation_loss,
             "best_validation_pairwise_accuracy": best_validation_accuracy,
@@ -242,8 +260,13 @@ class PairwiseRankerTrainer:
             int(reference_feature_matrix.shape[1]) if reference_feature_matrix is not None else 0,
         )
         resolved_config["total_preference_pairs"] = len(loaded_labels.preferences)
+        resolved_config["original_train_pairs"] = original_train_pair_count
         resolved_config["train_pairs"] = len(train_preferences)
         resolved_config["validation_pairs"] = len(validation_preferences)
+        resolved_config["disagreement_train_pairs"] = disagreement_train_pairs
+        resolved_config["effective_disagreement_train_pairs"] = sum(
+            1 for preference in train_preferences if preference.source_mode == AI_DISAGREEMENT_SOURCE_MODE
+        )
         resolved_config["reference_conditioning_enabled"] = reference_feature_matrix is not None
         resolved_config["reference_feature_names"] = list(reference_feature_names)
         save_json(resolved_config_path, resolved_config)

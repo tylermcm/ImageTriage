@@ -121,7 +121,11 @@ class ReferenceBankBuilder:
     ) -> np.ndarray:
         """Run batched DINO inference over valid reference exemplars."""
 
-        dataset = ImageDataset(valid_records, extractor.transform)
+        dataset = ImageDataset(
+            valid_records,
+            extractor.transform,
+            target_short_edge=max(extractor.preprocessing.height, extractor.preprocessing.width),
+        )
         dataloader = DataLoader(
             dataset,
             batch_size=self.config.batch_size,

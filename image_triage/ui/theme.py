@@ -928,6 +928,16 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLabel#mutedText {{
             color: {theme.text_muted.css};
         }}
+        QLabel#trainRankerTitle {{
+            color: {theme.text_primary.css};
+            font-size: 14px;
+            font-weight: 700;
+        }}
+        QLabel#trainRankerSummary {{
+            color: {theme.text_secondary.css};
+            font-size: 12px;
+            padding: 1px 2px;
+        }}
         QTextBrowser#helpMarkdownView {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -936,7 +946,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             padding: 12px 14px;
             selection-background-color: {theme.selection_fill.css};
         }}
-        QPlainTextEdit#aiTrainingLogView {{
+        QPlainTextEdit#aiTrainingLogView, QPlainTextEdit#aiReviewProgressLog {{
             background-color: {theme.chrome_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 14px;

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,7 @@ import numpy as np
 from app.config import RankingScoreConfig
 from app.engine.ranking.exports import build_ranked_export_rows
 from app.engine.ranking.inference import (
+    RankerEmbeddingDimensionError,
     ScoreBreakdown,
     l2_normalize_embeddings,
     load_ranker_checkpoint,
@@ -25,6 +27,9 @@ from app.storage.ranking_artifacts import (
     save_ranked_clusters_csv,
     save_ranking_summary_json,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,15 @@ class RankerService:
         self.reference_conditioning_enabled = bool(
             checkpoint_metadata.get("reference_conditioning", {}).get("enabled", False)
         ) or int(checkpoint_metadata.get("model_config", {}).get("reference_feature_dim", 0)) > 0
+
+    @property
+    def input_dim(self) -> int:
+        """Return the embedding width expected by this ranker checkpoint."""
+
+        try:
+            return int(self.checkpoint_metadata.get("model_config", {}).get("input_dim", 0))
+        except (TypeError, ValueError):
+            return 0
 
     @classmethod
     def from_checkpoint(
@@ -149,6 +163,7 @@ class RankerService:
         """Score many embeddings and return score-component details."""
 
         raw_embeddings = np.asarray(embeddings, dtype=np.float32)
+        self._validate_embedding_dim(raw_embeddings)
         prepared_embeddings = raw_embeddings
         if self.normalize_embeddings and prepared_embeddings.size:
             prepared_embeddings = l2_normalize_embeddings(prepared_embeddings)
@@ -162,6 +177,17 @@ class RankerService:
             device=self.device,
             batch_size=batch_size,
         )
+
+    def _validate_embedding_dim(self, embeddings: np.ndarray) -> None:
+        if embeddings.ndim != 2:
+            return
+        expected_dim = self.input_dim
+        actual_dim = int(embeddings.shape[1])
+        if expected_dim > 0 and actual_dim > 0 and expected_dim != actual_dim:
+            raise RankerEmbeddingDimensionError(
+                expected_dim=expected_dim,
+                actual_dim=actual_dim,
+            )
 
     def score_images(
         self,
@@ -344,6 +370,60 @@ def rank_cluster(
     return service.rank_cluster(ranking_artifacts, cluster_id, batch_size=batch_size)
 
 
+def rank_clusters_by_embedding_centrality(
+    ranking_artifacts: RankingArtifacts,
+) -> Dict[str, List[RankedClusterMember]]:
+    """Rank clusters with a dimension-agnostic embedding centrality fallback."""
+
+    normalized_embeddings = l2_normalize_embeddings(ranking_artifacts.embeddings)
+    ranked: Dict[str, List[RankedClusterMember]] = {}
+    for cluster_id in sorted(ranking_artifacts.clusters_by_id.keys()):
+        members = ranking_artifacts.clusters_by_id[cluster_id]
+        if not members:
+            ranked[cluster_id] = []
+            continue
+
+        embedding_indices = [member.embedding_index for member in members]
+        cluster_embeddings = normalized_embeddings[embedding_indices]
+        if len(members) == 1:
+            centrality_scores = np.zeros((1,), dtype=np.float32)
+        else:
+            centroid = cluster_embeddings.mean(axis=0, keepdims=True)
+            centroid = l2_normalize_embeddings(centroid)
+            centrality_scores = (cluster_embeddings @ centroid.T).reshape(-1).astype(np.float32)
+
+        ordered = sorted(
+            zip(members, centrality_scores),
+            key=lambda item: (
+                -float(item[1]),
+                item[0].cluster_position,
+                item[0].file_name.casefold(),
+                item[0].image_id,
+            ),
+        )
+
+        ranked_members: List[RankedClusterMember] = []
+        for rank_index, (member, score) in enumerate(ordered, start=1):
+            ranked_members.append(
+                RankedClusterMember(
+                    cluster_id=member.cluster_id,
+                    cluster_size=member.cluster_size,
+                    rank_in_cluster=rank_index,
+                    image_id=member.image_id,
+                    score=float(score),
+                    file_path=member.file_path,
+                    relative_path=member.relative_path,
+                    file_name=member.file_name,
+                    capture_timestamp=member.capture_timestamp,
+                    capture_time_source=member.capture_time_source,
+                    base_score=float(score),
+                    reference_adjustment=0.0,
+                )
+            )
+        ranked[cluster_id] = ranked_members
+    return ranked
+
+
 def score_cluster_artifacts(config: RankingScoreConfig) -> Dict[str, Path]:
     """Load a trained ranker, score saved artifacts, and write ranked cluster outputs."""
 
@@ -360,7 +440,18 @@ def score_cluster_artifacts(config: RankingScoreConfig) -> Dict[str, Path]:
         device=config.device,
         reference_bank_path=config.reference_bank_path,
     )
-    ranked_clusters = service.rank_clusters(ranking_artifacts)
+    fallback_reason = ""
+    fallback_expected_dim = 0
+    try:
+        ranked_clusters = service.rank_clusters(ranking_artifacts)
+    except RankerEmbeddingDimensionError as exc:
+        fallback_reason = str(exc)
+        fallback_expected_dim = exc.expected_dim
+        LOGGER.warning(
+            "Ranker checkpoint is incompatible with embeddings; using centrality fallback: %s",
+            exc,
+        )
+        ranked_clusters = rank_clusters_by_embedding_centrality(ranking_artifacts)
     export_rows = build_ranked_export_rows(ranked_clusters, ranking_artifacts)
     rows: List[Dict[str, Any]] = [
         {
@@ -397,11 +488,23 @@ def score_cluster_artifacts(config: RankingScoreConfig) -> Dict[str, Path]:
             "total_clusters": len(ranked_clusters),
             "singleton_clusters": sum(size == 1 for size in cluster_sizes),
             "largest_cluster_size": max(cluster_sizes) if cluster_sizes else 0,
-            "model_architecture": service.checkpoint_metadata["model_config"]["architecture"],
+            "model_architecture": (
+                "embedding_centrality_fallback"
+                if fallback_reason
+                else service.checkpoint_metadata["model_config"]["architecture"]
+            ),
             "normalize_embeddings": service.normalize_embeddings,
-            "reference_conditioning_enabled": service.reference_conditioning_enabled,
+            "embedding_feature_dim": ranking_artifacts.feature_dim,
+            "ranker_expected_input_dim": fallback_expected_dim or service.input_dim,
+            "ranker_fallback_enabled": bool(fallback_reason),
+            "ranker_fallback_reason": fallback_reason,
+            "reference_conditioning_enabled": (
+                False if fallback_reason else service.reference_conditioning_enabled
+            ),
             "reference_bank_path": resolved_reference_bank_path,
-            "reference_feature_names": reference_conditioning.get("reference_feature_names", []),
+            "reference_feature_names": (
+                [] if fallback_reason else reference_conditioning.get("reference_feature_names", [])
+            ),
         },
     )
 

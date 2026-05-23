@@ -73,6 +73,8 @@ DRIVE_REMOTE = 4
 TQDM_PROGRESS_PATTERN = re.compile(
     r"^(?P<label>Scanning images|Extracting embeddings|Classifying images):.*?\|\s*(?:[^|]*\|\s*)?(?P<current>\d+)/(?P<total>\d+)\s*\[(?P<timing>[^\]]+)\]"
 )
+AI_METRIC_PREFIX = "AI_METRIC "
+AI_METRICS_ENV_VAR = "IMAGE_TRIAGE_AI_METRICS"
 AI_RUNTIME_DIR_NAME = "ai_runtime"
 AI_RUNNER_TARGET_NAME = "ai_python_runner.exe" if os.name == "nt" else "ai_python_runner"
 AI_RUNNER_SCRIPT_RELATIVE_PATH = Path("packaging") / "ai_python_runner.py"
@@ -211,8 +213,14 @@ class AIRunSignals(QObject):
     started = Signal(str)
     stage = Signal(str, int, int, str)
     progress = Signal(str, str, int, int, str)
+    detail = Signal(str, str)
     finished = Signal(str, str, str)
     failed = Signal(str, str)
+    cancelled = Signal(str, str)
+
+
+class AIRunCancelled(RuntimeError):
+    """Raised inside the AI worker when the user stops the active run."""
 
 
 class AIRunTask(QRunnable):
@@ -227,6 +235,7 @@ class AIRunTask(QRunnable):
         reference_bank_path: Path | None = None,
         skip_extract: bool = False,
         skip_cluster: bool = False,
+        detailed_progress: bool = False,
     ) -> None:
         super().__init__()
         self.folder = folder
@@ -236,8 +245,37 @@ class AIRunTask(QRunnable):
         self.reference_bank_path = reference_bank_path
         self.skip_cluster = bool(skip_cluster)
         self.skip_extract = bool(skip_extract or self.skip_cluster)
+        self.detailed_progress = bool(detailed_progress)
         self.signals = AIRunSignals()
         self.setAutoDelete(True)
+        self._cancel_requested = False
+        self._current_process: subprocess.Popen[str] | None = None
+
+    def cancel(self) -> None:
+        """Request cancellation and terminate the running child process if present."""
+
+        self._cancel_requested = True
+        process = self._current_process
+        if process is None or process.poll() is not None:
+            return
+        _terminate_process(process)
+
+    def _is_cancelled(self) -> bool:
+        return self._cancel_requested
+
+    def _emit_detail(self, folder_text: str, message: str) -> None:
+        message = " ".join((message or "").split())
+        if message:
+            self.signals.detail.emit(folder_text, message)
+
+    def _set_current_process(self, process: subprocess.Popen[str] | None) -> None:
+        self._current_process = process
+        if process is not None and self._cancel_requested:
+            _terminate_process(process)
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancel_requested:
+            raise AIRunCancelled("AI review stopped by user.")
 
     def run(self) -> None:
         logger = perf_logger()
@@ -285,9 +323,17 @@ class AIRunTask(QRunnable):
                 _log_line(log_handle, f"Report dir: {self.paths.report_dir}")
 
                 try:
+                    self._emit_detail(folder_text, "Validating AI runtime and preparing the folder workspace.")
+                    self._raise_if_cancelled()
                     self.runtime.validate()
                     prepare_hidden_ai_workspace(self.folder)
+                    self._raise_if_cancelled()
                 except Exception as exc:
+                    if isinstance(exc, AIRunCancelled):
+                        _log_line(log_handle)
+                        _log_line(log_handle, "AI culling stopped before validation completed.")
+                        self.signals.cancelled.emit(folder_text, "AI review stopped.")
+                        return
                     _log_line(log_handle)
                     _log_line(log_handle, "Validation or workspace preparation failed.")
                     _log_line(log_handle, traceback.format_exc().rstrip())
@@ -397,6 +443,7 @@ class AIRunTask(QRunnable):
 
                 if use_local_stage:
                     self.signals.stage.emit(folder_text, 1, total_stages, "Staging images locally")
+                    self._emit_detail(folder_text, "Checking whether images should be copied into the local AI staging cache.")
                     stage_start = time.perf_counter() if logger.enabled else 0.0
 
                     def _stage_progress(current: int, total: int, eta_text: str, message: str) -> None:
@@ -410,7 +457,9 @@ class AIRunTask(QRunnable):
                         source_folder=self.folder,
                         runtime=self.runtime,
                         progress_callback=_stage_progress,
+                        should_cancel=self._is_cancelled,
                     )
+                    self._raise_if_cancelled()
                     if logger.enabled:
                         logger.duration(
                             "ai.stage.local_staging",
@@ -427,7 +476,9 @@ class AIRunTask(QRunnable):
                     commands,
                     start=(2 if use_local_stage else 1),
                 ):
+                    self._raise_if_cancelled()
                     self.signals.stage.emit(folder_text, stage_index, total_stages, stage_message)
+                    self._emit_detail(folder_text, f"Starting {stage_message}.")
                     command = _resolve_stage_command(
                         self.runtime,
                         script_relative_path=script_relative_path,
@@ -459,6 +510,13 @@ class AIRunTask(QRunnable):
                             )
                         ),
                         output_callback=lambda chunk: _log_chunk(log_handle, chunk),
+                        detail_callback=(
+                            (lambda message, *, _folder_text=folder_text: self._emit_detail(_folder_text, message))
+                            if self.detailed_progress
+                            else None
+                        ),
+                        process_started_callback=self._set_current_process,
+                        process_finished_callback=lambda _process: self._set_current_process(None),
                         log_context={
                             "folder": folder_text,
                             "stage": stage_name,
@@ -467,6 +525,19 @@ class AIRunTask(QRunnable):
                             "script": script_relative_path,
                         },
                     )
+                    if self._cancel_requested:
+                        _log_line(log_handle)
+                        _log_line(log_handle, "AI culling stopped by user.")
+                        if logger.enabled:
+                            logger.duration(
+                                "ai.task.cancelled",
+                                (time.perf_counter() - task_start) * 1000.0,
+                                folder=folder_text,
+                                phase=stage_name,
+                                log_path=str(log_path),
+                            )
+                        self.signals.cancelled.emit(folder_text, "AI review stopped.")
+                        return
                     if logger.enabled:
                         logger.duration(
                             "ai.stage.command",
@@ -520,6 +591,7 @@ class AIRunTask(QRunnable):
 
                 _log_line(log_handle)
                 _log_line(log_handle, "AI culling completed successfully.")
+                self._emit_detail(folder_text, "AI Review completed successfully.")
                 if logger.enabled:
                     logger.duration(
                         "ai.task.finished",
@@ -534,6 +606,22 @@ class AIRunTask(QRunnable):
                     str(self.paths.report_dir),
                     str(self.paths.html_report_path),
                 )
+        except AIRunCancelled:
+            try:
+                with log_path.open("a", encoding="utf-8", newline="") as log_handle:
+                    _log_line(log_handle)
+                    _log_line(log_handle, "AI culling stopped by user.")
+            except OSError:
+                pass
+            if logger.enabled:
+                logger.duration(
+                    "ai.task.cancelled",
+                    (time.perf_counter() - task_start) * 1000.0,
+                    folder=folder_text,
+                    phase="cancelled",
+                    log_path=str(log_path),
+                )
+            self.signals.cancelled.emit(folder_text, "AI review stopped.")
         except Exception as exc:
             stack_text = traceback.format_exc().rstrip()
             try:
@@ -611,6 +699,13 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
         semantic_installation.model_name if semantic_installation.is_installed else DEFAULT_SEMANTIC_MODEL_REPO_ID
     )
     semantic_batch_size = _positive_int_env("AICULLING_SEMANTIC_BATCH_SIZE", 16)
+    runtime_status = load_ai_runtime_installation_status()
+    if "gpu" in runtime_status.installed_variants:
+        device = "cuda"
+    elif runtime_status.installed_variants == ("cpu",):
+        device = "cpu"
+    else:
+        device = "auto"
 
     engine_root_path = Path(engine_root).expanduser().resolve()
     python_path = Path(python_executable).expanduser().resolve() if python_executable else None
@@ -625,6 +720,7 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
         semantic_config_path=engine_root_path / "configs" / "semantic_classification.json",
         model_installation=model_installation,
         checkpoint_download_url=checkpoint_download_url,
+        device=device,
         batch_size=batch_size,
         num_workers=num_workers,
         local_stage_mode=local_stage_mode,
@@ -636,6 +732,8 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
 
 
 def _default_ai_dataloader_workers() -> int:
+    if os.name == "nt":
+        return 0
     cpu_count = os.cpu_count() or 4
     return max(2, min(8, max(1, cpu_count // 2)))
 
@@ -865,12 +963,18 @@ def stage_supported_images(
     source_folder: Path,
     runtime: AIWorkflowRuntime,
     progress_callback: Callable[[int, int, str, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Path:
     """Copy supported images into a local staging workspace for faster AI processing."""
+    def raise_if_cancelled() -> None:
+        if should_cancel is not None and should_cancel():
+            raise AIRunCancelled("AI review stopped while staging images.")
+
     logger = perf_logger()
     total_start = time.perf_counter() if logger.enabled else 0.0
     step_start = total_start
     stage_root, stage_root_message = _ensure_stage_root(runtime.local_stage_root)
+    raise_if_cancelled()
     if stage_root_message and progress_callback is not None:
         progress_callback(0, 0, "", stage_root_message)
     workspace_dir = _stage_workspace_dir(stage_root, source_folder)
@@ -880,6 +984,7 @@ def stage_supported_images(
     supported_extensions = load_supported_extensions(runtime.extraction_config_path)
     source_folder = source_folder.resolve()
     previous_entries = _load_stage_manifest(manifest_path, source_folder)
+    raise_if_cancelled()
     if logger.enabled:
         logger.duration(
             "ai.staging.setup",
@@ -891,14 +996,12 @@ def stage_supported_images(
             extensions=len(supported_extensions),
         )
         step_start = time.perf_counter()
-    candidate_paths = sorted(
-        (
-            path
-            for path in source_folder.rglob("*")
-            if path.is_file() and path.suffix.lower() in supported_extensions
-        ),
-        key=lambda item: item.relative_to(source_folder).as_posix().casefold(),
-    )
+    candidate_paths: list[Path] = []
+    for path in source_folder.rglob("*"):
+        raise_if_cancelled()
+        if path.is_file() and path.suffix.lower() in supported_extensions:
+            candidate_paths.append(path)
+    candidate_paths.sort(key=lambda item: item.relative_to(source_folder).as_posix().casefold())
     if logger.enabled:
         logger.duration(
             "ai.staging.scan",
@@ -919,6 +1022,7 @@ def stage_supported_images(
         progress_callback(0, total, "", f"Staging images locally (0/{total})")
 
     for index, path in enumerate(candidate_paths, start=1):
+        raise_if_cancelled()
         relative_path = path.relative_to(source_folder)
         relative_key = relative_path.as_posix()
         stat_result = path.stat()
@@ -938,6 +1042,7 @@ def stage_supported_images(
             if temp_destination.exists():
                 temp_destination.unlink(missing_ok=True)
             shutil.copy2(path, temp_destination)
+            raise_if_cancelled()
             temp_destination.replace(destination)
             copied_count += 1
             copied_bytes += signature["size"]
@@ -952,6 +1057,7 @@ def stage_supported_images(
     stale_entries = set(previous_entries) - set(current_entries)
     stale_removed = 0
     for relative_key in stale_entries:
+        raise_if_cancelled()
         stale_path = input_dir / Path(relative_key)
         if stale_path.exists():
             stale_path.unlink(missing_ok=True)
@@ -1324,6 +1430,9 @@ def _run_command_with_live_output(
     cwd: Path,
     progress_callback: Callable[[str], None] | None = None,
     output_callback: Callable[[str], None] | None = None,
+    detail_callback: Callable[[str], None] | None = None,
+    process_started_callback: Callable[[subprocess.Popen[str]], None] | None = None,
+    process_finished_callback: Callable[[subprocess.Popen[str]], None] | None = None,
     log_context: dict[str, object] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     logger = perf_logger()
@@ -1339,6 +1448,7 @@ def _run_command_with_live_output(
         )
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    env[AI_METRICS_ENV_VAR] = "1" if logger.enabled or detail_callback is not None else "0"
     spawn_start = time.perf_counter() if logger.enabled else 0.0
     try:
         process = subprocess.Popen(
@@ -1366,6 +1476,10 @@ def _run_command_with_live_output(
             pid=process.pid,
             **context,
         )
+    if process_started_callback is not None:
+        process_started_callback(process)
+    if detail_callback is not None:
+        detail_callback(f"Started Python worker process {process.pid}.")
 
     chunks: list[str] = []
     buffer = ""
@@ -1397,9 +1511,23 @@ def _run_command_with_live_output(
                 is_terminated = index < len(segments) - 1
                 if is_terminated:
                     line = f"{buffer}{segment}".strip()
-                    if line and progress_callback is not None:
-                        progress_lines += 1
-                        progress_callback(line)
+                    if line:
+                        metric_payload = _parse_ai_metric_line(line)
+                        if metric_payload is not None:
+                            _log_ai_metric_payload(metric_payload, context=context)
+                            if detail_callback is not None:
+                                detail_text = _format_ai_metric_detail(metric_payload, context=context)
+                                if detail_text:
+                                    detail_callback(detail_text)
+                            buffer = ""
+                            continue
+                        if progress_callback is not None:
+                            progress_lines += 1
+                            progress_callback(line)
+                        if detail_callback is not None:
+                            detail_text = _format_command_output_detail(line)
+                            if detail_text:
+                                detail_callback(detail_text)
                     buffer = ""
                 else:
                     buffer += segment
@@ -1409,11 +1537,27 @@ def _run_command_with_live_output(
         except Exception:
             pass
 
-    if buffer.strip() and progress_callback is not None:
-        progress_lines += 1
-        progress_callback(buffer.strip())
+    trailing_line = buffer.strip()
+    if trailing_line:
+        metric_payload = _parse_ai_metric_line(trailing_line)
+        if metric_payload is not None:
+            _log_ai_metric_payload(metric_payload, context=context)
+            if detail_callback is not None:
+                detail_text = _format_ai_metric_detail(metric_payload, context=context)
+                if detail_text:
+                    detail_callback(detail_text)
+        else:
+            if progress_callback is not None:
+                progress_lines += 1
+                progress_callback(trailing_line)
+            if detail_callback is not None:
+                detail_text = _format_command_output_detail(trailing_line)
+                if detail_text:
+                    detail_callback(detail_text)
 
     return_code = process.wait()
+    if process_finished_callback is not None:
+        process_finished_callback(process)
     stdout = "".join(chunks)
     if logger.enabled:
         logger.duration(
@@ -1433,6 +1577,165 @@ def _run_command_with_live_output(
         stdout=stdout,
         stderr="",
     )
+
+
+def _log_ai_metric_line(line: str, *, context: dict[str, object]) -> bool:
+    payload = _parse_ai_metric_line(line)
+    if payload is None:
+        return False
+    _log_ai_metric_payload(payload, context=context)
+    return True
+
+
+def _log_ai_metric_payload(payload: dict[str, object], *, context: dict[str, object]) -> None:
+    logger = perf_logger()
+    if not logger.enabled:
+        return
+    payload = dict(payload)
+    event = str(payload.pop("event", "ai.script.metric") or "ai.script.metric")
+    duration = payload.pop("duration_ms", None)
+    fields = dict(context)
+    fields.update(payload)
+    if isinstance(duration, (int, float)):
+        logger.duration(event, float(duration), **fields)
+    else:
+        logger.log(event, **fields)
+
+
+def _parse_ai_metric_line(line: str) -> dict[str, object] | None:
+    metric_start = line.find(AI_METRIC_PREFIX)
+    if metric_start < 0:
+        return None
+    metric_text = line[metric_start + len(AI_METRIC_PREFIX) :].strip()
+    if not metric_text:
+        return None
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(metric_text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _format_command_output_detail(line: str) -> str:
+    text = " ".join((line or "").split())
+    if not text:
+        return ""
+    if len(text) > 220:
+        text = f"{text[:217]}..."
+    return text
+
+
+def _format_ai_metric_detail(payload: dict[str, object], *, context: dict[str, object]) -> str:
+    event = str(payload.get("event", "") or "")
+    stage = str(context.get("stage", "") or "")
+    duration_text = _format_metric_duration(payload.get("duration_ms"))
+
+    if event == "ai.script.extract.start":
+        return (
+            f"Preparing embedding extraction: {payload.get('batch_size', '-')} image batch size, "
+            f"{payload.get('num_workers', '-')} loader workers."
+        )
+    if event == "ai.script.extract.dependencies_start":
+        return "Loading embedding extraction libraries."
+    if event == "ai.script.extract.dependencies":
+        return f"Loaded embedding extraction libraries{duration_text}."
+    if event == "ai.script.extract.scan":
+        return (
+            f"Scanned image inputs: {payload.get('valid_records', 0)} readable of "
+            f"{payload.get('total_records', 0)} files{duration_text}."
+        )
+    if event == "ai.script.extract.model_load_start":
+        return f"Loading DINO embedding model on {payload.get('requested_device', 'auto')}."
+    if event == "ai.script.extract.model_load":
+        return (
+            f"Loaded DINO model ({payload.get('backend', 'model')}, {payload.get('device', '-')}, "
+            f"{payload.get('feature_dim', '-')} features){duration_text}."
+        )
+    if event == "ai.script.extract.iterator":
+        return f"Prepared embedding data loader{duration_text}."
+    if event == "ai.script.extract.first_batch_ready":
+        return f"First embedding batch ready{duration_text}."
+    if event == "ai.script.extract.batch":
+        return (
+            f"Embedded batch {payload.get('batch_index', '-')}: "
+            f"{payload.get('processed', payload.get('batch_size', '-'))} image(s){duration_text}."
+        )
+    if event == "ai.script.extract.inference_summary":
+        slow_file = str(payload.get("sample_max_file", "") or "")
+        suffix = f" Slowest image: {slow_file}." if slow_file else ""
+        return f"Embedding pass summary: {payload.get('samples', '-')} image(s){duration_text}.{suffix}"
+    if event == "ai.script.extract.save":
+        return f"Saved embedding artifacts for {payload.get('embeddings', 0)} image(s){duration_text}."
+    if event == "ai.script.extract.total":
+        return f"Finished embedding extraction{duration_text}."
+
+    if event == "ai.script.semantic.start":
+        return (
+            f"Preparing semantic classification with {payload.get('labels', '-')} label(s), "
+            f"batch size {payload.get('batch_size', '-')}."
+        )
+    if event == "ai.script.semantic.host_dependencies_start":
+        return "Loading semantic classification host libraries."
+    if event == "ai.script.semantic.host_dependencies":
+        return f"Loaded semantic classification host libraries{duration_text}."
+    if event == "ai.script.semantic.metadata":
+        return f"Loaded semantic metadata for {payload.get('rows', 0)} image(s){duration_text}."
+    if event == "ai.script.semantic.dependencies_start":
+        return "Loading semantic AI libraries."
+    if event == "ai.script.semantic.dependencies":
+        return f"Loaded semantic AI libraries{duration_text}."
+    if event == "ai.script.semantic.model_load_start":
+        return f"Loading semantic model on {payload.get('requested_device', 'auto')}."
+    if event == "ai.script.semantic.model_load":
+        return f"Loaded semantic model ({payload.get('device', '-')}){duration_text}."
+    if event == "ai.script.semantic.batch":
+        return (
+            f"Classified semantic batch {payload.get('batch_index', '-')}: "
+            f"{payload.get('opened', 0)} image(s), {payload.get('failed', 0)} failed{duration_text}."
+        )
+    if event == "ai.script.semantic.write":
+        return f"Saved semantic classifications for {payload.get('rows', 0)} image(s){duration_text}."
+    if event == "ai.script.semantic.summary":
+        return (
+            f"Semantic summary: {payload.get('classified', payload.get('classified_images', '-'))} classified, "
+            f"{payload.get('failed', payload.get('failed_images', '-'))} failed."
+        )
+    if event == "ai.script.semantic.total":
+        return f"Finished semantic classification for {payload.get('rows', '-')} image(s){duration_text}."
+
+    if duration_text:
+        label = event.removeprefix("ai.script.").replace(".", " ").replace("_", " ")
+        if label:
+            return f"{label.title()}{duration_text}."
+    if stage:
+        return f"{stage}: {event}" if event else ""
+    return event
+
+
+def _format_metric_duration(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return ""
+    milliseconds = max(0.0, float(value))
+    if milliseconds < 1000.0:
+        return f" in {milliseconds:.0f} ms"
+    seconds = milliseconds / 1000.0
+    if seconds < 60.0:
+        return f" in {seconds:.1f}s"
+    minutes = int(seconds // 60)
+    remainder = seconds - minutes * 60
+    return f" in {minutes}m {remainder:.0f}s"
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
 
 
 def _emit_tqdm_progress(*, signals: AIRunSignals, folder_text: str, line: str) -> None:

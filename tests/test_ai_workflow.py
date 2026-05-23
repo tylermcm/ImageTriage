@@ -12,6 +12,7 @@ from unittest.mock import patch
 from image_triage.ai_workflow import (
     AIWorkflowRuntime,
     _build_stage_failure_message,
+    _parse_ai_metric_line,
     _parse_tqdm_progress,
     _resolve_stage_command,
     _run_command_with_live_output,
@@ -30,6 +31,21 @@ class AIWorkflowStreamingTests(unittest.TestCase):
         parsed = _parse_tqdm_progress("Extracting embeddings:   6%|6         | 32/513 [00:57<14:23,  1.80s/image]")
 
         self.assertEqual(("Extracting embeddings", 32, 513, "14:23"), parsed)
+
+    def test_parse_ai_metric_line_accepts_structured_stdout_metric(self) -> None:
+        parsed = _parse_ai_metric_line('AI_METRIC {"event":"ai.script.extract.batch","duration_ms":12.5,"batch_index":2}')
+
+        self.assertEqual(
+            {"event": "ai.script.extract.batch", "duration_ms": 12.5, "batch_index": 2},
+            parsed,
+        )
+
+    def test_parse_ai_metric_line_accepts_tqdm_prefixed_metric(self) -> None:
+        parsed = _parse_ai_metric_line(
+            'Extracting embeddings:  10%|# | 32/320 [00:01<00:09]AI_METRIC {"event":"ai.script.extract.batch","batch_index":1}'
+        )
+
+        self.assertEqual({"event": "ai.script.extract.batch", "batch_index": 1}, parsed)
 
     def test_run_command_streams_lines_and_flushes_trailing_partial(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -90,6 +106,79 @@ class AIWorkflowStreamingTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         self.assertEqual(emitted, ["partial", "tail"])
         self.assertTrue(completed.stdout.endswith("tail"))
+
+    def test_run_command_filters_structured_metrics_from_progress_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "metric_case.py"
+            script_path.write_text(
+                textwrap.dedent(
+                    """
+                    print('AI_METRIC {"event":"ai.script.extract.batch","duration_ms":12.5}')
+                    print("visible progress")
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            emitted: list[str] = []
+            completed = _run_command_with_live_output(
+                [sys.executable, str(script_path)],
+                cwd=Path(temp_dir),
+                progress_callback=emitted.append,
+            )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(emitted, ["visible progress"])
+        self.assertIn("AI_METRIC", completed.stdout)
+
+    def test_run_command_emits_detail_lines_for_metrics_and_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "detail_case.py"
+            script_path.write_text(
+                textwrap.dedent(
+                    """
+                    print('AI_METRIC {"event":"ai.script.extract.model_load","duration_ms":1500,"backend":"huggingface","device":"cpu","feature_dim":1024}')
+                    print("visible progress")
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            progress: list[str] = []
+            details: list[str] = []
+            completed = _run_command_with_live_output(
+                [sys.executable, str(script_path)],
+                cwd=Path(temp_dir),
+                progress_callback=progress.append,
+                detail_callback=details.append,
+            )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(progress, ["visible progress"])
+        self.assertTrue(any("Loaded DINO model" in line for line in details))
+        self.assertTrue(any("visible progress" in line for line in details))
+
+    def test_run_command_process_callback_can_terminate_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "long_case.py"
+            script_path.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+
+            seen_pid: list[int] = []
+
+            def terminate_started(process) -> None:
+                seen_pid.append(process.pid)
+                process.terminate()
+
+            completed = _run_command_with_live_output(
+                [sys.executable, str(script_path)],
+                cwd=Path(temp_dir),
+                process_started_callback=terminate_started,
+            )
+
+        self.assertTrue(seen_pid)
+        self.assertNotEqual(completed.returncode, 0)
 
     def test_run_command_can_tee_raw_output_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -226,6 +315,32 @@ class AIWorkflowStreamingTests(unittest.TestCase):
 
             self.assertEqual(runtime.batch_size, 48)
             self.assertEqual(runtime.num_workers, 7)
+
+    def test_default_runtime_uses_zero_ai_workers_on_windows(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows-specific DataLoader default")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine_root = Path(temp_dir) / "engine"
+            config_dir = engine_root / "configs"
+            checkpoint_path = engine_root / "outputs" / "ranker_run_mlp_100ep" / "best_ranker.pt"
+            config_dir.mkdir(parents=True)
+            checkpoint_path.parent.mkdir(parents=True)
+            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
+            checkpoint_path.write_bytes(b"checkpoint")
+
+            env = {
+                "AICULLING_ENGINE_ROOT": str(engine_root),
+                "AICULLING_PYTHON": sys.executable,
+                "AICULLING_CHECKPOINT": str(checkpoint_path),
+                "AICULLING_MODEL_NAME": "mock-model",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                os.environ.pop("AICULLING_NUM_WORKERS", None)
+                runtime = default_ai_workflow_runtime()
+
+        self.assertEqual(runtime.num_workers, 0)
 
     def test_load_supported_extensions_fallback_includes_raw_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

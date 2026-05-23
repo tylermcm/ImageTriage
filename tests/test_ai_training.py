@@ -15,15 +15,22 @@ import numpy as np
 
 from image_triage.ai_training import (
     LaunchLabelingAppTask,
+    ai_training_evaluation_issues,
+    ai_training_source_needs_prepare,
     build_ai_training_paths,
     build_general_ai_training_paths,
     diagnose_ranker_fit,
     list_ranker_runs,
+    list_registered_training_sources,
     normalize_ranker_profile,
+    prepare_hidden_ai_training_workspace,
     prepare_general_training_pool,
     preview_general_training_pool,
     set_active_ranker_selection,
+    set_registered_training_source_enabled,
     suggest_training_profile,
+    _write_labeled_training_clusters,
+    _write_labeled_training_include_file,
 )
 from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord
@@ -330,46 +337,190 @@ class AITrainingTests(unittest.TestCase):
                     self.assertIn(record["preferred_image_id"], image_ids)
                     self.assertNotEqual("cluster_0000", record["cluster_id"])
 
+    def test_labeled_training_include_file_uses_only_labeled_images(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_labeled_include_") as temp_dir:
+            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
+                folder = Path(temp_dir) / "shots"
+                folder.mkdir(parents=True, exist_ok=True)
+                paths = build_ai_training_paths(folder)
+                paths.labeling_artifacts_dir.mkdir(parents=True, exist_ok=True)
+                paths.labels_dir.mkdir(parents=True, exist_ok=True)
+                metadata_rows = [
+                    {"image_id": "img_a", "relative_path": "a.jpg"},
+                    {"image_id": "img_b", "relative_path": "nested/b.jpg"},
+                    {"image_id": "img_unused", "relative_path": "unused.jpg"},
+                ]
+                with paths.labeling_metadata_path.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=["image_id", "relative_path"])
+                    writer.writeheader()
+                    writer.writerows(metadata_rows)
+                with paths.pairwise_labels_path.open("w", encoding="utf-8") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "image_a_id": "img_a",
+                                "image_b_id": "img_b",
+                                "preferred_image_id": "img_a",
+                            }
+                        )
+                        + "\n"
+                    )
+
+                include_file, image_ids = _write_labeled_training_include_file(paths)
+
+                self.assertIsNotNone(include_file)
+                assert include_file is not None
+                self.assertEqual({"img_a", "img_b"}, image_ids)
+                self.assertEqual(["a.jpg", "nested/b.jpg"], include_file.read_text(encoding="utf-8").splitlines())
+
+    def test_labeled_training_clusters_preserve_label_cluster_ids(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_labeled_clusters_") as temp_dir:
+            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
+                folder = Path(temp_dir) / "shots"
+                folder.mkdir(parents=True, exist_ok=True)
+                paths = build_ai_training_paths(folder)
+                paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
+                paths.labeling_artifacts_dir.mkdir(parents=True, exist_ok=True)
+                metadata_rows = [
+                    {
+                        "image_id": "img_a",
+                        "file_path": str(folder / "a.jpg"),
+                        "relative_path": "a.jpg",
+                        "file_name": "a.jpg",
+                        "embedding_index": "0",
+                    },
+                    {
+                        "image_id": "img_b",
+                        "file_path": str(folder / "b.jpg"),
+                        "relative_path": "b.jpg",
+                        "file_name": "b.jpg",
+                        "embedding_index": "1",
+                    },
+                ]
+                with (paths.artifacts_dir / "images.csv").open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(metadata_rows[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(metadata_rows)
+                cluster_rows = [
+                    {
+                        "image_id": "img_a",
+                        "cluster_id": "label_cluster_0007",
+                        "cluster_size": "4",
+                        "cluster_position": "2",
+                        "cluster_reason": "label_candidates_burst",
+                        "file_path": str(folder / "a.jpg"),
+                        "relative_path": "a.jpg",
+                        "file_name": "a.jpg",
+                    },
+                    {
+                        "image_id": "img_b",
+                        "cluster_id": "label_cluster_0007",
+                        "cluster_size": "4",
+                        "cluster_position": "3",
+                        "cluster_reason": "label_candidates_burst",
+                        "file_path": str(folder / "b.jpg"),
+                        "relative_path": "b.jpg",
+                        "file_name": "b.jpg",
+                    },
+                ]
+                with paths.labeling_clusters_path.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(cluster_rows[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(cluster_rows)
+
+                _write_labeled_training_clusters(paths, {"img_a", "img_b"})
+
+                with (paths.artifacts_dir / "clusters.csv").open("r", encoding="utf-8", newline="") as handle:
+                    output_rows = list(csv.DictReader(handle))
+                self.assertEqual(["label_cluster_0007", "label_cluster_0007"], [row["cluster_id"] for row in output_rows])
+                self.assertEqual(["2", "2"], [row["cluster_size"] for row in output_rows])
+                self.assertEqual(["0", "1"], [row["cluster_position"] for row in output_rows])
+
+    def test_stale_labeled_cluster_artifacts_block_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_stale_cluster_eval_") as temp_dir:
+            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
+                folder = Path(temp_dir) / "shots"
+                folder.mkdir(parents=True, exist_ok=True)
+                self._write_training_source(folder, seed=1.0)
+                paths = build_ai_training_paths(folder)
+                paths.cluster_labels_path.write_text(
+                    json.dumps(
+                        {
+                            "cluster_id": "label_cluster_0009",
+                            "best_image_ids": ["shared_a"],
+                            "acceptable_image_ids": [],
+                            "reject_image_ids": ["shared_b"],
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+                issues = ai_training_evaluation_issues(paths)
+
+                self.assertTrue(ai_training_source_needs_prepare(folder))
+                self.assertTrue(any("labeled cluster" in issue for issue in issues))
+                self.assertTrue(any("Run Prepare Training Data" in issue for issue in issues))
+
+    def test_registered_training_source_enabled_state_is_persisted(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_sources_") as temp_dir:
+            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
+                folder = Path(temp_dir) / "shots"
+                folder.mkdir(parents=True, exist_ok=True)
+
+                prepare_hidden_ai_training_workspace(folder)
+                sources = list_registered_training_sources(enabled_only=False)
+                self.assertEqual(1, len(sources))
+                self.assertTrue(sources[0].enabled)
+
+                set_registered_training_source_enabled(sources[0].namespace, False)
+
+                self.assertEqual((), list_registered_training_sources(enabled_only=True))
+                all_sources = list_registered_training_sources(enabled_only=False)
+                self.assertEqual(1, len(all_sources))
+                self.assertFalse(all_sources[0].enabled)
+
     def test_preview_general_training_pool_reports_retrain_guidance(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_general_preview_") as temp_dir:
-            folder = Path(temp_dir) / "folder_a"
-            folder.mkdir(parents=True, exist_ok=True)
-            self._write_training_source(folder, seed=2.0, pairwise_repetitions=30)
+            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
+                folder = Path(temp_dir) / "folder_a"
+                folder.mkdir(parents=True, exist_ok=True)
+                self._write_training_source(folder, seed=2.0, pairwise_repetitions=30)
 
-            reference_run = RankerRunInfo(
-                run_id="general-run",
-                display_name="General Run",
-                run_dir=Path(temp_dir) / "run",
-                checkpoint_path=None,
-                last_checkpoint_path=None,
-                metrics_path=None,
-                history_path=None,
-                resolved_config_path=None,
-                evaluation_metrics_path=None,
-                train_log_path=None,
-                evaluation_log_path=None,
-                created_at="2026-04-25T12:00:00-06:00",
-                pairwise_labels=1,
-                cluster_labels=0,
-                num_epochs=None,
-                best_epoch=None,
-                best_validation_accuracy=None,
-                best_validation_loss=None,
-                cluster_top1_hit_rate=None,
-                reference_bank_path="",
-                profile_key="general",
-                profile_label="General Use",
-                fit_diagnosis=RankerFitDiagnosis(
-                    code="healthy",
-                    label="Looks Healthy",
-                    summary="Balanced.",
-                    remedy="Keep going.",
-                ),
-                is_active=True,
-                is_legacy=False,
-            )
+                reference_run = RankerRunInfo(
+                    run_id="general-run",
+                    display_name="General Run",
+                    run_dir=Path(temp_dir) / "run",
+                    checkpoint_path=None,
+                    last_checkpoint_path=None,
+                    metrics_path=None,
+                    history_path=None,
+                    resolved_config_path=None,
+                    evaluation_metrics_path=None,
+                    train_log_path=None,
+                    evaluation_log_path=None,
+                    created_at="2026-04-25T12:00:00-06:00",
+                    pairwise_labels=1,
+                    cluster_labels=0,
+                    num_epochs=None,
+                    best_epoch=None,
+                    best_validation_accuracy=None,
+                    best_validation_loss=None,
+                    cluster_top1_hit_rate=None,
+                    reference_bank_path="",
+                    profile_key="general",
+                    profile_label="General Use",
+                    fit_diagnosis=RankerFitDiagnosis(
+                        code="healthy",
+                        label="Looks Healthy",
+                        summary="Balanced.",
+                        remedy="Keep going.",
+                    ),
+                    is_active=True,
+                    is_legacy=False,
+                )
 
-            status = preview_general_training_pool((str(folder),), reference_run=reference_run)
+                status = preview_general_training_pool((str(folder),), reference_run=reference_run)
 
             self.assertEqual(30, status.pairwise_labels)
             self.assertEqual(1, status.cluster_labels)

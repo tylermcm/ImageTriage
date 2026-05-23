@@ -1,4 +1,5 @@
 from .actions import MainWindowActions, build_main_window_actions
+from .ai_review_progress_dialog import AIReviewProgressDialog
 from .ai_training_progress_dialog import AITrainingProgressDialog
 from .ai_training_stats_dialog import AITrainingStatsDialog
 from .batch_rename_dialog import BatchRenameDialog
@@ -17,7 +18,7 @@ from .icons import build_pin_icon, build_symbol_icon, build_undo_icon
 from .keyboard_dialog import KeyboardShortcutDialog
 from .layout_state import clear_window_layout, restore_window_layout, save_window_layout
 from .menus import build_main_menu_bar
-from .ranker_manager_dialog import RankerCenterDialog, RankerCenterSummary, RankerManagerDialog
+from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, RankerCenterDialog, RankerCenterSummary, RankerManagerDialog, TrainingSourcesDialog
 from .resize_dialog import ResizeDialog
 from .train_ranker_dialog import TrainRankerDialog
 from .theme import (
@@ -34,6 +35,7 @@ from .toolbars import build_primary_toolbar
 
 __all__ = [
     "AITrainingProgressDialog",
+    "AIReviewProgressDialog",
     "AITrainingStatsDialog",
     "AppearanceMode",
     "AdvancedFilterDialog",
@@ -45,6 +47,7 @@ __all__ = [
     "ColorToken",
     "CommandPaletteDialog",
     "ConvertDialog",
+    "EvaluationSourceDialog",
     "FileAssociationsDialog",
     "HandoffBuilderDialog",
     "HelpMarkdownDialog",
@@ -52,12 +55,14 @@ __all__ = [
     "KeyboardShortcutDialog",
     "MainWindowActions",
     "PaletteCommand",
+    "PrepareTrainingSourcesDialog",
     "RankerCenterDialog",
     "RankerCenterSummary",
     "RankerManagerDialog",
     "ResizeDialog",
     "ThemePalette",
     "TrainRankerDialog",
+    "TrainingSourcesDialog",
     "WorkspaceDocks",
     "build_app_palette",
     "build_app_stylesheet",

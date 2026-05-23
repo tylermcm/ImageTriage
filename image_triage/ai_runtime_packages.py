@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -33,7 +34,7 @@ AI_RUNTIME_PIP_REQUIREMENTS = (
     "tqdm>=4.66",
     "PyYAML>=6.0",
     "timm>=1.0",
-    "transformers>=4.46",
+    "transformers>=4.56",
     "safetensors>=0.4",
 )
 AI_RUNTIME_REQUIRED_MODULE_NAMES = (
@@ -49,6 +50,10 @@ AI_RUNTIME_REQUIRED_MODULE_NAMES = (
     "yaml",
     "tqdm",
 )
+AI_RUNTIME_REQUIRED_VERSION_FLOORS = {
+    "transformers": (4, 56),
+}
+AI_RUNTIME_GPU_TORCH_MINIMUM_VERSION = (2, 9, 0)
 AI_RUNTIME_ESTIMATED_DOWNLOAD_MB = {
     AI_RUNTIME_CPU_VARIANT: 2600,
     AI_RUNTIME_GPU_VARIANT: 6200,
@@ -279,19 +284,43 @@ def build_ai_runtime_pip_install_args(
         "--no-warn-script-location",
         "--progress-bar",
         "raw",
-        "--prefer-binary",
-        "--only-binary=:all:",
         "--target",
         str(Path(target_dir)),
-        "--extra-index-url",
-        _torch_index_url_for_variant(normalized),
     ]
+    args.append("--prefer-binary")
+    if normalized == AI_RUNTIME_GPU_VARIANT:
+        args.extend(["--extra-index-url", _torch_index_url_for_variant(normalized)])
+        args.extend(["--only-binary=:all:"])
+    else:
+        args.extend(["--extra-index-url", _torch_index_url_for_variant(normalized)])
+        args.extend(["--only-binary=:all:"])
     if force:
         args.extend(["--upgrade", "--force-reinstall"])
     else:
         args.append("--upgrade")
-    args.extend(AI_RUNTIME_PIP_REQUIREMENTS)
+    args.extend(_ai_runtime_pip_requirements_for_variant(normalized))
     return args
+
+
+def _ai_runtime_pip_requirements_for_variant(variant: str) -> tuple[str, ...]:
+    if normalize_ai_runtime_variant(variant) != AI_RUNTIME_GPU_VARIANT:
+        return AI_RUNTIME_PIP_REQUIREMENTS
+    return tuple(
+        requirement
+        for requirement in AI_RUNTIME_PIP_REQUIREMENTS
+        if not requirement.partition(">=")[0] in {"torch", "torchvision"}
+    ) + (
+        f"torch=={_gpu_torch_version_spec()}",
+        f"torchvision=={_gpu_torchvision_version_spec()}",
+    )
+
+
+def _gpu_torch_version_spec() -> str:
+    return os.environ.get("IMAGE_TRIAGE_TORCH_GPU_VERSION", "2.9.0+cu128")
+
+
+def _gpu_torchvision_version_spec() -> str:
+    return os.environ.get("IMAGE_TRIAGE_TORCHVISION_GPU_VERSION", "0.24.0+cu128")
 
 
 def _default_pip_runner(args: list[str], cwd: Path) -> int:
@@ -305,16 +334,63 @@ def _default_pip_runner(args: list[str], cwd: Path) -> int:
 
 def _profile_status(directories: AIRuntimeDirectories, variant: str) -> AIRuntimeProfileStatus:
     target_dir = directories.site_packages_dir(variant)
-    missing = tuple(
-        module_name
-        for module_name in AI_RUNTIME_REQUIRED_MODULE_NAMES
-        if not _module_present(target_dir, module_name)
-    )
+    missing_items: list[str] = []
+    for module_name in AI_RUNTIME_REQUIRED_MODULE_NAMES:
+        if not _module_present(target_dir, module_name):
+            missing_items.append(module_name)
+            continue
+        minimum_version = AI_RUNTIME_REQUIRED_VERSION_FLOORS.get(module_name)
+        if minimum_version and not _module_version_at_least(target_dir, module_name, minimum_version):
+            missing_items.append(f"{module_name}>={'.'.join(str(part) for part in minimum_version)}")
+    if normalize_ai_runtime_variant(variant) == AI_RUNTIME_GPU_VARIANT:
+        if not _torch_cuda_binaries_present(target_dir):
+            missing_items.append("torch CUDA binaries")
+        if not _torch_runtime_version_at_least(target_dir, AI_RUNTIME_GPU_TORCH_MINIMUM_VERSION):
+            missing_items.append("torch>=2.9.0+cu128")
+    missing = tuple(missing_items)
     return AIRuntimeProfileStatus(
         variant=variant,
         site_packages_dir=target_dir,
         missing_modules=missing,
     )
+
+
+def _torch_cuda_binaries_present(site_packages_dir: Path) -> bool:
+    torch_lib = site_packages_dir / "torch" / "lib"
+    if not torch_lib.exists():
+        return False
+    cuda_dll_names = {
+        "c10_cuda.dll",
+        "torch_cuda.dll",
+        "torch_cuda_cu.dll",
+        "torch_cuda_cpp.dll",
+    }
+    try:
+        return any((torch_lib / name).exists() for name in cuda_dll_names)
+    except OSError:
+        return False
+
+
+def _torch_runtime_version_at_least(site_packages_dir: Path, minimum_version: tuple[int, ...]) -> bool:
+    version = _torch_import_version(site_packages_dir) or _installed_distribution_version(site_packages_dir, "torch")
+    if not version:
+        return False
+    parsed = _parse_version_prefix(version, parts=len(minimum_version))
+    if parsed is None:
+        return False
+    return parsed >= minimum_version
+
+
+def _torch_import_version(site_packages_dir: Path) -> str:
+    version_path = site_packages_dir / "torch" / "version.py"
+    if not version_path.exists():
+        return ""
+    try:
+        text = version_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", text)
+    return match.group(1).strip() if match else ""
 
 
 def _select_runtime_variant(
@@ -363,6 +439,60 @@ def _module_present(site_packages_dir: Path, module_name: str) -> bool:
     return package_dir.exists() or module_file.exists() or any(path.exists() for path in extension_files)
 
 
+def _module_version_at_least(
+    site_packages_dir: Path,
+    module_name: str,
+    minimum_version: tuple[int, ...],
+) -> bool:
+    version = _installed_distribution_version(site_packages_dir, module_name)
+    if not version:
+        return False
+    parsed = _parse_version_prefix(version, parts=len(minimum_version))
+    if parsed is None:
+        return False
+    return parsed >= minimum_version
+
+
+def _installed_distribution_version(site_packages_dir: Path, package_name: str) -> str:
+    normalized = package_name.replace("_", "-").lower()
+    for metadata_dir in site_packages_dir.glob("*.dist-info"):
+        metadata_path = metadata_dir / "METADATA"
+        if metadata_path.exists():
+            try:
+                metadata = metadata_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                metadata = ""
+            name = ""
+            version = ""
+            for line in metadata.splitlines():
+                if line.lower().startswith("name:"):
+                    name = line.split(":", 1)[1].strip().replace("_", "-").lower()
+                elif line.lower().startswith("version:"):
+                    version = line.split(":", 1)[1].strip()
+                if name and version:
+                    break
+            if name == normalized and version:
+                return version
+
+        stem = metadata_dir.name.removesuffix(".dist-info")
+        if "-" not in stem:
+            continue
+        name_part, version_part = stem.rsplit("-", 1)
+        if name_part.replace("_", "-").lower() == normalized:
+            return version_part
+    return ""
+
+
+def _parse_version_prefix(version: str, *, parts: int) -> tuple[int, ...] | None:
+    tokens = [token for token in re.split(r"[^\d]+", version) if token]
+    if len(tokens) < parts:
+        return None
+    try:
+        return tuple(int(token) for token in tokens[:parts])
+    except ValueError:
+        return None
+
+
 def _default_user_cache_root() -> Path:
     if os.name == "nt":
         local_appdata = os.environ.get("LOCALAPPDATA")
@@ -372,7 +502,19 @@ def _default_user_cache_root() -> Path:
 
 
 def _python_runtime_tag() -> str:
-    machine = (platform.machine() or "unknown").replace(" ", "_").lower()
+    machine = (platform.machine() or "").replace(" ", "_").lower()
+    if not machine and os.name == "nt":
+        machine = (
+            os.environ.get("PROCESSOR_ARCHITEW6432")
+            or os.environ.get("PROCESSOR_ARCHITECTURE")
+            or ""
+        ).replace(" ", "_").lower()
+    if machine in {"amd64", "x86_64"}:
+        machine = "amd64"
+    elif not machine and platform.architecture()[0] == "64bit":
+        machine = "amd64"
+    elif not machine:
+        machine = "unknown"
     system = (platform.system() or "unknown").replace(" ", "_").lower()
     return f"py{sys.version_info.major}{sys.version_info.minor}-{system}-{machine}"
 
