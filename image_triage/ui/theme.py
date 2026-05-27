@@ -860,6 +860,54 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-weight: 600;
             padding: 0 2px;
         }}
+        QListWidget#settingsSectionList {{
+            background-color: {theme.panel_alt_bg.css};
+            border: none;
+            border-right: 1px solid {theme.border_muted.css};
+            color: {theme.text_secondary.css};
+            font-size: 13px;
+            outline: 0;
+            padding: 18px 8px;
+        }}
+        QListWidget#settingsSectionList::item {{
+            padding: 8px 14px;
+            border-radius: 8px;
+            margin: 1px 4px;
+        }}
+        QListWidget#settingsSectionList::item:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QListWidget#settingsSectionList::item:selected {{
+            background-color: {theme.accent_soft.css};
+            color: {theme.text_primary.css};
+            font-weight: 600;
+        }}
+        QStackedWidget#settingsPages {{
+            background-color: {theme.window_bg.css};
+        }}
+        QWidget#settingsPageContent {{
+            background-color: {theme.window_bg.css};
+        }}
+        QLabel#settingsPageTitle {{
+            color: {theme.text_primary.css};
+            font-size: 18px;
+            font-weight: 700;
+            padding-bottom: 4px;
+        }}
+        QFrame#settingsPageSeparator {{
+            background-color: {theme.border_muted.css};
+            border: none;
+        }}
+        QLabel#settingsRowLabel {{
+            color: {theme.text_secondary.css};
+            font-size: 12px;
+            font-weight: 500;
+        }}
+        QFrame#settingsFooter {{
+            background-color: {theme.panel_alt_bg.css};
+            border-top: 1px solid {theme.border_muted.css};
+        }}
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};
             font-size: 12px;

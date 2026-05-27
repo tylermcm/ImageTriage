@@ -29,7 +29,7 @@ from app.config import (
     SemanticClassificationConfig,
 )
 from app.labeling.loaders import load_labeling_dataset
-from app.labeling.models import ClusterItem, DatasetBundle, ImageItem, PairCandidate
+from app.labeling.models import ClusterItem, DatasetBundle, ImageItem
 from app.labeling.session import LabelingSession
 
 __all__ = [
@@ -50,7 +50,6 @@ __all__ = [
     "HumanDecisionRecord",
     "LabelingConfig",
     "LabelingSession",
-    "PairCandidate",
     "PairwiseRankerTrainer",
     "RankerService",
     "ReferenceBankBuildConfig",
@@ -65,10 +64,12 @@ __all__ = [
     "build_culling_groups",
     "build_reference_bank",
     "build_reference_feature_matrix",
+    "build_culling_signals",
     "create_host_adapter",
     "create_labeling_session",
     "create_ranking_service",
     "discover_artifact_bundle",
+    "evaluate_culling_signals",
     "evaluate_ranker",
     "extract_embeddings",
     "export_ranked_results",
@@ -79,7 +80,9 @@ __all__ = [
     "run_similarity_clustering",
     "score_images",
     "score_cluster_artifacts",
+    "save_culling_signals",
     "classify_images_semantically",
+    "train_signal_combiner",
     "train_ranker",
 ]
 
@@ -99,14 +102,18 @@ _LAZY_EXPORTS = {
     "build_cluster_report": ("app.engine.ranking", "build_cluster_report"),
     "build_reference_bank": ("app.engine.ranking", "build_reference_bank"),
     "build_reference_feature_matrix": ("app.engine.ranking", "build_reference_feature_matrix"),
+    "build_culling_signals": ("app.engine.signals", "build_culling_signals"),
     "create_ranking_service": ("app.engine.ranking", "create_ranking_service"),
+    "evaluate_culling_signals": ("app.engine.signals", "evaluate_culling_signals"),
     "evaluate_ranker": ("app.engine.ranking", "evaluate_ranker"),
     "export_ranked_results": ("app.engine.ranking", "export_ranked_results"),
     "load_ranker": ("app.engine.ranking", "load_ranker"),
     "rank_cluster": ("app.engine.ranking", "rank_cluster"),
     "score_images": ("app.engine.ranking", "score_images"),
     "score_cluster_artifacts": ("app.engine.ranking", "score_cluster_artifacts"),
+    "save_culling_signals": ("app.engine.signals", "save_culling_signals"),
     "classify_images_semantically": ("app.engine.semantic", "classify_images_semantically"),
+    "train_signal_combiner": ("app.engine.signals", "train_signal_combiner"),
     "train_ranker": ("app.engine.ranking", "train_ranker"),
 }
 

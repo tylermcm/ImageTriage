@@ -1448,6 +1448,7 @@ def _run_command_with_live_output(
         )
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("IMAGE_TRIAGE_HOST_ROOT", str(Path(__file__).resolve().parents[1]))
     env[AI_METRICS_ENV_VAR] = "1" if logger.enabled or detail_callback is not None else "0"
     spawn_start = time.perf_counter() if logger.enabled else 0.0
     try:

@@ -1,4 +1,10 @@
-"""Append-safe JSONL storage for pairwise and cluster labels."""
+"""Append-safe JSONL storage for the legacy cluster-label fallback.
+
+The Speed Cull surface writes to the host DecisionStore via DecisionBridge in
+production. ClusterLabelStore is kept as an offline fallback so tests and
+standalone runs without the host present still have a place to persist
+decisions.
+"""
 
 from __future__ import annotations
 
@@ -6,23 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
-from uuid import uuid4
-
-
-@dataclass(frozen=True)
-class PairwiseLabelRecord:
-    """One pairwise preference annotation record written to JSONL."""
-
-    label_id: str
-    image_a_id: str
-    image_b_id: str
-    preferred_image_id: Optional[str]
-    decision: str
-    source_mode: str
-    cluster_id: Optional[str]
-    timestamp: str
-    annotator_id: Optional[str]
+from typing import Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -35,66 +25,6 @@ class ClusterLabelRecord:
     reject_image_ids: List[str]
     timestamp: str
     annotator_id: Optional[str]
-
-
-class PairwiseLabelStore:
-    """Append-only storage and resume tracking for pairwise labels."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.records = _load_jsonl(path)
-        self.records_by_key: Dict[Tuple[str, str], Dict[str, object]] = {}
-        for record in self.records:
-            key = pair_key(str(record["image_a_id"]), str(record["image_b_id"]))
-            self.records_by_key[key] = record
-
-    def has_pair(self, image_a_id: str, image_b_id: str) -> bool:
-        """Return whether the unordered pair already has a saved label."""
-
-        return pair_key(image_a_id, image_b_id) in self.records_by_key
-
-    def count(self) -> int:
-        """Return the number of unique labeled pairs."""
-
-        return len(self.records_by_key)
-
-    def clear(self) -> None:
-        """Delete saved pairwise labels and reset in-memory resume state."""
-
-        self.records.clear()
-        self.records_by_key.clear()
-        try:
-            self.path.unlink(missing_ok=True)
-        except OSError:
-            self.path.write_text("", encoding="utf-8")
-
-    def append(
-        self,
-        *,
-        image_a_id: str,
-        image_b_id: str,
-        preferred_image_id: Optional[str],
-        decision: str,
-        source_mode: str,
-        cluster_id: Optional[str],
-        annotator_id: Optional[str],
-    ) -> PairwiseLabelRecord:
-        """Append a new pairwise label record and update resume state."""
-
-        record = PairwiseLabelRecord(
-            label_id=str(uuid4()),
-            image_a_id=image_a_id,
-            image_b_id=image_b_id,
-            preferred_image_id=preferred_image_id,
-            decision=decision,
-            source_mode=source_mode,
-            cluster_id=cluster_id,
-            timestamp=current_timestamp(),
-            annotator_id=annotator_id,
-        )
-        _append_jsonl(self.path, asdict(record))
-        self.records_by_key[pair_key(image_a_id, image_b_id)] = asdict(record)
-        return record
 
 
 class ClusterLabelStore:
@@ -154,12 +84,6 @@ class ClusterLabelStore:
         _append_jsonl(self.path, asdict(record))
         self.records_by_cluster_id[cluster_id] = asdict(record)
         return record
-
-
-def pair_key(image_a_id: str, image_b_id: str) -> Tuple[str, str]:
-    """Normalize a pair of image IDs so order does not matter."""
-
-    return tuple(sorted((image_a_id, image_b_id)))
 
 
 def current_timestamp() -> str:

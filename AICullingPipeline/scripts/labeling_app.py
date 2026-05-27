@@ -39,6 +39,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Optional annotator identifier saved with label records.",
     )
+    parser.add_argument(
+        "--near-identical-threshold",
+        type=float,
+        help=(
+            "Override the DINO cosine threshold used to hide near-identical images before labeling. "
+            "Lower values collapse more images."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -52,6 +60,7 @@ def main() -> None:
             artifacts_dir=args.artifacts_dir,
             output_dir=args.output_dir,
             annotator_id=args.annotator_id,
+            near_identical_similarity_threshold=args.near_identical_threshold,
         )
         _bootstrap_pyside6_runtime()
         from app.labeling.ui import launch_labeling_app

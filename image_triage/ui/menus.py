@@ -10,32 +10,15 @@ from .theme import AppearanceMode
 
 
 def _add_ai_training_actions(menu: QMenu, actions: MainWindowActions) -> None:
-    menu.addAction(actions.open_ai_data_selection)
+    # Training surface for the transparent combiner. Order follows the pipeline:
+    # 1) Prepare folder, 2) Build features, 3) Train, 4) Evaluate, plus optional
+    # reference bank.
     menu.addAction(actions.prepare_ai_training_data)
+    menu.addAction(actions.build_culling_signals)
+    menu.addAction(actions.tune_culling_signals)
+    menu.addAction(actions.evaluate_culling_signals)
+    menu.addSeparator()
     menu.addAction(actions.build_ai_reference_bank)
-    menu.addAction(actions.train_ai_ranker)
-    menu.addAction(actions.evaluate_ai_ranker)
-    menu.addAction(actions.score_ai_with_trained_ranker)
-    menu.addSeparator()
-    menu.addAction(actions.clear_ai_trained_model)
-
-
-def _add_ai_training_management_actions(menu: QMenu, actions: MainWindowActions) -> None:
-    menu.addAction(actions.manage_ai_rankers)
-    menu.addAction(actions.run_full_ai_training_pipeline)
-
-
-def _add_ranker_training_menu(menu: QMenu, actions: MainWindowActions) -> None:
-    menu.addAction(actions.manage_ai_rankers)
-    menu.addAction(actions.open_ai_data_selection)
-    menu.addAction(actions.run_full_ai_training_pipeline)
-    menu.addSeparator()
-    menu.addAction(actions.prepare_ai_training_data)
-    menu.addAction(actions.train_ai_ranker)
-    menu.addAction(actions.evaluate_ai_ranker)
-    menu.addAction(actions.score_ai_with_trained_ranker)
-    menu.addAction(actions.build_ai_reference_bank)
-    menu.addSeparator()
     menu.addAction(actions.clear_ai_trained_model)
 
 
@@ -154,6 +137,7 @@ def build_main_menu_bar(
 
     review_menu = menu_bar.addMenu("&Review")
     review_menu.addAction(actions.open_preview)
+    review_menu.addAction(actions.open_ai_data_selection)
     review_menu.addAction(actions.winner_ladder_mode)
     review_menu.addSeparator()
     _add_selection_actions(review_menu, actions)
@@ -199,15 +183,13 @@ def build_main_menu_bar(
         workflow_menu.addMenu(workflow_recipe_menu)
 
     ai_menu = menu_bar.addMenu("&AI")
-    setup_menu = ai_menu.addMenu("Setup")
-    setup_menu.addAction(actions.install_ai_runtime)
-    setup_menu.addAction(actions.download_ai_model)
-
     ai_menu.addAction(actions.run_ai_culling)
     ai_menu.addAction(actions.apply_ai_culling)
     ai_menu.addAction(actions.sort_ai_semantic_folders)
     ai_menu.addSeparator()
-    ai_menu.addAction(actions.manage_ai_rankers)
+
+    training_menu = ai_menu.addMenu("Training")
+    _add_ai_training_actions(training_menu, actions)
 
     results_menu = ai_menu.addMenu("Results")
     results_menu.addAction(actions.load_saved_ai)
@@ -225,15 +207,12 @@ def build_main_menu_bar(
     review_tools_menu.addAction(actions.review_ai_disagreements)
     review_tools_menu.addAction(actions.taste_calibration_wizard)
 
-    training_menu = ai_menu.addMenu("Training")
-    _add_ai_training_actions(training_menu, actions)
-    _add_ai_training_management_actions(training_menu, actions)
-
-    cache_menu = ai_menu.addMenu("Cache")
-    cache_menu.addAction(actions.reset_ai_review_cache)
-
-    training_menu = menu_bar.addMenu("&Training")
-    _add_ranker_training_menu(training_menu, actions)
+    ai_menu.addSeparator()
+    setup_menu = ai_menu.addMenu("Setup")
+    setup_menu.addAction(actions.install_ai_runtime)
+    setup_menu.addAction(actions.download_ai_model)
+    setup_menu.addSeparator()
+    setup_menu.addAction(actions.reset_ai_review_cache)
 
     tools_menu = menu_bar.addMenu("&Tools")
     tools_menu.addAction(actions.open_command_palette)
@@ -248,28 +227,40 @@ def build_main_menu_bar(
     diagnostics_menu.addAction(actions.performance_logging)
     diagnostics_menu.addAction(actions.open_performance_log_folder)
 
-    settings_menu = menu_bar.addMenu("&Settings")
-    settings_menu.addAction(actions.workflow_settings)
-
-    window_menu = menu_bar.addMenu("&Window")
-    window_menu.addAction(actions.show_workspace_toolbar)
-    toolbar_position_menu = window_menu.addMenu("Toolbar Position")
+    # View menu absorbs the old "Window" menu so layout/dock/toolbar controls
+    # all live in one place.
+    view_menu.addSeparator()
+    view_menu.addAction(actions.show_workspace_toolbar)
+    toolbar_position_menu = view_menu.addMenu("Toolbar Position")
     toolbar_position_menu.addAction("Top", lambda _checked=False: window._set_workspace_bar_position("top"))
     toolbar_position_menu.addAction("Bottom", lambda _checked=False: window._set_workspace_bar_position("bottom"))
     if dock_actions:
-        panels_menu = window_menu.addMenu("Panels")
+        panels_menu = view_menu.addMenu("Panels")
         for key in ("library", "inspector"):
             action = dock_actions.get(key)
             if action is not None:
                 panels_menu.addAction(action)
-        layout_menu = window_menu.addMenu("Panel Layout")
-        _add_panel_layout_menu(layout_menu, window, "library", "Library")
-        _add_panel_layout_menu(layout_menu, window, "inspector", "Inspector")
-        layout_menu.addSeparator()
-        layout_menu.addAction("Swap Left And Right Panels", lambda _checked=False: window.workspace_docks.swap_sides())
-        layout_menu.addSeparator()
-        _add_workspace_presets_menu(layout_menu, actions, workspace_preset_menu)
-    window_menu.addAction(actions.reset_layout)
+        layout_submenu = view_menu.addMenu("Panel Layout")
+        _add_panel_layout_menu(layout_submenu, window, "library", "Library")
+        _add_panel_layout_menu(layout_submenu, window, "inspector", "Inspector")
+        layout_submenu.addSeparator()
+        layout_submenu.addAction(
+            "Swap Left And Right Panels",
+            lambda _checked=False: window.workspace_docks.swap_sides(),
+        )
+        layout_submenu.addSeparator()
+        _add_workspace_presets_menu(layout_submenu, actions, workspace_preset_menu)
+    view_menu.addAction(actions.reset_layout)
+
+    # Settings now has real entries instead of a single-item submenu so the
+    # click flow is: Settings menu → Open Settings (or jump straight to a
+    # related dialog). Ctrl+, still opens the main dialog directly.
+    settings_menu = menu_bar.addMenu("&Settings")
+    settings_menu.addAction(actions.workflow_settings)
+    settings_menu.addAction(actions.keyboard_help)
+    settings_menu.addAction(actions.file_associations)
+    settings_menu.addSeparator()
+    settings_menu.addAction(actions.reset_layout)
 
     help_menu = menu_bar.addMenu("&Help")
     help_menu.addAction(actions.keyboard_help)

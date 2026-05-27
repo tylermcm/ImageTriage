@@ -211,6 +211,7 @@ def load_preference_labels(
         "cluster_label_preference_pairs": 0,
         "tie_records_skipped": 0,
         "skip_records_skipped": 0,
+        "both_reject_records_skipped": 0,
         "missing_images_skipped": 0,
         "invalid_records_skipped": 0,
         "labels_dir": str(labels_dir),
@@ -416,6 +417,9 @@ def _pairwise_record_to_preference(
         return None
     if decision == "skip":
         summary["skip_records_skipped"] += 1
+        return None
+    if decision == "both_reject":
+        summary["both_reject_records_skipped"] += 1
         return None
     if decision not in {"left_better", "right_better"} and not preferred_image_id:
         summary["invalid_records_skipped"] += 1

@@ -336,17 +336,26 @@ class LabelingConfig:
     metadata_filename: str = "images.csv"
     image_ids_filename: str = "image_ids.json"
     clusters_filename: str = "clusters.csv"
-    pairwise_labels_filename: str = "pairwise_labels.jsonl"
     cluster_labels_filename: str = "cluster_labels.jsonl"
     annotator_id: Optional[str] = None
-    pair_preview_max_width: int = 1100
-    pair_preview_max_height: int = 900
     cluster_preview_height: int = 280
     cluster_grid_columns: int = 3
     cluster_auto_advance_cards: bool = True
     cluster_auto_advance_clusters: bool = True
     random_seed: int = 7
-    default_arbitrary_singletons_only: bool = True
+    collapse_near_identical_for_labeling: bool = True
+    near_identical_similarity_threshold: float = 0.965
+    near_identical_outlier_deviation: float = 0.004
+    filter_unusable_for_labeling: bool = True
+    unusable_shadow_clip_threshold: float = 0.985
+    unusable_highlight_clip_threshold: float = 0.985
+    unusable_contrast_threshold: float = 0.006
+    unusable_sharpness_threshold: float = 0.015
+    filter_semantic_outliers_for_labeling: bool = True
+    semantic_outlier_similarity_threshold: float = 0.55
+    max_labeling_cluster_images: int = 8
+    group_cluster_near_duplicates: bool = True
+    cluster_near_duplicate_hamming_threshold: int = 6
     log_level: str = "INFO"
 
     @classmethod
@@ -395,9 +404,6 @@ class LabelingConfig:
     def validate(self) -> None:
         """Validate labeling configuration values."""
 
-        if self.pair_preview_max_width <= 0 or self.pair_preview_max_height <= 0:
-            raise ValueError("Pair preview dimensions must be greater than 0.")
-
         if self.cluster_preview_height <= 0:
             raise ValueError("cluster_preview_height must be greater than 0.")
 
@@ -406,6 +412,33 @@ class LabelingConfig:
 
         if self.random_seed < 0:
             raise ValueError("random_seed must be 0 or greater.")
+
+        if not 0.0 <= self.near_identical_similarity_threshold <= 1.0:
+            raise ValueError("near_identical_similarity_threshold must be between 0 and 1.")
+
+        if self.near_identical_outlier_deviation < 0.0:
+            raise ValueError("near_identical_outlier_deviation must be 0 or greater.")
+
+        if not 0.0 <= self.unusable_shadow_clip_threshold <= 1.0:
+            raise ValueError("unusable_shadow_clip_threshold must be between 0 and 1.")
+
+        if not 0.0 <= self.unusable_highlight_clip_threshold <= 1.0:
+            raise ValueError("unusable_highlight_clip_threshold must be between 0 and 1.")
+
+        if self.unusable_contrast_threshold < 0.0:
+            raise ValueError("unusable_contrast_threshold must be 0 or greater.")
+
+        if self.unusable_sharpness_threshold < 0.0:
+            raise ValueError("unusable_sharpness_threshold must be 0 or greater.")
+
+        if not 0.0 <= self.semantic_outlier_similarity_threshold <= 1.0:
+            raise ValueError("semantic_outlier_similarity_threshold must be between 0 and 1.")
+
+        if self.max_labeling_cluster_images <= 0:
+            raise ValueError("max_labeling_cluster_images must be greater than 0.")
+
+        if self.cluster_near_duplicate_hamming_threshold < 0:
+            raise ValueError("cluster_near_duplicate_hamming_threshold must be 0 or greater.")
 
     def to_serializable_dict(self) -> dict[str, Any]:
         """Convert the labeling config to a JSON-safe dictionary."""

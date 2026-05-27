@@ -4,7 +4,7 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 
 EPOCH_LOG_PATTERN = re.compile(
@@ -75,6 +75,38 @@ class AITrainingStatsDialog(QDialog):
 
         root_layout.addWidget(summary_card)
 
+        progress_card = QWidget(self)
+        progress_card.setObjectName("aiTrainingStatsCard")
+        progress_layout = QGridLayout(progress_card)
+        progress_layout.setContentsMargins(14, 14, 14, 14)
+        progress_layout.setHorizontalSpacing(18)
+        progress_layout.setVerticalSpacing(8)
+
+        self.stage_progress_bar = QProgressBar(progress_card)
+        self.stage_progress_bar.setRange(0, 1)
+        self.stage_progress_bar.setValue(0)
+        self.stage_progress_bar.setFormat("Waiting")
+        self.stage_progress_bar.setTextVisible(True)
+
+        self.task_progress_bar = QProgressBar(progress_card)
+        self.task_progress_bar.setRange(0, 0)
+        self.task_progress_bar.setValue(0)
+        self.task_progress_bar.setFormat("Waiting")
+        self.task_progress_bar.setTextVisible(True)
+
+        for row_index, (title_text, bar) in enumerate(
+            (
+                ("Stage Progress", self.stage_progress_bar),
+                ("Current Work", self.task_progress_bar),
+            )
+        ):
+            key_label = QLabel(title_text, progress_card)
+            key_label.setObjectName("mutedText")
+            progress_layout.addWidget(key_label, row_index, 0)
+            progress_layout.addWidget(bar, row_index, 1)
+
+        root_layout.addWidget(progress_card)
+
         self.log_view = QPlainTextEdit(self)
         self.log_view.setObjectName("aiTrainingLogView")
         self.log_view.setReadOnly(True)
@@ -96,6 +128,53 @@ class AITrainingStatsDialog(QDialog):
 
     def set_stage_text(self, text: str) -> None:
         self.stage_value_label.setText(text or "Waiting for output")
+
+    def set_status_text(self, text: str) -> None:
+        self.set_stage_text(text)
+
+    def set_stage_progress(self, current: int, total: int) -> None:
+        if total > 0:
+            total_value = max(1, int(total))
+            current_value = min(max(int(current), 0), total_value)
+            self.stage_progress_bar.setRange(0, total_value)
+            self.stage_progress_bar.setValue(current_value)
+            self.stage_progress_bar.setFormat(f"Stage {current_value}/{total_value}")
+            return
+        self.stage_progress_bar.setRange(0, 0)
+        self.stage_progress_bar.setFormat("Working")
+
+    def set_task_progress(self, current: int, total: int) -> None:
+        if total > 0:
+            total_value = max(1, int(total))
+            current_value = min(max(int(current), 0), total_value)
+            self.task_progress_bar.setRange(0, total_value)
+            self.task_progress_bar.setValue(current_value)
+            self.task_progress_bar.setFormat(f"{current_value}/{total_value}")
+            return
+        self.task_progress_bar.setRange(0, 0)
+        self.task_progress_bar.setFormat("Working")
+
+    def set_progress(self, current: int, total: int) -> None:
+        self.set_stage_progress(current, total)
+
+    def set_stats_button_enabled(self, _enabled: bool) -> None:
+        return
+
+    def mark_complete(self, text: str = "Done") -> None:
+        self.stage_progress_bar.setRange(0, 1)
+        self.stage_progress_bar.setValue(1)
+        self.stage_progress_bar.setFormat(text or "Done")
+        self.task_progress_bar.setRange(0, 1)
+        self.task_progress_bar.setValue(1)
+        self.task_progress_bar.setFormat(text or "Done")
+
+    def mark_failed(self, text: str = "Failed") -> None:
+        self.stage_progress_bar.setRange(0, 1)
+        self.stage_progress_bar.setValue(1)
+        self.stage_progress_bar.setFormat(text or "Failed")
+        self.task_progress_bar.setRange(0, 1)
+        self.task_progress_bar.setValue(1)
+        self.task_progress_bar.setFormat(text or "Failed")
 
     def set_run_text(self, text: str) -> None:
         self.run_value_label.setText(text or "Not started")

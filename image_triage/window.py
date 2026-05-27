@@ -89,7 +89,9 @@ from .archive_ops import (
 )
 from .annotation_queue import AnnotationPersistenceQueue
 from .ai_training import (
+    BuildCullingSignalsTask,
     BuildReferenceBankTask,
+    EvaluateCullingSignalsTask,
     EvaluateRankerTask,
     GeneralTrainingPoolStatus,
     LaunchLabelingAppTask,
@@ -100,7 +102,9 @@ from .ai_training import (
     RankerTrainingOptions,
     ReferenceBankBuildOptions,
     ScoreCurrentFolderTask,
+    SIGNAL_COMBINER_WEIGHTS_FILENAME,
     TrainRankerTask,
+    TuneCullingSignalsTask,
     TrainingSourceInfo,
     ai_training_source_needs_prepare,
     ai_training_artifacts_ready,
@@ -266,6 +270,9 @@ from .ui import (
     EvaluationSourceDialog,
     TrainingSourcesDialog,
     WorkspaceDocks,
+    apply_shortcut_overrides,
+    load_shortcut_overrides,
+    save_shortcut_overrides,
     build_app_palette,
     build_app_stylesheet,
     build_main_menu_bar,
@@ -2202,6 +2209,7 @@ class MainWindow(QMainWindow):
     AI_EMBED_BATCH_SIZE_KEY = "ai/embed_batch_size"
     AI_SEMANTIC_SIDECAR_ENABLED_KEY = "ai/semantic_sidecar_enabled"
     AI_REVIEW_DETAIL_PROGRESS_KEY = "ai/review_detail_progress"
+    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY = "ai/label_near_duplicate_threshold"
     TRAIN_RANKER_LAST_RUN_NAME_KEY = "training/ranker_last_run_name"
     TRAIN_RANKER_LAST_PROFILE_KEY = "training/ranker_last_profile"
     TRAIN_RANKER_LAST_EPOCHS_KEY = "training/ranker_last_epochs"
@@ -2252,6 +2260,7 @@ class MainWindow(QMainWindow):
     AI_SETUP_PROMPTED_KEY = "ai/setup_prompted"
     AI_CHECKPOINT_OVERRIDE_KEY = "ai/checkpoint_override"
     AI_REFERENCE_BANK_KEY = "ai/reference_bank_path"
+    AI_SIGNAL_WEIGHTS_KEY = "ai/culling_signal_weights_path"
     BURST_GROUPS_KEY = "view/burst_groups"
     BURST_STACKS_KEY = "view/burst_stacks"
     AUTO_ADVANCE_KEY = "view/auto_advance"
@@ -2282,6 +2291,9 @@ class MainWindow(QMainWindow):
     AI_EMBED_BATCH_SIZE_AUTO = 0
     AI_EMBED_BATCH_SIZE_GPU_AUTO = 32
     AI_EMBED_BATCH_SIZE_CPU_AUTO = 16
+    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT = 0.965
+    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN = 0.500
+    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX = 0.995
     WORKSPACE_TOOLBAR_DEFAULTS = {
         "manual": ("open_folder", "undo", "review", "view", "selection_count", "search", "filters", "address"),
         "ai": (
@@ -2776,6 +2788,13 @@ class MainWindow(QMainWindow):
         )
         self._ai_semantic_sidecar_enabled = self._settings.value(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, True, bool)
         self._ai_review_detail_progress_enabled = self._settings.value(self.AI_REVIEW_DETAIL_PROGRESS_KEY, False, bool)
+        self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(
+            self._settings.value(
+                self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY,
+                self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT,
+                float,
+            )
+        )
         self._catalog_load_source = "idle"
         self._catalog_load_detail = "Ready"
         self._review_grouping_cache_source = "idle"
@@ -2944,6 +2963,9 @@ class MainWindow(QMainWindow):
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
         self.actions = build_main_window_actions(self)
+        apply_shortcut_overrides(self.actions)
+        # zen_mode binding is owned by a QShortcut below so the QAction itself
+        # must clear its default sequence to avoid double-fire.
         self.actions.zen_mode.setShortcut(QKeySequence())
         self._setup_command_palette_shortcuts()
         self._zen_toggle_shortcut = QShortcut(QKeySequence("F11"), self)
@@ -4801,6 +4823,9 @@ class MainWindow(QMainWindow):
             add_action_command("ai.data_selection", self.actions.open_ai_data_selection, section="Training", keywords=("collect training labels", "pairwise labels", "cluster labels", "ranking data", "labeling"))
             add_action_command("ai.full_training_pipeline", self.actions.run_full_ai_training_pipeline, section="Training", keywords=("one click training", "full training pipeline", "prepare train evaluate score"))
             add_action_command("ai.prepare_training_data", self.actions.prepare_ai_training_data, section="Training", keywords=("prepare training data", "prepare model data", "extract embeddings", "cluster"))
+            add_action_command("ai.build_culling_signals", self.actions.build_culling_signals, section="Training", keywords=("signals", "culling signals", "personal culler", "technical analysis", "combiner"))
+            add_action_command("ai.tune_culling_signals", self.actions.tune_culling_signals, section="Training", keywords=("tune signals", "learn signal weights", "personal combiner", "train combiner"))
+            add_action_command("ai.evaluate_culling_signals", self.actions.evaluate_culling_signals, section="Training", keywords=("evaluate signals", "signal metrics", "combiner metrics", "transparent combiner"))
             add_action_command("ai.build_reference_bank", self.actions.build_ai_reference_bank, section="Training", keywords=("reference bank", "exemplar model", "bucketed references"))
             add_action_command("ai.train_ranker", self.actions.train_ai_ranker, section="Training", keywords=("train model", "train ranker", "preference model"))
             add_action_command("ai.manage_rankers", self.actions.manage_ai_rankers, section="Training", keywords=("ranker workflow", "choose ranker", "model versions", "ranker versions", "checkpoint manager"))
@@ -5537,6 +5562,14 @@ class MainWindow(QMainWindow):
         if parsed <= 0:
             return cls.AI_EMBED_BATCH_SIZE_AUTO
         return min(256, parsed)
+
+    @classmethod
+    def _normalize_ai_label_near_duplicate_threshold(cls, value: object) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT
+        return max(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN, min(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX, parsed))
 
     def _default_ai_embed_batch_size(self) -> int:
         runtime_status = self._managed_ai_runtime_status()
@@ -7404,6 +7437,8 @@ class MainWindow(QMainWindow):
             title=context.title if context is not None else "AI Training",
         )
         self._ai_training_stage_text = "Preparing AI training task..."
+        dialog.set_stage_progress(0, max(1, total_steps))
+        dialog.set_task_progress(0, 0)
         dialog.set_status_text(self._ai_training_stage_text)
         self.statusBar().showMessage("Starting AI training task...")
         self._update_ai_toolbar_state()
@@ -7415,10 +7450,13 @@ class MainWindow(QMainWindow):
         )
         prefix = f"[{max(1, stage_index)}/{max(1, stage_total)}] "
         self._ai_training_stage_text = prefix + (message or "Running AI training task...")
-        dialog.set_progress(0, 0)
+        dialog.set_stage_progress(stage_index, stage_total)
+        dialog.set_task_progress(0, 0)
         dialog.set_status_text(self._ai_training_stage_text)
         if self._ai_training_stats_dialog is not None:
             self._ai_training_stats_dialog.set_stage_text(self._ai_training_stage_text)
+            self._ai_training_stats_dialog.set_stage_progress(stage_index, stage_total)
+            self._ai_training_stats_dialog.set_task_progress(0, 0)
         self.statusBar().showMessage(message or "Running AI training task...")
 
     def _handle_ai_training_progress(self, current: int, total: int, message: str) -> None:
@@ -7427,10 +7465,11 @@ class MainWindow(QMainWindow):
             title=self._ai_training_context.title if self._ai_training_context is not None else "AI Training",
         )
         self._ai_training_stage_text = message or self._ai_training_stage_text or "Running AI training task..."
-        dialog.set_progress(current, total)
+        dialog.set_task_progress(current, total)
         dialog.set_status_text(self._ai_training_stage_text)
         if self._ai_training_stats_dialog is not None:
             self._ai_training_stats_dialog.set_stage_text(self._ai_training_stage_text)
+            self._ai_training_stats_dialog.set_task_progress(current, total)
 
     def _handle_ai_training_log(self, line: str) -> None:
         message = (line or "").strip()
@@ -7444,6 +7483,8 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_training_finished(self, result: object) -> None:
         context = self._ai_training_context
+        if self._ai_training_stats_dialog is not None:
+            self._ai_training_stats_dialog.mark_complete("Done")
         self._active_ai_training_task = None
         self._ai_training_context = None
         self._close_ai_training_progress_dialog()
@@ -7584,11 +7625,17 @@ class MainWindow(QMainWindow):
                         if isinstance(comparison, dict):
                             trained = comparison.get("trained_ranker", {})
                             centrality = comparison.get("dino_centrality", {})
+                            combiner = comparison.get("transparent_combiner", {})
                             if isinstance(trained, dict) and isinstance(centrality, dict):
                                 trained_pairwise = trained.get("macro_pairwise_accuracy")
                                 centrality_pairwise = centrality.get("macro_pairwise_accuracy")
                                 if trained_pairwise is not None and centrality_pairwise is not None:
                                     summary_parts.append(f"vs centrality {float(trained_pairwise) - float(centrality_pairwise):+.3f}")
+                            if isinstance(combiner, dict) and isinstance(centrality, dict):
+                                combiner_pairwise = combiner.get("macro_pairwise_accuracy")
+                                centrality_pairwise = centrality.get("macro_pairwise_accuracy")
+                                if combiner_pairwise is not None and centrality_pairwise is not None:
+                                    summary_parts.append(f"combiner {float(combiner_pairwise) - float(centrality_pairwise):+.3f}")
                     else:
                         pairwise_accuracy = payload_json.get("pairwise_evaluation", {}).get("all_preferences", {}).get("accuracy")
                         top1 = payload_json.get("cluster_evaluation", {}).get("top_k_metrics", {}).get("top_1", {}).get("hit_rate")
@@ -7597,6 +7644,11 @@ class MainWindow(QMainWindow):
                             pairwise_delta = comparison.get("pairwise_accuracy")
                             if pairwise_delta is not None:
                                 summary_parts.append(f"vs centrality {float(pairwise_delta):+.3f}")
+                        combiner_comparison = payload_json.get("baseline_comparison", {}).get("deltas_transparent_combiner_vs_dino_centrality")
+                        if isinstance(combiner_comparison, dict):
+                            combiner_delta = combiner_comparison.get("pairwise_accuracy")
+                            if combiner_delta is not None:
+                                summary_parts.append(f"combiner {float(combiner_delta):+.3f}")
                     if pairwise_accuracy is not None:
                         summary_parts.append(f"pairwise acc {float(pairwise_accuracy):.3f}")
                     if top1 is not None:
@@ -7629,6 +7681,80 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Scored the current folder with the trained ranker")
                 return
 
+        if normalized_action == "signals":
+            payload = result if isinstance(result, dict) else {}
+            signals_json = str(payload.get("signals_json_path") or "")
+            signals_csv = str(payload.get("signals_csv_path") or "")
+            self._update_ai_toolbar_state()
+            parts = []
+            if signals_json:
+                parts.append(Path(signals_json).name)
+            if signals_csv:
+                parts.append(Path(signals_csv).name)
+            suffix = f": {', '.join(parts)}" if parts else ""
+            self.statusBar().showMessage(f"Culling signals built{suffix}")
+            return
+
+        if normalized_action == "evaluate_signals":
+            payload = result if isinstance(result, dict) else {}
+            metrics_path = str(payload.get("metrics_path") or "")
+            self._update_ai_toolbar_state()
+            summary_text = "Culling signal evaluation complete"
+            if metrics_path and os.path.exists(metrics_path):
+                try:
+                    payload_json = json.loads(Path(metrics_path).read_text(encoding="utf-8"))
+                    summary_parts = []
+                    pairwise_accuracy = payload_json.get("pairwise_evaluation", {}).get("all_preferences", {}).get("accuracy")
+                    top1 = payload_json.get("cluster_evaluation", {}).get("top_k_metrics", {}).get("top_1", {}).get("hit_rate")
+                    comparison = payload_json.get("baseline_comparison", {}).get("deltas_transparent_combiner_vs_dino_centrality", {})
+                    if isinstance(comparison, dict):
+                        pairwise_delta = comparison.get("pairwise_accuracy")
+                        if pairwise_delta is not None:
+                            summary_parts.append(f"vs centrality {float(pairwise_delta):+.3f}")
+                    if pairwise_accuracy is not None:
+                        summary_parts.append(f"pairwise acc {float(pairwise_accuracy):.3f}")
+                    if top1 is not None:
+                        summary_parts.append(f"top-1 hit {float(top1):.3f}")
+                    if summary_parts:
+                        summary_text = "Culling signal evaluation complete: " + ", ".join(summary_parts)
+                except (OSError, ValueError, TypeError):
+                    pass
+            self.statusBar().showMessage(summary_text)
+            return
+
+        if normalized_action == "tune_signals":
+            payload = result if isinstance(result, dict) else {}
+            weights_path = str(payload.get("weights_path") or "")
+            self._update_ai_toolbar_state()
+            summary_text = "Culling signals tuned and rebuilt"
+            if weights_path and os.path.exists(weights_path):
+                try:
+                    self._set_active_culling_signal_weights_path(weights_path)
+                except FileNotFoundError:
+                    pass
+                try:
+                    payload_json = json.loads(Path(weights_path).read_text(encoding="utf-8"))
+                    metrics = payload_json.get("training", {}).get("metrics", {})
+                    row_count = payload_json.get("training", {}).get("row_count")
+                    source_count = payload_json.get("training", {}).get("source_count")
+                    parts = []
+                    if source_count is not None:
+                        parts.append(f"{int(source_count)} source(s)")
+                    if row_count is not None:
+                        parts.append(f"{int(row_count)} preferences")
+                    preference_accuracy = metrics.get("preference_accuracy") if isinstance(metrics, dict) else None
+                    validation_accuracy = metrics.get("validation_accuracy") if isinstance(metrics, dict) else None
+                    if preference_accuracy is not None:
+                        parts.append(f"fit acc {float(preference_accuracy):.3f}")
+                    if validation_accuracy is not None:
+                        parts.append(f"val acc {float(validation_accuracy):.3f}")
+                    if parts:
+                        summary_text = "Culling signals tuned and rebuilt: " + ", ".join(parts)
+                except (OSError, ValueError, TypeError):
+                    pass
+            self.statusBar().showMessage(summary_text)
+            return
+
         if normalized_action == "reference_bank":
             payload = result if isinstance(result, dict) else {}
             reference_bank_path = str(payload.get("reference_bank_path") or "")
@@ -7657,6 +7783,8 @@ class MainWindow(QMainWindow):
     def _handle_ai_training_failed(self, message: str) -> None:
         context = self._ai_training_context
         title = context.title if context is not None else "AI Training"
+        if self._ai_training_stats_dialog is not None:
+            self._ai_training_stats_dialog.mark_failed("Failed")
         self._active_ai_training_task = None
         self._ai_training_context = None
         self._ai_training_pipeline = None
@@ -7797,17 +7925,28 @@ class MainWindow(QMainWindow):
         self._close_job_progress_dialog(self._archive_job_key)
         self._archive_progress_dialog = None
 
-    def _show_ai_training_progress_dialog(self, total_steps: int, *, title: str) -> AITrainingProgressDialog:
-        dialog = self._ai_training_progress_dialog
+    def _show_ai_training_progress_dialog(
+        self,
+        total_steps: int,
+        *,
+        title: str,
+        reveal: bool = False,
+    ) -> AITrainingStatsDialog:
+        dialog = self._ai_training_stats_dialog
         if dialog is None:
-            dialog = AITrainingProgressDialog(title=title, parent=self)
-            dialog.stats_requested.connect(self._open_ai_training_stats_dialog)
-            self._ai_training_progress_dialog = dialog
+            dialog = AITrainingStatsDialog(title=title, parent=self)
+            self._ai_training_stats_dialog = dialog
         dialog.setWindowTitle(title)
-        dialog.set_progress(0, max(1, total_steps))
-        dialog.show()
-        self._center_window_dialog(dialog)
-        dialog.raise_()
+        dialog.set_stage_text(self._ai_training_stage_text or "Preparing AI training task...")
+        dialog.set_run_text(self._ai_training_run_label or "Not started")
+        dialog.set_fit_diagnosis(
+            self._ai_training_fit_label,
+            self._ai_training_fit_summary,
+            self._ai_training_fit_remedy,
+        )
+        if reveal and not dialog.isVisible():
+            dialog.show()
+            self._center_window_dialog(dialog)
         return dialog
 
     def _close_ai_training_progress_dialog(self) -> None:
@@ -9957,7 +10096,9 @@ class MainWindow(QMainWindow):
             run_label=run_label.strip(),
             log_path=log_path.strip(),
         )
-        dialog = self._show_ai_training_progress_dialog(1, title=title)
+        dialog = self._show_ai_training_progress_dialog(1, title=title, reveal=True)
+        dialog.set_stage_progress(0, 1)
+        dialog.set_task_progress(0, 0)
         dialog.set_status_text("Preparing AI training task...")
         dialog.set_stats_button_enabled(show_stats_button)
         QApplication.processEvents()
@@ -10112,12 +10253,14 @@ class MainWindow(QMainWindow):
             folder=target_folder,
             artifacts_dir=str(artifacts_dir or ""),
             artifacts_ready=bool(training_paths and labeling_artifacts_ready(training_paths)),
+            near_duplicate_threshold=round(self._ai_label_near_duplicate_threshold, 3),
         )
         task = LaunchLabelingAppTask(
             folder=Path(target_folder),
             runtime=self._ai_runtime,
             annotator_id=self._session_id,
             artifacts_dir=artifacts_dir,
+            near_identical_threshold=self._ai_label_near_duplicate_threshold,
             appearance_mode=self._current_child_appearance_mode(),
             parent_pid=os.getpid(),
             sync_file_path=self._child_sync_state_path,
@@ -10655,7 +10798,7 @@ class MainWindow(QMainWindow):
         sources = [
             source
             for source in list_registered_training_sources(enabled_only=False)
-            if source.pairwise_labels > 0 or source.cluster_labels > 0
+            if source.pairwise_labels > 0 or source.cluster_labels > 0 or source.disagreement_pair_labels > 0
         ]
         current_key = normalized_path_key(current_folder)
         current_source = next((source for source in sources if normalized_path_key(source.folder) == current_key), None)
@@ -10675,10 +10818,20 @@ class MainWindow(QMainWindow):
                     labels_dir=str(training_paths.labels_dir),
                     artifacts_dir=str(training_paths.artifacts_dir),
                 )
-                if current_source.prepared_ready and (pairwise_count > 0 or cluster_count > 0):
+                if current_source.prepared_ready and (
+                    pairwise_count > 0
+                    or cluster_count > 0
+                    or current_source.disagreement_pair_labels > 0
+                ):
                     sources.insert(0, current_source)
         if evaluating_general:
-            dialog = EvaluationSourceDialog(sources=tuple(sources), parent=self)
+            dialog = EvaluationSourceDialog(
+                sources=tuple(sources),
+                title_text="Evaluate Trained Ranker",
+                summary_text="Choose labeled folders to evaluate the active ranker against. This does not add those sources to training.",
+                default_folders=(current_folder,),
+                parent=self,
+            )
             if self._exec_dialog_with_geometry(dialog, "ranker_evaluation_source") != dialog.DialogCode.Accepted:
                 return ()
             return dialog.selected_sources()
@@ -10686,10 +10839,65 @@ class MainWindow(QMainWindow):
             return (current_source,)
         if not sources:
             return ()
-        dialog = EvaluationSourceDialog(sources=tuple(sources), parent=self)
+        dialog = EvaluationSourceDialog(
+            sources=tuple(sources),
+            title_text="Evaluate Trained Ranker",
+            summary_text="Choose labeled folders to evaluate the active ranker against. This does not add those sources to training.",
+            default_folders=(current_folder,),
+            parent=self,
+        )
         if self._exec_dialog_with_geometry(dialog, "ranker_evaluation_source") != dialog.DialogCode.Accepted:
             return ()
         return dialog.selected_sources()
+
+    def _prompt_culling_signal_evaluation_source(self) -> TrainingSourceInfo | None:
+        current_folder = self._current_folder
+        if not current_folder:
+            return None
+        sources = [
+            source
+            for source in list_registered_training_sources(enabled_only=False)
+            if source.pairwise_labels > 0 or source.cluster_labels > 0 or source.disagreement_pair_labels > 0
+        ]
+        current_key = normalized_path_key(current_folder)
+        current_source = next((source for source in sources if normalized_path_key(source.folder) == current_key), None)
+        if current_source is None:
+            training_paths = self._ai_training_paths_for_folder(current_folder)
+            if training_paths is not None:
+                pairwise_count, cluster_count = count_label_records(training_paths)
+                disagreement_count = count_disagreement_pair_labels(training_paths)
+                if pairwise_count > 0 or cluster_count > 0 or disagreement_count > 0:
+                    current_source = TrainingSourceInfo(
+                        namespace="__current__",
+                        folder=current_folder,
+                        display_name=Path(current_folder).name,
+                        enabled=True,
+                        pairwise_labels=pairwise_count,
+                        cluster_labels=cluster_count,
+                        disagreement_pair_labels=disagreement_count,
+                        prepared_ready=ai_training_artifacts_ready(training_paths) and not ai_training_source_needs_prepare(training_paths.folder),
+                        labels_dir=str(training_paths.labels_dir),
+                        artifacts_dir=str(training_paths.artifacts_dir),
+                    )
+                    sources.insert(0, current_source)
+        if not sources:
+            return None
+        dialog = EvaluationSourceDialog(
+            sources=tuple(sources),
+            title_text="Evaluate Culling Signals",
+            summary_text=(
+                "Choose the held-out labeled source to evaluate with the active tuned culling-signal weights. "
+                "This rebuilds signal scores for that source before measuring them."
+            ),
+            default_folders=(current_folder,),
+            allow_multiple=False,
+            show_evaluate_all=False,
+            parent=self,
+        )
+        if self._exec_dialog_with_geometry(dialog, "culling_signal_evaluation_source") != dialog.DialogCode.Accepted:
+            return None
+        selected_sources = dialog.selected_sources()
+        return selected_sources[0] if selected_sources else None
 
     def _score_current_folder_with_trained_ranker(self) -> None:
         if not self._current_folder:
@@ -10731,6 +10939,211 @@ class MainWindow(QMainWindow):
         )
         if started:
             self.statusBar().showMessage("Scoring the current folder with the trained ranker...")
+
+    def _build_culling_signals_for_current_folder(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before building culling signals.")
+            return
+        if not self._ensure_ai_runtime_available(title="Build Culling Signals"):
+            return
+        training_paths = self._ai_training_paths_for_folder(self._current_folder)
+        if training_paths is None or not ai_training_artifacts_ready(training_paths):
+            QMessageBox.information(
+                self,
+                "Build Culling Signals",
+                "Prepare training data for this folder before building culling signals.",
+            )
+            return
+        active_run = self._active_ranker_run()
+        profile_name = active_run.profile_label if active_run is not None else "General Use"
+        weights_path = self._active_culling_signal_weights_path()
+        task = BuildCullingSignalsTask(
+            folder=Path(self._current_folder),
+            runtime=self._ai_runtime,
+            profile_name=profile_name,
+            run_technical=True,
+            run_specialists=True,
+            max_preview_side=768,
+            weights_path=weights_path,
+        )
+        started = self._start_ai_training_task(
+            task,
+            action="signals",
+            title="Build Culling Signals",
+            run_label=f"{profile_name} signal stack",
+        )
+        if started:
+            self.statusBar().showMessage("Building DINO, technical, specialist, and combiner signals...")
+
+    def _evaluate_culling_signals(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before evaluating culling signals.")
+            return
+        if not self._ensure_ai_runtime_available(title="Evaluate Personal Model"):
+            return
+        # Make sure the evaluation source sees the latest Speed Cull decisions
+        # so the held-out preference accuracy is computed against current data.
+        registered_folders = tuple(
+            source.folder for source in list_registered_training_sources(enabled_only=False)
+        )
+        self._harvest_speed_cull_decisions_for_folders(registered_folders + (self._current_folder,))
+        evaluation_source = self._prompt_culling_signal_evaluation_source()
+        if evaluation_source is None:
+            self.statusBar().showMessage("No evaluation source selected.")
+            return
+        evaluation_folder = evaluation_source.folder
+        training_paths = self._ai_training_paths_for_folder(evaluation_folder)
+        if training_paths is None or not ai_training_artifacts_ready(training_paths):
+            QMessageBox.information(
+                self,
+                "Evaluate Culling Signals",
+                "Prepare training data for the selected source before evaluating culling signals.",
+            )
+            return
+        signals_path = training_paths.hidden_root / "signals" / "culling_signals.json"
+        weights_path = self._active_culling_signal_weights_path()
+        if weights_path is None:
+            current_paths = self._ai_training_paths_for_folder(self._current_folder)
+            current_weights = current_paths.hidden_root / "signals" / SIGNAL_COMBINER_WEIGHTS_FILENAME if current_paths is not None else None
+            if current_weights is not None and current_weights.exists():
+                weights_path = current_weights
+        if weights_path is None:
+            local_weights = training_paths.hidden_root / "signals" / SIGNAL_COMBINER_WEIGHTS_FILENAME
+            weights_path = local_weights if local_weights.exists() else None
+        if weights_path is None and not signals_path.exists():
+            QMessageBox.information(
+                self,
+                "Evaluate Culling Signals",
+                "Build or tune culling signals before evaluating this source.",
+            )
+            return
+        issues = ai_training_evaluation_issues(training_paths)
+        if issues:
+            QMessageBox.information(
+                self,
+                "Evaluate Culling Signals",
+                format_ai_training_evaluation_issues(evaluation_folder, issues),
+            )
+            return
+        pairwise_count, cluster_count = count_label_records(training_paths)
+        disagreement_count = count_disagreement_pair_labels(training_paths)
+        if pairwise_count <= 0 and cluster_count <= 0 and disagreement_count <= 0:
+            QMessageBox.information(
+                self,
+                "Evaluate Culling Signals",
+                "No saved labels were found for the selected source.",
+            )
+            return
+        active_run = self._active_ranker_run()
+        profile_name = active_run.profile_label if active_run is not None else "General Use"
+        task = EvaluateCullingSignalsTask(
+            folder=Path(evaluation_folder),
+            runtime=self._ai_runtime,
+            profile_name=profile_name,
+            weights_path=weights_path,
+        )
+        weights_label = Path(weights_path).name if weights_path is not None else "existing signals"
+        started = self._start_ai_training_task(
+            task,
+            action="evaluate_signals",
+            title="Evaluate Culling Signals",
+            folder=evaluation_folder,
+            run_label=f"{Path(evaluation_folder).name} | {weights_label}",
+        )
+        if started:
+            self.statusBar().showMessage(f"Evaluating culling signals against {Path(evaluation_folder).name} labels...")
+
+    def _tune_culling_signals(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before tuning culling signals.")
+            return
+        if not self._ensure_ai_runtime_available(title="Train Personal Model"):
+            return
+        # Refresh cluster_labels.jsonl from Speed Cull decisions so the trainer
+        # sees the latest Accept/Reject choices the user has made.
+        registered_folders = tuple(
+            source.folder for source in list_registered_training_sources(enabled_only=False)
+        )
+        harvest_targets = registered_folders + (self._current_folder,)
+        harvested = self._harvest_speed_cull_decisions_for_folders(harvest_targets)
+        if harvested:
+            total_clusters = sum(harvested.values())
+            self.statusBar().showMessage(
+                f"Refreshed Speed Cull decisions from {len(harvested)} source(s) "
+                f"({total_clusters} clusters total)."
+            )
+        sources = [
+            source
+            for source in list_registered_training_sources(enabled_only=False)
+            if source.prepared_ready and (source.pairwise_labels > 0 or source.cluster_labels > 0 or source.disagreement_pair_labels > 0)
+        ]
+        current_key = normalized_path_key(self._current_folder)
+        if not any(normalized_path_key(source.folder) == current_key for source in sources):
+            training_paths = self._ai_training_paths_for_folder(self._current_folder)
+            if training_paths is not None:
+                pairwise_count, cluster_count = count_label_records(training_paths)
+                disagreement_count = count_disagreement_pair_labels(training_paths)
+                if (
+                    ai_training_artifacts_ready(training_paths)
+                    and (pairwise_count > 0 or cluster_count > 0 or disagreement_count > 0)
+                ):
+                    sources.insert(
+                        0,
+                        TrainingSourceInfo(
+                            namespace="__current__",
+                            folder=self._current_folder,
+                            display_name=Path(self._current_folder).name,
+                            enabled=True,
+                            pairwise_labels=pairwise_count,
+                            cluster_labels=cluster_count,
+                            disagreement_pair_labels=disagreement_count,
+                            prepared_ready=True,
+                            labels_dir=str(training_paths.labels_dir),
+                            artifacts_dir=str(training_paths.artifacts_dir),
+                        ),
+                    )
+        if not sources:
+            QMessageBox.information(
+                self,
+                "Tune Culling Signals",
+                "Prepare training data and collect labels for at least one source before tuning culling signals.",
+            )
+            return
+        default_folders = tuple(source.folder for source in sources if source.enabled)
+        dialog = EvaluationSourceDialog(
+            sources=tuple(sources),
+            title_text="Tune Culling Signals",
+            summary_text=(
+                "Choose the training sources used to learn the personalized transparent combiner. "
+                "Leave held-out validation sources unchecked."
+            ),
+            default_folders=default_folders or (self._current_folder,),
+            show_evaluate_all=False,
+            parent=self,
+        )
+        if self._exec_dialog_with_geometry(dialog, "culling_signal_tuning_sources") != dialog.DialogCode.Accepted:
+            return
+        selected_sources = dialog.selected_sources()
+        if not selected_sources:
+            self.statusBar().showMessage("No culling-signal training sources selected.")
+            return
+        active_run = self._active_ranker_run()
+        profile_name = active_run.profile_label if active_run is not None else "General Use"
+        task = TuneCullingSignalsTask(
+            folder=Path(self._current_folder),
+            runtime=self._ai_runtime,
+            profile_name=profile_name,
+            source_folders=tuple(source.folder for source in selected_sources),
+        )
+        source_count = len(selected_sources)
+        started = self._start_ai_training_task(
+            task,
+            action="tune_signals",
+            title="Tune Culling Signals",
+            run_label=f"{profile_name} transparent weights | {source_count} source(s)",
+        )
+        if started:
+            self.statusBar().showMessage(f"Tuning culling signal weights from {source_count} selected source(s)...")
 
     def _build_ai_reference_bank(self) -> None:
         if not self._ensure_ai_runtime_available(title="Build Reference Bank"):
@@ -11212,6 +11625,12 @@ class MainWindow(QMainWindow):
                 self._settings.remove(self.AI_REFERENCE_BANK_KEY)
                 self._active_reference_bank_path = ""
 
+        signal_weights_path = self._settings.value(self.AI_SIGNAL_WEIGHTS_KEY, "", str)
+        if isinstance(signal_weights_path, str) and signal_weights_path:
+            candidate = Path(signal_weights_path).expanduser()
+            if not candidate.exists():
+                self._settings.remove(self.AI_SIGNAL_WEIGHTS_KEY)
+
     def _set_active_ai_checkpoint(self, checkpoint_path: str) -> None:
         candidate = Path(checkpoint_path).expanduser()
         if not candidate.exists():
@@ -11239,6 +11658,22 @@ class MainWindow(QMainWindow):
         self._active_reference_bank_path = ""
         self._settings.remove(self.AI_REFERENCE_BANK_KEY)
 
+    def _active_culling_signal_weights_path(self) -> Path | None:
+        raw_path = self._settings.value(self.AI_SIGNAL_WEIGHTS_KEY, "", str)
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return None
+        candidate = Path(raw_path).expanduser()
+        if not candidate.exists():
+            self._settings.remove(self.AI_SIGNAL_WEIGHTS_KEY)
+            return None
+        return candidate.resolve()
+
+    def _set_active_culling_signal_weights_path(self, weights_path: str) -> None:
+        candidate = Path(weights_path).expanduser()
+        if not candidate.exists():
+            raise FileNotFoundError(f"Culling signal weights not found: {candidate}")
+        self._settings.setValue(self.AI_SIGNAL_WEIGHTS_KEY, str(candidate.resolve()))
+
     def _configure_general_training_sources(self) -> None:
         sources = list_registered_training_sources(enabled_only=False)
         if not sources:
@@ -11263,6 +11698,54 @@ class MainWindow(QMainWindow):
             return build_ai_training_paths(target_folder)
         except Exception:
             return None
+
+    def _harvest_speed_cull_decisions_for_folders(
+        self,
+        folders: Iterable[str],
+    ) -> dict[str, int]:
+        """Bridge Speed Cull DecisionStore entries into cluster_labels.jsonl.
+
+        Called before Train / Evaluate Personal Model so the trainer sees the
+        latest decisions. Empty harvests do not touch existing label files.
+        Returns a mapping of folder → cluster-count harvested (for status text).
+        """
+
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        aiculling_root = _Path(__file__).resolve().parents[1] / "AICullingPipeline"
+        if not aiculling_root.exists():
+            return {}
+        if str(aiculling_root) not in _sys.path:
+            _sys.path.insert(0, str(aiculling_root))
+        try:
+            from app.decision_harvest import harvest_decisions_for_artifacts
+        except Exception:
+            return {}
+
+        results: dict[str, int] = {}
+        seen: set[str] = set()
+        for folder in folders:
+            if not folder:
+                continue
+            key = normalized_path_key(folder)
+            if key in seen:
+                continue
+            seen.add(key)
+            paths = self._ai_training_paths_for_folder(folder)
+            if paths is None or not paths.labeling_artifacts_dir.exists():
+                continue
+            try:
+                summary = harvest_decisions_for_artifacts(
+                    artifacts_dir=paths.labeling_artifacts_dir,
+                    output_path=paths.labels_dir / "decision_labels.jsonl",
+                    cluster_labels_path=paths.labels_dir / "cluster_labels.jsonl",
+                )
+            except Exception:
+                continue
+            if summary.clusters_with_labels:
+                results[folder] = summary.clusters_with_labels
+        return results
 
     def _general_ai_training_paths(self):
         try:
@@ -14085,6 +14568,9 @@ class MainWindow(QMainWindow):
             self.actions.open_ai_data_selection.setEnabled(can_open_training_commands)
             self.actions.run_full_ai_training_pipeline.setEnabled(can_open_training_commands)
             self.actions.prepare_ai_training_data.setEnabled(can_open_training_commands)
+            self.actions.build_culling_signals.setEnabled(can_open_training_commands)
+            self.actions.tune_culling_signals.setEnabled(can_open_training_commands)
+            self.actions.evaluate_culling_signals.setEnabled(can_open_training_commands)
             self.actions.train_ai_ranker.setEnabled(can_open_training_commands)
             self.actions.manage_ai_rankers.setEnabled(can_open_training_commands)
             self.actions.evaluate_ai_ranker.setEnabled(can_open_training_commands)
@@ -16405,6 +16891,7 @@ class MainWindow(QMainWindow):
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
             ai_semantic_sidecar_enabled=self._ai_semantic_sidecar_enabled,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
+            ai_label_near_duplicate_threshold=self._ai_label_near_duplicate_threshold,
             catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
             preset_save_callback=persist_workflow_presets,
@@ -16412,6 +16899,7 @@ class MainWindow(QMainWindow):
             keyboard_shortcuts_callback=self._open_keyboard_shortcuts_dialog,
             toolbar_callback=self._show_workspace_toolbar_editor,
             reset_layout_callback=self._reset_window_layout,
+            shortcut_overrides=load_shortcut_overrides(),
             parent=self,
         )
         if self._exec_dialog_with_geometry(dialog, "settings_compact") != dialog.DialogCode.Accepted:
@@ -16420,6 +16908,8 @@ class MainWindow(QMainWindow):
         result = dialog.result_settings()
         self._workflow_presets = list(result.presets)
         self._save_workflow_presets()
+        save_shortcut_overrides(dict(result.shortcut_overrides))
+        apply_shortcut_overrides(self.actions)
         new_session = self._decision_store.ensure_session(result.session_id)
         session_changed = new_session != self._session_id
         winner_changed = result.winner_mode != self._winner_mode
@@ -16439,6 +16929,12 @@ class MainWindow(QMainWindow):
         ai_batch_changed = result.ai_embed_batch_size != self._ai_embed_batch_size_setting
         ai_semantic_changed = result.ai_semantic_sidecar_enabled != self._ai_semantic_sidecar_enabled
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
+        new_ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(
+            result.ai_label_near_duplicate_threshold
+        )
+        ai_label_threshold_changed = (
+            abs(new_ai_label_near_duplicate_threshold - self._ai_label_near_duplicate_threshold) >= 0.0005
+        )
 
         self._session_id = new_session
         self._winner_mode = result.winner_mode
@@ -16457,6 +16953,7 @@ class MainWindow(QMainWindow):
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
         self._ai_semantic_sidecar_enabled = result.ai_semantic_sidecar_enabled
         self._ai_review_detail_progress_enabled = result.ai_review_detail_progress_enabled
+        self._ai_label_near_duplicate_threshold = new_ai_label_near_duplicate_threshold
         self._refresh_ai_runtime_preferences()
         self._settings.setValue(self.SESSION_KEY, self._session_id)
         self._settings.setValue(self.WINNER_MODE_KEY, self._winner_mode.value)
@@ -16475,6 +16972,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
         self._settings.setValue(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, self._ai_semantic_sidecar_enabled)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
+        self._settings.setValue(self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY, self._ai_label_near_duplicate_threshold)
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Session: {self._session_id}")
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
@@ -16562,6 +17060,10 @@ class MainWindow(QMainWindow):
         elif ai_progress_detail_changed:
             state = "enabled" if self._ai_review_detail_progress_enabled else "disabled"
             self.statusBar().showMessage(f"Detailed AI Review progress {state}")
+        elif ai_label_threshold_changed:
+            self.statusBar().showMessage(
+                f"Label duplicate filter set to {self._ai_label_near_duplicate_threshold:.3f}"
+            )
 
     def _empty_recycle_bin(self) -> None:
         recycle_root = self._recycle_root_for_folder()

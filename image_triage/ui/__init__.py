@@ -1,4 +1,11 @@
-from .actions import MainWindowActions, build_main_window_actions
+from .actions import (
+    MainWindowActions,
+    SHORTCUT_REGISTRY,
+    apply_shortcut_overrides,
+    build_main_window_actions,
+    load_shortcut_overrides,
+    save_shortcut_overrides,
+)
 from .ai_review_progress_dialog import AIReviewProgressDialog
 from .ai_training_progress_dialog import AITrainingProgressDialog
 from .ai_training_stats_dialog import AITrainingStatsDialog
@@ -54,6 +61,10 @@ __all__ = [
     "InspectorPanel",
     "KeyboardShortcutDialog",
     "MainWindowActions",
+    "SHORTCUT_REGISTRY",
+    "apply_shortcut_overrides",
+    "load_shortcut_overrides",
+    "save_shortcut_overrides",
     "PaletteCommand",
     "PrepareTrainingSourcesDialog",
     "RankerCenterDialog",

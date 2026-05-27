@@ -590,13 +590,25 @@ class PrepareTrainingSourcesDialog(QDialog):
 
 
 class EvaluationSourceDialog(QDialog):
-    """Choose one labeled source folder to use as a held-out evaluation set."""
+    """Choose labeled source folders to use as held-out evaluation sets."""
 
-    def __init__(self, *, sources: tuple[TrainingSourceInfo, ...], parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        sources: tuple[TrainingSourceInfo, ...],
+        title_text: str = "Evaluation Source",
+        summary_text: str = "Choose labeled folders to evaluate against. This does not add those sources to training.",
+        default_folders: tuple[str, ...] = (),
+        allow_multiple: bool = True,
+        show_evaluate_all: bool = True,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._sources = list(sources)
+        self._default_keys = {str(Path(folder).expanduser().resolve()).casefold() for folder in default_folders if str(folder).strip()}
+        self._allow_multiple = allow_multiple
         self._evaluate_all_ready = False
-        self.setWindowTitle("Evaluation Source")
+        self.setWindowTitle(title_text)
         self.setModal(True)
         self.resize(760, 430)
         self.setMinimumSize(660, 340)
@@ -605,40 +617,44 @@ class EvaluationSourceDialog(QDialog):
         root_layout.setContentsMargins(14, 14, 14, 14)
         root_layout.setSpacing(10)
 
-        title = QLabel("Evaluation Source", self)
+        title = QLabel(title_text, self)
         title.setObjectName("dialogTitle")
         root_layout.addWidget(title)
 
-        summary = QLabel("Choose the labeled folder to evaluate the active ranker against. This does not add that source to training.", self)
+        summary = QLabel(summary_text, self)
         summary.setObjectName("mutedText")
         summary.setWordWrap(True)
         root_layout.addWidget(summary)
 
-        self.table = QTableWidget(0, 5, self)
-        self.table.setHorizontalHeaderLabels(["Source", "Pairwise", "Cluster", "AI Disputes", "Prepared"])
+        self.table = QTableWidget(0, 6, self)
+        self.table.setHorizontalHeaderLabels(["Evaluate", "Source", "Pairwise", "Cluster", "AI Disputes", "Prepared"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 5):
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for column in range(2, 6):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.itemDoubleClicked.connect(lambda _item: self.accept())
+        self.table.itemDoubleClicked.connect(lambda _item: self.accept() if self.evaluate_button.isEnabled() else None)
         root_layout.addWidget(self.table, 1)
 
         button_box = QDialogButtonBox(self)
-        self.evaluate_button = QPushButton("Evaluate", self)
-        self.evaluate_all_button = QPushButton("Evaluate All Ready", self)
+        self.evaluate_button = QPushButton("Evaluate Selected", self)
+        self.evaluate_all_button: QPushButton | None = QPushButton("Evaluate All Ready", self) if show_evaluate_all else None
         cancel_button = QPushButton("Cancel", self)
         button_box.addButton(cancel_button, QDialogButtonBox.ButtonRole.RejectRole)
-        button_box.addButton(self.evaluate_all_button, QDialogButtonBox.ButtonRole.ActionRole)
+        if self.evaluate_all_button is not None:
+            button_box.addButton(self.evaluate_all_button, QDialogButtonBox.ButtonRole.ActionRole)
         button_box.addButton(self.evaluate_button, QDialogButtonBox.ButtonRole.AcceptRole)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        self.evaluate_all_button.clicked.connect(self._accept_all_ready)
+        if self.evaluate_all_button is not None:
+            self.evaluate_all_button.clicked.connect(self._accept_all_ready)
         root_layout.addWidget(button_box)
 
+        self.table.itemChanged.connect(self._handle_item_changed)
         self.table.itemSelectionChanged.connect(self._refresh_button_state)
         self._populate_table()
         self._refresh_button_state()
@@ -654,14 +670,34 @@ class EvaluationSourceDialog(QDialog):
             return tuple(
                 source
                 for source in self._sources
-                if source.prepared_ready and (source.pairwise_labels > 0 or source.cluster_labels > 0)
+                if source.prepared_ready and _source_has_eval_labels(source)
             )
+        checked = tuple(
+            source
+            for row, source in enumerate(self._sources)
+            if self._is_row_checked(row) and source.prepared_ready and _source_has_eval_labels(source)
+        )
+        if checked:
+            return checked
         selected = self.selected_source()
         return (selected,) if selected is not None else ()
 
     def _populate_table(self) -> None:
         self.table.setRowCount(len(self._sources))
         for row, source in enumerate(self._sources):
+            evaluate_item = QTableWidgetItem("")
+            evaluate_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            try:
+                source_key = str(Path(source.folder).expanduser().resolve()).casefold()
+            except OSError:
+                source_key = source.folder.casefold()
+            evaluate_item.setCheckState(Qt.CheckState.Checked if source_key in self._default_keys else Qt.CheckState.Unchecked)
+            self.table.setItem(row, 0, evaluate_item)
+
             values = (
                 _short_path(source.folder, max_chars=88),
                 str(source.pairwise_labels),
@@ -669,34 +705,64 @@ class EvaluationSourceDialog(QDialog):
                 str(source.disagreement_pair_labels),
                 _ready_text(source.prepared_ready),
             )
-            for column, value in enumerate(values):
+            for column, value in enumerate(values, start=1):
                 item = QTableWidgetItem(value)
-                item.setToolTip(source.folder if column == 0 else "")
-                if column >= 1:
+                item.setToolTip(source.folder if column == 1 else "")
+                if column >= 2:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, column, item)
         if self._sources:
             self.table.selectRow(0)
 
     def _refresh_button_state(self) -> None:
+        checked_ready = any(
+            self._is_row_checked(row)
+            and source.prepared_ready
+            and (source.pairwise_labels > 0 or source.cluster_labels > 0)
+            for row, source in enumerate(self._sources)
+        )
         selected = self.selected_source()
-        self.evaluate_button.setEnabled(
+        selected_ready = (
             selected is not None
             and selected.prepared_ready
-            and (selected.pairwise_labels > 0 or selected.cluster_labels > 0)
+            and _source_has_eval_labels(selected)
         )
-        self.evaluate_all_button.setEnabled(
-            sum(
-                1
-                for source in self._sources
-                if source.prepared_ready and (source.pairwise_labels > 0 or source.cluster_labels > 0)
+        self.evaluate_button.setEnabled(checked_ready or selected_ready)
+        if self.evaluate_all_button is not None:
+            self.evaluate_all_button.setEnabled(
+                sum(
+                    1
+                    for source in self._sources
+                    if source.prepared_ready and _source_has_eval_labels(source)
+                )
+                >= 2
             )
-            >= 2
-        )
 
     def _accept_all_ready(self) -> None:
         self._evaluate_all_ready = True
         self.accept()
+
+    def _is_row_checked(self, row: int) -> bool:
+        item = self.table.item(row, 0)
+        return item is not None and item.checkState() == Qt.CheckState.Checked
+
+    def _handle_item_changed(self, item: QTableWidgetItem) -> None:
+        if not self._allow_multiple and item.column() == 0 and item.checkState() == Qt.CheckState.Checked:
+            previous_state = self.table.blockSignals(True)
+            try:
+                for row in range(self.table.rowCount()):
+                    if row == item.row():
+                        continue
+                    other = self.table.item(row, 0)
+                    if other is not None:
+                        other.setCheckState(Qt.CheckState.Unchecked)
+            finally:
+                self.table.blockSignals(previous_state)
+        self._refresh_button_state()
+
+
+def _source_has_eval_labels(source: TrainingSourceInfo) -> bool:
+    return source.pairwise_labels > 0 or source.cluster_labels > 0 or source.disagreement_pair_labels > 0
 
 
 def _metric_card(parent: QWidget, title: str, value: str, detail: str) -> QFrame:

@@ -457,6 +457,56 @@ def _build_labeling_stylesheet(theme: ThemePalette) -> str:
         QLabel#hintText {{
             color: {theme.text_muted.css};
         }}
+        QLabel#clusterInstructions {{
+            background-color: {theme.accent_soft.css};
+            border: 1px solid {theme.accent.css};
+            border-radius: 12px;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            padding: 10px 14px;
+        }}
+        QPushButton#instructionsToggleButton {{
+            background-color: transparent;
+            border: none;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+        }}
+        QPushButton#instructionsToggleButton:hover {{
+            color: {theme.text_secondary.css};
+        }}
+        QPushButton#chromeToggleButton {{
+            background-color: {theme.panel_alt_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 8px;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 10px;
+            min-height: 22px;
+            text-align: center;
+        }}
+        QPushButton#chromeToggleButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+            border-color: {theme.accent.css};
+        }}
+        QLabel#clusterStackBadge {{
+            background-color: {theme.warning_soft.css};
+            border: 1px solid {theme.warning.css};
+            border-radius: 8px;
+            color: {theme.text_primary.css};
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 8px;
+        }}
+        QPushButton#clusterStackExpandButton {{
+            font-size: 11px;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 8px;
+        }}
         QCheckBox#labelFlowToggle {{
             color: {theme.text_secondary.css};
             font-size: 12px;
