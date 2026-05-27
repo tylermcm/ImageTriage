@@ -49,6 +49,21 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(64, result.ai_embed_batch_size)
         dialog.deleteLater()
 
+    def test_result_settings_returns_label_duplicate_threshold(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+            ai_label_near_duplicate_threshold=0.965,
+        )
+        dialog.ai_label_near_duplicate_slider.setValue(940)
+
+        result = dialog.result_settings()
+
+        self.assertEqual(0.940, result.ai_label_near_duplicate_threshold)
+        dialog.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

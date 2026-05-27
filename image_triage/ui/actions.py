@@ -7,10 +7,26 @@ from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import QStyle
 
 from ..models import FilterMode, SortMode
+from .shortcuts import (
+    SHORTCUT_REGISTRY,
+    apply_shortcut_overrides,
+    load_shortcut_overrides,
+    save_shortcut_overrides,
+)
 from .theme import AppearanceMode
 
 if TYPE_CHECKING:
     from ..window import MainWindow
+
+
+__all__ = (
+    "MainWindowActions",
+    "SHORTCUT_REGISTRY",
+    "apply_shortcut_overrides",
+    "build_main_window_actions",
+    "load_shortcut_overrides",
+    "save_shortcut_overrides",
+)
 
 
 @dataclass(slots=True)
@@ -75,6 +91,9 @@ class MainWindowActions:
     manage_ai_rankers: QAction
     evaluate_ai_ranker: QAction
     score_ai_with_trained_ranker: QAction
+    build_culling_signals: QAction
+    tune_culling_signals: QAction
+    evaluate_culling_signals: QAction
     build_ai_reference_bank: QAction
     clear_ai_trained_model: QAction
     next_ai_pick: QAction
@@ -366,10 +385,10 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         clear_ai_results=_create_action(window, "Clear AI Results", slot=window._clear_ai_results),
         open_ai_report=_create_action(window, "Open AI Report", slot=window._open_ai_report),
         show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._show_last_ai_review_summary),
-        prepare_ai_training_data=_create_action(window, "Prepare Training Data", slot=window._prepare_ai_training_data),
+        prepare_ai_training_data=_create_action(window, "Prepare Folder For AI", slot=window._prepare_ai_training_data),
         open_ai_data_selection=_create_action(
             window,
-            "Collect Training Labels...",
+            "Speed Cull...",
             slot=window._open_ai_data_selection,
             shortcut="Ctrl+Shift+L",
         ),
@@ -397,8 +416,23 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Score Current Folder With Active Ranker",
             slot=window._score_current_folder_with_trained_ranker,
         ),
+        build_culling_signals=_create_action(
+            window,
+            "Build Image Features",
+            slot=window._build_culling_signals_for_current_folder,
+        ),
+        tune_culling_signals=_create_action(
+            window,
+            "Train Personal Model...",
+            slot=window._tune_culling_signals,
+        ),
+        evaluate_culling_signals=_create_action(
+            window,
+            "Evaluate Personal Model",
+            slot=window._evaluate_culling_signals,
+        ),
         build_ai_reference_bank=_create_action(window, "Build Reference Bank...", slot=window._build_ai_reference_bank),
-        clear_ai_trained_model=_create_action(window, "Clear Trained Model...", slot=window._clear_ai_trained_model),
+        clear_ai_trained_model=_create_action(window, "Clear Personal Model...", slot=window._clear_ai_trained_model),
         next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+P"),
         next_unreviewed_ai_pick=_create_action(
             window,

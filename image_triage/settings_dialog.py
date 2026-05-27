@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,12 +13,15 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
+    QKeySequenceEdit,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -24,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from .models import DeleteMode, WinnerMode
+from .ui.shortcuts import SHORTCUT_REGISTRY
 
 
 @dataclass(slots=True, frozen=True)
@@ -53,7 +59,11 @@ class WorkflowSettingsResult:
     ai_embed_batch_size: int = 0
     ai_semantic_sidecar_enabled: bool = True
     ai_review_detail_progress_enabled: bool = False
+    ai_label_near_duplicate_threshold: float = 0.965
     presets: tuple[WorkflowPreset, ...] = ()
+    # Keybind overrides: attr_name -> chord string. Empty / missing entries
+    # mean "use the registered default."
+    shortcut_overrides: dict[str, str] = field(default_factory=dict)
 
 
 def _compact_catalog_summary(summary: str) -> str:
@@ -93,6 +103,7 @@ class WorkflowSettingsDialog(QDialog):
         ai_embed_batch_size: int = 0,
         ai_semantic_sidecar_enabled: bool = True,
         ai_review_detail_progress_enabled: bool = False,
+        ai_label_near_duplicate_threshold: float = 0.965,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
@@ -100,35 +111,38 @@ class WorkflowSettingsDialog(QDialog):
         keyboard_shortcuts_callback: Callable[[], None] | None = None,
         toolbar_callback: Callable[[], None] | None = None,
         reset_layout_callback: Callable[[], None] | None = None,
+        shortcut_overrides: dict[str, str] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setMinimumSize(600, 430)
-        self.resize(630, 550)
+        self.setMinimumSize(640, 460)
+        self.resize(720, 540)
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(12, 12, 12, 12)
-        root_layout.setSpacing(12)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
         body = QWidget(self)
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(12)
+        body_layout.setSpacing(0)
 
         self.section_list = QListWidget(body)
         self.section_list.setObjectName("settingsSectionList")
-        self.section_list.setFixedWidth(140)
+        self.section_list.setFixedWidth(168)
         self.section_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.section_list.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.section_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.section_list.setSpacing(2)
 
         self.pages = QStackedWidget(body)
         self.pages.setObjectName("settingsPages")
-        self.pages.setMinimumWidth(420)
+        self.pages.setMinimumWidth(480)
         body_layout.addWidget(self.section_list)
         body_layout.addWidget(self.pages, 1)
         root_layout.addWidget(body, 1)
@@ -267,6 +281,28 @@ class WorkflowSettingsDialog(QDialog):
             "Shows model loading, library loading, and per-stage technical activity in the AI Review progress window."
         )
 
+        self.ai_label_near_duplicate_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ai_label_near_duplicate_slider.setRange(500, 995)
+        self.ai_label_near_duplicate_slider.setSingleStep(1)
+        self.ai_label_near_duplicate_slider.setPageStep(5)
+        self.ai_label_near_duplicate_slider.setValue(self._threshold_to_slider_value(ai_label_near_duplicate_threshold))
+        self.ai_label_near_duplicate_slider.setToolTip(
+            "DINO cosine threshold for hiding near-identical images before labeling. Lower is stricter and collapses more images."
+        )
+        self.ai_label_near_duplicate_value_label = QLabel(
+            self._format_threshold_value(self.ai_label_near_duplicate_slider.value())
+        )
+        self.ai_label_near_duplicate_value_label.setObjectName("mutedText")
+        self.ai_label_near_duplicate_value_label.setFixedWidth(48)
+        self.ai_label_near_duplicate_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.ai_label_near_duplicate_slider.valueChanged.connect(self._update_ai_label_near_duplicate_label)
+        label_threshold_row = QWidget()
+        label_threshold_layout = QHBoxLayout(label_threshold_row)
+        label_threshold_layout.setContentsMargins(0, 0, 0, 0)
+        label_threshold_layout.setSpacing(8)
+        label_threshold_layout.addWidget(self.ai_label_near_duplicate_slider, 1)
+        label_threshold_layout.addWidget(self.ai_label_near_duplicate_value_label)
+
         self.ai_auto_profile_checkbox = QCheckBox("Suggest a training profile before training")
         self.ai_auto_profile_checkbox.setChecked(ai_auto_profile_enabled)
 
@@ -274,26 +310,25 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(ai_layout, "Embedding batch size", self.ai_embed_batch_size_spin)
         self._add_checkbox_row(ai_layout, "Semantic sidecar", self.ai_semantic_sidecar_checkbox)
         self._add_checkbox_row(ai_layout, "Progress details", self.ai_review_detail_progress_checkbox)
+        self._add_form_row(ai_layout, "Label duplicate filter", label_threshold_row)
         self._add_checkbox_row(ai_layout, "Training profile", self.ai_auto_profile_checkbox)
         ai_layout.addStretch(1)
         self._add_settings_page("AI", ai_page)
 
-        workspace_page, workspace_layout = self._build_settings_page("Workspace")
-        self._add_button_row(workspace_layout, "Toolbar", "Customize Toolbar...", toolbar_callback)
-        self._add_button_row(workspace_layout, "Layout", "Reset Window Layout", reset_layout_callback)
-        workspace_layout.addStretch(1)
-        self._add_settings_page("Workspace", workspace_page)
+        shortcuts_page = self._build_shortcuts_page(shortcut_overrides or {})
+        self._add_settings_page("Shortcuts", shortcuts_page)
 
-        tools_page, tools_layout = self._build_settings_page("Tools")
-        self._add_button_row(tools_layout, "File types", "File Associations...", file_associations_callback)
-        self._add_button_row(tools_layout, "Shortcuts", "Keyboard Shortcuts...", keyboard_shortcuts_callback)
-        tools_layout.addStretch(1)
-        self._add_settings_page("Tools", tools_page)
-
+        footer = QFrame(self)
+        footer.setObjectName("settingsFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(24, 12, 24, 14)
+        footer_layout.setSpacing(8)
+        footer_layout.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        root_layout.addWidget(buttons, 0, Qt.AlignmentFlag.AlignRight)
+        footer_layout.addWidget(buttons)
+        root_layout.addWidget(footer, 0)
         self.section_list.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.section_list.setCurrentRow(0)
         self._refresh_preset_dropdown()
@@ -303,13 +338,22 @@ class WorkflowSettingsDialog(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         content = QWidget()
+        content.setObjectName("settingsPageContent")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(4, 2, 8, 8)
-        layout.setSpacing(12)
-        content.setMinimumWidth(390)
+        layout.setContentsMargins(24, 22, 24, 24)
+        layout.setSpacing(10)
+        content.setMinimumWidth(420)
         title_label = QLabel(title)
-        title_label.setObjectName("dialogTitle")
+        title_label.setObjectName("settingsPageTitle")
         layout.addWidget(title_label)
+        # Separator below the title
+        separator = QFrame()
+        separator.setObjectName("settingsPageSeparator")
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(1)
+        layout.addWidget(separator)
+        layout.addSpacing(4)
         scroll.setWidget(content)
         return scroll, layout
 
@@ -326,11 +370,13 @@ class WorkflowSettingsDialog(QDialog):
         layout.setSpacing(10)
         return row, layout
 
+    _ROW_LABEL_WIDTH = 132
+
     def _add_form_row(self, layout: QVBoxLayout, label_text: str, field: QWidget) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(106)
-        label.setObjectName("sectionLabel")
+        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setObjectName("settingsRowLabel")
         row_layout.addWidget(label)
         row_layout.addWidget(field, 1)
         layout.addWidget(row)
@@ -338,8 +384,8 @@ class WorkflowSettingsDialog(QDialog):
     def _add_checkbox_row(self, layout: QVBoxLayout, label_text: str, checkbox: QCheckBox) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(106)
-        label.setObjectName("sectionLabel")
+        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setObjectName("settingsRowLabel")
         row_layout.addWidget(label)
         row_layout.addWidget(checkbox, 1)
         layout.addWidget(row)
@@ -347,33 +393,156 @@ class WorkflowSettingsDialog(QDialog):
     def _add_text_row(self, layout: QVBoxLayout, label_text: str, value: QLabel) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(106)
-        label.setObjectName("sectionLabel")
+        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setObjectName("settingsRowLabel")
         row_layout.addWidget(label)
         row_layout.addWidget(value, 1)
         layout.addWidget(row)
 
-    def _add_button_row(
-        self,
-        layout: QVBoxLayout,
-        label_text: str,
-        button_text: str,
-        callback: Callable[[], None] | None,
-    ) -> None:
-        row, row_layout = self._row_frame()
-        label = QLabel(label_text)
-        label.setFixedWidth(106)
-        label.setObjectName("sectionLabel")
-        button = QPushButton(button_text)
-        button.setMinimumWidth(180)
-        button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        button.setEnabled(callback is not None)
-        if callback is not None:
-            button.clicked.connect(callback)
-        row_layout.addWidget(label)
-        row_layout.addWidget(button)
-        row_layout.addStretch(1)
-        layout.addWidget(row)
+    def _build_shortcuts_page(self, current_overrides: dict[str, str]) -> QWidget:
+        """Build the Shortcuts settings page from SHORTCUT_REGISTRY."""
+
+        page, layout = self._build_settings_page("Shortcuts")
+        hint = QLabel(
+            "Click a row's key field and press the new chord. Use the row's "
+            "Reset to revert to the default. Conflicts are reported when you "
+            "click OK."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("settingsRowLabel")
+        layout.addWidget(hint)
+        layout.addSpacing(4)
+
+        # Group registry entries by category, preserving registry order.
+        grouped: OrderedDict[str, list[tuple[str, str, str]]] = OrderedDict()
+        for attr_name, category, default, display in SHORTCUT_REGISTRY:
+            grouped.setdefault(category, []).append((attr_name, default, display))
+
+        self._shortcut_editors: dict[str, QKeySequenceEdit] = {}
+        self._shortcut_defaults: dict[str, str] = {
+            attr_name: default for attr_name, _c, default, _d in SHORTCUT_REGISTRY
+        }
+        self._shortcut_display_names: dict[str, str] = {
+            attr_name: display for attr_name, _c, _d, display in SHORTCUT_REGISTRY
+        }
+
+        for category, entries in grouped.items():
+            heading = QLabel(category)
+            heading.setObjectName("settingsCategoryHeading")
+            layout.addSpacing(6)
+            layout.addWidget(heading)
+            for attr_name, default, display in entries:
+                row, row_layout = self._row_frame()
+                label = QLabel(display)
+                label.setFixedWidth(self._ROW_LABEL_WIDTH * 2)
+                label.setObjectName("settingsRowLabel")
+                row_layout.addWidget(label)
+
+                editor = QKeySequenceEdit()
+                editor.setObjectName("shortcutEditor")
+                editor.setMinimumWidth(160)
+                editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                effective = current_overrides.get(attr_name, default)
+                if effective:
+                    editor.setKeySequence(QKeySequence(effective))
+                row_layout.addWidget(editor, 1)
+
+                reset_button = QPushButton("Reset")
+                reset_button.setObjectName("settingsRowReset")
+                reset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                reset_button.setFixedWidth(64)
+                reset_button.clicked.connect(
+                    lambda _checked=False, edit=editor, default_chord=default: edit.setKeySequence(
+                        QKeySequence(default_chord)
+                    )
+                )
+                row_layout.addWidget(reset_button)
+
+                layout.addWidget(row)
+                self._shortcut_editors[attr_name] = editor
+
+        layout.addSpacing(8)
+        reset_all = QPushButton("Reset all to defaults")
+        reset_all.setObjectName("settingsResetAll")
+        reset_all.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        reset_all.clicked.connect(self._reset_all_shortcuts)
+        layout.addWidget(reset_all, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+        return page
+
+    def _reset_all_shortcuts(self) -> None:
+        for attr_name, editor in self._shortcut_editors.items():
+            editor.setKeySequence(QKeySequence(self._shortcut_defaults.get(attr_name, "")))
+
+    def _collect_shortcut_state(self) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """Return (effective_chords_by_attr, conflicts_by_chord) from current editor state."""
+
+        effective: dict[str, str] = {}
+        for attr_name, editor in self._shortcut_editors.items():
+            text = editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+            effective[attr_name] = text
+        conflicts: dict[str, list[str]] = {}
+        for attr_name, chord in effective.items():
+            if not chord:
+                continue
+            conflicts.setdefault(chord, []).append(attr_name)
+        # Only chords with more than one assignee are real conflicts.
+        return effective, {chord: attrs for chord, attrs in conflicts.items() if len(attrs) > 1}
+
+    def _shortcut_overrides_from_state(self) -> dict[str, str]:
+        """Return non-default chords as overrides; defaults are dropped."""
+
+        effective, _conflicts = self._collect_shortcut_state()
+        overrides: dict[str, str] = {}
+        for attr_name, chord in effective.items():
+            default = self._shortcut_defaults.get(attr_name, "")
+            if chord and chord != default:
+                overrides[attr_name] = chord
+        return overrides
+
+    def accept(self) -> None:  # type: ignore[override]
+        """Validate shortcut conflicts before accepting."""
+
+        if getattr(self, "_shortcut_editors", None):
+            _effective, conflicts = self._collect_shortcut_state()
+            if conflicts:
+                lines = []
+                for chord, attrs in conflicts.items():
+                    names = ", ".join(
+                        self._shortcut_display_names.get(attr_name, attr_name) for attr_name in attrs
+                    )
+                    lines.append(f"  {chord} → {names}")
+                response = QMessageBox.warning(
+                    self,
+                    "Shortcut conflicts",
+                    "These shortcuts are assigned to more than one action:\n\n"
+                    + "\n".join(lines)
+                    + "\n\nQt will fire only one of them. Save anyway?",
+                    QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if response != QMessageBox.StandardButton.Save:
+                    return
+        super().accept()
+
+    @staticmethod
+    def _threshold_to_slider_value(value: float) -> int:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = 0.965
+        return max(500, min(995, int(round(parsed * 1000.0))))
+
+    @staticmethod
+    def _slider_value_to_threshold(value: int) -> float:
+        return max(0.500, min(0.995, float(value) / 1000.0))
+
+    @classmethod
+    def _format_threshold_value(cls, value: int) -> str:
+        return f"{cls._slider_value_to_threshold(value):.3f}"
+
+    def _update_ai_label_near_duplicate_label(self, value: int) -> None:
+        self.ai_label_near_duplicate_value_label.setText(self._format_threshold_value(value))
 
     def _refresh_session_combo(self, *, sessions: list[str], current_session: str) -> None:
         self._updating_session = True
@@ -491,5 +660,11 @@ class WorkflowSettingsDialog(QDialog):
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
             ai_semantic_sidecar_enabled=self.ai_semantic_sidecar_checkbox.isChecked(),
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
+            ai_label_near_duplicate_threshold=self._slider_value_to_threshold(
+                int(self.ai_label_near_duplicate_slider.value())
+            ),
             presets=tuple(self._presets) if include_presets else (),
+            shortcut_overrides=self._shortcut_overrides_from_state()
+            if getattr(self, "_shortcut_editors", None)
+            else {},
         )

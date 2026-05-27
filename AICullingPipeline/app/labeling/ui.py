@@ -1,4 +1,4 @@
-"""PySide6 desktop UI for local pairwise and cluster labeling."""
+"""PySide6 desktop UI for the Image Triage Speed Cull surface."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QPointF, Qt, QSize
+from PySide6.QtCore import QPointF, QSettings, Qt, QSize, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -31,14 +30,13 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedLayout,
     QStatusBar,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from app.config import LabelingConfig
 from app.host_sync import HostSyncController
-from app.labeling.models import ClusterItem, ImageItem, PairCandidate
+from app.labeling.models import ClusterItem, ImageItem
 from app.labeling.previews import load_oriented_pixmap
 from app.labeling.session import LabelingSession
 from app.labeling.theme import apply_labeling_theme
@@ -61,6 +59,8 @@ def launch_labeling_app(
     _notify_host_startup("qt_ready", "Qt application created", started_at=start)
     apply_labeling_theme(app)
     _notify_host_startup("theme_ready", "Theme loaded", started_at=start)
+    if session is None:
+        session = LabelingSession(config, progress_callback=_emit_phash_progress)
     window = LabelingMainWindow(config, session=session)
     _notify_host_startup("window_created", "Label collection window built", started_at=start)
     window._host_sync_controller = HostSyncController(
@@ -86,6 +86,18 @@ def _notify_host_ready() -> None:
         ready_path.write_text('{"state":"ready"}', encoding="utf-8")
     except OSError:
         pass
+
+
+def _emit_phash_progress(done: int, total: int, _state: str) -> None:
+    """Stream pHash compute progress to the host via the ready-file."""
+
+    if total <= 0:
+        return
+    percent = int(round(100.0 * done / total))
+    _notify_host_startup(
+        "computing_phashes",
+        f"Computing image fingerprints ({done}/{total}, {percent}%)",
+    )
 
 
 def _notify_host_startup(state: str, message: str, *, started_at: float | None = None) -> None:
@@ -146,136 +158,108 @@ def _safe_child_perf_value(value: object) -> object:
     return text[:497] + "..." if len(text) > 500 else text
 
 
-class ImagePreviewWidget(QGroupBox):
-    """Simple image preview panel used by the pairwise tab."""
+def _build_chrome_toggle(
+    *,
+    settings: QSettings,
+    settings_key: str,
+    panel: QWidget,
+    on_toggled: Optional[Callable[[bool], None]] = None,
+) -> QPushButton:
+    """Build a flat full-width toggle that hides or shows a chrome panel.
 
-    def __init__(
-        self,
-        title: str,
-        *,
-        max_width: int,
-        max_height: int,
-        sync_controller: Optional["PairZoomSyncController"] = None,
-    ) -> None:
-        super().__init__(title)
-        self.max_width = max_width
-        self.max_height = max_height
-        self.sync_controller = sync_controller
-        self.setObjectName("imagePreviewPanel")
+    State is persisted in QSettings so the user's choice survives restarts.
+    The returned button itself stays visible at all times so the user always
+    has a way to bring the panel back. The optional on_toggled callback fires
+    after each click so callers can recompute child geometry (the parent tab
+    does not get a resizeEvent when only its contents reflow).
+    """
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 18, 14, 14)
-        layout.setSpacing(10)
-        if sync_controller is None:
-            self.image_label = PreviewLabel(
-                max_width=max_width,
-                max_height=max_height,
-                minimum_size=QSize(420, 320),
-                padding=12,
-            )
-            layout.addWidget(self.image_label)
-            self.image_view = None
-            self.message_label = None
-            self.preview_stack = None
-        else:
-            self.image_view = ZoomableImageView(sync_controller)
-            self.message_label = QLabel("No image loaded.")
-            self.message_label.setObjectName("previewMessageLabel")
-            self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.message_label.setMinimumSize(QSize(420, 320))
-            self.message_label.setWordWrap(True)
-            preview_container = QWidget()
-            self.preview_stack = QStackedLayout(preview_container)
-            self.preview_stack.addWidget(self.message_label)
-            self.preview_stack.addWidget(self.image_view)
-            layout.addWidget(preview_container)
-            self.image_label = None
+    initial_visible = bool(settings.value(settings_key, True, type=bool))
+    panel.setVisible(initial_visible)
 
-        self.path_label = QLabel("")
-        self.path_label.setObjectName("previewPathLabel")
-        self.path_label.setWordWrap(True)
-        layout.addWidget(self.path_label)
+    button = QPushButton(_chrome_toggle_text(initial_visible))
+    button.setObjectName("chromeToggleButton")
+    button.setFlat(True)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        self.meta_label = QLabel("")
-        self.meta_label.setObjectName("previewMetaLabel")
-        self.meta_label.setWordWrap(True)
-        layout.addWidget(self.meta_label)
+    def _on_click() -> None:
+        new_visible = not panel.isVisible()
+        panel.setVisible(new_visible)
+        button.setText(_chrome_toggle_text(new_visible))
+        settings.setValue(settings_key, new_visible)
+        if on_toggled is not None:
+            on_toggled(new_visible)
 
-    def set_image(self, image: Optional[ImageItem]) -> None:
-        """Display an image preview and its metadata."""
+    button.clicked.connect(_on_click)
+    return button
 
-        if image is None:
-            self._set_message("No image loaded.")
-            self.path_label.setText("")
-            self.meta_label.setText("")
-            return
 
-        if not image.file_exists:
-            self._set_message("Missing image file.")
-        else:
-            pixmap = load_oriented_pixmap(
-                image.file_path,
-                max_side=max(self.max_width, self.max_height) * 3,
-            )
-            if pixmap.isNull():
-                self._set_message("Unable to render preview.")
-            else:
-                self._set_pixmap(pixmap)
+def _chrome_toggle_text(visible: bool) -> str:
+    return "▲ Hide controls" if visible else "▼ Show controls"
 
-        display_path = image.relative_path or str(image.file_path)
-        self.path_label.setText(f"<b>{image.file_name}</b><br>{display_path}")
-        self.path_label.setToolTip(str(image.file_path))
-        timestamp_text = image.capture_timestamp or "missing"
-        self.meta_label.setText(
-            f"Cluster <b>{image.cluster_id}</b> · {image.cluster_size} image(s)<br>"
-            f"Captured {timestamp_text} [{image.capture_time_source}]<br>"
-            f"Image ID {image.image_id}"
-        )
 
-    def _set_message(self, text: str) -> None:
-        """Show a placeholder message instead of an image preview."""
+def _group_initial_assignment(
+    members: List[ImageItem],
+    saved_assignments: Dict[str, str],
+) -> str:
+    """Pick a card's starting assignment from per-image saved labels.
 
-        if self.image_view is None or self.preview_stack is None or self.message_label is None:
-            assert self.image_label is not None
-            self.image_label.set_message(text)
-            return
+    If every member shares the same label, use it. Mixed labels fall back to
+    'unlabeled' so the user is prompted to relabel after expanding the stack.
+    """
 
-        self.image_view.clear_preview()
-        self.message_label.setText(text)
-        self.preview_stack.setCurrentWidget(self.message_label)
+    if not members:
+        return "unlabeled"
+    seen: set[str] = set()
+    for member in members:
+        seen.add(saved_assignments.get(member.image_id, "unlabeled"))
+        if len(seen) > 1:
+            return "unlabeled"
+    return next(iter(seen)) if seen else "unlabeled"
 
-    def _set_pixmap(self, pixmap: QPixmap) -> None:
-        """Show the current image preview."""
 
-        if self.image_view is None or self.preview_stack is None:
-            assert self.image_label is not None
-            self.image_label.set_preview_pixmap(pixmap)
-            return
+def _has_mixed_saved_assignments(
+    members: List[ImageItem],
+    saved_assignments: Dict[str, str],
+) -> bool:
+    """Return True when members have different saved labels (warrants auto-expand)."""
 
-        self.image_view.set_preview_pixmap(pixmap)
-        self.preview_stack.setCurrentWidget(self.image_view)
+    labels = {saved_assignments.get(member.image_id, "unlabeled") for member in members}
+    return len(labels) > 1
 
 
 class ClusterImageCard(QFrame):
-    """Small card used for cluster-level labeling."""
+    """Small card used for cluster-level labeling.
+
+    May represent a single image or a near-duplicate stack of images that
+    share one label. When stacked, the first member is the visible
+    representative and the user can click Expand to break the stack apart.
+    """
 
     def __init__(
         self,
-        image: ImageItem,
+        members: List[ImageItem],
         *,
         display_index: int,
         preview_height: int,
         sync_controller: PairZoomSyncController,
         on_changed: Callable[["ClusterImageCard"], None],
         on_selected: Callable[["ClusterImageCard"], None],
+        on_expand_requested: Optional[Callable[["ClusterImageCard"], None]] = None,
     ) -> None:
         super().__init__()
-        self.image = image
+        if not members:
+            raise ValueError("ClusterImageCard requires at least one member image.")
+        self.members: List[ImageItem] = list(members)
+        self.image = self.members[0]
         self.display_index = display_index
         self.on_changed = on_changed
         self.on_selected = on_selected
+        self.on_expand_requested = on_expand_requested
         self.setObjectName("clusterCard")
         self.setProperty("active", False)
+        self.setProperty("stacked", len(self.members) > 1)
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setLineWidth(2)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -292,7 +276,11 @@ class ClusterImageCard(QFrame):
             minimum_size=QSize(160, 160),
             on_selected=lambda: self.on_selected(self),
         )
+        self.preview_view.setProperty("image_id", self.image.image_id)
+        self.preview_view.setProperty("file_name", self.image.file_name)
+        self.preview_view.setProperty("cluster_id", self.image.cluster_id)
         self.preview_view.setMinimumWidth(0)
+        self.preview_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.preview_view.setFixedHeight(preview_height)
         self.preview_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -314,29 +302,31 @@ class ClusterImageCard(QFrame):
         self.preview_stack.addWidget(self.preview_view)
         layout.addWidget(self.preview_container)
 
-        if not image.file_exists:
+        representative = self.image
+        if not representative.file_exists:
             self.preview_message.setText("Missing image file.")
             self.preview_stack.setCurrentWidget(self.preview_message)
         else:
             preview_start = time.perf_counter()
-            preview_max_side = max(900, min(1600, preview_height * 4))
-            pixmap = load_oriented_pixmap(image.file_path, max_side=preview_max_side)
+            preview_max_side = max(768, min(1600, preview_height * 4))
+            pixmap = load_oriented_pixmap(representative.file_path, max_side=preview_max_side)
             preview_ms = (time.perf_counter() - preview_start) * 1000.0
             _child_perf_log(
                 "labeling.child.cluster_card.preview",
                 duration_ms=preview_ms,
-                image_id=image.image_id,
-                file_name=image.file_name,
-                file_path=image.file_path,
-                cluster_id=image.cluster_id,
-                cluster_size=image.cluster_size,
+                image_id=representative.image_id,
+                file_name=representative.file_name,
+                file_path=representative.file_path,
+                cluster_id=representative.cluster_id,
+                cluster_size=representative.cluster_size,
+                stack_size=len(self.members),
                 max_side=preview_max_side,
                 pixmap_null=pixmap.isNull(),
             )
             if preview_ms >= 250.0:
                 _notify_host_startup(
                     "cluster_preview_slow",
-                    f"Loaded cluster preview in {preview_ms:.0f} ms: {image.file_name}",
+                    f"Loaded cluster preview in {preview_ms:.0f} ms: {representative.file_name}",
                 )
             if pixmap.isNull():
                 self.preview_message.setText("Unable to render preview.")
@@ -345,15 +335,44 @@ class ClusterImageCard(QFrame):
                 self.preview_view.set_preview_pixmap(pixmap)
                 self.preview_stack.setCurrentWidget(self.preview_view)
 
-        info = QLabel(
-            f"<b>{display_index}. {image.file_name}</b><br>"
-            f"{image.relative_path}<br>"
-            f"timestamp: {image.capture_timestamp or 'missing'}"
-        )
+        stack_size = len(self.members)
+        if stack_size > 1:
+            stack_row = QHBoxLayout()
+            stack_row.setSpacing(8)
+            badge = QLabel(f"Stack of {stack_size}")
+            badge.setObjectName("clusterStackBadge")
+            badge.setToolTip(
+                "These frames look near-identical. Your label below will apply to all of them."
+            )
+            stack_row.addWidget(badge)
+            expand_button = QPushButton(f"Expand ({stack_size})")
+            expand_button.setObjectName("clusterStackExpandButton")
+            expand_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            expand_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            expand_button.clicked.connect(self._on_expand_clicked)
+            stack_row.addWidget(expand_button)
+            stack_row.addStretch(1)
+            layout.addLayout(stack_row)
+
+        if stack_size > 1:
+            info_text = (
+                f"<b>{display_index}. {representative.file_name}</b> "
+                f"<span style='color:#888;'>+{stack_size - 1} similar</span><br>"
+                f"{representative.relative_path}<br>"
+                f"timestamp: {representative.capture_timestamp or 'missing'}"
+            )
+        else:
+            info_text = (
+                f"<b>{display_index}. {representative.file_name}</b><br>"
+                f"{representative.relative_path}<br>"
+                f"timestamp: {representative.capture_timestamp or 'missing'}"
+            )
+        info = QLabel(info_text)
         info.setObjectName("clusterInfoLabel")
         info.setWordWrap(True)
         info.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        info.setToolTip(str(image.file_path))
+        tooltip_lines = [str(member.file_path) for member in self.members]
+        info.setToolTip("\n".join(tooltip_lines))
         layout.addWidget(info)
 
         self._assignment = "unlabeled"
@@ -361,12 +380,12 @@ class ClusterImageCard(QFrame):
         assignment_layout.setSpacing(6)
         self.assignment_buttons: Dict[str, QPushButton] = {}
         for label, value in (
-            ("Best", "best"),
-            ("OK", "acceptable"),
+            ("Accept", "accept"),
             ("Reject", "reject"),
         ):
             button = QPushButton(label)
             button.setObjectName("labelAssignmentButton")
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setCheckable(True)
             button.setProperty("assignmentRole", value)
             button.setProperty("assignmentSelected", False)
@@ -385,10 +404,21 @@ class ClusterImageCard(QFrame):
 
         return self._assignment
 
+    def member_image_ids(self) -> List[str]:
+        """Return image_ids covered by this card (one or many for a stack)."""
+
+        return [member.image_id for member in self.members]
+
+    def _on_expand_clicked(self) -> None:
+        """Forward an expand request to the cluster tab if a handler is wired."""
+
+        if self.on_expand_requested is not None:
+            self.on_expand_requested(self)
+
     def set_assignment(self, assignment: str, *, notify: bool = False) -> None:
         """Set the current assignment without changing the image."""
 
-        if assignment not in {"unlabeled", "best", "acceptable", "reject"}:
+        if assignment not in {"unlabeled", "accept", "reject"}:
             assignment = "unlabeled"
         if self._assignment == assignment:
             self._refresh_assignment_buttons()
@@ -447,206 +477,6 @@ class ClusterImageCard(QFrame):
         super().mousePressEvent(event)
 
 
-class PairwiseTab(QWidget):
-    """Tab for pairwise preference annotation."""
-
-    def __init__(
-        self,
-        session: LabelingSession,
-        config: LabelingConfig,
-        on_progress_changed: Callable[[], None],
-    ) -> None:
-        super().__init__()
-        self.session = session
-        self.config = config
-        self.on_progress_changed = on_progress_changed
-        self.current_candidate: Optional[PairCandidate] = None
-        self.zoom_controller = PairZoomSyncController()
-        self.setObjectName("pairwiseTab")
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
-
-        control_panel = QFrame()
-        control_panel.setObjectName("labelingControlPanel")
-        control_layout = QVBoxLayout(control_panel)
-        control_layout.setContentsMargins(14, 14, 14, 14)
-        control_layout.setSpacing(10)
-
-        controls = QHBoxLayout()
-        controls.setSpacing(10)
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Cluster Pairs", "cluster_pair")
-        self.mode_combo.addItem("Arbitrary Pairs", "arbitrary_pair")
-        self.mode_combo.currentIndexChanged.connect(self._load_next_pair)
-        source_label = QLabel("Pair source")
-        source_label.setObjectName("hintText")
-        controls.addWidget(source_label)
-        controls.addWidget(self.mode_combo)
-
-        self.singletons_only_checkbox = QCheckBox("Singletons only for arbitrary pairs")
-        self.singletons_only_checkbox.setChecked(
-            self.config.default_arbitrary_singletons_only
-        )
-        self.singletons_only_checkbox.stateChanged.connect(self._load_next_pair)
-        controls.addWidget(self.singletons_only_checkbox)
-
-        self.next_pair_button = QPushButton("Next Pair")
-        self.next_pair_button.setObjectName("secondaryActionButton")
-        self.next_pair_button.clicked.connect(self._load_next_pair)
-        controls.addWidget(self.next_pair_button)
-        controls.addStretch(1)
-
-        self.progress_label = QLabel("")
-        self.progress_label.setObjectName("summaryBadge")
-        controls.addWidget(self.progress_label)
-        control_layout.addLayout(controls)
-
-        self.guidance_label = QLabel(
-            "Label clusters first. Pairwise is mainly for hard or ambiguous comparisons; "
-            "the cluster-pair total is an available pool, not a quota."
-        )
-        self.guidance_label.setObjectName("hintText")
-        self.guidance_label.setWordWrap(True)
-        control_layout.addWidget(self.guidance_label)
-
-        zoom_controls = QHBoxLayout()
-        zoom_controls.setSpacing(10)
-        self.zoom_help_label = QLabel(
-            "Mouse wheel zooms both images together. Drag either preview to pan both. "
-            "Use reset if you get lost."
-        )
-        self.zoom_help_label.setObjectName("hintText")
-        self.zoom_help_label.setWordWrap(True)
-        zoom_controls.addWidget(self.zoom_help_label, 1)
-
-        self.zoom_out_button = QPushButton("Zoom Out")
-        self.zoom_out_button.setObjectName("secondaryActionButton")
-        self.zoom_out_button.clicked.connect(self.zoom_controller.zoom_out)
-        zoom_controls.addWidget(self.zoom_out_button)
-
-        self.reset_zoom_button = QPushButton("Reset Zoom")
-        self.reset_zoom_button.setObjectName("secondaryActionButton")
-        self.reset_zoom_button.clicked.connect(self.zoom_controller.reset)
-        zoom_controls.addWidget(self.reset_zoom_button)
-
-        self.zoom_in_button = QPushButton("Zoom In")
-        self.zoom_in_button.setObjectName("secondaryActionButton")
-        self.zoom_in_button.clicked.connect(self.zoom_controller.zoom_in)
-        zoom_controls.addWidget(self.zoom_in_button)
-        control_layout.addLayout(zoom_controls)
-        root.addWidget(control_panel)
-
-        pair_row = QHBoxLayout()
-        pair_row.setSpacing(12)
-        self.left_preview = ImagePreviewWidget(
-            "Left Image",
-            max_width=self.config.pair_preview_max_width,
-            max_height=self.config.pair_preview_max_height,
-            sync_controller=self.zoom_controller,
-        )
-        self.right_preview = ImagePreviewWidget(
-            "Right Image",
-            max_width=self.config.pair_preview_max_width,
-            max_height=self.config.pair_preview_max_height,
-            sync_controller=self.zoom_controller,
-        )
-        pair_row.addWidget(self.left_preview, 1)
-        pair_row.addWidget(self.right_preview, 1)
-        root.addLayout(pair_row, 1)
-
-        self.pair_meta_label = QLabel("")
-        self.pair_meta_label.setObjectName("pairMetaLabel")
-        self.pair_meta_label.setWordWrap(True)
-        root.addWidget(self.pair_meta_label)
-
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
-        self.left_button = QPushButton("Left Better [A]")
-        self.left_button.setObjectName("primaryActionButton")
-        self.left_button.clicked.connect(lambda: self._commit_decision("left_better"))
-        actions.addWidget(self.left_button)
-
-        self.tie_button = QPushButton("Tie [S]")
-        self.tie_button.setObjectName("secondaryActionButton")
-        self.tie_button.clicked.connect(lambda: self._commit_decision("tie"))
-        actions.addWidget(self.tie_button)
-
-        self.right_button = QPushButton("Right Better [D]")
-        self.right_button.setObjectName("primaryActionButton")
-        self.right_button.clicked.connect(lambda: self._commit_decision("right_better"))
-        actions.addWidget(self.right_button)
-
-        self.skip_button = QPushButton("Skip [Space]")
-        self.skip_button.setObjectName("secondaryActionButton")
-        self.skip_button.clicked.connect(lambda: self._commit_decision("skip"))
-        actions.addWidget(self.skip_button)
-        root.addLayout(actions)
-
-        self._install_shortcuts()
-        self._load_next_pair()
-
-    def _install_shortcuts(self) -> None:
-        """Register keyboard shortcuts for quick annotation."""
-
-        shortcuts = [
-            QShortcut(QKeySequence("A"), self, activated=lambda: self._commit_decision("left_better")),
-            QShortcut(QKeySequence("S"), self, activated=lambda: self._commit_decision("tie")),
-            QShortcut(QKeySequence("D"), self, activated=lambda: self._commit_decision("right_better")),
-            QShortcut(QKeySequence("Space"), self, activated=lambda: self._commit_decision("skip")),
-        ]
-        for shortcut in shortcuts:
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-
-    def refresh_progress(self) -> None:
-        """Refresh progress text from the session."""
-
-        summary = self.session.progress_summary()
-        self.progress_label.setText(
-            f"Pairs saved {summary['labeled_pairs']} · Pool {summary['total_cluster_pairs']}"
-        )
-
-    def _load_next_pair(self) -> None:
-        """Load the next pair according to the active mode."""
-
-        source_mode = str(self.mode_combo.currentData())
-        self.singletons_only_checkbox.setEnabled(source_mode == "arbitrary_pair")
-        candidate = self.session.next_pair(
-            source_mode=source_mode,
-            singletons_only=self.singletons_only_checkbox.isChecked(),
-        )
-        self.current_candidate = candidate
-        self.left_preview.set_image(candidate.image_a if candidate else None)
-        self.right_preview.set_image(candidate.image_b if candidate else None)
-        self.zoom_controller.reset()
-
-        enabled = candidate is not None
-        for button in (self.left_button, self.right_button, self.tie_button, self.skip_button):
-            button.setEnabled(enabled)
-
-        if candidate is None:
-            self.pair_meta_label.setText("No more unlabeled pairs available for this mode.")
-        else:
-            cluster_text = candidate.cluster_id or "none"
-            self.pair_meta_label.setText(
-                f"Source <b>{candidate.source_mode.replace('_', ' ')}</b> · "
-                f"Group <b>{cluster_text}</b>"
-            )
-
-        self.refresh_progress()
-
-    def _commit_decision(self, decision: str) -> None:
-        """Persist the current pairwise decision and advance to the next pair."""
-
-        if self.current_candidate is None:
-            return
-
-        self.session.save_pair_label(self.current_candidate, decision=decision)
-        self.on_progress_changed()
-        self._load_next_pair()
-
-
 class ClusterTab(QWidget):
     """Tab for cluster-level culling annotations."""
 
@@ -666,6 +496,9 @@ class ClusterTab(QWidget):
         self.current_index = self.session.next_unlabeled_cluster_index(0)
         self.active_card_index = 0
         self.zoom_controller = PairZoomSyncController()
+        self._expanded_cluster_ids: set[str] = set()
+        self._ui_settings = QSettings("ImageTriage", "LabelingApp")
+        self._current_card_row_count = 1
         self.setObjectName("clusterTab")
 
         root = QVBoxLayout(self)
@@ -717,6 +550,11 @@ class ClusterTab(QWidget):
         self.clear_button.clicked.connect(self._clear_all_assignments)
         batch_actions.addWidget(self.clear_button)
 
+        self.reject_all_button = QPushButton("Reject All")
+        self.reject_all_button.setObjectName("secondaryActionButton")
+        self.reject_all_button.clicked.connect(self._reject_all_assignments)
+        batch_actions.addWidget(self.reject_all_button)
+
         self.auto_card_advance_checkbox = QCheckBox("Auto-select next image")
         self.auto_card_advance_checkbox.setObjectName("labelFlowToggle")
         self.auto_card_advance_checkbox.setChecked(self.config.cluster_auto_advance_cards)
@@ -744,47 +582,82 @@ class ClusterTab(QWidget):
         self.cluster_rule_label.setProperty("status", "warning")
         control_layout.addWidget(self.cluster_rule_label)
 
-        self.cluster_guidance_label = QLabel(
-            "Click a card or press 1-9, then label it with A=Best, S=OK, or D=Reject. "
-            "Selecting a new Best moves the winner marker. Flow toggles control whether "
-            "the trainer advances between images and completed clusters."
+        instructions_visible = bool(
+            self._ui_settings.value("cluster_tab/instructions_visible", True, type=bool)
         )
-        self.cluster_guidance_label.setObjectName("hintText")
+        self.instructions_toggle = QPushButton(
+            self._instructions_toggle_text(instructions_visible)
+        )
+        self.instructions_toggle.setObjectName("instructionsToggleButton")
+        self.instructions_toggle.setFlat(True)
+        self.instructions_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.instructions_toggle.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.instructions_toggle.clicked.connect(self._toggle_cluster_instructions)
+        control_layout.addWidget(self.instructions_toggle, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        zoom_help_text = (
+            "Mouse-wheel zooms and drag pans, synced across every preview in the cluster. "
+            "Press Enter to save; N jumps to the next unlabeled cluster."
+        )
+        self.cluster_guidance_label = QLabel(
+            "<b>For each card, decide:</b> "
+            "<b>Accept</b> (keep) &nbsp;·&nbsp; "
+            "<b>Reject</b> (delete). "
+            "Skip cards you're not ready to decide on. Do another pass later to narrow down."
+            "<br>"
+            "<b>&quot;Stack of N&quot;</b> = N near-identical frames. "
+            "<b>Reject</b> applies to all of them. "
+            "<b>Accept</b> keeps only the visible top frame. "
+            "Hit <b>Expand</b> to decide each one separately."
+            "<br>"
+            "<b>To save:</b> mark at least one card. Untouched cards keep whatever state they had before."
+            "<br>"
+            "<span style='color:gray;'>Shortcuts: click or 1-9 to pick a card · "
+            "W=Accept · X=Reject · Enter saves · mouse-wheel zoom is synced across the group.</span>"
+        )
+        self.cluster_guidance_label.setObjectName("clusterInstructions")
         self.cluster_guidance_label.setWordWrap(True)
+        self.cluster_guidance_label.setTextFormat(Qt.TextFormat.RichText)
+        self.cluster_guidance_label.setVisible(instructions_visible)
         control_layout.addWidget(self.cluster_guidance_label)
 
         zoom_controls = QHBoxLayout()
         zoom_controls.setSpacing(10)
-        self.cluster_zoom_help_label = QLabel(
-            "Mouse-wheel zoom or drag in any preview syncs across the cluster. Enter saves "
-            "when the cluster is ready; N jumps to the next unlabeled cluster."
-        )
-        self.cluster_zoom_help_label.setObjectName("hintText")
-        self.cluster_zoom_help_label.setWordWrap(True)
-        zoom_controls.addWidget(self.cluster_zoom_help_label, 1)
-
+        zoom_controls.addStretch(1)
         self.cluster_zoom_out_button = QPushButton("Zoom Out")
         self.cluster_zoom_out_button.setObjectName("secondaryActionButton")
+        self.cluster_zoom_out_button.setToolTip(zoom_help_text)
         self.cluster_zoom_out_button.clicked.connect(self.zoom_controller.zoom_out)
         zoom_controls.addWidget(self.cluster_zoom_out_button)
 
         self.cluster_reset_zoom_button = QPushButton("Reset Zoom")
         self.cluster_reset_zoom_button.setObjectName("secondaryActionButton")
+        self.cluster_reset_zoom_button.setToolTip(zoom_help_text)
         self.cluster_reset_zoom_button.clicked.connect(self.zoom_controller.reset)
         zoom_controls.addWidget(self.cluster_reset_zoom_button)
 
         self.cluster_zoom_in_button = QPushButton("Zoom In")
         self.cluster_zoom_in_button.setObjectName("secondaryActionButton")
+        self.cluster_zoom_in_button.setToolTip(zoom_help_text)
         self.cluster_zoom_in_button.clicked.connect(self.zoom_controller.zoom_in)
         zoom_controls.addWidget(self.cluster_zoom_in_button)
         control_layout.addLayout(zoom_controls)
+
+        self.control_panel = control_panel
+        self._chrome_toggle = _build_chrome_toggle(
+            settings=self._ui_settings,
+            settings_key="cluster_tab/chrome_visible",
+            panel=self.control_panel,
+            on_toggled=lambda _visible: QTimer.singleShot(0, self._update_cluster_card_geometry),
+        )
+        root.addWidget(self._chrome_toggle)
         root.addWidget(control_panel)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("clusterScrollArea")
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_widget = QWidget()
         self.scroll_widget.setObjectName("clusterScrollWidget")
         self.scroll_widget.setMinimumWidth(0)
@@ -799,6 +672,7 @@ class ClusterTab(QWidget):
 
         self._refresh_selector()
         self._load_cluster(self.current_index, force=True)
+        self._configure_keyboard_focus()
         self._install_shortcuts()
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
@@ -825,13 +699,8 @@ class ClusterTab(QWidget):
         """Register fast cluster labeling shortcuts."""
 
         shortcuts = [
-            QShortcut(QKeySequence("A"), self, activated=lambda: self._assign_active_card("best")),
-            QShortcut(
-                QKeySequence("S"),
-                self,
-                activated=lambda: self._assign_active_card("acceptable"),
-            ),
-            QShortcut(QKeySequence("D"), self, activated=lambda: self._assign_active_card("reject")),
+            QShortcut(QKeySequence("W"), self, activated=lambda: self._assign_active_card("accept")),
+            QShortcut(QKeySequence("X"), self, activated=lambda: self._assign_active_card("reject")),
             QShortcut(QKeySequence("Return"), self, activated=self._save_and_next),
             QShortcut(QKeySequence("Enter"), self, activated=self._save_and_next),
             QShortcut(QKeySequence("N"), self, activated=self._navigate_next_unlabeled),
@@ -855,7 +724,31 @@ class ClusterTab(QWidget):
                 )
             )
         for shortcut in shortcuts:
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+
+    def _configure_keyboard_focus(self) -> None:
+        """Keep Speed Cull shortcuts active after mouse interaction."""
+
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.scroll_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.scroll_area.viewport().setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for widget in (
+            self.prev_button,
+            self.next_button,
+            self.next_unlabeled_button,
+            self.save_button,
+            self.save_next_button,
+            self.clear_button,
+            self.reject_all_button,
+            self.auto_card_advance_checkbox,
+            self.auto_cluster_advance_checkbox,
+            self.instructions_toggle,
+            self.cluster_zoom_out_button,
+            self.cluster_reset_zoom_button,
+            self.cluster_zoom_in_button,
+        ):
+            widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
 
     def confirm_discard_unsaved(self) -> bool:
         """Ask the user before discarding unsaved changes."""
@@ -880,42 +773,26 @@ class ClusterTab(QWidget):
             _child_perf_log("labeling.child.cluster_save.blocked", reason="no_clusters")
             return False
 
-        assignments = {card.image.image_id: card.assignment() for card in self.cards}
-        unlabeled = [image_id for image_id, label in assignments.items() if label == "unlabeled"]
-        if unlabeled:
+        card_decisions: List[Tuple[List[ImageItem], str]] = [
+            (list(card.members), card.assignment()) for card in self.cards
+        ]
+        decided_count = sum(1 for _members, decision in card_decisions if decision != "unlabeled")
+        if decided_count == 0:
             _child_perf_log(
                 "labeling.child.cluster_save.blocked",
-                reason="unlabeled_images",
-                unlabeled_count=len(unlabeled),
+                reason="no_decisions",
                 card_count=len(self.cards),
             )
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
-                "Incomplete Cluster Label",
-                "Assign every image first. Then choose exactly one Best image and use "
-                "Acceptable or Reject for the rest.",
-            )
-            return False
-
-        best_count = sum(1 for label in assignments.values() if label == "best")
-        if best_count != 1:
-            _child_perf_log(
-                "labeling.child.cluster_save.blocked",
-                reason="best_count",
-                best_count=best_count,
-                card_count=len(self.cards),
-            )
-            QMessageBox.warning(
-                self,
-                "Choose One Best Image",
-                "Every cluster must have exactly one Best image before saving. "
-                "Even when the whole set is weak, pick the single strongest frame.",
+                "Nothing to Save",
+                "Make a Keep / OK / Reject choice on at least one card before saving.",
             )
             return False
 
         cluster = self.clusters[self.current_index]
         store_start = time.perf_counter()
-        self.session.save_cluster_label(cluster.cluster_id, assignments)
+        self.session.save_card_decisions(cluster.cluster_id, card_decisions)
         _child_perf_log(
             "labeling.child.cluster_save.store",
             duration_ms=(time.perf_counter() - store_start) * 1000.0,
@@ -1074,32 +951,35 @@ class ClusterTab(QWidget):
             cluster_index=self.current_index,
         )
         layout_start = time.perf_counter()
-        columns = min(self.config.cluster_grid_columns, max(1, len(cluster.members)))
+        member_groups = self._resolve_member_groups(cluster, saved_assignments)
+        columns = min(self.config.cluster_grid_columns, max(1, len(member_groups)))
+        self._current_card_row_count = max(1, (len(member_groups) + columns - 1) // columns)
         for column in range(self.config.cluster_grid_columns):
             self.grid_layout.setColumnStretch(column, 0)
             self.grid_layout.setColumnMinimumWidth(column, 0)
         for column in range(columns):
             self.grid_layout.setColumnStretch(column, 1)
-        for member_index, image in enumerate(cluster.members):
+        for group_index, group_members in enumerate(member_groups):
             card_start = time.perf_counter()
             card = ClusterImageCard(
-                image,
-                display_index=member_index + 1,
+                group_members,
+                display_index=group_index + 1,
                 preview_height=self.config.cluster_preview_height,
                 sync_controller=self.zoom_controller,
                 on_changed=self._on_card_assignment_changed,
                 on_selected=self._select_card,
+                on_expand_requested=self._on_expand_requested,
             )
-            card.set_assignment(saved_assignments.get(image.image_id, "unlabeled"))
-            row = member_index // columns
-            column = member_index % columns
+            card.set_assignment(_group_initial_assignment(group_members, saved_assignments))
+            row = group_index // columns
+            column = group_index % columns
             self.grid_layout.addWidget(card, row, column)
             self.cards.append(card)
             card_ms = (time.perf_counter() - card_start) * 1000.0
             if card_ms >= 250.0:
                 _notify_host_startup(
                     "cluster_card_slow",
-                    f"Built cluster card in {card_ms:.0f} ms: {image.file_name}",
+                    f"Built cluster card in {card_ms:.0f} ms: {group_members[0].file_name}",
                 )
         _child_perf_log(
             "labeling.child.cluster_load.cards",
@@ -1111,10 +991,20 @@ class ClusterTab(QWidget):
         )
 
         finalize_start = time.perf_counter()
-        self.cluster_meta_label.setText(
-            f"Group <b>{cluster.cluster_id}</b> - {len(cluster.members)} image(s) - "
-            f"{cluster.cluster_reason or 'manual grouping'} - "
-            f"{cluster.window_kind or 'window'} / {cluster.time_window_id or 'n/a'}"
+        card_count = len(member_groups)
+        member_count = len(cluster.members)
+        if card_count == member_count:
+            summary_text = f"<b>{member_count}</b> image(s) in this cluster"
+        else:
+            summary_text = (
+                f"<b>{card_count}</b> card(s) &nbsp;·&nbsp; "
+                f"<b>{member_count}</b> images underneath"
+            )
+        self.cluster_meta_label.setText(summary_text)
+        self.cluster_meta_label.setToolTip(
+            f"Cluster {cluster.cluster_id}\n"
+            f"Reason: {cluster.cluster_reason or 'manual grouping'}\n"
+            f"Window: {cluster.window_kind or 'window'} / {cluster.time_window_id or 'n/a'}"
         )
         self.dirty = False
         self._set_cluster_controls_enabled(True)
@@ -1144,14 +1034,67 @@ class ClusterTab(QWidget):
             f"Initial cluster loaded in {total_ms:.0f} ms",
         )
 
+    @staticmethod
+    def _instructions_toggle_text(visible: bool) -> str:
+        return "Hide instructions ▲" if visible else "Show instructions ▼"
+
+    def _toggle_cluster_instructions(self) -> None:
+        """Show or hide the labeling instructions panel and persist the choice."""
+
+        new_visible = not self.cluster_guidance_label.isVisible()
+        self.cluster_guidance_label.setVisible(new_visible)
+        self.instructions_toggle.setText(self._instructions_toggle_text(new_visible))
+        self._ui_settings.setValue("cluster_tab/instructions_visible", new_visible)
+
+    def _resolve_member_groups(
+        self,
+        cluster: ClusterItem,
+        saved_assignments: Dict[str, str],
+    ) -> List[List[ImageItem]]:
+        """Return the list of card groups for a cluster, honoring expand state."""
+
+        base_groups = self.session.cluster_member_groups(cluster.cluster_id)
+        if not base_groups:
+            return [[member] for member in cluster.members]
+
+        force_expand = cluster.cluster_id in self._expanded_cluster_ids
+        resolved: List[List[ImageItem]] = []
+        for group in base_groups:
+            if force_expand and len(group) > 1:
+                resolved.extend([[member] for member in group])
+                continue
+            if len(group) > 1 and _has_mixed_saved_assignments(group, saved_assignments):
+                resolved.extend([[member] for member in group])
+                continue
+            resolved.append(list(group))
+        return resolved
+
+    def _on_expand_requested(self, card: "ClusterImageCard") -> None:
+        """Break the current cluster's stacks into per-image cards."""
+
+        if not self.clusters:
+            return
+        cluster = self.clusters[self.current_index]
+        if cluster.cluster_id in self._expanded_cluster_ids:
+            return
+        self._expanded_cluster_ids.add(cluster.cluster_id)
+        _child_perf_log(
+            "labeling.child.cluster_stack.expand",
+            cluster_id=cluster.cluster_id,
+            cluster_index=self.current_index,
+            stack_size=len(card.members),
+        )
+        self._load_cluster(self.current_index, force=True)
+
     def _refresh_selector(self) -> None:
         """Refresh cluster selector labels and progress state."""
 
         refresh_start = time.perf_counter()
+        decision_statuses = self.session.cluster_decision_statuses()
         self.cluster_selector.blockSignals(True)
         self.cluster_selector.clear()
         for cluster in self.clusters:
-            suffix = "labeled" if self.session.cluster_store.has_cluster(cluster.cluster_id) else "unlabeled"
+            suffix = "labeled" if decision_statuses.get(cluster.cluster_id, False) else "unlabeled"
             self.cluster_selector.addItem(
                 f"{cluster.cluster_id} ({len(cluster.members)}) [{suffix}]",
                 cluster.cluster_id,
@@ -1164,6 +1107,7 @@ class ClusterTab(QWidget):
             duration_ms=(time.perf_counter() - refresh_start) * 1000.0,
             cluster_index=self.current_index,
             cluster_count=len(self.clusters),
+            labeled_count=sum(1 for labeled in decision_statuses.values() if labeled),
         )
 
     def _clear_all_assignments(self) -> None:
@@ -1174,6 +1118,15 @@ class ClusterTab(QWidget):
         self._mark_dirty()
         self._select_card_index(0)
 
+    def _reject_all_assignments(self) -> None:
+        """Mark every image in the cluster as reject evidence."""
+
+        for card in self.cards:
+            card.set_assignment("reject")
+        self._mark_dirty()
+        self._select_card_index(0)
+        self._advance_after_assignment()
+
     def _assign_active_card(self, assignment: str) -> None:
         """Assign the active card and advance to the next target."""
 
@@ -1183,7 +1136,6 @@ class ClusterTab(QWidget):
         card = self.cards[self.active_card_index]
         if card.assignment() != assignment:
             card.set_assignment(assignment)
-            self._normalize_best_assignment(card)
             self._mark_dirty()
         self._select_card(card)
         self._advance_after_assignment()
@@ -1191,7 +1143,6 @@ class ClusterTab(QWidget):
     def _on_card_assignment_changed(self, card: ClusterImageCard) -> None:
         """Track assignment edits from cluster cards."""
 
-        self._normalize_best_assignment(card)
         self._mark_dirty()
         self._select_card(card)
         self._advance_after_assignment()
@@ -1200,8 +1151,25 @@ class ClusterTab(QWidget):
         """Apply the current trainer flow toggles after a card is labeled."""
 
         if self._cluster_ready_to_save():
-            if self.auto_cluster_advance_checkbox.isChecked():
+            if self._should_auto_advance_cluster():
+                _child_perf_log(
+                    "labeling.child.cluster_auto_advance",
+                    cluster_index=self.current_index,
+                    expanded=self._current_cluster_is_expanded(),
+                    all_cards_labeled=self._all_cards_labeled(),
+                    card_count=len(self.cards),
+                    trigger="assignment",
+                )
                 self._save_and_advance_cluster_auto()
+            else:
+                _child_perf_log(
+                    "labeling.child.cluster_auto_advance_suppressed",
+                    cluster_index=self.current_index,
+                    expanded=self._current_cluster_is_expanded(),
+                    all_cards_labeled=self._all_cards_labeled(),
+                    card_count=len(self.cards),
+                    trigger="assignment",
+                )
             return
 
         if not self.auto_card_advance_checkbox.isChecked():
@@ -1213,15 +1181,6 @@ class ClusterTab(QWidget):
         )
         if next_index is not None:
             self._select_card_index(next_index)
-
-    def _normalize_best_assignment(self, selected_card: ClusterImageCard) -> None:
-        """Keep Best as a single winner marker within the active cluster."""
-
-        if selected_card.assignment() != "best":
-            return
-        for card in self.cards:
-            if card is not selected_card and card.assignment() == "best":
-                card.set_assignment("acceptable")
 
     def _select_card(self, card: ClusterImageCard) -> None:
         """Select one card by instance."""
@@ -1270,15 +1229,35 @@ class ClusterTab(QWidget):
 
         return all(card.assignment() != "unlabeled" for card in self.cards)
 
-    def _best_assignment_count(self) -> int:
-        """Return how many cards are currently marked Best."""
+    def _current_cluster_is_expanded(self) -> bool:
+        """Return whether the current cluster has been expanded into single-image cards."""
 
-        return sum(1 for card in self.cards if card.assignment() == "best")
+        if not self.clusters:
+            return False
+        return self.clusters[self.current_index].cluster_id in self._expanded_cluster_ids
+
+    def _should_auto_advance_cluster(self) -> bool:
+        """Return whether the current assignment should save and move ahead."""
+
+        if not self.auto_cluster_advance_checkbox.isChecked():
+            return False
+        if not self._current_cluster_is_expanded():
+            return True
+        return self._all_cards_labeled()
+
+    def _accept_assignment_count(self) -> int:
+        """Return how many cards are currently marked Accept."""
+
+        return sum(1 for card in self.cards if card.assignment() == "accept")
 
     def _cluster_ready_to_save(self) -> bool:
-        """Return whether the current cluster satisfies the save rule."""
+        """Return whether the current cluster has any decision worth saving.
 
-        return self._all_cards_labeled() and self._best_assignment_count() == 1
+        Speed-cull rule: at least one card must have a decision (Accept/Reject).
+        Unlabeled cards are allowed — they preserve any prior state on save.
+        """
+
+        return any(card.assignment() != "unlabeled" for card in self.cards)
 
     def _save_and_advance_cluster_auto(self) -> None:
         """Save the current cluster and jump to the next unlabeled cluster, if any."""
@@ -1286,8 +1265,9 @@ class ClusterTab(QWidget):
         if not self.save_current_cluster():
             return
 
+        decision_statuses = self.session.cluster_decision_statuses()
         for index in range(self.current_index + 1, len(self.clusters)):
-            if not self.session.cluster_store.has_cluster(self.clusters[index].cluster_id):
+            if not decision_statuses.get(self.clusters[index].cluster_id, False):
                 self._load_cluster(index, force=True)
                 return
 
@@ -1315,32 +1295,31 @@ class ClusterTab(QWidget):
         """Refresh the save rule badge and save-button state."""
 
         if not self.cards:
-            self._set_cluster_rule_status("warning", "Choose exactly 1 Best image")
+            self._set_cluster_rule_status("warning", "Nothing to cull in this cluster")
             self.save_button.setEnabled(False)
             self.save_next_button.setEnabled(False)
             return
 
         unlabeled_count = sum(1 for card in self.cards if card.assignment() == "unlabeled")
-        best_count = self._best_assignment_count()
-        acceptable_count = sum(1 for card in self.cards if card.assignment() == "acceptable")
+        accept_count = self._accept_assignment_count()
         reject_count = sum(1 for card in self.cards if card.assignment() == "reject")
+        decided_count = accept_count + reject_count
 
-        if best_count == 1 and unlabeled_count == 0:
-            status = "success"
-            text = (
-                f"Ready to save - Best 1/1 - Acceptable {acceptable_count} - Reject {reject_count}"
-            )
-        elif best_count == 1:
-            status = "info"
-            text = (
-                f"Best selected 1/1 - {unlabeled_count} image(s) still unlabeled"
-            )
-        elif best_count == 0:
+        if decided_count == 0:
             status = "warning"
-            text = "Pick exactly 1 Best image before saving"
+            text = "Mark at least one card to save"
         else:
-            status = "warning"
-            text = f"Too many Best images selected ({best_count}) - keep exactly 1"
+            status = "success"
+            parts: list[str] = []
+            if accept_count:
+                parts.append(f"Accept {accept_count}")
+            if reject_count:
+                parts.append(f"Reject {reject_count}")
+            summary = " · ".join(parts)
+            if unlabeled_count:
+                text = f"Ready to save — {summary} ({unlabeled_count} skipped)"
+            else:
+                text = f"Ready to save — {summary}"
 
         self._set_cluster_rule_status(status, text)
         can_save = self._cluster_ready_to_save()
@@ -1357,7 +1336,7 @@ class ClusterTab(QWidget):
         self.cluster_rule_label.update()
 
     def _update_cluster_card_geometry(self) -> None:
-        """Resize cluster cards so one row of three fits the viewport cleanly."""
+        """Resize cluster cards so each row fits the available viewport space."""
 
         if not self.cards:
             return
@@ -1367,15 +1346,27 @@ class ClusterTab(QWidget):
             return
 
         layout_margins = self.grid_layout.contentsMargins()
-        vertical_spacing = self.grid_layout.verticalSpacing()
-        available_row_height = (
+        vertical_spacing = max(0, self.grid_layout.verticalSpacing())
+        row_count = max(1, self._current_card_row_count)
+        total_spacing = vertical_spacing * (row_count - 1)
+        available_total_height = (
             viewport_height
             - layout_margins.top()
             - layout_margins.bottom()
-            - max(0, vertical_spacing)
+            - total_spacing
             - 8
         )
-        preview_height = max(220, min(available_row_height - 110, 560))
+        per_row_height = available_total_height / row_count
+        card_overhead = max((getattr(card, "_card_overhead", 110) for card in self.cards), default=110)
+        preview_height = int(max(48, min(per_row_height - card_overhead - 2, 2000)))
+        _child_perf_log(
+            "labeling.child.cluster_geometry",
+            viewport_height=viewport_height,
+            row_count=row_count,
+            per_row_height=round(per_row_height, 3),
+            card_overhead=card_overhead,
+            preview_height=preview_height,
+        )
 
         for card in self.cards:
             card.set_preview_height(preview_height)
@@ -1389,6 +1380,7 @@ class ClusterTab(QWidget):
             self.next_button,
             self.next_unlabeled_button,
             self.clear_button,
+            self.reject_all_button,
             self.auto_card_advance_checkbox,
             self.auto_cluster_advance_checkbox,
             self.cluster_zoom_out_button,
@@ -1428,7 +1420,7 @@ class LabelingMainWindow(QMainWindow):
         )
         self._force_close_from_parent = False
 
-        self.setWindowTitle("AI Label Collection")
+        self.setWindowTitle("Speed Cull")
         self.resize(1680, 1080)
 
         central = QWidget()
@@ -1443,17 +1435,13 @@ class LabelingMainWindow(QMainWindow):
         header_layout.setContentsMargins(16, 14, 16, 14)
         header_layout.setSpacing(10)
 
-        self.header_title = QLabel("AI Label Collection")
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        self.header_title = QLabel("Speed Cull")
         self.header_title.setObjectName("labelingHeaderTitle")
-        header_layout.addWidget(self.header_title)
-
-        self.header_subtitle = QLabel(
-            "Start with clusters and choose exactly one Best image per set. "
-            "Use Acceptable and Reject for the rest, then use pairwise for edge-case comparisons."
-        )
-        self.header_subtitle.setObjectName("labelingHeaderSubtitle")
-        self.header_subtitle.setWordWrap(True)
-        header_layout.addWidget(self.header_subtitle)
+        title_row.addWidget(self.header_title)
+        title_row.addStretch(1)
+        header_layout.addLayout(title_row)
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(10)
@@ -1464,34 +1452,14 @@ class LabelingMainWindow(QMainWindow):
         self.cluster_badge = QLabel("")
         self.cluster_badge.setObjectName("summaryBadgeAccent")
         summary_row.addWidget(self.cluster_badge)
-
-        self.pair_badge = QLabel("")
-        self.pair_badge.setObjectName("summaryBadge")
-        summary_row.addWidget(self.pair_badge)
-
-        self.singleton_badge = QLabel("")
-        self.singleton_badge.setObjectName("summaryBadge")
-        summary_row.addWidget(self.singleton_badge)
         summary_row.addStretch(1)
-
-        self.delete_labels_button = QPushButton("Delete Labels")
-        self.delete_labels_button.setObjectName("dangerActionButton")
-        self.delete_labels_button.clicked.connect(self._delete_saved_labels)
-        summary_row.addWidget(self.delete_labels_button)
         header_layout.addLayout(summary_row)
         central_layout.addWidget(header_panel)
 
-        self.tabs = QTabWidget()
-        self.tabs.setObjectName("labelingTabs")
-        pairwise_start = time.perf_counter()
-        self.pairwise_tab = PairwiseTab(self.session, config, self.refresh_status)
-        _notify_host_startup("pairwise_tab_ready", "Pairwise labeling tab built", started_at=pairwise_start)
-        cluster_start = time.perf_counter()
+        cull_start = time.perf_counter()
         self.cluster_tab = ClusterTab(self.session, config, self.refresh_status)
-        _notify_host_startup("cluster_tab_ready", "Cluster labeling tab built", started_at=cluster_start)
-        self.tabs.addTab(self.cluster_tab, "Clusters")
-        self.tabs.addTab(self.pairwise_tab, "Pairwise")
-        central_layout.addWidget(self.tabs, 1)
+        _notify_host_startup("cull_view_ready", "Cull view built", started_at=cull_start)
+        central_layout.addWidget(self.cluster_tab, 1)
         self.setCentralWidget(central)
         menu_start = time.perf_counter()
         self._build_menu_bar()
@@ -1503,46 +1471,35 @@ class LabelingMainWindow(QMainWindow):
         _notify_host_startup("main_window_ready", "Label collection window object ready", started_at=startup_start)
 
     def _build_menu_bar(self) -> None:
-        """Build a lightweight menu bar for common labeling actions."""
+        """Build a lightweight menu bar for common Speed Cull actions."""
 
         file_menu = self.menuBar().addMenu("&File")
-        save_cluster_action = QAction("Save Cluster", self)
-        save_cluster_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_cluster_action.triggered.connect(self.cluster_tab.save_current_cluster)
-        file_menu.addAction(save_cluster_action)
-
-        next_pair_action = QAction("Next Pair", self)
-        next_pair_action.setShortcut(QKeySequence("N"))
-        next_pair_action.triggered.connect(self.pairwise_tab._load_next_pair)
-        file_menu.addAction(next_pair_action)
+        save_action = QAction("Save Group", self)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self.cluster_tab.save_current_cluster)
+        file_menu.addAction(save_action)
         file_menu.addSeparator()
-
-        delete_labels_action = QAction("Delete Saved Labels...", self)
-        delete_labels_action.triggered.connect(self._delete_saved_labels)
-        file_menu.addAction(delete_labels_action)
-        file_menu.addSeparator()
-
         close_action = QAction("Close", self)
         close_action.setShortcut(QKeySequence.StandardKey.Close)
         close_action.triggered.connect(self.close)
         file_menu.addAction(close_action)
 
         navigate_menu = self.menuBar().addMenu("&Navigate")
-        previous_cluster_action = QAction("Previous Cluster", self)
-        previous_cluster_action.triggered.connect(
+        previous_action = QAction("Previous Group", self)
+        previous_action.triggered.connect(
             lambda: self.cluster_tab._navigate(self.cluster_tab.current_index - 1)
         )
-        navigate_menu.addAction(previous_cluster_action)
+        navigate_menu.addAction(previous_action)
 
-        next_cluster_action = QAction("Next Cluster", self)
-        next_cluster_action.triggered.connect(
+        next_action = QAction("Next Group", self)
+        next_action.triggered.connect(
             lambda: self.cluster_tab._navigate(self.cluster_tab.current_index + 1)
         )
-        navigate_menu.addAction(next_cluster_action)
+        navigate_menu.addAction(next_action)
 
-        next_unlabeled_action = QAction("Next Unlabeled Cluster", self)
-        next_unlabeled_action.triggered.connect(self.cluster_tab._navigate_next_unlabeled)
-        navigate_menu.addAction(next_unlabeled_action)
+        next_unreviewed_action = QAction("Next Unreviewed Group", self)
+        next_unreviewed_action.triggered.connect(self.cluster_tab._navigate_next_unlabeled)
+        navigate_menu.addAction(next_unreviewed_action)
 
         view_menu = self.menuBar().addMenu("&View")
         zoom_in_action = QAction("Zoom In", self)
@@ -1561,16 +1518,13 @@ class LabelingMainWindow(QMainWindow):
         view_menu.addAction(reset_zoom_action)
 
         help_menu = self.menuBar().addMenu("&Help")
-        shortcuts_action = QAction("Labeling Shortcuts", self)
+        shortcuts_action = QAction("Speed Cull Shortcuts", self)
         shortcuts_action.triggered.connect(self._show_shortcuts_help)
         help_menu.addAction(shortcuts_action)
 
     def _active_zoom_controller(self) -> "PairZoomSyncController":
-        """Return the zoom controller for the visible tab."""
+        """Return the zoom controller for the cull view."""
 
-        current_widget = self.tabs.currentWidget()
-        if current_widget is self.pairwise_tab:
-            return self.pairwise_tab.zoom_controller
         return self.cluster_tab.zoom_controller
 
     def _zoom_in_current_tab(self) -> None:
@@ -1582,59 +1536,20 @@ class LabelingMainWindow(QMainWindow):
     def _reset_zoom_current_tab(self) -> None:
         self._active_zoom_controller().reset()
 
-    def _delete_saved_labels(self) -> None:
-        """Delete all saved labels for the current labeling workspace after confirmation."""
-
-        summary = self.session.progress_summary()
-        pair_count = int(summary.get("labeled_pairs", 0))
-        cluster_count = int(summary.get("labeled_clusters", 0))
-        if pair_count <= 0 and cluster_count <= 0:
-            QMessageBox.information(
-                self,
-                "Delete Saved Labels",
-                "There are no saved labels for this labeling workspace.",
-            )
-            return
-
-        result = QMessageBox.warning(
-            self,
-            "Delete Saved Labels?",
-            (
-                f"This will delete {pair_count} pairwise label(s) and "
-                f"{cluster_count} cluster label(s).\n\n"
-                "Images, embeddings, and AI results will not be deleted."
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if result != QMessageBox.StandardButton.Yes:
-            return
-
-        deleted = self.session.delete_all_labels()
-        self.cluster_tab.dirty = False
-        self.cluster_tab._load_cluster(self.cluster_tab.current_index, force=True)
-        self.pairwise_tab._load_next_pair()
-        self.refresh_status()
-        self.status.showMessage(
-            f"Deleted {deleted['pairwise']} pairwise and {deleted['clusters']} cluster labels."
-        )
-
     def _show_shortcuts_help(self) -> None:
-        """Show a concise shortcuts guide for the labeling workflow."""
+        """Show a concise shortcuts guide for the speed cull workflow."""
 
         QMessageBox.information(
             self,
-            "AI Labeling Shortcuts",
+            "Speed Cull Shortcuts",
             "\n".join(
                 [
-                    "Clusters first:",
-                    "A = Best, S = Acceptable, D = Reject for the active card.",
-                    "Every cluster must have exactly one Best image before it can be saved.",
-                    "If the whole set is weak, still choose the single strongest frame.",
-                    "",
-                    "Pairwise:",
-                    "A = Left better, S = Tie, D = Right better, Space = Skip.",
-                    "Mouse wheel zooms both previews together, and dragging pans them together.",
+                    "W = Accept, X = Reject for the active card (matches the main app).",
+                    "Click a card or press 1-9 to make it active.",
+                    "Stacks: Reject fans out to every frame in the stack.",
+                    "Stacks: Accept keeps only the visible top frame. Hit Expand to split.",
+                    "Enter saves the group. N jumps to the next unreviewed group.",
+                    "Mouse-wheel zoom and drag are synced across every card in the group.",
                 ]
             ),
         )
@@ -1643,16 +1558,13 @@ class LabelingMainWindow(QMainWindow):
         """Refresh global status bar and child progress labels."""
 
         summary = self.session.progress_summary()
-        self.pairwise_tab.refresh_progress()
         self.cluster_tab.refresh_progress()
-        self.total_images_badge.setText(f"Images {summary['total_images']}")
+        self.total_images_badge.setText(f"Photos {summary['total_images']}")
         self.cluster_badge.setText(
-            f"Clusters {summary['labeled_clusters']}/{summary['total_clusters']} labeled"
+            f"Reviewed {summary['labeled_clusters']}/{summary['total_clusters']}"
         )
-        self.pair_badge.setText(f"Pair labels {summary['labeled_pairs']}")
-        self.singleton_badge.setText(f"Singletons {summary['singleton_images']}")
         self.status.showMessage(
-            f"Labels save to {self.config.output_dir}"
+            f"Decisions save to the host Image Triage database."
         )
 
     def request_parent_shutdown(self) -> None:
@@ -1668,71 +1580,6 @@ class LabelingMainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
-
-
-class PreviewLabel(QLabel):
-    """Label that keeps an image upright and rescales it with the viewport."""
-
-    def __init__(
-        self,
-        *,
-        max_width: Optional[int],
-        max_height: Optional[int],
-        minimum_size: QSize,
-        padding: int,
-    ) -> None:
-        super().__init__("No preview")
-        self.max_width = max_width
-        self.max_height = max_height
-        self.padding = padding
-        self._source_pixmap = QPixmap()
-        self.setObjectName("previewImageLabel")
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(minimum_size)
-        self.setWordWrap(True)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setContentsMargins(padding, padding, padding, padding)
-
-    def set_preview_pixmap(self, pixmap: QPixmap) -> None:
-        """Set the original pixmap and rescale it to the current viewport."""
-
-        self._source_pixmap = pixmap
-        self._refresh_pixmap()
-
-    def set_message(self, text: str) -> None:
-        """Clear any image and show a text message instead."""
-
-        self._source_pixmap = QPixmap()
-        self.setPixmap(QPixmap())
-        self.setText(text)
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        """Keep the preview fitted when the viewport changes size."""
-
-        super().resizeEvent(event)
-        self._refresh_pixmap()
-
-    def _refresh_pixmap(self) -> None:
-        """Rescale the current pixmap to fit the label bounds."""
-
-        if self._source_pixmap.isNull():
-            return
-
-        available_width = max(1, self.width() - (self.padding * 2))
-        available_height = max(1, self.height() - (self.padding * 2))
-        if self.max_width is not None:
-            available_width = min(available_width, self.max_width)
-        if self.max_height is not None:
-            available_height = min(available_height, self.max_height)
-
-        scaled = self._source_pixmap.scaled(
-            available_width,
-            available_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.setPixmap(scaled)
-        self.setText("")
 
 
 class PairZoomSyncController:
@@ -1758,28 +1605,29 @@ class PairZoomSyncController:
     def zoom_in(self) -> None:
         """Increase shared zoom."""
 
-        self.set_shared_state(zoom_factor=self.zoom_factor * 1.2)
+        self.set_shared_state(zoom_factor=self.zoom_factor * 1.2, source="zoom_in")
 
     def zoom_out(self) -> None:
         """Decrease shared zoom."""
 
-        self.set_shared_state(zoom_factor=self.zoom_factor / 1.2)
+        self.set_shared_state(zoom_factor=self.zoom_factor / 1.2, source="zoom_out")
 
     def reset(self) -> None:
         """Reset both views to fit-to-window centered mode."""
 
-        self.set_shared_state(zoom_factor=1.0, center_ratio=(0.5, 0.5))
+        self.set_shared_state(zoom_factor=1.0, center_ratio=(0.5, 0.5), source="reset")
 
     def set_shared_state(
         self,
         *,
         zoom_factor: Optional[float] = None,
         center_ratio: Optional[Tuple[float, float]] = None,
-    ) -> None:
+        source: str = "api",
+    ) -> float | None:
         """Broadcast a new shared zoom/pan state to every registered view."""
 
         if self._syncing:
-            return
+            return None
 
         if zoom_factor is not None:
             self.zoom_factor = max(1.0, min(float(zoom_factor), 12.0))
@@ -1791,11 +1639,24 @@ class PairZoomSyncController:
             )
 
         self._syncing = True
+        sync_start = time.perf_counter()
         try:
             for view in self.views:
                 view.apply_shared_state(self.zoom_factor, self.center_ratio)
         finally:
             self._syncing = False
+        duration_ms = (time.perf_counter() - sync_start) * 1000.0
+        if duration_ms >= 20.0 or source in {"zoom_in", "zoom_out", "reset", "wheel", "mouse_release"}:
+            _child_perf_log(
+                "labeling.child.zoom_sync.broadcast",
+                duration_ms=duration_ms,
+                trigger=source,
+                view_count=len(self.views),
+                zoom_factor=round(self.zoom_factor, 4),
+                center_x=round(self.center_ratio[0], 5),
+                center_y=round(self.center_ratio[1], 5),
+            )
+        return duration_ms
 
 
 class ZoomableImageView(QGraphicsView):
@@ -1817,6 +1678,14 @@ class ZoomableImageView(QGraphicsView):
         self._shared_center_ratio = (0.5, 0.5)
         self._applying_shared_state = False
         self._updating_interaction_mode = False
+        self._pan_active = False
+        self._pan_started_perf = 0.0
+        self._pan_scroll_events = 0
+        self._pan_sync_calls = 0
+        self._pan_sync_ms = 0.0
+        self._pan_slow_syncs = 0
+        self._pan_last_sample_perf = 0.0
+        self._pan_last_sample_events = 0
 
         scene = QGraphicsScene(self)
         self._pixmap_item = QGraphicsPixmapItem()
@@ -1874,12 +1743,27 @@ class ZoomableImageView(QGraphicsView):
         self._shared_zoom_factor = zoom_factor
         self._shared_center_ratio = center_ratio
         self._applying_shared_state = True
+        apply_start = time.perf_counter()
         try:
             self._apply_scale()
             self._center_on_ratio(center_ratio)
             self._update_interaction_mode()
         finally:
             self._applying_shared_state = False
+        apply_ms = (time.perf_counter() - apply_start) * 1000.0
+        if apply_ms >= 25.0:
+            _child_perf_log(
+                "labeling.child.zoom_sync.apply_slow",
+                duration_ms=apply_ms,
+                **self._log_context(),
+                zoom_factor=round(zoom_factor, 4),
+                center_x=round(center_ratio[0], 5),
+                center_y=round(center_ratio[1], 5),
+                pixmap_width=self._pixmap_item.pixmap().width(),
+                pixmap_height=self._pixmap_item.pixmap().height(),
+                viewport_width=self.viewport().width(),
+                viewport_height=self.viewport().height(),
+            )
 
     def wheelEvent(self, event) -> None:  # type: ignore[override]
         """Zoom both previews together from the mouse wheel."""
@@ -1897,6 +1781,14 @@ class ZoomableImageView(QGraphicsView):
         self.sync_controller.set_shared_state(
             zoom_factor=self.sync_controller.zoom_factor * factor,
             center_ratio=self._current_center_ratio(),
+            source="wheel",
+        )
+        _child_perf_log(
+            "labeling.child.zoom_wheel",
+            **self._log_context(),
+            delta=delta,
+            view_count=len(self.sync_controller.views),
+            zoom_factor=round(self.sync_controller.zoom_factor, 4),
         )
         event.accept()
 
@@ -1916,21 +1808,48 @@ class ZoomableImageView(QGraphicsView):
         """Sync panning after drag gestures finish."""
 
         super().mouseReleaseEvent(event)
-        self._emit_center_change()
+        self._emit_center_change(source="mouse_release")
+        if self._pan_active:
+            duration_ms = (time.perf_counter() - self._pan_started_perf) * 1000.0
+            center_ratio = self._current_center_ratio()
+            _child_perf_log(
+                "labeling.child.pan.end",
+                duration_ms=duration_ms,
+                **self._log_context(),
+                scroll_events=self._pan_scroll_events,
+                sync_calls=self._pan_sync_calls,
+                sync_ms=round(self._pan_sync_ms, 3),
+                slow_syncs=self._pan_slow_syncs,
+                view_count=len(self.sync_controller.views),
+                zoom_factor=round(self.sync_controller.zoom_factor, 4),
+                center_x=round(center_ratio[0], 5),
+                center_y=round(center_ratio[1], 5),
+            )
+        self._pan_active = False
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         """Select this preview before handling normal drag behavior."""
 
         if self.on_selected is not None:
             self.on_selected()
+        if self.has_preview() and event.button() == Qt.MouseButton.LeftButton:
+            self._begin_pan_log()
         super().mousePressEvent(event)
 
     def _on_scroll_changed(self, _: int) -> None:
         """Sync panning during scroll/drag updates."""
 
-        self._emit_center_change()
+        if self._pan_active:
+            self._pan_scroll_events += 1
+        sync_ms = self._emit_center_change(source="scroll")
+        if self._pan_active and sync_ms is not None:
+            self._pan_sync_calls += 1
+            self._pan_sync_ms += sync_ms
+            if sync_ms >= 20.0:
+                self._pan_slow_syncs += 1
+            self._maybe_log_pan_sample()
 
-    def _emit_center_change(self) -> None:
+    def _emit_center_change(self, *, source: str = "scroll") -> float | None:
         """Push the current pan center back into the shared controller."""
 
         if (
@@ -1938,9 +1857,71 @@ class ZoomableImageView(QGraphicsView):
             or self.sync_controller._syncing
             or not self.has_preview()
         ):
-            return
+            return None
 
-        self.sync_controller.set_shared_state(center_ratio=self._current_center_ratio())
+        return self.sync_controller.set_shared_state(
+            center_ratio=self._current_center_ratio(),
+            source=source,
+        )
+
+    def _begin_pan_log(self) -> None:
+        """Start aggregate logging for one user pan gesture."""
+
+        self._pan_active = True
+        self._pan_started_perf = time.perf_counter()
+        self._pan_scroll_events = 0
+        self._pan_sync_calls = 0
+        self._pan_sync_ms = 0.0
+        self._pan_slow_syncs = 0
+        self._pan_last_sample_perf = self._pan_started_perf
+        self._pan_last_sample_events = 0
+        _child_perf_log(
+            "labeling.child.pan.start",
+            **self._log_context(),
+            view_count=len(self.sync_controller.views),
+            zoom_factor=round(self.sync_controller.zoom_factor, 4),
+            drag_mode=str(self.dragMode()),
+            pixmap_width=self._pixmap_item.pixmap().width(),
+            pixmap_height=self._pixmap_item.pixmap().height(),
+            viewport_width=self.viewport().width(),
+            viewport_height=self.viewport().height(),
+        )
+
+    def _maybe_log_pan_sample(self) -> None:
+        """Periodically log pan event rate while a drag is in progress."""
+
+        now = time.perf_counter()
+        elapsed = now - self._pan_last_sample_perf
+        if elapsed < 0.25:
+            return
+        events_since_last = self._pan_scroll_events - self._pan_last_sample_events
+        center_ratio = self._current_center_ratio()
+        _child_perf_log(
+            "labeling.child.pan.sample",
+            duration_ms=elapsed * 1000.0,
+            **self._log_context(),
+            scroll_events=self._pan_scroll_events,
+            events_since_last=events_since_last,
+            event_rate_per_s=round(events_since_last / max(elapsed, 0.001), 2),
+            sync_calls=self._pan_sync_calls,
+            sync_ms=round(self._pan_sync_ms, 3),
+            slow_syncs=self._pan_slow_syncs,
+            view_count=len(self.sync_controller.views),
+            zoom_factor=round(self.sync_controller.zoom_factor, 4),
+            center_x=round(center_ratio[0], 5),
+            center_y=round(center_ratio[1], 5),
+        )
+        self._pan_last_sample_perf = now
+        self._pan_last_sample_events = self._pan_scroll_events
+
+    def _log_context(self) -> dict[str, object]:
+        """Return compact identifying fields for pan and zoom logs."""
+
+        return {
+            "image_id": str(self.property("image_id") or ""),
+            "file_name": str(self.property("file_name") or ""),
+            "cluster_id": str(self.property("cluster_id") or ""),
+        }
 
     def _apply_scale(self) -> None:
         """Scale the view so zoom=1 means fit-to-window."""

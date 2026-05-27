@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -35,16 +37,6 @@ class ClusterItem:
     time_window_id: str
 
 
-@dataclass(frozen=True)
-class PairCandidate:
-    """A pair of images presented for pairwise preference labeling."""
-
-    image_a: ImageItem
-    image_b: ImageItem
-    source_mode: str
-    cluster_id: Optional[str]
-
-
 @dataclass
 class DatasetBundle:
     """All images and clusters needed by the labeling app."""
@@ -54,3 +46,22 @@ class DatasetBundle:
     clusters_by_id: Dict[str, ClusterItem]
     multi_image_clusters: List[ClusterItem]
     singleton_images: List[ImageItem]
+    embedding_lookup: Dict[str, np.ndarray] = field(default_factory=dict)
+    phash_lookup: Dict[str, int] = field(default_factory=dict)
+    cluster_near_duplicate_groups: Dict[str, List[List[ImageItem]]] = field(default_factory=dict)
+    filtered_unusable_count: int = 0
+    semantic_outlier_count: int = 0
+    semantic_outlier_group_count: int = 0
+    cluster_subsample_hidden_count: int = 0
+    cluster_subsampled_count: int = 0
+    label_filter_report_path: Optional[Path] = None
+    collapsed_near_duplicate_count: int = 0
+    near_duplicate_group_count: int = 0
+    near_duplicate_outlier_count: int = 0
+    near_duplicate_threshold: float = 0.965
+    near_duplicate_compared_pair_count: int = 0
+    near_duplicate_max_similarity: Optional[float] = None
+    near_duplicate_report_path: Optional[Path] = None
+    near_duplicate_candidate_report_path: Optional[Path] = None
+    semantic_outlier_report_path: Optional[Path] = None
+    cluster_subsample_report_path: Optional[Path] = None

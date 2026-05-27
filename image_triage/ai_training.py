@@ -85,6 +85,13 @@ CLUSTER_BREAKDOWN_FILENAME = "cluster_evaluation.csv"
 EVALUATION_LOG_FILENAME = "evaluate_ranker.log"
 REFERENCE_BANK_FILENAME = "reference_bank.npz"
 REFERENCE_BANK_SUMMARY_FILENAME = "reference_bank_summary.json"
+SIGNALS_DIR_NAME = "signals"
+SIGNALS_JSON_FILENAME = "culling_signals.json"
+SIGNALS_CSV_FILENAME = "culling_signals.csv"
+SIGNAL_EVALUATION_METRICS_FILENAME = "culling_signal_evaluation.json"
+SIGNAL_EVALUATION_SUMMARY_FILENAME = "culling_signal_evaluation.csv"
+SIGNAL_COMBINER_WEIGHTS_FILENAME = "personal_combiner_weights.json"
+SIGNAL_COMBINER_FEATURES_FILENAME = "personal_combiner_training_rows.csv"
 GENERAL_TRAINING_ROOT_DIR_NAME = "ai_training"
 GENERAL_TRAINING_PROFILE_DIR_NAME = "general_use"
 GENERAL_POOL_MANIFEST_FILENAME = "general_pool_manifest.json"
@@ -534,7 +541,7 @@ def labeling_artifacts_ready(paths: AITrainingPaths) -> bool:
 
 def count_label_records(paths: AITrainingPaths) -> tuple[int, int]:
     """Count pairwise and cluster labels currently stored in a workspace."""
-    pairwise_count = _count_jsonl_lines(paths.pairwise_labels_path)
+    pairwise_count = _count_usable_pairwise_label_records(paths.pairwise_labels_path)
     cluster_count = _count_jsonl_lines(paths.cluster_labels_path)
     if _legacy_label_migration_suppressed(paths):
         return pairwise_count, cluster_count
@@ -544,7 +551,7 @@ def count_label_records(paths: AITrainingPaths) -> tuple[int, int]:
     except OSError:
         is_legacy_same = False
     if not is_legacy_same:
-        pairwise_count = max(pairwise_count, _count_jsonl_lines(legacy_labels_dir / PAIRWISE_LABELS_FILENAME))
+        pairwise_count = max(pairwise_count, _count_usable_pairwise_label_records(legacy_labels_dir / PAIRWISE_LABELS_FILENAME))
         cluster_count = max(cluster_count, _count_jsonl_lines(legacy_labels_dir / CLUSTER_LABELS_FILENAME))
     return pairwise_count, cluster_count
 
@@ -812,6 +819,7 @@ def build_labeling_command(
     folder: str | Path,
     annotator_id: str = "",
     artifacts_dir: str | Path | None = None,
+    near_identical_threshold: float | None = None,
 ) -> tuple[str, ...]:
     """Build the child-process command line for the label-collection UI."""
     paths = prepare_hidden_ai_training_workspace(folder)
@@ -835,6 +843,8 @@ def build_labeling_command(
     ]
     if annotator_id.strip():
         command.extend(["--annotator-id", annotator_id.strip()])
+    if near_identical_threshold is not None:
+        command.extend(["--near-identical-threshold", f"{float(near_identical_threshold):.3f}"])
     return tuple(command)
 
 
@@ -844,6 +854,7 @@ def launch_labeling_app(
     folder: str | Path,
     annotator_id: str = "",
     artifacts_dir: str | Path | None = None,
+    near_identical_threshold: float | None = None,
     ready_file_path: str | Path | None = None,
     appearance_mode: str | None = None,
     parent_pid: int | None = None,
@@ -852,12 +863,21 @@ def launch_labeling_app(
     """Spawn the label-collection UI as a detached child process."""
     logger = perf_logger()
     start = time.perf_counter()
-    command = list(build_labeling_command(runtime, folder=folder, annotator_id=annotator_id, artifacts_dir=artifacts_dir))
+    command = list(
+        build_labeling_command(
+            runtime,
+            folder=folder,
+            annotator_id=annotator_id,
+            artifacts_dir=artifacts_dir,
+            near_identical_threshold=near_identical_threshold,
+        )
+    )
     if logger.enabled:
         logger.log(
             "labeling.launch.command_ready",
             folder=str(folder),
             artifacts_dir=str(artifacts_dir or ""),
+            near_duplicate_threshold=near_identical_threshold if near_identical_threshold is not None else "",
             command=" ".join(command[:4]),
         )
     env = dict(os.environ)
@@ -921,6 +941,7 @@ class LaunchLabelingAppTask(QRunnable):
         runtime: AIWorkflowRuntime,
         annotator_id: str = "",
         artifacts_dir: str | Path | None = None,
+        near_identical_threshold: float | None = None,
         appearance_mode: str | None = None,
         parent_pid: int | None = None,
         sync_file_path: str | Path | None = None,
@@ -930,6 +951,7 @@ class LaunchLabelingAppTask(QRunnable):
         self.runtime = runtime
         self.annotator_id = annotator_id.strip()
         self.artifacts_dir = artifacts_dir
+        self.near_identical_threshold = near_identical_threshold
         self.appearance_mode = appearance_mode
         self.parent_pid = parent_pid
         self.sync_file_path = sync_file_path
@@ -952,6 +974,7 @@ class LaunchLabelingAppTask(QRunnable):
             "labeling.launch.start",
             folder=str(self.folder),
             artifacts_dir=str(self.artifacts_dir or ""),
+            near_duplicate_threshold=self.near_identical_threshold if self.near_identical_threshold is not None else "",
             ready_file=str(ready_path),
         )
 
@@ -961,6 +984,7 @@ class LaunchLabelingAppTask(QRunnable):
                 folder=self.folder,
                 annotator_id=self.annotator_id,
                 artifacts_dir=self.artifacts_dir,
+                near_identical_threshold=self.near_identical_threshold,
                 ready_file_path=ready_path,
                 appearance_mode=self.appearance_mode,
                 parent_pid=self.parent_pid,
@@ -1386,7 +1410,7 @@ class TrainRankerTask(QRunnable):
                 required=(
                     ("engine root", self.runtime.engine_root),
                     ("python executable", self.runtime.python_executable),
-                    ("train config", self.runtime.engine_root / "configs" / "train_ranker.json"),
+                    ("train config", self.runtime.engine_root / "legacy" / "configs" / "train_ranker.json"),
                 ),
             )
             if pairwise_count <= 0 and cluster_count <= 0:
@@ -1400,7 +1424,7 @@ class TrainRankerTask(QRunnable):
         self.signals.stage.emit(1, 1, "Training ranker")
         stage_args = [
             "--config",
-            str(self.runtime.engine_root / "configs" / "train_ranker.json"),
+            str(self.runtime.engine_root / "legacy" / "configs" / "train_ranker.json"),
             "--artifacts-dir",
             str(paths.artifacts_dir),
             "--labels-dir",
@@ -1427,7 +1451,7 @@ class TrainRankerTask(QRunnable):
             stage_args.extend(["--reference-bank-path", reference_bank_path])
         command = _resolve_stage_command(
             self.runtime,
-            script_relative_path="scripts/train_ranker.py",
+            script_relative_path="legacy/scripts/train_ranker.py",
             stage_args=stage_args,
         )
 
@@ -1531,7 +1555,7 @@ class EvaluateRankerTask(QRunnable):
                 required=(
                     ("engine root", self.runtime.engine_root),
                     ("python executable", self.runtime.python_executable),
-                    ("evaluate config", self.runtime.engine_root / "configs" / "evaluate_ranker.json"),
+                    ("evaluate config", self.runtime.engine_root / "legacy" / "configs" / "evaluate_ranker.json"),
                     ("checkpoint", self.checkpoint_path),
                 ),
             )
@@ -1549,7 +1573,7 @@ class EvaluateRankerTask(QRunnable):
         self.signals.stage.emit(1, 1, "Evaluating trained ranker")
         stage_args = [
             "--config",
-            str(self.runtime.engine_root / "configs" / "evaluate_ranker.json"),
+            str(self.runtime.engine_root / "legacy" / "configs" / "evaluate_ranker.json"),
             "--artifacts-dir",
             str(paths.artifacts_dir),
             "--labels-dir",
@@ -1565,7 +1589,7 @@ class EvaluateRankerTask(QRunnable):
             stage_args.extend(["--reference-bank-path", self.reference_bank_path])
         command = _resolve_stage_command(
             self.runtime,
-            script_relative_path="scripts/evaluate_ranker.py",
+            script_relative_path="legacy/scripts/evaluate_ranker.py",
             stage_args=stage_args,
         )
 
@@ -1599,7 +1623,7 @@ class EvaluateRankerTask(QRunnable):
             required=(
                 ("engine root", self.runtime.engine_root),
                 ("python executable", self.runtime.python_executable),
-                ("evaluate config", self.runtime.engine_root / "configs" / "evaluate_ranker.json"),
+                ("evaluate config", self.runtime.engine_root / "legacy" / "configs" / "evaluate_ranker.json"),
                 ("checkpoint", self.checkpoint_path),
             ),
         )
@@ -1670,7 +1694,7 @@ class EvaluateRankerTask(QRunnable):
     def _run_single_evaluation(self, *, paths: AITrainingPaths, evaluation_dir: Path) -> None:
         stage_args = [
             "--config",
-            str(self.runtime.engine_root / "configs" / "evaluate_ranker.json"),
+            str(self.runtime.engine_root / "legacy" / "configs" / "evaluate_ranker.json"),
             "--artifacts-dir",
             str(paths.artifacts_dir),
             "--labels-dir",
@@ -1686,7 +1710,7 @@ class EvaluateRankerTask(QRunnable):
             stage_args.extend(["--reference-bank-path", self.reference_bank_path])
         command = _resolve_stage_command(
             self.runtime,
-            script_relative_path="scripts/evaluate_ranker.py",
+            script_relative_path="legacy/scripts/evaluate_ranker.py",
             stage_args=stage_args,
         )
         completed = _run_command_with_live_output(
@@ -1975,6 +1999,392 @@ class ScoreCurrentFolderTask(QRunnable):
                 "report_dir": str(paths.report_dir),
                 "html_report_path": str(paths.html_report_path),
                 "ranked_export_path": str(paths.ranked_export_path),
+            }
+        )
+
+
+class BuildCullingSignalsTask(QRunnable):
+    """Builds modular culling signal artifacts for a prepared folder."""
+
+    def __init__(
+        self,
+        *,
+        folder: Path,
+        runtime: AIWorkflowRuntime,
+        profile_name: str = "General Use",
+        run_technical: bool = True,
+        run_specialists: bool = True,
+        max_preview_side: int = 768,
+        weights_path: Path | None = None,
+    ) -> None:
+        super().__init__()
+        self.folder = folder
+        self.runtime = runtime
+        self.profile_name = profile_name.strip() or "General Use"
+        self.run_technical = bool(run_technical)
+        self.run_specialists = bool(run_specialists)
+        self.max_preview_side = max(64, int(max_preview_side))
+        self.weights_path = weights_path
+        self.signals = AITrainingTaskSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            paths = prepare_hidden_ai_training_workspace(self.folder)
+            _validate_runtime_paths(
+                self.runtime,
+                required=(
+                    ("engine root", self.runtime.engine_root),
+                    ("python executable", self.runtime.python_executable),
+                    ("culling signal script", self.runtime.engine_root / "scripts" / "build_culling_signals.py"),
+                ),
+            )
+            if not ai_training_artifacts_ready(paths):
+                raise ValueError("Prepared artifacts are not ready yet. Run Prepare Training Data first.")
+            output_dir = paths.hidden_root / SIGNALS_DIR_NAME
+            output_dir.mkdir(parents=True, exist_ok=True)
+            weights_path = self.weights_path or (output_dir / SIGNAL_COMBINER_WEIGHTS_FILENAME)
+            if not weights_path.exists():
+                weights_path = None
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        self.signals.started.emit(1)
+        self.signals.stage.emit(1, 1, "Building culling signals")
+        stage_args = [
+            "--artifacts-dir",
+            str(paths.artifacts_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            self.profile_name,
+            "--max-preview-side",
+            str(self.max_preview_side),
+        ]
+        if not self.run_technical:
+            stage_args.append("--skip-technical")
+        if not self.run_specialists:
+            stage_args.append("--skip-specialists")
+        if weights_path is not None:
+            stage_args.extend(["--weights-path", str(weights_path)])
+        command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/build_culling_signals.py",
+            stage_args=stage_args,
+        )
+
+        try:
+            completed = _run_command_with_live_output(
+                command,
+                cwd=self.runtime.engine_root,
+                progress_callback=lambda line: _emit_command_progress(
+                    self.signals,
+                    line,
+                    default_message="Building culling signals",
+                ),
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(_command_failure_message("Building culling signals", completed.stdout))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        self.signals.finished.emit(
+            {
+                "signals_dir": str(output_dir),
+                "signals_json_path": str(output_dir / SIGNALS_JSON_FILENAME),
+                "signals_csv_path": str(output_dir / SIGNALS_CSV_FILENAME),
+                "weights_path": str(weights_path) if weights_path is not None else "",
+                "profile_name": self.profile_name,
+            }
+        )
+
+
+class EvaluateCullingSignalsTask(QRunnable):
+    """Evaluates culling signal scores without requiring a trained checkpoint."""
+
+    def __init__(
+        self,
+        *,
+        folder: Path,
+        runtime: AIWorkflowRuntime,
+        profile_name: str = "General Use",
+        weights_path: Path | None = None,
+    ) -> None:
+        super().__init__()
+        self.folder = folder
+        self.runtime = runtime
+        self.profile_name = profile_name.strip() or "General Use"
+        self.weights_path = weights_path
+        self.signals = AITrainingTaskSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            paths = prepare_hidden_ai_training_workspace(self.folder)
+            signals_dir = paths.hidden_root / SIGNALS_DIR_NAME
+            signals_path = signals_dir / SIGNALS_JSON_FILENAME
+            output_dir = paths.evaluation_dir / "culling_signals"
+            weights_path = self.weights_path
+            if weights_path is not None:
+                weights_path = Path(weights_path).expanduser()
+                if not weights_path.exists():
+                    weights_path = None
+            _validate_runtime_paths(
+                self.runtime,
+                required=(
+                    ("engine root", self.runtime.engine_root),
+                    ("python executable", self.runtime.python_executable),
+                    ("culling signal evaluation script", self.runtime.engine_root / "scripts" / "evaluate_culling_signals.py"),
+                ),
+            )
+            if weights_path is not None:
+                _validate_runtime_paths(
+                    self.runtime,
+                    required=(
+                        ("culling signal script", self.runtime.engine_root / "scripts" / "build_culling_signals.py"),
+                    ),
+                )
+            if not ai_training_artifacts_ready(paths):
+                raise ValueError("Prepared artifacts are not ready yet. Run Prepare Training Data first.")
+            pairwise_count, cluster_count = count_label_records(paths)
+            disagreement_count = count_disagreement_pair_labels(paths)
+            if pairwise_count <= 0 and cluster_count <= 0 and disagreement_count <= 0:
+                raise ValueError("No saved labels were found for signal evaluation.")
+            issues = ai_training_evaluation_issues(paths)
+            if issues:
+                raise ValueError(format_ai_training_evaluation_issues(paths.folder, issues))
+            if weights_path is None and not signals_path.exists():
+                raise ValueError("Culling signals are not built yet. Run Build Culling Signals first.")
+            signals_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        total_steps = 2 if weights_path is not None else 1
+        self.signals.started.emit(total_steps)
+        if weights_path is not None:
+            self.signals.stage.emit(1, total_steps, "Rebuilding culling signals with active weights")
+            build_args = [
+                "--artifacts-dir",
+                str(paths.artifacts_dir),
+                "--output-dir",
+                str(signals_dir),
+                "--profile",
+                self.profile_name,
+                "--weights-path",
+                str(weights_path),
+            ]
+            build_command = _resolve_stage_command(
+                self.runtime,
+                script_relative_path="scripts/build_culling_signals.py",
+                stage_args=build_args,
+            )
+            try:
+                completed = _run_command_with_live_output(
+                    build_command,
+                    cwd=self.runtime.engine_root,
+                    progress_callback=lambda line: _emit_command_progress(
+                        self.signals,
+                        line,
+                        default_message="Rebuilding culling signals",
+                    ),
+                )
+                if completed.returncode != 0:
+                    raise RuntimeError(_command_failure_message("Rebuilding culling signals", completed.stdout))
+            except Exception as exc:
+                self.signals.failed.emit(str(exc))
+                return
+
+        self.signals.stage.emit(total_steps, total_steps, "Evaluating culling signals")
+        stage_args = [
+            "--artifacts-dir",
+            str(paths.artifacts_dir),
+            "--labels-dir",
+            str(paths.labels_dir),
+            "--signals-path",
+            str(signals_path),
+            "--output-dir",
+            str(output_dir),
+        ]
+        command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/evaluate_culling_signals.py",
+            stage_args=stage_args,
+        )
+
+        try:
+            completed = _run_command_with_live_output(
+                command,
+                cwd=self.runtime.engine_root,
+                progress_callback=lambda line: _emit_command_progress(
+                    self.signals,
+                    line,
+                    default_message="Evaluating culling signals",
+                ),
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(_command_failure_message("Evaluating culling signals", completed.stdout))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        self.signals.finished.emit(
+            {
+                "metrics_path": str(output_dir / SIGNAL_EVALUATION_METRICS_FILENAME),
+                "summary_path": str(output_dir / SIGNAL_EVALUATION_SUMMARY_FILENAME),
+                "signals_json_path": str(signals_path),
+                "weights_path": str(weights_path) if weights_path is not None else "",
+            }
+        )
+
+
+class TuneCullingSignalsTask(QRunnable):
+    """Tunes transparent combiner weights and rebuilds signal scores."""
+
+    def __init__(
+        self,
+        *,
+        folder: Path,
+        runtime: AIWorkflowRuntime,
+        profile_name: str = "General Use",
+        source_folders: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__()
+        self.folder = folder
+        self.runtime = runtime
+        self.profile_name = profile_name.strip() or "General Use"
+        self.source_folders = tuple(str(source).strip() for source in source_folders if str(source).strip())
+        self.signals = AITrainingTaskSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            source_folders = self.source_folders or (str(self.folder),)
+            source_paths: list[AITrainingPaths] = []
+            source_entries: list[dict[str, str]] = []
+            for source_folder in source_folders:
+                source_path = prepare_hidden_ai_training_workspace(Path(source_folder))
+                if not ai_training_artifacts_ready(source_path):
+                    raise ValueError(f"Prepared artifacts are not ready for {source_path.folder}. Run Prepare Training Data first.")
+                pairwise_count, cluster_count = count_label_records(source_path)
+                disagreement_count = count_disagreement_pair_labels(source_path)
+                if pairwise_count <= 0 and cluster_count <= 0 and disagreement_count <= 0:
+                    raise ValueError(f"No saved labels were found for {source_path.folder}.")
+                issues = ai_training_evaluation_issues(source_path)
+                if issues:
+                    raise ValueError(format_ai_training_evaluation_issues(source_path.folder, issues))
+                source_paths.append(source_path)
+                source_signals_dir = source_path.hidden_root / SIGNALS_DIR_NAME
+                source_entries.append(
+                    {
+                        "folder": str(source_path.folder),
+                        "source_name": str(source_path.folder),
+                        "artifacts_dir": str(source_path.artifacts_dir),
+                        "labels_dir": str(source_path.labels_dir),
+                        "signals_path": str(source_signals_dir / SIGNALS_JSON_FILENAME),
+                    }
+                )
+
+            output_paths = prepare_general_ai_training_workspace() if len(source_paths) > 1 else source_paths[0]
+            signals_dir = output_paths.hidden_root / SIGNALS_DIR_NAME
+            weights_path = signals_dir / SIGNAL_COMBINER_WEIGHTS_FILENAME
+            feature_rows_path = signals_dir / SIGNAL_COMBINER_FEATURES_FILENAME
+            manifest_path = signals_dir / "culling_combiner_sources.json"
+            _validate_runtime_paths(
+                self.runtime,
+                required=(
+                    ("engine root", self.runtime.engine_root),
+                    ("python executable", self.runtime.python_executable),
+                    ("culling combiner training script", self.runtime.engine_root / "scripts" / "train_culling_combiner.py"),
+                    ("culling signal script", self.runtime.engine_root / "scripts" / "build_culling_signals.py"),
+                ),
+            )
+            signals_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(
+                json.dumps({"sources": source_entries}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        total_steps = len(source_paths) + 1
+        self.signals.started.emit(total_steps)
+        for index, source_path in enumerate(source_paths, start=1):
+            self.signals.stage.emit(index, total_steps, f"Refreshing culling signal features for {Path(source_path.folder).name}")
+            source_signals_dir = source_path.hidden_root / SIGNALS_DIR_NAME
+            source_signals_dir.mkdir(parents=True, exist_ok=True)
+            refresh_args = [
+                "--artifacts-dir",
+                str(source_path.artifacts_dir),
+                "--output-dir",
+                str(source_signals_dir),
+                "--profile",
+                self.profile_name,
+            ]
+            refresh_command = _resolve_stage_command(
+                self.runtime,
+                script_relative_path="scripts/build_culling_signals.py",
+                stage_args=refresh_args,
+            )
+            try:
+                completed = _run_command_with_live_output(
+                    refresh_command,
+                    cwd=self.runtime.engine_root,
+                    progress_callback=lambda line: _emit_command_progress(
+                        self.signals,
+                        line,
+                        default_message="Refreshing culling signal features",
+                    ),
+                )
+                if completed.returncode != 0:
+                    raise RuntimeError(_command_failure_message("Refreshing culling signals", completed.stdout))
+            except Exception as exc:
+                self.signals.failed.emit(str(exc))
+                return
+
+        self.signals.stage.emit(total_steps, total_steps, "Tuning culling signal weights")
+        train_args = [
+            "--source-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(signals_dir),
+            "--profile",
+            self.profile_name,
+        ]
+        train_command = _resolve_stage_command(
+            self.runtime,
+            script_relative_path="scripts/train_culling_combiner.py",
+            stage_args=train_args,
+        )
+
+        try:
+            completed = _run_command_with_live_output(
+                train_command,
+                cwd=self.runtime.engine_root,
+                progress_callback=lambda line: _emit_command_progress(
+                    self.signals,
+                    line,
+                    default_message="Tuning culling signal weights",
+                ),
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(_command_failure_message("Tuning culling signals", completed.stdout))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        self.signals.finished.emit(
+            {
+                "signals_dir": str(signals_dir),
+                "weights_path": str(weights_path),
+                "feature_rows_path": str(feature_rows_path),
+                "source_manifest_path": str(manifest_path),
+                "source_count": len(source_paths),
+                "profile_name": self.profile_name,
             }
         )
 
@@ -2486,6 +2896,8 @@ def _collect_labeled_training_image_ids(paths: AITrainingPaths) -> set[str]:
 
     image_ids: set[str] = set()
     for record in _iter_jsonl_records(paths.pairwise_labels_path):
+        if _is_ambiguous_pairwise_record(record):
+            continue
         for key in ("image_a_id", "image_b_id", "preferred_image_id"):
             value = str(record.get(key) or "").strip()
             if value:
@@ -2963,14 +3375,44 @@ def _count_jsonl_lines(path: Path) -> int:
         return 0
 
 
+def _count_usable_pairwise_label_records(path: Path) -> int:
+    """Count pairwise labels that produce a preference for training/evaluation."""
+
+    count = 0
+    for record in _iter_jsonl_records(path):
+        if _is_non_preference_pairwise_record(record):
+            continue
+        decision = str(record.get("decision") or "").strip().lower()
+        preferred_image_id = str(record.get("preferred_image_id") or "").strip()
+        image_a_id = str(record.get("image_a_id") or "").strip()
+        image_b_id = str(record.get("image_b_id") or "").strip()
+        if image_a_id and image_b_id and (preferred_image_id or decision in {"left_better", "right_better"}):
+            count += 1
+    return count
+
+
 def _count_pairwise_labels_by_source(path: Path, source_mode: str) -> int:
     if not path.exists():
         return 0
     count = 0
     for record in _iter_jsonl_records(path):
+        if _is_non_preference_pairwise_record(record):
+            continue
         if str(record.get("source_mode") or "") == source_mode:
             count += 1
     return count
+
+
+def _is_ambiguous_pairwise_record(record: dict[str, object]) -> bool:
+    """Return whether a saved pairwise record is an explicit tie/skip."""
+
+    return str(record.get("decision") or "").strip().lower() in {"tie", "skip"}
+
+
+def _is_non_preference_pairwise_record(record: dict[str, object]) -> bool:
+    """Return whether a pairwise record should not produce preference pairs."""
+
+    return str(record.get("decision") or "").strip().lower() in {"tie", "skip", "both_reject"}
 
 
 def _merge_eta(message: str, eta_text: str) -> str:

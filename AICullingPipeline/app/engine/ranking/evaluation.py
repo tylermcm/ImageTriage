@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -86,6 +87,7 @@ def evaluate_cluster_rankings(
     evaluated_clusters = 0
     skipped_without_best = 0
     missing_rankings = 0
+    multi_best_clusters = 0
     first_best_ranks: List[int] = []
     hit_counts = {value: 0 for value in top_k_values}
     eligible_counts = {value: 0 for value in top_k_values}
@@ -110,6 +112,8 @@ def evaluate_cluster_rankings(
 
         image_name_by_id = {member.image_id: member.file_name for member in members}
         human_best_ids = set(label_record.best_image_ids)
+        if len(human_best_ids) > 1:
+            multi_best_clusters += 1
         human_acceptable_ids = set(label_record.acceptable_image_ids)
         human_reject_ids = set(label_record.reject_image_ids)
         top_member = members[0]
@@ -117,6 +121,7 @@ def evaluate_cluster_rankings(
         row: Dict[str, Any] = {
             "cluster_id": cluster_id,
             "cluster_size": members[0].cluster_size,
+            "human_best_count": len(human_best_ids),
             "evaluation_status": "evaluated" if human_best_ids else "skipped_no_human_best",
             "model_top1_file_name": top_member.file_name,
             "model_top1_score": top_member.score,
@@ -165,6 +170,7 @@ def evaluate_cluster_rankings(
     summary = {
         "labeled_clusters": len(cluster_labels_by_id),
         "evaluated_clusters": evaluated_clusters,
+        "multi_best_clusters": multi_best_clusters,
         "skipped_clusters_without_best": skipped_without_best,
         "missing_ranked_clusters": missing_rankings,
         "top_k_metrics": {
@@ -256,6 +262,7 @@ def evaluate_ranker(config: RankingEvaluationConfig) -> Dict[str, Path]:
     )
     baseline_comparison = _build_baseline_comparison(
         ranking_artifacts=ranking_artifacts,
+        artifacts_dir=config.artifacts_dir,
         trained_scores=scores,
         trained_ranked_clusters=ranked_clusters,
         loaded_preferences=loaded_labels.preferences,
@@ -340,6 +347,7 @@ def _evaluate_pairwise_splits(
 def _build_baseline_comparison(
     *,
     ranking_artifacts: Any,
+    artifacts_dir: Path,
     trained_scores: np.ndarray,
     trained_ranked_clusters: Dict[str, List[RankedClusterMember]],
     loaded_preferences: Sequence[PairwisePreferenceRecord],
@@ -392,6 +400,24 @@ def _build_baseline_comparison(
         cluster_labels_by_id=cluster_labels_by_id,
         top_k_values=top_k_values,
     )
+    signal_scores = _load_signal_combiner_scores(
+        artifacts_dir=artifacts_dir,
+        ranking_artifacts=ranking_artifacts,
+    )
+    if signal_scores is not None:
+        scorers["transparent_combiner"] = _evaluate_scorer(
+            name="Transparent Combiner",
+            scores=signal_scores["scores"],
+            ranked_clusters=_rank_clusters_from_scores(ranking_artifacts, signal_scores["scores"]),
+            ranking_artifacts=ranking_artifacts,
+            all_preferences=loaded_preferences,
+            pairwise_only=pairwise_only,
+            cluster_only=cluster_only,
+            cluster_labels_by_id=cluster_labels_by_id,
+            top_k_values=top_k_values,
+        )
+        scorers["transparent_combiner"]["signal_source_path"] = signal_scores["path"]
+        scorers["transparent_combiner"]["missing_signal_scores"] = signal_scores["missing_count"]
     scorers["random_expected"] = _evaluate_random_expected(
         all_preferences=loaded_preferences,
         pairwise_only=pairwise_only,
@@ -403,6 +429,7 @@ def _build_baseline_comparison(
 
     trained = scorers["trained_ranker"]
     centrality = scorers["dino_centrality"]
+    combiner = scorers.get("transparent_combiner")
     return {
         "scorers": scorers,
         "deltas_vs_dino_centrality": {
@@ -423,10 +450,33 @@ def _build_baseline_comparison(
                 lower_is_better=True,
             ),
         },
+        "deltas_transparent_combiner_vs_dino_centrality": (
+            {
+                "pairwise_accuracy": _metric_delta(
+                    combiner,
+                    centrality,
+                    "pairwise_evaluation",
+                    "all_preferences",
+                    "accuracy",
+                ),
+                "cluster_top1_hit_rate": _top_k_delta(combiner, centrality, "top_1"),
+                "cluster_top3_hit_rate": _top_k_delta(combiner, centrality, "top_3"),
+                "mean_first_human_best_rank": _metric_delta(
+                    combiner,
+                    centrality,
+                    "cluster_evaluation",
+                    "mean_first_human_best_rank",
+                    lower_is_better=True,
+                ),
+            }
+            if combiner is not None
+            else None
+        ),
         "notes": [
             "DINO Centrality ranks each cluster by cosine similarity to the cluster centroid.",
             "File Order ranks by original cluster/file order.",
             "Random Expected is analytical chance, not a sampled random seed.",
+            "Transparent Combiner is included only when culling signal artifacts exist next to the prepared artifacts.",
         ],
     }
 
@@ -522,6 +572,59 @@ def _rank_clusters_from_scores(
     return ranked
 
 
+def _load_signal_combiner_scores(
+    *,
+    artifacts_dir: Path,
+    ranking_artifacts: Any,
+) -> Dict[str, Any] | None:
+    signals_path = Path(artifacts_dir).parent / "signals" / "culling_signals.json"
+    if not signals_path.exists():
+        return None
+
+    try:
+        payload = json.loads(signals_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, list):
+        return None
+
+    score_by_id: Dict[str, float] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        image_id = str(item.get("image_id") or "").strip()
+        if not image_id:
+            continue
+        final = item.get("final")
+        personal = item.get("personal")
+        score = None
+        if isinstance(final, dict):
+            score = final.get("score")
+        if score is None and isinstance(personal, dict):
+            score = personal.get("score")
+        try:
+            score_by_id[image_id] = float(score)
+        except (TypeError, ValueError):
+            continue
+
+    if not score_by_id:
+        return None
+
+    scores = np.zeros((len(ranking_artifacts.ordered_images),), dtype=np.float32)
+    missing_count = 0
+    for image in ranking_artifacts.ordered_images:
+        score = score_by_id.get(image.image_id)
+        if score is None:
+            missing_count += 1
+            score = 0.0
+        scores[image.embedding_index] = float(score)
+    return {
+        "scores": scores,
+        "path": str(signals_path),
+        "missing_count": missing_count,
+    }
+
+
 def _evaluate_random_expected(
     *,
     all_preferences: Sequence[PairwisePreferenceRecord],
@@ -570,6 +673,7 @@ def _random_cluster_metrics(
     evaluated_clusters = 0
     skipped_without_best = 0
     missing_rankings = 0
+    multi_best_clusters = 0
 
     for cluster_id, label_record in sorted(cluster_labels_by_id.items()):
         members = ranking_artifacts.clusters_by_id.get(cluster_id)
@@ -580,6 +684,8 @@ def _random_cluster_metrics(
         if best_count <= 0:
             skipped_without_best += 1
             continue
+        if best_count > 1:
+            multi_best_clusters += 1
 
         evaluated_clusters += 1
         cluster_size = len(members)
@@ -598,6 +704,7 @@ def _random_cluster_metrics(
     return {
         "labeled_clusters": len(cluster_labels_by_id),
         "evaluated_clusters": evaluated_clusters,
+        "multi_best_clusters": multi_best_clusters,
         "skipped_clusters_without_best": skipped_without_best,
         "missing_ranked_clusters": missing_rankings,
         "top_k_metrics": {
@@ -702,6 +809,7 @@ def _save_cluster_breakdown_csv(
     fieldnames = [
         "cluster_id",
         "cluster_size",
+        "human_best_count",
         "evaluation_status",
         "model_top1_file_name",
         "model_top1_score",

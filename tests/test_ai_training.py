@@ -18,6 +18,7 @@ from image_triage.ai_training import (
     ai_training_evaluation_issues,
     ai_training_source_needs_prepare,
     build_ai_training_paths,
+    build_labeling_command,
     build_general_ai_training_paths,
     diagnose_ranker_fit,
     list_ranker_runs,
@@ -32,6 +33,7 @@ from image_triage.ai_training import (
     _write_labeled_training_clusters,
     _write_labeled_training_include_file,
 )
+from image_triage.ai_workflow import AIWorkflowRuntime
 from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord
 from image_triage.ai_training import RankerFitDiagnosis, RankerRunInfo
@@ -527,6 +529,40 @@ class AITrainingTests(unittest.TestCase):
             self.assertGreaterEqual(status.labels_added_since_train, 30)
             self.assertTrue(status.needs_retrain)
             self.assertIn("Retraining is recommended", status.guidance_text)
+
+    def test_build_labeling_command_passes_near_identical_threshold(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_label_command_") as temp_dir:
+            root = Path(temp_dir)
+            previous_appdata = os.environ.get("IMAGE_TRIAGE_APPDATA")
+            os.environ["IMAGE_TRIAGE_APPDATA"] = str(root / "appdata")
+            engine_root = root / "engine"
+            (engine_root / "configs").mkdir(parents=True)
+            (engine_root / "configs" / "labeling_app.json").write_text("{}", encoding="utf-8")
+            python_executable = root / "python.exe"
+            python_executable.write_text("", encoding="utf-8")
+            folder = root / "photos"
+            folder.mkdir()
+            runtime = AIWorkflowRuntime(
+                engine_root=engine_root,
+                python_executable=python_executable,
+                model_name="model",
+                checkpoint_path=root / "checkpoint.pt",
+                extraction_config_path=root / "extract.json",
+                clustering_config_path=root / "cluster.json",
+                report_config_path=root / "report.json",
+            )
+
+            try:
+                command = build_labeling_command(runtime, folder=folder, near_identical_threshold=0.94)
+            finally:
+                if previous_appdata is None:
+                    os.environ.pop("IMAGE_TRIAGE_APPDATA", None)
+                else:
+                    os.environ["IMAGE_TRIAGE_APPDATA"] = previous_appdata
+
+            self.assertIn("--near-identical-threshold", command)
+            flag_index = command.index("--near-identical-threshold")
+            self.assertEqual("0.940", command[flag_index + 1])
 
     def test_launch_labeling_app_task_waits_for_ready_signal(self) -> None:
         class _FakeProcess:

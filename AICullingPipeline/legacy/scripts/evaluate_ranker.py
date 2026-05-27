@@ -105,7 +105,13 @@ def main() -> None:
         if comparison:
             print("")
             print("Baseline comparison:")
-            for key in ("random_expected", "file_order", "dino_centrality", "trained_ranker"):
+            for key in (
+                "random_expected",
+                "file_order",
+                "dino_centrality",
+                "transparent_combiner",
+                "trained_ranker",
+            ):
                 scorer = comparison.get(key)
                 if not isinstance(scorer, dict):
                     continue
