@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
-from PySide6.QtWidgets import QApplication, QAbstractScrollArea
+from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
 from .cache import ThumbnailKey
@@ -64,6 +64,7 @@ class ThumbnailGridView(QAbstractScrollArea):
     tag_requested = Signal(int)
     winner_requested = Signal(int)
     reject_requested = Signal(int)
+    adapter_label_requested = Signal(str, str)
     context_menu_requested = Signal(int, object)
     selection_changed = Signal()
 
@@ -115,6 +116,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._action_mode = "normal"
         self._show_ai_annotations = False
         self._compact_card_mode = False
+        self._adapter_review_mode = False
+        self._adapter_review_paths: set[str] = set()
+        self._adapter_labels_by_path: dict[str, str] = {}
+        self._adapter_label_combos: dict[int, QComboBox] = {}
         self._columns = 3
         self._margin = 18
         self._spacing = 18
@@ -290,6 +295,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         start = time.perf_counter() if logger.enabled else 0.0
         previous_variant_indexes = dict(self._variant_indexes)
         self._reset_image_zoom()
+        self._adapter_review_mode = False
+        self._adapter_review_paths.clear()
+        self._adapter_labels_by_path.clear()
+        self._delete_adapter_label_controls()
         self._items = items
         self._burst_groups_by_path = {}
         self._burst_groups = []
@@ -374,6 +383,38 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def set_annotations(self, annotations: dict[str, SessionAnnotation]) -> None:
         self._annotations = annotations
+        self.viewport().update()
+
+    def set_adapter_review_mode(self, paths: list[str] | tuple[str, ...], labels_by_path: dict[str, str] | None = None) -> None:
+        self._adapter_review_mode = True
+        self._adapter_review_paths = {_fast_path_key(path) for path in paths if path}
+        self._adapter_labels_by_path = dict(labels_by_path or {})
+        self._rebuild_visible_items()
+        self._refresh_layout_after_visible_items_changed()
+        if self._visible_item_indexes:
+            self._current_index = self._visible_item_indexes[0]
+            self._selected_indexes = {self._current_index}
+            self._selection_anchor = self._current_index
+            self.current_changed.emit(self._current_index)
+            self.selection_changed.emit()
+        self.viewport().update()
+        self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def clear_adapter_review_mode(self) -> None:
+        if not self._adapter_review_mode:
+            return
+        self._adapter_review_mode = False
+        self._adapter_review_paths.clear()
+        self._adapter_labels_by_path.clear()
+        self._hide_adapter_label_controls()
+        self._rebuild_visible_items()
+        self._refresh_layout_after_visible_items_changed()
+        self.viewport().update()
+        self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def update_adapter_review_labels(self, labels_by_path: dict[str, str]) -> None:
+        self._adapter_labels_by_path = dict(labels_by_path)
+        self._sync_adapter_label_controls()
         self.viewport().update()
 
     def update_annotations(self, changed_paths: list[str] | tuple[str, ...] | set[str]) -> None:
@@ -811,6 +852,7 @@ class ThumbnailGridView(QAbstractScrollArea):
 
         if not self._items:
             self._paint_empty_state(painter)
+            self._hide_adapter_label_controls()
             if logger.enabled:
                 logger.duration("grid.paint", (time.perf_counter() - start) * 1000.0, visible=0, event_width=event.rect().width(), event_height=event.rect().height())
             return
@@ -844,6 +886,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.setPen(QPen(overlay_border, 1, Qt.PenStyle.DashLine))
             painter.setBrush(overlay_fill)
             painter.drawRect(self._marquee_rect)
+        self._sync_adapter_label_controls()
         if logger.enabled:
             logger.duration(
                 "grid.paint",
@@ -1270,6 +1313,16 @@ class ThumbnailGridView(QAbstractScrollArea):
         if Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
             if self._items[index].is_folder:
                 return
+            if self._adapter_review_mode and Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
+                labels = {
+                    Qt.Key.Key_1: "hero",
+                    Qt.Key.Key_2: "strong",
+                    Qt.Key.Key_3: "maybe",
+                    Qt.Key.Key_4: "weak",
+                    Qt.Key.Key_5: "reject",
+                }
+                self._set_adapter_label_for_index(index, labels[key], emit=True)
+                return
             self.rate_requested.emit(index, key - Qt.Key.Key_0)
             return
         if key == Qt.Key.Key_T and review_shortcut_allowed:
@@ -1658,6 +1711,9 @@ class ThumbnailGridView(QAbstractScrollArea):
                 QColor(18, 27, 40, 220),
                 QColor("#dce5f2"),
             )
+        if self._adapter_review_mode and self._record_in_adapter_review(index):
+            adapter_rect = self._adapter_label_rect(rect)
+            title_text_rect.setRight(min(title_text_rect.right(), adapter_rect.left() - 8))
 
         painter.setPen(self._title_color)
         painter.setFont(self._title_font)
@@ -1665,7 +1721,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         title_option.setWrapMode(QTextOption.WrapMode.WordWrap)
         painter.drawText(QRectF(title_text_rect), variant.name if record.has_variant_stack else record.name, title_option)
 
-        if not record.is_folder:
+        if not record.is_folder and not self._adapter_review_mode:
             self._paint_winner_button(
                 painter,
                 self._winner_button_rect(rect),
@@ -2134,6 +2190,14 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._meta_height,
         )
 
+    def _adapter_label_rect(self, tile_rect: QRect) -> QRect:
+        title_rect = self._title_rect(tile_rect)
+        height = max(18, title_rect.height())
+        width = min(140, max(96, title_rect.width() // 2))
+        x = title_rect.x() + max(0, (title_rect.width() - width) // 2)
+        y = title_rect.y() + max(0, (title_rect.height() - height) // 2)
+        return QRect(x, y, width, height)
+
     def _action_rect(self, tile_rect: QRect) -> QRect:
         if self._compact_card_mode:
             title_rect = self._title_rect(tile_rect)
@@ -2326,10 +2390,142 @@ class ThumbnailGridView(QAbstractScrollArea):
                 visible.append(display_member)
                 skip_members.update(members)
             self._visible_item_indexes = visible
+        if self._adapter_review_mode:
+            self._visible_item_indexes = [
+                index
+                for index in self._visible_item_indexes
+                if self._record_in_adapter_review(index)
+            ]
         self._visible_slot_by_item_index = {
             item_index: slot
             for slot, item_index in enumerate(self._visible_item_indexes)
         }
+        self._sync_adapter_label_controls()
+
+    def _record_in_adapter_review(self, index: int) -> bool:
+        if not 0 <= index < len(self._items):
+            return False
+        record = self._items[index]
+        if _fast_path_key(record.path) in self._adapter_review_paths:
+            return True
+        return any(_fast_path_key(variant.path) in self._adapter_review_paths for variant in record.display_variants)
+
+    def _hide_adapter_label_controls(self) -> None:
+        for combo in self._adapter_label_combos.values():
+            combo.hide()
+
+    def _delete_adapter_label_controls(self) -> None:
+        for combo in self._adapter_label_combos.values():
+            combo.deleteLater()
+        self._adapter_label_combos.clear()
+
+    def _sync_adapter_label_controls(self) -> None:
+        if not self._adapter_review_mode:
+            self._hide_adapter_label_controls()
+            return
+        visible = set(self._visible_indexes())
+        for index, combo in list(self._adapter_label_combos.items()):
+            if index not in visible or not self._record_in_adapter_review(index):
+                combo.hide()
+        for index in visible:
+            if not self._record_in_adapter_review(index):
+                continue
+            combo = self._adapter_label_combos.get(index)
+            if combo is None:
+                combo = self._build_adapter_label_combo(index)
+                self._adapter_label_combos[index] = combo
+            record = self._items[index]
+            label = self._adapter_labels_by_path.get(record.path, "")
+            current = combo.currentData()
+            if current != label:
+                was_blocked = combo.blockSignals(True)
+                combo.setCurrentIndex(max(0, combo.findData(label)))
+                combo.blockSignals(was_blocked)
+            combo.setGeometry(self._adapter_label_rect(self._item_rect(index)))
+            combo.show()
+            combo.raise_()
+
+    def _build_adapter_label_combo(self, index: int) -> QComboBox:
+        combo = QComboBox(self.viewport())
+        combo.setObjectName("adapterLabelCombo")
+        combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        combo.setStyleSheet(
+            "QComboBox#adapterLabelCombo {"
+            " padding: 0px 4px 0px 6px;"
+            " margin: 0px;"
+            " font-size: 10px;"
+            " min-height: 18px;"
+            "} "
+            "QComboBox#adapterLabelCombo::drop-down { width: 14px; border-left: none; } "
+            "QComboBox#adapterLabelCombo QAbstractItemView { font-size: 11px; }"
+        )
+        for label, text in (
+            ("", "Label..."),
+            ("hero", "1 Best"),
+            ("strong", "2 Strong"),
+            ("maybe", "3 Maybe"),
+            ("weak", "4 Weak"),
+            ("reject", "5 Reject"),
+        ):
+            combo.addItem(text, label)
+        combo.currentIndexChanged.connect(lambda _row, item_index=index, widget=combo: self._handle_adapter_label_changed(item_index, widget))
+        return combo
+
+    def _handle_adapter_label_changed(self, index: int, combo: QComboBox) -> None:
+        label = str(combo.currentData() or "")
+        self._set_adapter_label_for_index(index, label, emit=True)
+
+    def _set_adapter_label_for_index(self, index: int, label: str, *, emit: bool) -> None:
+        if not 0 <= index < len(self._items):
+            return
+        record = self._items[index]
+        normalized = label.strip().lower()
+        if normalized:
+            self._adapter_labels_by_path[record.path] = normalized
+        else:
+            self._adapter_labels_by_path.pop(record.path, None)
+        combo = self._adapter_label_combos.get(index)
+        if combo is not None and combo.currentData() != normalized:
+            was_blocked = combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(normalized)))
+            combo.blockSignals(was_blocked)
+        if emit:
+            self.adapter_label_requested.emit(record.path, normalized)
+            if normalized and self._adapter_review_mode:
+                self._advance_to_next_adapter_candidate(index)
+
+    def _advance_to_next_adapter_candidate(self, from_index: int) -> None:
+        if not self._items:
+            return
+        total = len(self._items)
+        for offset in range(1, total + 1):
+            candidate_index = (from_index + offset) % total
+            if candidate_index == from_index:
+                break
+            if not self._record_in_adapter_review(candidate_index):
+                continue
+            record = self._items[candidate_index]
+            if record.path in self._adapter_labels_by_path:
+                continue
+            self.set_current_index(candidate_index)
+            self._ensure_index_visible(candidate_index)
+            return
+
+    def _ensure_index_visible(self, index: int) -> None:
+        if not 0 <= index < len(self._items):
+            return
+        try:
+            rect = self._item_rect(index)
+        except Exception:
+            return
+        if rect.isNull():
+            return
+        viewport = self.viewport().rect()
+        if rect.top() < 0:
+            self.verticalScrollBar().setValue(max(0, self.verticalScrollBar().value() + rect.top() - 12))
+        elif rect.bottom() > viewport.height():
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() + (rect.bottom() - viewport.height()) + 12)
 
     def _refresh_layout_after_visible_items_changed(self) -> None:
         self._recalculate_metrics()

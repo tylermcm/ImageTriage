@@ -45,7 +45,9 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     ("assign_review_round_hero", "Review", "Alt+4", "Mark Final Hero Selects"),
     ("clear_review_round", "Review", "Alt+0", "Clear Review Round"),
     # AI
-    ("open_ai_data_selection", "AI", "Ctrl+Shift+L", "Speed Cull..."),
+    ("open_ai_workflow_center", "AI", "Ctrl+Shift+W", "AI Workflow Center..."),
+    ("open_ai_data_selection", "AI", "Ctrl+Shift+L", "Prepare Adapter Ratings"),
+    ("quick_rerank_ai_culling", "AI", "Ctrl+Shift+Y", "Quick Rerank"),
     ("next_ai_pick", "AI", "Ctrl+Alt+P", "Next AI Top Pick"),
     ("compare_ai_group", "AI", "Ctrl+Alt+G", "Compare Current AI Group"),
     ("review_ai_disagreements", "AI", "Ctrl+Alt+D", "Review AI Disagreements"),

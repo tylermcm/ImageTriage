@@ -10,6 +10,7 @@ to hold the reusable backend logic whenever a behavior can be isolated cleanly.
 """
 
 import ctypes
+import csv
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import sys
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, replace
+from hashlib import sha1
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from textwrap import dedent
@@ -141,6 +143,19 @@ from .ai_workflow import (
     default_ai_workflow_runtime,
     existing_hidden_ai_report_dir,
     reset_hidden_ai_review_cache,
+)
+from .ai_workflow_center import AIWorkflowCenterDialog
+from .aiculler_workflow import (
+    AICullerAdapterTask,
+    AICullerRunTask,
+    aiculler_db_path,
+    aiculler_rerank_readiness,
+    aiculler_runtime_available,
+    build_aiculler_workflow_paths,
+    default_aiculler_runtime,
+    latest_adapter_model_version,
+    load_adapter_review_candidates,
+    load_adapter_status_summary,
 )
 from .ai_results import (
     AIBundle,
@@ -3257,15 +3272,21 @@ class MainWindow(QMainWindow):
         self.cache_pipeline_label = QLabel("")
         self.cache_pipeline_label.setObjectName("filterSummaryLabel")
         self.cache_pipeline_label.setMaximumWidth(340)
+        self.adapter_status_label = QLabel("Adapter: —")
+        self.adapter_status_label.setObjectName("filterSummaryLabel")
+        self.adapter_status_label.setMaximumWidth(360)
+        self.adapter_status_label.setToolTip("Adapter status will appear after the first AI Culler run.")
         self.clear_filters_button = QToolButton()
         self.clear_filters_button.setObjectName("statusFilterClearButton")
         self.clear_filters_button.setAutoRaise(True)
         self.clear_filters_button.setDefaultAction(self.actions.clear_filters)
         status.addPermanentWidget(self.catalog_status_label)
         status.addPermanentWidget(self.cache_pipeline_label)
+        status.addPermanentWidget(self.adapter_status_label)
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
         self._refresh_catalog_status_indicator()
+        self._refresh_adapter_status_indicator()
         self._refresh_filter_toolbar_menu()
         self._refresh_recent_folder_combos()
 
@@ -3278,6 +3299,7 @@ class MainWindow(QMainWindow):
         self.grid.tag_requested.connect(self._tag_record)
         self.grid.winner_requested.connect(self._toggle_winner)
         self.grid.reject_requested.connect(self._toggle_reject)
+        self.grid.adapter_label_requested.connect(self._handle_aiculler_adapter_label_requested)
         self.grid.context_menu_requested.connect(self._show_grid_context_menu)
         self.grid.selection_changed.connect(self._handle_grid_selection_changed)
         self.grid.verticalScrollBar().valueChanged.connect(self._schedule_metadata_scroll_prefetch)
@@ -4809,9 +4831,11 @@ class MainWindow(QMainWindow):
             add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
             add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
             add_action_command("search.clear_filters", self.actions.clear_filters, section="Search", keywords=("reset filters", "clear search"))
-            add_action_command("ai.install_runtime", self.actions.install_ai_runtime, section="AI", keywords=("install ai runtime", "install pytorch", "gpu runtime", "cpu runtime"))
-            add_action_command("ai.download_model", self.actions.download_ai_model, section="AI", keywords=("download ai model", "install ai model", "enable ai"))
-            add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run ai review", "run model"))
+            add_action_command("ai.open_culler_root", self.actions.install_ai_runtime, section="AI", keywords=("cli culler", "open ai folder", "runtime folder"))
+            add_action_command("ai.edit_categories", self.actions.download_ai_model, section="AI", keywords=("categories", "category prompts", "semantic labels"))
+            add_action_command("ai.workflow_center", self.actions.open_ai_workflow_center, section="AI", keywords=("workflow center", "ai workflow", "guide", "steps", "wizard"))
+            add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run ai culler", "rank images"))
+            add_action_command("ai.quick_rerank", self.actions.quick_rerank_ai_culling, section="AI", keywords=("quick rerank", "rerank", "re-rank", "rerun rank", "fast rerank", "rerank only"))
             add_action_command("ai.apply_culling", self.actions.apply_ai_culling, section="AI", keywords=("apply ai culling", "auto cull", "move ai picks", "recycle ai rejects"))
             add_action_command("ai.sort_semantic_folders", self.actions.sort_ai_semantic_folders, section="AI", keywords=("semantic folders", "classify folders", "sort by ai class", "sort by semantic label"))
             add_action_command("ai.reset_cache", self.actions.reset_ai_review_cache, section="AI", keywords=("reset ai cache", "rerun ai from scratch", "clear embeddings", "delete ai artifacts"))
@@ -4820,18 +4844,11 @@ class MainWindow(QMainWindow):
             add_action_command("ai.clear_results", self.actions.clear_ai_results, section="AI", keywords=("remove ai results",))
             add_action_command("ai.open_report", self.actions.open_ai_report, section="AI", keywords=("html report",))
             add_action_command("ai.tag_legend", self.actions.ai_review_tag_legend, section="AI", keywords=("ai tags", "tag legend", "ai badges", "what do the ai tags mean"))
-            add_action_command("ai.data_selection", self.actions.open_ai_data_selection, section="Training", keywords=("collect training labels", "pairwise labels", "cluster labels", "ranking data", "labeling"))
-            add_action_command("ai.full_training_pipeline", self.actions.run_full_ai_training_pipeline, section="Training", keywords=("one click training", "full training pipeline", "prepare train evaluate score"))
-            add_action_command("ai.prepare_training_data", self.actions.prepare_ai_training_data, section="Training", keywords=("prepare training data", "prepare model data", "extract embeddings", "cluster"))
-            add_action_command("ai.build_culling_signals", self.actions.build_culling_signals, section="Training", keywords=("signals", "culling signals", "personal culler", "technical analysis", "combiner"))
-            add_action_command("ai.tune_culling_signals", self.actions.tune_culling_signals, section="Training", keywords=("tune signals", "learn signal weights", "personal combiner", "train combiner"))
-            add_action_command("ai.evaluate_culling_signals", self.actions.evaluate_culling_signals, section="Training", keywords=("evaluate signals", "signal metrics", "combiner metrics", "transparent combiner"))
-            add_action_command("ai.build_reference_bank", self.actions.build_ai_reference_bank, section="Training", keywords=("reference bank", "exemplar model", "bucketed references"))
-            add_action_command("ai.train_ranker", self.actions.train_ai_ranker, section="Training", keywords=("train model", "train ranker", "preference model"))
-            add_action_command("ai.manage_rankers", self.actions.manage_ai_rankers, section="Training", keywords=("ranker workflow", "choose ranker", "model versions", "ranker versions", "checkpoint manager"))
-            add_action_command("ai.evaluate_ranker", self.actions.evaluate_ai_ranker, section="Training", keywords=("evaluate model", "metrics", "validation"))
-            add_action_command("ai.score_trained_ranker", self.actions.score_ai_with_trained_ranker, section="Training", keywords=("refresh ai report", "score current folder", "trained checkpoint"))
-            add_action_command("ai.clear_trained_model", self.actions.clear_ai_trained_model, section="Training", keywords=("reset ai checkpoint", "clear trained model"))
+            add_action_command("ai.export_adapter_ratings", self.actions.open_ai_data_selection, section="Adapter", keywords=("prepare ratings", "adapter labels", "training labels", "bucket labels"))
+            add_action_command("ai.review_adapter_labels", self.actions.review_ai_adapter_labels, section="Adapter", keywords=("review labels", "adapter review", "label adapter"))
+            add_action_command("ai.train_adapter", self.actions.train_ai_ranker, section="Adapter", keywords=("train adapter", "train model", "personal model", "preference model"))
+            add_action_command("ai.evaluate_adapter", self.actions.evaluate_ai_ranker, section="Adapter", keywords=("evaluate adapter", "holdout", "metrics", "adapter metrics", "validation"))
+            add_action_command("ai.rank_adapter", self.actions.score_ai_with_trained_ranker, section="Adapter", keywords=("rank with adapter", "adapter ranking", "rank current folder", "refresh ai report"))
             add_action_command("ai.next_top_pick", self.actions.next_ai_pick, section="AI", keywords=("next ai pick", "jump ai"))
             add_action_command("ai.next_unreviewed_top_pick", self.actions.next_unreviewed_ai_pick, section="AI", keywords=("unreviewed ai pick",))
             add_action_command("ai.compare_group", self.actions.compare_ai_group, section="AI", keywords=("compare ai cluster", "group compare"))
@@ -7681,6 +7698,43 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Scored the current folder with the trained ranker")
                 return
 
+        if normalized_action == "train_adapter":
+            payload = result if isinstance(result, dict) else {}
+            model_version = str(payload.get("model_version") or "")
+            report_dir = str(payload.get("report_dir") or "")
+            self._update_ai_toolbar_state()
+            self._refresh_adapter_status_indicator()
+            self._refresh_ai_workflow_center()
+            if report_dir and folder_key == current_key:
+                self._load_ai_results(report_dir, show_message=False)
+                self.mode_tabs.setCurrentIndex(1)
+            self.statusBar().showMessage(f"Adapter trained{f' ({model_version})' if model_version else ''}.")
+            return
+
+        if normalized_action == "evaluate_adapter":
+            payload = result if isinstance(result, dict) else {}
+            model_version = str(payload.get("model_version") or "")
+            evaluation_csv = str(payload.get("evaluation_csv_path") or "")
+            self._update_ai_toolbar_state()
+            self._refresh_adapter_status_indicator()
+            self._refresh_ai_workflow_center()
+            suffix = f": {Path(evaluation_csv).name}" if evaluation_csv else ""
+            self.statusBar().showMessage(f"Adapter evaluation complete{f' ({model_version})' if model_version else ''}{suffix}.")
+            return
+
+        if normalized_action == "rank_adapter":
+            payload = result if isinstance(result, dict) else {}
+            model_version = str(payload.get("model_version") or "")
+            report_dir = str(payload.get("report_dir") or "")
+            self._update_ai_toolbar_state()
+            self._refresh_adapter_status_indicator()
+            self._refresh_ai_workflow_center()
+            if report_dir and folder_key == current_key:
+                self._load_ai_results(report_dir, show_message=False)
+                self.mode_tabs.setCurrentIndex(1)
+            self.statusBar().showMessage(f"Ranked current folder with adapter{f' ({model_version})' if model_version else ''}.")
+            return
+
         if normalized_action == "signals":
             payload = result if isinstance(result, dict) else {}
             signals_json = str(payload.get("signals_json_path") or "")
@@ -8787,6 +8841,9 @@ class MainWindow(QMainWindow):
         training_paths = self._ai_training_paths_for_folder()
         ai_runtime_ready = self._ai_runtime_available()
         ai_model_ready = self._ai_model_available()
+        culler_runtime_ready = aiculler_runtime_available()
+        culler_paths = self._aiculler_paths_for_current_folder()
+        culler_model_version = latest_adapter_model_version(aiculler_db_path(culler_paths)) if culler_paths is not None else ""
         training_busy = (
             self._active_ai_training_task is not None
             or self._active_ai_task is not None
@@ -8799,7 +8856,7 @@ class MainWindow(QMainWindow):
             and not in_winners_folder
             and not training_busy
         )
-        training_allowed = training_entry_allowed and ai_runtime_ready and ai_model_ready
+        training_allowed = training_entry_allowed and culler_runtime_ready
         has_training_artifacts = bool(training_paths and ai_training_artifacts_ready(training_paths))
         pairwise_labels, cluster_labels = self._cached_training_label_counts(training_paths)
         general_training_paths = self._general_ai_training_paths()
@@ -8815,17 +8872,12 @@ class MainWindow(QMainWindow):
             trained_checkpoint_available=trained_checkpoint is not None,
             active_profile_key=active_run.profile_key if active_run is not None else "",
         )
-        self.actions.install_ai_runtime.setEnabled(self._active_ai_runtime_task is None and self._active_ai_model_task is None)
-        self.actions.download_ai_model.setEnabled(self._active_ai_model_task is None and self._active_ai_runtime_task is None)
-        self.actions.run_full_ai_training_pipeline.setEnabled(training_entry_allowed and training_availability.can_run_full_pipeline)
-        self.actions.prepare_ai_training_data.setEnabled(training_entry_allowed)
-        self.actions.open_ai_data_selection.setEnabled(training_entry_allowed)
-        self.actions.manage_ai_rankers.setEnabled(training_entry_allowed)
-        self.actions.train_ai_ranker.setEnabled(training_entry_allowed and training_availability.can_train)
-        self.actions.evaluate_ai_ranker.setEnabled(training_entry_allowed and training_availability.can_evaluate)
-        self.actions.score_ai_with_trained_ranker.setEnabled(training_entry_allowed and trained_checkpoint is not None)
-        self.actions.build_ai_reference_bank.setEnabled(ai_runtime_ready and ai_model_ready and not training_busy)
-        self.actions.clear_ai_trained_model.setEnabled(ai_runtime_ready and ai_model_ready and not training_busy and trained_checkpoint is not None)
+        self.actions.install_ai_runtime.setEnabled(True)
+        self.actions.download_ai_model.setEnabled(True)
+        self.actions.open_ai_data_selection.setEnabled(training_allowed)
+        self.actions.train_ai_ranker.setEnabled(training_allowed)
+        self.actions.evaluate_ai_ranker.setEnabled(training_allowed and bool(culler_model_version))
+        self.actions.score_ai_with_trained_ranker.setEnabled(training_allowed and bool(culler_model_version))
         self.actions.accept_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.reject_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.keep_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
@@ -10105,6 +10157,306 @@ class MainWindow(QMainWindow):
         self._update_ai_toolbar_state()
         self._ai_training_pool.start(task)
         return True
+
+    def _open_ai_workflow_center(self) -> None:
+        dialog = getattr(self, "_ai_workflow_center_dialog", None)
+        if dialog is None:
+            dialog = AIWorkflowCenterDialog(self)
+            self._ai_workflow_center_dialog = dialog
+        else:
+            dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _refresh_ai_workflow_center(self) -> None:
+        dialog = getattr(self, "_ai_workflow_center_dialog", None)
+        if dialog is not None and dialog.isVisible():
+            dialog.refresh()
+
+    def _open_aiculler_root(self) -> None:
+        try:
+            runtime = default_aiculler_runtime()
+        except Exception as exc:
+            QMessageBox.warning(self, "AI Culler", f"Could not resolve the CLI-Culler runtime.\n\n{exc}")
+            return
+        open_with_default(str(runtime.root))
+
+    def _open_aiculler_categories(self) -> None:
+        try:
+            runtime = default_aiculler_runtime()
+            category_path = runtime.categories_csv or (runtime.root / "categories.csv")
+            if not category_path.exists():
+                category_path.write_text("category,prompt,enabled\n", encoding="utf-8")
+            open_with_default(str(category_path))
+        except Exception as exc:
+            QMessageBox.warning(self, "AI Categories", f"Could not open category prompts.\n\n{exc}")
+
+    def _aiculler_paths_for_current_folder(self):
+        if not self._current_folder:
+            return None
+        return build_aiculler_workflow_paths(self._current_folder)
+
+    def _write_aiculler_ratings_csv(self) -> Path | None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            self.statusBar().showMessage("Choose a folder before exporting adapter ratings.")
+            return None
+        rows: list[dict[str, object]] = []
+        for record in self._all_records:
+            if record.is_folder:
+                continue
+            annotation = self._annotations.get(record.path)
+            label = self._aiculler_label_for_annotation(annotation)
+            if not label:
+                continue
+            rows.append(
+                {
+                    "source_path": record.path,
+                    "filename": record.name,
+                    "label": label,
+                    "rating": annotation.rating if annotation is not None else 0,
+                    "winner": int(bool(annotation and annotation.winner)),
+                    "reject": int(bool(annotation and annotation.reject)),
+                    "review_round": annotation.review_round if annotation is not None else "",
+                }
+            )
+        if len(rows) < 2 or len({str(row["label"]) for row in rows}) < 2:
+            internal_rows = self._aiculler_ratings_from_internal_labels(paths)
+            if internal_rows:
+                rows = internal_rows
+        if len(rows) < 2:
+            self.statusBar().showMessage("Mark at least two images before exporting adapter ratings.")
+            return None
+        labels = {str(row["label"]) for row in rows}
+        if len(labels) < 2:
+            self.statusBar().showMessage("Adapter training needs at least two different rating labels.")
+            return None
+        ratings_path = self._aiculler_internal_ratings_path(paths)
+        ratings_path.parent.mkdir(parents=True, exist_ok=True)
+        with ratings_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round"),
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        return ratings_path
+
+    def _aiculler_internal_label_store_path(self, paths) -> Path:
+        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        root = Path(app_data) if app_data else Path.home() / ".image-triage"
+        folder_key = sha1(str(paths.folder).casefold().encode("utf-8"), usedforsecurity=False).hexdigest()[:20]
+        return root / "ai_training" / "adapter_labels" / f"{folder_key}.json"
+
+    def _aiculler_internal_ratings_path(self, paths) -> Path:
+        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        root = Path(app_data) if app_data else Path.home() / ".image-triage"
+        folder_key = sha1(str(paths.folder).casefold().encode("utf-8"), usedforsecurity=False).hexdigest()[:20]
+        return root / "ai_training" / "adapter_labels" / "prepared" / f"{folder_key}_ratings.csv"
+
+    def _load_aiculler_internal_labels(self, paths) -> dict[str, str]:
+        label_path = self._aiculler_internal_label_store_path(paths)
+        if not label_path.exists():
+            return {}
+        try:
+            payload = json.loads(label_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        labels = payload.get("labels") if isinstance(payload, dict) else None
+        if not isinstance(labels, dict):
+            return {}
+        allowed_labels = {"hero", "portfolio", "strong", "keep", "good", "maybe", "weak", "reject", "bad", "k", "r", "yes", "no", "1", "0"}
+        return {
+            str(path): str(label).strip().lower()
+            for path, label in labels.items()
+            if str(label).strip().lower() in allowed_labels
+        }
+
+    def _save_aiculler_internal_labels(self, paths, labels: dict[str, str]) -> None:
+        label_path = self._aiculler_internal_label_store_path(paths)
+        label_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "folder": str(paths.folder),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "labels": dict(sorted(labels.items(), key=lambda item: item[0].casefold())),
+        }
+        label_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _aiculler_ratings_from_internal_labels(self, paths) -> list[dict[str, object]]:
+        labels = self._load_aiculler_internal_labels(paths)
+        if not labels:
+            return []
+        allowed_labels = {"hero", "portfolio", "strong", "keep", "good", "maybe", "weak", "reject", "bad", "k", "r", "yes", "no", "1", "0"}
+        rows: list[dict[str, object]] = []
+        for source_path, label in labels.items():
+            if label not in allowed_labels:
+                continue
+            rows.append(
+                {
+                    "source_path": source_path,
+                    "filename": Path(source_path).name,
+                    "label": label,
+                    "rating": "",
+                    "winner": int(label in {"hero", "portfolio", "keep", "good", "k", "yes", "1"}),
+                    "reject": int(label in {"reject", "bad", "r", "no", "0"}),
+                    "review_round": "adapter_internal_review",
+                }
+            )
+        if len(rows) >= 2 and len({str(row["label"]) for row in rows}) >= 2:
+            return rows
+        return []
+
+    @staticmethod
+    def _aiculler_label_for_annotation(annotation: SessionAnnotation | None) -> str:
+        if annotation is None:
+            return ""
+        if annotation.reject:
+            return "reject"
+        if annotation.winner:
+            return "hero"
+        if annotation.rating >= 5:
+            return "hero"
+        if annotation.rating == 4:
+            return "strong"
+        if annotation.rating == 3:
+            return "maybe"
+        if annotation.rating == 2:
+            return "weak"
+        if annotation.rating == 1:
+            return "reject"
+        return ""
+
+    def _export_aiculler_ratings(self) -> None:
+        ratings_path = self._write_aiculler_ratings_csv()
+        if ratings_path is None:
+            return
+        self.statusBar().showMessage(f"Prepared {ratings_path.name} for adapter training.")
+
+    def _review_aiculler_adapter_labels(self) -> None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            self.statusBar().showMessage("Choose a folder before reviewing adapter labels.")
+            return
+        db_path = aiculler_db_path(paths)
+        if not db_path.exists():
+            self.statusBar().showMessage("Run AI Culler before reviewing adapter labels.")
+            return
+        saved_labels = self._load_aiculler_internal_labels(paths)
+        try:
+            candidates = load_adapter_review_candidates(
+                db_path,
+                already_labeled=set(saved_labels.keys()),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
+            return
+        review_paths = [str(row.get("file_path") or "") for row in candidates if row.get("file_path")]
+        if not review_paths:
+            self.statusBar().showMessage("No adapter label candidates are available for this folder.")
+            return
+        self.grid.set_adapter_review_mode(review_paths, saved_labels)
+        self.mode_tabs.setCurrentIndex(0)
+        self.statusBar().showMessage(
+            f"Reviewing {len(review_paths)} adapter candidates. Use 1=best, 2=strong, 3=maybe, 4=weak, 5=reject."
+        )
+
+    def _handle_aiculler_adapter_label_requested(self, record_path: str, label: str) -> None:
+        record = self._all_records_by_path.get(record_path)
+        if record is None:
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return
+        labels = self._load_aiculler_internal_labels(paths)
+        normalized = label.strip().lower()
+        if normalized:
+            labels[record.path] = normalized
+        else:
+            labels.pop(record.path, None)
+        self._save_aiculler_internal_labels(paths, labels)
+        self.grid.update_adapter_review_labels(labels)
+        self.statusBar().showMessage(f"Saved adapter label for {record.name}: {normalized or 'unlabeled'}")
+
+    def _train_aiculler_adapter(self) -> None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            self.statusBar().showMessage("Choose a folder before training an adapter.")
+            return
+        db_path = aiculler_db_path(paths)
+        if not db_path.exists():
+            self.statusBar().showMessage("Run AI Culler before training an adapter.")
+            return
+        ratings_path = self._write_aiculler_ratings_csv()
+        if ratings_path is None:
+            return
+        try:
+            ratings_csv_text = ratings_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Train Adapter", f"Could not prepare adapter ratings.\n\n{exc}")
+            return
+        model_version = time.strftime("%Y%m%dT%H%M%S")
+        task = AICullerAdapterTask(
+            runtime=default_aiculler_runtime(),
+            paths=paths,
+            mode="train",
+            ratings_csv=ratings_path,
+            ratings_csv_text=ratings_csv_text,
+            model_version=model_version,
+        )
+        if self._start_ai_training_task(
+            task,
+            action="train_adapter",
+            title="Train Adapter",
+            run_label=f"Adapter {model_version}",
+        ):
+            self.statusBar().showMessage("Training adapter from current ratings...")
+
+    def _evaluate_aiculler_adapter(self) -> None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            self.statusBar().showMessage("Choose a folder before evaluating an adapter.")
+            return
+        model_version = latest_adapter_model_version(aiculler_db_path(paths))
+        if not model_version:
+            self.statusBar().showMessage("Train an adapter before evaluating it.")
+            return
+        task = AICullerAdapterTask(
+            runtime=default_aiculler_runtime(),
+            paths=paths,
+            mode="evaluate",
+            model_version=model_version,
+        )
+        if self._start_ai_training_task(
+            task,
+            action="evaluate_adapter",
+            title="Evaluate Adapter",
+            run_label=f"Adapter {model_version}",
+        ):
+            self.statusBar().showMessage("Evaluating adapter against stored ratings...")
+
+    def _rank_aiculler_adapter(self) -> None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            self.statusBar().showMessage("Choose a folder before ranking with an adapter.")
+            return
+        model_version = latest_adapter_model_version(aiculler_db_path(paths))
+        if not model_version:
+            self.statusBar().showMessage("Train an adapter before ranking with it.")
+            return
+        task = AICullerAdapterTask(
+            runtime=default_aiculler_runtime(),
+            paths=paths,
+            mode="rank",
+            model_version=model_version,
+        )
+        if self._start_ai_training_task(
+            task,
+            action="rank_adapter",
+            title="Rank With Adapter",
+            run_label=f"Adapter {model_version}",
+        ):
+            self.statusBar().showMessage("Ranking current folder with adapter...")
 
     def _prepare_ai_training_data(
         self,
@@ -13749,6 +14101,76 @@ class MainWindow(QMainWindow):
             self.cache_pipeline_label.setText(self._cache_pipeline_badge_text())
             self.cache_pipeline_label.setToolTip(summary_text)
 
+    def _refresh_adapter_status_indicator(self) -> None:
+        if not hasattr(self, "adapter_status_label"):
+            return
+        summary: dict[str, object] | None = None
+        try:
+            paths = self._aiculler_paths_for_current_folder()
+        except Exception:
+            paths = None
+        if paths is not None:
+            try:
+                summary = load_adapter_status_summary(aiculler_db_path(paths))
+            except Exception:
+                summary = None
+        text, tooltip = self._adapter_status_display(summary)
+        self.adapter_status_label.setText(text)
+        self.adapter_status_label.setToolTip(tooltip)
+
+    @staticmethod
+    def _adapter_status_display(summary: dict[str, object] | None) -> tuple[str, str]:
+        if summary is None or not summary.get("db_exists"):
+            return ("Adapter: —", "Run AI Culler on a folder to begin building the adapter.")
+        rating_count = int(summary.get("rating_count") or 0)
+        model_version = str(summary.get("model_version") or "")
+        if not model_version:
+            label = f"Adapter: untrained · {rating_count} label(s)"
+            tooltip = (
+                "No adapter trained for this folder yet.\n"
+                f"Recorded labels: {rating_count}\n"
+                "Use Review Adapter Labels then Train Adapter to fit one."
+            )
+            return (label, tooltip)
+        bits: list[str] = [f"v{model_version}", f"{rating_count} label(s)"]
+        train_mae = summary.get("train_mae")
+        if isinstance(train_mae, (int, float)):
+            bits.append(f"MAE {float(train_mae):.3f}")
+        holdout_mae = summary.get("holdout_mae")
+        if isinstance(holdout_mae, (int, float)):
+            bits.append(f"hold {float(holdout_mae):.3f}")
+        train_lift = summary.get("train_rank_lift")
+        if isinstance(train_lift, (int, float)):
+            bits.append(f"lift {float(train_lift):+.2f}")
+        label = "Adapter: " + " · ".join(bits)
+
+        tooltip_lines = [
+            f"Adapter version: {model_version}",
+        ]
+        created_at = str(summary.get("created_at") or "")
+        if created_at:
+            tooltip_lines.append(f"Trained: {created_at}")
+        tooltip_lines.append(f"Recorded labels: {rating_count}")
+        scored_count = int(summary.get("scored_count") or 0)
+        if scored_count:
+            tooltip_lines.append(f"Adapter-scored images: {scored_count}")
+        train_count = summary.get("train_count")
+        if isinstance(train_count, int):
+            tooltip_lines.append(f"Train fold: {train_count} label(s)")
+        if isinstance(train_mae, (int, float)):
+            tooltip_lines.append(f"Train MAE: {float(train_mae):.4f}")
+        if isinstance(train_lift, (int, float)):
+            tooltip_lines.append(f"Train rank lift: {float(train_lift):+.3f}")
+        holdout_count = summary.get("holdout_count")
+        if isinstance(holdout_count, int):
+            tooltip_lines.append(f"Holdout fold: {holdout_count} label(s)")
+        if isinstance(holdout_mae, (int, float)):
+            tooltip_lines.append(f"Holdout MAE: {float(holdout_mae):.4f}")
+        holdout_lift = summary.get("holdout_rank_lift")
+        if isinstance(holdout_lift, (int, float)):
+            tooltip_lines.append(f"Holdout rank lift: {float(holdout_lift):+.3f}")
+        return (label, "\n".join(tooltip_lines))
+
     def _reset_review_cache_status(self) -> None:
         self._review_grouping_cache_source = "idle"
         self._review_grouping_cache_detail = "Ready"
@@ -14486,12 +14908,14 @@ class MainWindow(QMainWindow):
         current_folder = bool(self._current_folder)
         ai_loaded = self._ai_bundle is not None
         ai_runtime_ready = self._ai_runtime_available()
+        culler_runtime_ready = aiculler_runtime_available()
         ai_model_ready = self._ai_model_available()
         semantic_model_ready = self._semantic_model_available()
         step_start = log_step(
             "ai_toolbar_state.readiness",
             step_start,
             runtime_ready=ai_runtime_ready,
+            culler_ready=culler_runtime_ready,
             model_ready=ai_model_ready,
             semantic_ready=semantic_model_ready,
         )
@@ -14508,8 +14932,7 @@ class MainWindow(QMainWindow):
         if self.actions is not None:
             can_use_ai_tools = (
                 current_folder
-                and ai_runtime_ready
-                and ai_model_ready
+                and culler_runtime_ready
                 and self._active_ai_task is None
                 and self._active_ai_runtime_task is None
                 and self._active_ai_training_task is None
@@ -14541,9 +14964,15 @@ class MainWindow(QMainWindow):
                     )
                 )
             )
-            self.actions.install_ai_runtime.setEnabled(self._active_ai_runtime_task is None and self._active_ai_model_task is None)
-            self.actions.download_ai_model.setEnabled(self._active_ai_model_task is None and self._active_ai_runtime_task is None)
+            adapter_version = latest_adapter_model_version(aiculler_db_path(ai_paths)) if ai_paths is not None else ""
+            rerank_ready = bool(
+                ai_paths
+                and aiculler_rerank_readiness(aiculler_db_path(ai_paths)).get("can_rerank")
+            )
+            self.actions.install_ai_runtime.setEnabled(True)
+            self.actions.download_ai_model.setEnabled(True)
             self.actions.run_ai_culling.setEnabled(can_use_ai_tools)
+            self.actions.quick_rerank_ai_culling.setEnabled(can_use_ai_tools and rerank_ready)
             self.actions.apply_ai_culling.setEnabled(can_apply_ai_cull)
             self.actions.sort_ai_semantic_folders.setEnabled(can_sort_semantic)
             self.actions.reset_ai_review_cache.setEnabled(
@@ -14566,17 +14995,10 @@ class MainWindow(QMainWindow):
                 and not self._is_recycle_folder()
             )
             self.actions.open_ai_data_selection.setEnabled(can_open_training_commands)
-            self.actions.run_full_ai_training_pipeline.setEnabled(can_open_training_commands)
-            self.actions.prepare_ai_training_data.setEnabled(can_open_training_commands)
-            self.actions.build_culling_signals.setEnabled(can_open_training_commands)
-            self.actions.tune_culling_signals.setEnabled(can_open_training_commands)
-            self.actions.evaluate_culling_signals.setEnabled(can_open_training_commands)
+            self.actions.review_ai_adapter_labels.setEnabled(can_open_training_commands and bool(ai_paths and aiculler_db_path(ai_paths).exists()))
             self.actions.train_ai_ranker.setEnabled(can_open_training_commands)
-            self.actions.manage_ai_rankers.setEnabled(can_open_training_commands)
-            self.actions.evaluate_ai_ranker.setEnabled(can_open_training_commands)
-            self.actions.score_ai_with_trained_ranker.setEnabled(can_open_training_commands)
-            self.actions.build_ai_reference_bank.setEnabled(can_use_ai_tools)
-            self.actions.clear_ai_trained_model.setEnabled(can_use_ai_tools)
+            self.actions.evaluate_ai_ranker.setEnabled(can_open_training_commands and bool(adapter_version))
+            self.actions.score_ai_with_trained_ranker.setEnabled(can_open_training_commands and bool(adapter_version))
             self.actions.next_ai_pick.setEnabled(ai_loaded)
             self.actions.next_unreviewed_ai_pick.setEnabled(ai_loaded)
             self.actions.compare_ai_group.setEnabled(ai_loaded and can_compare_group)
@@ -14593,6 +15015,9 @@ class MainWindow(QMainWindow):
         for mode, action in self._ai_state_actions.items():
             action.setEnabled(ai_loaded or mode == AIStateFilter.ALL)
         step_start = log_step("ai_toolbar_state.filter_actions", step_start)
+        self._refresh_adapter_status_indicator()
+        self._refresh_ai_workflow_center()
+        step_start = log_step("ai_toolbar_state.adapter_status", step_start)
 
         if self._active_ai_task is not None:
             self.ai_status_label.setText(self._build_ai_progress_text())
@@ -14684,48 +15109,17 @@ class MainWindow(QMainWindow):
     def _run_ai_pipeline(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        step_start = start
-
-        def log_step(event: str, step_started: float, **fields: object) -> float:
-            if not logger.enabled:
-                return step_started
-            now = time.perf_counter()
-            logger.duration(
-                event,
-                (now - step_started) * 1000.0,
-                folder=self._current_folder,
-                records=len(self._all_records),
-                semantic_sidecar=self._ai_semantic_sidecar_enabled,
-                **fields,
-            )
-            return now
 
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before running AI review")
             if logger.enabled:
                 logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, reason="no_folder")
             return
-
-        runtime_available = self._ensure_ai_runtime_available(title="Run AI Review")
-        step_start = log_step("ai.run_prepare.runtime_check", step_start, available=runtime_available)
-        if not runtime_available:
+        if not self._all_records:
+            self.statusBar().showMessage("No images are loaded for the current folder yet.")
             if logger.enabled:
-                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="runtime_missing")
+                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="no_records")
             return
-        model_available = self._ensure_ai_model_available(title="Run AI Review")
-        step_start = log_step("ai.run_prepare.model_check", step_start, available=model_available)
-        if not model_available:
-            if logger.enabled:
-                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="model_missing")
-            return
-        semantic_available = self._ensure_semantic_model_available(title="Run AI Review")
-        step_start = log_step("ai.run_prepare.semantic_model_check", step_start, available=semantic_available)
-        if not semantic_available:
-            if logger.enabled:
-                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="semantic_model_missing")
-            return
-        self._refresh_ai_runtime_preferences()
-        step_start = log_step("ai.run_prepare.refresh_preferences", step_start)
         if self._active_ai_task is not None:
             self.statusBar().showMessage("AI review is already running for the current folder")
             self._show_ai_review_progress_dialog(folder=self._current_folder)
@@ -14734,132 +15128,15 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            paths = build_ai_workflow_paths(self._current_folder)
-            training_paths = self._ai_training_paths_for_folder(self._current_folder)
-            labels_dir = training_paths.labels_dir if training_paths is not None and training_paths.labels_dir.exists() else None
-            reference_bank_path = Path(self._active_reference_bank_path) if self._active_reference_bank_path else None
-            step_start = log_step(
-                "ai.run_prepare.paths",
-                step_start,
-                has_training_paths=training_paths is not None,
-                has_labels=labels_dir is not None,
-                has_reference_bank=reference_bank_path is not None,
-            )
-            runtime = self._ai_runtime
-            active_checkpoint = self._current_trained_checkpoint_path()
-            if active_checkpoint is not None:
-                runtime = replace(runtime, checkpoint_path=active_checkpoint)
-            runtime = replace(runtime, semantic_sidecar_enabled=self._ai_semantic_sidecar_enabled)
-            step_start = log_step(
-                "ai.run_prepare.runtime",
-                step_start,
-                checkpoint=str(runtime.checkpoint_path),
-                device=runtime.device,
-                batch_size=runtime.batch_size,
-                num_workers=runtime.num_workers,
-                local_stage_mode=runtime.local_stage_mode,
-            )
-            cache_keys = build_ai_stage_cache_keys(
-                self._all_records,
-                runtime,
-                labels_dir=labels_dir,
-                reference_bank_path=reference_bank_path,
-            )
-            step_start = log_step(
-                "ai.run_prepare.cache_keys",
-                step_start,
-                embedding_key=cache_keys.embedding_cache_key,
-                cluster_key=cache_keys.cluster_cache_key,
-                report_key=cache_keys.report_cache_key,
-                semantic_key=cache_keys.semantic_cache_key,
-            )
-            cached_ai_workflow = self._catalog_repository.load_ai_workflow_cache(self._current_folder)
-            step_start = log_step(
-                "ai.run_prepare.workflow_cache_lookup",
-                step_start,
-                hit=cached_ai_workflow is not None,
-                cached_embedding_key=getattr(cached_ai_workflow, "embedding_cache_key", ""),
-                cached_cluster_key=getattr(cached_ai_workflow, "cluster_cache_key", ""),
-                cached_report_key=getattr(cached_ai_workflow, "report_cache_key", ""),
-                cached_semantic_key=getattr(cached_ai_workflow, "semantic_cache_key", ""),
-            )
-            report_ready = ai_report_artifacts_ready(paths)
-            step_start = log_step("ai.run_prepare.report_artifacts", step_start, ready=report_ready)
-            semantic_ready = False
-            if self._ai_semantic_sidecar_enabled:
-                semantic_ready = ai_semantic_artifacts_ready(paths)
-                step_start = log_step("ai.run_prepare.semantic_artifacts", step_start, ready=semantic_ready)
-            if (
-                cached_ai_workflow is not None
-                and cached_ai_workflow.report_cache_key == cache_keys.report_cache_key
-                and report_ready
-                and (
-                    not self._ai_semantic_sidecar_enabled
-                    or (
-                        cached_ai_workflow.semantic_cache_key == cache_keys.semantic_cache_key
-                        and semantic_ready
-                    )
-                )
-            ):
-                if self._load_hidden_ai_results_for_current_folder(show_message=False):
-                    step_start = log_step("ai.run_prepare.reuse_hidden_results", step_start, reused=True)
-                    self._ai_stage_index = 4 if self._ai_semantic_sidecar_enabled else 3
-                    self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
-                    self._ai_stage_message = "Reused cached AI results"
-                    self._ai_progress_current = 1
-                    self._ai_progress_total = 1
-                    self._ai_progress_eta_text = ""
-                    self.mode_tabs.setCurrentIndex(1)
-                    self._update_ai_toolbar_state()
-                    self.statusBar().showMessage(f"Reused cached AI review results for {self._current_folder}")
-                    if logger.enabled:
-                        logger.duration(
-                            "ai.run_prepare.reused_total",
-                            (time.perf_counter() - start) * 1000.0,
-                            folder=self._current_folder,
-                            records=len(self._all_records),
-                            semantic_sidecar=self._ai_semantic_sidecar_enabled,
-                        )
-                    return
-                step_start = log_step("ai.run_prepare.reuse_hidden_results", step_start, reused=False)
-            skip_extract = False
-            skip_cluster = False
-            cluster_ready = ai_cluster_artifacts_ready(paths)
-            step_start = log_step("ai.run_prepare.cluster_artifacts", step_start, ready=cluster_ready)
-            embedding_ready = ai_embedding_artifacts_ready(paths)
-            step_start = log_step("ai.run_prepare.embedding_artifacts", step_start, ready=embedding_ready)
-            if (
-                cached_ai_workflow is not None
-                and cached_ai_workflow.cluster_cache_key == cache_keys.cluster_cache_key
-                and cluster_ready
-            ):
-                skip_extract = True
-                skip_cluster = True
-            elif (
-                cached_ai_workflow is not None
-                and cached_ai_workflow.embedding_cache_key == cache_keys.embedding_cache_key
-                and embedding_ready
-            ):
-                skip_extract = True
-            elif cached_ai_workflow is None and cluster_ready:
-                # Interrupted runs can leave valid folder-local DINO artifacts before the
-                # catalog cache is saved. Reuse them so semantic recovery does not start over.
-                skip_extract = True
-                skip_cluster = True
-            elif cached_ai_workflow is None and embedding_ready:
-                skip_extract = True
-            step_start = log_step("ai.run_prepare.cache_decision", step_start, skip_extract=skip_extract, skip_cluster=skip_cluster)
-            task = AIRunTask(
+            runtime = default_aiculler_runtime()
+            runtime.validate()
+            paths = build_aiculler_workflow_paths(self._current_folder)
+            task = AICullerRunTask(
                 folder=Path(self._current_folder),
                 runtime=runtime,
                 paths=paths,
-                labels_dir=labels_dir,
-                reference_bank_path=reference_bank_path,
-                skip_extract=skip_extract,
-                skip_cluster=skip_cluster,
-                detailed_progress=self._ai_review_detail_progress_enabled,
+                records=tuple(record for record in self._all_records if not record.is_folder),
             )
-            step_start = log_step("ai.run_prepare.task_construct", step_start)
         except Exception as exc:
             if logger.enabled:
                 logger.duration(
@@ -14879,23 +15156,16 @@ class MainWindow(QMainWindow):
         task.signals.finished.connect(self._handle_ai_run_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_ai_run_failed, Qt.ConnectionType.QueuedConnection)
         task.signals.cancelled.connect(self._handle_ai_run_cancelled, Qt.ConnectionType.QueuedConnection)
-        step_start = log_step("ai.run_prepare.signal_connect", step_start)
         self._active_ai_task = task
         self._defer_background_review_work_for_ai(reason="run_ai_review")
-        step_start = log_step("ai.run_prepare.defer_background_work", step_start)
         self._active_ai_run_start_perf = start if logger.enabled else 0.0
-        self._active_ai_embedding_cache_key = cache_keys.embedding_cache_key
-        self._active_ai_cluster_cache_key = cache_keys.cluster_cache_key
-        self._active_ai_report_cache_key = cache_keys.report_cache_key
-        self._active_ai_semantic_cache_key = cache_keys.semantic_cache_key
+        self._active_ai_embedding_cache_key = ""
+        self._active_ai_cluster_cache_key = ""
+        self._active_ai_report_cache_key = ""
+        self._active_ai_semantic_cache_key = ""
         self._ai_stage_index = 0
-        self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
-        if skip_cluster:
-            self._ai_stage_message = "Queued AI review (reusing cached embeddings and clusters)"
-        elif skip_extract:
-            self._ai_stage_message = "Queued AI review (reusing cached embeddings)"
-        else:
-            self._ai_stage_message = "Queued AI review"
+        self._ai_stage_total = 5
+        self._ai_stage_message = "Queued AI review"
         self._ai_progress_current = 0
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
@@ -14907,25 +15177,90 @@ class MainWindow(QMainWindow):
                 message=self._ai_stage_message,
             )
         self._update_ai_toolbar_state()
-        step_start = log_step("ai.run_prepare.toolbar_state", step_start)
-        if skip_cluster:
-            self.statusBar().showMessage(f"Queued AI review for {self._current_folder} using cached embeddings and clusters")
-        elif skip_extract:
-            self.statusBar().showMessage(f"Queued AI review for {self._current_folder} using cached embeddings")
-        else:
-            self.statusBar().showMessage(f"Queued AI review for {self._current_folder}")
+        self.statusBar().showMessage(f"Queued AI review for {self._current_folder}")
         self._ai_run_pool.start(task)
-        step_start = log_step("ai.run_prepare.pool_start", step_start)
         if logger.enabled:
             logger.duration(
                 "ai.run_queued",
                 (time.perf_counter() - start) * 1000.0,
                 folder=self._current_folder,
                 records=len(self._all_records),
-                skip_extract=skip_extract,
-                skip_cluster=skip_cluster,
-                semantic_sidecar=self._ai_semantic_sidecar_enabled,
+                backend="cli-culler",
             )
+
+    def _rerank_ai_pipeline(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before reranking.")
+            return
+        if self._active_ai_task is not None:
+            self.statusBar().showMessage("AI review is already running for the current folder")
+            self._show_ai_review_progress_dialog(folder=self._current_folder)
+            return
+        try:
+            paths = build_aiculler_workflow_paths(self._current_folder)
+        except Exception as exc:
+            QMessageBox.warning(self, "Quick Rerank", f"Could not resolve AI paths.\n\n{exc}")
+            return
+        readiness = aiculler_rerank_readiness(aiculler_db_path(paths))
+        if not readiness.get("can_rerank"):
+            QMessageBox.information(
+                self,
+                "Quick Rerank",
+                "Run AI Culler at least once for this folder before using Quick Rerank.\n\n"
+                "Quick Rerank reuses the existing ingest, categories, and clusters.",
+            )
+            return
+        try:
+            runtime = default_aiculler_runtime()
+            runtime.validate()
+            task = AICullerRunTask(
+                folder=Path(self._current_folder),
+                runtime=runtime,
+                paths=paths,
+                records=tuple(record for record in self._all_records if not record.is_folder),
+                stages=("rank",),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Quick Rerank", f"Could not prepare the rerank.\n\n{exc}")
+            return
+        task.signals.started.connect(self._handle_ai_run_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.stage.connect(self._handle_ai_run_stage, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.detail.connect(self._handle_ai_run_detail, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_ai_run_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_ai_run_failed, Qt.ConnectionType.QueuedConnection)
+        task.signals.cancelled.connect(self._handle_ai_run_cancelled, Qt.ConnectionType.QueuedConnection)
+        self._active_ai_task = task
+        self._defer_background_review_work_for_ai(reason="rerank_ai_review")
+        self._active_ai_run_start_perf = 0.0
+        self._active_ai_embedding_cache_key = ""
+        self._active_ai_cluster_cache_key = ""
+        self._active_ai_report_cache_key = ""
+        self._active_ai_semantic_cache_key = ""
+        self._ai_stage_index = 0
+        self._ai_stage_total = 2
+        self._ai_stage_message = "Queued quick rerank"
+        self._ai_progress_current = 0
+        self._ai_progress_total = 0
+        self._ai_progress_eta_text = ""
+        self._show_ai_review_progress_dialog(folder=self._current_folder, reset=True)
+        if self._ai_review_progress_dialog is not None:
+            self._ai_review_progress_dialog.set_stage(
+                stage_index=self._ai_stage_index,
+                stage_total=self._ai_stage_total,
+                message=self._ai_stage_message,
+            )
+        self._update_ai_toolbar_state()
+        ready_count = int(readiness.get("ready_image_count") or 0)
+        file_records = sum(1 for record in self._all_records if not record.is_folder)
+        if ready_count and file_records and ready_count != file_records:
+            self.statusBar().showMessage(
+                f"Quick rerank: scoring {ready_count} indexed image(s). "
+                f"Folder has {file_records} — run AI Culler to pick up new files."
+            )
+        else:
+            self.statusBar().showMessage(f"Queued quick rerank for {self._current_folder}")
+        self._ai_run_pool.start(task)
 
     def _ai_cull_record_groups(self, records: list[ImageRecord] | tuple[ImageRecord, ...] | None = None) -> dict[AICullBucket, list[ImageRecord]]:
         grouped: dict[AICullBucket, list[ImageRecord]] = {bucket: [] for bucket in AICullBucket}
@@ -15161,13 +15496,13 @@ class MainWindow(QMainWindow):
         if self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.set_stage(
                 stage_index=0,
-                stage_total=4 if self._ai_semantic_sidecar_enabled else 3,
+                stage_total=max(1, self._ai_stage_total),
                 message="Preparing AI review",
             )
         if normalized_path_key(folder) != normalized_path_key(self._current_folder):
             return
         self._ai_stage_index = 0
-        self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
+        self._ai_stage_total = max(1, self._ai_stage_total)
         self._ai_stage_message = "Preparing AI review"
         self._ai_progress_current = 0
         self._ai_progress_total = 0
