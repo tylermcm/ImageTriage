@@ -75,7 +75,9 @@ class MainWindowActions:
     ai_mode: QAction
     install_ai_runtime: QAction
     download_ai_model: QAction
+    open_ai_workflow_center: QAction
     run_ai_culling: QAction
+    quick_rerank_ai_culling: QAction
     apply_ai_culling: QAction
     sort_ai_semantic_folders: QAction
     reset_ai_review_cache: QAction
@@ -84,18 +86,11 @@ class MainWindowActions:
     clear_ai_results: QAction
     open_ai_report: QAction
     show_ai_review_summary: QAction
-    prepare_ai_training_data: QAction
+    review_ai_adapter_labels: QAction
     open_ai_data_selection: QAction
-    run_full_ai_training_pipeline: QAction
     train_ai_ranker: QAction
-    manage_ai_rankers: QAction
     evaluate_ai_ranker: QAction
     score_ai_with_trained_ranker: QAction
-    build_culling_signals: QAction
-    tune_culling_signals: QAction
-    evaluate_culling_signals: QAction
-    build_ai_reference_bank: QAction
-    clear_ai_trained_model: QAction
     next_ai_pick: QAction
     next_unreviewed_ai_pick: QAction
     compare_ai_group: QAction
@@ -351,19 +346,31 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
         install_ai_runtime=_create_action(
             window,
-            "Install AI Runtime...",
-            slot=window._install_ai_runtime,
+            "Open CLI-Culler Folder",
+            slot=window._open_aiculler_root,
         ),
         download_ai_model=_create_action(
             window,
-            "Download AI Model...",
-            slot=window._download_ai_model,
+            "Edit Category Prompts...",
+            slot=window._open_aiculler_categories,
+        ),
+        open_ai_workflow_center=_create_action(
+            window,
+            "AI Workflow Center...",
+            slot=window._open_ai_workflow_center,
+            shortcut="Ctrl+Shift+W",
         ),
         run_ai_culling=_create_action(
             window,
-            "Run AI Review",
+            "Run AI Culler",
             slot=window._run_ai_pipeline,
             icon=QStyle.StandardPixmap.SP_MediaPlay,
+        ),
+        quick_rerank_ai_culling=_create_action(
+            window,
+            "Quick Rerank",
+            slot=window._rerank_ai_pipeline,
+            shortcut="Ctrl+Shift+Y",
         ),
         apply_ai_culling=_create_action(
             window,
@@ -372,7 +379,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         sort_ai_semantic_folders=_create_action(
             window,
-            "Sort Into Semantic Folders...",
+            "Move Into AI Categories...",
             slot=window._sort_images_into_semantic_folders,
         ),
         reset_ai_review_cache=_create_action(
@@ -385,54 +392,29 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         clear_ai_results=_create_action(window, "Clear AI Results", slot=window._clear_ai_results),
         open_ai_report=_create_action(window, "Open AI Report", slot=window._open_ai_report),
         show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._show_last_ai_review_summary),
-        prepare_ai_training_data=_create_action(window, "Prepare Folder For AI", slot=window._prepare_ai_training_data),
+        review_ai_adapter_labels=_create_action(
+            window,
+            "Review Adapter Labels...",
+            slot=window._review_aiculler_adapter_labels,
+        ),
         open_ai_data_selection=_create_action(
             window,
-            "Speed Cull...",
-            slot=window._open_ai_data_selection,
+            "Prepare Adapter Ratings",
+            slot=window._export_aiculler_ratings,
             shortcut="Ctrl+Shift+L",
-        ),
-        run_full_ai_training_pipeline=_create_action(
-            window,
-            "Run Full Training Pipeline...",
-            slot=window._run_full_ai_training_pipeline,
-            shortcut="Ctrl+Shift+Y",
         ),
         train_ai_ranker=_create_action(
             window,
-            "Train Ranker...",
-            slot=window._train_ai_ranker,
+            "Train Adapter...",
+            slot=window._train_aiculler_adapter,
             shortcut="Ctrl+Shift+T",
         ),
-        manage_ai_rankers=_create_action(
-            window,
-            "Ranker Workflow...",
-            slot=window._manage_ai_rankers,
-            shortcut="Ctrl+Shift+K",
-        ),
-        evaluate_ai_ranker=_create_action(window, "Evaluate Trained Ranker", slot=window._evaluate_ai_ranker),
+        evaluate_ai_ranker=_create_action(window, "Evaluate Adapter", slot=window._evaluate_aiculler_adapter),
         score_ai_with_trained_ranker=_create_action(
             window,
-            "Score Current Folder With Active Ranker",
-            slot=window._score_current_folder_with_trained_ranker,
+            "Rank Current Folder With Adapter",
+            slot=window._rank_aiculler_adapter,
         ),
-        build_culling_signals=_create_action(
-            window,
-            "Build Image Features",
-            slot=window._build_culling_signals_for_current_folder,
-        ),
-        tune_culling_signals=_create_action(
-            window,
-            "Train Personal Model...",
-            slot=window._tune_culling_signals,
-        ),
-        evaluate_culling_signals=_create_action(
-            window,
-            "Evaluate Personal Model",
-            slot=window._evaluate_culling_signals,
-        ),
-        build_ai_reference_bank=_create_action(window, "Build Reference Bank...", slot=window._build_ai_reference_bank),
-        clear_ai_trained_model=_create_action(window, "Clear Personal Model...", slot=window._clear_ai_trained_model),
         next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+P"),
         next_unreviewed_ai_pick=_create_action(
             window,

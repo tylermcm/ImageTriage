@@ -10,16 +10,11 @@ from .theme import AppearanceMode
 
 
 def _add_ai_training_actions(menu: QMenu, actions: MainWindowActions) -> None:
-    # Training surface for the transparent combiner. Order follows the pipeline:
-    # 1) Prepare folder, 2) Build features, 3) Train, 4) Evaluate, plus optional
-    # reference bank.
-    menu.addAction(actions.prepare_ai_training_data)
-    menu.addAction(actions.build_culling_signals)
-    menu.addAction(actions.tune_culling_signals)
-    menu.addAction(actions.evaluate_culling_signals)
-    menu.addSeparator()
-    menu.addAction(actions.build_ai_reference_bank)
-    menu.addAction(actions.clear_ai_trained_model)
+    menu.addAction(actions.review_ai_adapter_labels)
+    menu.addAction(actions.open_ai_data_selection)
+    menu.addAction(actions.train_ai_ranker)
+    menu.addAction(actions.evaluate_ai_ranker)
+    menu.addAction(actions.score_ai_with_trained_ranker)
 
 
 def _add_selection_actions(menu: QMenu, actions: MainWindowActions) -> None:
@@ -137,7 +132,6 @@ def build_main_menu_bar(
 
     review_menu = menu_bar.addMenu("&Review")
     review_menu.addAction(actions.open_preview)
-    review_menu.addAction(actions.open_ai_data_selection)
     review_menu.addAction(actions.winner_ladder_mode)
     review_menu.addSeparator()
     _add_selection_actions(review_menu, actions)
@@ -183,12 +177,15 @@ def build_main_menu_bar(
         workflow_menu.addMenu(workflow_recipe_menu)
 
     ai_menu = menu_bar.addMenu("&AI")
+    ai_menu.addAction(actions.open_ai_workflow_center)
+    ai_menu.addSeparator()
     ai_menu.addAction(actions.run_ai_culling)
+    ai_menu.addAction(actions.quick_rerank_ai_culling)
     ai_menu.addAction(actions.apply_ai_culling)
     ai_menu.addAction(actions.sort_ai_semantic_folders)
     ai_menu.addSeparator()
 
-    training_menu = ai_menu.addMenu("Training")
+    training_menu = ai_menu.addMenu("Adapter")
     _add_ai_training_actions(training_menu, actions)
 
     results_menu = ai_menu.addMenu("Results")
@@ -208,7 +205,7 @@ def build_main_menu_bar(
     review_tools_menu.addAction(actions.taste_calibration_wizard)
 
     ai_menu.addSeparator()
-    setup_menu = ai_menu.addMenu("Setup")
+    setup_menu = ai_menu.addMenu("Runtime")
     setup_menu.addAction(actions.install_ai_runtime)
     setup_menu.addAction(actions.download_ai_model)
     setup_menu.addSeparator()
