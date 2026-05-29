@@ -256,48 +256,102 @@ class IngestionEngine:
 
     def scan(self, folder: str | Path, *, recursive: bool = True) -> list[Path]:
         root = Path(folder)
-        iterator = root.rglob("*") if recursive else root.glob("*")
+        if recursive:
+            return sorted(self._iter_visible_images(root))
         return sorted(
             path
-            for path in iterator
+            for path in root.glob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
         )
+
+    @staticmethod
+    def _iter_visible_images(root: Path) -> Iterable[Path]:
+        # Walk the tree explicitly so we can prune dotted/hidden directories
+        # (e.g. .image_triage_ai/aiculler_cache) instead of rglob walking into
+        # them and picking up cached preview JPGs as fresh source images.
+        stack: list[Path] = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                entries = list(current.iterdir())
+            except (PermissionError, FileNotFoundError):
+                continue
+            for entry in entries:
+                name = entry.name
+                if name.startswith(".") or name == "__pycache__":
+                    continue
+                if entry.is_dir():
+                    stack.append(entry)
+                elif entry.is_file() and entry.suffix.lower() in IMAGE_EXTENSIONS:
+                    yield entry
 
     def ingest(self, folder: str | Path, *, recursive: bool = True) -> list[int]:
         paths = self.scan(folder, recursive=recursive)
         return self.ingest_paths(paths)
 
     def ingest_paths(self, paths: Iterable[str | Path]) -> list[int]:
+        """Two-stage pipeline: preview extraction overlaps with feature extract.
+
+        Stage 1 (preview_pool) reads each source image and decodes a preview
+        (mostly IO + libraw; releases the GIL during the heavy decode). Stage 2
+        (feature_pool) runs the CLIP / TOPIQ ONNX inferences on the preview
+        path. Because the stages run in separate pools, a preview worker can
+        immediately start the next image while feature workers are still busy
+        with the previous batch — eliminating the visible "4 previewed, 4
+        ready, 4 previewed, 4 ready" cadence of the old single-pool design.
+        """
+
         image_ids: list[int] = []
         path_iter = iter(paths)
-        max_in_flight = self.max_workers * 2
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            futures = set()
+        # Each stage gets max_workers slots. Worst case in flight =
+        # max_workers (preview) + max_workers (feature).
+        preview_workers = self.max_workers
+        feature_workers = self.max_workers
+        max_preview_in_flight = preview_workers * 2
 
-            def submit_next() -> bool:
+        with ThreadPoolExecutor(max_workers=preview_workers, thread_name_prefix="ingest-preview") as preview_pool, \
+                ThreadPoolExecutor(max_workers=feature_workers, thread_name_prefix="ingest-feature") as feature_pool:
+            preview_futures: set = set()
+            feature_futures: set = set()
+
+            def submit_preview() -> bool:
                 try:
                     path = next(path_iter)
                 except StopIteration:
                     return False
-                futures.add(pool.submit(self._ingest_one, Path(path)))
+                preview_futures.add(preview_pool.submit(self._do_preview, Path(path)))
                 return True
 
-            for _ in range(max_in_flight):
-                if not submit_next():
+            for _ in range(max_preview_in_flight):
+                if not submit_preview():
                     break
 
-            while futures:
-                done, futures = wait(futures, return_when=FIRST_COMPLETED)
+            while preview_futures or feature_futures:
+                pending = preview_futures | feature_futures
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
                 for future in done:
-                    image_id = future.result()
-                    if image_id is not None:
-                        image_ids.append(image_id)
-                    submit_next()
+                    if future in preview_futures:
+                        preview_futures.discard(future)
+                        preview_result = future.result()
+                        if preview_result is not None:
+                            if self.extractor is not None:
+                                feature_futures.add(
+                                    feature_pool.submit(self._do_features, preview_result)
+                                )
+                            else:
+                                image_ids.append(preview_result["image_id"])
+                        submit_preview()
+                    else:
+                        feature_futures.discard(future)
+                        image_id = future.result()
+                        if image_id is not None:
+                            image_ids.append(image_id)
         return image_ids
 
-    def _ingest_one(self, source_path: Path) -> int | None:
+    def _do_preview(self, source_path: Path) -> dict | None:
+        """Stage 1: extract preview, record image, emit 'previewed' event."""
+
         started_at = time.perf_counter()
-        image_id: int | None = None
         try:
             preview_started_at = time.perf_counter()
             preview_path, (width, height) = self.preview_extractor.extract(source_path)
@@ -319,39 +373,65 @@ class IngestionEngine:
                     total_seconds=time.perf_counter() - started_at,
                 )
             )
-            if self.extractor is not None:
-                feature_started_at = time.perf_counter()
-                features = self.extractor.extract_features(preview_path)
-                feature_seconds = time.perf_counter() - feature_started_at
-                self.store.save_features(
-                    image_id,
-                    np.asarray(features["embedding"], dtype=np.float32),
-                    technical_score=float(features["technical_score"]),
-                    aesthetic_prior=float(features["technical_score"]),
-                    status="ready",
-                )
-                self._emit(
-                    IngestionEvent(
-                        image_id,
-                        source_path,
-                        preview_path,
-                        "ready",
-                        preview_seconds=preview_seconds,
-                        feature_seconds=feature_seconds,
-                        total_seconds=time.perf_counter() - started_at,
-                    )
-                )
-            return image_id
+            return {
+                "image_id": image_id,
+                "source_path": source_path,
+                "preview_path": preview_path,
+                "preview_seconds": preview_seconds,
+                "started_at": started_at,
+            }
         except Exception as exc:
-            if image_id is None:
-                image_id = self.store.upsert_image(source_path, status="error", error=str(exc))
-            else:
-                self.store.mark_error(image_id, str(exc))
+            image_id = self.store.upsert_image(source_path, status="error", error=str(exc))
             self._emit(
                 IngestionEvent(
                     image_id,
                     source_path,
                     None,
+                    "error",
+                    str(exc),
+                    total_seconds=time.perf_counter() - started_at,
+                )
+            )
+            return None
+
+    def _do_features(self, preview_result: dict) -> int | None:
+        """Stage 2: run feature extraction on a preview, emit 'ready' event."""
+
+        image_id: int = preview_result["image_id"]
+        source_path: Path = preview_result["source_path"]
+        preview_path: Path = preview_result["preview_path"]
+        preview_seconds: float = preview_result["preview_seconds"]
+        started_at: float = preview_result["started_at"]
+        try:
+            feature_started_at = time.perf_counter()
+            features = self.extractor.extract_features(preview_path)
+            feature_seconds = time.perf_counter() - feature_started_at
+            self.store.save_features(
+                image_id,
+                np.asarray(features["embedding"], dtype=np.float32),
+                technical_score=float(features["technical_score"]),
+                aesthetic_prior=float(features["technical_score"]),
+                status="ready",
+            )
+            self._emit(
+                IngestionEvent(
+                    image_id,
+                    source_path,
+                    preview_path,
+                    "ready",
+                    preview_seconds=preview_seconds,
+                    feature_seconds=feature_seconds,
+                    total_seconds=time.perf_counter() - started_at,
+                )
+            )
+            return image_id
+        except Exception as exc:
+            self.store.mark_error(image_id, str(exc))
+            self._emit(
+                IngestionEvent(
+                    image_id,
+                    source_path,
+                    preview_path,
                     "error",
                     str(exc),
                     total_seconds=time.perf_counter() - started_at,

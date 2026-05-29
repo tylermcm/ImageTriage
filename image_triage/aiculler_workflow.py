@@ -108,6 +108,10 @@ class AICullerRunTask(QRunnable):
         self.setAutoDelete(True)
         self._cancel_requested = False
         self._current_process: subprocess.Popen[str] | None = None
+        # Monotonic counter of completed (ready/error) images. Used instead
+        # of the per-event image index so the progress bar stays monotonic
+        # when the two-stage pipeline retires images out of submission order.
+        self._completed_image_count = 0
 
     def cancel(self) -> None:
         self._cancel_requested = True
@@ -280,8 +284,25 @@ class AICullerRunTask(QRunnable):
         self.signals.detail.emit(str(self.folder), line)
         match = INGEST_EVENT_PATTERN.match(line)
         if match is not None and self.records:
-            current = min(int(match.group("current")), len(self.records))
-            self.signals.progress.emit(str(self.folder), stage_message, current, len(self.records), "")
+            status = (match.group("status") or "").strip().lower()
+            # CLI-Culler's two-stage pipeline emits both "previewed" and
+            # "ready" events per image, and with workers > 1 they interleave
+            # AND retire out of submission order. Driving the bar off the
+            # raw image index makes it jitter both ways. Instead: count
+            # completed images monotonically (each "ready"/"error" bumps
+            # the counter once), ignore "previewed" for progress purposes
+            # (it still flows through the detail signal for the log panel).
+            if status in {"ready", "error"}:
+                self._completed_image_count = min(
+                    self._completed_image_count + 1, len(self.records)
+                )
+                self.signals.progress.emit(
+                    str(self.folder),
+                    stage_message,
+                    self._completed_image_count,
+                    len(self.records),
+                    "",
+                )
             return
         self.signals.progress.emit(str(self.folder), stage_message, 0, 0, "")
 
@@ -465,7 +486,7 @@ class AICullerAdapterTask(QRunnable):
             raise RuntimeError(f"{stage_message} failed." + (f"\n\n{tail}" if tail else ""))
 
 
-def default_aiculler_runtime() -> AICullerRuntime:
+def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
     root = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_ROOT", "") or DEFAULT_AICULLER_ROOT).expanduser().resolve()
     python_executable = Path(
         os.environ.get("IMAGE_TRIAGE_AICULLER_PYTHON", "")
@@ -503,7 +524,7 @@ def default_aiculler_runtime() -> AICullerRuntime:
         tag_penalties_csv=tag_penalties_path.expanduser().resolve() if tag_penalties_path.exists() else None,
         avoid_tags=avoid_tags,
         penalty_weight=float(os.environ.get("IMAGE_TRIAGE_AICULLER_PENALTY_WEIGHT", "0.85") or "0.85"),
-        workers=int(os.environ.get("IMAGE_TRIAGE_AICULLER_WORKERS", "4") or "4"),
+        workers=int(workers) if workers is not None and workers > 0 else int(os.environ.get("IMAGE_TRIAGE_AICULLER_WORKERS", "4") or "4"),
     )
 
 
@@ -895,11 +916,33 @@ def _load_ranked_gui_rows(db_path: Path, run_id: str) -> list[dict[str, object]]
     return _rows_to_gui_output(image_rows)
 
 
+# How much weight the tag-penalty-aware base score gets vs. the adapter score
+# when blending. Range 0.0-1.0 (window pushes the user's slider value here).
+# Default 0.65 = base score (with penalties) wins over adapter; 1.0 = adapter
+# is completely ignored; 0.0 = adapter only, penalties have no influence.
+_BASE_SCORE_BLEND_WEIGHT = 0.65
+
+
+def set_base_score_blend_weight(weight: float) -> None:
+    """Update the blend weight between the tag-penalty-aware base score and
+    the adapter score. Called by MainWindow whenever the user changes the
+    'Base score weight' slider in Settings -> AI."""
+
+    global _BASE_SCORE_BLEND_WEIGHT
+    _BASE_SCORE_BLEND_WEIGHT = max(0.0, min(1.0, float(weight)))
+
+
+def current_base_score_blend_weight() -> float:
+    return _BASE_SCORE_BLEND_WEIGHT
+
+
 def _load_adapter_gui_rows(db_path: Path, model_version: str) -> list[dict[str, object]]:
+    base_weight = _BASE_SCORE_BLEND_WEIGHT
+    adapter_weight = 1.0 - base_weight
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
         image_rows = connection.execute(
-            """
+            f"""
             SELECT
                 images.id,
                 images.source_path,
@@ -908,8 +951,8 @@ def _load_adapter_gui_rows(db_path: Path, model_version: str) -> list[dict[str, 
                 images.tag_penalty,
                 images.tag_flags,
                 (
-                    COALESCE(images.final_score, images.technical_score, 0.0) * 0.50
-                    + adapter_scores.adapter_score * 0.50
+                    COALESCE(images.final_score, images.technical_score, 0.0) * {base_weight:.6f}
+                    + adapter_scores.adapter_score * {adapter_weight:.6f}
                 ) AS final_score,
                 COALESCE(adapter_scores.primary_category, image_categories.primary_category, 'uncategorized') AS primary_category,
                 adapter_scores.cluster_id,
