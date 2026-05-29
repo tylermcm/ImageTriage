@@ -103,14 +103,41 @@ class TechnicalTagScorer:
 def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
     with Image.open(image_path) as opened:
         img = opened.convert("RGB")
-    img.thumbnail((1024, 1024), Image.Resampling.BILINEAR)
+    # Larger sample window: 1024-px thumbs lose almost all evidence of
+    # camera-shake / motion blur from a 24MP raw. 2048 px preserves enough
+    # high-frequency content for Laplacian variance to discriminate sharp
+    # from soft frames without making per-image cost unreasonable.
+    img.thumbnail((2048, 2048), Image.Resampling.BILINEAR)
     rgb = np.asarray(img, dtype=np.float32) / 255.0
     gray = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
+    # Focus / sharpness: variance of the Laplacian (the canonical sharpness
+    # metric in OpenCV / scikit-image). The first-derivative magnitude we used
+    # previously gets fooled by high-frequency static texture (Spanish moss,
+    # tree foliage), saturating to "sharp" even when the image is clearly
+    # motion-blurred. The Laplacian (second derivative) falls off much faster
+    # under any kind of blur because blur smooths the local intensity curve.
+    laplacian = (
+        gray[:-2, 1:-1]
+        + gray[2:, 1:-1]
+        + gray[1:-1, :-2]
+        + gray[1:-1, 2:]
+        - 4.0 * gray[1:-1, 1:-1]
+    )
+    laplacian_variance = float(np.var(laplacian))
+    # Multiplier 80 maps a sharp landscape (lap_var ~0.015+) to ~1.0 and a
+    # noticeably soft frame (lap_var ~0.003) to ~0.24 (below the default
+    # outoffocus threshold of 0.30). Tune via tag_penalties.csv if needed.
+    focus_score = float(np.clip(laplacian_variance * 80.0, 0.0, 1.0))
+
+    # First-derivative gradients still drive motion-blur direction. With the
+    # new Laplacian-based focus_score being trustworthy now, the original
+    # softness * directional_balance formula gives clean signal: it fires
+    # when the image is both visibly soft AND has axis-asymmetric edges
+    # (the signature of a camera pan or shake along one axis).
     gx = np.diff(gray, axis=1)
     gy = np.diff(gray, axis=0)
     edge_energy = float(np.mean(np.abs(gx)) + np.mean(np.abs(gy)))
-    focus_score = float(np.clip(edge_energy * 18.0, 0.0, 1.0))
     directional_balance = abs(float(np.mean(np.abs(gx))) - float(np.mean(np.abs(gy)))) / (edge_energy + 1e-6)
     motion_blur_score = float(np.clip((1.0 - focus_score) * directional_balance, 0.0, 1.0))
 

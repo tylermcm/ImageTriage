@@ -2750,6 +2750,11 @@ class MainWindow(QMainWindow):
         # Reject because they're non-best frames in a visually similar burst.
         # Recomputed whenever the bundle OR review_intelligence changes.
         self._ai_demoted_burst_paths: set[str] = set()
+        # Map of fast-path-key -> AIConfidenceBucket name for paths the user
+        # has labeled / disputed. Overrides the AI's bucket immediately so the
+        # user doesn't have to wait for the next adapter retrain to see their
+        # decision reflected in AI Review.
+        self._user_label_bucket_overrides: dict[str, str] = {}
         # AI Review forces Smart Groups/Stacks off too (the cluster context
         # was producing misleading "weak cluster leader" rejects). We snapshot
         # the toggles the same way as adapter review so they can be restored
@@ -8433,7 +8438,9 @@ class MainWindow(QMainWindow):
                 self._ai_review_burst_snapshot = burst_state
             self._apply_ai_review_burst_lockout(locked=True)
             # Push disputed-path set into the grid so the orange Disputed badge
-            # paints on returning to AI Review across sessions.
+            # paints on returning to AI Review across sessions, and rebuild
+            # the user-label bucket override map so the AI bucket reflects any
+            # labels saved in a previous session.
             paths = self._aiculler_paths_for_current_folder()
             if paths is not None:
                 try:
@@ -8441,6 +8448,7 @@ class MainWindow(QMainWindow):
                     self.grid.set_disputed_paths(set(disputes.keys()))
                 except Exception:
                     pass
+            self._recompute_user_label_bucket_overrides()
             # Don't call _load_hidden_ai_results_for_current_folder /
             # _restore_ai_results here — both do synchronous load_ai_bundle()
             # calls and would freeze the UI on slow/UNC paths. Inline the
@@ -10912,6 +10920,9 @@ class MainWindow(QMainWindow):
 
         self._save_aiculler_internal_labels(paths, labels, disputes=disputes)
         self.grid.set_disputed_paths(set(disputes.keys()))
+        # Override the AI bucket on the spot so the dispute is visible
+        # immediately without waiting for the next adapter retrain.
+        self._recompute_user_label_bucket_overrides()
         sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings else ""
         self.statusBar().showMessage(
             f"Disputed AI on {record.name} -> {normalized}"
@@ -11020,6 +11031,9 @@ class MainWindow(QMainWindow):
                 labels.pop(sibling_path, None)
         self._save_aiculler_internal_labels(paths, labels)
         self.grid.update_adapter_review_labels(labels)
+        # Reflect the label in the AI Review bucket immediately so user
+        # decisions show up the moment they save.
+        self._recompute_user_label_bucket_overrides()
         self._refresh_adapter_review_banner()
         sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings else ""
         self.statusBar().showMessage(
@@ -16944,7 +16958,77 @@ class MainWindow(QMainWindow):
             return None
         result = find_ai_result_for_record(self._ai_bundle, record, preferred_path=preferred_path)
         refined = refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
-        return self._apply_burst_dedup_to_ai_result(refined, record)
+        deduped = self._apply_burst_dedup_to_ai_result(refined, record)
+        return self._apply_user_label_override(deduped, record)
+
+    # Map adapter labels (1-5 ratings) to confidence buckets. Used by the
+    # user-label override so a disputed/labeled card flips bucket immediately
+    # without waiting for the next training pass.
+    _USER_LABEL_TO_BUCKET = {
+        "hero": "OBVIOUS_WINNER",
+        "portfolio": "OBVIOUS_WINNER",
+        "strong": "LIKELY_KEEPER",
+        "keep": "LIKELY_KEEPER",
+        "good": "LIKELY_KEEPER",
+        "k": "LIKELY_KEEPER",
+        "yes": "LIKELY_KEEPER",
+        "1": "LIKELY_KEEPER",
+        "maybe": "NEEDS_REVIEW",
+        "weak": "LIKELY_REJECT",
+        "reject": "LIKELY_REJECT",
+        "bad": "LIKELY_REJECT",
+        "r": "LIKELY_REJECT",
+        "no": "LIKELY_REJECT",
+        "0": "LIKELY_REJECT",
+    }
+
+    def _apply_user_label_override(self, result, record):
+        """If the user has saved a label for this path (via adapter combo or
+        dispute chord), use it as the authoritative bucket. The user's call
+        always wins over the model's call in the live view — disputes don't
+        need to wait until the next retrain to be visible. Training still
+        picks them up as weighted samples on the next Train Adapter run."""
+
+        if result is None or not getattr(self, "_user_label_bucket_overrides", None):
+            return result
+        bucket_name = self._user_label_bucket_overrides.get(_memory_path_key(record.path))
+        if bucket_name is None:
+            return result
+        from .ai_results import AIConfidenceBucket, _combine_confidence_summaries, _replace_confidence
+        bucket = getattr(AIConfidenceBucket, bucket_name, None)
+        if bucket is None:
+            return result
+        summary = _combine_confidence_summaries(
+            getattr(result, "confidence_summary", ""),
+            "Bucket set by your saved label (overrides the AI's call).",
+        )
+        return _replace_confidence(result, bucket, summary)
+
+    def _recompute_user_label_bucket_overrides(self) -> None:
+        """Rebuild the in-memory map from labeled path -> bucket. Called when
+        the user labels / disputes a card, and when entering a folder so
+        existing labels surface in the AI Review badges immediately."""
+
+        overrides: dict[str, str] = {}
+        try:
+            paths = self._aiculler_paths_for_current_folder()
+        except Exception:
+            paths = None
+        if paths is None:
+            self._user_label_bucket_overrides = overrides
+            return
+        try:
+            labels = self._load_aiculler_internal_labels(paths)
+        except Exception:
+            labels = {}
+        for path, label in labels.items():
+            bucket_name = self._USER_LABEL_TO_BUCKET.get(str(label).strip().lower())
+            if bucket_name is not None:
+                overrides[_memory_path_key(path)] = bucket_name
+        self._user_label_bucket_overrides = overrides
+        # Force a grid repaint so any visible cards reflect the new bucket.
+        if hasattr(self, "grid") and self.grid is not None:
+            self.grid.viewport().update()
 
     def _apply_burst_dedup_to_ai_result(self, result, record):
         """Demote non-best frames in a visually similar burst to LIKELY_REJECT.
