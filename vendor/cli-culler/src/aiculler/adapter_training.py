@@ -420,7 +420,27 @@ def resolve_rating_row(record: dict, *, by_id: dict, by_source: dict, by_filenam
 
     source_path = (record.get("source_path") or record.get("path") or "").strip()
     if source_path:
-        return by_source.get(normalize_key(source_path))
+        match = by_source.get(normalize_key(source_path))
+        if match is not None:
+            return match
+        # Fall through to filename lookup so a caller whose source_path uses a
+        # different mount form (e.g. X:\... vs \\server\share\...) than what
+        # was ingested can still match the right image by basename. The
+        # filename can come from an explicit CSV column or be derived from the
+        # source_path itself.
+        filename_candidate = (record.get("filename") or "").strip()
+        if not filename_candidate:
+            filename_candidate = Path(source_path).name
+        if filename_candidate:
+            matches = by_filename.get(normalize_key(filename_candidate), [])
+            if len(matches) > 1:
+                raise ValueError(
+                    f"source_path {source_path!r} did not match exactly and filename "
+                    f"{filename_candidate!r} matched multiple images; use id to disambiguate"
+                )
+            if matches:
+                return matches[0]
+        return None
 
     filename = (record.get("filename") or "").strip()
     if filename:

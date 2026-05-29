@@ -65,6 +65,10 @@ class ThumbnailGridView(QAbstractScrollArea):
     winner_requested = Signal(int)
     reject_requested = Signal(int)
     adapter_label_requested = Signal(str, str)
+    adapter_review_mode_cleared = Signal()
+    dispute_label_requested = Signal(str, str)  # (record_path, user_corrective_label)
+    dispute_chord_started = Signal()  # user pressed D, awaiting 1-5
+    dispute_chord_cancelled = Signal()  # chord timed out or unrelated key pressed
     context_menu_requested = Signal(int, object)
     selection_changed = Signal()
 
@@ -116,6 +120,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._action_mode = "normal"
         self._show_ai_annotations = False
         self._compact_card_mode = False
+        # AI dispute chord state: when the user presses D in AI Review mode we
+        # set this to time.time() + 2.0, so the next 1-5 keypress within the
+        # window counts as a dispute (with the chosen corrective label).
+        self._awaiting_dispute_until: float = 0.0
+        self._disputed_paths: set[str] = set()
         self._adapter_review_mode = False
         self._adapter_review_paths: set[str] = set()
         self._adapter_labels_by_path: dict[str, str] = {}
@@ -295,10 +304,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         start = time.perf_counter() if logger.enabled else 0.0
         previous_variant_indexes = dict(self._variant_indexes)
         self._reset_image_zoom()
+        was_in_adapter_review = self._adapter_review_mode
         self._adapter_review_mode = False
         self._adapter_review_paths.clear()
         self._adapter_labels_by_path.clear()
         self._delete_adapter_label_controls()
+        if was_in_adapter_review:
+            self.adapter_review_mode_cleared.emit()
         self._items = items
         self._burst_groups_by_path = {}
         self._burst_groups = []
@@ -411,6 +423,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._refresh_layout_after_visible_items_changed()
         self.viewport().update()
         self._schedule_visible_thumbnail_requests(immediate=True)
+        self.adapter_review_mode_cleared.emit()
 
     def update_adapter_review_labels(self, labels_by_path: dict[str, str]) -> None:
         self._adapter_labels_by_path = dict(labels_by_path)
@@ -599,6 +612,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._ai_result_cache.clear()
         self._normalized_path_cache.clear()
         self._meta_with_ai_cache.clear()
+        self.viewport().update()
+
+    def set_disputed_paths(self, paths: set[str] | frozenset[str] | None) -> None:
+        """Push the set of disputed paths from the window. Drives the
+        'Disputed' badge that paints in AI Review mode."""
+
+        self._disputed_paths = {_fast_path_key(p) for p in (paths or set()) if p}
         self.viewport().update()
 
     def set_review_insights(self, insights_by_path: dict[str, object]) -> None:
@@ -1313,17 +1333,37 @@ class ThumbnailGridView(QAbstractScrollArea):
         if Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
             if self._items[index].is_folder:
                 return
+            label_map = {
+                Qt.Key.Key_1: "hero",
+                Qt.Key.Key_2: "strong",
+                Qt.Key.Key_3: "maybe",
+                Qt.Key.Key_4: "weak",
+                Qt.Key.Key_5: "reject",
+            }
+            # Dispute chord: D was pressed within the last 2s and we're in AI
+            # Review mode. Consume the 1-5 as a dispute label rather than a
+            # regular rating.
+            if (
+                self._show_ai_annotations
+                and Qt.Key.Key_1 <= key <= Qt.Key.Key_5
+                and self._awaiting_dispute_until > 0.0
+                and time.time() <= self._awaiting_dispute_until
+            ):
+                self._awaiting_dispute_until = 0.0
+                self.dispute_label_requested.emit(self._items[index].path, label_map[key])
+                return
             if self._adapter_review_mode and Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
-                labels = {
-                    Qt.Key.Key_1: "hero",
-                    Qt.Key.Key_2: "strong",
-                    Qt.Key.Key_3: "maybe",
-                    Qt.Key.Key_4: "weak",
-                    Qt.Key.Key_5: "reject",
-                }
-                self._set_adapter_label_for_index(index, labels[key], emit=True)
+                self._set_adapter_label_for_index(index, label_map[key], emit=True)
                 return
             self.rate_requested.emit(index, key - Qt.Key.Key_0)
+            return
+        if key == Qt.Key.Key_D and self._show_ai_annotations and review_shortcut_allowed:
+            # Start the dispute chord. The next 1-5 key within 2s will be
+            # treated as a dispute label for the current card.
+            if self._items[index].is_folder:
+                return
+            self._awaiting_dispute_until = time.time() + 2.0
+            self.dispute_chord_started.emit()
             return
         if key == Qt.Key.Key_T and review_shortcut_allowed:
             if self._items[index].is_folder:
@@ -1635,6 +1675,15 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._workflow_best_badge_text,
             )
             left_badge_y += 30
+        if self._show_ai_annotations and _fast_path_key(record.path) in self._disputed_paths:
+            self._paint_state_badge(
+                painter,
+                QRect(left_badge_x, left_badge_y, 88, 24),
+                "Disputed",
+                QColor(140, 78, 16, 220),
+                QColor("#fff1d6"),
+            )
+            left_badge_y += 30
         if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
             fill, text = self._workflow_disagreement_palette(getattr(workflow_insight, "disagreement_level", ""))
             self._paint_state_badge(
@@ -1713,7 +1762,11 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
         if self._adapter_review_mode and self._record_in_adapter_review(index):
             adapter_rect = self._adapter_label_rect(rect)
-            title_text_rect.setRight(min(title_text_rect.right(), adapter_rect.left() - 8))
+            # Only clip the filename when the combo is actually in the title row
+            # (right-aligned mode). When it falls back to the action row below,
+            # the title row is unaffected.
+            if adapter_rect.top() <= title_rect.bottom():
+                title_text_rect.setRight(min(title_text_rect.right(), adapter_rect.left() - 8))
 
         painter.setPen(self._title_color)
         painter.setFont(self._title_font)
@@ -2192,11 +2245,26 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _adapter_label_rect(self, tile_rect: QRect) -> QRect:
         title_rect = self._title_rect(tile_rect)
-        height = max(18, title_rect.height())
-        width = min(140, max(96, title_rect.width() // 2))
-        x = title_rect.x() + max(0, (title_rect.width() - width) // 2)
-        y = title_rect.y() + max(0, (title_rect.height() - height) // 2)
-        return QRect(x, y, width, height)
+        title_height = max(20, title_rect.height())
+        # Burst/dup badges are forced off in adapter review mode (window-side
+        # pHash dedup takes their place), so the right side of the title row is
+        # free. Plant the combo in the badge slot: right-aligned, fixed width,
+        # with a filename-min slot reserved on the left. If the tile is so
+        # narrow that even a compact combo would crowd the filename, fall back
+        # to the full-width action row below.
+        combo_width = 120
+        filename_min = 60
+        if title_rect.width() - combo_width >= filename_min:
+            x = title_rect.right() - combo_width
+            y = title_rect.y() + max(0, (title_rect.height() - title_height) // 2)
+            return QRect(x, y, combo_width, title_height)
+        action_rect = self._action_rect(tile_rect)
+        return QRect(
+            action_rect.x(),
+            action_rect.y(),
+            action_rect.width(),
+            max(22, action_rect.height()),
+        )
 
     def _action_rect(self, tile_rect: QRect) -> QRect:
         if self._compact_card_mode:
@@ -2452,13 +2520,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         combo.setStyleSheet(
             "QComboBox#adapterLabelCombo {"
-            " padding: 0px 4px 0px 6px;"
+            " padding: 1px 4px 1px 8px;"
             " margin: 0px;"
-            " font-size: 10px;"
-            " min-height: 18px;"
+            " font-size: 11px;"
+            " min-height: 20px;"
             "} "
-            "QComboBox#adapterLabelCombo::drop-down { width: 14px; border-left: none; } "
-            "QComboBox#adapterLabelCombo QAbstractItemView { font-size: 11px; }"
+            "QComboBox#adapterLabelCombo::drop-down { width: 16px; border-left: none; } "
+            "QComboBox#adapterLabelCombo QAbstractItemView { font-size: 12px; }"
         )
         for label, text in (
             ("", "Label..."),

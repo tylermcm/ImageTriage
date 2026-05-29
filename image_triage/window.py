@@ -171,6 +171,7 @@ from .ai_results import (
     iter_ai_bundle_results,
     load_ai_bundle,
     refine_ai_result_with_review_insight,
+    set_cull_thresholds,
 )
 from .batch_rename import BatchRenameApplyTask, BatchRenamePreview
 from .brackets import BracketDetector
@@ -1928,6 +1929,75 @@ class ScopeEnrichmentTask(QRunnable):
             self.signals.failed.emit(self.scope_key, self.token, str(exc))
 
 
+class PostAIRunBundleLoadSignals(QObject):
+    """Signals emitted by the post-AI-run bundle loader."""
+    finished = Signal(str, str, str, object, object)  # folder, report_dir, html_report_path, bundle, source_details
+    failed = Signal(str, str, str, str)  # folder, report_dir, html_report_path, error
+
+
+class PostAIRunBundleLoadTask(QRunnable):
+    """Loads the freshly written AI bundle off the UI thread so the post-AI
+    flow doesn't freeze the GUI on slow/UNC paths."""
+
+    def __init__(
+        self,
+        *,
+        folder: str,
+        report_dir: str,
+        html_report_path: str,
+        catalog_db_path: str | Path | None,
+    ) -> None:
+        super().__init__()
+        self.folder = folder
+        self.report_dir = report_dir
+        self.html_report_path = html_report_path
+        self.catalog_db_path = Path(catalog_db_path) if catalog_db_path else None
+        self.signals = PostAIRunBundleLoadSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        try:
+            source_details = inspect_ai_bundle_source(self.report_dir)
+            bundle: AIBundle | None = None
+            repository = (
+                CatalogRepository(self.catalog_db_path)
+                if self.catalog_db_path is not None
+                else CatalogRepository()
+            )
+            if self.folder and source_details.cache_key:
+                cached_entry = repository.load_ai_bundle(self.folder, cache_key=source_details.cache_key)
+                if cached_entry is not None:
+                    bundle = cached_entry.bundle
+            if bundle is None:
+                bundle = load_ai_bundle(self.report_dir)
+                if source_details.cache_key and bundle.results_by_path:
+                    repository.save_ai_bundle(
+                        self.folder,
+                        cache_key=source_details.cache_key,
+                        bundle=bundle,
+                    )
+            if logger.enabled:
+                logger.duration(
+                    "post_ai_run.bundle_load",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    report_dir=self.report_dir,
+                    results=len(bundle.results_by_path or {}),
+                )
+            self.signals.finished.emit(self.folder, self.report_dir, self.html_report_path, bundle, source_details)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            if logger.enabled:
+                logger.duration(
+                    "post_ai_run.bundle_load.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    error=str(exc),
+                )
+            self.signals.failed.emit(self.folder, self.report_dir, self.html_report_path, str(exc))
+
+
 class HiddenAIResultsLoadSignals(QObject):
     """Signals emitted by the hidden AI-result autoload worker."""
     finished = Signal(str, int, object, object, str)
@@ -2225,6 +2295,22 @@ class MainWindow(QMainWindow):
     AI_SEMANTIC_SIDECAR_ENABLED_KEY = "ai/semantic_sidecar_enabled"
     AI_REVIEW_DETAIL_PROGRESS_KEY = "ai/review_detail_progress"
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY = "ai/label_near_duplicate_threshold"
+    AI_DISPUTE_WEIGHT_KEY = "ai/dispute_weight"
+    AI_DISPUTE_WEIGHT_DEFAULT = 3
+    AI_DISPUTE_WEIGHT_MIN = 2
+    AI_DISPUTE_WEIGHT_MAX = 5
+    AI_KEEP_TOP_PERCENT_KEY = "ai/keep_top_percent"
+    AI_KEEP_TOP_PERCENT_DEFAULT = 10
+    AI_KEEP_TOP_PERCENT_MIN = 1
+    AI_KEEP_TOP_PERCENT_MAX = 50
+    AI_REVIEW_BAND_PERCENT_KEY = "ai/review_band_percent"
+    AI_REVIEW_BAND_PERCENT_DEFAULT = 10
+    AI_REVIEW_BAND_PERCENT_MIN = 0
+    AI_REVIEW_BAND_PERCENT_MAX = 30
+    AI_BASE_SCORE_WEIGHT_PERCENT_KEY = "ai/base_score_weight_percent"
+    AI_BASE_SCORE_WEIGHT_PERCENT_DEFAULT = 65
+    AI_BASE_SCORE_WEIGHT_PERCENT_MIN = 0
+    AI_BASE_SCORE_WEIGHT_PERCENT_MAX = 100
     TRAIN_RANKER_LAST_RUN_NAME_KEY = "training/ranker_last_run_name"
     TRAIN_RANKER_LAST_PROFILE_KEY = "training/ranker_last_profile"
     TRAIN_RANKER_LAST_EPOCHS_KEY = "training/ranker_last_epochs"
@@ -2304,8 +2390,13 @@ class MainWindow(QMainWindow):
     PREVIEW_PRELOAD_BATCH_SIZE_DEFAULT = FullScreenPreview.DEFAULT_PRELOAD_BATCH_SIZE
     PREVIEW_PRELOAD_BATCH_SIZE_MAX = FullScreenPreview.MAX_PRELOAD_BATCH_SIZE
     AI_EMBED_BATCH_SIZE_AUTO = 0
-    AI_EMBED_BATCH_SIZE_GPU_AUTO = 32
-    AI_EMBED_BATCH_SIZE_CPU_AUTO = 16
+    # NOTE: Despite the historical name, this setting now controls the
+    # *worker concurrency* of CLI-Culler's ingest pipeline (preview pool +
+    # feature pool both get this many threads). Sensible defaults below
+    # were tuned for the two-stage pipeline: enough to overlap IO and
+    # compute without oversubscribing ONNX's intra-op thread pool.
+    AI_EMBED_BATCH_SIZE_GPU_AUTO = 8
+    AI_EMBED_BATCH_SIZE_CPU_AUTO = 4
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT = 0.965
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN = 0.500
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX = 0.995
@@ -2653,6 +2744,17 @@ class MainWindow(QMainWindow):
         self._scope_enrichment_debounce_timer.setInterval(220)
         self._scope_enrichment_debounce_timer.timeout.connect(self._run_scope_enrichment_debounced)
         self._active_ai_training_task: object | None = None
+        self._aiculler_dedupe_siblings: dict[str, list[str]] = {}
+        self._aiculler_review_burst_snapshot: tuple[bool, bool] | None = None
+        # Paths the AI Review post-pass has demoted from Keeper/Review to
+        # Reject because they're non-best frames in a visually similar burst.
+        # Recomputed whenever the bundle OR review_intelligence changes.
+        self._ai_demoted_burst_paths: set[str] = set()
+        # AI Review forces Smart Groups/Stacks off too (the cluster context
+        # was producing misleading "weak cluster leader" rejects). We snapshot
+        # the toggles the same way as adapter review so they can be restored
+        # when the user switches back to Manual.
+        self._ai_review_burst_snapshot: tuple[bool, bool] | None = None
         self._ai_training_context: AITrainingExecutionContext | None = None
         self._ai_training_pipeline: AITrainingPipelineState | None = None
         self._ai_training_prepare_queue: AITrainingPrepareQueueState | None = None
@@ -2801,6 +2903,22 @@ class MainWindow(QMainWindow):
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(
             self._settings.value(self.AI_EMBED_BATCH_SIZE_KEY, self.AI_EMBED_BATCH_SIZE_AUTO, int)
         )
+        self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(
+            self._settings.value(self.AI_DISPUTE_WEIGHT_KEY, self.AI_DISPUTE_WEIGHT_DEFAULT, int)
+        )
+        self._ai_keep_top_percent_setting = self._normalize_ai_keep_top_percent(
+            self._settings.value(self.AI_KEEP_TOP_PERCENT_KEY, self.AI_KEEP_TOP_PERCENT_DEFAULT, int)
+        )
+        self._ai_review_band_percent_setting = self._normalize_ai_review_band_percent(
+            self._settings.value(self.AI_REVIEW_BAND_PERCENT_KEY, self.AI_REVIEW_BAND_PERCENT_DEFAULT, int)
+        )
+        self._ai_base_score_weight_percent_setting = self._normalize_ai_base_score_weight_percent(
+            self._settings.value(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self.AI_BASE_SCORE_WEIGHT_PERCENT_DEFAULT, int)
+        )
+        # Push the loaded cull thresholds into the bucket classifier so the
+        # very first bundle load uses them.
+        self._apply_cull_thresholds_to_classifier()
+        self._apply_base_score_blend_to_workflow()
         self._ai_semantic_sidecar_enabled = self._settings.value(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, True, bool)
         self._ai_review_detail_progress_enabled = self._settings.value(self.AI_REVIEW_DETAIL_PROGRESS_KEY, False, bool)
         self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(
@@ -3181,8 +3299,11 @@ class MainWindow(QMainWindow):
         self.details_view.set_row_density(self._details_row_density)
         self.details_view.layout_state_changed.connect(self._save_details_view_state)
         self.browser_stack.setCurrentIndex(1 if self._browser_view_mode == "details" else 0)
+        self.adapter_review_banner = self._build_adapter_review_banner()
+        self.adapter_review_banner.hide()
         center_layout.addWidget(self.workspace_bar)
         center_layout.addWidget(self.tool_mode_bar)
+        center_layout.addWidget(self.adapter_review_banner)
         center_layout.addWidget(self.browser_stack, 1)
         self._apply_workspace_bar_position()
 
@@ -3300,6 +3421,10 @@ class MainWindow(QMainWindow):
         self.grid.winner_requested.connect(self._toggle_winner)
         self.grid.reject_requested.connect(self._toggle_reject)
         self.grid.adapter_label_requested.connect(self._handle_aiculler_adapter_label_requested)
+        self.grid.adapter_review_mode_cleared.connect(self._exit_aiculler_adapter_review_mode)
+        self.grid.dispute_label_requested.connect(self._handle_dispute_label_requested)
+        self.grid.dispute_chord_started.connect(self._handle_dispute_chord_started)
+        self.grid.dispute_chord_cancelled.connect(self._handle_dispute_chord_cancelled)
         self.grid.context_menu_requested.connect(self._show_grid_context_menu)
         self.grid.selection_changed.connect(self._handle_grid_selection_changed)
         self.grid.verticalScrollBar().valueChanged.connect(self._schedule_metadata_scroll_prefetch)
@@ -5581,6 +5706,59 @@ class MainWindow(QMainWindow):
         return min(256, parsed)
 
     @classmethod
+    def _normalize_ai_dispute_weight(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return cls.AI_DISPUTE_WEIGHT_DEFAULT
+        return max(cls.AI_DISPUTE_WEIGHT_MIN, min(cls.AI_DISPUTE_WEIGHT_MAX, parsed))
+
+    @classmethod
+    def _normalize_ai_keep_top_percent(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return cls.AI_KEEP_TOP_PERCENT_DEFAULT
+        return max(cls.AI_KEEP_TOP_PERCENT_MIN, min(cls.AI_KEEP_TOP_PERCENT_MAX, parsed))
+
+    @classmethod
+    def _normalize_ai_review_band_percent(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return cls.AI_REVIEW_BAND_PERCENT_DEFAULT
+        return max(cls.AI_REVIEW_BAND_PERCENT_MIN, min(cls.AI_REVIEW_BAND_PERCENT_MAX, parsed))
+
+    @classmethod
+    def _normalize_ai_base_score_weight_percent(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return cls.AI_BASE_SCORE_WEIGHT_PERCENT_DEFAULT
+        return max(cls.AI_BASE_SCORE_WEIGHT_PERCENT_MIN, min(cls.AI_BASE_SCORE_WEIGHT_PERCENT_MAX, parsed))
+
+    def _apply_base_score_blend_to_workflow(self) -> None:
+        """Push the user's Base score weight slider into the aiculler_workflow
+        module so the next bundle build / adapter export uses it."""
+
+        from .aiculler_workflow import set_base_score_blend_weight
+        set_base_score_blend_weight(self._ai_base_score_weight_percent_setting / 100.0)
+
+    def _apply_cull_thresholds_to_classifier(self) -> None:
+        """Push the user's Keep/Review sliders into the ai_results module so
+        the next bundle load uses them. Keep top X% becomes a >= (100 - X)
+        keeper threshold; the review band sits just below that."""
+
+        keep_top = float(self._ai_keep_top_percent_setting)
+        review_band = float(self._ai_review_band_percent_setting)
+        keeper_threshold = max(0.0, 100.0 - keep_top)
+        reject_threshold = max(0.0, keeper_threshold - review_band)
+        set_cull_thresholds(
+            keeper_percentile=keeper_threshold,
+            reject_percentile=reject_threshold,
+        )
+
+    @classmethod
     def _normalize_ai_label_near_duplicate_threshold(cls, value: object) -> float:
         try:
             parsed = float(value)
@@ -7689,10 +7867,18 @@ class MainWindow(QMainWindow):
             self._update_ai_toolbar_state()
             pipeline_step_completed = True
             if report_dir and folder_key == current_key:
-                self._load_ai_results(report_dir, show_message=False)
-                self.mode_tabs.setCurrentIndex(1)
+                # Async — synchronous load_ai_bundle() over UNC was freezing the GUI.
+                self._kick_off_async_ai_results_reload(
+                    folder=context.folder,
+                    report_dir=report_dir,
+                    switch_to_ai_tab=True,
+                    success_message=(
+                        "Refreshed AI results with the trained ranker"
+                        if self._ai_training_pipeline is None
+                        else ""
+                    ),
+                )
                 if self._ai_training_pipeline is None:
-                    self.statusBar().showMessage("Refreshed AI results with the trained ranker")
                     return
             if self._ai_training_pipeline is None:
                 self.statusBar().showMessage("Scored the current folder with the trained ranker")
@@ -7705,10 +7891,17 @@ class MainWindow(QMainWindow):
             self._update_ai_toolbar_state()
             self._refresh_adapter_status_indicator()
             self._refresh_ai_workflow_center()
+            status_text = f"Adapter trained{f' ({model_version})' if model_version else ''}."
             if report_dir and folder_key == current_key:
-                self._load_ai_results(report_dir, show_message=False)
-                self.mode_tabs.setCurrentIndex(1)
-            self.statusBar().showMessage(f"Adapter trained{f' ({model_version})' if model_version else ''}.")
+                # Async — was freezing on UNC bundle read after training.
+                self._kick_off_async_ai_results_reload(
+                    folder=context.folder,
+                    report_dir=report_dir,
+                    switch_to_ai_tab=True,
+                    success_message=status_text,
+                )
+            else:
+                self.statusBar().showMessage(status_text)
             return
 
         if normalized_action == "evaluate_adapter":
@@ -7729,10 +7922,17 @@ class MainWindow(QMainWindow):
             self._update_ai_toolbar_state()
             self._refresh_adapter_status_indicator()
             self._refresh_ai_workflow_center()
+            status_text = f"Ranked current folder with adapter{f' ({model_version})' if model_version else ''}."
             if report_dir and folder_key == current_key:
-                self._load_ai_results(report_dir, show_message=False)
-                self.mode_tabs.setCurrentIndex(1)
-            self.statusBar().showMessage(f"Ranked current folder with adapter{f' ({model_version})' if model_version else ''}.")
+                # Async — was freezing on UNC bundle read.
+                self._kick_off_async_ai_results_reload(
+                    folder=context.folder,
+                    report_dir=report_dir,
+                    switch_to_ai_tab=True,
+                    success_message=status_text,
+                )
+            else:
+                self.statusBar().showMessage(status_text)
             return
 
         if normalized_action == "signals":
@@ -8217,11 +8417,60 @@ class MainWindow(QMainWindow):
         self._update_ai_toolbar_state()
         step_start = log_step("mode_switch.ai_toolbar_initial", step_start)
         if self._ui_mode == "ai":
-            loaded_hidden = self._load_hidden_ai_results_for_current_folder(show_message=False)
-            step_start = log_step("mode_switch.load_hidden_ai", step_start, loaded=loaded_hidden)
-            if not loaded_hidden:
-                restored = self._restore_ai_results(force=True)
-                step_start = log_step("mode_switch.restore_ai_results", step_start, restored=restored)
+            # AI Review judges each image on its own folder ranking — cluster
+            # context produces misleading "weak cluster leader" rejects. Force
+            # Smart Groups + Smart Stacks off while in AI Review and disable
+            # the toggle actions so the user can't re-enable them here.
+            # Previous state is restored on the way out (else branch below).
+            burst_state = (self._burst_groups_enabled, self._burst_stacks_enabled)
+            if burst_state != (False, False):
+                self._ai_review_burst_snapshot = burst_state
+                self._burst_groups_enabled = False
+                self._burst_stacks_enabled = False
+                self._refresh_burst_group_view()
+            elif self._ai_review_burst_snapshot is None:
+                # Nothing was on; remember that so we don't restore stale state.
+                self._ai_review_burst_snapshot = burst_state
+            self._apply_ai_review_burst_lockout(locked=True)
+            # Push disputed-path set into the grid so the orange Disputed badge
+            # paints on returning to AI Review across sessions.
+            paths = self._aiculler_paths_for_current_folder()
+            if paths is not None:
+                try:
+                    disputes = self._load_aiculler_internal_disputes(paths)
+                    self.grid.set_disputed_paths(set(disputes.keys()))
+                except Exception:
+                    pass
+            # Don't call _load_hidden_ai_results_for_current_folder /
+            # _restore_ai_results here — both do synchronous load_ai_bundle()
+            # calls and would freeze the UI on slow/UNC paths. Inline the
+            # cache check, then kick the async loader if the bundle isn't
+            # already in memory. The AI panel populates whenever the worker
+            # thread completes.
+            bundle_in_memory = (
+                self._ai_bundle is not None
+                and self._ai_bundle.source_path
+                and self._saved_ai_results_belong_to_current_folder(str(self._ai_bundle.source_path))
+            )
+            step_start = log_step(
+                "mode_switch.load_hidden_ai",
+                step_start,
+                loaded=bundle_in_memory,
+            )
+            if not bundle_in_memory:
+                self._schedule_hidden_ai_results_load(delay_ms=0)
+                step_start = log_step("mode_switch.async_load_scheduled", step_start)
+        else:
+            # Leaving AI Review — restore whatever the toggles were before.
+            snapshot = self._ai_review_burst_snapshot
+            self._ai_review_burst_snapshot = None
+            self._apply_ai_review_burst_lockout(locked=False)
+            if snapshot is not None and snapshot != (
+                self._burst_groups_enabled,
+                self._burst_stacks_enabled,
+            ):
+                self._burst_groups_enabled, self._burst_stacks_enabled = snapshot
+                self._refresh_burst_group_view()
         self._update_action_states()
         step_start = log_step("mode_switch.action_states", step_start)
         self._update_status()
@@ -10186,11 +10435,13 @@ class MainWindow(QMainWindow):
         try:
             runtime = default_aiculler_runtime()
             category_path = runtime.categories_csv or (runtime.root / "categories.csv")
-            if not category_path.exists():
-                category_path.write_text("category,prompt,enabled\n", encoding="utf-8")
-            open_with_default(str(category_path))
         except Exception as exc:
-            QMessageBox.warning(self, "AI Categories", f"Could not open category prompts.\n\n{exc}")
+            QMessageBox.warning(self, "AI Categories", f"Could not resolve the categories file.\n\n{exc}")
+            return
+        from .category_prompts_dialog import CategoryPromptsDialog
+        dialog = CategoryPromptsDialog(category_path, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage(f"Saved category prompts to {category_path.name}.")
 
     def _aiculler_paths_for_current_folder(self):
         if not self._current_folder:
@@ -10273,13 +10524,59 @@ class MainWindow(QMainWindow):
             if str(label).strip().lower() in allowed_labels
         }
 
-    def _save_aiculler_internal_labels(self, paths, labels: dict[str, str]) -> None:
+    def _load_aiculler_internal_disputes(self, paths) -> dict[str, dict[str, object]]:
+        """Disputes: per-image entries where the user overrode the AI.
+
+        Stored alongside labels in the same JSON file (sibling `disputes` key)
+        so there's one source of truth and the existing label flow keeps
+        working unchanged. Each entry records the user's corrective label and
+        a snapshot of what the AI said at dispute time (for debugging /
+        analytics later).
+        """
+
+        label_path = self._aiculler_internal_label_store_path(paths)
+        if not label_path.exists():
+            return {}
+        try:
+            payload = json.loads(label_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        raw = payload.get("disputes") if isinstance(payload, dict) else None
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, dict[str, object]] = {}
+        for path, entry in raw.items():
+            if not isinstance(entry, dict):
+                continue
+            result[str(path)] = {
+                "user_label": str(entry.get("user_label") or "").strip().lower(),
+                # ai_label is a display string like "AI Pick" / "Keeper" — keep
+                # original casing, just trim whitespace.
+                "ai_label": str(entry.get("ai_label") or "").strip(),
+                "ai_score": float(entry.get("ai_score") or 0.0),
+                "ai_bucket": str(entry.get("ai_bucket") or ""),
+                "timestamp": str(entry.get("timestamp") or ""),
+            }
+        return result
+
+    def _save_aiculler_internal_labels(
+        self,
+        paths,
+        labels: dict[str, str],
+        *,
+        disputes: dict[str, dict[str, object]] | None = None,
+    ) -> None:
         label_path = self._aiculler_internal_label_store_path(paths)
         label_path.parent.mkdir(parents=True, exist_ok=True)
+        # If disputes weren't passed in, preserve whatever is already on disk
+        # so saving labels doesn't accidentally drop existing disputes.
+        if disputes is None:
+            disputes = self._load_aiculler_internal_disputes(paths)
         payload = {
             "folder": str(paths.folder),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "labels": dict(sorted(labels.items(), key=lambda item: item[0].casefold())),
+            "disputes": dict(sorted(disputes.items(), key=lambda item: item[0].casefold())),
         }
         label_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -10287,22 +10584,34 @@ class MainWindow(QMainWindow):
         labels = self._load_aiculler_internal_labels(paths)
         if not labels:
             return []
+        disputes = self._load_aiculler_internal_disputes(paths)
+        # Poor-man's weighting: CLI-Culler doesn't support per-row weights, so
+        # we duplicate disputed rows N times in the materialized CSV. Each
+        # duplicate counts as another sample to the trainer.
+        dispute_weight = max(1, int(self._ai_dispute_weight_setting))
         allowed_labels = {"hero", "portfolio", "strong", "keep", "good", "maybe", "weak", "reject", "bad", "k", "r", "yes", "no", "1", "0"}
         rows: list[dict[str, object]] = []
         for source_path, label in labels.items():
             if label not in allowed_labels:
                 continue
-            rows.append(
-                {
-                    "source_path": source_path,
-                    "filename": Path(source_path).name,
-                    "label": label,
-                    "rating": "",
-                    "winner": int(label in {"hero", "portfolio", "keep", "good", "k", "yes", "1"}),
-                    "reject": int(label in {"reject", "bad", "r", "no", "0"}),
-                    "review_round": "adapter_internal_review",
-                }
-            )
+            row = {
+                "source_path": source_path,
+                "filename": Path(source_path).name,
+                "label": label,
+                "rating": "",
+                "winner": int(label in {"hero", "portfolio", "keep", "good", "k", "yes", "1"}),
+                "reject": int(label in {"reject", "bad", "r", "no", "0"}),
+                "review_round": "adapter_internal_review",
+            }
+            is_dispute = source_path in disputes
+            if is_dispute:
+                row["review_round"] = "adapter_dispute"
+                # Emit the row dispute_weight times so the trainer sees it as
+                # that many samples.
+                for _ in range(dispute_weight):
+                    rows.append(dict(row))
+            else:
+                rows.append(row)
         if len(rows) >= 2 and len({str(row["label"]) for row in rows}) >= 2:
             return rows
         return []
@@ -10351,15 +10660,345 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
             return
-        review_paths = [str(row.get("file_path") or "") for row in candidates if row.get("file_path")]
+
+        survivors, siblings_by_survivor = self._dedupe_adapter_candidates(candidates)
+
+        # The CLI-Culler DB stores whatever path the AI run was given (often a
+        # UNC path like \\server\share\...), but the grid records use whatever
+        # form the user opened the folder with (often a mapped drive like X:).
+        # Translate each survivor + sibling path to its matching grid record
+        # path so the grid filter actually sees matches and the viewport
+        # populates.
+        #
+        # IMPORTANT: do NOT use normalized_path_key here — it calls Path.resolve(),
+        # which on UNC paths makes a network round-trip per call. For a 1400-image
+        # folder that's tens of seconds of UI-thread blocking. Instead, match by
+        # filename (cheap, IO-free, works perfectly when filenames are unique
+        # inside the folder — the norm for a photo shoot). When two records share
+        # the same basename, fall back to comparing the casefolded full path
+        # (still no IO, just string ops) to disambiguate.
+        records_by_basename: dict[str, list[str]] = {}
+        for record in self._all_records:
+            if record.is_folder:
+                continue
+            basename = os.path.basename(record.path).casefold()
+            if not basename:
+                continue
+            records_by_basename.setdefault(basename, []).append(record.path)
+
+        def _resolve_to_grid(db_path: str) -> str:
+            if not db_path:
+                return db_path
+            basename = os.path.basename(db_path).casefold()
+            matches = records_by_basename.get(basename)
+            if not matches:
+                return db_path
+            if len(matches) == 1:
+                return matches[0]
+            # Multiple records with the same filename — pick the one whose
+            # casefolded path shares the longest suffix with the DB path.
+            db_key = os.path.normpath(db_path).casefold()
+            best = matches[0]
+            best_score = 0
+            for candidate in matches:
+                cand_key = os.path.normpath(candidate).casefold()
+                # Compare from the right (suffix overlap).
+                score = 0
+                for a, b in zip(reversed(db_key), reversed(cand_key)):
+                    if a != b:
+                        break
+                    score += 1
+                if score > best_score:
+                    best = candidate
+                    best_score = score
+            return best
+
+        review_paths: list[str] = []
+        for row in survivors:
+            db_path = str(row.get("file_path") or "")
+            if not db_path:
+                continue
+            review_paths.append(_resolve_to_grid(db_path))
+
         if not review_paths:
             self.statusBar().showMessage("No adapter label candidates are available for this folder.")
             return
+
+        # Re-key the sibling map so label propagation also lands on grid paths.
+        translated_siblings: dict[str, list[str]] = {}
+        for survivor_path, sibling_paths in siblings_by_survivor.items():
+            grid_survivor = _resolve_to_grid(str(survivor_path))
+            translated_siblings[grid_survivor] = [
+                _resolve_to_grid(str(sib)) for sib in sibling_paths
+            ]
+        self._aiculler_dedupe_siblings = translated_siblings
+
+        # Force burst grouping/stacking off while labeling so pHash dedup is the
+        # only source of grouping. The previous toggle state is restored when
+        # adapter review mode exits via _exit_aiculler_adapter_review_mode().
+        burst_snapshot = (self._burst_groups_enabled, self._burst_stacks_enabled)
+        if burst_snapshot != (False, False):
+            self._aiculler_review_burst_snapshot = burst_snapshot
+            self._burst_groups_enabled = False
+            self._burst_stacks_enabled = False
+            self._refresh_burst_group_view()
+            self._update_action_states()
+        else:
+            self._aiculler_review_burst_snapshot = None
+
         self.grid.set_adapter_review_mode(review_paths, saved_labels)
         self.mode_tabs.setCurrentIndex(0)
+        self._refresh_adapter_review_banner()
+        hidden_count = sum(len(siblings) for siblings in siblings_by_survivor.values())
+        suffix = f" ({hidden_count} near-dup(s) hidden, labels propagate to siblings)" if hidden_count else ""
         self.statusBar().showMessage(
-            f"Reviewing {len(review_paths)} adapter candidates. Use 1=best, 2=strong, 3=maybe, 4=weak, 5=reject."
+            f"Reviewing {len(review_paths)} adapter candidates{suffix}. "
+            f"Use 1=best, 2=strong, 3=maybe, 4=weak, 5=reject."
         )
+
+    def _dedupe_adapter_candidates(
+        self,
+        candidates: list[dict[str, object]],
+    ) -> tuple[list[dict[str, object]], dict[str, list[str]]]:
+        """Collapse adapter review candidates by perceptual-hash group.
+
+        For each visual group identified by ReviewIntelligence (which uses dhash
+        plus capture metadata to detect bursts / near-duplicates / similar
+        frames), keep only the highest-ranked candidate and remember every other
+        path in the group so labels can be propagated back to siblings at write
+        time. Candidates without an associated group pass through unchanged.
+        """
+
+        bundle = self._review_intelligence
+        if bundle is None or not candidates:
+            return list(candidates), {}
+
+        members_by_group: dict[str, tuple[str, ...]] = {
+            group.id: tuple(group.member_paths) for group in bundle.groups
+        }
+
+        survivors: list[dict[str, object]] = []
+        siblings_by_survivor: dict[str, list[str]] = {}
+        seen_groups: dict[str, dict[str, object]] = {}
+
+        def candidate_rank(row: dict[str, object]) -> int:
+            try:
+                return int(row.get("rank") or 1_000_000)
+            except (TypeError, ValueError):
+                return 1_000_000
+
+        for candidate in candidates:
+            path = str(candidate.get("file_path") or "")
+            if not path:
+                continue
+            insight = bundle.insight_for_path(path)
+            if insight is None or not insight.has_group:
+                survivors.append(candidate)
+                continue
+            existing = seen_groups.get(insight.group_id)
+            if existing is None or candidate_rank(candidate) < candidate_rank(existing):
+                if existing is not None:
+                    survivors.remove(existing)
+                seen_groups[insight.group_id] = candidate
+                survivors.append(candidate)
+
+        for group_id, survivor in seen_groups.items():
+            survivor_path = str(survivor.get("file_path") or "")
+            all_members = members_by_group.get(group_id, ())
+            siblings = [member for member in all_members if member != survivor_path]
+            if siblings:
+                siblings_by_survivor[survivor_path] = siblings
+
+        return survivors, siblings_by_survivor
+
+    def _apply_ai_review_burst_lockout(self, *, locked: bool) -> None:
+        """Lock or unlock Smart Groups/Stacks toggle actions for AI Review.
+
+        Cards in AI Review should each be judged on their own folder ranking;
+        grouping/stacking re-introduces the cluster context we deliberately
+        suppress in the bucket classifier. So while in AI Review we force the
+        toggles off (handled at the caller) and also disable the action +
+        force the checkbox to reflect the off state, so the user can't quietly
+        re-enable them. Tooltips explain why.
+
+        IMPORTANT: signal-block setChecked. Otherwise the toggled signal fires
+        synchronously into _handle_burst_groups_toggled, which calls
+        _refresh_burst_group_view + _update_action_states — and we're often
+        inside _handle_mode_tab_changed when this runs, so that triggers
+        re-entrant grid updates that have crashed PySide6 natively in
+        production. Block signals to keep the lockout purely cosmetic.
+        """
+
+        burst_groups = getattr(self.actions, "burst_groups", None)
+        burst_stacks = getattr(self.actions, "burst_stacks", None)
+        if burst_groups is None or burst_stacks is None:
+            return
+        if locked:
+            for action in (burst_groups, burst_stacks):
+                with QSignalBlocker(action):
+                    action.setChecked(False)
+                action.setEnabled(False)
+                action.setToolTip(
+                    "Disabled while AI Review is active. "
+                    "Switch to Manual Review to use Smart Groups / Smart Stacks."
+                )
+        else:
+            for action in (burst_groups, burst_stacks):
+                action.setEnabled(True)
+                base = action.property("imageTriageBaseText")
+                tooltip_text = base if isinstance(base, str) and base else action.text()
+                action.setToolTip(tooltip_text)
+
+    def _handle_dispute_chord_started(self) -> None:
+        self.statusBar().showMessage(
+            "Dispute the AI: press 1=best, 2=strong, 3=maybe, 4=weak, 5=reject. (Esc cancels.)"
+        )
+
+    def _handle_dispute_chord_cancelled(self) -> None:
+        self.statusBar().showMessage("Dispute cancelled.")
+
+    def _handle_dispute_label_requested(self, record_path: str, label: str) -> None:
+        """Record the user's corrective label for a card in AI Review.
+
+        Disputes write to the same internal labels file as adapter labels but
+        also append an entry to the sibling 'disputes' map with a snapshot of
+        what the AI said at dispute time. At training time, disputed rows are
+        duplicated N times in the materialized ratings CSV (where N is the
+        user-configurable dispute weight, default 3).
+        """
+
+        record = self._all_records_by_path.get(record_path)
+        if record is None:
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return
+        normalized = label.strip().lower()
+        if not normalized:
+            return
+
+        labels = self._load_aiculler_internal_labels(paths)
+        disputes = self._load_aiculler_internal_disputes(paths)
+
+        ai_result = self._ai_result_for_record(record)
+        ai_label = ""
+        ai_score = 0.0
+        ai_bucket = ""
+        if ai_result is not None:
+            ai_score = float(getattr(ai_result, "score", 0.0) or 0.0)
+            try:
+                bucket = ai_result.confidence_bucket
+                ai_bucket = getattr(bucket, "value", str(bucket))
+            except Exception:
+                ai_bucket = ""
+            try:
+                ai_label = ai_result.confidence_bucket_short_label or ""
+            except Exception:
+                ai_label = ""
+
+        labels[record.path] = normalized
+        disputes[record.path] = {
+            "user_label": normalized,
+            "ai_label": ai_label,
+            "ai_score": ai_score,
+            "ai_bucket": ai_bucket,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        # Propagate to dedup siblings too, mirroring the adapter combo flow.
+        siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
+        for sibling_path in siblings:
+            labels[sibling_path] = normalized
+            disputes[sibling_path] = dict(disputes[record.path])
+
+        self._save_aiculler_internal_labels(paths, labels, disputes=disputes)
+        self.grid.set_disputed_paths(set(disputes.keys()))
+        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings else ""
+        self.statusBar().showMessage(
+            f"Disputed AI on {record.name} -> {normalized}"
+            f"{sibling_suffix}. Counts as {self._ai_dispute_weight_setting}x at next training."
+        )
+
+    def _exit_aiculler_adapter_review_mode(self) -> None:
+        self._aiculler_dedupe_siblings = {}
+        snapshot = self._aiculler_review_burst_snapshot
+        self._aiculler_review_burst_snapshot = None
+        if snapshot is not None:
+            self._burst_groups_enabled, self._burst_stacks_enabled = snapshot
+            self._refresh_burst_group_view()
+            self._update_action_states()
+        banner = getattr(self, "adapter_review_banner", None)
+        if banner is not None:
+            banner.hide()
+
+    def _build_adapter_review_banner(self) -> QWidget:
+        banner = QWidget()
+        banner.setObjectName("adapterReviewBanner")
+        banner.setStyleSheet(
+            "QWidget#adapterReviewBanner {"
+            " background: #21344f;"
+            " border: 1px solid #2f6fd6;"
+            " border-radius: 6px;"
+            "} "
+            "QLabel#adapterReviewBannerTitle { color: #d4e3f6; font-weight: 600; }"
+            "QLabel#adapterReviewBannerStatus { color: #a9bbd3; font-size: 11px; }"
+            "QPushButton#adapterReviewBannerExit {"
+            " background: rgba(255,255,255,0.08); color: #e6ecf4;"
+            " border: 1px solid rgba(255,255,255,0.18);"
+            " border-radius: 5px; padding: 5px 14px; font-weight: 600;"
+            "} "
+            "QPushButton#adapterReviewBannerExit:hover { background: rgba(255,255,255,0.14); } "
+            "QPushButton#adapterReviewBannerExit:pressed { background: rgba(255,255,255,0.04); }"
+        )
+        layout = QHBoxLayout(banner)
+        layout.setContentsMargins(14, 8, 10, 8)
+        layout.setSpacing(12)
+        text_column = QVBoxLayout()
+        text_column.setContentsMargins(0, 0, 0, 0)
+        text_column.setSpacing(2)
+        title = QLabel("Adapter Label Review")
+        title.setObjectName("adapterReviewBannerTitle")
+        text_column.addWidget(title)
+        self._adapter_review_banner_status = QLabel("")
+        self._adapter_review_banner_status.setObjectName("adapterReviewBannerStatus")
+        self._adapter_review_banner_status.setWordWrap(False)
+        text_column.addWidget(self._adapter_review_banner_status)
+        layout.addLayout(text_column, 1)
+        exit_button = QPushButton("Exit Review")
+        exit_button.setObjectName("adapterReviewBannerExit")
+        exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        exit_button.setToolTip("Exit adapter label review (Esc)")
+        exit_button.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        exit_button.clicked.connect(self._handle_adapter_review_exit_clicked)
+        layout.addWidget(exit_button, 0)
+        return banner
+
+    def _handle_adapter_review_exit_clicked(self) -> None:
+        self.grid.clear_adapter_review_mode()
+
+    def _refresh_adapter_review_banner(self) -> None:
+        banner = getattr(self, "adapter_review_banner", None)
+        if banner is None:
+            return
+        if not self.grid._adapter_review_mode:
+            banner.hide()
+            return
+        candidate_count = len(self.grid._adapter_review_paths)
+        labeled = sum(
+            1
+            for path in self.grid._adapter_review_paths
+            if any(
+                str(known).casefold() == str(path).casefold()
+                for known in self.grid._adapter_labels_by_path.keys()
+            )
+        )
+        hidden = sum(len(siblings) for siblings in self._aiculler_dedupe_siblings.values())
+        parts = [f"{candidate_count} candidate(s)"]
+        parts.append(f"{labeled} labeled")
+        if hidden:
+            parts.append(f"{hidden} near-dup(s) hidden")
+        parts.append("Use 1-5 to rate, Esc to exit")
+        self._adapter_review_banner_status.setText(" · ".join(parts))
+        banner.show()
 
     def _handle_aiculler_adapter_label_requested(self, record_path: str, label: str) -> None:
         record = self._all_records_by_path.get(record_path)
@@ -10370,13 +11009,22 @@ class MainWindow(QMainWindow):
             return
         labels = self._load_aiculler_internal_labels(paths)
         normalized = label.strip().lower()
+        siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
         if normalized:
             labels[record.path] = normalized
+            for sibling_path in siblings:
+                labels[sibling_path] = normalized
         else:
             labels.pop(record.path, None)
+            for sibling_path in siblings:
+                labels.pop(sibling_path, None)
         self._save_aiculler_internal_labels(paths, labels)
         self.grid.update_adapter_review_labels(labels)
-        self.statusBar().showMessage(f"Saved adapter label for {record.name}: {normalized or 'unlabeled'}")
+        self._refresh_adapter_review_banner()
+        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings else ""
+        self.statusBar().showMessage(
+            f"Saved adapter label for {record.name}: {normalized or 'unlabeled'}{sibling_suffix}"
+        )
 
     def _train_aiculler_adapter(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
@@ -13795,6 +14443,7 @@ class MainWindow(QMainWindow):
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
         self._review_intelligence = bundle
+        self._recompute_ai_demoted_burst_paths()
         current_path = self._current_visible_record_path()
         self._records_view_cache.mark(ViewInvalidationReason.REVIEW_CHANGED)
         self._apply_records_view(current_path=current_path)
@@ -14431,6 +15080,16 @@ class MainWindow(QMainWindow):
             if logger.enabled:
                 logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="skipped_manual_mode")
             return False
+        # Fast path: bundle already loaded for this folder. Skip the re-parse
+        # — this fires on every tab flip and was the dominant cost there.
+        if (
+            self._ai_bundle is not None
+            and self._ai_bundle.source_path
+            and self._saved_ai_results_belong_to_current_folder(str(self._ai_bundle.source_path))
+        ):
+            if logger.enabled:
+                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="already_loaded")
+            return True
         saved_path = self._settings.value(self.AI_RESULTS_KEY, "", str)
         if not saved_path:
             self._refresh_ai_state()
@@ -14534,6 +15193,7 @@ class MainWindow(QMainWindow):
         if not isinstance(bundle_obj, AIBundle):
             return
         self._ai_bundle = bundle_obj
+        self._recompute_ai_demoted_burst_paths()
         source_path = getattr(source_details_obj, "source_path", "") or bundle_obj.source_path
         if source_path:
             self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
@@ -14569,6 +15229,22 @@ class MainWindow(QMainWindow):
             if logger.enabled:
                 logger.duration("ai_results.load_hidden_current", (time.perf_counter() - start) * 1000.0, state="no_folder")
             return False
+        # Fast path: if a matching bundle is already in memory for this folder
+        # there's nothing to reload. Saves a CSV re-parse + catalog round-trip
+        # on every Manual<->AI tab flip.
+        if (
+            self._ai_bundle is not None
+            and self._ai_bundle.source_path
+            and self._saved_ai_results_belong_to_current_folder(str(self._ai_bundle.source_path))
+        ):
+            if logger.enabled:
+                logger.duration(
+                    "ai_results.load_hidden_current",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self._current_folder,
+                    state="already_loaded",
+                )
+            return True
         report_dir = existing_hidden_ai_report_dir(self._current_folder)
         if report_dir is None:
             if show_message:
@@ -14681,6 +15357,7 @@ class MainWindow(QMainWindow):
             return False
 
         self._ai_bundle = bundle
+        self._recompute_ai_demoted_burst_paths()
         result_count = len(bundle.results_by_path or {})
         self._settings.setValue(self.AI_RESULTS_KEY, source_details.source_path if source_details is not None else str(path))
         if self._active_ai_task is None and self._ai_stage_message != "AI review complete":
@@ -15128,7 +15805,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            runtime = default_aiculler_runtime()
+            runtime = default_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
             runtime.validate()
             paths = build_aiculler_workflow_paths(self._current_folder)
             task = AICullerRunTask(
@@ -15211,7 +15888,7 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            runtime = default_aiculler_runtime()
+            runtime = default_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
             runtime.validate()
             task = AICullerRunTask(
                 folder=Path(self._current_folder),
@@ -15652,12 +16329,12 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self._active_ai_task is None:
             self._close_ai_review_progress_dialog()
+        # IMPORTANT: never call load_ai_bundle() here. This dialog runs on the
+        # UI thread, and load_ai_bundle reads the bundle CSV synchronously —
+        # on a UNC/NAS path that freezes the whole app. If the caller didn't
+        # supply a pre-loaded bundle, show the dialog with empty bucket counts;
+        # the async post-AI loader will populate the AI tab separately.
         resolved_bundle = bundle
-        if resolved_bundle is None:
-            try:
-                resolved_bundle = load_ai_bundle(report_dir)
-            except (FileNotFoundError, ValueError, OSError):
-                resolved_bundle = None
         self._remember_ai_review_summary(
             folder=folder,
             report_dir=report_dir,
@@ -15745,57 +16422,237 @@ class MainWindow(QMainWindow):
         self._ai_progress_eta_text = ""
         self._close_ai_review_progress_dialog()
         same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
-        completion_bundle: AIBundle | None = None
-        if same_folder:
-            self._load_ai_results(report_dir, show_message=False)
-            step_start = log_step(
-                "ai.run_finished.load_results",
-                step_start,
-                loaded=self._ai_bundle is not None,
-                results=len(self._ai_bundle.results_by_path) if self._ai_bundle and self._ai_bundle.results_by_path else 0,
-            )
-            completion_bundle = self._ai_bundle
-            self.mode_tabs.setCurrentIndex(1)
-            step_start = log_step("ai.run_finished.mode_switch", step_start)
-            self.statusBar().showMessage(f"AI review complete. Loaded {Path(html_report_path).name}")
-        else:
+
+        if not same_folder:
+            # Different folder: nothing to load into the current view. Skip the
+            # async load entirely, refresh toolbar, show the (bundle-less)
+            # completion dialog and we're done.
             self._update_ai_toolbar_state()
             step_start = log_step("ai.run_finished.toolbar_state", step_start)
             self.statusBar().showMessage(f"AI review complete for {folder}")
+            if logger.enabled:
+                logger.duration(
+                    "ai.run_finished_handler.pre_dialog",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder,
+                    report_dir=report_dir,
+                    same_folder=False,
+                    loaded_results=False,
+                )
+            dialog_start = time.perf_counter() if logger.enabled else 0.0
+            self._show_ai_review_complete_dialog(
+                folder=folder,
+                report_dir=report_dir,
+                html_report_path=html_report_path,
+                same_folder=False,
+                bundle=None,
+            )
+            if logger.enabled:
+                logger.duration(
+                    "ai.run_finished.dialog",
+                    (time.perf_counter() - dialog_start) * 1000.0,
+                    folder=folder,
+                    report_dir=report_dir,
+                    same_folder=False,
+                )
+                logger.duration(
+                    "ai.run_finished_handler",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=folder,
+                    report_dir=report_dir,
+                    same_folder=False,
+                )
+            self._resume_deferred_background_review_work_after_ai(reason="finished")
+            self._active_ai_run_start_perf = 0.0
+            return
+
+        # same_folder branch: kick the bundle load onto a worker so a slow
+        # UNC/NAS path can't freeze the UI. The continuation handler runs
+        # the tab switch + completion dialog once the bundle arrives.
+        self.statusBar().showMessage(
+            f"AI review complete. Loading {Path(html_report_path).name}..."
+        )
         if logger.enabled:
             logger.duration(
-                "ai.run_finished_handler.pre_dialog",
+                "ai.run_finished_handler.async_load_kicked_off",
                 (time.perf_counter() - start) * 1000.0,
                 folder=folder,
                 report_dir=report_dir,
-                same_folder=same_folder,
-                loaded_results=completion_bundle is not None,
+                same_folder=True,
             )
-        dialog_start = time.perf_counter() if logger.enabled else 0.0
+        task = PostAIRunBundleLoadTask(
+            folder=folder,
+            report_dir=report_dir,
+            html_report_path=html_report_path,
+            catalog_db_path=self._catalog_repository.db_path,
+        )
+        task.signals.finished.connect(
+            self._handle_post_ai_run_bundle_loaded, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.failed.connect(
+            self._handle_post_ai_run_bundle_failed, Qt.ConnectionType.QueuedConnection
+        )
+        QThreadPool.globalInstance().start(task, -50)
+
+    def _handle_post_ai_run_bundle_loaded(
+        self,
+        folder: str,
+        report_dir: str,
+        html_report_path: str,
+        bundle_obj: object,
+        source_details_obj: object,
+    ) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        bundle = bundle_obj if isinstance(bundle_obj, AIBundle) else None
+        same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        if bundle is not None:
+            self._ai_bundle = bundle
+            self._recompute_ai_demoted_burst_paths()
+            source_path = getattr(source_details_obj, "source_path", "") or report_dir
+            if source_path:
+                self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
+            self._refresh_ai_state()
+        if same_folder:
+            self.mode_tabs.setCurrentIndex(1)
+            self.statusBar().showMessage(
+                f"AI review complete. Loaded {Path(html_report_path).name}"
+            )
         self._show_ai_review_complete_dialog(
             folder=folder,
             report_dir=report_dir,
             html_report_path=html_report_path,
             same_folder=same_folder,
-            bundle=completion_bundle,
+            bundle=bundle,
         )
         if logger.enabled:
             logger.duration(
-                "ai.run_finished.dialog",
-                (time.perf_counter() - dialog_start) * 1000.0,
-                folder=folder,
-                report_dir=report_dir,
-                same_folder=same_folder,
-            )
-            logger.duration(
-                "ai.run_finished_handler",
+                "ai.run_finished.async_continuation",
                 (time.perf_counter() - start) * 1000.0,
                 folder=folder,
                 report_dir=report_dir,
                 same_folder=same_folder,
+                loaded_results=bundle is not None,
             )
         self._resume_deferred_background_review_work_after_ai(reason="finished")
         self._active_ai_run_start_perf = 0.0
+
+    def _handle_post_ai_run_bundle_failed(
+        self,
+        folder: str,
+        report_dir: str,
+        html_report_path: str,
+        error: str,
+    ) -> None:
+        same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        self.statusBar().showMessage(f"AI review complete, but loading results failed: {error}")
+        self._show_ai_review_complete_dialog(
+            folder=folder,
+            report_dir=report_dir,
+            html_report_path=html_report_path,
+            same_folder=same_folder,
+            bundle=None,
+        )
+        self._resume_deferred_background_review_work_after_ai(reason="finished_with_error")
+        self._active_ai_run_start_perf = 0.0
+
+    def _kick_off_async_ai_results_reload(
+        self,
+        *,
+        folder: str,
+        report_dir: str,
+        switch_to_ai_tab: bool = True,
+        success_message: str = "",
+    ) -> None:
+        """Reload an AI bundle off the UI thread (used after train/eval/rank).
+
+        load_ai_bundle() reads a CSV synchronously and on UNC/NAS paths can
+        block the UI for many seconds. This helper kicks off the same
+        PostAIRunBundleLoadTask the post-run handler uses but with a quiet
+        completion handler (no review-complete dialog).
+        """
+
+        task = PostAIRunBundleLoadTask(
+            folder=folder,
+            report_dir=report_dir,
+            html_report_path="",
+            catalog_db_path=self._catalog_repository.db_path,
+        )
+        task.signals.finished.connect(
+            lambda f, rd, hrp, bundle, src: self._handle_quiet_ai_bundle_reload(
+                folder=f,
+                bundle_obj=bundle,
+                source_details_obj=src,
+                switch_to_ai_tab=switch_to_ai_tab,
+                success_message=success_message,
+            ),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            lambda f, rd, hrp, err: self.statusBar().showMessage(
+                f"AI results reload failed: {err}"
+            ),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        QThreadPool.globalInstance().start(task, -50)
+
+    def _handle_quiet_ai_bundle_reload(
+        self,
+        *,
+        folder: str,
+        bundle_obj: object,
+        source_details_obj: object,
+        switch_to_ai_tab: bool,
+        success_message: str,
+    ) -> None:
+        bundle = bundle_obj if isinstance(bundle_obj, AIBundle) else None
+        # Cheap string compare first so we don't pay Path.resolve() over UNC
+        # twice on the hot path. Fall back to normalized_path_key only if the
+        # cheap compare doesn't match.
+        cheap_match = (
+            bool(folder)
+            and bool(self._current_folder)
+            and os.path.normpath(folder).casefold() == os.path.normpath(self._current_folder).casefold()
+        )
+        same_folder = cheap_match or (
+            bool(folder)
+            and bool(self._current_folder)
+            and normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        )
+        results_count = (
+            len(bundle.results_by_path or {}) if bundle is not None else 0
+        )
+        logger = perf_logger()
+        if logger.enabled:
+            logger.log(
+                "ai_results.quiet_reload",
+                folder=folder,
+                same_folder=same_folder,
+                results=results_count,
+                bundle_loaded=bundle is not None,
+                switch_to_ai_tab=switch_to_ai_tab,
+            )
+        if bundle is not None and same_folder:
+            self._ai_bundle = bundle
+            self._recompute_ai_demoted_burst_paths()
+            source_path = getattr(source_details_obj, "source_path", "")
+            if source_path:
+                self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
+            self._refresh_ai_state()
+            if switch_to_ai_tab:
+                if self.mode_tabs.currentIndex() != 1:
+                    self.mode_tabs.setCurrentIndex(1)
+                else:
+                    # Already on the AI tab: setCurrentIndex(1) is a no-op so
+                    # _handle_mode_tab_changed doesn't fire and the freshly
+                    # loaded bundle never gets surfaced through
+                    # set_show_ai_annotations(True). Push it through ourselves
+                    # so AI Pick / confidence-bucket badges actually paint.
+                    self._ui_mode = "ai"
+                    self.grid.set_show_ai_annotations(True)
+                    self.grid.viewport().update()
+        if success_message:
+            self.statusBar().showMessage(success_message)
 
     def _handle_ai_run_failed(self, folder: str, message: str) -> None:
         logger = perf_logger()
@@ -16086,7 +16943,67 @@ class MainWindow(QMainWindow):
         if record is None or self._ai_bundle is None:
             return None
         result = find_ai_result_for_record(self._ai_bundle, record, preferred_path=preferred_path)
-        return refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
+        refined = refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
+        return self._apply_burst_dedup_to_ai_result(refined, record)
+
+    def _apply_burst_dedup_to_ai_result(self, result, record):
+        """Demote non-best frames in a visually similar burst to LIKELY_REJECT.
+
+        We deliberately removed cluster-context from bucket classification so
+        each image is judged on its own folder percentile — but that means
+        multiple frames from the same burst can all hit the Keeper threshold.
+        This post-pass uses the demote set computed by
+        _recompute_ai_demoted_burst_paths() to override the bucket to Reject
+        for everything except the best-scoring frame of each burst.
+        """
+
+        if result is None or not self._ai_demoted_burst_paths:
+            return result
+        if _memory_path_key(record.path) not in self._ai_demoted_burst_paths:
+            return result
+        from .ai_results import AIConfidenceBucket, _combine_confidence_summaries, _replace_confidence
+        summary = _combine_confidence_summaries(
+            getattr(result, "confidence_summary", ""),
+            "Demoted because a stronger frame in the same burst already passes as Keeper.",
+        )
+        return _replace_confidence(result, AIConfidenceBucket.LIKELY_REJECT, summary)
+
+    def _recompute_ai_demoted_burst_paths(self) -> None:
+        """Rebuild the demote set from the current bundle + review intelligence.
+
+        For each review group with more than one member, pick the highest-
+        scoring member (by bundle score). Every OTHER member of the group goes
+        into the demote set and will be force-rejected by _ai_result_for_record.
+        Called whenever bundle or review_intelligence changes."""
+
+        demoted: set[str] = set()
+        bundle = self._ai_bundle
+        review = self._review_intelligence
+        if (
+            bundle is None
+            or bundle.results_by_path is None
+            or review is None
+            or not review.groups
+        ):
+            self._ai_demoted_burst_paths = demoted
+            return
+
+        def _score_for(path: str) -> float:
+            insight_path = bundle.results_by_path.get(path) or bundle.results_by_path.get(normalized_path_key(path))
+            if insight_path is None:
+                return -1.0
+            return float(getattr(insight_path, "score", 0.0) or 0.0)
+
+        for group in review.groups:
+            members = [str(p) for p in (group.member_paths or ()) if p]
+            if len(members) <= 1:
+                continue
+            best_path = max(members, key=_score_for)
+            for member in members:
+                if member == best_path:
+                    continue
+                demoted.add(_memory_path_key(member))
+        self._ai_demoted_burst_paths = demoted
 
     def _ai_result_for_record_memory(self, record: ImageRecord | None, *, preferred_path: str | None = None):
         if record is None or self._ai_bundle is None:
@@ -17227,6 +18144,10 @@ class MainWindow(QMainWindow):
             ai_semantic_sidecar_enabled=self._ai_semantic_sidecar_enabled,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
             ai_label_near_duplicate_threshold=self._ai_label_near_duplicate_threshold,
+            ai_dispute_weight=self._ai_dispute_weight_setting,
+            ai_keep_top_percent=self._ai_keep_top_percent_setting,
+            ai_review_band_percent=self._ai_review_band_percent_setting,
+            ai_base_score_weight_percent=self._ai_base_score_weight_percent_setting,
             catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
             preset_save_callback=persist_workflow_presets,
@@ -17286,6 +18207,21 @@ class MainWindow(QMainWindow):
         self._watch_current_folder_enabled = result.watch_current_folder
         self._ai_auto_profile_enabled = result.ai_auto_profile_enabled
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
+        self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
+        new_keep_top = self._normalize_ai_keep_top_percent(result.ai_keep_top_percent)
+        new_review_band = self._normalize_ai_review_band_percent(result.ai_review_band_percent)
+        cull_thresholds_changed = (
+            new_keep_top != self._ai_keep_top_percent_setting
+            or new_review_band != self._ai_review_band_percent_setting
+        )
+        self._ai_keep_top_percent_setting = new_keep_top
+        self._ai_review_band_percent_setting = new_review_band
+        if cull_thresholds_changed:
+            self._apply_cull_thresholds_to_classifier()
+        new_base_weight = self._normalize_ai_base_score_weight_percent(result.ai_base_score_weight_percent)
+        if new_base_weight != self._ai_base_score_weight_percent_setting:
+            self._ai_base_score_weight_percent_setting = new_base_weight
+            self._apply_base_score_blend_to_workflow()
         self._ai_semantic_sidecar_enabled = result.ai_semantic_sidecar_enabled
         self._ai_review_detail_progress_enabled = result.ai_review_detail_progress_enabled
         self._ai_label_near_duplicate_threshold = new_ai_label_near_duplicate_threshold
@@ -17305,6 +18241,10 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, self._watch_current_folder_enabled)
         self._settings.setValue(self.AI_AUTO_PROFILE_ENABLED_KEY, self._ai_auto_profile_enabled)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
+        self._settings.setValue(self.AI_DISPUTE_WEIGHT_KEY, self._ai_dispute_weight_setting)
+        self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
+        self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
+        self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
         self._settings.setValue(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, self._ai_semantic_sidecar_enabled)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
         self._settings.setValue(self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY, self._ai_label_near_duplicate_threshold)

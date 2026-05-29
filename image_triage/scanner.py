@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import re
 import stat
@@ -26,17 +27,30 @@ EDIT_DIRECTORIES = {
 }
 
 
-def normalize_filesystem_path(path: str | Path) -> str:
-    raw = str(path).strip()
-    if not raw:
-        return ""
-
+@functools.lru_cache(maxsize=16384)
+def _normalize_filesystem_path_cached(raw: str) -> str:
     candidate = Path(raw).expanduser()
     try:
         candidate = candidate.resolve(strict=False)
     except OSError:
         candidate = candidate.absolute()
     return os.path.normpath(str(candidate))
+
+
+def normalize_filesystem_path(path: str | Path) -> str:
+    """Resolve and normalize a filesystem path string.
+
+    Memoized via an LRU cache because Path.resolve() does a filesystem stat,
+    and on UNC paths each call is a network round-trip. Hot callers
+    (load_ai_bundle, adapter review path translation, etc.) hit this thousands
+    of times per session with mostly-repeating inputs, so caching turns
+    those into O(1) dict lookups after the first call per unique path.
+    """
+
+    raw = str(path).strip()
+    if not raw:
+        return ""
+    return _normalize_filesystem_path_cached(raw)
 
 
 def normalized_path_key(path: str | Path) -> str:

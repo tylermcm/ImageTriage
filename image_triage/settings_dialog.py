@@ -4,7 +4,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -60,6 +60,10 @@ class WorkflowSettingsResult:
     ai_semantic_sidecar_enabled: bool = True
     ai_review_detail_progress_enabled: bool = False
     ai_label_near_duplicate_threshold: float = 0.965
+    ai_dispute_weight: int = 3
+    ai_keep_top_percent: int = 10       # % of folder to mark as Keeper
+    ai_review_band_percent: int = 10    # % below Keeper cutoff to mark as Review
+    ai_base_score_weight_percent: int = 65  # blend weight (0=adapter only, 100=base only)
     presets: tuple[WorkflowPreset, ...] = ()
     # Keybind overrides: attr_name -> chord string. Empty / missing entries
     # mean "use the registered default."
@@ -104,6 +108,10 @@ class WorkflowSettingsDialog(QDialog):
         ai_semantic_sidecar_enabled: bool = True,
         ai_review_detail_progress_enabled: bool = False,
         ai_label_near_duplicate_threshold: float = 0.965,
+        ai_dispute_weight: int = 3,
+        ai_keep_top_percent: int = 10,
+        ai_review_band_percent: int = 10,
+        ai_base_score_weight_percent: int = 65,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
@@ -266,11 +274,19 @@ class WorkflowSettingsDialog(QDialog):
         self._add_settings_page("Folders", folders_page)
 
         self.ai_embed_batch_size_spin = QSpinBox()
-        self.ai_embed_batch_size_spin.setRange(0, 256)
-        self.ai_embed_batch_size_spin.setSingleStep(8)
+        self.ai_embed_batch_size_spin.setRange(0, 64)
+        self.ai_embed_batch_size_spin.setSingleStep(1)
         self.ai_embed_batch_size_spin.setSpecialValueText("Auto")
         self.ai_embed_batch_size_spin.setValue(max(0, int(ai_embed_batch_size)))
         self.ai_embed_batch_size_spin.setMinimumWidth(120)
+        self.ai_embed_batch_size_spin.setToolTip(
+            "Concurrent workers in CLI-Culler's ingest pipeline. Both stages "
+            "(preview extraction + CLIP/TOPIQ feature extraction) get this "
+            "many threads each. Auto picks a balanced default for your "
+            "hardware (4 on CPU, 8 on GPU). Higher values speed up ingest "
+            "up to your CPU core count; very high values can oversubscribe "
+            "ONNX's internal thread pool."
+        )
 
         self.ai_semantic_sidecar_checkbox = QCheckBox("Run semantic classification during AI Review")
         self.ai_semantic_sidecar_checkbox.setChecked(ai_semantic_sidecar_enabled)
@@ -306,13 +322,86 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_auto_profile_checkbox = QCheckBox("Suggest a training profile before training")
         self.ai_auto_profile_checkbox.setChecked(ai_auto_profile_enabled)
 
+        self.ai_dispute_weight_spin = QSpinBox()
+        self.ai_dispute_weight_spin.setRange(2, 5)
+        self.ai_dispute_weight_spin.setSingleStep(1)
+        self.ai_dispute_weight_spin.setSuffix("x")
+        self.ai_dispute_weight_spin.setValue(max(2, min(5, int(ai_dispute_weight))))
+        self.ai_dispute_weight_spin.setMinimumWidth(120)
+        self.ai_dispute_weight_spin.setToolTip(
+            "How heavily a disputed image counts in adapter training relative "
+            "to a normal label. 3x means each dispute is worth three normal "
+            "labels. Higher values let disputes correct the model faster but "
+            "make a few mis-clicks louder."
+        )
+
+        # Cull aggressiveness: two spinners that together determine the bucket
+        # distribution. The auto-derived label below them tells the user what
+        # the rest of the folder becomes (Reject = 100 - keep_top - review_band).
+        self.ai_keep_top_spin = QSpinBox()
+        self.ai_keep_top_spin.setRange(1, 50)
+        self.ai_keep_top_spin.setSingleStep(1)
+        self.ai_keep_top_spin.setSuffix("%")
+        self.ai_keep_top_spin.setValue(max(1, min(50, int(ai_keep_top_percent))))
+        self.ai_keep_top_spin.setMinimumWidth(120)
+        self.ai_keep_top_spin.setToolTip(
+            "Top percentile of the folder marked as Keeper. 10% means the AI "
+            "passes through roughly the top 10% of images as 'Likely Keeper' "
+            "after each run."
+        )
+
+        self.ai_review_band_spin = QSpinBox()
+        self.ai_review_band_spin.setRange(0, 30)
+        self.ai_review_band_spin.setSingleStep(1)
+        self.ai_review_band_spin.setSuffix("%")
+        self.ai_review_band_spin.setValue(max(0, min(30, int(ai_review_band_percent))))
+        self.ai_review_band_spin.setMinimumWidth(120)
+        self.ai_review_band_spin.setToolTip(
+            "Additional band of close-to-keeper images marked as 'Needs "
+            "Review' (sitting just below the Keeper cutoff). Set to 0 to "
+            "disable the Review band entirely so every card is either Keeper "
+            "or Reject."
+        )
+
+        self.ai_cull_summary_label = QLabel("")
+        self.ai_cull_summary_label.setObjectName("mutedText")
+        self.ai_keep_top_spin.valueChanged.connect(self._update_ai_cull_summary)
+        self.ai_review_band_spin.valueChanged.connect(self._update_ai_cull_summary)
+
+        # Blend weight between the tag-penalty-aware base score and the
+        # adapter's prediction. Higher = the base score wins (tag penalties
+        # for blur / blown highlights / etc. carry more weight). Lower = the
+        # learned adapter dominates. 100% lets penalized images never escape
+        # Reject; 0% effectively disables the penalty system.
+        self.ai_base_score_weight_spin = QSpinBox()
+        self.ai_base_score_weight_spin.setRange(0, 100)
+        self.ai_base_score_weight_spin.setSingleStep(5)
+        self.ai_base_score_weight_spin.setSuffix("%")
+        self.ai_base_score_weight_spin.setValue(max(0, min(100, int(ai_base_score_weight_percent))))
+        self.ai_base_score_weight_spin.setMinimumWidth(120)
+        self.ai_base_score_weight_spin.setToolTip(
+            "Weight of the tag-penalty-aware base score vs. the trained "
+            "adapter when blending the final ranking. 100% = base score wins "
+            "outright (heavily penalized images can never pass as Keeper); "
+            "0% = adapter only (tag penalties for blur / blown / harsh light "
+            "have no effect). Default 65% favors the base score so the "
+            "negative prompts stay authoritative, while still letting the "
+            "adapter influence borderline calls."
+        )
+
         ai_page, ai_layout = self._build_settings_page("AI")
-        self._add_form_row(ai_layout, "Embedding batch size", self.ai_embed_batch_size_spin)
+        self._add_form_row(ai_layout, "AI ingest workers", self.ai_embed_batch_size_spin)
         self._add_checkbox_row(ai_layout, "Semantic sidecar", self.ai_semantic_sidecar_checkbox)
         self._add_checkbox_row(ai_layout, "Progress details", self.ai_review_detail_progress_checkbox)
         self._add_form_row(ai_layout, "Label duplicate filter", label_threshold_row)
+        self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
+        self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
+        self._add_form_row(ai_layout, "Cull breakdown", self.ai_cull_summary_label)
+        self._add_form_row(ai_layout, "Base score weight", self.ai_base_score_weight_spin)
+        self._add_form_row(ai_layout, "Dispute training weight", self.ai_dispute_weight_spin)
         self._add_checkbox_row(ai_layout, "Training profile", self.ai_auto_profile_checkbox)
         ai_layout.addStretch(1)
+        self._update_ai_cull_summary()
         self._add_settings_page("AI", ai_page)
 
         shortcuts_page = self._build_shortcuts_page(shortcut_overrides or {})
@@ -544,6 +633,20 @@ class WorkflowSettingsDialog(QDialog):
     def _update_ai_label_near_duplicate_label(self, value: int) -> None:
         self.ai_label_near_duplicate_value_label.setText(self._format_threshold_value(value))
 
+    def _update_ai_cull_summary(self) -> None:
+        keep = int(self.ai_keep_top_spin.value())
+        review = int(self.ai_review_band_spin.value())
+        # Clamp combined sliders so Review never eats into Keeper or pushes
+        # Reject below 0%.
+        if keep + review > 100:
+            review = max(0, 100 - keep)
+            with QSignalBlocker(self.ai_review_band_spin):
+                self.ai_review_band_spin.setValue(review)
+        reject = max(0, 100 - keep - review)
+        self.ai_cull_summary_label.setText(
+            f"~{keep}% Keeper · ~{review}% Review · ~{reject}% Reject"
+        )
+
     def _refresh_session_combo(self, *, sessions: list[str], current_session: str) -> None:
         self._updating_session = True
         try:
@@ -663,6 +766,10 @@ class WorkflowSettingsDialog(QDialog):
             ai_label_near_duplicate_threshold=self._slider_value_to_threshold(
                 int(self.ai_label_near_duplicate_slider.value())
             ),
+            ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
+            ai_keep_top_percent=max(1, min(50, int(self.ai_keep_top_spin.value()))),
+            ai_review_band_percent=max(0, min(30, int(self.ai_review_band_spin.value()))),
+            ai_base_score_weight_percent=max(0, min(100, int(self.ai_base_score_weight_spin.value()))),
             presets=tuple(self._presets) if include_presets else (),
             shortcut_overrides=self._shortcut_overrides_from_state()
             if getattr(self, "_shortcut_editors", None)

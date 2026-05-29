@@ -56,7 +56,8 @@ class WorkflowSnapshot:
     indexed_count: int
     cluster_run_id: str
     can_rerank: bool
-    label_count: int
+    label_count: int           # ratings already imported into the CLI-Culler DB
+    pending_label_count: int   # in-progress labels saved via the adapter combo (not yet trained on)
     adapter_version: str
     adapter_created_at: str
     train_mae: float | None
@@ -65,6 +66,10 @@ class WorkflowSnapshot:
     scored_count: int
     folder_path: str = ""
     file_count: int = 0
+
+    @property
+    def total_label_count(self) -> int:
+        return self.label_count + self.pending_label_count
 
 
 @dataclass
@@ -365,6 +370,7 @@ class AIWorkflowCenterDialog(QDialog):
         cluster_run_id = ""
         can_rerank = False
         label_count = 0
+        pending_label_count = 0
         adapter_version = ""
         adapter_created_at = ""
         train_mae: float | None = None
@@ -391,6 +397,14 @@ class AIWorkflowCenterDialog(QDialog):
                     else None
                 )
                 scored_count = int(summary.get("scored_count") or 0)
+            # In-progress labels saved via the per-card adapter combo. These
+            # haven't been imported into the DB yet — that happens at train
+            # time — but they DO count toward "you can train now".
+            try:
+                pending_labels = self._window._load_aiculler_internal_labels(paths)
+                pending_label_count = len(pending_labels)
+            except Exception:
+                pending_label_count = 0
         return WorkflowSnapshot(
             runtime_ready=runtime_ready,
             folder_open=bool(folder_path),
@@ -399,6 +413,7 @@ class AIWorkflowCenterDialog(QDialog):
             cluster_run_id=cluster_run_id,
             can_rerank=can_rerank,
             label_count=label_count,
+            pending_label_count=pending_label_count,
             adapter_version=adapter_version,
             adapter_created_at=adapter_created_at,
             train_mae=train_mae,
@@ -485,9 +500,19 @@ class AIWorkflowCenterDialog(QDialog):
             ],
         )
 
+        # Label step is "done" if you have ANY usable labels — pending ones from
+        # the current session count too. Without this, a freshly-ingested folder
+        # always shows label_count=0 (the DB ratings table is only populated
+        # after the first successful training run) and the user thinks they
+        # need to label every visible candidate before they can proceed.
         label_status = STATUS_BLOCKED
         if index_status == STATUS_DONE:
-            label_status = STATUS_DONE if snap.label_count > 0 else STATUS_READY
+            label_status = STATUS_DONE if snap.total_label_count > 0 else STATUS_READY
+        label_metrics = []
+        if snap.pending_label_count:
+            label_metrics.append(("Pending labels", str(snap.pending_label_count)))
+        label_metrics.append(("Trained-on labels", str(snap.label_count)))
+        label_metrics.append(("Cluster run", snap.cluster_run_id or "—"))
         steps["label"] = StepSpec(
             key="label",
             title="Review Labels",
@@ -496,13 +521,12 @@ class AIWorkflowCenterDialog(QDialog):
                 "Opens a filtered grid showing the most useful candidates "
                 "(proportional category coverage + technical-disagreement). Use "
                 "keys 1–5 (best / strong / maybe / weak / reject) — auto-advance "
-                "moves to the next un-labeled candidate automatically."
+                "moves to the next un-labeled candidate automatically. You don't "
+                "need to label every candidate; a couple of dozen across at least "
+                "two rating values is enough to train."
             ),
             status=label_status,
-            metrics=[
-                ("Saved labels", str(snap.label_count)),
-                ("Cluster run", snap.cluster_run_id or "—"),
-            ],
+            metrics=label_metrics,
             actions=[
                 ActionSpec(
                     label="Open Review Labels",
@@ -521,10 +545,11 @@ class AIWorkflowCenterDialog(QDialog):
         train_status = STATUS_BLOCKED
         if label_status == STATUS_DONE:
             train_status = STATUS_DONE if snap.adapter_version else STATUS_READY
-        train_metrics: list[tuple[str, str]] = [
-            ("Saved labels", str(snap.label_count)),
-            ("Current adapter", snap.adapter_version or "untrained"),
-        ]
+        train_metrics: list[tuple[str, str]] = []
+        if snap.pending_label_count:
+            train_metrics.append(("Pending labels", str(snap.pending_label_count)))
+        train_metrics.append(("Trained-on labels", str(snap.label_count)))
+        train_metrics.append(("Current adapter", snap.adapter_version or "untrained"))
         if snap.adapter_created_at:
             train_metrics.append(("Trained at", snap.adapter_created_at))
         if snap.train_mae is not None:
@@ -536,9 +561,11 @@ class AIWorkflowCenterDialog(QDialog):
             title="Train Adapter",
             subtitle="Fit a personal model from your saved labels.",
             description=(
-                "Trains the adapter on every label saved for this folder. Training "
-                "is fast — a few seconds per hundred labels — and produces a new "
-                "model version you can evaluate or rank with."
+                "Trains the adapter on every label saved for this folder — "
+                "both the pending labels from the current session and any "
+                "previously-trained labels in the DB. Training is fast "
+                "(a few seconds per hundred labels) and produces a new model "
+                "version you can evaluate or rank with."
             ),
             status=train_status,
             metrics=train_metrics,
@@ -547,7 +574,7 @@ class AIWorkflowCenterDialog(QDialog):
                     label="Train Adapter",
                     callback=lambda: self._invoke("_train_aiculler_adapter"),
                     primary=True,
-                    enabled=snap.db_exists and snap.label_count > 0,
+                    enabled=snap.db_exists and snap.total_label_count > 0,
                 ),
             ],
         )

@@ -66,8 +66,36 @@ _SECOND_PLACE_REVIEW_NORMALIZED_THRESHOLD = 74.0
 _SECOND_PLACE_REVIEW_PERCENTILE_THRESHOLD = 60.0
 _THIRD_PLACE_REVIEW_GAP_THRESHOLD = 0.18
 _THIRD_PLACE_REVIEW_PERCENTILE_THRESHOLD = 80.0
-_SINGLETON_KEEPER_PERCENTILE_THRESHOLD = 84.0
-_SINGLETON_REJECT_PERCENTILE_THRESHOLD = 28.0
+# AI Review classifies by folder percentile (0-100, evenly distributed).
+# Defaults are tuned for high-volume photo culling: only the top ~10% pass as
+# Keepers, the bottom ~80% become Rejects, and a thin ~10% band sits at the
+# boundary as Needs Review. The window updates these at runtime from the
+# user's Settings -> AI sliders via set_cull_thresholds().
+_SINGLETON_KEEPER_PERCENTILE_THRESHOLD = 90.0
+_SINGLETON_REJECT_PERCENTILE_THRESHOLD = 80.0
+
+
+def set_cull_thresholds(*, keeper_percentile: float, reject_percentile: float) -> None:
+    """Update the bucket classifier's percentile thresholds at runtime.
+
+    Called by MainWindow at startup and whenever the user changes the
+    "Keep top X%" / "Review band Y%" sliders in Settings -> AI. The next
+    bundle load (or refresh) picks up the new thresholds.
+    """
+
+    global _SINGLETON_KEEPER_PERCENTILE_THRESHOLD, _SINGLETON_REJECT_PERCENTILE_THRESHOLD
+    keeper = max(0.0, min(100.0, float(keeper_percentile)))
+    reject = max(0.0, min(100.0, float(reject_percentile)))
+    # Defensive: reject threshold must not exceed keeper threshold, otherwise
+    # the classifier produces no Review band.
+    if reject > keeper:
+        reject = keeper
+    _SINGLETON_KEEPER_PERCENTILE_THRESHOLD = keeper
+    _SINGLETON_REJECT_PERCENTILE_THRESHOLD = reject
+
+
+def current_cull_thresholds() -> tuple[float, float]:
+    return (_SINGLETON_KEEPER_PERCENTILE_THRESHOLD, _SINGLETON_REJECT_PERCENTILE_THRESHOLD)
 
 AI_REVIEW_TAG_DEFINITIONS: tuple[tuple[str, str], ...] = (
     (
@@ -125,7 +153,9 @@ class AIImageResult:
 
     @property
     def is_top_pick(self) -> bool:
-        return self.is_rank_leader and self.confidence_bucket in {
+        # Cluster rank doesn't drive classification anymore — any card whose
+        # bucket is keeper / obvious winner qualifies for the "AI Pick" badge.
+        return self.confidence_bucket in {
             AIConfidenceBucket.OBVIOUS_WINNER,
             AIConfidenceBucket.LIKELY_KEEPER,
         }
@@ -145,11 +175,28 @@ class AIImageResult:
         return f"{self.normalized_score:.1f}"
 
     @property
+    def folder_percentile_text(self) -> str:
+        if self.folder_percentile is None:
+            return ""
+        return f"{self.folder_percentile:.0f}"
+
+    @property
     def display_score_text(self) -> str:
+        # Show the folder percentile (0-100, how this image ranks within the
+        # entire folder) when available. The earlier within-group normalized
+        # score was misleading: a card could show "AI 94" because it led its
+        # 3-image burst, while the burst itself sat in the folder's bottom
+        # 15% and was correctly classified as Reject. Folder percentile is
+        # the metric the keeper/reject buckets actually key off of, so the
+        # badge number now matches the bucket badge.
+        if self.folder_percentile is not None:
+            return self.folder_percentile_text
         return self.normalized_score_text or self.score_text
 
     @property
     def display_score_with_scale_text(self) -> str:
+        if self.folder_percentile is not None:
+            return f"{self.folder_percentile_text}p"
         if self.normalized_score is None:
             return self.score_text
         return f"{self.normalized_score_text}/100"
@@ -658,60 +705,28 @@ def _confidence_context_for_result(
     score_gap_to_next: float | None,
     score_gap_to_top: float | None,
 ) -> tuple[AIConfidenceBucket, str]:
-    if result.group_size > 1:
-        percentile = folder_percentile if folder_percentile is not None else 50.0
-        normalized = normalized_score if normalized_score is not None else 0.0
-        gap_to_next = score_gap_to_next or 0.0
-        gap_to_top = score_gap_to_top or 0.0
+    """Classify each image by its FOLDER percentile only.
 
-        if result.rank_in_group == 1 and percentile <= _WEAK_CLUSTER_LEADER_REJECT_PERCENTILE:
-            return AIConfidenceBucket.LIKELY_REJECT, (
-                "Leads its cluster, but the whole cluster still scores near the bottom of the folder."
-            )
-        if (
-            result.rank_in_group == 1
-            and normalized_score is not None
-            and normalized >= _OBVIOUS_WINNER_NORMALIZED_THRESHOLD
-            and gap_to_next >= _OBVIOUS_WINNER_GAP_THRESHOLD
-        ):
-            return AIConfidenceBucket.OBVIOUS_WINNER, "Clear lead inside its AI group."
-        if (
-            result.rank_in_group == 1
-            and (
-                (normalized_score is not None and normalized >= _LIKELY_KEEPER_GROUP_NORMALIZED_THRESHOLD)
-                or percentile >= _LIKELY_KEEPER_GROUP_PERCENTILE_THRESHOLD
-            )
-        ):
-            return AIConfidenceBucket.LIKELY_KEEPER, "Strong group rank without a runaway margin."
+    The earlier cluster-aware path produced confusing edge cases — a card
+    leading a small burst could be marked Reject because the whole burst
+    landed in the folder's bottom 15%, or a perfectly fine standalone image
+    could be marked Reject because it happened to be rank-2 in some loose
+    cluster. The badge then said something like "AI 94" (within-group score)
+    on a Reject card, which read as a contradiction.
 
-        if result.rank_in_group >= 4:
-            return AIConfidenceBucket.LIKELY_REJECT, "Falls too far behind the stronger frames in its group."
-
-        if result.rank_in_group == 3:
-            if percentile >= _THIRD_PLACE_REVIEW_PERCENTILE_THRESHOLD and gap_to_top <= _THIRD_PLACE_REVIEW_GAP_THRESHOLD:
-                return AIConfidenceBucket.NEEDS_REVIEW, "Third-place frame is unusually close inside a strong cluster."
-            return AIConfidenceBucket.LIKELY_REJECT, "Third-place and lower frames usually do not justify a manual pass."
-
-        if result.rank_in_group == 2:
-            if (
-                gap_to_top <= _SECOND_PLACE_REVIEW_GAP_THRESHOLD
-                or (
-                    normalized_score is not None
-                    and normalized >= _SECOND_PLACE_REVIEW_NORMALIZED_THRESHOLD
-                    and percentile >= _SECOND_PLACE_REVIEW_PERCENTILE_THRESHOLD
-                )
-            ):
-                return AIConfidenceBucket.NEEDS_REVIEW, "Close second-place frame inside a strong cluster."
-            return AIConfidenceBucket.LIKELY_REJECT, "Second-place frame still trails the leader by a meaningful margin."
-
-        return AIConfidenceBucket.NEEDS_REVIEW, "Model signals are mixed enough to warrant a human pass."
+    Now every image is judged independently against folder percentile, using
+    the singleton thresholds. Burst/cluster grouping is still detected and
+    surfaced for navigation, but it no longer drives the keeper/reject
+    decision. This matches the user's intent of "don't rank like-images
+    bundled as one."
+    """
 
     percentile = folder_percentile if folder_percentile is not None else 50.0
     if percentile >= _SINGLETON_KEEPER_PERCENTILE_THRESHOLD:
-        return AIConfidenceBucket.LIKELY_KEEPER, "High single-image score compared with the rest of the folder."
+        return AIConfidenceBucket.LIKELY_KEEPER, "High score compared with the rest of the folder."
     if percentile <= _SINGLETON_REJECT_PERCENTILE_THRESHOLD:
-        return AIConfidenceBucket.LIKELY_REJECT, "Single-image score lands near the bottom of the folder."
-    return AIConfidenceBucket.NEEDS_REVIEW, "Single-image score does not imply a decisive winner on its own."
+        return AIConfidenceBucket.LIKELY_REJECT, "Score lands near the bottom of the folder."
+    return AIConfidenceBucket.NEEDS_REVIEW, "Mid-folder score — needs a human pass."
 
 
 def confidence_bucket_label(bucket: AIConfidenceBucket | str) -> str:
