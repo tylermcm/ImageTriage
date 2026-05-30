@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -55,11 +54,8 @@ class WorkflowSettingsResult:
     burst_stacks_enabled: bool = False
     catalog_cache_enabled: bool = True
     watch_current_folder: bool = True
-    ai_auto_profile_enabled: bool = False
     ai_embed_batch_size: int = 0
-    ai_semantic_sidecar_enabled: bool = True
     ai_review_detail_progress_enabled: bool = False
-    ai_label_near_duplicate_threshold: float = 0.965
     ai_dispute_weight: int = 3
     ai_keep_top_percent: int = 10       # % of folder to mark as Keeper
     ai_review_band_percent: int = 10    # % below Keeper cutoff to mark as Review
@@ -103,11 +99,8 @@ class WorkflowSettingsDialog(QDialog):
         burst_stacks_enabled: bool = False,
         catalog_cache_enabled: bool = True,
         watch_current_folder: bool = True,
-        ai_auto_profile_enabled: bool = False,
         ai_embed_batch_size: int = 0,
-        ai_semantic_sidecar_enabled: bool = True,
         ai_review_detail_progress_enabled: bool = False,
-        ai_label_near_duplicate_threshold: float = 0.965,
         ai_dispute_weight: int = 3,
         ai_keep_top_percent: int = 10,
         ai_review_band_percent: int = 10,
@@ -288,39 +281,11 @@ class WorkflowSettingsDialog(QDialog):
             "ONNX's internal thread pool."
         )
 
-        self.ai_semantic_sidecar_checkbox = QCheckBox("Run semantic classification during AI Review")
-        self.ai_semantic_sidecar_checkbox.setChecked(ai_semantic_sidecar_enabled)
-
         self.ai_review_detail_progress_checkbox = QCheckBox("Show detailed AI Review activity")
         self.ai_review_detail_progress_checkbox.setChecked(ai_review_detail_progress_enabled)
         self.ai_review_detail_progress_checkbox.setToolTip(
             "Shows model loading, library loading, and per-stage technical activity in the AI Review progress window."
         )
-
-        self.ai_label_near_duplicate_slider = QSlider(Qt.Orientation.Horizontal)
-        self.ai_label_near_duplicate_slider.setRange(500, 995)
-        self.ai_label_near_duplicate_slider.setSingleStep(1)
-        self.ai_label_near_duplicate_slider.setPageStep(5)
-        self.ai_label_near_duplicate_slider.setValue(self._threshold_to_slider_value(ai_label_near_duplicate_threshold))
-        self.ai_label_near_duplicate_slider.setToolTip(
-            "DINO cosine threshold for hiding near-identical images before labeling. Lower is stricter and collapses more images."
-        )
-        self.ai_label_near_duplicate_value_label = QLabel(
-            self._format_threshold_value(self.ai_label_near_duplicate_slider.value())
-        )
-        self.ai_label_near_duplicate_value_label.setObjectName("mutedText")
-        self.ai_label_near_duplicate_value_label.setFixedWidth(48)
-        self.ai_label_near_duplicate_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.ai_label_near_duplicate_slider.valueChanged.connect(self._update_ai_label_near_duplicate_label)
-        label_threshold_row = QWidget()
-        label_threshold_layout = QHBoxLayout(label_threshold_row)
-        label_threshold_layout.setContentsMargins(0, 0, 0, 0)
-        label_threshold_layout.setSpacing(8)
-        label_threshold_layout.addWidget(self.ai_label_near_duplicate_slider, 1)
-        label_threshold_layout.addWidget(self.ai_label_near_duplicate_value_label)
-
-        self.ai_auto_profile_checkbox = QCheckBox("Suggest a training profile before training")
-        self.ai_auto_profile_checkbox.setChecked(ai_auto_profile_enabled)
 
         self.ai_dispute_weight_spin = QSpinBox()
         self.ai_dispute_weight_spin.setRange(2, 5)
@@ -391,15 +356,12 @@ class WorkflowSettingsDialog(QDialog):
 
         ai_page, ai_layout = self._build_settings_page("AI")
         self._add_form_row(ai_layout, "AI ingest workers", self.ai_embed_batch_size_spin)
-        self._add_checkbox_row(ai_layout, "Semantic sidecar", self.ai_semantic_sidecar_checkbox)
         self._add_checkbox_row(ai_layout, "Progress details", self.ai_review_detail_progress_checkbox)
-        self._add_form_row(ai_layout, "Label duplicate filter", label_threshold_row)
         self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
         self._add_form_row(ai_layout, "Cull breakdown", self.ai_cull_summary_label)
         self._add_form_row(ai_layout, "Base score weight", self.ai_base_score_weight_spin)
         self._add_form_row(ai_layout, "Dispute training weight", self.ai_dispute_weight_spin)
-        self._add_checkbox_row(ai_layout, "Training profile", self.ai_auto_profile_checkbox)
         ai_layout.addStretch(1)
         self._update_ai_cull_summary()
         self._add_settings_page("AI", ai_page)
@@ -614,24 +576,6 @@ class WorkflowSettingsDialog(QDialog):
                     return
         super().accept()
 
-    @staticmethod
-    def _threshold_to_slider_value(value: float) -> int:
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            parsed = 0.965
-        return max(500, min(995, int(round(parsed * 1000.0))))
-
-    @staticmethod
-    def _slider_value_to_threshold(value: int) -> float:
-        return max(0.500, min(0.995, float(value) / 1000.0))
-
-    @classmethod
-    def _format_threshold_value(cls, value: int) -> str:
-        return f"{cls._slider_value_to_threshold(value):.3f}"
-
-    def _update_ai_label_near_duplicate_label(self, value: int) -> None:
-        self.ai_label_near_duplicate_value_label.setText(self._format_threshold_value(value))
 
     def _update_ai_cull_summary(self) -> None:
         keep = int(self.ai_keep_top_spin.value())
@@ -759,13 +703,8 @@ class WorkflowSettingsDialog(QDialog):
             burst_stacks_enabled=self.burst_stacks_checkbox.isChecked(),
             catalog_cache_enabled=self.catalog_cache_checkbox.isChecked(),
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
-            ai_auto_profile_enabled=self.ai_auto_profile_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
-            ai_semantic_sidecar_enabled=self.ai_semantic_sidecar_checkbox.isChecked(),
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
-            ai_label_near_duplicate_threshold=self._slider_value_to_threshold(
-                int(self.ai_label_near_duplicate_slider.value())
-            ),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
             ai_keep_top_percent=max(1, min(50, int(self.ai_keep_top_spin.value()))),
             ai_review_band_percent=max(0, min(30, int(self.ai_review_band_spin.value()))),

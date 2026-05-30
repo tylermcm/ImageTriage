@@ -162,10 +162,19 @@ def matches_record_query(
     metadata: "CaptureMetadata | None" = None,
     review_insight: "ReviewInsight | None" = None,
     workflow_insight: "RecordWorkflowInsight | None" = None,
+    is_disputed: bool = False,
 ) -> bool:
     resolved_annotation = annotation if annotation is not None else SessionAnnotation()
     return (
-        _matches_quick_filter(record, query.quick_filter, resolved_annotation, ai_result, review_insight, workflow_insight)
+        _matches_quick_filter(
+            record,
+            query.quick_filter,
+            resolved_annotation,
+            ai_result,
+            review_insight,
+            workflow_insight,
+            is_disputed=is_disputed,
+        )
         and _matches_search(record, query)
         and _matches_file_type(record, query.file_type)
         and _matches_review_state(query.review_state, resolved_annotation)
@@ -184,6 +193,8 @@ def _matches_quick_filter(
     ai_result: "AIImageResult | None",
     review_insight: "ReviewInsight | None",
     workflow_insight: "RecordWorkflowInsight | None",
+    *,
+    is_disputed: bool = False,
 ) -> bool:
     if quick_filter == FilterMode.WINNERS:
         return annotation.winner
@@ -202,6 +213,11 @@ def _matches_quick_filter(
     if quick_filter == FilterMode.AI_GROUPED:
         return ai_result is not None and ai_result.group_size > 1
     if quick_filter == FilterMode.AI_DISAGREEMENTS:
+        # A dispute is the user explicitly disagreeing with the AI's call —
+        # the strongest possible disagreement signal — so it should appear
+        # alongside the workflow-derived disagreements.
+        if is_disputed:
+            return True
         return workflow_insight is not None and workflow_insight.has_disagreement
     if quick_filter == FilterMode.REVIEW_ROUNDS:
         return workflow_insight is not None and workflow_insight.has_round

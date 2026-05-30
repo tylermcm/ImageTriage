@@ -54,7 +54,6 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     ("next_ai_pick", "AI", "Ctrl+Alt+P", "Next AI Top Pick"),
     ("compare_ai_group", "AI", "Ctrl+Alt+G", "Compare Current AI Group"),
     ("review_ai_disagreements", "AI", "Ctrl+Alt+D", "Review AI Disagreements"),
-    ("taste_calibration_wizard", "AI", "Ctrl+Alt+K", "Taste Calibration Wizard..."),
     # Workflow / export
     ("handoff_builder", "Workflow", "Ctrl+Alt+H", "Deliver / Handoff Builder..."),
     ("send_to_editor_pipeline", "Workflow", "Ctrl+Alt+E", "Send To Editor..."),

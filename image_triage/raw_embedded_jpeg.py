@@ -12,6 +12,7 @@ class EmbeddedJpeg:
     source: str
     offset: int
     byte_count: int
+    orientation: int = 1  # EXIF orientation 1-8 (1 = no rotation needed)
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,6 +46,7 @@ _STRIP_BYTE_COUNTS = 0x0117
 _COMPRESSION = 0x0103
 _SUB_IFDS = 0x014A
 _EXIF_IFD = 0x8769
+_ORIENTATION = 0x0112
 
 _JPEG_COMPRESSION_VALUES = {6, 7}
 _MAX_IFDS = 48
@@ -75,7 +77,7 @@ def extract_embedded_jpeg(path: str) -> EmbeddedJpeg | None:
             endian = _tiff_endian(header)
             if endian is not None and struct.unpack(endian + "H", header[2:4])[0] == 42:
                 first_ifd = struct.unpack(endian + "I", header[4:8])[0]
-                candidates = _walk_ifds(stream, file_size, endian, first_ifd)
+                candidates, orientation = _walk_ifds(stream, file_size, endian, first_ifd)
                 for candidate in sorted(candidates, key=lambda item: item.byte_count, reverse=True):
                     payload = _read_jpeg_payload(stream, file_size, candidate.offset, candidate.byte_count)
                     if payload is not None:
@@ -84,6 +86,7 @@ def extract_embedded_jpeg(path: str) -> EmbeddedJpeg | None:
                             source=candidate.source,
                             offset=candidate.offset,
                             byte_count=len(payload),
+                            orientation=orientation,
                         )
         marker_candidate = _scan_jpeg_markers(path, file_size)
         if marker_candidate is None:
@@ -95,11 +98,14 @@ def extract_embedded_jpeg(path: str) -> EmbeddedJpeg | None:
             return None
         if payload is None:
             return None
+        # Marker-scan fallback can't tell us orientation; default to 1 (no
+        # rotation) and let the JPEG itself carry it if it has one.
         return EmbeddedJpeg(
             payload=payload,
             source=marker_candidate.source,
             offset=marker_candidate.offset,
             byte_count=len(payload),
+            orientation=1,
         )
     except (OSError, struct.error, ValueError):
         return None
@@ -116,12 +122,23 @@ def _tiff_endian(header: bytes) -> str | None:
     return None
 
 
-def _walk_ifds(stream, file_size: int, endian: str, first_ifd: int) -> list[_Candidate]:
+def _walk_ifds(stream, file_size: int, endian: str, first_ifd: int) -> tuple[list[_Candidate], int]:
+    """Walk the TIFF IFD chain. Returns (jpeg candidates, orientation).
+
+    Orientation is read from the FIRST IFD that carries tag 0x0112 — that's
+    the main image IFD, which holds the camera-recorded orientation in
+    Nikon / Canon / Sony raw containers. Sub-IFDs and thumbnail IFDs are
+    skipped for the orientation read because they typically carry the
+    sensor-orientation (1) regardless of how the camera was held.
+    """
+
     candidates: list[_Candidate] = []
-    pending = [first_ifd]
+    orientation: int = 1
+    orientation_found = False
+    pending: list[tuple[int, bool]] = [(first_ifd, True)]  # (offset, is_main_chain)
     seen: set[int] = set()
     while pending and len(seen) < _MAX_IFDS:
-        offset = pending.pop(0)
+        offset, is_main = pending.pop(0)
         if offset in seen or offset <= 0 or offset + 2 > file_size:
             continue
         seen.add(offset)
@@ -129,15 +146,22 @@ def _walk_ifds(stream, file_size: int, endian: str, first_ifd: int) -> list[_Can
         if not entries:
             continue
         candidates.extend(_candidates_from_entries(stream, file_size, endian, entries))
+        if not orientation_found and is_main:
+            values = _entry_ints(stream, file_size, endian, entries.get(_ORIENTATION), limit=1)
+            if values:
+                candidate_orient = int(values[0])
+                if 1 <= candidate_orient <= 8:
+                    orientation = candidate_orient
+                    orientation_found = True
         for tag in (_SUB_IFDS, _EXIF_IFD):
             pending.extend(
-                child
+                (child, False)
                 for child in _entry_ints(stream, file_size, endian, entries.get(tag), limit=_MAX_ENTRY_VALUES)
                 if child not in seen
             )
         if next_ifd and next_ifd not in seen:
-            pending.append(next_ifd)
-    return candidates
+            pending.append((next_ifd, True))
+    return candidates, orientation
 
 
 def _read_ifd(stream, file_size: int, endian: str, offset: int) -> tuple[dict[int, _Entry], int]:

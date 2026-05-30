@@ -2290,11 +2290,8 @@ class MainWindow(QMainWindow):
     WORKFLOW_PRESETS_KEY = "workflow/presets"
     CATALOG_CACHE_ENABLED_KEY = "catalog/cache_enabled"
     CATALOG_WATCH_CURRENT_FOLDER_KEY = "catalog/watch_current_folder"
-    AI_AUTO_PROFILE_ENABLED_KEY = "ai/auto_profile_enabled"
     AI_EMBED_BATCH_SIZE_KEY = "ai/embed_batch_size"
-    AI_SEMANTIC_SIDECAR_ENABLED_KEY = "ai/semantic_sidecar_enabled"
     AI_REVIEW_DETAIL_PROGRESS_KEY = "ai/review_detail_progress"
-    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY = "ai/label_near_duplicate_threshold"
     AI_DISPUTE_WEIGHT_KEY = "ai/dispute_weight"
     AI_DISPUTE_WEIGHT_DEFAULT = 3
     AI_DISPUTE_WEIGHT_MIN = 2
@@ -2755,6 +2752,10 @@ class MainWindow(QMainWindow):
         # user doesn't have to wait for the next adapter retrain to see their
         # decision reflected in AI Review.
         self._user_label_bucket_overrides: dict[str, str] = {}
+        # Cached fast-path-keys for paths the user has explicitly disputed.
+        # Drives the dispute -> AI Disagreements filter inclusion and is
+        # refreshed alongside the bucket overrides above.
+        self._disputed_path_keys: set[str] = set()
         # AI Review forces Smart Groups/Stacks off too (the cluster context
         # was producing misleading "weak cluster leader" rejects). We snapshot
         # the toggles the same way as adapter review so they can be restored
@@ -2904,7 +2905,6 @@ class MainWindow(QMainWindow):
         self._toolbar_style = self._normalize_toolbar_style(self._settings.value(self.TOOLBAR_STYLE_KEY, "text", str))
         self._catalog_cache_enabled = self._settings.value(self.CATALOG_CACHE_ENABLED_KEY, True, bool)
         self._watch_current_folder_enabled = self._settings.value(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, True, bool)
-        self._ai_auto_profile_enabled = self._settings.value(self.AI_AUTO_PROFILE_ENABLED_KEY, False, bool)
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(
             self._settings.value(self.AI_EMBED_BATCH_SIZE_KEY, self.AI_EMBED_BATCH_SIZE_AUTO, int)
         )
@@ -2924,8 +2924,16 @@ class MainWindow(QMainWindow):
         # very first bundle load uses them.
         self._apply_cull_thresholds_to_classifier()
         self._apply_base_score_blend_to_workflow()
-        self._ai_semantic_sidecar_enabled = self._settings.value(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, True, bool)
         self._ai_review_detail_progress_enabled = self._settings.value(self.AI_REVIEW_DETAIL_PROGRESS_KEY, False, bool)
+        # Stub: the semantic-sidecar setting used to flip a stage count and
+        # gate a DINO-era semantic model. With CLI-Culler driving the pipeline
+        # the flag is no longer meaningful, but a couple of legacy status-line
+        # helpers still read it — keep it as a constant False so they evaluate
+        # to a tidy "disabled" path until those helpers go too.
+        self._ai_semantic_sidecar_enabled = False
+        # Same for the DINO label-duplicate cosine threshold: only read by a
+        # dead training-prep helper, but cheaper to stub than to thread None
+        # through it. Will be removed alongside the dead pipeline methods.
         self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(
             self._settings.value(
                 self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY,
@@ -3848,7 +3856,6 @@ class MainWindow(QMainWindow):
             "next_unreviewed_ai_pick": (self.actions.next_unreviewed_ai_pick, "Next Unreviewed"),
             "compare_ai_group": (self.actions.compare_ai_group, "AI Compare"),
             "review_ai_disagreements": (self.actions.review_ai_disagreements, "Disagree"),
-            "taste_calibration": (self.actions.taste_calibration_wizard, "Calibrate"),
         }
         for item_id, (action, text) in action_items.items():
             widgets[item_id] = self._build_workspace_action_button(action, text, item_id=item_id)
@@ -9145,7 +9152,6 @@ class MainWindow(QMainWindow):
         self.actions.reveal_in_explorer.setEnabled(bool(display_path))
         self.actions.open_in_photoshop.setEnabled(bool(selected_records and self._photoshop_executable))
         self.actions.review_ai_disagreements.setEnabled(self._ai_bundle is not None)
-        self.actions.taste_calibration_wizard.setEnabled(bool(self._current_folder and len(self._all_records) >= 2))
         self.actions.assign_review_round_first_pass.setEnabled(has_selection)
         self.actions.assign_review_round_second_pass.setEnabled(has_selection)
         self.actions.assign_review_round_third_pass.setEnabled(has_selection)
@@ -14636,6 +14642,7 @@ class MainWindow(QMainWindow):
         ai_result = self._ai_result_for_record(record) if needs_ai else None
         review_insight = self._review_insight_for_record(record) if needs_review else None
         workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
+        is_disputed = self._is_record_disputed(record)
         old_match = matches_record_query(
             record,
             self._filter_query,
@@ -14644,6 +14651,7 @@ class MainWindow(QMainWindow):
             metadata=EMPTY_METADATA,
             review_insight=review_insight,
             workflow_insight=workflow_insight,
+            is_disputed=is_disputed,
         )
         new_match = matches_record_query(
             record,
@@ -14653,6 +14661,7 @@ class MainWindow(QMainWindow):
             metadata=metadata,
             review_insight=review_insight,
             workflow_insight=workflow_insight,
+            is_disputed=is_disputed,
         )
         return old_match != new_match
 
@@ -15694,7 +15703,6 @@ class MainWindow(QMainWindow):
             self.actions.next_unreviewed_ai_pick.setEnabled(ai_loaded)
             self.actions.compare_ai_group.setEnabled(ai_loaded and can_compare_group)
             self.actions.review_ai_disagreements.setEnabled(ai_loaded)
-            self.actions.taste_calibration_wizard.setEnabled(current_folder and len(self._all_records) >= 2)
             self.actions.clear_ai_results.setEnabled(ai_loaded)
             if FilterMode.AI_GROUPED in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_GROUPED].setEnabled(ai_loaded)
@@ -17005,17 +17013,20 @@ class MainWindow(QMainWindow):
         return _replace_confidence(result, bucket, summary)
 
     def _recompute_user_label_bucket_overrides(self) -> None:
-        """Rebuild the in-memory map from labeled path -> bucket. Called when
-        the user labels / disputes a card, and when entering a folder so
-        existing labels surface in the AI Review badges immediately."""
+        """Rebuild the in-memory map from labeled path -> bucket AND the set
+        of disputed path keys. Called when the user labels / disputes a card,
+        and when entering a folder so existing labels surface in the AI Review
+        badges immediately."""
 
         overrides: dict[str, str] = {}
+        disputed_keys: set[str] = set()
         try:
             paths = self._aiculler_paths_for_current_folder()
         except Exception:
             paths = None
         if paths is None:
             self._user_label_bucket_overrides = overrides
+            self._disputed_path_keys = disputed_keys
             return
         try:
             labels = self._load_aiculler_internal_labels(paths)
@@ -17025,10 +17036,27 @@ class MainWindow(QMainWindow):
             bucket_name = self._USER_LABEL_TO_BUCKET.get(str(label).strip().lower())
             if bucket_name is not None:
                 overrides[_memory_path_key(path)] = bucket_name
+        try:
+            disputes = self._load_aiculler_internal_disputes(paths)
+        except Exception:
+            disputes = {}
+        for path in disputes:
+            disputed_keys.add(_memory_path_key(path))
         self._user_label_bucket_overrides = overrides
+        self._disputed_path_keys = disputed_keys
         # Force a grid repaint so any visible cards reflect the new bucket.
         if hasattr(self, "grid") and self.grid is not None:
             self.grid.viewport().update()
+        # If the user is currently filtering by AI Disagreements, the set of
+        # matched records just changed — re-apply the filter so the freshly
+        # disputed card appears (or stops appearing if it was undisputed).
+        if self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS:
+            self._apply_filter_query_change()
+
+    def _is_record_disputed(self, record: ImageRecord | None) -> bool:
+        if record is None or not self._disputed_path_keys:
+            return False
+        return _memory_path_key(record.path) in self._disputed_path_keys
 
     def _apply_burst_dedup_to_ai_result(self, result, record):
         """Demote non-best frames in a visually similar burst to LIKELY_REJECT.
@@ -18223,11 +18251,8 @@ class MainWindow(QMainWindow):
             burst_stacks_enabled=self._burst_stacks_enabled,
             catalog_cache_enabled=self._catalog_cache_enabled,
             watch_current_folder=self._watch_current_folder_enabled,
-            ai_auto_profile_enabled=self._ai_auto_profile_enabled,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
-            ai_semantic_sidecar_enabled=self._ai_semantic_sidecar_enabled,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
-            ai_label_near_duplicate_threshold=self._ai_label_near_duplicate_threshold,
             ai_dispute_weight=self._ai_dispute_weight_setting,
             ai_keep_top_percent=self._ai_keep_top_percent_setting,
             ai_review_band_percent=self._ai_review_band_percent_setting,
@@ -18265,16 +18290,8 @@ class MainWindow(QMainWindow):
         burst_stacks_changed = result.burst_stacks_enabled != self._burst_stacks_enabled
         catalog_changed = result.catalog_cache_enabled != self._catalog_cache_enabled
         watch_changed = result.watch_current_folder != self._watch_current_folder_enabled
-        auto_profile_changed = result.ai_auto_profile_enabled != self._ai_auto_profile_enabled
         ai_batch_changed = result.ai_embed_batch_size != self._ai_embed_batch_size_setting
-        ai_semantic_changed = result.ai_semantic_sidecar_enabled != self._ai_semantic_sidecar_enabled
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
-        new_ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(
-            result.ai_label_near_duplicate_threshold
-        )
-        ai_label_threshold_changed = (
-            abs(new_ai_label_near_duplicate_threshold - self._ai_label_near_duplicate_threshold) >= 0.0005
-        )
 
         self._session_id = new_session
         self._winner_mode = result.winner_mode
@@ -18289,7 +18306,6 @@ class MainWindow(QMainWindow):
         self._burst_stacks_enabled = result.burst_stacks_enabled
         self._catalog_cache_enabled = result.catalog_cache_enabled
         self._watch_current_folder_enabled = result.watch_current_folder
-        self._ai_auto_profile_enabled = result.ai_auto_profile_enabled
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
         new_keep_top = self._normalize_ai_keep_top_percent(result.ai_keep_top_percent)
@@ -18306,9 +18322,7 @@ class MainWindow(QMainWindow):
         if new_base_weight != self._ai_base_score_weight_percent_setting:
             self._ai_base_score_weight_percent_setting = new_base_weight
             self._apply_base_score_blend_to_workflow()
-        self._ai_semantic_sidecar_enabled = result.ai_semantic_sidecar_enabled
         self._ai_review_detail_progress_enabled = result.ai_review_detail_progress_enabled
-        self._ai_label_near_duplicate_threshold = new_ai_label_near_duplicate_threshold
         self._refresh_ai_runtime_preferences()
         self._settings.setValue(self.SESSION_KEY, self._session_id)
         self._settings.setValue(self.WINNER_MODE_KEY, self._winner_mode.value)
@@ -18323,15 +18337,12 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.BURST_STACKS_KEY, self._burst_stacks_enabled)
         self._settings.setValue(self.CATALOG_CACHE_ENABLED_KEY, self._catalog_cache_enabled)
         self._settings.setValue(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, self._watch_current_folder_enabled)
-        self._settings.setValue(self.AI_AUTO_PROFILE_ENABLED_KEY, self._ai_auto_profile_enabled)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
         self._settings.setValue(self.AI_DISPUTE_WEIGHT_KEY, self._ai_dispute_weight_setting)
         self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
         self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
         self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
-        self._settings.setValue(self.AI_SEMANTIC_SIDECAR_ENABLED_KEY, self._ai_semantic_sidecar_enabled)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
-        self._settings.setValue(self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY, self._ai_label_near_duplicate_threshold)
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Session: {self._session_id}")
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
@@ -18408,21 +18419,11 @@ class MainWindow(QMainWindow):
         elif watch_changed:
             state = "enabled" if self._watch_current_folder_enabled else "disabled"
             self.statusBar().showMessage(f"Current-folder watch {state}")
-        elif auto_profile_changed:
-            state = "enabled" if self._ai_auto_profile_enabled else "disabled"
-            self.statusBar().showMessage(f"Training profile suggestion {state}")
         elif ai_batch_changed:
             self.statusBar().showMessage(f"AI embedding batch size set to {self._ai_embed_batch_size_label()}")
-        elif ai_semantic_changed:
-            state = "enabled" if self._ai_semantic_sidecar_enabled else "disabled"
-            self.statusBar().showMessage(f"Semantic AI sidecar {state}")
         elif ai_progress_detail_changed:
             state = "enabled" if self._ai_review_detail_progress_enabled else "disabled"
             self.statusBar().showMessage(f"Detailed AI Review progress {state}")
-        elif ai_label_threshold_changed:
-            self.statusBar().showMessage(
-                f"Label duplicate filter set to {self._ai_label_near_duplicate_threshold:.3f}"
-            )
 
     def _empty_recycle_bin(self) -> None:
         recycle_root = self._recycle_root_for_folder()
@@ -20248,12 +20249,14 @@ class MainWindow(QMainWindow):
             records = [*visible_folder_records, *sorted_records]
         else:
             records = list(visible_folder_records)
+            needs_dispute = self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
             for record in sorted_records:
                 annotation = self._annotations.get(record.path, SessionAnnotation())
                 ai_result = self._ai_result_for_record(record) if needs_ai else None
                 review_insight = self._review_insight_for_record(record) if needs_review else None
                 workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
                 metadata = self._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
+                is_disputed = self._is_record_disputed(record) if needs_dispute else False
                 if matches_record_query(
                     record,
                     self._filter_query,
@@ -20262,6 +20265,7 @@ class MainWindow(QMainWindow):
                     metadata=metadata,
                     review_insight=review_insight,
                     workflow_insight=workflow_insight,
+                    is_disputed=is_disputed,
                 ):
                     records.append(record)
 

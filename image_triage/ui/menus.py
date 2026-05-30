@@ -202,7 +202,6 @@ def build_main_menu_bar(
     review_tools_menu.addAction(actions.next_unreviewed_ai_pick)
     review_tools_menu.addAction(actions.compare_ai_group)
     review_tools_menu.addAction(actions.review_ai_disagreements)
-    review_tools_menu.addAction(actions.taste_calibration_wizard)
 
     ai_menu.addSeparator()
     setup_menu = ai_menu.addMenu("Runtime")

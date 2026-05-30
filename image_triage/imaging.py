@@ -9,7 +9,7 @@ from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QSize, Qt
-from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPolygonF, QTransform
 
 from .fits_support import (
     is_basic_displayable_fits_array,
@@ -735,9 +735,18 @@ def _load_raw_image(path: str, target_size: QSize, *, prefer_embedded: bool, suf
                 jpeg_bytes=embedded_jpeg.byte_count if embedded_jpeg is not None else 0,
             )
         if embedded_jpeg is not None:
-            image = _load_standard_image_from_bytes(embedded_jpeg.payload, target_size)
+            # Skip QImageReader auto-transform — most Nikon NEF embedded
+            # JPEGs don't carry their own orientation EXIF, and applying the
+            # container's tag 0x0112 below is the authoritative source.
+            # (For containers where the embedded JPEG DOES carry its own
+            # orientation, the IFD walker reads the same value from 0x0112
+            # so we still apply the correct rotation once.)
+            image = _load_standard_image_from_bytes(
+                embedded_jpeg.payload, target_size, apply_exif_transform=False
+            )
             if not image.isNull():
-                return image, None
+                image = _apply_exif_orientation(image, embedded_jpeg.orientation)
+                return _scale_if_needed(image, target_size), None
 
     if rawpy is None:
         return QImage(), "RAW support requires the rawpy package."
@@ -767,7 +776,15 @@ def _load_embedded_thumbnail(raw, target_size: QSize) -> QImage | None:
         return None
 
     if thumb.format == rawpy.ThumbFormat.JPEG:
-        image = _load_standard_image_from_bytes(bytes(thumb.data), target_size)
+        # Nikon NEFs (and others) sometimes strip the orientation EXIF tag
+        # from the embedded JPEG preview because the camera knows it should
+        # render the preview using the raw container's orientation field.
+        # Skip QImageReader's auto-transform here so we don't double-rotate
+        # when the JPEG DOES carry orientation, then apply raw.sizes.flip
+        # below as the authoritative source.
+        image = _load_standard_image_from_bytes(
+            bytes(thumb.data), target_size, apply_exif_transform=False
+        )
     elif thumb.format == rawpy.ThumbFormat.BITMAP:
         image = _qimage_from_rgb_array(thumb.data)
     else:
@@ -775,17 +792,92 @@ def _load_embedded_thumbnail(raw, target_size: QSize) -> QImage | None:
 
     if image.isNull():
         return None
+    image = _apply_raw_orientation(image, getattr(raw.sizes, "flip", 0))
     return _scale_if_needed(image, target_size)
 
 
-def _load_standard_image_from_bytes(payload: bytes, target_size: QSize) -> QImage:
+def _apply_exif_orientation(image: QImage, orientation: int) -> QImage:
+    """Apply the standard EXIF orientation field (1-8) to an image.
+
+      1: no rotation
+      2: flip horizontal
+      3: 180° rotation
+      4: flip vertical
+      5: transpose (90° CCW + flip horizontal)
+      6: 90° CW
+      7: transverse (90° CW + flip horizontal)
+      8: 90° CCW
+
+    Used by the fast-path TIFF/IFD JPEG extractor, which reads tag 0x0112
+    from the RAW container — Nikon NEFs carry the camera-recorded
+    orientation here even when the embedded preview JPEG itself doesn't.
+    """
+
+    if image.isNull() or orientation == 1 or orientation < 1 or orientation > 8:
+        return image
+    transform = QTransform()
+    if orientation == 2:
+        transform.scale(-1.0, 1.0)
+    elif orientation == 3:
+        transform.rotate(180)
+    elif orientation == 4:
+        transform.scale(1.0, -1.0)
+    elif orientation == 5:
+        transform.rotate(90)
+        transform.scale(-1.0, 1.0)
+    elif orientation == 6:
+        transform.rotate(90)
+    elif orientation == 7:
+        transform.rotate(-90)
+        transform.scale(-1.0, 1.0)
+    elif orientation == 8:
+        transform.rotate(-90)
+    rotated = image.transformed(transform, Qt.TransformationMode.SmoothTransformation)
+    return rotated if not rotated.isNull() else image
+
+
+def _apply_raw_orientation(image: QImage, flip: int) -> QImage:
+    """Apply the camera-recorded orientation that libraw / rawpy expose via
+    ``raw.sizes.flip``. Values follow the standard EXIF orientation scheme:
+
+      0 - no rotation (sensor was held in landscape)
+      3 - 180° (camera upside-down)
+      5 - 90° counter-clockwise (camera held right side up, right edge down)
+      6 - 90° clockwise (camera held right side up, left edge down)
+
+    The embedded JPEG preview in many Nikon NEFs doesn't carry its own
+    orientation EXIF tag, and the raw BITMAP / postprocessed pixel buffers
+    carry no orientation metadata at all — so this is where portrait shots
+    need to actually become portrait."""
+
+    if image.isNull() or flip in (0, None):
+        return image
+    transform = QTransform()
+    if flip == 3:
+        transform.rotate(180)
+    elif flip == 5:
+        transform.rotate(-90)
+    elif flip == 6:
+        transform.rotate(90)
+    else:
+        return image
+    rotated = image.transformed(transform, Qt.TransformationMode.SmoothTransformation)
+    return rotated if not rotated.isNull() else image
+
+
+def _load_standard_image_from_bytes(
+    payload: bytes,
+    target_size: QSize,
+    *,
+    apply_exif_transform: bool = True,
+) -> QImage:
     byte_array = QByteArray(payload)
     buffer = QBuffer(byte_array)
     if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
         return QImage()
 
     reader = QImageReader(buffer)
-    reader.setAutoTransform(True)
+    reader.setAutoTransform(apply_exif_transform)
     source_size = reader.size()
     if source_size.isValid() and _has_target(target_size):
         scaled = source_size.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio)
@@ -814,6 +906,10 @@ def _postprocess_raw(raw, target_size: QSize, *, quality_mode: str) -> QImage:
     image = _qimage_from_rgb_array(rgb)
     if image.isNull():
         return image
+    # postprocess returns sensor-orientation pixels; apply the camera-recorded
+    # orientation the same way the embedded-preview path does so portrait raws
+    # actually render portrait.
+    image = _apply_raw_orientation(image, getattr(raw.sizes, "flip", 0))
     return _scale_if_needed(image, target_size)
 
 
