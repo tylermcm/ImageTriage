@@ -95,7 +95,6 @@ class MainWindowActions:
     next_unreviewed_ai_pick: QAction
     compare_ai_group: QAction
     review_ai_disagreements: QAction
-    taste_calibration_wizard: QAction
     winner_ladder_mode: QAction
     assign_review_round_first_pass: QAction
     assign_review_round_second_pass: QAction
@@ -432,12 +431,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Review AI Disagreements",
             slot=window._review_ai_disagreements,
             shortcut="Ctrl+Alt+D",
-        ),
-        taste_calibration_wizard=_create_action(
-            window,
-            "Taste Calibration Wizard...",
-            slot=window._open_taste_calibration_wizard,
-            shortcut="Ctrl+Alt+K",
         ),
         winner_ladder_mode=_create_action(
             window,
