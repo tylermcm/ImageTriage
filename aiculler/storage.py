@@ -119,6 +119,7 @@ class SQLiteFeatureStore:
                     primary_category TEXT,
                     cluster_id INTEGER,
                     source TEXT NOT NULL,
+                    label_origin TEXT NOT NULL DEFAULT 'legacy',
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE,
@@ -164,6 +165,7 @@ class SQLiteFeatureStore:
             self._ensure_column("images", "tag_base_score", "REAL")
             self._ensure_column("images", "tag_penalty", "REAL")
             self._ensure_column("images", "tag_flags", "TEXT")
+            self._ensure_column("ratings", "label_origin", "TEXT NOT NULL DEFAULT 'legacy'")
             self.connection.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -550,27 +552,50 @@ class SQLiteFeatureStore:
 
     def add_ratings(self, ratings: list[dict]) -> None:
         with self.lock:
-            self.connection.executemany(
-                """
-                INSERT INTO ratings (
-                    image_id, label, label_type, numeric_score, primary_category,
-                    cluster_id, source, metadata_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
+            rows = []
+            for rating in ratings:
+                metadata = dict(rating.get("metadata", {}) or {})
+                label_origin = str(rating.get("label_origin") or metadata.get("label_origin") or "manual")
+                rows.append(
                     (
                         int(rating["image_id"]),
+                        str(rating.get("source", "import")),
+                        label_origin,
                         str(rating["label"]),
                         str(rating["label_type"]),
                         float(rating["numeric_score"]),
                         rating.get("primary_category"),
                         rating.get("cluster_id"),
-                        str(rating.get("source", "import")),
-                        json.dumps(rating.get("metadata", {}), sort_keys=True),
+                        json.dumps(metadata, sort_keys=True),
                     )
-                    for rating in ratings
-                ],
+                )
+            rows_by_key = {(row[0], row[1], row[2]): row for row in rows}
+            rows = list(rows_by_key.values())
+            self.connection.executemany(
+                "DELETE FROM ratings WHERE image_id = ? AND source = ? AND label_origin = ?",
+                [(row[0], row[1], row[2]) for row in rows],
+            )
+            self.connection.executemany(
+                """
+                INSERT INTO ratings (
+                    image_id, source, label_origin, label, label_type,
+                    numeric_score, primary_category, cluster_id, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            self.connection.commit()
+
+    def delete_ratings_for_source_origins(self, source: str, label_origins: Iterable[str]) -> None:
+        origins = sorted({str(origin) for origin in label_origins if str(origin)})
+        if not origins:
+            return
+        placeholders = ", ".join("?" for _ in origins)
+        with self.lock:
+            self.connection.execute(
+                f"DELETE FROM ratings WHERE source = ? AND label_origin IN ({placeholders})",
+                (str(source), *origins),
             )
             self.connection.commit()
 

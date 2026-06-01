@@ -42,10 +42,6 @@ EXTRACT_ARCHIVE_FILTER = (
 )
 
 
-def archive_formats() -> tuple[ArchiveFormat, ...]:
-    return ARCHIVE_FORMATS
-
-
 def archive_format_for_key(key: str) -> ArchiveFormat:
     normalized = (key or "").strip().lower()
     for item in ARCHIVE_FORMATS:
@@ -108,18 +104,6 @@ def build_archive_entries(source_paths: list[str] | tuple[str, ...], *, root_dir
         seen_archive_names.add(archive_name)
         entries.append(ArchiveEntry(source_path=str(source), archive_name=archive_name))
     return tuple(entries)
-
-
-def create_archive(
-    source_paths: list[str] | tuple[str, ...],
-    archive_path: str,
-    *,
-    archive_key: str = "",
-    root_dir: str | None = None,
-    progress_callback=None,
-) -> str:
-    entries = build_archive_entries(source_paths, root_dir=root_dir)
-    return _create_archive_from_entries(entries, archive_path, archive_key=archive_key, progress_callback=progress_callback)
 
 
 def extract_archive(archive_path: str, destination_dir: str, *, progress_callback=None) -> tuple[str, ...]:

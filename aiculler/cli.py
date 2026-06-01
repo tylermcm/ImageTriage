@@ -497,15 +497,28 @@ def command_import_ratings(args) -> int:
                 "source_path": record.source_path,
                 "label": record.label,
                 "label_type": record.label_type,
+                "label_origin": record.label_origin,
+                "weight": record.weight,
                 "numeric_score": record.numeric_score,
                 "primary_category": record.primary_category,
                 "cluster_id": record.cluster_id,
             }
             for record in records
         ]
+        origin_counts: dict[str, int] = {}
+        label_counts: dict[str, int] = {}
+        for record in records:
+            origin_counts[record.label_origin] = origin_counts.get(record.label_origin, 0) + 1
+            label_counts[record.label] = label_counts.get(record.label, 0) + 1
         logger.table("imported_ratings", output_records)
-        logger.summary({"imported_count": len(records), "ratings": str(args.ratings)})
-        print(f"Imported {len(records)} rating(s).")
+        logger.summary({
+            "imported_count": len(records),
+            "ratings": str(args.ratings),
+            "source": args.source,
+            "origin_counts": origin_counts,
+            "label_counts": label_counts,
+        })
+        print(f"Imported {len(records)} rating(s). origins={origin_counts} labels={label_counts}")
         return 0
     finally:
         store.close()

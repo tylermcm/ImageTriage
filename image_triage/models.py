@@ -118,6 +118,7 @@ class SortMode(str, Enum):
     NAME = "Filename"
     DATE = "Date Modified"
     SIZE = "File Size"
+    AI_RANK = "AI Rank"
 
 
 class FilterMode(str, Enum):

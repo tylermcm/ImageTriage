@@ -8,12 +8,14 @@ dependencies = [
     "astropy>=7.1",
     "exifread>=3.0",
     "numpy>=1.26",
+    "onnxruntime>=1.16",
     "Pillow>=10.4",
     "PySide6>=6.8",
     "py7zr>=1.1",
     "pillow-heif>=0.18",
     "psd-tools>=1.10",
     "rawpy>=0.20",
+    "tokenizers>=0.15",
 ]
 
 [project.scripts]
@@ -24,4 +26,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["image_triage*"]
+include = ["image_triage*", "aiculler*"]
+
+[tool.setuptools.package-data]
+aiculler = ["resources/*.csv"]

@@ -46,6 +46,8 @@ class RatingExample:
     label: str
     label_type: str
     numeric_score: float
+    weight: float
+    label_origin: str
     primary_category: str
     cluster_id: int | None
 
@@ -80,6 +82,9 @@ def import_ratings_csv(
     source: str = "csv",
 ) -> list[RatingExample]:
     records = load_rating_records(store, ratings_csv_path, source=source)
+    existing_count = len(store.list_ratings())
+    store.delete_ratings_for_source_origins(source, {record.label_origin for record in records})
+    after_delete_count = len(store.list_ratings())
     store.add_ratings(
         [
             {
@@ -90,10 +95,22 @@ def import_ratings_csv(
                 "primary_category": record.primary_category,
                 "cluster_id": record.cluster_id,
                 "source": source,
-                "metadata": {"filename": record.filename, "source_path": record.source_path},
+                "label_origin": record.label_origin,
+                "metadata": {
+                    "filename": record.filename,
+                    "source_path": record.source_path,
+                    "weight": record.weight,
+                    "label_origin": record.label_origin,
+                },
             }
             for record in records
         ]
+    )
+    final_count = len(store.list_ratings())
+    print(
+        "Rating import diagnostics: "
+        f"existing={existing_count} after_origin_delete={after_delete_count} final={final_count} "
+        f"origins={label_origin_counts(records)} labels={_label_counts(records)}"
     )
     return records
 
@@ -123,6 +140,8 @@ def load_rating_records(
                 raise ValueError(f"ratings row {line_number} did not match any image")
             label = (record.get("label") or record.get("rating") or "").strip().lower()
             label_type, numeric_score = parse_rating_label(label)
+            weight = parse_rating_weight(record.get("weight"))
+            label_origin = normalize_label_origin(record.get("review_round"))
             image_id = int(row["id"])
             item_context = context.get(image_id, {})
             examples.append(
@@ -133,6 +152,8 @@ def load_rating_records(
                     label=label,
                     label_type=label_type,
                     numeric_score=numeric_score,
+                    weight=weight,
+                    label_origin=label_origin,
                     primary_category=item_context.get("primary_category") or "uncategorized",
                     cluster_id=item_context.get("cluster_id"),
                 )
@@ -292,6 +313,7 @@ class AdapterTrainer:
             "seed": self.seed,
             "train_count": len(train_examples),
             "holdout_count": len(holdout_examples),
+            "label_origin_counts": label_origin_counts(examples),
             "category_models": sorted(category_models),
             "cluster_models": sorted(cluster_models),
         }
@@ -322,10 +344,11 @@ def fit_preference_model(
         return CentroidPreferenceModel(np.zeros(features.shape[1], dtype=np.float32), 0.0)
     values = np.vstack([features[index_by_id[example.image_id]] for example in examples])
     labels = np.asarray([example.numeric_score for example in examples], dtype=np.float32)
+    sample_weights = np.asarray([max(0.05, example.weight) for example in examples], dtype=np.float32)
     if float(labels.max() - labels.min()) == 0.0:
         return CentroidPreferenceModel(np.zeros(features.shape[1], dtype=np.float32), float(labels.mean()))
-    high_weights = labels
-    low_weights = 1.0 - labels
+    high_weights = labels * sample_weights
+    low_weights = (1.0 - labels) * sample_weights
     high_center = weighted_center(values, high_weights)
     low_center = weighted_center(values, low_weights)
     weights = high_center - low_center
@@ -363,6 +386,20 @@ def weighted_center(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
     return (values * weights[:, None]).sum(axis=0) / total
 
 
+def label_origin_counts(examples: list[RatingExample]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for example in examples:
+        counts[example.label_origin] = counts.get(example.label_origin, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _label_counts(examples: list[RatingExample]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for example in examples:
+        counts[example.label] = counts.get(example.label, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def normalize_vector(values: np.ndarray) -> np.ndarray:
     scores = {idx: float(value) for idx, value in enumerate(np.asarray(values).reshape(-1))}
     normalized = normalize_scores(scores, mode="minmax")
@@ -370,19 +407,31 @@ def normalize_vector(values: np.ndarray) -> np.ndarray:
 
 
 def rating_examples_from_store(store: SQLiteFeatureStore) -> list[RatingExample]:
-    return [
-        RatingExample(
-            image_id=int(row["image_id"]),
-            filename=Path(row["source_path"]).name,
-            source_path=row["source_path"],
-            label=row["label"],
-            label_type=row["label_type"],
-            numeric_score=float(row["numeric_score"]),
-            primary_category=row["primary_category"] or "uncategorized",
-            cluster_id=int(row["cluster_id"]) if row["cluster_id"] is not None else None,
+    examples: list[RatingExample] = []
+    for row in store.list_ratings():
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        examples.append(
+            RatingExample(
+                image_id=int(row["image_id"]),
+                filename=Path(row["source_path"]).name,
+                source_path=row["source_path"],
+                label=row["label"],
+                label_type=row["label_type"],
+                numeric_score=float(row["numeric_score"]),
+                weight=parse_rating_weight(metadata.get("weight") if isinstance(metadata, dict) else None),
+                label_origin=str(
+                    row["label_origin"]
+                    if "label_origin" in row.keys()
+                    else metadata.get("label_origin") if isinstance(metadata, dict) else "legacy"
+                ),
+                primary_category=row["primary_category"] or "uncategorized",
+                cluster_id=int(row["cluster_id"]) if row["cluster_id"] is not None else None,
+            )
         )
-        for row in store.list_ratings()
-    ]
+    return examples
 
 
 def image_context(store: SQLiteFeatureStore) -> dict[int, dict]:
@@ -459,6 +508,27 @@ def parse_rating_label(label: str) -> tuple[str, float]:
     raise ValueError(f"unsupported rating label {label!r}")
 
 
+def parse_rating_weight(value: object) -> float:
+    try:
+        parsed = float(value or 1.0)
+    except (TypeError, ValueError):
+        parsed = 1.0
+    return float(np.clip(parsed, 0.05, 100.0))
+
+
+def normalize_label_origin(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"adapter_global_dispute", "global_dispute"}:
+        return "global_dispute"
+    if text in {"adapter_global_review", "global", "global_review"}:
+        return "global"
+    if text in {"adapter_dispute", "dispute", "ai_dispute"}:
+        return "dispute"
+    if text in {"adapter_internal_review", "internal", "internal_adapter"}:
+        return "internal_adapter"
+    return "manual"
+
+
 def normalize_key(value: str) -> str:
     return str(Path(value)).replace("/", "\\").lower()
 
@@ -510,7 +580,8 @@ def evaluate_examples(examples: list[RatingExample], score_by_id: dict[int, floa
         return {"count": 0, "mae": None, "top_half_mean_label": None, "bottom_half_mean_label": None}
     labels = np.asarray([example.numeric_score for example in examples], dtype=np.float32)
     scores = np.asarray([score_by_id.get(example.image_id, 0.0) for example in examples], dtype=np.float32)
-    mae = float(np.mean(np.abs(scores - labels)))
+    weights = np.asarray([max(0.05, example.weight) for example in examples], dtype=np.float32)
+    mae = float(np.average(np.abs(scores - labels), weights=weights))
     order = np.argsort(scores)
     split = max(1, len(order) // 2)
     bottom = labels[order[:split]]
@@ -580,6 +651,10 @@ def evaluation_rows(store: SQLiteFeatureStore, model_version: str) -> list[dict]
         score_row = scores.get(int(rating["image_id"]))
         if score_row is None:
             continue
+        try:
+            metadata = json.loads(rating["metadata_json"] or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
         rows.append(
             {
                 "id": int(rating["image_id"]),
@@ -587,7 +662,9 @@ def evaluation_rows(store: SQLiteFeatureStore, model_version: str) -> list[dict]
                 "source_path": rating["source_path"],
                 "label": rating["label"],
                 "label_type": rating["label_type"],
+                "label_origin": rating["label_origin"] if "label_origin" in rating.keys() else "legacy",
                 "numeric_score": float(rating["numeric_score"]),
+                "weight": parse_rating_weight(metadata.get("weight") if isinstance(metadata, dict) else None),
                 "adapter_score": float(score_row["adapter_score"]),
                 "absolute_error": abs(float(score_row["adapter_score"]) - float(rating["numeric_score"])),
                 "primary_category": rating["primary_category"],

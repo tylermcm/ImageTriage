@@ -89,6 +89,7 @@ class MainWindowActions:
     review_ai_adapter_labels: QAction
     open_ai_data_selection: QAction
     train_ai_ranker: QAction
+    train_ai_ranker_from_global: QAction
     evaluate_ai_ranker: QAction
     score_ai_with_trained_ranker: QAction
     next_ai_pick: QAction
@@ -345,7 +346,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
         install_ai_runtime=_create_action(
             window,
-            "Open CLI-Culler Folder",
+            "Open AI Culler Source",
             slot=window._open_aiculler_root,
         ),
         download_ai_model=_create_action(
@@ -407,6 +408,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Train Adapter...",
             slot=window._train_aiculler_adapter,
             shortcut="Ctrl+Shift+T",
+        ),
+        train_ai_ranker_from_global=_create_action(
+            window,
+            "Train Adapter From Global Labels...",
+            slot=window._train_aiculler_adapter_from_global_labels,
         ),
         evaluate_ai_ranker=_create_action(window, "Evaluate Adapter", slot=window._evaluate_aiculler_adapter),
         score_ai_with_trained_ranker=_create_action(

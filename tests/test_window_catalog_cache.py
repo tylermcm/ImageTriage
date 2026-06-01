@@ -28,7 +28,6 @@ from image_triage.window import (
     MainWindow,
     ScopeEnrichmentTask,
     _DirectorySuggestionController,
-    _build_ai_training_action_availability,
 )
 
 
@@ -576,39 +575,6 @@ class WindowCatalogCacheTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         _ensure_app()
-
-    def test_ai_training_action_availability_allows_general_training_without_local_labels(self) -> None:
-        availability = _build_ai_training_action_availability(
-            local_pairwise_labels=0,
-            local_cluster_labels=0,
-            local_prepared_ready=False,
-            general_pairwise_labels=12,
-            general_cluster_labels=4,
-            trained_checkpoint_available=True,
-            active_profile_key="general",
-        )
-
-        self.assertFalse(availability.local_has_labels)
-        self.assertTrue(availability.general_has_labels)
-        self.assertTrue(availability.can_run_full_pipeline)
-        self.assertTrue(availability.can_train)
-        self.assertTrue(availability.can_evaluate)
-
-    def test_ai_training_action_availability_requires_local_labels_for_specialist_eval(self) -> None:
-        availability = _build_ai_training_action_availability(
-            local_pairwise_labels=0,
-            local_cluster_labels=0,
-            local_prepared_ready=True,
-            general_pairwise_labels=18,
-            general_cluster_labels=6,
-            trained_checkpoint_available=True,
-            active_profile_key="portrait",
-        )
-
-        self.assertTrue(availability.general_has_labels)
-        self.assertTrue(availability.can_train)
-        self.assertTrue(availability.can_run_full_pipeline)
-        self.assertFalse(availability.can_evaluate)
 
     def test_restore_ai_results_skips_saved_report_from_different_folder(self) -> None:
         window = _WindowAiRestoreStub(

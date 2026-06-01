@@ -10,6 +10,7 @@ grouping, and report commands on worker threads.
 
 import ctypes
 import csv
+import gc
 import json
 import os
 import re
@@ -944,18 +945,48 @@ def _remove_tree_if_present(path: Path) -> None:
     if not path.exists():
         return
     if path.is_file() or path.is_symlink():
-        path.unlink()
+        _unlink_with_retries(path)
         return
-    shutil.rmtree(path)
+    _rmtree_with_retries(path)
 
 
 def _remove_path_if_present(path: Path) -> None:
     if not path.exists():
         return
     if path.is_dir():
-        shutil.rmtree(path)
+        _rmtree_with_retries(path)
         return
-    path.unlink()
+    _unlink_with_retries(path)
+
+
+def _rmtree_with_retries(path: Path, *, attempts: int = 8, delay_seconds: float = 0.25) -> None:
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as exc:
+            last_error = exc
+            gc.collect()
+            if attempt < attempts - 1:
+                time.sleep(delay_seconds * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+
+
+def _unlink_with_retries(path: Path, *, attempts: int = 8, delay_seconds: float = 0.25) -> None:
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            path.unlink()
+            return
+        except OSError as exc:
+            last_error = exc
+            gc.collect()
+            if attempt < attempts - 1:
+                time.sleep(delay_seconds * (attempt + 1))
+    if last_error is not None:
+        raise last_error
 
 
 def stage_supported_images(
@@ -1578,14 +1609,6 @@ def _run_command_with_live_output(
         stdout=stdout,
         stderr="",
     )
-
-
-def _log_ai_metric_line(line: str, *, context: dict[str, object]) -> bool:
-    payload = _parse_ai_metric_line(line)
-    if payload is None:
-        return False
-    _log_ai_metric_payload(payload, context=context)
-    return True
 
 
 def _log_ai_metric_payload(payload: dict[str, object], *, context: dict[str, object]) -> None:

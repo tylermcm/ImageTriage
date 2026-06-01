@@ -269,12 +269,6 @@ def build_ai_training_paths(folder: str | Path) -> AITrainingPaths:
     )
 
 
-def discover_registered_training_source_folders() -> tuple[str, ...]:
-    """Return folders that have central label-source manifests."""
-
-    return tuple(source.folder for source in list_registered_training_sources(enabled_only=True))
-
-
 def list_registered_training_sources(*, enabled_only: bool = False) -> tuple[TrainingSourceInfo, ...]:
     """Return central label sources with label/prepared counts for UI selection."""
 

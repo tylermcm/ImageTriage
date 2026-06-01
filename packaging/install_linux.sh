@@ -141,7 +141,7 @@ EOF
     printf '  Desktop entry: %s\n' "$desktop_path"
   fi
   printf '\nOn first launch, the app will offer to download the AI model into:\n'
-  printf '  %s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/image_triage_ai_cache/models/Skulleton12/DinoV2"
+  printf '  %s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/image_triage_ai_cache/models/DinoV3"
   printf 'You can skip that step and later use AI > Download AI Model... inside the app.\n'
 }
 

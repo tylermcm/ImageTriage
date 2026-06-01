@@ -27,7 +27,7 @@ The product direction in `README.md`, `PRODUCT_ROADMAP.md`, `POWER_TOOLS_PLAN.md
 - Scanning and records: `image_triage/models.py`, `image_triage/scanner.py`
 - Thumbnail/image pipeline: `image_triage/thumbnails.py`, `image_triage/cache.py`, `image_triage/imaging.py`, `image_triage/metadata.py`
 - Persistence: `image_triage/decision_store.py`, `image_triage/scan_cache.py`, `image_triage/xmp.py`, `image_triage/library_store.py`
-- Batch/file workflows: `image_triage/file_ops.py`, `image_triage/image_resize.py`, `image_triage/image_convert.py`, `image_triage/archive_ops.py`, `image_triage/production_workflows.py`
+- Batch/file workflows: `image_triage/file_ops.py`, `image_triage/image_resize.py`, `image_triage/image_convert.py`, `image_triage/archive_ops.py`, `image_triage/workflows/`
 - AI/review layer: `image_triage/ai_results.py`, `image_triage/review_intelligence.py`, `image_triage/review_workflows.py`, `image_triage/ai_workflow.py`, `image_triage/ai_training.py`
 - UI composition/helpers: `image_triage/ui/actions.py`, `image_triage/ui/menus.py`, `image_triage/ui/toolbars.py`, `image_triage/ui/docks.py`, `image_triage/ui/theme.py`, plus many dialogs
 
@@ -129,7 +129,7 @@ The package boundaries are understandable, but the control flow is too centraliz
 ### 6. Test coverage does not match risk concentration
 
 - Only 5 test modules exist.
-- The tests cover some pure logic (`library_store`, `review_intelligence`, `review_workflows`, `production_workflows`, `ai_results`).
+- The tests cover some pure logic (`library_store`, `review_intelligence`, `review_workflows`, `workflows`, `ai_results`).
 - There is no meaningful automated coverage for the highest-risk areas:
   - `window.py`
   - `grid.py`

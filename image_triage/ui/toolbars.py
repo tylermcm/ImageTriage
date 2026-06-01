@@ -55,6 +55,7 @@ def build_primary_toolbar(window, actions: MainWindowActions) -> QToolBar:
     ai_training_menu.addAction(actions.review_ai_adapter_labels)
     ai_training_menu.addAction(actions.open_ai_data_selection)
     ai_training_menu.addAction(actions.train_ai_ranker)
+    ai_training_menu.addAction(actions.train_ai_ranker_from_global)
     ai_training_menu.addAction(actions.evaluate_ai_ranker)
     ai_training_menu.addAction(actions.score_ai_with_trained_ranker)
     _add_toolbar_menu(toolbar, text="Adapter", menu=ai_training_menu, min_width=104)

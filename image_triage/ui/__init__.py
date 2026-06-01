@@ -25,7 +25,7 @@ from .icons import build_pin_icon, build_symbol_icon, build_undo_icon
 from .keyboard_dialog import KeyboardShortcutDialog
 from .layout_state import clear_window_layout, restore_window_layout, save_window_layout
 from .menus import build_main_menu_bar
-from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, RankerCenterDialog, RankerCenterSummary, RankerManagerDialog, TrainingSourcesDialog
+from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, TrainingSourcesDialog
 from .resize_dialog import ResizeDialog
 from .train_ranker_dialog import TrainRankerDialog
 from .theme import (
@@ -67,9 +67,6 @@ __all__ = [
     "save_shortcut_overrides",
     "PaletteCommand",
     "PrepareTrainingSourcesDialog",
-    "RankerCenterDialog",
-    "RankerCenterSummary",
-    "RankerManagerDialog",
     "ResizeDialog",
     "ThemePalette",
     "TrainRankerDialog",

@@ -1,9 +1,9 @@
 ## AI Integration
 
-The host app now supports both sides of the local `AICullingPipeline` workflow:
+The host app now supports the in-repo CLI-Culler workflow:
 
-- inference and ranked report loading inside `AI Culling`
-- training-data prep, labeling, training, evaluation, and rescoring from the app menus
+- CLI-Culler inference and ranked report loading through the AI menu
+- adapter label review, training, evaluation, and rescoring from the app menus
 
 The app still stays human-in-control. It helps prepare and use the model, but it does not automatically make keep/reject decisions for you.
 
@@ -13,29 +13,23 @@ For automated AI work, the host app stores data inside a hidden folder next to t
 
 - `.image_triage_ai/artifacts`
 - `.image_triage_ai/ranker_report`
-- `.image_triage_ai/labels`
 - `.image_triage_ai/training`
 - `.image_triage_ai/evaluation`
-- `.image_triage_ai/reference_bank`
 
-When the selected folder lives on a remote or removable drive, the app may first stage supported image files into a local SSD scratch area under `%LOCALAPPDATA%` for faster embedding extraction. The saved AI artifacts are still written back into the hidden folder beside the original images, and exported paths are rewritten to the original folder so matching continues to work normally.
+The older AICullingPipeline backend remains in the repository for now, but the active GUI workflow shells out to the in-repo `aiculler/cli.py` package and writes GUI-compatible exports into this hidden workspace. Model weights stay outside git and can be pointed at with `IMAGE_TRIAGE_AICULLER_MODEL_ROOT`.
 
 ### What The App Can Do
 
 The host app can:
 
 - load existing AI exports with `Load AI Results...`
-- run extraction, clustering, scoring, and report export with `AI -> Run AI Culling`
+- run ingest, semantic categorization, clustering, scoring, and report export with `AI -> Run AI Culling`
 - reopen the hidden cached ranked report for the current folder with `AI -> Load Saved AI For Folder`
-- prepare training data for the current folder with `AI -> Training -> Prepare Training Data`
-- launch the local pairwise + cluster labeling app with `AI -> Training -> Data Selection / Ranking...`
-- train a new preference ranker with `AI -> Training -> Train Ranker...`
-- evaluate the active trained checkpoint with `AI -> Training -> Evaluate Trained Ranker`
-- rescore the current folder with the trained checkpoint using `AI -> Training -> Score Current Folder With Trained Ranker`
-- build a reusable reference bank from a separate folder with `AI -> Training -> Build Reference Bank...`
-- clear the current folder's trained checkpoint or reset back to the default model with `AI -> Training -> Clear Trained Model...`
-
-The same core training actions are also available from `Tools -> AI Training`.
+- review adapter label candidates with `AI -> Adapter -> Review Adapter Labels`
+- manage adapter data selection with `AI -> Adapter -> Data Selection / Ranking...`
+- train a new adapter with `AI -> Adapter -> Train Ranker...`
+- evaluate the active adapter with `AI -> Adapter -> Evaluate Trained Ranker`
+- rescore the current folder with `AI -> Adapter -> Score Current Folder With Trained Ranker`
 
 ### What The App Displays
 
@@ -44,7 +38,6 @@ When an AI export is loaded, matching images gain read-only AI context in these 
 - thumbnail overlays: AI score badge and AI top-pick badge
 - thumbnail metadata line: normalized AI display score, group id, and group rank
 - preview footer: normalized AI display score, group id, rank, and top-pick note
-- AI Culling viewport: grouped sections with rank badges and normalized `0-100` per-group scores
 - summary and status text: matched-image counts and selected-image AI details
 
 ### Mapping Strategy
@@ -54,8 +47,8 @@ The host app matches AI rows to image records by normalized absolute file path. 
 The host-side adapter code lives in:
 
 - `ai_results.py`
-- `ai_workflow.py`
-- `ai_training.py`
+- `aiculler_workflow.py`
+- `ai_workflow_center.py`
 
 ### Current Scope
 

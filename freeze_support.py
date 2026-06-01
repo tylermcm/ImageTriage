@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage.ico"
 APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage.png"
 AI_STAGE_ROOT = ROOT / "build_assets" / "ai_runtime" / "AICullingPipeline"
+CLI_CULLER_PACKAGE_ROOT = ROOT / "aiculler"
 AI_SITE_PACKAGES_STAGE_ROOT = ROOT / "build_assets" / "ai_site_packages"
 AI_STDLIB_STAGE_ROOT = ROOT / "build_assets" / "ai_stdlib"
 AI_DLLS_STAGE_ROOT = ROOT / "build_assets" / "ai_python_dlls"
@@ -42,6 +43,7 @@ INCLUDE_DEFAULT_RANKER = _env_flag("IMAGE_TRIAGE_INCLUDE_DEFAULT_RANKER")
 
 AI_SITE_PACKAGES_ENTRIES = (
     "numpy",
+    "onnxruntime",
     "torch",
     "torchgen",
     "torchvision",
@@ -132,6 +134,7 @@ class FreezeAssetLayout:
     def include_files(self) -> list[tuple[str, str]]:
         include_files = [
             (str(self.ai_stage_root.parent), "ai_runtime"),
+            (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
             (str(self.ai_binary_modules_stage_root), "lib"),
         ]
