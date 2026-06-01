@@ -82,13 +82,15 @@ GitHub Actions also builds an AppImage artifact on pull requests, pushes to `mai
 
 The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/tylle/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same integrated `AICullingPipeline` tree and the same Python-side AI dependencies.
 
+The active CLI-Culler source lives in the in-repo [aiculler package](/Users/tylle/OneDrive/Documents/Playground/aiculler) and is the default AI culler implementation used by the app. CLIP/TOPIQ weights remain outside git; set `IMAGE_TRIAGE_AICULLER_MODEL_ROOT` to point at a local `models` directory when the defaults do not apply.
+
 On first launch, the app offers to download the AI model into:
 
 ```text
-~/.cache/image_triage_ai_cache/models/DinoV2
+~/.cache/image_triage_ai_cache/models/DinoV3
 ```
 
-If the user skips that step, the AI actions stay unavailable until they use `AI > Download AI Model...`.
+If the user skips that step, the older bundled AI pipeline stays unavailable until the model is installed.
 
 ## Notes
 

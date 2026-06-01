@@ -157,6 +157,7 @@ from .aiculler_workflow import (
     load_adapter_review_candidates,
     load_adapter_status_summary,
 )
+from .aiculler_global_store import GlobalAdapterLabelStore, default_global_adapter_label_store_path
 from .ai_results import (
     AIBundle,
     AICullBucket,
@@ -278,8 +279,6 @@ from .ui import (
     MainWindowActions,
     PaletteCommand,
     PrepareTrainingSourcesDialog,
-    RankerCenterDialog,
-    RankerCenterSummary,
     ResizeDialog,
     TasteCalibrationDialog,
     TrainRankerDialog,
@@ -421,25 +420,6 @@ class AITrainingExecutionContext:
     log_path: str = ""
 
 
-@dataclass(slots=True)
-class AITrainingPipelineState:
-    """Tracks multi-step AI training pipeline progress across background tasks."""
-    folder: str
-    options: RankerTrainingOptions
-    general_source_folders: tuple[str, ...] = ()
-    step_index: int = 0
-
-
-@dataclass(slots=True)
-class AITrainingPrepareQueueState:
-    """Tracks queued preparation across central label sources."""
-    folders: tuple[str, ...]
-    index: int = 0
-    launch_labeling_after_prepare: bool = False
-    dialog_title: str = "Prepare Training Data"
-    status_message: str = ""
-
-
 @dataclass(slots=True, frozen=True)
 class AISetupSelection:
     """Captures the optional AI components the user chose to install."""
@@ -468,17 +448,6 @@ class ShortcutTarget:
     section: str
     default_shortcut: str
     apply: object
-
-
-@dataclass(slots=True, frozen=True)
-class AITrainingActionAvailability:
-    """Summarizes which AI training actions should be enabled for the current state."""
-    local_has_labels: bool
-    general_has_labels: bool
-    evaluating_general: bool
-    can_run_full_pipeline: bool
-    can_train: bool
-    can_evaluate: bool
 
 
 def _memory_path_key(path: str) -> str:
@@ -516,36 +485,6 @@ def _headless_background_popen_kwargs() -> dict[str, object]:
         startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0) or 0)
         kwargs["startupinfo"] = startupinfo
     return kwargs
-
-
-def _build_ai_training_action_availability(
-    *,
-    local_pairwise_labels: int,
-    local_cluster_labels: int,
-    local_prepared_ready: bool,
-    general_pairwise_labels: int,
-    general_cluster_labels: int,
-    trained_checkpoint_available: bool,
-    active_profile_key: str = "",
-) -> AITrainingActionAvailability:
-    """Centralize the enablement rules for AI training commands and menu items."""
-    local_has_labels = local_pairwise_labels > 0 or local_cluster_labels > 0
-    general_has_labels = general_pairwise_labels > 0 or general_cluster_labels > 0
-    evaluating_general = active_profile_key == "general"
-    return AITrainingActionAvailability(
-        local_has_labels=local_has_labels,
-        general_has_labels=general_has_labels,
-        evaluating_general=evaluating_general,
-        can_run_full_pipeline=local_has_labels or general_has_labels,
-        can_train=(local_prepared_ready and local_has_labels) or general_has_labels,
-        can_evaluate=bool(
-            trained_checkpoint_available
-            and (
-                (evaluating_general and general_has_labels)
-                or ((not evaluating_general) and local_prepared_ready and local_has_labels)
-            )
-        ),
-    )
 
 
 @dataclass(slots=True)
@@ -2394,6 +2333,7 @@ class MainWindow(QMainWindow):
     # compute without oversubscribing ONNX's intra-op thread pool.
     AI_EMBED_BATCH_SIZE_GPU_AUTO = 8
     AI_EMBED_BATCH_SIZE_CPU_AUTO = 4
+    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY = "ai/label_near_duplicate_threshold"
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT = 0.965
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN = 0.500
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX = 0.995
@@ -2762,8 +2702,6 @@ class MainWindow(QMainWindow):
         # when the user switches back to Manual.
         self._ai_review_burst_snapshot: tuple[bool, bool] | None = None
         self._ai_training_context: AITrainingExecutionContext | None = None
-        self._ai_training_pipeline: AITrainingPipelineState | None = None
-        self._ai_training_prepare_queue: AITrainingPrepareQueueState | None = None
         self._ai_review_progress_dialog: AIReviewProgressDialog | None = None
         self._ai_training_progress_dialog: AITrainingProgressDialog | None = None
         self._ai_training_stats_dialog: AITrainingStatsDialog | None = None
@@ -2883,6 +2821,7 @@ class MainWindow(QMainWindow):
         self._active_ai_report_cache_key = ""
         self._active_ai_semantic_cache_key = ""
         self._sort_mode = SortMode.NAME
+        self._manual_sort_mode_before_ai_review: SortMode | None = None
         self._filter_query = RecordFilterQuery()
         self._pending_search_text = ""
         self._auto_advance_enabled = self._settings.value(self.AUTO_ADVANCE_KEY, True, bool)
@@ -7698,214 +7637,25 @@ class MainWindow(QMainWindow):
 
         if context is None:
             self._update_ai_toolbar_state()
-            self.statusBar().showMessage("AI training task complete")
+            self.statusBar().showMessage("AI task complete")
             return
 
         folder_key = normalized_path_key(context.folder)
         current_key = normalized_path_key(self._current_folder) if self._current_folder else ""
-        normalized_action = context.action[9:] if context.action.startswith("pipeline_") else context.action
-        pipeline_step_completed = False
+        payload = result if isinstance(result, dict) else {}
+        normalized_action = context.action
 
-        if normalized_action == "label_candidates":
-            payload = result if isinstance(result, dict) else {}
-            group_count = int(payload.get("multi_image_groups") or 0)
-            self._update_ai_toolbar_state()
-            if context.launch_labeling_after_prepare and folder_key == current_key:
-                self.statusBar().showMessage(
-                    f"Built {group_count} multi-image label group(s). Opening Collect Training Labels..."
-                )
-                self._launch_ai_labeling_app()
-                return
-            self.statusBar().showMessage(f"Built {group_count} multi-image label group(s)")
-            return
-
-        if normalized_action == "launch_labeling":
-            payload = result if isinstance(result, dict) else {}
-            process = payload.get("process")
-            if process is not None:
-                self._register_child_process(process, name="AI Label Collection")
-            self._update_ai_toolbar_state()
-            if bool(payload.get("ready_acknowledged")):
-                self.statusBar().showMessage("Opened training label collection for the current folder.")
-            else:
-                self.statusBar().showMessage("Training label collection is still loading in the background.")
-            return
-
-        if normalized_action == "prepare":
-            self._update_ai_toolbar_state()
-            pipeline_step_completed = True
-            if self._ai_training_prepare_queue is not None:
-                self._ai_training_prepare_queue.index += 1
-                if self._ai_training_prepare_queue.index >= len(self._ai_training_prepare_queue.folders):
-                    finished_count = len(self._ai_training_prepare_queue.folders)
-                    launch_after = self._ai_training_prepare_queue.launch_labeling_after_prepare
-                    self._ai_training_prepare_queue = None
-                    if launch_after and folder_key == current_key:
-                        self.statusBar().showMessage(
-                            f"Prepared {finished_count} training source(s). Opening Collect Training Labels..."
-                        )
-                        self._launch_ai_labeling_app()
-                        return
-                    self.statusBar().showMessage(f"Prepared {finished_count} training source(s).")
-                    return
-                QTimer.singleShot(0, self._start_next_prepare_training_data_task)
-                return
-            if self._ai_training_pipeline is None:
-                self.statusBar().showMessage("Training data is ready for the current folder")
-                return
-
-        if normalized_action == "train":
-            payload = result if isinstance(result, dict) else {}
-            checkpoint_path = str(payload.get("checkpoint_path") or "")
-            profile_key = str(payload.get("profile_key") or "")
-            profile_label = str(payload.get("profile_label") or "")
-            training_scope = str(payload.get("training_scope") or "")
-            training_paths = (
-                self._general_ai_training_paths()
-                if training_scope == "shared_general" or normalize_ranker_profile(profile_key or profile_label)[0] == "general"
-                else self._ai_training_paths_for_folder(context.folder)
-            )
-            try:
-                if checkpoint_path:
-                    if training_paths is not None:
-                        set_active_ranker_selection(
-                            training_paths,
-                            checkpoint_path=checkpoint_path,
-                            run_id=str(payload.get("run_id") or context.run_id or ""),
-                            display_name=str(payload.get("display_name") or context.run_label or Path(checkpoint_path).parent.name),
-                            profile_key=profile_key,
-                            profile_label=profile_label,
-                        )
-                    self._set_active_ai_checkpoint(checkpoint_path)
-            except FileNotFoundError:
-                pass
-            reference_bank_path = str(payload.get("reference_bank_path") or "")
-            if reference_bank_path:
-                try:
-                    self._set_active_reference_bank_path(reference_bank_path)
-                except FileNotFoundError:
-                    pass
-            else:
-                self._clear_active_reference_bank_path()
-            fit_diagnosis = self._ranker_fit_diagnosis_for_paths(
-                checkpoint_path=checkpoint_path,
-                metrics_path=str(payload.get("metrics_path") or ""),
-                history_path=str(payload.get("history_path") or ""),
-                folder=context.folder,
-            )
-            self._set_ai_training_fit_diagnosis(fit_diagnosis)
-            self._update_ai_toolbar_state()
-            pipeline_step_completed = True
-            if self._ai_training_pipeline is None:
-                if checkpoint_path:
-                    resolved_profile_label = normalize_ranker_profile(profile_key or profile_label)[1]
-                    status_text = f"Training complete. Active checkpoint updated to {Path(checkpoint_path).name} [{resolved_profile_label}]"
-                    if fit_diagnosis is not None:
-                        status_text += f" | {fit_diagnosis.label}"
-                    self.statusBar().showMessage(status_text)
-                else:
-                    self.statusBar().showMessage("Training complete")
-                return
-
-        if normalized_action == "evaluate":
-            payload = result if isinstance(result, dict) else {}
-            metrics_path = str(payload.get("metrics_path") or "")
-            fit_diagnosis = self._ranker_fit_diagnosis_for_paths(
-                checkpoint_path=str(payload.get("checkpoint_path") or ""),
-                folder=context.folder,
-            )
-            self._set_ai_training_fit_diagnosis(fit_diagnosis)
-            self._update_ai_toolbar_state()
-            pipeline_step_completed = True
-            if metrics_path and os.path.exists(metrics_path):
-                summary_text = "Evaluation complete"
-                try:
-                    payload_json = json.loads(Path(metrics_path).read_text(encoding="utf-8"))
-                    summary_parts = []
-                    if payload_json.get("evaluation_mode") == "source_aware":
-                        source_count = int(payload_json.get("source_count") or 0)
-                        pairwise_accuracy = payload_json.get("macro_pairwise_accuracy")
-                        top1 = payload_json.get("macro_cluster_top1_hit_rate")
-                        if source_count:
-                            summary_parts.append(f"{source_count} sources")
-                        comparison = payload_json.get("baseline_comparison", {})
-                        if isinstance(comparison, dict):
-                            trained = comparison.get("trained_ranker", {})
-                            centrality = comparison.get("dino_centrality", {})
-                            combiner = comparison.get("transparent_combiner", {})
-                            if isinstance(trained, dict) and isinstance(centrality, dict):
-                                trained_pairwise = trained.get("macro_pairwise_accuracy")
-                                centrality_pairwise = centrality.get("macro_pairwise_accuracy")
-                                if trained_pairwise is not None and centrality_pairwise is not None:
-                                    summary_parts.append(f"vs centrality {float(trained_pairwise) - float(centrality_pairwise):+.3f}")
-                            if isinstance(combiner, dict) and isinstance(centrality, dict):
-                                combiner_pairwise = combiner.get("macro_pairwise_accuracy")
-                                centrality_pairwise = centrality.get("macro_pairwise_accuracy")
-                                if combiner_pairwise is not None and centrality_pairwise is not None:
-                                    summary_parts.append(f"combiner {float(combiner_pairwise) - float(centrality_pairwise):+.3f}")
-                    else:
-                        pairwise_accuracy = payload_json.get("pairwise_evaluation", {}).get("all_preferences", {}).get("accuracy")
-                        top1 = payload_json.get("cluster_evaluation", {}).get("top_k_metrics", {}).get("top_1", {}).get("hit_rate")
-                        comparison = payload_json.get("baseline_comparison", {}).get("deltas_vs_dino_centrality", {})
-                        if isinstance(comparison, dict):
-                            pairwise_delta = comparison.get("pairwise_accuracy")
-                            if pairwise_delta is not None:
-                                summary_parts.append(f"vs centrality {float(pairwise_delta):+.3f}")
-                        combiner_comparison = payload_json.get("baseline_comparison", {}).get("deltas_transparent_combiner_vs_dino_centrality")
-                        if isinstance(combiner_comparison, dict):
-                            combiner_delta = combiner_comparison.get("pairwise_accuracy")
-                            if combiner_delta is not None:
-                                summary_parts.append(f"combiner {float(combiner_delta):+.3f}")
-                    if pairwise_accuracy is not None:
-                        summary_parts.append(f"pairwise acc {float(pairwise_accuracy):.3f}")
-                    if top1 is not None:
-                        summary_parts.append(f"top-1 hit {float(top1):.3f}")
-                    if fit_diagnosis is not None:
-                        summary_parts.append(f"fit {fit_diagnosis.label}")
-                    if summary_parts:
-                        summary_text = "Evaluation complete: " + ", ".join(summary_parts)
-                except (OSError, ValueError, TypeError):
-                    pass
-                if self._ai_training_pipeline is None:
-                    self.statusBar().showMessage(summary_text)
-                    return
-            if self._ai_training_pipeline is None:
-                self.statusBar().showMessage("Evaluation complete")
-                return
-
-        if normalized_action == "score":
-            payload = result if isinstance(result, dict) else {}
-            report_dir = str(payload.get("report_dir") or "")
-            self._update_ai_toolbar_state()
-            pipeline_step_completed = True
-            if report_dir and folder_key == current_key:
-                # Async — synchronous load_ai_bundle() over UNC was freezing the GUI.
-                self._kick_off_async_ai_results_reload(
-                    folder=context.folder,
-                    report_dir=report_dir,
-                    switch_to_ai_tab=True,
-                    success_message=(
-                        "Refreshed AI results with the trained ranker"
-                        if self._ai_training_pipeline is None
-                        else ""
-                    ),
-                )
-                if self._ai_training_pipeline is None:
-                    return
-            if self._ai_training_pipeline is None:
-                self.statusBar().showMessage("Scored the current folder with the trained ranker")
-                return
-
-        if normalized_action == "train_adapter":
-            payload = result if isinstance(result, dict) else {}
+        if normalized_action in {"train_adapter", "train_global_adapter"}:
             model_version = str(payload.get("model_version") or "")
             report_dir = str(payload.get("report_dir") or "")
             self._update_ai_toolbar_state()
             self._refresh_adapter_status_indicator()
             self._refresh_ai_workflow_center()
+            diagnostics_path = str(Path(report_dir) / "aiculler_diagnostics.json") if report_dir else ""
             status_text = f"Adapter trained{f' ({model_version})' if model_version else ''}."
+            if diagnostics_path:
+                status_text += " Diagnostics written."
             if report_dir and folder_key == current_key:
-                # Async — was freezing on UNC bundle read after training.
                 self._kick_off_async_ai_results_reload(
                     folder=context.folder,
                     report_dir=report_dir,
@@ -7917,7 +7667,6 @@ class MainWindow(QMainWindow):
             return
 
         if normalized_action == "evaluate_adapter":
-            payload = result if isinstance(result, dict) else {}
             model_version = str(payload.get("model_version") or "")
             evaluation_csv = str(payload.get("evaluation_csv_path") or "")
             self._update_ai_toolbar_state()
@@ -7928,15 +7677,16 @@ class MainWindow(QMainWindow):
             return
 
         if normalized_action == "rank_adapter":
-            payload = result if isinstance(result, dict) else {}
             model_version = str(payload.get("model_version") or "")
             report_dir = str(payload.get("report_dir") or "")
             self._update_ai_toolbar_state()
             self._refresh_adapter_status_indicator()
             self._refresh_ai_workflow_center()
+            diagnostics_path = str(Path(report_dir) / "aiculler_diagnostics.json") if report_dir else ""
             status_text = f"Ranked current folder with adapter{f' ({model_version})' if model_version else ''}."
+            if diagnostics_path:
+                status_text += " Diagnostics written."
             if report_dir and folder_key == current_key:
-                # Async — was freezing on UNC bundle read.
                 self._kick_off_async_ai_results_reload(
                     folder=context.folder,
                     report_dir=report_dir,
@@ -7947,105 +7697,8 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(status_text)
             return
 
-        if normalized_action == "signals":
-            payload = result if isinstance(result, dict) else {}
-            signals_json = str(payload.get("signals_json_path") or "")
-            signals_csv = str(payload.get("signals_csv_path") or "")
-            self._update_ai_toolbar_state()
-            parts = []
-            if signals_json:
-                parts.append(Path(signals_json).name)
-            if signals_csv:
-                parts.append(Path(signals_csv).name)
-            suffix = f": {', '.join(parts)}" if parts else ""
-            self.statusBar().showMessage(f"Culling signals built{suffix}")
-            return
-
-        if normalized_action == "evaluate_signals":
-            payload = result if isinstance(result, dict) else {}
-            metrics_path = str(payload.get("metrics_path") or "")
-            self._update_ai_toolbar_state()
-            summary_text = "Culling signal evaluation complete"
-            if metrics_path and os.path.exists(metrics_path):
-                try:
-                    payload_json = json.loads(Path(metrics_path).read_text(encoding="utf-8"))
-                    summary_parts = []
-                    pairwise_accuracy = payload_json.get("pairwise_evaluation", {}).get("all_preferences", {}).get("accuracy")
-                    top1 = payload_json.get("cluster_evaluation", {}).get("top_k_metrics", {}).get("top_1", {}).get("hit_rate")
-                    comparison = payload_json.get("baseline_comparison", {}).get("deltas_transparent_combiner_vs_dino_centrality", {})
-                    if isinstance(comparison, dict):
-                        pairwise_delta = comparison.get("pairwise_accuracy")
-                        if pairwise_delta is not None:
-                            summary_parts.append(f"vs centrality {float(pairwise_delta):+.3f}")
-                    if pairwise_accuracy is not None:
-                        summary_parts.append(f"pairwise acc {float(pairwise_accuracy):.3f}")
-                    if top1 is not None:
-                        summary_parts.append(f"top-1 hit {float(top1):.3f}")
-                    if summary_parts:
-                        summary_text = "Culling signal evaluation complete: " + ", ".join(summary_parts)
-                except (OSError, ValueError, TypeError):
-                    pass
-            self.statusBar().showMessage(summary_text)
-            return
-
-        if normalized_action == "tune_signals":
-            payload = result if isinstance(result, dict) else {}
-            weights_path = str(payload.get("weights_path") or "")
-            self._update_ai_toolbar_state()
-            summary_text = "Culling signals tuned and rebuilt"
-            if weights_path and os.path.exists(weights_path):
-                try:
-                    self._set_active_culling_signal_weights_path(weights_path)
-                except FileNotFoundError:
-                    pass
-                try:
-                    payload_json = json.loads(Path(weights_path).read_text(encoding="utf-8"))
-                    metrics = payload_json.get("training", {}).get("metrics", {})
-                    row_count = payload_json.get("training", {}).get("row_count")
-                    source_count = payload_json.get("training", {}).get("source_count")
-                    parts = []
-                    if source_count is not None:
-                        parts.append(f"{int(source_count)} source(s)")
-                    if row_count is not None:
-                        parts.append(f"{int(row_count)} preferences")
-                    preference_accuracy = metrics.get("preference_accuracy") if isinstance(metrics, dict) else None
-                    validation_accuracy = metrics.get("validation_accuracy") if isinstance(metrics, dict) else None
-                    if preference_accuracy is not None:
-                        parts.append(f"fit acc {float(preference_accuracy):.3f}")
-                    if validation_accuracy is not None:
-                        parts.append(f"val acc {float(validation_accuracy):.3f}")
-                    if parts:
-                        summary_text = "Culling signals tuned and rebuilt: " + ", ".join(parts)
-                except (OSError, ValueError, TypeError):
-                    pass
-            self.statusBar().showMessage(summary_text)
-            return
-
-        if normalized_action == "reference_bank":
-            payload = result if isinstance(result, dict) else {}
-            reference_bank_path = str(payload.get("reference_bank_path") or "")
-            if reference_bank_path:
-                try:
-                    self._set_active_reference_bank_path(reference_bank_path)
-                except FileNotFoundError:
-                    pass
-            self._update_ai_toolbar_state()
-            self.statusBar().showMessage("Reference bank build complete")
-            return
-
-        if pipeline_step_completed and self._ai_training_pipeline is not None and folder_key == normalized_path_key(self._ai_training_pipeline.folder):
-            self._ai_training_pipeline.step_index += 1
-            if self._ai_training_pipeline.step_index >= 4:
-                self._ai_training_pipeline = None
-                self._update_ai_toolbar_state()
-                self.statusBar().showMessage("Full AI training pipeline complete. Active ranker evaluated and scored.")
-                return
-            QTimer.singleShot(0, self._start_next_ai_training_pipeline_step)
-            return
-
         self._update_ai_toolbar_state()
-        self.statusBar().showMessage("AI training task complete")
-
+        self.statusBar().showMessage("AI task complete")
     def _handle_ai_training_failed(self, message: str) -> None:
         context = self._ai_training_context
         title = context.title if context is not None else "AI Training"
@@ -8053,8 +7706,6 @@ class MainWindow(QMainWindow):
             self._ai_training_stats_dialog.mark_failed("Failed")
         self._active_ai_training_task = None
         self._ai_training_context = None
-        self._ai_training_pipeline = None
-        self._ai_training_prepare_queue = None
         self._close_ai_training_progress_dialog()
         self._update_ai_toolbar_state()
         QMessageBox.warning(self, title, message)
@@ -8429,6 +8080,15 @@ class MainWindow(QMainWindow):
         self._update_ai_toolbar_state()
         step_start = log_step("mode_switch.ai_toolbar_initial", step_start)
         if self._ui_mode == "ai":
+            if previous_mode != "ai" and self._sort_mode != SortMode.AI_RANK:
+                self._manual_sort_mode_before_ai_review = self._sort_mode
+            if self._sort_mode != SortMode.AI_RANK:
+                self._sort_mode = SortMode.AI_RANK
+                self._records_view_cache.mark(ViewInvalidationReason.SORT_CHANGED)
+                combo_index = self.sort_combo.findData(SortMode.AI_RANK)
+                if combo_index >= 0:
+                    with QSignalBlocker(self.sort_combo):
+                        self.sort_combo.setCurrentIndex(combo_index)
             # AI Review judges each image on its own folder ranking — cluster
             # context produces misleading "weak cluster leader" rejects. Force
             # Smart Groups + Smart Stacks off while in AI Review and disable
@@ -8476,6 +8136,15 @@ class MainWindow(QMainWindow):
                 self._schedule_hidden_ai_results_load(delay_ms=0)
                 step_start = log_step("mode_switch.async_load_scheduled", step_start)
         else:
+            restored_sort = self._manual_sort_mode_before_ai_review
+            self._manual_sort_mode_before_ai_review = None
+            if restored_sort is not None and self._sort_mode == SortMode.AI_RANK:
+                self._sort_mode = restored_sort
+                self._records_view_cache.mark(ViewInvalidationReason.SORT_CHANGED)
+                combo_index = self.sort_combo.findData(restored_sort)
+                if combo_index >= 0:
+                    with QSignalBlocker(self.sort_combo):
+                        self.sort_combo.setCurrentIndex(combo_index)
             # Leaving AI Review — restore whatever the toggles were before.
             snapshot = self._ai_review_burst_snapshot
             self._ai_review_burst_snapshot = None
@@ -8486,6 +8155,9 @@ class MainWindow(QMainWindow):
             ):
                 self._burst_groups_enabled, self._burst_stacks_enabled = snapshot
                 self._refresh_burst_group_view()
+        if self._all_records:
+            self._apply_records_view(current_path=self._current_visible_record_path())
+            step_start = log_step("mode_switch.records_view", step_start)
         self._update_action_states()
         step_start = log_step("mode_switch.action_states", step_start)
         self._update_status()
@@ -9102,9 +8774,6 @@ class MainWindow(QMainWindow):
         has_convertible_records = self._records_have_convertible
         self.actions.batch_convert_selection.setEnabled(bool(self._current_folder and has_convertible_records) and not in_recycle_folder)
         self.actions.extract_archive.setEnabled(bool(self._current_folder))
-        training_paths = self._ai_training_paths_for_folder()
-        ai_runtime_ready = self._ai_runtime_available()
-        ai_model_ready = self._ai_model_available()
         culler_runtime_ready = aiculler_runtime_available()
         culler_paths = self._aiculler_paths_for_current_folder()
         culler_model_version = latest_adapter_model_version(aiculler_db_path(culler_paths)) if culler_paths is not None else ""
@@ -9121,25 +8790,11 @@ class MainWindow(QMainWindow):
             and not training_busy
         )
         training_allowed = training_entry_allowed and culler_runtime_ready
-        has_training_artifacts = bool(training_paths and ai_training_artifacts_ready(training_paths))
-        pairwise_labels, cluster_labels = self._cached_training_label_counts(training_paths)
-        general_training_paths = self._general_ai_training_paths()
-        general_pairwise_labels, general_cluster_labels = self._cached_training_label_counts(general_training_paths)
-        trained_checkpoint = self._current_trained_checkpoint_path()
-        active_run = self._active_ranker_run(trained_checkpoint)
-        training_availability = _build_ai_training_action_availability(
-            local_pairwise_labels=pairwise_labels,
-            local_cluster_labels=cluster_labels,
-            local_prepared_ready=has_training_artifacts,
-            general_pairwise_labels=general_pairwise_labels,
-            general_cluster_labels=general_cluster_labels,
-            trained_checkpoint_available=trained_checkpoint is not None,
-            active_profile_key=active_run.profile_key if active_run is not None else "",
-        )
         self.actions.install_ai_runtime.setEnabled(True)
         self.actions.download_ai_model.setEnabled(True)
         self.actions.open_ai_data_selection.setEnabled(training_allowed)
         self.actions.train_ai_ranker.setEnabled(training_allowed)
+        self.actions.train_ai_ranker_from_global.setEnabled(training_allowed)
         self.actions.evaluate_ai_ranker.setEnabled(training_allowed and bool(culler_model_version))
         self.actions.score_ai_with_trained_ranker.setEnabled(training_allowed and bool(culler_model_version))
         self.actions.accept_selection.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
@@ -10462,47 +10117,67 @@ class MainWindow(QMainWindow):
             return None
         return build_aiculler_workflow_paths(self._current_folder)
 
-    def _write_aiculler_ratings_csv(self) -> Path | None:
+    def _write_aiculler_ratings_csv(self, *, global_only: bool = False) -> Path | None:
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
             self.statusBar().showMessage("Choose a folder before exporting adapter ratings.")
             return None
         rows: list[dict[str, object]] = []
-        for record in self._all_records:
-            if record.is_folder:
-                continue
-            annotation = self._annotations.get(record.path)
-            label = self._aiculler_label_for_annotation(annotation)
-            if not label:
-                continue
-            rows.append(
-                {
-                    "source_path": record.path,
-                    "filename": record.name,
-                    "label": label,
-                    "rating": annotation.rating if annotation is not None else 0,
-                    "winner": int(bool(annotation and annotation.winner)),
-                    "reject": int(bool(annotation and annotation.reject)),
-                    "review_round": annotation.review_round if annotation is not None else "",
-                }
-            )
-        if len(rows) < 2 or len({str(row["label"]) for row in rows}) < 2:
-            internal_rows = self._aiculler_ratings_from_internal_labels(paths)
-            if internal_rows:
-                rows = internal_rows
+        if not global_only:
+            for record in self._all_records:
+                if record.is_folder:
+                    continue
+                annotation = self._annotations.get(record.path)
+                label = self._aiculler_label_for_annotation(annotation)
+                if not label:
+                    continue
+                rows.append(
+                    {
+                        "source_path": record.path,
+                        "filename": record.name,
+                        "label": label,
+                        "rating": annotation.rating if annotation is not None else 0,
+                        "winner": int(bool(annotation and annotation.winner)),
+                        "reject": int(bool(annotation and annotation.reject)),
+                        "review_round": annotation.review_round if annotation is not None else "",
+                        "weight": 1,
+                    }
+                )
+            if len(rows) < 2 or len({str(row["label"]) for row in rows}) < 2:
+                internal_rows = self._aiculler_ratings_from_internal_labels(paths)
+                if internal_rows:
+                    rows = internal_rows
+        existing_paths = set() if global_only else {
+            os.path.normcase(os.path.normpath(str(row.get("source_path") or "")))
+            for row in rows
+            if row.get("source_path")
+        }
+        global_rows = self._aiculler_global_ratings_for_current_records(existing_paths)
+        if global_rows:
+            rows.extend(global_rows)
         if len(rows) < 2:
-            self.statusBar().showMessage("Mark at least two images before exporting adapter ratings.")
+            message = (
+                "Global adapter training needs at least two matching global labels in this folder."
+                if global_only
+                else "Mark at least two images before exporting adapter ratings."
+            )
+            self.statusBar().showMessage(message)
             return None
         labels = {str(row["label"]) for row in rows}
         if len(labels) < 2:
-            self.statusBar().showMessage("Adapter training needs at least two different rating labels.")
+            message = (
+                "Global adapter training needs at least two different matching rating labels."
+                if global_only
+                else "Adapter training needs at least two different rating labels."
+            )
+            self.statusBar().showMessage(message)
             return None
-        ratings_path = self._aiculler_internal_ratings_path(paths)
+        ratings_path = self._aiculler_internal_ratings_path(paths, global_only=global_only)
         ratings_path.parent.mkdir(parents=True, exist_ok=True)
         with ratings_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(
                 handle,
-                fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round"),
+                fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round", "weight"),
             )
             writer.writeheader()
             writer.writerows(rows)
@@ -10514,11 +10189,79 @@ class MainWindow(QMainWindow):
         folder_key = sha1(str(paths.folder).casefold().encode("utf-8"), usedforsecurity=False).hexdigest()[:20]
         return root / "ai_training" / "adapter_labels" / f"{folder_key}.json"
 
-    def _aiculler_internal_ratings_path(self, paths) -> Path:
+    def _aiculler_internal_ratings_path(self, paths, *, global_only: bool = False) -> Path:
         app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
         root = Path(app_data) if app_data else Path.home() / ".image-triage"
         folder_key = sha1(str(paths.folder).casefold().encode("utf-8"), usedforsecurity=False).hexdigest()[:20]
-        return root / "ai_training" / "adapter_labels" / "prepared" / f"{folder_key}_ratings.csv"
+        suffix = "global_ratings" if global_only else "ratings"
+        return root / "ai_training" / "adapter_labels" / "prepared" / f"{folder_key}_{suffix}.csv"
+
+    def _aiculler_global_label_store(self) -> GlobalAdapterLabelStore:
+        return GlobalAdapterLabelStore(default_global_adapter_label_store_path())
+
+    def _save_aiculler_global_label(
+        self,
+        source_path: str,
+        label: str,
+        *,
+        weight: float = 1.0,
+        is_dispute: bool = False,
+    ) -> None:
+        try:
+            store = self._aiculler_global_label_store()
+            try:
+                if label.strip():
+                    store.upsert_label(
+                        source_path,
+                        label,
+                        folder=self._current_folder or str(Path(source_path).parent),
+                        weight=weight,
+                        is_dispute=is_dispute,
+                    )
+                else:
+                    store.delete_label(source_path)
+            finally:
+                store.close()
+        except Exception:
+            # Global labels are a convenience layer. Folder-local labels remain
+            # authoritative for the current workflow if the global DB is not
+            # writable.
+            return
+
+    def _aiculler_global_ratings_for_current_records(self, existing_paths: set[str]) -> list[dict[str, object]]:
+        file_records = [record for record in self._all_records if not record.is_folder]
+        if not file_records:
+            return []
+        try:
+            store = self._aiculler_global_label_store()
+            try:
+                labels = store.labels_for_paths(tuple(record.path for record in file_records))
+            finally:
+                store.close()
+        except Exception:
+            return []
+        rows: list[dict[str, object]] = []
+        existing = {os.path.normcase(os.path.normpath(path)) for path in existing_paths}
+        for record in file_records:
+            key = os.path.normcase(os.path.normpath(record.path))
+            if key in existing:
+                continue
+            label = labels.get(record.path)
+            if label is None:
+                continue
+            rows.append(
+                {
+                    "source_path": record.path,
+                    "filename": record.name,
+                    "label": label.label,
+                    "rating": "",
+                    "winner": int(label.label in {"hero", "portfolio", "keep", "good", "k", "yes", "1"}),
+                    "reject": int(label.label in {"reject", "bad", "r", "no", "0"}),
+                    "review_round": "adapter_global_dispute" if label.is_dispute else "adapter_global_review",
+                    "weight": label.weight,
+                }
+            )
+        return rows
 
     def _load_aiculler_internal_labels(self, paths) -> dict[str, str]:
         label_path = self._aiculler_internal_label_store_path(paths)
@@ -10599,9 +10342,8 @@ class MainWindow(QMainWindow):
         if not labels:
             return []
         disputes = self._load_aiculler_internal_disputes(paths)
-        # Poor-man's weighting: CLI-Culler doesn't support per-row weights, so
-        # we duplicate disputed rows N times in the materialized CSV. Each
-        # duplicate counts as another sample to the trainer.
+        # CLI-Culler supports per-row weights in the ratings CSV. Disputes get
+        # a louder sample weight so corrections influence the adapter faster.
         dispute_weight = max(1, int(self._ai_dispute_weight_setting))
         allowed_labels = {"hero", "portfolio", "strong", "keep", "good", "maybe", "weak", "reject", "bad", "k", "r", "yes", "no", "1", "0"}
         rows: list[dict[str, object]] = []
@@ -10616,16 +10358,12 @@ class MainWindow(QMainWindow):
                 "winner": int(label in {"hero", "portfolio", "keep", "good", "k", "yes", "1"}),
                 "reject": int(label in {"reject", "bad", "r", "no", "0"}),
                 "review_round": "adapter_internal_review",
+                "weight": dispute_weight if source_path in disputes else 1,
             }
             is_dispute = source_path in disputes
             if is_dispute:
                 row["review_round"] = "adapter_dispute"
-                # Emit the row dispute_weight times so the trainer sees it as
-                # that many samples.
-                for _ in range(dispute_weight):
-                    rows.append(dict(row))
-            else:
-                rows.append(row)
+            rows.append(row)
         if len(rows) >= 2 and len({str(row["label"]) for row in rows}) >= 2:
             return rows
         return []
@@ -10764,7 +10502,7 @@ class MainWindow(QMainWindow):
         self.mode_tabs.setCurrentIndex(0)
         self._refresh_adapter_review_banner()
         hidden_count = sum(len(siblings) for siblings in siblings_by_survivor.values())
-        suffix = f" ({hidden_count} near-dup(s) hidden, labels propagate to siblings)" if hidden_count else ""
+        suffix = f" ({hidden_count} near-dup(s) hidden; weak/reject labels propagate)" if hidden_count else ""
         self.statusBar().showMessage(
             f"Reviewing {len(review_paths)} adapter candidates{suffix}. "
             f"Use 1=best, 2=strong, 3=maybe, 4=weak, 5=reject."
@@ -10918,18 +10656,28 @@ class MainWindow(QMainWindow):
             "ai_bucket": ai_bucket,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-        # Propagate to dedup siblings too, mirroring the adapter combo flow.
         siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
-        for sibling_path in siblings:
-            labels[sibling_path] = normalized
-            disputes[sibling_path] = dict(disputes[record.path])
+        propagate_to_siblings = self._aiculler_should_propagate_label_to_siblings(normalized)
+        if propagate_to_siblings:
+            for sibling_path in siblings:
+                labels[sibling_path] = normalized
+                disputes[sibling_path] = dict(disputes[record.path])
+        else:
+            for sibling_path in siblings:
+                labels.pop(sibling_path, None)
+                disputes.pop(sibling_path, None)
 
         self._save_aiculler_internal_labels(paths, labels, disputes=disputes)
+        dispute_weight = max(1, int(self._ai_dispute_weight_setting))
+        self._save_aiculler_global_label(record.path, normalized, weight=dispute_weight, is_dispute=True)
+        for sibling_path in siblings:
+            sibling_label = normalized if propagate_to_siblings else ""
+            self._save_aiculler_global_label(sibling_path, sibling_label, weight=dispute_weight, is_dispute=True)
         self.grid.set_disputed_paths(set(disputes.keys()))
         # Override the AI bucket on the spot so the dispute is visible
         # immediately without waiting for the next adapter retrain.
         self._recompute_user_label_bucket_overrides()
-        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings else ""
+        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings and propagate_to_siblings else ""
         self.statusBar().showMessage(
             f"Disputed AI on {record.name} -> {normalized}"
             f"{sibling_suffix}. Counts as {self._ai_dispute_weight_setting}x at next training."
@@ -11012,7 +10760,7 @@ class MainWindow(QMainWindow):
         parts = [f"{candidate_count} candidate(s)"]
         parts.append(f"{labeled} labeled")
         if hidden:
-            parts.append(f"{hidden} near-dup(s) hidden")
+            parts.append(f"{hidden} near-dup(s) hidden; weak/reject propagate")
         parts.append("Use 1-5 to rate, Esc to exit")
         self._adapter_review_banner_status.setText(" · ".join(parts))
         banner.show()
@@ -11027,24 +10775,42 @@ class MainWindow(QMainWindow):
         labels = self._load_aiculler_internal_labels(paths)
         normalized = label.strip().lower()
         siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
+        propagate_to_siblings = self._aiculler_should_propagate_label_to_siblings(normalized)
         if normalized:
             labels[record.path] = normalized
-            for sibling_path in siblings:
-                labels[sibling_path] = normalized
+            if propagate_to_siblings:
+                for sibling_path in siblings:
+                    labels[sibling_path] = normalized
+            else:
+                for sibling_path in siblings:
+                    labels.pop(sibling_path, None)
         else:
             labels.pop(record.path, None)
             for sibling_path in siblings:
                 labels.pop(sibling_path, None)
         self._save_aiculler_internal_labels(paths, labels)
+        self._save_aiculler_global_label(record.path, normalized, weight=1.0, is_dispute=False)
+        for sibling_path in siblings:
+            sibling_label = normalized if propagate_to_siblings else ""
+            self._save_aiculler_global_label(sibling_path, sibling_label, weight=1.0, is_dispute=False)
         self.grid.update_adapter_review_labels(labels)
         # Reflect the label in the AI Review bucket immediately so user
         # decisions show up the moment they save.
         self._recompute_user_label_bucket_overrides()
         self._refresh_adapter_review_banner()
-        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings else ""
+        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings and propagate_to_siblings else ""
         self.statusBar().showMessage(
             f"Saved adapter label for {record.name}: {normalized or 'unlabeled'}{sibling_suffix}"
         )
+
+    @staticmethod
+    def _aiculler_should_propagate_label_to_siblings(label: str) -> bool:
+        return label.strip().lower() in {"maybe", "weak", "reject", "bad", "r", "no", "0"}
+
+    @staticmethod
+    def _new_aiculler_adapter_model_version(*, global_labels: bool = False) -> str:
+        prefix = "Global Adapter" if global_labels else "Adapter"
+        return f"{prefix} {time.strftime('%Y-%m-%d %H.%M.%S')}"
 
     def _train_aiculler_adapter(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
@@ -11063,7 +10829,7 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "Train Adapter", f"Could not prepare adapter ratings.\n\n{exc}")
             return
-        model_version = time.strftime("%Y%m%dT%H%M%S")
+        model_version = self._new_aiculler_adapter_model_version(global_labels=True)
         task = AICullerAdapterTask(
             runtime=default_aiculler_runtime(),
             paths=paths,
@@ -11076,9 +10842,43 @@ class MainWindow(QMainWindow):
             task,
             action="train_adapter",
             title="Train Adapter",
-            run_label=f"Adapter {model_version}",
+            run_label=model_version,
         ):
             self.statusBar().showMessage("Training adapter from current ratings...")
+
+    def _train_aiculler_adapter_from_global_labels(self) -> None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            self.statusBar().showMessage("Choose a folder before training an adapter.")
+            return
+        db_path = aiculler_db_path(paths)
+        if not db_path.exists():
+            self.statusBar().showMessage("Run AI Culler before training an adapter.")
+            return
+        ratings_path = self._write_aiculler_ratings_csv(global_only=True)
+        if ratings_path is None:
+            return
+        try:
+            ratings_csv_text = ratings_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Train Adapter From Global Labels", f"Could not prepare global adapter ratings.\n\n{exc}")
+            return
+        model_version = self._new_aiculler_adapter_model_version()
+        task = AICullerAdapterTask(
+            runtime=default_aiculler_runtime(),
+            paths=paths,
+            mode="train",
+            ratings_csv=ratings_path,
+            ratings_csv_text=ratings_csv_text,
+            model_version=model_version,
+        )
+        if self._start_ai_training_task(
+            task,
+            action="train_global_adapter",
+            title="Train Adapter From Global Labels",
+            run_label=model_version,
+        ):
+            self.statusBar().showMessage("Training adapter from matching global labels...")
 
     def _evaluate_aiculler_adapter(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
@@ -11125,1266 +10925,6 @@ class MainWindow(QMainWindow):
             run_label=f"Adapter {model_version}",
         ):
             self.statusBar().showMessage("Ranking current folder with adapter...")
-
-    def _prepare_ai_training_data(
-        self,
-        _checked: bool = False,
-        *,
-        launch_labeling_after_prepare: bool = False,
-        dialog_title: str | None = None,
-        status_message: str | None = None,
-    ) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before preparing training data.")
-            return
-        if not self._ensure_ai_runtime_available(title="Prepare Training Data"):
-            return
-        if not self._ensure_ai_model_available(title="Prepare Training Data"):
-            return
-        folders = self._prompt_prepare_training_sources(self._current_folder)
-        if not folders:
-            return
-        self._ai_training_prepare_queue = AITrainingPrepareQueueState(
-            folders=folders,
-            launch_labeling_after_prepare=launch_labeling_after_prepare,
-            dialog_title=dialog_title or "Prepare Training Data",
-            status_message=status_message or "Preparing central training data...",
-        )
-        self._start_next_prepare_training_data_task()
-
-    def _prompt_prepare_training_sources(self, current_folder: str) -> tuple[str, ...]:
-        sources = self._prepare_training_source_options(current_folder)
-        dialog = PrepareTrainingSourcesDialog(
-            sources=tuple(sources),
-            default_folders=(current_folder,),
-            parent=self,
-        )
-        if self._exec_dialog_with_geometry(dialog, "prepare_training_sources") != dialog.DialogCode.Accepted:
-            return ()
-        folders: list[str] = []
-        seen: set[str] = set()
-        for folder in dialog.selected_folders():
-            normalized = normalize_filesystem_path(folder)
-            if not normalized or not os.path.isdir(normalized):
-                continue
-            key = normalized_path_key(normalized)
-            if key in seen:
-                continue
-            seen.add(key)
-            folders.append(normalized)
-        return tuple(folders)
-
-    def _prepare_training_source_options(self, current_folder: str) -> list[TrainingSourceInfo]:
-        sources = list(list_registered_training_sources(enabled_only=False))
-        current_key = normalized_path_key(current_folder)
-        current_source = next((source for source in sources if normalized_path_key(source.folder) == current_key), None)
-        if current_source is not None:
-            sources = [current_source] + [source for source in sources if normalized_path_key(source.folder) != current_key]
-            return sources
-
-        training_paths = self._ai_training_paths_for_folder(current_folder)
-        if training_paths is not None:
-            pairwise_count, cluster_count = count_label_records(training_paths)
-            disagreement_count = count_disagreement_pair_labels(training_paths)
-            prepared_ready = ai_training_artifacts_ready(training_paths) and not ai_training_source_needs_prepare(training_paths.folder)
-        else:
-            pairwise_count = 0
-            cluster_count = 0
-            disagreement_count = 0
-            prepared_ready = False
-        return [
-            TrainingSourceInfo(
-                namespace="__current__",
-                folder=current_folder,
-                display_name=Path(current_folder).name,
-                enabled=True,
-                pairwise_labels=pairwise_count,
-                cluster_labels=cluster_count,
-                disagreement_pair_labels=disagreement_count,
-                prepared_ready=prepared_ready,
-                labels_dir=str(training_paths.labels_dir) if training_paths is not None else "",
-                artifacts_dir=str(training_paths.artifacts_dir) if training_paths is not None else "",
-            ),
-            *sources,
-        ]
-
-    def _prepare_training_source_queue(self, current_folder: str) -> tuple[str, ...]:
-        folders: list[str] = []
-        seen: set[str] = set()
-
-        def add_folder(value: str, *, force: bool = False) -> None:
-            normalized = normalize_filesystem_path(value)
-            if not normalized or not os.path.isdir(normalized):
-                return
-            key = normalized_path_key(normalized)
-            if key in seen:
-                return
-            if not force and not ai_training_source_needs_prepare(normalized):
-                return
-            seen.add(key)
-            folders.append(normalized)
-
-        add_folder(current_folder, force=True)
-        for source in list_registered_training_sources(enabled_only=True):
-            add_folder(source.folder)
-        return tuple(folders)
-
-    def _start_next_prepare_training_data_task(self) -> None:
-        queue = self._ai_training_prepare_queue
-        if queue is None:
-            return
-        if queue.index >= len(queue.folders):
-            self._ai_training_prepare_queue = None
-            self._update_ai_toolbar_state()
-            self.statusBar().showMessage("Central training data is ready.")
-            return
-
-        folder = queue.folders[queue.index]
-        task = PrepareTrainingDataTask(folder=Path(folder), runtime=self._ai_runtime)
-        title = queue.dialog_title
-        if len(queue.folders) > 1:
-            title = f"{queue.dialog_title} ({queue.index + 1}/{len(queue.folders)})"
-        started = self._start_ai_training_task(
-            task,
-            action="prepare",
-            title=title,
-            folder=folder,
-            launch_labeling_after_prepare=queue.launch_labeling_after_prepare and queue.index == 0,
-        )
-        if started:
-            self.statusBar().showMessage(
-                f"{queue.status_message} ({queue.index + 1}/{len(queue.folders)}): {Path(folder).name}"
-            )
-        else:
-            self._ai_training_prepare_queue = None
-
-    def _launch_ai_labeling_app(self, *, folder: str | None = None) -> None:
-        logger = perf_logger()
-        start = time.perf_counter()
-        target_folder = folder or self._current_folder
-        if not target_folder:
-            self.statusBar().showMessage("Choose a folder before collecting training labels.")
-            logger.duration("labeling.open.blocked", (time.perf_counter() - start) * 1000.0, reason="no_folder")
-            return
-        training_paths = self._ai_training_paths_for_folder(target_folder)
-        artifacts_dir = training_paths.labeling_artifacts_dir if training_paths is not None else None
-        logger.log(
-            "labeling.open.launch_requested",
-            folder=target_folder,
-            artifacts_dir=str(artifacts_dir or ""),
-            artifacts_ready=bool(training_paths and labeling_artifacts_ready(training_paths)),
-            near_duplicate_threshold=round(self._ai_label_near_duplicate_threshold, 3),
-        )
-        task = LaunchLabelingAppTask(
-            folder=Path(target_folder),
-            runtime=self._ai_runtime,
-            annotator_id=self._session_id,
-            artifacts_dir=artifacts_dir,
-            near_identical_threshold=self._ai_label_near_duplicate_threshold,
-            appearance_mode=self._current_child_appearance_mode(),
-            parent_pid=os.getpid(),
-            sync_file_path=self._child_sync_state_path,
-        )
-        started = self._start_ai_training_task(
-            task,
-            action="launch_labeling",
-            title="Collect Training Labels",
-            folder=target_folder,
-            show_stats_button=False,
-        )
-        if started:
-            self.statusBar().showMessage("Opening label collection window...")
-        logger.duration(
-            "labeling.open.launch_queued",
-            (time.perf_counter() - start) * 1000.0,
-            folder=target_folder,
-            started=bool(started),
-        )
-
-    def _open_ai_data_selection(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter()
-        logger.log(
-            "labeling.open.start",
-            folder=self._current_folder,
-            loaded_records=len(self._all_records),
-        )
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before collecting training labels.")
-            logger.duration("labeling.open.blocked", (time.perf_counter() - start) * 1000.0, reason="no_folder")
-            return
-        if not self._ensure_ai_runtime_available(title="Collect Training Labels"):
-            logger.duration("labeling.open.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="runtime_missing")
-            return
-        if not self._ensure_ai_model_available(title="Collect Training Labels"):
-            logger.duration("labeling.open.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="model_missing")
-            return
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        if training_paths is not None and labeling_artifacts_ready(training_paths):
-            logger.duration(
-                "labeling.open.artifacts_ready",
-                (time.perf_counter() - start) * 1000.0,
-                folder=self._current_folder,
-                artifacts_dir=str(training_paths.labeling_artifacts_dir),
-            )
-            self._launch_ai_labeling_app()
-            return
-        if not self._all_records:
-            QMessageBox.information(
-                self,
-                "Collect Training Labels",
-                "No images are loaded for the current folder yet.",
-            )
-            logger.duration("labeling.open.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="no_records")
-            return
-        task = PrepareLabelingCandidatesTask(
-            folder=Path(self._current_folder),
-            records=tuple(self._all_records),
-        )
-        started = self._start_ai_training_task(
-            task,
-            action="label_candidates",
-            title="Collect Training Labels",
-            launch_labeling_after_prepare=True,
-        )
-        if started:
-            self.statusBar().showMessage("Opening label collection and building local candidate groups...")
-        logger.duration(
-            "labeling.open.prepare_queued",
-            (time.perf_counter() - start) * 1000.0,
-            folder=self._current_folder,
-            started=bool(started),
-            record_count=len(self._all_records),
-        )
-
-    def _train_ai_ranker(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before training a ranker.")
-            return
-        if not self._ensure_ai_runtime_available(title="Train Ranker"):
-            return
-        if not self._ensure_ai_model_available(title="Train Ranker"):
-            return
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        general_status = self._general_training_pool_status(self._current_folder)
-        has_local_training = bool(training_paths and ai_training_artifacts_ready(training_paths))
-        if training_paths is None:
-            pairwise_count, cluster_count = 0, 0
-            disagreement_count = 0
-        else:
-            pairwise_count, cluster_count = count_label_records(training_paths)
-            disagreement_count = count_disagreement_pair_labels(training_paths)
-        if not has_local_training and general_status.pairwise_labels <= 0 and general_status.cluster_labels <= 0:
-            QMessageBox.information(
-                self,
-                "Train Ranker",
-                "Prepare training data for this folder or build up some General Use labels before training a ranker.",
-            )
-            return
-        if pairwise_count <= 0 and cluster_count <= 0 and general_status.pairwise_labels <= 0 and general_status.cluster_labels <= 0:
-            QMessageBox.information(
-                self,
-                "Train Ranker",
-                "No saved labels were found yet.\n\nUse Collect Training Labels first.",
-            )
-            return
-        options = self._prompt_train_ranker_options(
-            pairwise_count=pairwise_count,
-            cluster_count=cluster_count,
-            disagreement_count=disagreement_count,
-            title="Train Ranker",
-        )
-        if options is None:
-            return
-        if options.profile_key != "general" and not has_local_training:
-            QMessageBox.information(
-                self,
-                "Train Ranker",
-                "Prepare training data for the current folder before training a specialist ranker.",
-            )
-            return
-        if options.profile_key != "general" and pairwise_count <= 0 and cluster_count <= 0:
-            QMessageBox.information(
-                self,
-                "Train Ranker",
-                "No saved labels were found for the current folder.\n\nCollect labels first, or switch back to General Use.",
-            )
-            return
-        if options.profile_key == "general":
-            general_source_folders = self._general_training_source_folders(self._current_folder)
-            general_status = self._general_training_pool_status(self._current_folder)
-        else:
-            general_source_folders = ()
-        if options.profile_key == "general" and general_status.pairwise_labels <= 0 and general_status.cluster_labels <= 0:
-            QMessageBox.information(
-                self,
-                "Train Ranker",
-                "General Use does not have any pooled labels yet.\n\nCollect labels in one or more folders first.",
-            )
-            return
-        task = TrainRankerTask(
-            folder=Path(self._current_folder),
-            runtime=self._ai_runtime,
-            options=options,
-            general_source_folders=general_source_folders,
-        )
-        run_label = f"{task.display_name} [{task.profile_label}]"
-        started = self._start_ai_training_task(
-            task,
-            action="train",
-            title="Train Ranker",
-            reference_bank_path=options.reference_bank_path,
-            run_id=task.run_id,
-            run_label=run_label,
-            log_path=str(task.log_path),
-        )
-        if started:
-            if options.profile_key == "general":
-                self.statusBar().showMessage("Training the shared General Use ranker from pooled labels...")
-            else:
-                self.statusBar().showMessage("Training a new AI preference ranker...")
-
-    def _run_full_ai_training_pipeline(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before running the full training pipeline.")
-            return
-        if not self._ensure_ai_runtime_available(title="Run Full Training Pipeline"):
-            return
-        if not self._ensure_ai_model_available(title="Run Full Training Pipeline"):
-            return
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        if training_paths is None:
-            self.statusBar().showMessage("Open a folder first.")
-            return
-        pairwise_count, cluster_count = count_label_records(training_paths)
-        disagreement_count = count_disagreement_pair_labels(training_paths)
-        general_status = self._general_training_pool_status(self._current_folder)
-        if pairwise_count <= 0 and cluster_count <= 0 and general_status.pairwise_labels <= 0 and general_status.cluster_labels <= 0:
-            QMessageBox.information(
-                self,
-                "Run Full Training Pipeline",
-                "The one-click pipeline still needs your human labels first.\n\nUse Collect Training Labels before running the full pipeline.",
-            )
-            return
-        options = self._prompt_train_ranker_options(
-            pairwise_count=pairwise_count,
-            cluster_count=cluster_count,
-            disagreement_count=disagreement_count,
-            title="Run Full Training Pipeline",
-        )
-        if options is None:
-            return
-        if options.profile_key != "general" and (pairwise_count <= 0 and cluster_count <= 0):
-            QMessageBox.information(
-                self,
-                "Run Full Training Pipeline",
-                "No saved labels were found for the current folder.\n\nCollect labels first, or switch back to General Use.",
-            )
-            return
-        if options.profile_key == "general":
-            general_source_folders = self._general_training_source_folders(self._current_folder)
-            general_status = self._general_training_pool_status(self._current_folder)
-        else:
-            general_source_folders = ()
-        if options.profile_key == "general" and general_status.pairwise_labels <= 0 and general_status.cluster_labels <= 0:
-            QMessageBox.information(
-                self,
-                "Run Full Training Pipeline",
-                "General Use does not have any pooled labels yet.\n\nCollect labels in one or more folders first.",
-            )
-            return
-        self._ai_training_pipeline = AITrainingPipelineState(
-            folder=self._current_folder,
-            options=options,
-            general_source_folders=general_source_folders,
-            step_index=0,
-        )
-        self._start_next_ai_training_pipeline_step()
-
-    def _start_next_ai_training_pipeline_step(self) -> None:
-        pipeline = self._ai_training_pipeline
-        if pipeline is None:
-            return
-        if normalized_path_key(pipeline.folder) != normalized_path_key(self._current_folder):
-            self._select_folder(pipeline.folder)
-        steps = ("prepare", "train", "evaluate", "score")
-        if pipeline.step_index >= len(steps):
-            self._ai_training_pipeline = None
-            return
-        step = steps[pipeline.step_index]
-        if step == "prepare":
-            task = PrepareTrainingDataTask(folder=Path(pipeline.folder), runtime=self._ai_runtime)
-            started = self._start_ai_training_task(
-                task,
-                action="pipeline_prepare",
-                title="AI Training Pipeline",
-                folder=pipeline.folder,
-            )
-            if started:
-                self.statusBar().showMessage("Pipeline 1/4: preparing training data...")
-            return
-        if step == "train":
-            task = TrainRankerTask(
-                folder=Path(pipeline.folder),
-                runtime=self._ai_runtime,
-                options=pipeline.options,
-                general_source_folders=pipeline.general_source_folders,
-            )
-            run_label = f"{task.display_name} [{task.profile_label}]"
-            started = self._start_ai_training_task(
-                task,
-                action="pipeline_train",
-                title="AI Training Pipeline",
-                folder=pipeline.folder,
-                reference_bank_path=pipeline.options.reference_bank_path,
-                run_id=task.run_id,
-                run_label=run_label,
-                log_path=str(task.log_path),
-            )
-            if started:
-                self.statusBar().showMessage("Pipeline 2/4: training the new ranker...")
-            return
-        if step == "evaluate":
-            checkpoint_path = self._current_trained_checkpoint_path()
-            if checkpoint_path is None:
-                self._ai_training_pipeline = None
-                QMessageBox.warning(self, "AI Training Pipeline", "Training finished, but no checkpoint is available for evaluation.")
-                return
-            active_run = self._active_ranker_run(checkpoint_path)
-            run_label = (
-                f"{active_run.display_name} [{active_run.profile_label}]"
-                if active_run is not None
-                else Path(checkpoint_path).parent.name
-            )
-            task = EvaluateRankerTask(
-                folder=Path(pipeline.folder),
-                runtime=self._ai_runtime,
-                checkpoint_path=checkpoint_path,
-                reference_bank_path=pipeline.options.reference_bank_path,
-                use_general_pool=bool(active_run is not None and active_run.profile_key == "general"),
-                general_source_folders=pipeline.general_source_folders,
-            )
-            started = self._start_ai_training_task(
-                task,
-                action="pipeline_evaluate",
-                title="AI Training Pipeline",
-                folder=pipeline.folder,
-                reference_bank_path=pipeline.options.reference_bank_path,
-                run_label=run_label,
-            )
-            if started:
-                self.statusBar().showMessage("Pipeline 3/4: evaluating the active ranker...")
-            return
-        checkpoint_path = self._current_trained_checkpoint_path()
-        if checkpoint_path is None:
-            self._ai_training_pipeline = None
-            QMessageBox.warning(self, "AI Training Pipeline", "No active checkpoint is available for scoring.")
-            return
-        task = ScoreCurrentFolderTask(
-            folder=Path(pipeline.folder),
-            runtime=self._ai_runtime,
-            checkpoint_path=checkpoint_path,
-            reference_bank_path=pipeline.options.reference_bank_path,
-        )
-        started = self._start_ai_training_task(
-            task,
-            action="pipeline_score",
-            title="AI Training Pipeline",
-            folder=pipeline.folder,
-            reference_bank_path=pipeline.options.reference_bank_path,
-        )
-        if started:
-            self.statusBar().showMessage("Pipeline 4/4: scoring the current folder with the active ranker...")
-
-    def _prompt_train_ranker_options(
-        self,
-        *,
-        pairwise_count: int,
-        cluster_count: int,
-        disagreement_count: int,
-        title: str,
-    ) -> RankerTrainingOptions | None:
-        suggested_profile_key = ""
-        suggestion_reason = ""
-        if self._ai_auto_profile_enabled:
-            suggested_profile_key, suggestion_reason = self._suggest_training_profile_defaults()
-        general_status = self._general_training_pool_status(self._current_folder)
-        last_options = self._load_last_ranker_training_options()
-        dialog = TrainRankerDialog(
-            pairwise_count=pairwise_count,
-            cluster_count=cluster_count,
-            disagreement_count=disagreement_count,
-            general_pairwise_count=general_status.pairwise_labels,
-            general_cluster_count=general_status.cluster_labels,
-            general_disagreement_count=general_status.disagreement_pair_labels,
-            general_source_count=general_status.source_folders,
-            active_reference_bank_path=self._active_reference_bank_path,
-            suggested_profile_key=suggested_profile_key,
-            suggestion_reason=suggestion_reason,
-            initial_options=last_options,
-            show_advanced_options=self._last_ranker_training_advanced_visible(),
-            parent=self,
-        )
-        dialog.configure_sources_requested.connect(lambda: self._handle_train_ranker_sources_requested(dialog))
-        dialog.setWindowTitle(title)
-        if self._exec_dialog_with_geometry(dialog, "train_ranker") != dialog.DialogCode.Accepted:
-            return None
-        options = dialog.accepted_options()
-        self._save_last_ranker_training_options(options, advanced_visible=dialog.advanced_options_visible)
-        return options
-
-    def _load_last_ranker_training_options(self) -> RankerTrainingOptions | None:
-        if not self._settings.contains(self.TRAIN_RANKER_LAST_PROFILE_KEY):
-            return None
-
-        def read_int(key: str, default: int, *, minimum: int, maximum: int) -> int:
-            try:
-                value = int(self._settings.value(key, default, int))
-            except (TypeError, ValueError):
-                value = default
-            return max(minimum, min(maximum, value))
-
-        def read_float(key: str, default: float, *, minimum: float, maximum: float) -> float:
-            try:
-                value = float(self._settings.value(key, default, float))
-            except (TypeError, ValueError):
-                value = default
-            return max(minimum, min(maximum, value))
-
-        profile_key = str(self._settings.value(self.TRAIN_RANKER_LAST_PROFILE_KEY, "general", str) or "general")
-        profile_key = normalize_ranker_profile(profile_key)[0]
-        device = str(self._settings.value(self.TRAIN_RANKER_LAST_DEVICE_KEY, "auto", str) or "auto")
-        if device not in {"auto", "cpu", "cuda"} and not device.startswith("cuda"):
-            device = "auto"
-        return RankerTrainingOptions(
-            run_name=str(self._settings.value(self.TRAIN_RANKER_LAST_RUN_NAME_KEY, "", str) or ""),
-            profile_key=profile_key,
-            num_epochs=read_int(self.TRAIN_RANKER_LAST_EPOCHS_KEY, 30, minimum=1, maximum=1000),
-            batch_size=read_int(self.TRAIN_RANKER_LAST_BATCH_SIZE_KEY, 32, minimum=1, maximum=4096),
-            learning_rate=read_float(self.TRAIN_RANKER_LAST_LEARNING_RATE_KEY, 0.001, minimum=0.000001, maximum=1.0),
-            hidden_dim=read_int(self.TRAIN_RANKER_LAST_HIDDEN_DIM_KEY, 0, minimum=0, maximum=4096),
-            disagreement_oversample_factor=read_int(
-                self.TRAIN_RANKER_LAST_DISAGREEMENT_WEIGHT_KEY,
-                3,
-                minimum=1,
-                maximum=10,
-            ),
-            reference_bank_path=str(self._settings.value(self.TRAIN_RANKER_LAST_REFERENCE_PATH_KEY, "", str) or ""),
-            reference_top_k=read_int(self.TRAIN_RANKER_LAST_REFERENCE_TOP_K_KEY, 3, minimum=1, maximum=16),
-            device=device,
-        )
-
-    def _last_ranker_training_advanced_visible(self) -> bool:
-        return bool(self._settings.value(self.TRAIN_RANKER_LAST_ADVANCED_VISIBLE_KEY, False, bool))
-
-    def _save_last_ranker_training_options(self, options: RankerTrainingOptions, *, advanced_visible: bool) -> None:
-        self._settings.setValue(self.TRAIN_RANKER_LAST_RUN_NAME_KEY, options.run_name)
-        self._settings.setValue(self.TRAIN_RANKER_LAST_PROFILE_KEY, options.profile_key)
-        self._settings.setValue(self.TRAIN_RANKER_LAST_EPOCHS_KEY, int(options.num_epochs))
-        self._settings.setValue(self.TRAIN_RANKER_LAST_BATCH_SIZE_KEY, int(options.batch_size))
-        self._settings.setValue(self.TRAIN_RANKER_LAST_LEARNING_RATE_KEY, float(options.learning_rate))
-        self._settings.setValue(self.TRAIN_RANKER_LAST_HIDDEN_DIM_KEY, int(options.hidden_dim))
-        self._settings.setValue(self.TRAIN_RANKER_LAST_DISAGREEMENT_WEIGHT_KEY, int(options.disagreement_oversample_factor))
-        self._settings.setValue(self.TRAIN_RANKER_LAST_REFERENCE_PATH_KEY, options.reference_bank_path)
-        self._settings.setValue(self.TRAIN_RANKER_LAST_REFERENCE_TOP_K_KEY, int(options.reference_top_k))
-        self._settings.setValue(self.TRAIN_RANKER_LAST_DEVICE_KEY, options.device)
-        self._settings.setValue(self.TRAIN_RANKER_LAST_ADVANCED_VISIBLE_KEY, bool(advanced_visible))
-
-    def _handle_train_ranker_sources_requested(self, dialog: TrainRankerDialog) -> None:
-        self._configure_general_training_sources()
-        general_status = self._general_training_pool_status(self._current_folder)
-        dialog.set_general_source_summary(
-            pairwise_count=general_status.pairwise_labels,
-            cluster_count=general_status.cluster_labels,
-            disagreement_count=general_status.disagreement_pair_labels,
-            source_count=general_status.source_folders,
-        )
-
-    def _suggest_training_profile_defaults(self) -> tuple[str, str]:
-        records = list(self._all_records)
-        if not records:
-            return "", ""
-        records_by_path = {record.path: record for record in records}
-
-        def metadata_loader(path: str) -> CaptureMetadata:
-            record = records_by_path.get(path)
-            if record is not None:
-                cached = self._filter_metadata_manager.get_cached(record)
-                if cached is not None:
-                    return cached
-            return load_capture_metadata(path)
-
-        suggestion = suggest_training_profile(records, metadata_loader=metadata_loader)
-        return suggestion.profile_key, suggestion.reason
-
-    def _evaluate_ai_ranker(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before evaluating a ranker.")
-            return
-        if not self._ensure_ai_runtime_available(title="Evaluate Ranker"):
-            return
-        if not self._ensure_ai_model_available(title="Evaluate Ranker"):
-            return
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        active_run = self._active_ranker_run()
-        evaluating_general = bool(active_run is not None and active_run.profile_key == "general")
-        evaluation_sources = self._prompt_ranker_evaluation_source(evaluating_general=evaluating_general)
-        if not evaluation_sources:
-            return
-        for evaluation_source in evaluation_sources:
-            evaluation_folder = evaluation_source.folder if evaluation_source.folder else self._current_folder
-            evaluating_current_source = normalized_path_key(evaluation_folder) == normalized_path_key(self._current_folder)
-            evaluation_paths = self._ai_training_paths_for_folder(evaluation_folder)
-            if evaluation_paths is None or not ai_training_artifacts_ready(evaluation_paths):
-                QMessageBox.information(
-                    self,
-                    "Evaluate Ranker",
-                    "Prepare training data for the selected evaluation source before evaluating a ranker.",
-                )
-                return
-            if (not evaluating_general) and evaluating_current_source and (training_paths is None or not ai_training_artifacts_ready(training_paths)):
-                QMessageBox.information(
-                    self,
-                    "Evaluate Ranker",
-                    "Prepare training data for this folder before evaluating a ranker.",
-                )
-                return
-            issues = ai_training_evaluation_issues(evaluation_paths)
-            if issues:
-                QMessageBox.information(
-                    self,
-                    "Evaluate Ranker",
-                    format_ai_training_evaluation_issues(evaluation_folder, issues),
-                )
-                return
-            pairwise_count = evaluation_source.pairwise_labels
-            cluster_count = evaluation_source.cluster_labels
-            if pairwise_count <= 0 and cluster_count <= 0:
-                QMessageBox.information(
-                    self,
-                    "Evaluate Ranker",
-                    "No saved labels were found yet.\n\nUse Collect Training Labels first, or switch back to General Use if you want the pooled model.",
-                )
-                return
-        checkpoint_path = self._current_trained_checkpoint_path()
-        if checkpoint_path is None:
-            QMessageBox.information(
-                self,
-                "Evaluate Ranker",
-                "No trained checkpoint is available yet.",
-            )
-            return
-        evaluation_folder = evaluation_sources[0].folder if evaluation_sources[0].folder else self._current_folder
-        reference_bank_path = self._active_reference_bank_path if self._active_reference_bank_path else ""
-        run_label = (
-            f"{active_run.display_name} [{active_run.profile_label}]"
-            if active_run is not None
-            else Path(checkpoint_path).parent.name
-        )
-        source_count = len(evaluation_sources)
-        evaluation_output_name = (
-            "source-aware-evaluation"
-            if source_count > 1
-            else f"eval-{Path(evaluation_folder).name}"
-        )
-        task = EvaluateRankerTask(
-            folder=Path(self._current_folder),
-            runtime=self._ai_runtime,
-            checkpoint_path=checkpoint_path,
-            reference_bank_path=reference_bank_path,
-            use_general_pool=evaluating_general,
-            general_source_folders=self._general_training_source_folders(self._current_folder) if evaluating_general else (),
-            evaluation_folder=Path(evaluation_folder) if source_count == 1 else None,
-            evaluation_folders=tuple(Path(source.folder) for source in evaluation_sources) if source_count > 1 else (),
-            evaluation_output_name=evaluation_output_name,
-        )
-        started = self._start_ai_training_task(
-            task,
-            action="evaluate",
-            title="Evaluate Trained Ranker",
-            reference_bank_path=reference_bank_path,
-            run_label=run_label,
-        )
-        if started:
-            if source_count > 1:
-                self.statusBar().showMessage(f"Evaluating the trained ranker against {source_count} prepared sources...")
-            else:
-                self.statusBar().showMessage(f"Evaluating the trained ranker against {Path(evaluation_folder).name}...")
-
-    def _prompt_ranker_evaluation_source(self, *, evaluating_general: bool) -> tuple[TrainingSourceInfo, ...]:
-        current_folder = self._current_folder
-        if not current_folder:
-            return ()
-        sources = [
-            source
-            for source in list_registered_training_sources(enabled_only=False)
-            if source.pairwise_labels > 0 or source.cluster_labels > 0 or source.disagreement_pair_labels > 0
-        ]
-        current_key = normalized_path_key(current_folder)
-        current_source = next((source for source in sources if normalized_path_key(source.folder) == current_key), None)
-        if current_source is None:
-            training_paths = self._ai_training_paths_for_folder(current_folder)
-            if training_paths is not None:
-                pairwise_count, cluster_count = count_label_records(training_paths)
-                current_source = TrainingSourceInfo(
-                    namespace="__current__",
-                    folder=current_folder,
-                    display_name=Path(current_folder).name,
-                    enabled=True,
-                    pairwise_labels=pairwise_count,
-                    cluster_labels=cluster_count,
-                    disagreement_pair_labels=count_disagreement_pair_labels(training_paths),
-                    prepared_ready=ai_training_artifacts_ready(training_paths) and not ai_training_source_needs_prepare(training_paths.folder),
-                    labels_dir=str(training_paths.labels_dir),
-                    artifacts_dir=str(training_paths.artifacts_dir),
-                )
-                if current_source.prepared_ready and (
-                    pairwise_count > 0
-                    or cluster_count > 0
-                    or current_source.disagreement_pair_labels > 0
-                ):
-                    sources.insert(0, current_source)
-        if evaluating_general:
-            dialog = EvaluationSourceDialog(
-                sources=tuple(sources),
-                title_text="Evaluate Trained Ranker",
-                summary_text="Choose labeled folders to evaluate the active ranker against. This does not add those sources to training.",
-                default_folders=(current_folder,),
-                parent=self,
-            )
-            if self._exec_dialog_with_geometry(dialog, "ranker_evaluation_source") != dialog.DialogCode.Accepted:
-                return ()
-            return dialog.selected_sources()
-        if current_source is not None:
-            return (current_source,)
-        if not sources:
-            return ()
-        dialog = EvaluationSourceDialog(
-            sources=tuple(sources),
-            title_text="Evaluate Trained Ranker",
-            summary_text="Choose labeled folders to evaluate the active ranker against. This does not add those sources to training.",
-            default_folders=(current_folder,),
-            parent=self,
-        )
-        if self._exec_dialog_with_geometry(dialog, "ranker_evaluation_source") != dialog.DialogCode.Accepted:
-            return ()
-        return dialog.selected_sources()
-
-    def _prompt_culling_signal_evaluation_source(self) -> TrainingSourceInfo | None:
-        current_folder = self._current_folder
-        if not current_folder:
-            return None
-        sources = [
-            source
-            for source in list_registered_training_sources(enabled_only=False)
-            if source.pairwise_labels > 0 or source.cluster_labels > 0 or source.disagreement_pair_labels > 0
-        ]
-        current_key = normalized_path_key(current_folder)
-        current_source = next((source for source in sources if normalized_path_key(source.folder) == current_key), None)
-        if current_source is None:
-            training_paths = self._ai_training_paths_for_folder(current_folder)
-            if training_paths is not None:
-                pairwise_count, cluster_count = count_label_records(training_paths)
-                disagreement_count = count_disagreement_pair_labels(training_paths)
-                if pairwise_count > 0 or cluster_count > 0 or disagreement_count > 0:
-                    current_source = TrainingSourceInfo(
-                        namespace="__current__",
-                        folder=current_folder,
-                        display_name=Path(current_folder).name,
-                        enabled=True,
-                        pairwise_labels=pairwise_count,
-                        cluster_labels=cluster_count,
-                        disagreement_pair_labels=disagreement_count,
-                        prepared_ready=ai_training_artifacts_ready(training_paths) and not ai_training_source_needs_prepare(training_paths.folder),
-                        labels_dir=str(training_paths.labels_dir),
-                        artifacts_dir=str(training_paths.artifacts_dir),
-                    )
-                    sources.insert(0, current_source)
-        if not sources:
-            return None
-        dialog = EvaluationSourceDialog(
-            sources=tuple(sources),
-            title_text="Evaluate Culling Signals",
-            summary_text=(
-                "Choose the held-out labeled source to evaluate with the active tuned culling-signal weights. "
-                "This rebuilds signal scores for that source before measuring them."
-            ),
-            default_folders=(current_folder,),
-            allow_multiple=False,
-            show_evaluate_all=False,
-            parent=self,
-        )
-        if self._exec_dialog_with_geometry(dialog, "culling_signal_evaluation_source") != dialog.DialogCode.Accepted:
-            return None
-        selected_sources = dialog.selected_sources()
-        return selected_sources[0] if selected_sources else None
-
-    def _score_current_folder_with_trained_ranker(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before scoring it with a trained ranker.")
-            return
-        if not self._ensure_ai_runtime_available(title="Score With Trained Ranker"):
-            return
-        if not self._ensure_ai_model_available(title="Score With Trained Ranker"):
-            return
-        checkpoint_path = self._current_trained_checkpoint_path()
-        if checkpoint_path is None:
-            QMessageBox.information(
-                self,
-                "Score With Trained Ranker",
-                "No trained checkpoint is available yet.",
-            )
-            return
-        try:
-            self._set_active_ai_checkpoint(str(checkpoint_path))
-        except FileNotFoundError:
-            pass
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        if training_paths is None or not ai_training_artifacts_ready(training_paths):
-            self.statusBar().showMessage("No prepared artifacts found. Running the full AI pipeline with the active trained ranker...")
-            self._run_ai_pipeline()
-            return
-        reference_bank_path = self._active_reference_bank_path if self._active_reference_bank_path else ""
-        task = ScoreCurrentFolderTask(
-            folder=Path(self._current_folder),
-            runtime=self._ai_runtime,
-            checkpoint_path=checkpoint_path,
-            reference_bank_path=reference_bank_path,
-        )
-        started = self._start_ai_training_task(
-            task,
-            action="score",
-            title="Score With Trained Ranker",
-            reference_bank_path=reference_bank_path,
-        )
-        if started:
-            self.statusBar().showMessage("Scoring the current folder with the trained ranker...")
-
-    def _build_culling_signals_for_current_folder(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before building culling signals.")
-            return
-        if not self._ensure_ai_runtime_available(title="Build Culling Signals"):
-            return
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        if training_paths is None or not ai_training_artifacts_ready(training_paths):
-            QMessageBox.information(
-                self,
-                "Build Culling Signals",
-                "Prepare training data for this folder before building culling signals.",
-            )
-            return
-        active_run = self._active_ranker_run()
-        profile_name = active_run.profile_label if active_run is not None else "General Use"
-        weights_path = self._active_culling_signal_weights_path()
-        task = BuildCullingSignalsTask(
-            folder=Path(self._current_folder),
-            runtime=self._ai_runtime,
-            profile_name=profile_name,
-            run_technical=True,
-            run_specialists=True,
-            max_preview_side=768,
-            weights_path=weights_path,
-        )
-        started = self._start_ai_training_task(
-            task,
-            action="signals",
-            title="Build Culling Signals",
-            run_label=f"{profile_name} signal stack",
-        )
-        if started:
-            self.statusBar().showMessage("Building DINO, technical, specialist, and combiner signals...")
-
-    def _evaluate_culling_signals(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before evaluating culling signals.")
-            return
-        if not self._ensure_ai_runtime_available(title="Evaluate Personal Model"):
-            return
-        # Make sure the evaluation source sees the latest Speed Cull decisions
-        # so the held-out preference accuracy is computed against current data.
-        registered_folders = tuple(
-            source.folder for source in list_registered_training_sources(enabled_only=False)
-        )
-        self._harvest_speed_cull_decisions_for_folders(registered_folders + (self._current_folder,))
-        evaluation_source = self._prompt_culling_signal_evaluation_source()
-        if evaluation_source is None:
-            self.statusBar().showMessage("No evaluation source selected.")
-            return
-        evaluation_folder = evaluation_source.folder
-        training_paths = self._ai_training_paths_for_folder(evaluation_folder)
-        if training_paths is None or not ai_training_artifacts_ready(training_paths):
-            QMessageBox.information(
-                self,
-                "Evaluate Culling Signals",
-                "Prepare training data for the selected source before evaluating culling signals.",
-            )
-            return
-        signals_path = training_paths.hidden_root / "signals" / "culling_signals.json"
-        weights_path = self._active_culling_signal_weights_path()
-        if weights_path is None:
-            current_paths = self._ai_training_paths_for_folder(self._current_folder)
-            current_weights = current_paths.hidden_root / "signals" / SIGNAL_COMBINER_WEIGHTS_FILENAME if current_paths is not None else None
-            if current_weights is not None and current_weights.exists():
-                weights_path = current_weights
-        if weights_path is None:
-            local_weights = training_paths.hidden_root / "signals" / SIGNAL_COMBINER_WEIGHTS_FILENAME
-            weights_path = local_weights if local_weights.exists() else None
-        if weights_path is None and not signals_path.exists():
-            QMessageBox.information(
-                self,
-                "Evaluate Culling Signals",
-                "Build or tune culling signals before evaluating this source.",
-            )
-            return
-        issues = ai_training_evaluation_issues(training_paths)
-        if issues:
-            QMessageBox.information(
-                self,
-                "Evaluate Culling Signals",
-                format_ai_training_evaluation_issues(evaluation_folder, issues),
-            )
-            return
-        pairwise_count, cluster_count = count_label_records(training_paths)
-        disagreement_count = count_disagreement_pair_labels(training_paths)
-        if pairwise_count <= 0 and cluster_count <= 0 and disagreement_count <= 0:
-            QMessageBox.information(
-                self,
-                "Evaluate Culling Signals",
-                "No saved labels were found for the selected source.",
-            )
-            return
-        active_run = self._active_ranker_run()
-        profile_name = active_run.profile_label if active_run is not None else "General Use"
-        task = EvaluateCullingSignalsTask(
-            folder=Path(evaluation_folder),
-            runtime=self._ai_runtime,
-            profile_name=profile_name,
-            weights_path=weights_path,
-        )
-        weights_label = Path(weights_path).name if weights_path is not None else "existing signals"
-        started = self._start_ai_training_task(
-            task,
-            action="evaluate_signals",
-            title="Evaluate Culling Signals",
-            folder=evaluation_folder,
-            run_label=f"{Path(evaluation_folder).name} | {weights_label}",
-        )
-        if started:
-            self.statusBar().showMessage(f"Evaluating culling signals against {Path(evaluation_folder).name} labels...")
-
-    def _tune_culling_signals(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before tuning culling signals.")
-            return
-        if not self._ensure_ai_runtime_available(title="Train Personal Model"):
-            return
-        # Refresh cluster_labels.jsonl from Speed Cull decisions so the trainer
-        # sees the latest Accept/Reject choices the user has made.
-        registered_folders = tuple(
-            source.folder for source in list_registered_training_sources(enabled_only=False)
-        )
-        harvest_targets = registered_folders + (self._current_folder,)
-        harvested = self._harvest_speed_cull_decisions_for_folders(harvest_targets)
-        if harvested:
-            total_clusters = sum(harvested.values())
-            self.statusBar().showMessage(
-                f"Refreshed Speed Cull decisions from {len(harvested)} source(s) "
-                f"({total_clusters} clusters total)."
-            )
-        sources = [
-            source
-            for source in list_registered_training_sources(enabled_only=False)
-            if source.prepared_ready and (source.pairwise_labels > 0 or source.cluster_labels > 0 or source.disagreement_pair_labels > 0)
-        ]
-        current_key = normalized_path_key(self._current_folder)
-        if not any(normalized_path_key(source.folder) == current_key for source in sources):
-            training_paths = self._ai_training_paths_for_folder(self._current_folder)
-            if training_paths is not None:
-                pairwise_count, cluster_count = count_label_records(training_paths)
-                disagreement_count = count_disagreement_pair_labels(training_paths)
-                if (
-                    ai_training_artifacts_ready(training_paths)
-                    and (pairwise_count > 0 or cluster_count > 0 or disagreement_count > 0)
-                ):
-                    sources.insert(
-                        0,
-                        TrainingSourceInfo(
-                            namespace="__current__",
-                            folder=self._current_folder,
-                            display_name=Path(self._current_folder).name,
-                            enabled=True,
-                            pairwise_labels=pairwise_count,
-                            cluster_labels=cluster_count,
-                            disagreement_pair_labels=disagreement_count,
-                            prepared_ready=True,
-                            labels_dir=str(training_paths.labels_dir),
-                            artifacts_dir=str(training_paths.artifacts_dir),
-                        ),
-                    )
-        if not sources:
-            QMessageBox.information(
-                self,
-                "Tune Culling Signals",
-                "Prepare training data and collect labels for at least one source before tuning culling signals.",
-            )
-            return
-        default_folders = tuple(source.folder for source in sources if source.enabled)
-        dialog = EvaluationSourceDialog(
-            sources=tuple(sources),
-            title_text="Tune Culling Signals",
-            summary_text=(
-                "Choose the training sources used to learn the personalized transparent combiner. "
-                "Leave held-out validation sources unchecked."
-            ),
-            default_folders=default_folders or (self._current_folder,),
-            show_evaluate_all=False,
-            parent=self,
-        )
-        if self._exec_dialog_with_geometry(dialog, "culling_signal_tuning_sources") != dialog.DialogCode.Accepted:
-            return
-        selected_sources = dialog.selected_sources()
-        if not selected_sources:
-            self.statusBar().showMessage("No culling-signal training sources selected.")
-            return
-        active_run = self._active_ranker_run()
-        profile_name = active_run.profile_label if active_run is not None else "General Use"
-        task = TuneCullingSignalsTask(
-            folder=Path(self._current_folder),
-            runtime=self._ai_runtime,
-            profile_name=profile_name,
-            source_folders=tuple(source.folder for source in selected_sources),
-        )
-        source_count = len(selected_sources)
-        started = self._start_ai_training_task(
-            task,
-            action="tune_signals",
-            title="Tune Culling Signals",
-            run_label=f"{profile_name} transparent weights | {source_count} source(s)",
-        )
-        if started:
-            self.statusBar().showMessage(f"Tuning culling signal weights from {source_count} selected source(s)...")
-
-    def _build_ai_reference_bank(self) -> None:
-        if not self._ensure_ai_runtime_available(title="Build Reference Bank"):
-            return
-        if not self._ensure_ai_model_available(title="Build Reference Bank"):
-            return
-        initial_dir = self._current_folder or QDir.homePath()
-        reference_dir = QFileDialog.getExistingDirectory(
-            self,
-            "Choose Reference Images Folder",
-            initial_dir,
-        )
-        if not reference_dir:
-            return
-        output_root = self._reference_bank_output_dir()
-        output_name = Path(reference_dir).name or "reference_bank"
-        output_dir = output_root / output_name
-        task = BuildReferenceBankTask(
-            runtime=self._ai_runtime,
-            options=ReferenceBankBuildOptions(
-                reference_dir=reference_dir,
-                output_dir=str(output_dir),
-                batch_size=8,
-                device="auto",
-            ),
-        )
-        started = self._start_ai_training_task(
-            task,
-            action="reference_bank",
-            title="Build Reference Bank",
-            folder=self._current_folder or reference_dir,
-            reference_bank_path=str(output_dir / "reference_bank.npz"),
-        )
-        if started:
-            self.statusBar().showMessage("Building a reference bank from the selected folder...")
-
-    def _manage_ai_rankers(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before opening Ranker Workflow.")
-            return
-        if not self._ensure_ai_runtime_available(title="Ranker Workflow"):
-            return
-        if not self._ensure_ai_model_available(title="Ranker Workflow"):
-            return
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        general_paths = self._general_ai_training_paths()
-        if training_paths is None and general_paths is None:
-            self.statusBar().showMessage("Choose a folder before opening Ranker Workflow.")
-            return
-        local_runs = list_ranker_runs(training_paths) if training_paths is not None else ()
-        general_runs = list_ranker_runs(general_paths) if general_paths is not None else ()
-        active_checkpoint = self._current_trained_checkpoint_path()
-        combined_runs: list[RankerRunInfo] = []
-        seen_checkpoints: set[str] = set()
-        for run in (*general_runs, *local_runs):
-            checkpoint_key = normalized_path_key(str(run.checkpoint_path)) if run.checkpoint_path is not None else f"run:{run.run_id}:{run.run_dir}"
-            if checkpoint_key in seen_checkpoints:
-                continue
-            seen_checkpoints.add(checkpoint_key)
-            is_active = bool(active_checkpoint and run.checkpoint_path and normalized_path_key(str(run.checkpoint_path)) == normalized_path_key(str(active_checkpoint)))
-            combined_runs.append(replace(run, is_active=is_active))
-        combined_runs.sort(key=lambda run: run.created_at, reverse=True)
-        runs = tuple(combined_runs)
-        if training_paths is not None:
-            pairwise_count, cluster_count = count_label_records(training_paths)
-            disagreement_pair_count = count_disagreement_pair_labels(training_paths)
-            candidates_ready = labeling_artifacts_ready(training_paths)
-            prepared_ready = ai_training_artifacts_ready(training_paths)
-            hidden_root = str(training_paths.hidden_root)
-        else:
-            pairwise_count, cluster_count = 0, 0
-            disagreement_pair_count = 0
-            candidates_ready = False
-            prepared_ready = False
-            hidden_root = ""
-        active_checkpoint = self._current_trained_checkpoint_path()
-        active_run = next((run for run in runs if run.is_active), None)
-        general_status = self._general_training_pool_status(self._current_folder)
-        active_ranker_label = active_run.display_name if active_run is not None else "Default built-in checkpoint"
-        active_profile_label = active_run.profile_label if active_run is not None else "Built-in Default"
-        active_reference_label = (
-            Path(active_run.reference_bank_path).name
-            if active_run is not None and active_run.reference_bank_path
-            else (Path(self._active_reference_bank_path).name if self._active_reference_bank_path else "None")
-        )
-        training_availability = _build_ai_training_action_availability(
-            local_pairwise_labels=pairwise_count,
-            local_cluster_labels=cluster_count,
-            local_prepared_ready=prepared_ready,
-            general_pairwise_labels=general_status.pairwise_labels,
-            general_cluster_labels=general_status.cluster_labels,
-            trained_checkpoint_available=active_checkpoint is not None,
-            active_profile_key=active_run.profile_key if active_run is not None else "",
-        )
-        summary = RankerCenterSummary(
-            folder_path=self._current_folder,
-            hidden_root=hidden_root,
-            pairwise_labels=pairwise_count,
-            cluster_labels=cluster_count,
-            disagreement_events=count_ai_disagreement_events(self._correction_events),
-            disagreement_pair_labels=disagreement_pair_count,
-            general_pairwise_labels=general_status.pairwise_labels,
-            general_cluster_labels=general_status.cluster_labels,
-            general_disagreement_pair_labels=general_status.disagreement_pair_labels,
-            general_source_folders=general_status.source_folders,
-            general_retrain_status=general_status.guidance_text,
-            candidates_ready=candidates_ready,
-            prepared_ready=prepared_ready,
-            active_ranker_label=active_ranker_label,
-            active_profile_label=active_profile_label,
-            active_reference_label=active_reference_label,
-            saved_rankers=len(runs),
-            has_active_checkpoint=active_checkpoint is not None,
-            can_run_full_pipeline=training_availability.can_run_full_pipeline,
-            can_train=training_availability.can_train,
-            can_evaluate=training_availability.can_evaluate,
-        )
-        dialog = RankerCenterDialog(summary=summary, runs=runs, parent=self)
-        if self._exec_dialog_with_geometry(dialog, "ranker_center") != dialog.DialogCode.Accepted:
-            return
-        requested_action = dialog.requested_action
-        if requested_action == "collect_labels":
-            self._open_ai_data_selection()
-            return
-        if requested_action == "prepare_data":
-            self._prepare_ai_training_data()
-            return
-        if requested_action == "run_full_pipeline":
-            self._run_full_ai_training_pipeline()
-            return
-        if requested_action == "train":
-            self._train_ai_ranker()
-            return
-        if requested_action == "sources":
-            self._configure_general_training_sources()
-            return
-        if requested_action == "evaluate":
-            self._evaluate_ai_ranker()
-            return
-        if requested_action == "score":
-            self._score_current_folder_with_trained_ranker()
-            return
-        if requested_action == "use_default":
-            if training_paths is not None:
-                clear_active_ranker_selection(training_paths)
-            if general_paths is not None:
-                clear_active_ranker_selection(general_paths)
-            self._clear_active_ai_checkpoint_override()
-            self._clear_active_reference_bank_path()
-            self._update_ai_toolbar_state()
-            self.statusBar().showMessage("Switched back to the default built-in ranker.")
-            return
-        selected_run = dialog.selected_run()
-        if requested_action != "use_selected" or selected_run is None or selected_run.checkpoint_path is None:
-            return
-        selection_paths = general_paths if self._run_uses_training_paths(selected_run, general_paths) else training_paths
-        if selection_paths is None:
-            selection_paths = training_paths or general_paths
-        if selection_paths is None:
-            return
-        set_active_ranker_selection(
-            selection_paths,
-            checkpoint_path=selected_run.checkpoint_path,
-            run_id=selected_run.run_id,
-            display_name=selected_run.display_name,
-            profile_key=selected_run.profile_key,
-            profile_label=selected_run.profile_label,
-        )
-        try:
-            self._set_active_ai_checkpoint(str(selected_run.checkpoint_path))
-        except FileNotFoundError as exc:
-            QMessageBox.warning(self, "Ranker Workflow", f"Could not activate the selected ranker.\n\n{exc}")
-            return
-        if selected_run.reference_bank_path:
-            try:
-                self._set_active_reference_bank_path(selected_run.reference_bank_path)
-            except FileNotFoundError:
-                pass
-        else:
-            self._clear_active_reference_bank_path()
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage(f"Active ranker set to {selected_run.display_name} [{selected_run.profile_label}].")
-
-    def _clear_ai_trained_model(self) -> None:
-        if self._active_ai_training_task is not None or self._active_ai_task is not None:
-            self.statusBar().showMessage("Wait for the current AI task to finish first.")
-            return
-
-        training_paths = self._ai_training_paths_for_folder(self._current_folder)
-        general_paths = self._general_ai_training_paths()
-        current_folder_checkpoint = resolve_trained_checkpoint(training_paths) if training_paths is not None else None
-        shared_general_checkpoint = resolve_trained_checkpoint(general_paths) if general_paths is not None else None
-        active_checkpoint = self._current_trained_checkpoint_path()
-
-        if current_folder_checkpoint is None and shared_general_checkpoint is None and active_checkpoint is None:
-            self.statusBar().showMessage("No trained model is available to clear.")
-            return
-
-        message = (
-            "Reset the active ranker and switch back to the default checkpoint?\n\n"
-            "Saved ranker versions will stay on disk so you can switch back later from Ranker Workflow."
-        )
-        title = "Reset Active Ranker"
-
-        confirmation = QMessageBox.question(
-            self,
-            title,
-            message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirmation != QMessageBox.StandardButton.Yes:
-            return
-
-        if training_paths is not None:
-            clear_active_ranker_selection(training_paths)
-        if general_paths is not None:
-            clear_active_ranker_selection(general_paths)
-        self._clear_active_ai_checkpoint_override()
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("Reset the active model to the default checkpoint.")
 
     def _accept_selected_records(self) -> None:
         records = self._selected_records_for_actions()
@@ -15494,6 +14034,10 @@ class MainWindow(QMainWindow):
         if choice != QMessageBox.StandardButton.Yes:
             return
         paths = build_ai_workflow_paths(self._current_folder)
+        self._clear_ai_results_state()
+        cached_summary = getattr(self, "_last_ai_review_summary", None)
+        if cached_summary and normalized_path_key(str(cached_summary.get("folder", ""))) == normalized_path_key(self._current_folder):
+            self._last_ai_review_summary = None
         try:
             reset_hidden_ai_review_cache(paths)
         except OSError as exc:
@@ -15506,11 +14050,7 @@ class MainWindow(QMainWindow):
             return
         self._catalog_repository.delete_ai_workflow_cache(self._current_folder)
         self._catalog_repository.delete_ai_bundle_cache(self._current_folder)
-        self._clear_ai_results_state()
-        cached_summary = getattr(self, "_last_ai_review_summary", None)
-        if cached_summary and normalized_path_key(str(cached_summary.get("folder", ""))) == normalized_path_key(self._current_folder):
-            self._last_ai_review_summary = None
-            self._update_ai_toolbar_state()
+        self._update_ai_toolbar_state()
         self.statusBar().showMessage(f"Reset AI review cache for {self._current_folder}")
 
     def _open_ai_report(self) -> None:
@@ -18072,70 +16612,40 @@ class MainWindow(QMainWindow):
 
                 {self._ai_review_tags_markdown()}
 
-                ## AI Training Workflow
+                ## Adapter Workflow
 
-                Use this when you want the model to learn your own culling preferences.
+                Use this when you want CLI-Culler to learn from your own decisions.
 
                 1. Open the folder you want to train from.
-                2. Choose **`Training > Collect Training Labels...`**.
-                3. The app opens the labeling workflow and, if needed, quickly builds local label groups from the current folder without running embedding extraction first.
-                4. In the labeling app, mark **Best**, **Acceptable**, and **Reject** images in clusters, and pick favorites in pairwise comparisons.
-                5. After you have labels, either:
-                   - choose **`Training > Run Full Training Pipeline...`** to automatically prepare, train, evaluate, and rescore in one go
-                   - or step through the menu manually if you want tighter control
-                6. Optional: choose **`Training > Build Reference Bank...`** if you want exemplar-driven scoring from a separate reference folder.
-                7. Choose **`Training > Train Ranker...`** when you want a manual training run and give it a run name if you want easier version tracking.
-                8. Use **`Stats For Nerds`** during training to watch the live epoch, loss, and validation output.
-                9. Choose **`Training > Ranker Workflow...`** or press **`Ctrl+Shift+K`** to switch between saved ranker versions and check folder training status.
-                10. Choose **`Training > Evaluate Trained Ranker`** to check how well the active checkpoint matches your labels.
-                11. Choose **`Training > Score Current Folder With Active Ranker`** to rebuild rankings for the current folder with the selected model.
-                12. Review the refreshed result in **AI Review**.
-                13. Add more labels and retrain whenever you want to refine the model further.
-
-                ## Training Menu Order
-
-                The training actions are intentionally arranged in usage order:
-
-                1. **Collect Training Labels...**
-                2. **Run Full Training Pipeline...**
-                3. **Prepare Training Data**
-                4. **Build Reference Bank...** (optional)
-                5. **Train Ranker...**
-                6. **Ranker Workflow...** (main AI menu item)
-                7. **Evaluate Trained Ranker**
-                8. **Score Current Folder With Active Ranker**
-                9. **Clear Trained Model...**
+                2. Run **`AI > Run AI Culler`** so the folder has a CLI-Culler database.
+                3. Mark images with ratings, Accept, or Reject in the grid, or choose **`AI > Adapter > Review Adapter Labels...`** to work through suggested label candidates.
+                4. Choose **`AI > Adapter > Prepare Adapter Ratings`** to materialize the current labels.
+                5. Choose **`AI > Adapter > Train Adapter...`**.
+                6. Choose **`AI > Adapter > Evaluate Adapter`** to check the latest adapter against stored ratings.
+                7. Choose **`AI > Adapter > Rank Current Folder With Adapter`** to refresh the folder ranking.
+                8. Review the refreshed result in **AI Review**.
 
                 ## Where AI Files Live
 
                 Every AI-enabled folder gets a hidden workspace beside the images:
 
-                - **`.image_triage_ai/artifacts`**: embeddings, IDs, and clusters
-                - **`.image_triage_ai/labels`**: pairwise and cluster labels
-                - **`.image_triage_ai/training`**: versioned ranker runs and the active-ranker pointer
-                - **`.image_triage_ai/evaluation`**: evaluation summaries and breakdowns
+                - **`.image_triage_ai/artifacts`**: CLI-Culler database and intermediate artifacts
                 - **`.image_triage_ai/ranker_report`**: scored exports and HTML report
-                - **`.image_triage_ai/reference_bank`**: optional exemplar reference features
 
                 ## Best Practices
 
                 - Start with folders that match the kind of work you care about most.
                 - Label clear winners and clear rejects first.
-                - Use the cluster labeling view to sort groups into Best, Acceptable, and Reject before spending time on pairwise edge cases.
-                - Treat **Collect Training Labels** as the human-labeling step and **Prepare Training Data** as the later model-prep step.
-                - Use run names so it is obvious which checkpoint came from which labeling pass.
-                - Keep older rankers around and compare them instead of assuming the newest one is always best.
+                - Use adapter label review to cover uncertain or informative cases before training.
                 - Retrain after a meaningful batch of labels, not after every tiny change.
-                - Evaluate a new checkpoint before trusting it broadly.
-                - Use a reference bank only when you want the model biased toward a specific style, subject, or look.
+                - Evaluate a new adapter before trusting it broadly.
 
                 ## Troubleshooting
 
-                - If rankings look stale, run **Score Current Folder With Trained Ranker** again.
-                - If the folder changed heavily, collect a fresh round of labels and then rerun **Prepare Training Data** before rescoring.
-                - If AI actions are disabled, install the runtime from **`AI > Install AI Runtime...`** and the weights from **`AI > Download AI Model...`**.
-                - If you only want to review AI results, you do **not** need the training steps.
-                - Use **Clear Trained Model...** to reset the current folder back toward the default checkpoint behavior.
+                - If rankings look stale, run **Rank Current Folder With Adapter** again.
+                - If the folder changed heavily, rerun **Run AI Culler** before training or ranking.
+                - If AI actions are disabled, open **`AI > Runtime > Open AI Culler Source`** and check the configured AI Culler paths.
+                - If you only want to review AI results, you do **not** need the adapter steps.
                 """
             ),
         )
@@ -18179,9 +16689,7 @@ class MainWindow(QMainWindow):
                 - Batch tools use the checkbox mode in the grid
                 - Resize and Convert are also available from the image right-click menu
                 - RAW files are skipped for Resize and Convert
-                - The top-level **Training** menu mirrors the step-by-step training actions shown in **`Help > AI Guide`**
-                - **`Run Full Training Pipeline...`** is the one-click retrain option after labels already exist
-                - **`Ranker Workflow...`** is direct in both **Training** and **AI**, and `Ctrl+Shift+K` opens it from anywhere
+                - The **AI > Adapter** menu contains the current label review, adapter training, evaluation, and ranking flow
                 - long AI tasks use centered progress dialogs while scripts are running, and **Stats For Nerds** opens the live training log
 
                 ## Preview
@@ -20210,6 +18718,27 @@ class MainWindow(QMainWindow):
         if logger.enabled:
             logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=True)
 
+    def _sort_records_for_active_context(self, records: list[ImageRecord]) -> list[ImageRecord]:
+        if self._sort_mode != SortMode.AI_RANK or self._ai_bundle is None:
+            return sort_records(records, self._sort_mode)
+
+        def key(record: ImageRecord) -> tuple[object, ...]:
+            if record.is_folder:
+                return (0, record.name.casefold())
+            result = find_ai_result_for_record(self._ai_bundle, record)
+            if result is None:
+                return (2, record.name.casefold())
+            percentile = float(result.folder_percentile if result.folder_percentile is not None else -1.0)
+            return (
+                1,
+                -float(result.score),
+                -percentile,
+                int(max(1, result.rank_in_group)),
+                record.name.casefold(),
+            )
+
+        return sorted(records, key=key)
+
     def _apply_records_view(
         self,
         current_path: str | None = None,
@@ -20232,9 +18761,9 @@ class MainWindow(QMainWindow):
                 force_full=force_workflow_rebuild,
             )
 
-        sorted_records = sort_records(list(self._all_records), self._sort_mode)
+        sorted_records = self._sort_records_for_active_context(list(self._all_records))
         visible_folder_records = (
-            sort_records(list(self._folder_records), self._sort_mode)
+            self._sort_records_for_active_context(list(self._folder_records))
             if self._scope_kind == "folder" and not self._filter_query.has_active_filters
             else []
         )

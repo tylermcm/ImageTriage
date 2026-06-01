@@ -7,6 +7,8 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,14 +19,20 @@ from .ai_workflow import AIWorkflowPaths, build_ai_workflow_paths
 from .models import ImageRecord
 
 
-DEFAULT_AICULLER_ROOT = Path(r"C:\Users\tylle\Documents\GitHub\CLI-Culler")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_AICULLER_ROOT = REPO_ROOT
+DEFAULT_AICULLER_ROOT = SOURCE_AICULLER_ROOT
+DEFAULT_AICULLER_CONFIG_ROOT = REPO_ROOT / "aiculler" / "resources"
 INGEST_EVENT_PATTERN = re.compile(r"^\[(?P<status>[^\]]+)\]\s+#(?P<current>\d+)\s+")
+CAPTURE_SEQUENCE_PATTERN = re.compile(r"^(?P<prefix>.*?)(?P<number>\d{3,})(?P<suffix>[^0-9]*)$")
+CAPTURE_DIVERSITY_BUCKET_SIZE = 24
 
 
 @dataclass(slots=True, frozen=True)
 class AICullerRuntime:
     root: Path
     python_executable: Path
+    cli_entrypoint: Path
     clip_vision_model: Path
     clip_text_model: Path
     tokenizer: Path
@@ -40,6 +48,7 @@ class AICullerRuntime:
         for label, path in (
             ("CLI-Culler root", self.root),
             ("CLI-Culler Python", self.python_executable),
+            ("CLI-Culler entrypoint", self.cli_entrypoint),
             ("CLIP vision model", self.clip_vision_model),
             ("CLIP text model", self.clip_text_model),
             ("CLIP tokenizer", self.tokenizer),
@@ -54,6 +63,17 @@ class AICullerRuntime:
             missing.append(f"tag penalties: {self.tag_penalties_csv}")
         if missing:
             raise FileNotFoundError("Missing CLI-Culler runtime paths:\n" + "\n".join(missing))
+
+
+@dataclass(slots=True, frozen=True)
+class AICullerRuntimeStatus:
+    runtime: AICullerRuntime
+    missing_required: tuple[str, ...]
+    missing_optional: tuple[str, ...]
+
+    @property
+    def is_ready(self) -> bool:
+        return not self.missing_required
 
 
 class AICullerRunSignals(QObject):
@@ -210,8 +230,7 @@ class AICullerRunTask(QRunnable):
     def _command(self, db_path: Path, command: str, *args: str) -> list[str]:
         return [
             str(self.runtime.python_executable),
-            "-m",
-            "aiculler.cli",
+            str(self.runtime.cli_entrypoint),
             "--db",
             str(db_path),
             "--log-dir",
@@ -248,9 +267,7 @@ class AICullerRunTask(QRunnable):
     def _run_command(self, command: list[str], *, stage_message: str) -> None:
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
-        source_root = str(self.runtime.root / "src")
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = source_root if not existing_pythonpath else source_root + os.pathsep + existing_pythonpath
+        env["PYTHONPATH"] = _aiculler_pythonpath(self.runtime.root, env.get("PYTHONPATH", ""))
         process = subprocess.Popen(
             command,
             cwd=str(self.runtime.root),
@@ -308,6 +325,13 @@ class AICullerRunTask(QRunnable):
 
     def _write_gui_exports(self, db_path: Path) -> None:
         write_gui_exports(db_path, self.paths, run_id=self.run_id)
+        write_run_config(
+            self.paths,
+            runtime=self.runtime,
+            mode="run",
+            run_id=self.run_id,
+            stages=self.stages,
+        )
 
     def _raise_if_cancelled(self) -> None:
         if self._cancel_requested:
@@ -361,6 +385,13 @@ class AICullerAdapterTask(QRunnable):
                 self._run_command(command, message)
             if self.mode in {"train", "rank"}:
                 write_gui_exports(db_path, self.paths, model_version=self.model_version)
+            write_run_config(
+                self.paths,
+                runtime=self.runtime,
+                mode=self.mode,
+                run_id=self.run_id,
+                model_version=self.model_version,
+            )
             self.signals.finished.emit(
                 {
                     "mode": self.mode,
@@ -395,6 +426,10 @@ class AICullerAdapterTask(QRunnable):
                         "train-adapter",
                         "--model-version",
                         self.model_version,
+                        "--base-weight",
+                        "0",
+                        "--adapter-weight",
+                        "1",
                         "--out",
                         str(self.paths.report_dir / f"adapter_scores_{self.model_version}.csv"),
                     ),
@@ -434,6 +469,10 @@ class AICullerAdapterTask(QRunnable):
                         "rank-adapter",
                         "--model-version",
                         self.model_version,
+                        "--base-weight",
+                        "0",
+                        "--adapter-weight",
+                        "1",
                         "--out",
                         str(self.paths.report_dir / f"adapter_ranking_{self.model_version}.csv"),
                     ),
@@ -444,8 +483,7 @@ class AICullerAdapterTask(QRunnable):
     def _command(self, db_path: Path, command: str, *args: str) -> list[str]:
         return [
             str(self.runtime.python_executable),
-            "-m",
-            "aiculler.cli",
+            str(self.runtime.cli_entrypoint),
             "--db",
             str(db_path),
             "--log-dir",
@@ -459,9 +497,7 @@ class AICullerAdapterTask(QRunnable):
     def _run_command(self, command: list[str], stage_message: str) -> None:
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
-        source_root = str(self.runtime.root / "src")
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = source_root if not existing_pythonpath else source_root + os.pathsep + existing_pythonpath
+        env["PYTHONPATH"] = _aiculler_pythonpath(self.runtime.root, env.get("PYTHONPATH", ""))
         process = subprocess.Popen(
             command,
             cwd=str(self.runtime.root),
@@ -487,15 +523,21 @@ class AICullerAdapterTask(QRunnable):
 
 
 def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
-    root = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_ROOT", "") or DEFAULT_AICULLER_ROOT).expanduser().resolve()
+    root = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_ROOT", "") or _default_aiculler_root()).expanduser().resolve()
+    model_root = _default_aiculler_model_root(root)
     python_executable = Path(
         os.environ.get("IMAGE_TRIAGE_AICULLER_PYTHON", "")
-        or root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        or _default_aiculler_python(root)
     ).expanduser().resolve()
-    clip_root = root / "models" / "Clip" / "clip-vit-large-patch14"
-    topiq_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_TOPIQ", "") or root / "models" / "TOPIQ" / "topiq_nr.onnx")
-    categories_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_CATEGORIES", "") or root / "categories.csv")
-    tag_penalties_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_TAG_PENALTIES", "") or root / "tag_penalties.csv")
+    cli_entrypoint = Path(
+        os.environ.get("IMAGE_TRIAGE_AICULLER_CLI", "")
+        or _default_aiculler_cli(root)
+    ).expanduser().resolve()
+    clip_root = model_root / "Clip" / "clip-vit-large-patch14"
+    configured_topiq = os.environ.get("IMAGE_TRIAGE_AICULLER_TOPIQ", "").strip()
+    topiq_path = Path(configured_topiq or model_root / "TOPIQ" / "topiq_nr.onnx")
+    categories_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_CATEGORIES", "") or _default_aiculler_config_path(root, "categories.csv"))
+    tag_penalties_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_TAG_PENALTIES", "") or _default_aiculler_config_path(root, "tag_penalties.csv"))
     avoid_tags = tuple(
         tag.strip()
         for tag in os.environ.get(
@@ -507,6 +549,7 @@ def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
     return AICullerRuntime(
         root=root,
         python_executable=python_executable,
+        cli_entrypoint=cli_entrypoint,
         clip_vision_model=Path(
             os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_VISION", "")
             or clip_root / "onnx" / "vision_model_uint8.onnx"
@@ -519,7 +562,11 @@ def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
             os.environ.get("IMAGE_TRIAGE_AICULLER_TOKENIZER", "")
             or clip_root / "tokenizer.json"
         ).expanduser().resolve(),
-        topiq_model=topiq_path.expanduser().resolve() if str(topiq_path).strip() else None,
+        topiq_model=(
+            topiq_path.expanduser().resolve()
+            if configured_topiq or topiq_path.exists()
+            else None
+        ),
         categories_csv=categories_path.expanduser().resolve() if categories_path.exists() else None,
         tag_penalties_csv=tag_penalties_path.expanduser().resolve() if tag_penalties_path.exists() else None,
         avoid_tags=avoid_tags,
@@ -528,12 +575,151 @@ def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
     )
 
 
+def _default_aiculler_python(root: Path) -> Path:
+    app_dir = Path(sys.executable).resolve().parent
+    runner = app_dir / ("ai_python_runner.exe" if os.name == "nt" else "ai_python_runner")
+    if runner.exists():
+        return runner
+    root_venv_python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if root_venv_python.exists():
+        return root_venv_python
+    legacy_venv_python = _legacy_aiculler_root() / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if legacy_venv_python.exists():
+        return legacy_venv_python
+    return Path(sys.executable)
+
+
+def _default_aiculler_cli(root: Path) -> Path:
+    package_cli = root / "aiculler" / "cli.py"
+    if package_cli.exists():
+        return package_cli
+    return root / "src" / "aiculler" / "cli.py"
+
+
+def _default_aiculler_root() -> Path:
+    if getattr(sys, "frozen", False):
+        app_root = Path(sys.executable).resolve().parent
+        if (app_root / "aiculler" / "cli.py").exists():
+            return app_root
+        legacy_bundled = app_root / "vendor" / "cli-culler"
+        if legacy_bundled.exists():
+            return legacy_bundled
+    return DEFAULT_AICULLER_ROOT
+
+
+def _default_aiculler_config_path(root: Path, filename: str) -> Path:
+    candidates = (
+        root / "aiculler" / "resources" / filename,
+        DEFAULT_AICULLER_CONFIG_ROOT / filename,
+        root / filename,
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _aiculler_pythonpath(root: Path, existing_pythonpath: str = "") -> str:
+    entries = []
+    package_root = root if (root / "aiculler").exists() else root / "src"
+    entries.append(str(package_root))
+    if existing_pythonpath:
+        entries.extend(part for part in existing_pythonpath.split(os.pathsep) if part)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        key = os.path.normcase(os.path.abspath(entry))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return os.pathsep.join(deduped)
+
+
+def _default_aiculler_model_root(root: Path) -> Path:
+    configured = os.environ.get("IMAGE_TRIAGE_AICULLER_MODEL_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    candidates = (
+        _default_aiculler_cache_model_root(),
+        root / "models",
+        _legacy_aiculler_root() / "models",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.expanduser().resolve()
+    return (root / "models").expanduser().resolve()
+
+
+def _default_aiculler_cache_model_root() -> Path:
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "CLI-Culler"
+
+
+def _default_user_cache_root() -> Path:
+    if os.name == "nt":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_appdata:
+            return Path(local_appdata)
+        userprofile = os.environ.get("USERPROFILE", "").strip()
+        if userprofile:
+            return Path(userprofile) / "AppData" / "Local"
+        try:
+            return Path.home() / "AppData" / "Local"
+        except RuntimeError:
+            return Path(tempfile.gettempdir())
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg_cache_home:
+        return Path(xdg_cache_home)
+    try:
+        return Path.home() / ".cache"
+    except RuntimeError:
+        return Path(tempfile.gettempdir())
+
+
+def _legacy_aiculler_root() -> Path:
+    try:
+        return Path.home() / "Documents" / "GitHub" / "CLI-Culler"
+    except RuntimeError:
+        userprofile = os.environ.get("USERPROFILE", "").strip()
+        if userprofile:
+            return Path(userprofile) / "Documents" / "GitHub" / "CLI-Culler"
+        return Path("C:/Users/tylle/Documents/GitHub/CLI-Culler")
+
+
 def aiculler_runtime_available() -> bool:
     try:
-        default_aiculler_runtime().validate()
+        return aiculler_runtime_status().is_ready
     except Exception:
         return False
-    return True
+
+
+def aiculler_runtime_status(workers: int | None = None) -> AICullerRuntimeStatus:
+    runtime = default_aiculler_runtime(workers=workers)
+    required: list[str] = []
+    optional: list[str] = []
+    for label, path in (
+        ("CLI-Culler root", runtime.root),
+        ("CLI-Culler Python", runtime.python_executable),
+        ("CLI-Culler entrypoint", runtime.cli_entrypoint),
+        ("CLIP vision model", runtime.clip_vision_model),
+        ("CLIP text model", runtime.clip_text_model),
+        ("CLIP tokenizer", runtime.tokenizer),
+    ):
+        if not path.exists():
+            required.append(f"{label}: {path}")
+    if runtime.categories_csv is not None and not runtime.categories_csv.exists():
+        required.append(f"category prompts: {runtime.categories_csv}")
+    if runtime.tag_penalties_csv is not None and not runtime.tag_penalties_csv.exists():
+        required.append(f"tag penalties: {runtime.tag_penalties_csv}")
+    if runtime.topiq_model is None:
+        optional.append("TOPIQ model: not configured; heuristic technical scoring will be used")
+    elif not runtime.topiq_model.exists():
+        optional.append(f"TOPIQ model: {runtime.topiq_model}")
+    return AICullerRuntimeStatus(
+        runtime=runtime,
+        missing_required=tuple(required),
+        missing_optional=tuple(optional),
+    )
 
 
 def build_aiculler_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
@@ -558,6 +744,64 @@ def latest_adapter_model_version(db_path: str | Path) -> str:
             """
         ).fetchone()
     return str(row[0]) if row else ""
+
+
+def list_adapter_model_summaries(db_path: str | Path) -> list[dict[str, object]]:
+    path = Path(db_path)
+    if not path.exists():
+        return []
+    summaries: list[dict[str, object]] = []
+    connection = sqlite3.connect(path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT
+                adapter_models.model_version,
+                adapter_models.created_at,
+                adapter_models.metrics_json,
+                adapter_models.training_config_json,
+                COUNT(adapter_scores.image_id) AS scored_count
+            FROM adapter_models
+            LEFT JOIN adapter_scores
+                ON adapter_scores.model_version = adapter_models.model_version
+            GROUP BY adapter_models.model_version
+            ORDER BY adapter_models.created_at DESC, adapter_models.model_version DESC
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    for row in rows:
+        try:
+            metrics = json.loads(row[2] or "{}")
+        except (TypeError, ValueError):
+            metrics = {}
+        try:
+            config = json.loads(row[3] or "{}")
+        except (TypeError, ValueError):
+            config = {}
+        train = metrics.get("train") if isinstance(metrics, dict) else None
+        holdout = metrics.get("holdout") if isinstance(metrics, dict) else None
+        train_mae = _as_optional_float(train.get("mae")) if isinstance(train, dict) else None
+        holdout_mae = _as_optional_float(holdout.get("mae")) if isinstance(holdout, dict) else None
+        failure_rate = holdout_mae if holdout_mae is not None else train_mae
+        accuracy_percent = None if failure_rate is None else max(0.0, min(100.0, (1.0 - failure_rate) * 100.0))
+        summaries.append(
+            {
+                "model_version": str(row[0]),
+                "created_at": str(row[1] or ""),
+                "scored_count": int(row[4] or 0),
+                "train_mae": train_mae,
+                "holdout_mae": holdout_mae,
+                "accuracy_percent": accuracy_percent,
+                "train_count": _as_optional_int(train.get("count")) if isinstance(train, dict) else None,
+                "holdout_count": _as_optional_int(holdout.get("count")) if isinstance(holdout, dict) else None,
+                "train_rank_lift": _as_optional_float(train.get("rank_lift")) if isinstance(train, dict) else None,
+                "holdout_rank_lift": _as_optional_float(holdout.get("rank_lift")) if isinstance(holdout, dict) else None,
+                "training_config": config if isinstance(config, dict) else {},
+                "label_origin_counts": config.get("label_origin_counts", {}) if isinstance(config, dict) else {},
+            }
+        )
+    return summaries
 
 
 def aiculler_rerank_readiness(db_path: str | Path) -> dict[str, object]:
@@ -682,6 +926,122 @@ def write_gui_exports(
     _write_semantic_classifications(paths.semantic_export_path, rows)
     _write_semantic_summary(paths.semantic_summary_path, rows)
     _write_html_report(paths.html_report_path, rows)
+    _write_gui_diagnostics(
+        paths.report_dir / "aiculler_diagnostics.json",
+        rows,
+        mode="adapter" if model_version else "base",
+        run_id=run_id,
+        model_version=model_version,
+    )
+
+
+def write_run_config(
+    paths: AIWorkflowPaths,
+    *,
+    runtime: AICullerRuntime,
+    mode: str,
+    run_id: str = "",
+    stages: tuple[str, ...] = (),
+    model_version: str = "",
+) -> Path:
+    payload = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "mode": mode,
+        "run_id": run_id,
+        "stages": list(stages),
+        "model_version": model_version,
+        "source": {
+            "root": str(runtime.root),
+            "cli_entrypoint": str(runtime.cli_entrypoint),
+            "python": str(runtime.python_executable),
+        },
+        "models": {
+            "clip_vision": str(runtime.clip_vision_model),
+            "clip_text": str(runtime.clip_text_model),
+            "tokenizer": str(runtime.tokenizer),
+            "topiq": "" if runtime.topiq_model is None else str(runtime.topiq_model),
+        },
+        "configs": {
+            "categories_csv": "" if runtime.categories_csv is None else str(runtime.categories_csv),
+            "tag_penalties_csv": "" if runtime.tag_penalties_csv is None else str(runtime.tag_penalties_csv),
+            "avoid_tags": list(runtime.avoid_tags),
+            "penalty_weight": runtime.penalty_weight,
+            "base_score_blend_weight": _BASE_SCORE_BLEND_WEIGHT,
+        },
+        "ranking": {
+            "adapter_export_blend_owner": "image_triage_gui_export",
+            "cli_adapter_base_weight": 0.0,
+            "cli_adapter_adapter_weight": 1.0,
+        },
+    }
+    target = paths.report_dir / "aiculler_run_config.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return target
+
+
+def _write_gui_diagnostics(
+    path: Path,
+    rows: list[dict[str, object]],
+    *,
+    mode: str,
+    run_id: str = "",
+    model_version: str = "",
+) -> None:
+    group_counts: dict[str, int] = {}
+    penalized = 0
+    max_penalty = 0.0
+    for row in rows:
+        group_id = str(row.get("group_id") or row.get("cluster_id") or "ungrouped")
+        group_counts[group_id] = group_counts.get(group_id, 0) + 1
+        penalty = _as_debug_float(row.get("duplicate_diversity_penalty"))
+        if penalty > 0:
+            penalized += 1
+            max_penalty = max(max_penalty, penalty)
+    top_rows = []
+    for row in rows[:40]:
+        top_rows.append(
+            {
+                "rank": row.get("rank"),
+                "file_name": row.get("file_name"),
+                "group_id": row.get("group_id"),
+                "rank_in_cluster": row.get("rank_in_cluster"),
+                "score": row.get("score"),
+                "pre_diversity_score": row.get("pre_diversity_score"),
+                "duplicate_diversity_penalty": row.get("duplicate_diversity_penalty"),
+                "primary_category": row.get("primary_category"),
+            }
+        )
+    payload = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "mode": mode,
+        "run_id": run_id,
+        "model_version": model_version,
+        "row_count": len(rows),
+        "group_count": len(group_counts),
+        "largest_groups": [
+            {"group_id": group_id, "count": count}
+            for group_id, count in sorted(group_counts.items(), key=lambda item: (-item[1], item[0]))[:20]
+        ],
+        "diversity": {
+            "enabled": True,
+            "penalized_rows": penalized,
+            "max_penalty": max_penalty,
+            "first_duplicate_penalty": _DUPLICATE_DIVERSITY_FIRST_PENALTY,
+            "step_penalty": _DUPLICATE_DIVERSITY_STEP_PENALTY,
+            "max_configured_penalty": _DUPLICATE_DIVERSITY_MAX_PENALTY,
+        },
+        "top_rows": top_rows,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _as_debug_float(value: object) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def load_adapter_review_candidates(
@@ -921,6 +1281,9 @@ def _load_ranked_gui_rows(db_path: Path, run_id: str) -> list[dict[str, object]]
 # Default 0.65 = base score (with penalties) wins over adapter; 1.0 = adapter
 # is completely ignored; 0.0 = adapter only, penalties have no influence.
 _BASE_SCORE_BLEND_WEIGHT = 0.65
+_DUPLICATE_DIVERSITY_FIRST_PENALTY = 0.14
+_DUPLICATE_DIVERSITY_STEP_PENALTY = 0.04
+_DUPLICATE_DIVERSITY_MAX_PENALTY = 0.35
 
 
 def set_base_score_blend_weight(weight: float) -> None:
@@ -930,10 +1293,6 @@ def set_base_score_blend_weight(weight: float) -> None:
 
     global _BASE_SCORE_BLEND_WEIGHT
     _BASE_SCORE_BLEND_WEIGHT = max(0.0, min(1.0, float(weight)))
-
-
-def current_base_score_blend_weight() -> float:
-    return _BASE_SCORE_BLEND_WEIGHT
 
 
 def _load_adapter_gui_rows(db_path: Path, model_version: str) -> list[dict[str, object]]:
@@ -971,17 +1330,30 @@ def _load_adapter_gui_rows(db_path: Path, model_version: str) -> list[dict[str, 
 def _rows_to_gui_output(image_rows: list[sqlite3.Row]) -> list[dict[str, object]]:
     groups: dict[str, list[sqlite3.Row]] = {}
     for row in image_rows:
-        group_id = _gui_group_id(row)
+        group_id = _diversity_group_id(row)
         groups.setdefault(group_id, []).append(row)
+
+    ranked_groups: list[tuple[str, list[sqlite3.Row]]] = []
+    for group_id in sorted(groups, key=lambda key: _group_sort_key(key, groups[key])):
+        group_rows = sorted(groups[group_id], key=lambda item: (-float(item["final_score"] or 0.0), Path(item["source_path"]).name.casefold()))
+        ranked_groups.append((group_id, group_rows))
 
     output: list[dict[str, object]] = []
     global_rank = 1
-    for group_id in sorted(groups, key=lambda key: _group_sort_key(key, groups[key])):
-        group_rows = sorted(groups[group_id], key=lambda item: (-float(item["final_score"] or 0.0), Path(item["source_path"]).name.casefold()))
-        group_size = len(group_rows)
-        for rank_in_group, row in enumerate(group_rows, start=1):
+    max_group_size = max((len(rows) for _, rows in ranked_groups), default=0)
+    for rank_index in range(max_group_size):
+        round_rows: list[tuple[str, list[sqlite3.Row], sqlite3.Row]] = []
+        for group_id, group_rows in ranked_groups:
+            if rank_index < len(group_rows):
+                round_rows.append((group_id, group_rows, group_rows[rank_index]))
+        round_rows.sort(key=lambda item: (-_diversified_score(item[2], rank_index + 1, len(item[1])), Path(item[2]["source_path"]).name.casefold()))
+        for group_id, group_rows, row in round_rows:
+            group_size = len(group_rows)
+            rank_in_group = rank_index + 1
             source_path = str(row["source_path"])
-            score = float(row["final_score"] or row["technical_score"] or 0.0)
+            original_score = float(row["final_score"] or row["technical_score"] or 0.0)
+            penalty = _duplicate_diversity_penalty(rank_in_group, group_size)
+            score = max(0.0, original_score - penalty)
             output.append(
                 {
                     "rank": global_rank,
@@ -990,6 +1362,7 @@ def _rows_to_gui_output(image_rows: list[sqlite3.Row]) -> list[dict[str, object]
                     "file_name": Path(source_path).name,
                     "cluster_id": group_id,
                     "group_id": group_id,
+                    "semantic_group_id": _gui_group_id(row),
                     "cluster_size": group_size,
                     "group_size": group_size,
                     "rank_in_cluster": rank_in_group,
@@ -998,13 +1371,50 @@ def _rows_to_gui_output(image_rows: list[sqlite3.Row]) -> list[dict[str, object]
                     "tag_base_score": _row_value(row, "tag_base_score"),
                     "tag_penalty": _row_value(row, "tag_penalty"),
                     "triggered_tags": _row_value(row, "tag_flags"),
-                    "final_score": row["final_score"],
+                    "final_score": score,
+                    "pre_diversity_score": original_score,
+                    "duplicate_diversity_penalty": penalty,
                     "primary_category": row["primary_category"],
                     "cluster_reason": _cluster_reason(row),
                 }
             )
             global_rank += 1
     return output
+
+
+def _diversified_score(row: sqlite3.Row, rank_in_group: int, group_size: int) -> float:
+    original_score = float(row["final_score"] or row["technical_score"] or 0.0)
+    return max(0.0, original_score - _duplicate_diversity_penalty(rank_in_group, group_size))
+
+
+def _duplicate_diversity_penalty(rank_in_group: int, group_size: int) -> float:
+    if group_size <= 1 or rank_in_group <= 1:
+        return 0.0
+    return min(
+        _DUPLICATE_DIVERSITY_MAX_PENALTY,
+        _DUPLICATE_DIVERSITY_FIRST_PENALTY + (rank_in_group - 2) * _DUPLICATE_DIVERSITY_STEP_PENALTY,
+    )
+
+
+def _diversity_group_id(row: sqlite3.Row) -> str:
+    source_path = str(row["source_path"])
+    path = Path(source_path)
+    match = CAPTURE_SEQUENCE_PATTERN.match(path.stem)
+    if match is None:
+        return _path_group_key(path)
+    try:
+        number = int(match.group("number"))
+    except ValueError:
+        return _path_group_key(path)
+    bucket_start = (number // CAPTURE_DIVERSITY_BUCKET_SIZE) * CAPTURE_DIVERSITY_BUCKET_SIZE
+    bucket_end = bucket_start + CAPTURE_DIVERSITY_BUCKET_SIZE - 1
+    prefix = match.group("prefix").casefold()
+    suffix = match.group("suffix").casefold()
+    return f"{_path_group_key(path)}::{prefix}{bucket_start:04d}-{bucket_end:04d}{suffix}"
+
+
+def _path_group_key(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path.parent)))
 
 
 def _row_value(row: sqlite3.Row, name: str, default: object = "") -> object:

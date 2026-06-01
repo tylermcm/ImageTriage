@@ -13,6 +13,7 @@ def _add_ai_training_actions(menu: QMenu, actions: MainWindowActions) -> None:
     menu.addAction(actions.review_ai_adapter_labels)
     menu.addAction(actions.open_ai_data_selection)
     menu.addAction(actions.train_ai_ranker)
+    menu.addAction(actions.train_ai_ranker_from_global)
     menu.addAction(actions.evaluate_ai_ranker)
     menu.addAction(actions.score_ai_with_trained_ranker)
 

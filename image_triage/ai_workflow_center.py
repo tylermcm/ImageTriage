@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -22,10 +23,12 @@ from PySide6.QtWidgets import (
 from .aiculler_workflow import (
     aiculler_db_path,
     aiculler_rerank_readiness,
-    aiculler_runtime_available,
+    aiculler_runtime_status,
     build_aiculler_workflow_paths,
+    list_adapter_model_summaries,
     load_adapter_status_summary,
 )
+from .aiculler_global_store import GlobalAdapterLabelStore, default_global_adapter_label_store_path
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -48,9 +51,41 @@ _STATUS_COLORS = {
 }
 
 
+def _display_adapter_version(model_version: str, *, compact: bool = False) -> str:
+    text = str(model_version or "").strip()
+    if not text:
+        return "unknown"
+    prefix = ""
+    timestamp = text
+    for candidate in ("Global Adapter ", "Adapter "):
+        if text.startswith(candidate):
+            prefix = candidate.strip()
+            timestamp = text[len(candidate):]
+            break
+    parsed = _parse_adapter_timestamp(timestamp)
+    if parsed:
+        date_text, time_text = parsed
+        if compact:
+            return f"{prefix + ' ' if prefix else ''}{date_text} {time_text[:5]}"
+        return f"{prefix + ' ' if prefix else ''}{date_text} {time_text}"
+    return text
+
+
+def _parse_adapter_timestamp(value: str) -> tuple[str, str] | None:
+    text = value.strip()
+    if len(text) == 15 and text[8] == "T" and text[:8].isdigit() and text[9:].isdigit():
+        return f"{text[0:4]}-{text[4:6]}-{text[6:8]}", f"{text[9:11]}:{text[11:13]}:{text[13:15]}"
+    if len(text) == 19 and text[4] == "-" and text[7] == "-" and text[10] == " ":
+        return text[:10], text[11:].replace(".", ":")
+    return None
+
+
 @dataclass
 class WorkflowSnapshot:
     runtime_ready: bool
+    runtime_source: str
+    model_root: str
+    runtime_note: str
     folder_open: bool
     db_exists: bool
     indexed_count: int
@@ -58,18 +93,31 @@ class WorkflowSnapshot:
     can_rerank: bool
     label_count: int           # ratings already imported into the CLI-Culler DB
     pending_label_count: int   # in-progress labels saved via the adapter combo (not yet trained on)
+    global_label_count: int
+    global_matching_label_count: int
+    global_matching_label_values: int
+    global_matching_dispute_count: int
     adapter_version: str
     adapter_created_at: str
     train_mae: float | None
     holdout_mae: float | None
     train_rank_lift: float | None
     scored_count: int
+    adapter_models: tuple[dict[str, object], ...] = ()
     folder_path: str = ""
     file_count: int = 0
 
     @property
     def total_label_count(self) -> int:
         return self.label_count + self.pending_label_count
+
+    @property
+    def can_train_from_global_labels(self) -> bool:
+        return self.global_matching_label_count >= 2 and self.global_matching_label_values >= 2
+
+    @property
+    def has_trainable_labels(self) -> bool:
+        return self.total_label_count > 0 or self.can_train_from_global_labels
 
 
 @dataclass
@@ -139,8 +187,6 @@ class _StepPage(QWidget):
         self._metrics_layout.setSpacing(6)
         outer.addWidget(self._metrics_frame)
 
-        outer.addStretch(1)
-
         self._action_row = QHBoxLayout()
         self._action_row.setSpacing(8)
         outer.addLayout(self._action_row)
@@ -171,7 +217,7 @@ class _StepPage(QWidget):
                 row.setSpacing(8)
                 key_label = QLabel(label)
                 key_label.setStyleSheet("color: #8d99ac;")
-                key_label.setMinimumWidth(140)
+                key_label.setMinimumWidth(118)
                 value_label = QLabel(value)
                 value_label.setStyleSheet("color: #e6ecf4;")
                 value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -187,9 +233,10 @@ class _StepPage(QWidget):
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.deleteLater()
-        self._action_row.addStretch(1)
         for action in step.actions:
             button = QPushButton(action.label)
+            button.setMinimumHeight(32)
+            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             button.setEnabled(action.enabled)
             if action.tooltip:
                 button.setToolTip(action.tooltip)
@@ -198,7 +245,7 @@ class _StepPage(QWidget):
                 button.setStyleSheet(
                     "QPushButton {"
                     " background: #2f6fd6; color: white;"
-                    " border-radius: 6px; padding: 7px 16px;"
+                    " border-radius: 6px; padding: 7px 10px;"
                     " font-weight: 600;"
                     "} QPushButton:disabled { background: #3b4252; color: #7a8295; }"
                 )
@@ -207,7 +254,7 @@ class _StepPage(QWidget):
                     "QPushButton {"
                     " background: rgba(255, 255, 255, 0.07); color: #d4dbe4;"
                     " border: 1px solid rgba(255, 255, 255, 0.12);"
-                    " border-radius: 6px; padding: 7px 14px;"
+                    " border-radius: 6px; padding: 7px 10px;"
                     "} QPushButton:disabled { color: #6c7488; border-color: rgba(255,255,255,0.05); }"
                 )
             button.clicked.connect(action.callback)
@@ -290,8 +337,63 @@ class AIWorkflowCenterDialog(QDialog):
         self._pages = QStackedWidget()
         root.addWidget(self._pages, 1)
 
+        adapter_panel = QFrame()
+        adapter_panel.setObjectName("adapterHistoryPanel")
+        adapter_panel.setStyleSheet(
+            "QFrame#adapterHistoryPanel {"
+            " background: #121821;"
+            " border-left: 1px solid rgba(255, 255, 255, 0.05);"
+            "}"
+        )
+        adapter_panel.setFixedWidth(250)
+        adapter_layout = QVBoxLayout(adapter_panel)
+        adapter_layout.setContentsMargins(14, 18, 14, 18)
+        adapter_layout.setSpacing(10)
+        adapter_title = QLabel("Adapters")
+        adapter_title_font = QFont()
+        adapter_title_font.setPointSize(12)
+        adapter_title_font.setBold(True)
+        adapter_title.setFont(adapter_title_font)
+        adapter_layout.addWidget(adapter_title)
+        self._adapter_summary_label = QLabel("")
+        self._adapter_summary_label.setStyleSheet("color: #8d99ac; font-size: 11px;")
+        self._adapter_summary_label.setWordWrap(True)
+        adapter_layout.addWidget(self._adapter_summary_label)
+        self._adapter_list = QListWidget()
+        self._adapter_list.setObjectName("adapterHistoryList")
+        self._adapter_list.setMaximumHeight(190)
+        self._adapter_list.setStyleSheet(
+            "QListWidget#adapterHistoryList {"
+            " background: transparent; border: none;"
+            "} QListWidget#adapterHistoryList::item {"
+            " padding: 8px 8px; margin: 1px 0; border-radius: 5px;"
+            " color: #c4cbd6;"
+            "} QListWidget#adapterHistoryList::item:selected {"
+            " background: rgba(47, 111, 214, 0.25); color: white;"
+            "}"
+        )
+        self._adapter_list.currentRowChanged.connect(self._handle_adapter_selected)
+        adapter_layout.addWidget(self._adapter_list, 0)
+        self._adapter_detail_label = QLabel("")
+        self._adapter_detail_label.setStyleSheet("color: #d4dbe4; font-size: 11px;")
+        self._adapter_detail_label.setWordWrap(True)
+        self._adapter_detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        detail_scroll = QScrollArea()
+        detail_scroll.setWidgetResizable(True)
+        detail_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        detail_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        detail_container = QWidget()
+        detail_layout = QVBoxLayout(detail_container)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.addWidget(self._adapter_detail_label)
+        detail_layout.addStretch(1)
+        detail_scroll.setWidget(detail_container)
+        adapter_layout.addWidget(detail_scroll, 1)
+        root.addWidget(adapter_panel, 0)
+
         self._step_keys: list[str] = []
         self._page_widgets: dict[str, _StepPage] = {}
+        self._adapter_models: tuple[dict[str, object], ...] = ()
         self._build_pages()
         self.refresh()
 
@@ -318,10 +420,14 @@ class AIWorkflowCenterDialog(QDialog):
         if 0 <= row < self._pages.count():
             self._pages.setCurrentIndex(row)
 
+    def _handle_adapter_selected(self, row: int) -> None:
+        self._update_adapter_detail(row)
+
     def refresh(self) -> None:
         snapshot = self._capture_snapshot()
         folder_text = snapshot.folder_path or "(no folder open)"
         self._sidebar_subtitle.setText(f"Folder:\n{folder_text}")
+        self._populate_adapter_history(snapshot.adapter_models)
 
         steps = self._build_steps(snapshot)
         for key, step in steps.items():
@@ -344,6 +450,64 @@ class AIWorkflowCenterDialog(QDialog):
                 item.setForeground(Qt.GlobalColor.lightGray if step.status == STATUS_BLOCKED else Qt.GlobalColor.white)
                 item.setToolTip(_STATUS_LABELS.get(step.status, ""))
 
+    def _populate_adapter_history(self, adapter_models: tuple[dict[str, object], ...]) -> None:
+        selected_version = ""
+        current_item = self._adapter_list.currentItem()
+        if current_item is not None:
+            selected_version = str(current_item.data(Qt.ItemDataRole.UserRole) or "")
+        self._adapter_models = adapter_models
+        self._adapter_list.clear()
+        self._adapter_summary_label.setText(
+            f"{len(adapter_models)} trained adapter{'s' if len(adapter_models) != 1 else ''}"
+            if adapter_models
+            else "No trained adapters for this folder yet."
+        )
+        selected_row = 0
+        for index, model in enumerate(adapter_models):
+            version = str(model.get("model_version") or "")
+            accuracy = model.get("accuracy_percent")
+            accuracy_text = f"{float(accuracy):.1f}%" if isinstance(accuracy, (int, float)) else "n/a"
+            item = QListWidgetItem(f"{_display_adapter_version(version, compact=True)}\nAccuracy {accuracy_text}")
+            item.setData(Qt.ItemDataRole.UserRole, version)
+            item.setToolTip(_display_adapter_version(version))
+            self._adapter_list.addItem(item)
+            if version == selected_version:
+                selected_row = index
+        if adapter_models:
+            self._adapter_list.setCurrentRow(selected_row)
+        else:
+            self._adapter_detail_label.setText("Train an adapter to see accuracy, failure rate, and scored image counts here.")
+
+    def _update_adapter_detail(self, row: int) -> None:
+        if row < 0 or row >= len(self._adapter_models):
+            self._adapter_detail_label.setText("Train an adapter to see accuracy, failure rate, and scored image counts here.")
+            return
+        model = self._adapter_models[row]
+        accuracy = model.get("accuracy_percent")
+        holdout_mae = model.get("holdout_mae")
+        train_mae = model.get("train_mae")
+        failure_rate = holdout_mae if isinstance(holdout_mae, (int, float)) else train_mae
+        accuracy_text = f"{float(accuracy):.1f}%" if isinstance(accuracy, (int, float)) else "n/a"
+        failure_text = f"{float(failure_rate) * 100.0:.1f}%" if isinstance(failure_rate, (int, float)) else "n/a"
+        holdout_text = f"{float(holdout_mae):.4f}" if isinstance(holdout_mae, (int, float)) else "n/a"
+        train_text = f"{float(train_mae):.4f}" if isinstance(train_mae, (int, float)) else "n/a"
+        details = [
+            f"Version: {_display_adapter_version(str(model.get('model_version') or 'unknown'))}",
+            f"Accuracy: {accuracy_text}",
+            f"Failure rate: {failure_text}",
+            f"Holdout MAE: {holdout_text}",
+            f"Train MAE: {train_text}",
+            f"Scored images: {int(model.get('scored_count') or 0)}",
+        ]
+        origin_counts = model.get("label_origin_counts")
+        if isinstance(origin_counts, dict) and origin_counts:
+            origin_text = ", ".join(f"{key}: {value}" for key, value in sorted(origin_counts.items()))
+            details.append(f"Labels: {origin_text}")
+        created_at = str(model.get("created_at") or "")
+        if created_at:
+            details.append(f"Trained: {created_at}")
+        self._adapter_detail_label.setText("\n".join(details))
+
     def _find_item(self, key: str) -> QListWidgetItem | None:
         for row in range(self._step_list.count()):
             item = self._step_list.item(row)
@@ -353,10 +517,22 @@ class AIWorkflowCenterDialog(QDialog):
 
     def _capture_snapshot(self) -> WorkflowSnapshot:
         runtime_ready = False
+        runtime_source = ""
+        model_root = ""
+        runtime_note = ""
         try:
-            runtime_ready = aiculler_runtime_available()
-        except Exception:
+            status = aiculler_runtime_status()
+            runtime_ready = status.is_ready
+            runtime_source = str(status.runtime.cli_entrypoint)
+            parents = status.runtime.clip_vision_model.parents
+            model_root = str(parents[3] if len(parents) > 3 else status.runtime.clip_vision_model.parent)
+            if status.missing_required:
+                runtime_note = status.missing_required[0]
+            elif status.missing_optional:
+                runtime_note = status.missing_optional[0]
+        except Exception as exc:
             runtime_ready = False
+            runtime_note = str(exc)
         folder_path = self._window._current_folder or ""
         file_count = sum(1 for record in self._window._all_records if not record.is_folder)
         paths = None
@@ -371,12 +547,17 @@ class AIWorkflowCenterDialog(QDialog):
         can_rerank = False
         label_count = 0
         pending_label_count = 0
+        global_label_count = 0
+        global_matching_label_count = 0
+        global_matching_label_values = 0
+        global_matching_dispute_count = 0
         adapter_version = ""
         adapter_created_at = ""
         train_mae: float | None = None
         holdout_mae: float | None = None
         train_rank_lift: float | None = None
         scored_count = 0
+        adapter_models: tuple[dict[str, object], ...] = ()
         if paths is not None:
             db_path = aiculler_db_path(paths)
             readiness = aiculler_rerank_readiness(db_path)
@@ -397,6 +578,7 @@ class AIWorkflowCenterDialog(QDialog):
                     else None
                 )
                 scored_count = int(summary.get("scored_count") or 0)
+                adapter_models = tuple(list_adapter_model_summaries(db_path))
             # In-progress labels saved via the per-card adapter combo. These
             # haven't been imported into the DB yet — that happens at train
             # time — but they DO count toward "you can train now".
@@ -405,8 +587,27 @@ class AIWorkflowCenterDialog(QDialog):
                 pending_label_count = len(pending_labels)
             except Exception:
                 pending_label_count = 0
+        current_file_paths = tuple(record.path for record in self._window._all_records if not record.is_folder)
+        try:
+            store = GlobalAdapterLabelStore(default_global_adapter_label_store_path())
+            try:
+                global_label_count = store.summary().total_count
+                matching_labels = store.labels_for_paths(current_file_paths)
+                global_matching_label_count = len(matching_labels)
+                global_matching_label_values = len({label.label for label in matching_labels.values()})
+                global_matching_dispute_count = sum(1 for label in matching_labels.values() if label.is_dispute)
+            finally:
+                store.close()
+        except Exception:
+            global_label_count = 0
+            global_matching_label_count = 0
+            global_matching_label_values = 0
+            global_matching_dispute_count = 0
         return WorkflowSnapshot(
             runtime_ready=runtime_ready,
+            runtime_source=runtime_source,
+            model_root=model_root,
+            runtime_note=runtime_note,
             folder_open=bool(folder_path),
             db_exists=db_exists,
             indexed_count=indexed_count,
@@ -414,12 +615,17 @@ class AIWorkflowCenterDialog(QDialog):
             can_rerank=can_rerank,
             label_count=label_count,
             pending_label_count=pending_label_count,
+            global_label_count=global_label_count,
+            global_matching_label_count=global_matching_label_count,
+            global_matching_label_values=global_matching_label_values,
+            global_matching_dispute_count=global_matching_dispute_count,
             adapter_version=adapter_version,
             adapter_created_at=adapter_created_at,
             train_mae=train_mae,
             holdout_mae=holdout_mae,
             train_rank_lift=train_rank_lift,
             scored_count=scored_count,
+            adapter_models=adapter_models,
             folder_path=folder_path,
             file_count=file_count,
         )
@@ -439,11 +645,13 @@ class AIWorkflowCenterDialog(QDialog):
             status=STATUS_DONE if snap.runtime_ready else STATUS_BLOCKED,
             metrics=[
                 ("Runtime", "Ready" if snap.runtime_ready else "Unavailable"),
+                ("Culler source", snap.runtime_source or "—"),
+                ("Model root", snap.model_root or "—"),
                 ("Current folder", snap.folder_path or "(none)"),
-            ],
+            ] + ([("Note", snap.runtime_note)] if snap.runtime_note else []),
             actions=[
                 ActionSpec(
-                    label="Open CLI-Culler folder",
+                    label="Open AI Culler source",
                     callback=lambda: self._invoke("_open_aiculler_root"),
                     enabled=True,
                 ),
@@ -507,11 +715,15 @@ class AIWorkflowCenterDialog(QDialog):
         # need to label every visible candidate before they can proceed.
         label_status = STATUS_BLOCKED
         if index_status == STATUS_DONE:
-            label_status = STATUS_DONE if snap.total_label_count > 0 else STATUS_READY
+            label_status = STATUS_DONE if snap.has_trainable_labels else STATUS_READY
         label_metrics = []
         if snap.pending_label_count:
             label_metrics.append(("Pending labels", str(snap.pending_label_count)))
         label_metrics.append(("Trained-on labels", str(snap.label_count)))
+        label_metrics.append(("Global labels", str(snap.global_label_count)))
+        label_metrics.append(("Matching global labels", str(snap.global_matching_label_count)))
+        if snap.global_matching_dispute_count:
+            label_metrics.append(("Matching disputes", str(snap.global_matching_dispute_count)))
         label_metrics.append(("Cluster run", snap.cluster_run_id or "—"))
         steps["label"] = StepSpec(
             key="label",
@@ -549,7 +761,8 @@ class AIWorkflowCenterDialog(QDialog):
         if snap.pending_label_count:
             train_metrics.append(("Pending labels", str(snap.pending_label_count)))
         train_metrics.append(("Trained-on labels", str(snap.label_count)))
-        train_metrics.append(("Current adapter", snap.adapter_version or "untrained"))
+        train_metrics.append(("Matching global labels", str(snap.global_matching_label_count)))
+        train_metrics.append(("Current adapter", _display_adapter_version(snap.adapter_version) if snap.adapter_version else "untrained"))
         if snap.adapter_created_at:
             train_metrics.append(("Trained at", snap.adapter_created_at))
         if snap.train_mae is not None:
@@ -575,6 +788,16 @@ class AIWorkflowCenterDialog(QDialog):
                     callback=lambda: self._invoke("_train_aiculler_adapter"),
                     primary=True,
                     enabled=snap.db_exists and snap.total_label_count > 0,
+                ),
+                ActionSpec(
+                    label="Train From Global Labels",
+                    callback=lambda: self._invoke("_train_aiculler_adapter_from_global_labels"),
+                    enabled=snap.db_exists and snap.can_train_from_global_labels,
+                    tooltip=(
+                        "Needs at least two matching global labels with two different rating values."
+                        if not snap.can_train_from_global_labels
+                        else ""
+                    ),
                 ),
             ],
         )

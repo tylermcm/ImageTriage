@@ -94,9 +94,6 @@ def set_cull_thresholds(*, keeper_percentile: float, reject_percentile: float) -
     _SINGLETON_REJECT_PERCENTILE_THRESHOLD = reject
 
 
-def current_cull_thresholds() -> tuple[float, float]:
-    return (_SINGLETON_KEEPER_PERCENTILE_THRESHOLD, _SINGLETON_REJECT_PERCENTILE_THRESHOLD)
-
 AI_REVIEW_TAG_DEFINITIONS: tuple[tuple[str, str], ...] = (
     (
         "AI Pick",
@@ -138,6 +135,11 @@ class AIImageResult:
     group_size: int
     rank_in_group: int
     score: float
+    technical_score: float | None = None
+    tag_base_score: float | None = None
+    tag_penalty: float | None = None
+    triggered_tags: str = ""
+    primary_category: str = ""
     cluster_reason: str = ""
     capture_timestamp: str = ""
     normalized_score: float | None = None
@@ -214,6 +216,26 @@ class AIImageResult:
     @property
     def confidence_bucket_short_label(self) -> str:
         return confidence_bucket_short_label(self.confidence_bucket)
+
+    @property
+    def explanation_lines(self) -> tuple[str, ...]:
+        lines = [f"Final score: {self.score:.4f}."]
+        if self.folder_percentile is not None:
+            lines.append(f"Folder percentile: {self.folder_percentile:.0f}.")
+        if self.technical_score is not None:
+            lines.append(f"Technical score: {self.technical_score:.4f}.")
+        if self.tag_base_score is not None:
+            lines.append(f"Pre-penalty score: {self.tag_base_score:.4f}.")
+        if self.tag_penalty is not None and self.tag_penalty > 0:
+            tags = self.triggered_tags.strip() or "configured technical tag"
+            lines.append(f"Technical penalty: {self.tag_penalty:.4f} ({tags}).")
+        if self.primary_category:
+            lines.append(f"Semantic category: {self.primary_category}.")
+        if self.cluster_reason:
+            lines.append(self.cluster_reason.rstrip(".") + ".")
+        if self.confidence_summary:
+            lines.append(self.confidence_summary)
+        return tuple(lines)
 
 
 @dataclass(slots=True, frozen=True)
@@ -603,9 +625,26 @@ def _row_to_result(row: dict[str, str]) -> AIImageResult | None:
         group_size=group_size,
         rank_in_group=rank_in_group,
         score=score,
+        technical_score=_optional_float(row.get("technical_score")),
+        tag_base_score=_optional_float(row.get("tag_base_score")),
+        tag_penalty=_optional_float(row.get("tag_penalty")),
+        triggered_tags=(row.get("triggered_tags") or "").strip(),
+        primary_category=(row.get("primary_category") or "").strip(),
         cluster_reason=(row.get("cluster_reason") or row.get("group_reason") or "").strip(),
         capture_timestamp=(row.get("capture_timestamp") or row.get("timestamp") or "").strip(),
     )
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _build_normalized_score_map(results_by_group: dict[str, tuple[AIImageResult, ...]]) -> dict[str, float]:

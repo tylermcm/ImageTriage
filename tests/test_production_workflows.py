@@ -8,7 +8,7 @@ from image_triage.ai_results import AIBundle, AIConfidenceBucket, AIImageResult
 from image_triage.image_resize import ResizeSourceItem
 from image_triage.keyboard_mapping import ShortcutBinding, serialize_shortcut_overrides, shortcut_conflicts
 from image_triage.models import ImageRecord, SessionAnnotation
-from image_triage.production_workflows import (
+from image_triage.workflows import (
     BEST_OF_BALANCED,
     WorkflowRecipe,
     WorkspacePreset,

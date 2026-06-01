@@ -38,12 +38,10 @@ The main coordinator is:
 
 ### AI culling path
 
-1. [ai_workflow.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ai_workflow.py) stages inputs and runs the external AI pipeline.
+1. [aiculler_workflow.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/aiculler_workflow.py) shells out to the in-repo [aiculler package](C:/Users/tylle/OneDrive/Documents/Playground/aiculler/cli.py) for ingest, semantic grouping, adapter training, and ranking.
 2. [ai_results.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ai_results.py) loads ranked AI output back into app-native structures.
-3. [ai_training.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ai_training.py) manages label collection, ranker training, evaluation, and shared General Use training pools.
-4. Profile suggestion and fit diagnosis are isolated in:
-   - [ranker_profiles.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ranker_profiles.py)
-   - [ranker_fit.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ranker_fit.py)
+3. [ai_workflow_center.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ai_workflow_center.py) presents the active operator workflow.
+4. [ai_workflow.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ai_workflow.py) and [ai_training.py](C:/Users/tylle/OneDrive/Documents/Playground/image_triage/ai_training.py) are still present for the older AICullingPipeline/backend path and packaging support.
 
 ### Workflow / handoff path
 

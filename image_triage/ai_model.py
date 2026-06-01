@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -167,13 +166,6 @@ def download_semantic_model(
         force=force,
         progress_callback=progress_callback,
     )
-
-
-def remove_ai_model(installation: AIModelInstallation | None = None) -> None:
-    resolved = installation or resolve_ai_model_installation()
-    if not resolved.install_dir.exists():
-        return
-    shutil.rmtree(resolved.install_dir)
 
 
 def _download_file(
