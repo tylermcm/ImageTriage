@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+def pair_key(image_a_id: str, image_b_id: str) -> tuple[str, str]:
+    """Return an order-independent key identifying a pair of images."""
+
+    return tuple(sorted((image_a_id, image_b_id)))
+
+
 @dataclass(frozen=True)
 class ClusterLabelRecord:
     """One cluster annotation record written to JSONL."""

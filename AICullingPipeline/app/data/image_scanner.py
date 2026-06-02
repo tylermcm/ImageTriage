@@ -74,7 +74,9 @@ def scan_image_directory(
             (
                 path
                 for path in input_dir.rglob("*")
-                if path.is_file() and path.suffix.lower() in supported_extensions
+                if path.is_file()
+                and path.suffix.lower() in supported_extensions
+                and not _has_hidden_directory_component(path, input_dir)
             ),
             key=lambda item: item.relative_to(input_dir).as_posix().casefold(),
         )
@@ -113,6 +115,15 @@ def scan_image_directory(
     )
 
     return all_records, valid_records
+
+
+def _has_hidden_directory_component(path: Path, input_dir: Path) -> bool:
+    """Return True if any directory between input_dir and path is hidden (dot-prefixed).
+
+    Keeps derived caches such as ``.image_triage_ai`` out of the input image set.
+    """
+    relative_parts = path.relative_to(input_dir).parts[:-1]
+    return any(part.startswith(".") for part in relative_parts)
 
 
 def _normalize_include_paths(include_paths: set[str], *, input_dir: Path) -> set[Path]:

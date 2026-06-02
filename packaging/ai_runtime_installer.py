@@ -34,6 +34,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Reinstall the selected runtime profile even if it already exists.",
     )
+    install_parser.add_argument(
+        "--no-dino",
+        action="store_true",
+        help="Skip optional DINO/PyTorch/transformers dependencies.",
+    )
 
     status_parser = subparsers.add_parser("status", help="Print current AI runtime installation status")
     status_parser.add_argument("--json", action="store_true", help="Emit status as JSON")
@@ -63,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         status = install_ai_runtime(
             args.variant,
             force=bool(args.force),
+            include_dino=not bool(args.no_dino),
             output_callback=print,
         )
     except Exception as exc:

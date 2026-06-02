@@ -63,8 +63,16 @@ def command_ingest(args) -> int:
             max_workers=args.workers,
             on_event=on_event,
         )
-        logger.event("ingest_start", {"folder": args.folder, "workers": args.workers})
-        ids = engine.ingest(args.folder, recursive=not args.no_recursive)
+        include_paths = _load_include_paths(args.include_paths_file) if args.include_paths_file else None
+        logger.event(
+            "ingest_start",
+            {
+                "folder": args.folder,
+                "workers": args.workers,
+                "include_paths": 0 if include_paths is None else len(include_paths),
+            },
+        )
+        ids = engine.ingest_paths(include_paths) if include_paths is not None else engine.ingest(args.folder, recursive=not args.no_recursive)
         logger.table("ingestion_events", events)
         logger.summary({"image_count": len(ids), "events": len(events)})
         print(f"Ingested {len(ids)} image(s).")
@@ -225,6 +233,18 @@ def command_rank(args) -> int:
         tag_configs = load_tag_penalty_configs(args.tag_config) if args.avoid else []
 
         ranker = CompositeRanker(store, weights=weights)
+
+        def on_rank_progress(label: str, current: int, total: int, message: str) -> None:
+            record = {
+                "label": label,
+                "current": int(current),
+                "total": int(total),
+                "message": message,
+            }
+            if current == 1 or current == total or current % 25 == 0:
+                logger.event("rank_progress", record)
+            print(f"[{label}] {current}/{total} {message}", flush=True)
+
         result = ranker.rank(
             text_encoder=text_encoder,
             prompt=args.prompt,
@@ -238,6 +258,7 @@ def command_rank(args) -> int:
             preference_alpha=args.alpha,
             record_feedback=not args.no_record_feedback,
             diagnostic_top_n=args.diagnostic_top_n,
+            progress_callback=on_rank_progress,
         )
         output_records = [_composite_record_to_csv(record) for record in result.records]
         if args.out is not None:
@@ -450,6 +471,20 @@ def command_assign_categories(args) -> int:
     finally:
         store.close()
         logger.close()
+
+
+def _load_include_paths(path: Path) -> list[Path]:
+    paths: list[Path] = []
+    base = path.parent
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        candidate = Path(text)
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        paths.append(candidate)
+    return paths
 
 
 def command_cluster_categories(args) -> int:
@@ -1170,6 +1205,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--workers", type=int, default=4)
     ingest.add_argument("--no-recursive", action="store_true")
     ingest.add_argument("--no-features", action="store_true", help="Only extract/cache previews")
+    ingest.add_argument("--include-paths-file", type=Path, help="Optional newline-delimited image pool to ingest instead of scanning the folder")
     ingest.set_defaults(func=command_ingest)
 
     benchmark = subparsers.add_parser("benchmark", help="Measure ingest/extraction throughput and write timing CSV")

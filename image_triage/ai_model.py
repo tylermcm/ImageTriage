@@ -13,12 +13,24 @@ DEFAULT_AI_MODEL_SIZE_MB = 1210
 DEFAULT_SEMANTIC_MODEL_REPO_ID = "openai/clip-vit-base-patch32"
 DEFAULT_SEMANTIC_MODEL_REVISION = "main"
 DEFAULT_SEMANTIC_MODEL_SIZE_MB = 610
+DEFAULT_AICULLER_CLIP_REPO_ID = "Skulleton12/Clip"
+DEFAULT_AICULLER_CLIP_REVISION = "main"
+DEFAULT_AICULLER_CLIP_SIZE_MB = 1865
+DEFAULT_AICULLER_TOPIQ_REPO_ID = "Skulleton12/TOPIQ"
+DEFAULT_AICULLER_TOPIQ_REVISION = "main"
+DEFAULT_AICULLER_TOPIQ_SIZE_MB = 185
 AI_MODEL_DIR_ENV = "AICULLING_MODEL_DIR"
 AI_MODEL_REPO_ENV = "AICULLING_MODEL_REPO_ID"
 AI_MODEL_REVISION_ENV = "AICULLING_MODEL_REVISION"
 SEMANTIC_MODEL_DIR_ENV = "AICULLING_SEMANTIC_MODEL_DIR"
 SEMANTIC_MODEL_REPO_ENV = "AICULLING_SEMANTIC_MODEL_REPO_ID"
 SEMANTIC_MODEL_REVISION_ENV = "AICULLING_SEMANTIC_MODEL_REVISION"
+AICULLER_CLIP_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_DIR"
+AICULLER_CLIP_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_REPO_ID"
+AICULLER_CLIP_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_REVISION"
+AICULLER_TOPIQ_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_TOPIQ_MODEL_DIR"
+AICULLER_TOPIQ_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_TOPIQ_MODEL_REPO_ID"
+AICULLER_TOPIQ_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_TOPIQ_MODEL_REVISION"
 AI_MODEL_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 AI_MODEL_REQUIRED_FILENAMES = ("config.json", "model.safetensors")
 SEMANTIC_MODEL_REQUIRED_FILENAMES = (
@@ -30,6 +42,20 @@ SEMANTIC_MODEL_REQUIRED_FILENAMES = (
     "special_tokens_map.json",
     "pytorch_model.bin",
 )
+AICULLER_CLIP_MODEL_REQUIRED_FILENAMES = (
+    "tokenizer.json",
+    "onnx/vision_model_uint8.onnx",
+    "onnx/text_model_uint8.onnx",
+    "onnx/vision_model_int8.onnx",
+    "onnx/text_model_int8.onnx",
+    "onnx/vision_model_quantized.onnx",
+    "onnx/text_model_quantized.onnx",
+    "onnx/vision_model_q4.onnx",
+    "onnx/text_model_q4.onnx",
+    "onnx/vision_model_bnb4.onnx",
+    "onnx/text_model_bnb4.onnx",
+)
+AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES = ("topiq_nr.onnx",)
 AI_MODEL_USER_AGENT = "ImageTriage/0.1"
 
 AIModelProgressCallback = Callable[[str, int, int], None]
@@ -122,6 +148,64 @@ def resolve_semantic_model_installation(
     )
 
 
+def resolve_aiculler_clip_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(AICULLER_CLIP_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_AICULLER_CLIP_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(AICULLER_CLIP_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_AICULLER_CLIP_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(AICULLER_CLIP_MODEL_DIR_ENV, "") or "").strip()
+        or default_aiculler_clip_model_install_dir(repo_id=resolved_repo_id)
+    )
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=Path(resolved_dir_value).expanduser().resolve(),
+        required_filenames=AICULLER_CLIP_MODEL_REQUIRED_FILENAMES,
+    )
+
+
+def resolve_aiculler_topiq_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(AICULLER_TOPIQ_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_AICULLER_TOPIQ_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(AICULLER_TOPIQ_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_AICULLER_TOPIQ_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(AICULLER_TOPIQ_MODEL_DIR_ENV, "") or "").strip()
+        or default_aiculler_topiq_model_install_dir(repo_id=resolved_repo_id)
+    )
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=Path(resolved_dir_value).expanduser().resolve(),
+        required_filenames=AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES,
+    )
+
+
 def default_ai_model_install_dir(*, repo_id: str = DEFAULT_AI_MODEL_REPO_ID) -> Path:
     _owner, name = _repo_path_parts(repo_id)
     return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
@@ -130,6 +214,21 @@ def default_ai_model_install_dir(*, repo_id: str = DEFAULT_AI_MODEL_REPO_ID) -> 
 def default_semantic_model_install_dir(*, repo_id: str = DEFAULT_SEMANTIC_MODEL_REPO_ID) -> Path:
     _owner, name = _repo_path_parts(repo_id)
     return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
+
+
+def default_aiculler_clip_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_CLIP_REPO_ID) -> Path:
+    return (
+        _default_user_cache_root()
+        / "image_triage_ai_cache"
+        / "models"
+        / "CLI-Culler"
+        / "Clip"
+        / "clip-vit-large-patch14"
+    )
+
+
+def default_aiculler_topiq_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_TOPIQ_REPO_ID) -> Path:
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "CLI-Culler" / "TOPIQ"
 
 
 def download_ai_model(
@@ -163,6 +262,32 @@ def download_semantic_model(
 ) -> AIModelInstallation:
     return download_ai_model(
         installation or resolve_semantic_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
+
+
+def download_aiculler_clip_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_aiculler_clip_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
+
+
+def download_aiculler_topiq_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_aiculler_topiq_model_installation(),
         force=force,
         progress_callback=progress_callback,
     )

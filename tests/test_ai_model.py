@@ -7,9 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from image_triage.ai_model import (
+    AICULLER_CLIP_MODEL_REQUIRED_FILENAMES,
+    AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES,
     SEMANTIC_MODEL_REQUIRED_FILENAMES,
     download_ai_model,
+    download_aiculler_clip_model,
+    download_aiculler_topiq_model,
     download_semantic_model,
+    resolve_aiculler_clip_model_installation,
+    resolve_aiculler_topiq_model_installation,
     resolve_ai_model_installation,
     resolve_semantic_model_installation,
 )
@@ -72,6 +78,27 @@ class AIModelTests(unittest.TestCase):
         self.assertEqual(installation.install_dir.name, "clip-vit-base-patch32")
         self.assertEqual(installation.install_dir.parent.name, "models")
         self.assertEqual(installation.required_filenames, SEMANTIC_MODEL_REQUIRED_FILENAMES)
+
+    def test_default_aiculler_clip_model_installation_uses_runtime_cache_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_aiculler_clip_model_installation()
+
+        self.assertEqual("Skulleton12/Clip", installation.repo_id)
+        self.assertEqual(installation.install_dir.name, "clip-vit-large-patch14")
+        self.assertEqual(installation.install_dir.parent.name, "Clip")
+        self.assertEqual(installation.required_filenames, AICULLER_CLIP_MODEL_REQUIRED_FILENAMES)
+
+    def test_default_aiculler_topiq_model_installation_uses_runtime_cache_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_aiculler_topiq_model_installation()
+
+        self.assertEqual("Skulleton12/TOPIQ", installation.repo_id)
+        self.assertEqual(installation.install_dir.name, "TOPIQ")
+        self.assertEqual(installation.required_filenames, AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES)
 
     def test_ai_model_installation_requires_all_expected_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -151,6 +178,46 @@ class AIModelTests(unittest.TestCase):
             self.assertTrue(installation.is_installed)
             self.assertEqual((installation.install_dir / "pytorch_model.bin").read_bytes(), b"pytorch_model.bin")
             self.assertTrue(any(filename == "pytorch_model.bin" for filename, _, _ in seen_progress))
+
+    def test_download_aiculler_clip_model_fetches_nested_onnx_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = resolve_aiculler_clip_model_installation(
+                install_dir=Path(temp_dir) / "clip",
+                repo_id="owner/clip",
+                revision="main",
+            )
+            payloads = {filename: filename.encode("utf-8") for filename in AICULLER_CLIP_MODEL_REQUIRED_FILENAMES}
+
+            def fake_urlopen(request):
+                url = getattr(request, "full_url", str(request)).split("?", 1)[0]
+                filename = url.split("/resolve/main/", 1)[1]
+                return _FakeResponse(payloads[filename])
+
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                download_aiculler_clip_model(installation)
+
+            self.assertTrue(installation.is_installed)
+            self.assertTrue((installation.install_dir / "onnx" / "vision_model_uint8.onnx").exists())
+
+    def test_download_aiculler_topiq_model_fetches_required_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = resolve_aiculler_topiq_model_installation(
+                install_dir=Path(temp_dir) / "topiq",
+                repo_id="owner/topiq",
+                revision="main",
+            )
+            payloads = {"topiq_nr.onnx": b"topiq"}
+
+            def fake_urlopen(request):
+                url = getattr(request, "full_url", str(request))
+                filename = url.split("?", 1)[0].rsplit("/", 1)[-1]
+                return _FakeResponse(payloads[filename])
+
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                download_aiculler_topiq_model(installation)
+
+            self.assertTrue(installation.is_installed)
+            self.assertEqual((installation.install_dir / "topiq_nr.onnx").read_bytes(), b"topiq")
 
 
 if __name__ == "__main__":

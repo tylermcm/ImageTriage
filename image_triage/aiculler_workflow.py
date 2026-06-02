@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import html
 import json
 import os
@@ -15,8 +16,20 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .ai_workflow import AIWorkflowPaths, build_ai_workflow_paths
+from .ai_runtime_packages import resolve_ai_runtime_site_packages
+from .ai_workflow import AIWorkflowPaths, AIWorkflowRuntime, build_ai_workflow_paths
+from .dino_prefilter import (
+    DINOPrefilterMode,
+    DINOPrefilterSettings,
+    build_dino_prefilter_paths,
+    default_dino_prefilter_settings,
+    load_dino_prefilter_decisions,
+    run_dino_prefilter_from_signal_rows,
+)
+from .formats import JPEG_SUFFIXES, suffix_for_path
 from .models import ImageRecord
+from .perceptual_hash import find_perceptual_duplicate_groups_with_stats
+from .perf import perf_logger
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,8 +37,87 @@ SOURCE_AICULLER_ROOT = REPO_ROOT
 DEFAULT_AICULLER_ROOT = SOURCE_AICULLER_ROOT
 DEFAULT_AICULLER_CONFIG_ROOT = REPO_ROOT / "aiculler" / "resources"
 INGEST_EVENT_PATTERN = re.compile(r"^\[(?P<status>[^\]]+)\]\s+#(?P<current>\d+)\s+")
+CLI_PROGRESS_PATTERN = re.compile(
+    r"^\[(?P<label>[^\]]+)\]\s+(?P<current>\d+)/(?P<total>\d+)(?:\s+(?P<message>.*))?$"
+)
 CAPTURE_SEQUENCE_PATTERN = re.compile(r"^(?P<prefix>.*?)(?P<number>\d{3,})(?P<suffix>[^0-9]*)$")
 CAPTURE_DIVERSITY_BUCKET_SIZE = 24
+
+
+@dataclass(slots=True, frozen=True)
+class AICullerClipModelVariant:
+    key: str
+    label: str
+    description: str
+    expected_delta: str
+    warning: str = ""
+    recommended: bool = False
+
+
+CLIP_MODEL_VARIANT_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_VARIANT"
+DEFAULT_CLIP_MODEL_VARIANT = "uint8"
+CLIP_MODEL_VARIANTS: tuple[AICullerClipModelVariant, ...] = (
+    AICullerClipModelVariant(
+        key="uint8",
+        label="UInt8 (recommended)",
+        description="Default CPU-friendly export. Balanced quality, compatibility, memory use, and speed.",
+        expected_delta="Baseline speed for this app.",
+        recommended=True,
+    ),
+    AICullerClipModelVariant(
+        key="int8",
+        label="Int8",
+        description="Alternate 8-bit export. Usually fastest, with a higher risk of embedding drift.",
+        expected_delta="Expected: slightly faster than UInt8.",
+        warning="May change categories, duplicate grouping, and adapter behavior.",
+    ),
+    AICullerClipModelVariant(
+        key="quantized",
+        label="Quantized",
+        description="Alternate quantized export with similar size and runtime profile to UInt8.",
+        expected_delta="Expected: roughly similar to UInt8.",
+        warning="Use only when comparing output drift against the recommended default.",
+    ),
+    AICullerClipModelVariant(
+        key="q4",
+        label="Q4",
+        description="4-bit export. Smaller vision model, but more aggressive compression.",
+        expected_delta="Expected: can be slower than UInt8 on CPU despite the smaller file.",
+        warning="Higher risk of category/ranking drift. Validate before using for real culls.",
+    ),
+    AICullerClipModelVariant(
+        key="bnb4",
+        label="BNB4",
+        description="4-bit BNB export. Smallest vision file, with the most aggressive compression.",
+        expected_delta="Expected: may be slower than UInt8 on CPU.",
+        warning="Highest risk of output drift. Treat as experimental.",
+    ),
+    AICullerClipModelVariant(
+        key="fp32",
+        label="FP32 full precision",
+        description="Full precision split export. Largest model and slower on CPU.",
+        expected_delta="Expected: slower than UInt8 and uses much more memory.",
+        warning="Full precision is not automatically better for this workflow. Validate before switching.",
+    ),
+)
+
+
+def clip_model_variant_options() -> tuple[AICullerClipModelVariant, ...]:
+    return CLIP_MODEL_VARIANTS
+
+
+def coerce_clip_model_variant(value: object) -> str:
+    key = str(value or "").strip().lower()
+    valid = {variant.key for variant in CLIP_MODEL_VARIANTS}
+    return key if key in valid else DEFAULT_CLIP_MODEL_VARIANT
+
+
+def clip_model_variant_info(value: object) -> AICullerClipModelVariant:
+    key = coerce_clip_model_variant(value)
+    for variant in CLIP_MODEL_VARIANTS:
+        if variant.key == key:
+            return variant
+    return CLIP_MODEL_VARIANTS[0]
 
 
 @dataclass(slots=True, frozen=True)
@@ -36,6 +128,7 @@ class AICullerRuntime:
     clip_vision_model: Path
     clip_text_model: Path
     tokenizer: Path
+    clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     topiq_model: Path | None = None
     categories_csv: Path | None = None
     tag_penalties_csv: Path | None = None
@@ -113,6 +206,9 @@ class AICullerRunTask(QRunnable):
         paths: AIWorkflowPaths,
         run_id: str | None = None,
         stages: tuple[str, ...] = ALL_AICULLER_STAGES,
+        run_dino_prefilter: bool = False,
+        dino_prefilter_settings: DINOPrefilterSettings | None = None,
+        dino_runtime: AIWorkflowRuntime | None = None,
     ) -> None:
         super().__init__()
         self.folder = folder
@@ -120,6 +216,9 @@ class AICullerRunTask(QRunnable):
         self.runtime = runtime
         self.paths = paths
         self.run_id = run_id or time.strftime("%Y%m%dT%H%M%S")
+        self.run_dino_prefilter = bool(run_dino_prefilter)
+        self.dino_prefilter_settings = (dino_prefilter_settings or default_dino_prefilter_settings()).normalized()
+        self.dino_runtime = dino_runtime
         unknown = tuple(stage for stage in stages if stage not in ALL_AICULLER_STAGES)
         if unknown:
             raise ValueError(f"Unknown AI Culler stage(s): {unknown}")
@@ -144,7 +243,25 @@ class AICullerRunTask(QRunnable):
 
     def run(self) -> None:
         folder_text = str(self.folder)
+        logger = perf_logger()
+        task_start = time.perf_counter() if logger.enabled else 0.0
         self.signals.started.emit(folder_text)
+        if logger.enabled:
+            logger.log(
+                "ai.workflow.started",
+                workflow="clip_topiq",
+                run_id=self.run_id,
+                folder=folder_text,
+                records=len(self.records),
+                stages=self.stages,
+                dino_prepass_requested=self.run_dino_prefilter,
+                dino_enabled=self.dino_prefilter_settings.enabled,
+                dino_mode=self.dino_prefilter_settings.mode.value,
+                clip_model_variant=self.runtime.clip_model_variant,
+                clip_vision_model=self.runtime.clip_vision_model.name,
+                topiq_enabled=self.runtime.topiq_model is not None,
+                workers=self.runtime.workers,
+            )
         try:
             self.runtime.validate()
             self.paths.hidden_root.mkdir(parents=True, exist_ok=True)
@@ -155,6 +272,27 @@ class AICullerRunTask(QRunnable):
             raw_rank_path = self.paths.report_dir / "aiculler_raw_ranking.csv"
             category_path = self.paths.report_dir / "semantic_classifications.csv"
             cluster_path = self.paths.report_dir / "semantic_clusters.csv"
+            dino_stage_enabled = self.run_dino_prefilter and self.dino_prefilter_settings.enabled and "ingest" in self.stages
+            total = len(self.stages) + 1 + (1 if dino_stage_enabled else 0)
+            stage_index = 1
+            if dino_stage_enabled:
+                self._raise_if_cancelled()
+                self.signals.stage.emit(folder_text, stage_index, total, "Running DINO Prefilter")
+                dino_start = time.perf_counter() if logger.enabled else 0.0
+                self._run_dino_prefilter()
+                if logger.enabled:
+                    logger.duration(
+                        "ai.workflow.stage",
+                        (time.perf_counter() - dino_start) * 1000.0,
+                        workflow="dino_prefilter",
+                        parent_workflow="clip_topiq",
+                        run_id=self.run_id,
+                        folder=folder_text,
+                        stage="dino_prefilter",
+                        stage_message="Running DINO Prefilter",
+                    )
+                stage_index += 1
+            include_paths_file = self._write_dino_prefilter_include_file() if "ingest" in self.stages else None
 
             all_commands: dict[str, tuple[str, list[str]]] = {
                 "ingest": (
@@ -169,6 +307,7 @@ class AICullerRunTask(QRunnable):
                         str(self.runtime.clip_vision_model),
                         "--workers",
                         str(max(1, self.runtime.workers)),
+                        *self._include_paths_args(include_paths_file),
                         *self._topiq_args(),
                     ),
                 ),
@@ -208,21 +347,85 @@ class AICullerRunTask(QRunnable):
                     ),
                 ),
             }
-            commands = [all_commands[stage] for stage in self.stages]
+            commands = [(stage, *all_commands[stage]) for stage in self.stages]
 
-            total = len(commands) + 1
-            for index, (message, command) in enumerate(commands, start=1):
+            for index, (stage, message, command) in enumerate(commands, start=stage_index):
                 self._raise_if_cancelled()
                 self.signals.stage.emit(folder_text, index, total, message)
+                stage_start = time.perf_counter() if logger.enabled else 0.0
                 self._run_command(command, stage_message=message)
+                if logger.enabled:
+                    logger.duration(
+                        "ai.workflow.stage",
+                        (time.perf_counter() - stage_start) * 1000.0,
+                        workflow="clip_topiq",
+                        run_id=self.run_id,
+                        folder=folder_text,
+                        stage=stage,
+                        stage_message=message,
+                        stage_index=index,
+                        stage_total=total,
+                    )
+                if stage == "ingest":
+                    prune_start = time.perf_counter() if logger.enabled else 0.0
+                    self._prune_aiculler_db_to_include_file(db_path, include_paths_file)
+                    if logger.enabled:
+                        logger.duration(
+                            "ai.workflow.stage",
+                            (time.perf_counter() - prune_start) * 1000.0,
+                            workflow="clip_topiq",
+                            run_id=self.run_id,
+                            folder=folder_text,
+                            stage="prune_scoped_db",
+                            include_paths_file=str(include_paths_file or ""),
+                        )
 
             self._raise_if_cancelled()
             self.signals.stage.emit(folder_text, total, total, "Preparing GUI results")
+            export_start = time.perf_counter() if logger.enabled else 0.0
             self._write_gui_exports(db_path)
+            if logger.enabled:
+                logger.duration(
+                    "ai.workflow.stage",
+                    (time.perf_counter() - export_start) * 1000.0,
+                    workflow="clip_topiq",
+                    run_id=self.run_id,
+                    folder=folder_text,
+                    stage="gui_exports",
+                    report_dir=str(self.paths.report_dir),
+                    ranked_export_exists=self.paths.ranked_export_path.exists(),
+                    html_report_exists=self.paths.html_report_path.exists(),
+                )
+                logger.duration(
+                    "ai.workflow.finished",
+                    (time.perf_counter() - task_start) * 1000.0,
+                    workflow="clip_topiq",
+                    run_id=self.run_id,
+                    folder=folder_text,
+                    stages=self.stages,
+                    report_dir=str(self.paths.report_dir),
+                )
             self.signals.finished.emit(folder_text, str(self.paths.report_dir), str(self.paths.html_report_path))
         except _AICullerCancelled:
+            if logger.enabled:
+                logger.duration(
+                    "ai.workflow.cancelled",
+                    (time.perf_counter() - task_start) * 1000.0,
+                    workflow="clip_topiq",
+                    run_id=self.run_id,
+                    folder=folder_text,
+                )
             self.signals.cancelled.emit(folder_text, "AI review stopped.")
         except Exception as exc:
+            if logger.enabled:
+                logger.duration(
+                    "ai.workflow.failed",
+                    (time.perf_counter() - task_start) * 1000.0,
+                    workflow="clip_topiq",
+                    run_id=self.run_id,
+                    folder=folder_text,
+                    error=str(exc),
+                )
             self.signals.failed.emit(folder_text, str(exc))
         finally:
             self._current_process = None
@@ -240,6 +443,527 @@ class AICullerRunTask(QRunnable):
             command,
             *args,
         ]
+
+    def _run_dino_prefilter(self) -> None:
+        logger = perf_logger()
+        workflow_start = time.perf_counter() if logger.enabled else 0.0
+        runtime = self.dino_runtime
+        if runtime is None:
+            raise FileNotFoundError("DINO Prefilter is enabled, but no DINO runtime is configured.")
+        if logger.enabled:
+            logger.log(
+                "ai.workflow.started",
+                workflow="dino_prefilter",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                records=len(self.records),
+                mode=self.dino_prefilter_settings.mode.value,
+                aggressiveness_percent=self.dino_prefilter_settings.aggressiveness_percent,
+                phash_duplicate_enabled=self.dino_prefilter_settings.phash_duplicate_enabled,
+                phash_hamming_threshold=self.dino_prefilter_settings.phash_hamming_threshold,
+                model_policy="base_model_only",
+                model_name=runtime.model_name,
+                device=runtime.device,
+                batch_size=runtime.batch_size,
+                num_workers=runtime.num_workers,
+            )
+        self._validate_dino_prefilter_runtime(runtime)
+        prefilter_paths = build_dino_prefilter_paths(self.paths)
+        prefilter_paths.ensure()
+        settings = self.dino_prefilter_settings.normalized()
+        artifacts_dir = prefilter_paths.artifact_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        python_executable = runtime.python_executable or Path(sys.executable)
+        extraction_include_file = self._write_dino_extraction_include_file(prefilter_paths)
+        extraction_cache_key = self._dino_extraction_cache_key(runtime, extraction_include_file)
+        extraction_cache_marker = artifacts_dir / "image_triage_extraction_cache.json"
+        signal_args = ["--skip-specialists"]
+        if not settings.technical_trash_enabled:
+            signal_args.append("--skip-technical")
+        commands = (
+            (
+                "Extracting DINO embeddings",
+                [
+                    str(python_executable),
+                    str(runtime.engine_root / "scripts" / "extract_embeddings.py"),
+                    "--config",
+                    str(runtime.extraction_config_path),
+                    "--input-dir",
+                    str(self.folder),
+                    "--output-dir",
+                    str(artifacts_dir),
+                    "--batch-size",
+                    str(max(1, int(runtime.batch_size))),
+                    "--model-name",
+                    runtime.model_name,
+                    "--device",
+                    runtime.device,
+                    "--num-workers",
+                    str(max(0, int(runtime.num_workers))),
+                    *self._include_paths_args(extraction_include_file),
+                ],
+            ),
+            (
+                "Clustering DINO embeddings",
+                [
+                    str(python_executable),
+                    str(runtime.engine_root / "scripts" / "cluster_embeddings.py"),
+                    "--config",
+                    str(runtime.clustering_config_path),
+                    "--artifacts-dir",
+                    str(artifacts_dir),
+                    "--output-dir",
+                    str(artifacts_dir),
+                ],
+            ),
+            (
+                "Building DINO prefilter signals",
+                [
+                    str(python_executable),
+                    str(runtime.engine_root / "scripts" / "build_culling_signals.py"),
+                    "--artifacts-dir",
+                    str(artifacts_dir),
+                    "--output-dir",
+                    str(prefilter_paths.artifact_dir),
+                    *signal_args,
+                ],
+            ),
+        )
+        for message, command in commands:
+            self._raise_if_cancelled()
+            stage_key = _stage_key_from_message(message)
+            if (
+                stage_key == "extracting_dino_embeddings"
+                and self._dino_extraction_cache_valid(
+                    artifacts_dir=artifacts_dir,
+                    marker_path=extraction_cache_marker,
+                    cache_key=extraction_cache_key,
+                )
+            ):
+                self.signals.detail.emit("DINO Prefilter", "Reusing cached DINO embeddings for this image set.")
+                if logger.enabled:
+                    logger.log(
+                        "ai.workflow.stage_skipped",
+                        workflow="dino_prefilter",
+                        run_id=self.run_id,
+                        folder=str(self.folder),
+                        stage=stage_key,
+                        reason="cache_hit",
+                        cache_key=extraction_cache_key,
+                        marker_path=str(extraction_cache_marker),
+                    )
+                continue
+            self.signals.detail.emit("DINO Prefilter", message)
+            stage_start = time.perf_counter() if logger.enabled else 0.0
+            self._run_dino_command(command, stage_message=message, runtime=runtime)
+            if stage_key == "extracting_dino_embeddings":
+                self._write_dino_extraction_cache_marker(
+                    marker_path=extraction_cache_marker,
+                    cache_key=extraction_cache_key,
+                )
+            if logger.enabled:
+                logger.duration(
+                    "ai.workflow.stage",
+                    (time.perf_counter() - stage_start) * 1000.0,
+                    workflow="dino_prefilter",
+                    run_id=self.run_id,
+                    folder=str(self.folder),
+                    stage=stage_key,
+                    stage_message=message,
+                    artifact_dir=str(prefilter_paths.artifact_dir),
+                )
+        signals_csv_path = prefilter_paths.artifact_dir / "culling_signals.csv"
+        if not signals_csv_path.exists():
+            raise FileNotFoundError(f"DINO Prefilter signals were not written: {signals_csv_path}")
+        load_start = time.perf_counter() if logger.enabled else 0.0
+        with signals_csv_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        if logger.enabled:
+            logger.duration(
+                "ai.workflow.stage",
+                (time.perf_counter() - load_start) * 1000.0,
+                workflow="dino_prefilter",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                stage="load_signal_rows",
+                signal_rows=len(rows),
+                rows_path=str(signals_csv_path),
+            )
+        rows.extend(self._phash_prefilter_signal_rows())
+        audit_start = time.perf_counter() if logger.enabled else 0.0
+        decisions = run_dino_prefilter_from_signal_rows(
+            rows,
+            settings=self.dino_prefilter_settings,
+            paths=prefilter_paths,
+        )
+        if logger.enabled:
+            logger.duration(
+                "ai.workflow.stage",
+                (time.perf_counter() - audit_start) * 1000.0,
+                workflow="dino_prefilter",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                stage="decision_audit",
+                signal_rows=len(rows),
+                decisions=len(decisions),
+                rows_path=str(prefilter_paths.rows_path),
+                report_path=str(prefilter_paths.report_path),
+            )
+        candidates = sum(1 for decision in decisions.values() if decision.is_candidate)
+        rescued = sum(1 for decision in decisions.values() if decision.is_rescued)
+        self.signals.detail.emit(
+            "DINO Prefilter",
+            f"DINO Prefilter marked {candidates} candidate(s), rescued {rescued}, scanned {len(decisions)} image(s).",
+        )
+        if logger.enabled:
+            logger.duration(
+                "ai.workflow.finished",
+                (time.perf_counter() - workflow_start) * 1000.0,
+                workflow="dino_prefilter",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                scanned=len(decisions),
+                candidates=candidates,
+                rescued=rescued,
+                artifact_dir=str(prefilter_paths.artifact_dir),
+            )
+
+    def _phash_prefilter_signal_rows(self) -> list[dict[str, object]]:
+        logger = perf_logger()
+        stage_start = time.perf_counter() if logger.enabled else 0.0
+        settings = self.dino_prefilter_settings.normalized()
+        if not settings.phash_duplicate_enabled:
+            if logger.enabled:
+                logger.log(
+                    "ai.workflow.stage_skipped",
+                    workflow="dino_prefilter",
+                    run_id=self.run_id,
+                    folder=str(self.folder),
+                    stage="phash_duplicates",
+                    reason="disabled",
+                )
+            return []
+        representatives = self._collect_jpeg_representatives()
+        if len(representatives) < 2:
+            if logger.enabled:
+                logger.log(
+                    "ai.workflow.stage_skipped",
+                    workflow="dino_prefilter",
+                    run_id=self.run_id,
+                    folder=str(self.folder),
+                    stage="phash_duplicates",
+                    reason="not_enough_images",
+                    representatives=len(representatives),
+                )
+            return []
+        self.signals.detail.emit(
+            "DINO Prefilter",
+            f"Running pHash duplicate check on {len(representatives)} image(s).",
+        )
+        cache_path = build_dino_prefilter_paths(self.paths).artifact_dir / "phash_cache.json"
+        result = find_perceptual_duplicate_groups_with_stats(
+            representatives,
+            hamming_threshold=settings.phash_hamming_threshold,
+            cache_path=cache_path,
+        )
+        groups = result.groups
+        rows: list[dict[str, object]] = []
+        for group_index, group in enumerate(groups, start=1):
+            group_size = len(group.members)
+            for rank, path in enumerate(group.members, start=1):
+                rows.append(
+                    {
+                        "file_path": path,
+                        "group_size": str(group_size),
+                        "dino_rank": "1",
+                        "phash_group": f"phash_{group_index:04d}",
+                        "phash_rank": str(rank),
+                        "phash_hamming_threshold": str(settings.phash_hamming_threshold),
+                        "phash_max_distance": str(group.max_distance),
+                        "phash_duplicate_score": "0.0" if rank == 1 else "1.0",
+                        "best_representative": "1" if rank == 1 else "0",
+                    }
+                )
+        duplicate_count = sum(max(0, len(group.members) - 1) for group in groups)
+        self.signals.detail.emit(
+            "DINO Prefilter",
+            f"pHash duplicate check found {duplicate_count} duplicate candidate(s) in {len(groups)} group(s).",
+        )
+        if logger.enabled:
+            logger.duration(
+                "ai.workflow.stage",
+                (time.perf_counter() - stage_start) * 1000.0,
+                workflow="dino_prefilter",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                stage="phash_duplicates",
+                representatives=len(representatives),
+                groups=len(groups),
+                duplicate_candidates=duplicate_count,
+                hamming_threshold=settings.phash_hamming_threshold,
+                cache_hits=result.stats.cached,
+                cache_misses=result.stats.computed,
+                cache_failures=result.stats.failed,
+                cache_path=result.stats.cache_path,
+            )
+        return rows
+
+    def _collect_jpeg_representatives(
+        self,
+        *,
+        excluded_keys: set[str] | None = None,
+    ) -> list[str]:
+        """Return one representative (JPEG-preferred) path per grid record.
+
+        Folder rows are skipped, duplicates are removed, and records whose stack
+        intersects ``excluded_keys`` (normalized paths) are dropped. This collapses
+        RAW+JPEG stacks to a single decodable image so the engine does not count
+        each RAW and its sibling JPEG separately.
+        """
+        excluded = excluded_keys or set()
+        representatives: list[str] = []
+        seen: set[str] = set()
+        for record in self.records:
+            if getattr(record, "is_folder", False):
+                continue
+            if excluded and any(_norm_path(path) in excluded for path in record.stack_paths):
+                continue
+            representative = self._jpeg_representative_for_record(record)
+            if not representative:
+                continue
+            key = _norm_path(representative)
+            if key in seen:
+                continue
+            seen.add(key)
+            representatives.append(representative)
+        return representatives
+
+    def _write_dino_extraction_include_file(self, prefilter_paths: DINOPrefilterPaths) -> Path | None:
+        """Scope DINO extraction to one representative (JPEG-preferred) per grid record.
+
+        Without this the engine walks the folder recursively, which pulls in the hidden
+        .image_triage_ai cache and counts each RAW and its sibling JPEG separately.
+        """
+        representatives = self._collect_jpeg_representatives()
+        if not representatives:
+            return None
+        prefilter_paths.ensure()
+        include_path = prefilter_paths.artifact_dir / "dino_extraction_paths.txt"
+        include_path.write_text("\n".join(representatives) + "\n", encoding="utf-8")
+        self.signals.detail.emit(
+            "DINO Prefilter",
+            f"Scoped DINO extraction to {len(representatives)} image(s) from the culling pool.",
+        )
+        return include_path
+
+    @staticmethod
+    def _jpeg_representative_for_record(record: ImageRecord) -> str:
+        for path in record.stack_paths:
+            if suffix_for_path(path) in JPEG_SUFFIXES:
+                return path
+        return record.path
+
+    def _validate_dino_prefilter_runtime(self, runtime: AIWorkflowRuntime) -> None:
+        missing: list[str] = []
+        python_executable = runtime.python_executable or Path(sys.executable)
+        for label, path in (
+            ("DINO Python", python_executable),
+            ("DINO engine root", runtime.engine_root),
+            ("DINO extract config", runtime.extraction_config_path),
+            ("DINO cluster config", runtime.clustering_config_path),
+            ("DINO extract script", runtime.engine_root / "scripts" / "extract_embeddings.py"),
+            ("DINO cluster script", runtime.engine_root / "scripts" / "cluster_embeddings.py"),
+            ("DINO signal script", runtime.engine_root / "scripts" / "build_culling_signals.py"),
+        ):
+            if not Path(path).exists():
+                missing.append(f"{label}: {path}")
+        if runtime.model_installation is not None and not runtime.model_installation.is_installed:
+            missing.extend(f"DINO model: {path}" for path in runtime.model_installation.missing_files)
+        elif runtime.model_name:
+            model_path = Path(runtime.model_name).expanduser()
+            if model_path.is_absolute() or "/" in runtime.model_name or "\\" in runtime.model_name or runtime.model_name.startswith("."):
+                if not model_path.exists():
+                    missing.append(f"DINO model: {model_path}")
+                elif model_path.is_dir():
+                    for filename in ("config.json", "model.safetensors"):
+                        candidate = model_path / filename
+                        if not candidate.exists():
+                            missing.append(f"DINO model: {candidate}")
+        if missing:
+            raise FileNotFoundError("Missing DINO Prefilter runtime paths:\n" + "\n".join(missing))
+
+    def _dino_extraction_cache_key(self, runtime: AIWorkflowRuntime, include_paths_file: Path | None) -> str:
+        payload = {
+            "schema_version": 1,
+            "model_policy": "base_model_only",
+            "model_name": runtime.model_name,
+            "input_dir": str(self.folder.resolve()),
+            "extraction_config": _file_cache_identity(runtime.extraction_config_path),
+            "include_paths": [
+                _file_cache_identity(path)
+                for path in _read_include_paths_file(include_paths_file)
+            ],
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _dino_extraction_cache_valid(*, artifacts_dir: Path, marker_path: Path, cache_key: str) -> bool:
+        if not cache_key or not marker_path.exists():
+            return False
+        for filename in ("images.csv", "embeddings.npy", "image_ids.json"):
+            if not (artifacts_dir / filename).exists():
+                return False
+        try:
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return isinstance(payload, dict) and payload.get("cache_key") == cache_key
+
+    @staticmethod
+    def _write_dino_extraction_cache_marker(*, marker_path: Path, cache_key: str) -> None:
+        marker_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cache_key": cache_key,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+
+    def _run_dino_command(self, command: list[str], *, stage_message: str, runtime: AIWorkflowRuntime) -> None:
+        logger = perf_logger()
+        command_start = time.perf_counter() if logger.enabled else 0.0
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        path_entries = [str(site_dir) for site_dir in resolve_ai_runtime_site_packages(device=runtime.device)]
+        path_entries.append(str(runtime.engine_root))
+        if existing_pythonpath:
+            path_entries.extend(part for part in existing_pythonpath.split(os.pathsep) if part)
+        env["PYTHONPATH"] = os.pathsep.join(path_entries)
+        process = subprocess.Popen(
+            command,
+            cwd=str(runtime.engine_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+        if logger.enabled:
+            logger.log(
+                "ai.workflow.subprocess_started",
+                workflow="dino_prefilter",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                stage=_stage_key_from_message(stage_message),
+                stage_message=stage_message,
+                pid=process.pid,
+                executable=Path(command[0]).name if command else "",
+                cwd=str(runtime.engine_root),
+            )
+        self._current_process = process
+        output_lines: list[str] = []
+        assert process.stdout is not None
+        self.signals.progress.emit(str(self.folder), stage_message, 0, 0, "")
+        for raw_line in iter(process.stdout.readline, ""):
+            if self._cancel_requested:
+                self.cancel()
+                raise _AICullerCancelled()
+            line = raw_line.strip()
+            if not line:
+                continue
+            output_lines.append(line)
+            self.signals.detail.emit("DINO Prefilter", line)
+            parsed = _parse_tqdm_progress(line)
+            if parsed is not None:
+                message, current, total, eta_text = parsed
+                self.signals.progress.emit(str(self.folder), message, current, total, eta_text)
+        return_code = process.wait()
+        self._current_process = None
+        if self._cancel_requested:
+            raise _AICullerCancelled()
+        if return_code != 0:
+            tail = "\n".join(output_lines[-30:])
+            if logger.enabled:
+                logger.duration(
+                    "ai.workflow.subprocess_failed",
+                    (time.perf_counter() - command_start) * 1000.0,
+                    workflow="dino_prefilter",
+                    run_id=self.run_id,
+                    folder=str(self.folder),
+                    stage=_stage_key_from_message(stage_message),
+                    stage_message=stage_message,
+                    return_code=return_code,
+                    output_lines=len(output_lines),
+                )
+            raise RuntimeError(f"{stage_message} failed." + (f"\n\n{tail}" if tail else ""))
+        if logger.enabled:
+            logger.duration(
+                "ai.workflow.subprocess_finished",
+                (time.perf_counter() - command_start) * 1000.0,
+                workflow="dino_prefilter",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                stage=_stage_key_from_message(stage_message),
+                stage_message=stage_message,
+                return_code=return_code,
+                output_lines=len(output_lines),
+            )
+
+    def _write_dino_prefilter_include_file(self) -> Path | None:
+        """Scope the AI Culler ingest to one JPEG-per-stack representative.
+
+        Always written (when records are known) so CLIP/TOPIQ do not double-count
+        RAW+JPEG stacks or walk the hidden cache. When DINO pool removal is active,
+        records flagged for removal are additionally dropped from the pool.
+        """
+        prefilter_paths = build_dino_prefilter_paths(self.paths)
+        settings = self.dino_prefilter_settings
+        excluded_keys: set[str] = set()
+        pool_removal_active = settings.enabled and settings.mode == DINOPrefilterMode.POOL_REMOVAL
+        if pool_removal_active:
+            decisions = load_dino_prefilter_decisions(prefilter_paths)
+            excluded_keys = {
+                _norm_path(path)
+                for path, decision in decisions.items()
+                if decision.action == "remove_from_pool"
+            }
+            if not excluded_keys:
+                self.signals.detail.emit("DINO Prefilter", "Pool removal enabled, but no DINO removal rows were found.")
+        elif settings.enabled:
+            self.signals.detail.emit("DINO Prefilter", "Soft quarantine enabled; all images remain in the AI pool.")
+
+        total_records = sum(1 for record in self.records if not getattr(record, "is_folder", False))
+        included = self._collect_jpeg_representatives(excluded_keys=excluded_keys)
+        if not included:
+            return None
+        prefilter_paths.ensure()
+        include_path = prefilter_paths.artifact_dir / "aiculler_include_paths.txt"
+        include_path.write_text("\n".join(included) + "\n", encoding="utf-8")
+        excluded_count = total_records - len(included)
+        if pool_removal_active and excluded_count > 0:
+            self.signals.detail.emit(
+                "DINO Prefilter",
+                f"Pool removal excluded {excluded_count} image(s); {len(included)} remain for AI Culler.",
+            )
+        else:
+            self.signals.detail.emit(
+                "DINO Prefilter",
+                f"Scoped AI Culler ingest to {len(included)} image(s) from the culling pool.",
+            )
+        return include_path
+
+    @staticmethod
+    def _include_paths_args(include_paths_file: Path | None) -> tuple[str, ...]:
+        if include_paths_file is None:
+            return ()
+        return ("--include-paths-file", str(include_paths_file))
 
     def _topiq_args(self) -> tuple[str, ...]:
         if self.runtime.topiq_model is None:
@@ -265,6 +989,8 @@ class AICullerRunTask(QRunnable):
         return tuple(args)
 
     def _run_command(self, command: list[str], *, stage_message: str) -> None:
+        logger = perf_logger()
+        command_start = time.perf_counter() if logger.enabled else 0.0
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONPATH"] = _aiculler_pythonpath(self.runtime.root, env.get("PYTHONPATH", ""))
@@ -277,6 +1003,19 @@ class AICullerRunTask(QRunnable):
             bufsize=1,
             env=env,
         )
+        if logger.enabled:
+            logger.log(
+                "ai.workflow.subprocess_started",
+                workflow="clip_topiq",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                stage=_stage_key_from_message(stage_message),
+                stage_message=stage_message,
+                pid=process.pid,
+                executable=Path(command[0]).name if command else "",
+                cli_command=_cli_command_from_args(command),
+                cwd=str(self.runtime.root),
+            )
         self._current_process = process
         output_lines: list[str] = []
         assert process.stdout is not None
@@ -295,7 +1034,106 @@ class AICullerRunTask(QRunnable):
             raise _AICullerCancelled()
         if return_code != 0:
             tail = "\n".join(output_lines[-30:])
+            if logger.enabled:
+                logger.duration(
+                    "ai.workflow.subprocess_failed",
+                    (time.perf_counter() - command_start) * 1000.0,
+                    workflow="clip_topiq",
+                    run_id=self.run_id,
+                    folder=str(self.folder),
+                    stage=_stage_key_from_message(stage_message),
+                    stage_message=stage_message,
+                    return_code=return_code,
+                    output_lines=len(output_lines),
+                    cli_command=_cli_command_from_args(command),
+                )
             raise RuntimeError(f"{stage_message} failed." + (f"\n\n{tail}" if tail else ""))
+        if logger.enabled:
+            logger.duration(
+                "ai.workflow.subprocess_finished",
+                (time.perf_counter() - command_start) * 1000.0,
+                workflow="clip_topiq",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                stage=_stage_key_from_message(stage_message),
+                stage_message=stage_message,
+                return_code=return_code,
+                output_lines=len(output_lines),
+                cli_command=_cli_command_from_args(command),
+            )
+
+    def _prune_aiculler_db_to_include_file(self, db_path: Path, include_paths_file: Path | None) -> None:
+        logger = perf_logger()
+        prune_start = time.perf_counter() if logger.enabled else 0.0
+        if include_paths_file is None or not include_paths_file.exists() or not db_path.exists():
+            return
+        include_keys: set[str] = set()
+        for line in include_paths_file.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            candidate = Path(text)
+            if not candidate.is_absolute():
+                candidate = include_paths_file.parent / candidate
+            include_keys.add(_norm_path(candidate))
+        if not include_keys:
+            return
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+            rows = connection.execute("SELECT id, source_path FROM images").fetchall()
+            stale_ids = [
+                int(row["id"])
+                for row in rows
+                if _norm_path(str(row["source_path"])) not in include_keys
+            ]
+            if not stale_ids:
+                self.signals.detail.emit(
+                    "AI Culler",
+                    f"AI Culler database already scoped to {len(include_keys)} image(s).",
+                )
+                if logger.enabled:
+                    logger.duration(
+                        "ai.workflow.db_prune",
+                        (time.perf_counter() - prune_start) * 1000.0,
+                        workflow="clip_topiq",
+                        run_id=self.run_id,
+                        folder=str(self.folder),
+                        include_paths=len(include_keys),
+                        stale_rows=0,
+                    )
+                return
+            for table in (
+                "embeddings",
+                "feedback",
+                "image_categories",
+                "image_cluster_memberships",
+                "ratings",
+                "adapter_scores",
+            ):
+                _delete_rows_by_ids(connection, table, "image_id", stale_ids)
+            _delete_rows_by_ids(connection, "images", "id", stale_ids)
+            connection.commit()
+            remaining = connection.execute("SELECT COUNT(*) FROM images").fetchone()
+            remaining_count = int(remaining[0]) if remaining else 0
+        finally:
+            connection.close()
+        self.signals.detail.emit(
+            "AI Culler",
+            f"Pruned AI Culler database to {remaining_count} scoped image row(s); removed {len(stale_ids)} stale row(s).",
+        )
+        if logger.enabled:
+            logger.duration(
+                "ai.workflow.db_prune",
+                (time.perf_counter() - prune_start) * 1000.0,
+                workflow="clip_topiq",
+                run_id=self.run_id,
+                folder=str(self.folder),
+                include_paths=len(include_keys),
+                stale_rows=len(stale_ids),
+                remaining_rows=remaining_count,
+            )
 
     def _emit_progress_for_line(self, stage_message: str, line: str) -> None:
         self.signals.detail.emit(str(self.folder), line)
@@ -319,7 +1157,20 @@ class AICullerRunTask(QRunnable):
                     self._completed_image_count,
                     len(self.records),
                     "",
-                )
+            )
+            return
+        progress_match = CLI_PROGRESS_PATTERN.match(line)
+        if progress_match is not None:
+            try:
+                current = int(progress_match.group("current"))
+                total = int(progress_match.group("total"))
+            except (TypeError, ValueError):
+                current = 0
+                total = 0
+            label = (progress_match.group("label") or "").replace("-", " ").strip()
+            detail = (progress_match.group("message") or "").strip()
+            progress_message = f"{stage_message}: {label}" if label else stage_message
+            self.signals.progress.emit(str(self.folder), progress_message, current, total, detail)
             return
         self.signals.progress.emit(str(self.folder), stage_message, 0, 0, "")
 
@@ -340,6 +1191,58 @@ class AICullerRunTask(QRunnable):
 
 class _AICullerCancelled(RuntimeError):
     pass
+
+
+class DINOPrefilterRunTask(AICullerRunTask):
+    def __init__(
+        self,
+        *,
+        folder: Path,
+        paths: AIWorkflowPaths,
+        dino_prefilter_settings: DINOPrefilterSettings,
+        dino_runtime: AIWorkflowRuntime,
+        records: tuple[ImageRecord, ...] = (),
+        run_id: str | None = None,
+    ) -> None:
+        QRunnable.__init__(self)
+        self.folder = folder
+        self.records = records
+        self.paths = paths
+        self.run_id = run_id or time.strftime("%Y%m%dT%H%M%S")
+        self.run_dino_prefilter = True
+        self.dino_prefilter_settings = dino_prefilter_settings.normalized()
+        self.dino_runtime = dino_runtime
+        self.stages = ()
+        self.signals = AICullerRunSignals()
+        self.setAutoDelete(True)
+        self._cancel_requested = False
+        self._current_process: subprocess.Popen[str] | None = None
+        self._completed_image_count = 0
+
+    def run(self) -> None:
+        folder_text = str(self.folder)
+        self.signals.started.emit(folder_text)
+        try:
+            if not self.dino_prefilter_settings.enabled:
+                raise RuntimeError("DINO Prefilter is disabled.")
+            self.paths.hidden_root.mkdir(parents=True, exist_ok=True)
+            self.paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
+            self.paths.report_dir.mkdir(parents=True, exist_ok=True)
+            self._raise_if_cancelled()
+            self.signals.stage.emit(folder_text, 1, 1, "Running DINO Prefilter")
+            self._run_dino_prefilter()
+            prefilter_paths = build_dino_prefilter_paths(self.paths)
+            self.signals.finished.emit(
+                folder_text,
+                str(prefilter_paths.artifact_dir),
+                str(prefilter_paths.report_path),
+            )
+        except _AICullerCancelled:
+            self.signals.cancelled.emit(folder_text, "DINO Prefilter stopped.")
+        except Exception as exc:
+            self.signals.failed.emit(folder_text, str(exc))
+        finally:
+            self._current_process = None
 
 
 class AICullerAdapterTask(QRunnable):
@@ -522,7 +1425,7 @@ class AICullerAdapterTask(QRunnable):
             raise RuntimeError(f"{stage_message} failed." + (f"\n\n{tail}" if tail else ""))
 
 
-def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
+def default_aiculler_runtime(workers: int | None = None, clip_model_variant: str | None = None) -> AICullerRuntime:
     root = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_ROOT", "") or _default_aiculler_root()).expanduser().resolve()
     model_root = _default_aiculler_model_root(root)
     python_executable = Path(
@@ -534,6 +1437,12 @@ def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
         or _default_aiculler_cli(root)
     ).expanduser().resolve()
     clip_root = model_root / "Clip" / "clip-vit-large-patch14"
+    resolved_clip_variant = coerce_clip_model_variant(
+        clip_model_variant
+        or os.environ.get(CLIP_MODEL_VARIANT_ENV, "")
+        or DEFAULT_CLIP_MODEL_VARIANT
+    )
+    default_clip_vision, default_clip_text = _clip_model_paths_for_variant(clip_root, resolved_clip_variant)
     configured_topiq = os.environ.get("IMAGE_TRIAGE_AICULLER_TOPIQ", "").strip()
     topiq_path = Path(configured_topiq or model_root / "TOPIQ" / "topiq_nr.onnx")
     categories_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_CATEGORIES", "") or _default_aiculler_config_path(root, "categories.csv"))
@@ -552,16 +1461,17 @@ def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
         cli_entrypoint=cli_entrypoint,
         clip_vision_model=Path(
             os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_VISION", "")
-            or clip_root / "onnx" / "vision_model_uint8.onnx"
+            or default_clip_vision
         ).expanduser().resolve(),
         clip_text_model=Path(
             os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_TEXT", "")
-            or clip_root / "onnx" / "text_model_uint8.onnx"
+            or default_clip_text
         ).expanduser().resolve(),
         tokenizer=Path(
             os.environ.get("IMAGE_TRIAGE_AICULLER_TOKENIZER", "")
             or clip_root / "tokenizer.json"
         ).expanduser().resolve(),
+        clip_model_variant=resolved_clip_variant,
         topiq_model=(
             topiq_path.expanduser().resolve()
             if configured_topiq or topiq_path.exists()
@@ -573,6 +1483,14 @@ def default_aiculler_runtime(workers: int | None = None) -> AICullerRuntime:
         penalty_weight=float(os.environ.get("IMAGE_TRIAGE_AICULLER_PENALTY_WEIGHT", "0.85") or "0.85"),
         workers=int(workers) if workers is not None and workers > 0 else int(os.environ.get("IMAGE_TRIAGE_AICULLER_WORKERS", "4") or "4"),
     )
+
+
+def _clip_model_paths_for_variant(clip_root: Path, variant: str) -> tuple[Path, Path]:
+    normalized = coerce_clip_model_variant(variant)
+    onnx_root = clip_root / "onnx"
+    if normalized == "fp32":
+        return onnx_root / "vision_model.onnx", onnx_root / "text_model.onnx"
+    return onnx_root / f"vision_model_{normalized}.onnx", onnx_root / f"text_model_{normalized}.onnx"
 
 
 def _default_aiculler_python(root: Path) -> Path:
@@ -956,6 +1874,7 @@ def write_run_config(
             "python": str(runtime.python_executable),
         },
         "models": {
+            "clip_model_variant": runtime.clip_model_variant,
             "clip_vision": str(runtime.clip_vision_model),
             "clip_text": str(runtime.clip_text_model),
             "tokenizer": str(runtime.tokenizer),
@@ -1415,6 +2334,117 @@ def _diversity_group_id(row: sqlite3.Row) -> str:
 
 def _path_group_key(path: Path) -> str:
     return os.path.normcase(os.path.normpath(str(path.parent)))
+
+
+def _norm_path(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _read_include_paths_file(include_paths_file: Path | None) -> list[Path]:
+    if include_paths_file is None or not include_paths_file.exists():
+        return []
+    paths: list[Path] = []
+    for line in include_paths_file.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        candidate = Path(text)
+        if not candidate.is_absolute():
+            candidate = include_paths_file.parent / candidate
+        paths.append(candidate)
+    return paths
+
+
+def _file_cache_identity(path: str | Path) -> dict[str, object]:
+    candidate = Path(path)
+    try:
+        resolved = candidate.expanduser().resolve()
+        stat = resolved.stat()
+    except OSError:
+        return {
+            "path": str(candidate),
+            "exists": False,
+        }
+    return {
+        "path": _norm_path(resolved),
+        "exists": True,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+def _stage_key_from_message(message: str) -> str:
+    text = re.sub(r"[^a-z0-9]+", "_", (message or "").strip().casefold())
+    return text.strip("_") or "stage"
+
+
+def _cli_command_from_args(command: list[str]) -> str:
+    known_commands = {
+        "ingest",
+        "assign-categories",
+        "cluster-categories",
+        "rank",
+        "train-adapter",
+        "evaluate-adapter",
+        "rank-adapter",
+        "import-ratings",
+    }
+    for arg in command:
+        text = str(arg)
+        if text in known_commands:
+            return text
+    return ""
+
+
+def _delete_rows_by_ids(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    ids: list[int],
+    *,
+    chunk_size: int = 400,
+) -> None:
+    table_row = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if table_row is None or not ids:
+        return
+    for start in range(0, len(ids), max(1, chunk_size)):
+        chunk = ids[start : start + chunk_size]
+        placeholders = ", ".join("?" for _ in chunk)
+        connection.execute(
+            f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
+            chunk,
+        )
+
+
+_TQDM_PROGRESS_RE = re.compile(
+    r"^(?P<desc>.+?):\s*\d+%\|[^|]*\|\s*(?P<current>\d+)/(?P<total>\d+)"
+    r"(?:\s*\[(?P<elapsed>[^<\]]+)<(?P<remaining>[^,\]]+))?"
+)
+
+
+def _parse_tqdm_progress(line: str) -> tuple[str, int, int, str] | None:
+    """Extract (message, current, total, eta) from a tqdm progress line.
+
+    Matches lines like ``Extracting embeddings: 7%|6 | 192/2895 [00:17<03:51, ...]``.
+    Returns None for non-progress output.
+    """
+    match = _TQDM_PROGRESS_RE.match(line.strip())
+    if match is None:
+        return None
+    try:
+        current = int(match.group("current"))
+        total = int(match.group("total"))
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    message = match.group("desc").strip() or "Working"
+    remaining = (match.group("remaining") or "").strip()
+    eta_text = remaining if remaining and "?" not in remaining else ""
+    return message, current, total, eta_text
 
 
 def _row_value(row: sqlite3.Row, name: str, default: object = "") -> object:
