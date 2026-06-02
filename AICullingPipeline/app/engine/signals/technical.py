@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Dict
@@ -40,13 +42,27 @@ class TechnicalSignalLayer:
         if not status.available:
             return append_layer_status(updated, status)
 
-        for image_id, record in records.items():
+        items = list(records.items())
+        worker_count = _analysis_worker_count(len(items))
+        if worker_count <= 1:
+            analyzed = (
+                (image_id, analyze_technical_quality(Path(record.file_path), max_side=context.max_preview_side))
+                for image_id, record in items
+            )
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                analyzed = list(
+                    executor.map(
+                        _analyze_technical_record,
+                        ((image_id, record.file_path, context.max_preview_side) for image_id, record in items),
+                    )
+                )
+
+        for image_id, technical_signals in analyzed:
+            record = records[image_id]
             updated[image_id] = replace(
                 record,
-                technical=analyze_technical_quality(
-                    Path(record.file_path),
-                    max_side=context.max_preview_side,
-                ),
+                technical=technical_signals,
             )
         return append_layer_status(updated, status)
 
@@ -196,3 +212,14 @@ def _confidence_label(valid_tiles: int) -> str:
     if valid_tiles <= 8:
         return "medium"
     return "high"
+
+
+def _analyze_technical_record(item: tuple[str, str, int]) -> tuple[str, TechnicalSignals]:
+    image_id, file_path, max_side = item
+    return image_id, analyze_technical_quality(Path(file_path), max_side=max_side)
+
+
+def _analysis_worker_count(item_count: int) -> int:
+    if item_count <= 1:
+        return 1
+    return max(1, min(8, os.cpu_count() or 4, item_count))

@@ -35,7 +35,10 @@ from .ai_model import (
     resolve_ai_model_installation,
     resolve_semantic_model_installation,
 )
-from .ai_runtime_packages import load_ai_runtime_installation_status
+from .ai_runtime_packages import (
+    load_ai_runtime_installation_status,
+    resolve_ai_runtime_site_packages,
+)
 from .formats import RAW_SUFFIXES
 from .perf import perf_logger
 
@@ -1455,6 +1458,20 @@ def _get_drive_type(path: Path) -> int:
         return DRIVE_UNKNOWN
 
 
+def _inject_ai_runtime_pythonpath(env: dict[str, str], *, device: str = "auto") -> None:
+    """Prepend the installed AI runtime site-packages onto the subprocess PYTHONPATH.
+
+    Engine scripts run with the host interpreter when launched from source, so torch
+    and friends live only in the runtime cache, not on the interpreter's own path.
+    """
+    site_dirs = [str(path) for path in resolve_ai_runtime_site_packages(device=device)]
+    if not site_dirs:
+        return
+    existing = env.get("PYTHONPATH", "")
+    entries = site_dirs + [part for part in existing.split(os.pathsep) if part]
+    env["PYTHONPATH"] = os.pathsep.join(entries)
+
+
 def _run_command_with_live_output(
     command: list[str],
     *,
@@ -1481,6 +1498,7 @@ def _run_command_with_live_output(
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("IMAGE_TRIAGE_HOST_ROOT", str(Path(__file__).resolve().parents[1]))
     env[AI_METRICS_ENV_VAR] = "1" if logger.enabled or detail_callback is not None else "0"
+    _inject_ai_runtime_pythonpath(env)
     spawn_start = time.perf_counter() if logger.enabled else 0.0
     try:
         process = subprocess.Popen(

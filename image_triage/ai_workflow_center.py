@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
@@ -25,10 +26,16 @@ from .aiculler_workflow import (
     aiculler_rerank_readiness,
     aiculler_runtime_status,
     build_aiculler_workflow_paths,
+    clip_model_variant_info,
     list_adapter_model_summaries,
     load_adapter_status_summary,
 )
 from .aiculler_global_store import GlobalAdapterLabelStore, default_global_adapter_label_store_path
+from .dino_prefilter import (
+    build_dino_prefilter_paths,
+    default_dino_prefilter_settings,
+    dino_prefilter_mode_label,
+)
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -80,12 +87,38 @@ def _parse_adapter_timestamp(value: str) -> tuple[str, str] | None:
     return None
 
 
+def _int_value(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sorted_count_pairs(value: object) -> tuple[tuple[str, int], ...]:
+    if not isinstance(value, dict):
+        return ()
+    pairs: list[tuple[str, int]] = []
+    for key, count in value.items():
+        label = str(key or "").strip()
+        if not label:
+            continue
+        pairs.append((label, _int_value(count)))
+    return tuple(sorted(pairs, key=lambda item: (-item[1], item[0])))
+
+
+def _format_count_pairs(pairs: tuple[tuple[str, int], ...]) -> str:
+    if not pairs:
+        return "—"
+    return ", ".join(f"{label.replace('_', ' ')}: {count}" for label, count in pairs)
+
+
 @dataclass
 class WorkflowSnapshot:
     runtime_ready: bool
     runtime_source: str
     model_root: str
     runtime_note: str
+    clip_model_label: str
     folder_open: bool
     db_exists: bool
     indexed_count: int
@@ -106,6 +139,24 @@ class WorkflowSnapshot:
     adapter_models: tuple[dict[str, object], ...] = ()
     folder_path: str = ""
     file_count: int = 0
+    dino_enabled: bool = False
+    dino_mode_label: str = "Soft Quarantine"
+    dino_aggressiveness_percent: int = 85
+    dino_phash_duplicate_enabled: bool = True
+    dino_phash_hamming_threshold: int = 6
+    dino_diagnostics_enabled: bool = True
+    dino_report_exists: bool = False
+    dino_rows_exists: bool = False
+    dino_report_created_at: str = ""
+    dino_model_policy: str = "base_model_only"
+    dino_scanned_count: int = 0
+    dino_quarantined_count: int = 0
+    dino_removed_from_pool_count: int = 0
+    dino_rescued_count: int = 0
+    dino_cache_hit: bool = False
+    dino_reason_counts: tuple[tuple[str, int], ...] = ()
+    dino_rescue_counts: tuple[tuple[str, int], ...] = ()
+    dino_artifact_dir: str = ""
 
     @property
     def total_label_count(self) -> int:
@@ -187,7 +238,7 @@ class _StepPage(QWidget):
         self._metrics_layout.setSpacing(6)
         outer.addWidget(self._metrics_frame)
 
-        self._action_row = QHBoxLayout()
+        self._action_row = QVBoxLayout()
         self._action_row.setSpacing(8)
         outer.addLayout(self._action_row)
 
@@ -236,7 +287,7 @@ class _StepPage(QWidget):
         for action in step.actions:
             button = QPushButton(action.label)
             button.setMinimumHeight(32)
-            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             button.setEnabled(action.enabled)
             if action.tooltip:
                 button.setToolTip(action.tooltip)
@@ -400,11 +451,12 @@ class AIWorkflowCenterDialog(QDialog):
     def _build_pages(self) -> None:
         for key, label in (
             ("setup", "1. Setup"),
-            ("index", "2. Index & Score"),
-            ("label", "3. Review Labels"),
-            ("train", "4. Train Adapter"),
-            ("evaluate", "5. Evaluate"),
-            ("apply", "6. Rank & Apply"),
+            ("dino", "2. DINO Prefilter"),
+            ("index", "3. Index & Score"),
+            ("label", "4. Review Labels"),
+            ("train", "5. Train Adapter"),
+            ("evaluate", "6. Evaluate"),
+            ("apply", "7. Rank & Apply"),
         ):
             self._step_keys.append(key)
             item = QListWidgetItem(label)
@@ -520,6 +572,7 @@ class AIWorkflowCenterDialog(QDialog):
         runtime_source = ""
         model_root = ""
         runtime_note = ""
+        clip_model_label = clip_model_variant_info(getattr(self._window, "_ai_clip_model_variant", "uint8")).label
         try:
             status = aiculler_runtime_status()
             runtime_ready = status.is_ready
@@ -558,6 +611,20 @@ class AIWorkflowCenterDialog(QDialog):
         train_rank_lift: float | None = None
         scored_count = 0
         adapter_models: tuple[dict[str, object], ...] = ()
+        dino_settings = getattr(self._window, "_dino_prefilter_settings", default_dino_prefilter_settings())
+        dino_settings = dino_settings.normalized()
+        dino_report_exists = False
+        dino_rows_exists = False
+        dino_report_created_at = ""
+        dino_model_policy = "base_model_only"
+        dino_scanned_count = 0
+        dino_quarantined_count = 0
+        dino_removed_from_pool_count = 0
+        dino_rescued_count = 0
+        dino_cache_hit = False
+        dino_reason_counts: tuple[tuple[str, int], ...] = ()
+        dino_rescue_counts: tuple[tuple[str, int], ...] = ()
+        dino_artifact_dir = ""
         if paths is not None:
             db_path = aiculler_db_path(paths)
             readiness = aiculler_rerank_readiness(db_path)
@@ -587,6 +654,28 @@ class AIWorkflowCenterDialog(QDialog):
                 pending_label_count = len(pending_labels)
             except Exception:
                 pending_label_count = 0
+            try:
+                dino_paths = build_dino_prefilter_paths(paths)
+                dino_artifact_dir = str(dino_paths.artifact_dir)
+                dino_report_exists = dino_paths.report_path.exists()
+                dino_rows_exists = dino_paths.rows_path.exists()
+                if dino_report_exists:
+                    report = json.loads(dino_paths.report_path.read_text(encoding="utf-8"))
+                    counts = report.get("counts") if isinstance(report, dict) else {}
+                    if not isinstance(counts, dict):
+                        counts = {}
+                    dino_report_created_at = str(report.get("created_at") or "")
+                    dino_model_policy = str(report.get("model_policy") or dino_model_policy)
+                    dino_scanned_count = _int_value(counts.get("scanned"))
+                    dino_quarantined_count = _int_value(counts.get("quarantined"))
+                    dino_removed_from_pool_count = _int_value(counts.get("removed_from_pool"))
+                    dino_rescued_count = _int_value(counts.get("rescued"))
+                    dino_cache_hit = bool(report.get("cache_hit"))
+                    dino_reason_counts = _sorted_count_pairs(report.get("reason_counts"))
+                    dino_rescue_counts = _sorted_count_pairs(report.get("rescue_counts"))
+            except Exception:
+                dino_report_exists = False
+                dino_rows_exists = False
         current_file_paths = tuple(record.path for record in self._window._all_records if not record.is_folder)
         try:
             store = GlobalAdapterLabelStore(default_global_adapter_label_store_path())
@@ -608,6 +697,7 @@ class AIWorkflowCenterDialog(QDialog):
             runtime_source=runtime_source,
             model_root=model_root,
             runtime_note=runtime_note,
+            clip_model_label=clip_model_label,
             folder_open=bool(folder_path),
             db_exists=db_exists,
             indexed_count=indexed_count,
@@ -628,6 +718,24 @@ class AIWorkflowCenterDialog(QDialog):
             adapter_models=adapter_models,
             folder_path=folder_path,
             file_count=file_count,
+            dino_enabled=dino_settings.enabled,
+            dino_mode_label=dino_prefilter_mode_label(dino_settings.mode),
+            dino_aggressiveness_percent=dino_settings.aggressiveness_percent,
+            dino_phash_duplicate_enabled=dino_settings.phash_duplicate_enabled,
+            dino_phash_hamming_threshold=dino_settings.phash_hamming_threshold,
+            dino_diagnostics_enabled=dino_settings.diagnostics_enabled,
+            dino_report_exists=dino_report_exists,
+            dino_rows_exists=dino_rows_exists,
+            dino_report_created_at=dino_report_created_at,
+            dino_model_policy=dino_model_policy,
+            dino_scanned_count=dino_scanned_count,
+            dino_quarantined_count=dino_quarantined_count,
+            dino_removed_from_pool_count=dino_removed_from_pool_count,
+            dino_rescued_count=dino_rescued_count,
+            dino_cache_hit=dino_cache_hit,
+            dino_reason_counts=dino_reason_counts,
+            dino_rescue_counts=dino_rescue_counts,
+            dino_artifact_dir=dino_artifact_dir,
         )
 
     def _build_steps(self, snap: WorkflowSnapshot) -> dict[str, StepSpec]:
@@ -647,9 +755,21 @@ class AIWorkflowCenterDialog(QDialog):
                 ("Runtime", "Ready" if snap.runtime_ready else "Unavailable"),
                 ("Culler source", snap.runtime_source or "—"),
                 ("Model root", snap.model_root or "—"),
+                ("CLIP model", snap.clip_model_label),
                 ("Current folder", snap.folder_path or "(none)"),
             ] + ([("Note", snap.runtime_note)] if snap.runtime_note else []),
             actions=[
+                ActionSpec(
+                    label="Install AI Runtime",
+                    callback=lambda: self._invoke("_install_ai_runtime"),
+                    primary=not snap.runtime_ready,
+                    enabled=True,
+                ),
+                ActionSpec(
+                    label="Download AI Models",
+                    callback=lambda: self._invoke("_download_ai_model"),
+                    enabled=True,
+                ),
                 ActionSpec(
                     label="Open AI Culler source",
                     callback=lambda: self._invoke("_open_aiculler_root"),
@@ -663,8 +783,91 @@ class AIWorkflowCenterDialog(QDialog):
             ],
         )
 
+        if not snap.dino_enabled:
+            dino_status = STATUS_DONE
+        elif not snap.runtime_ready or not snap.folder_open:
+            dino_status = STATUS_BLOCKED
+        elif snap.dino_report_exists and snap.dino_rows_exists and snap.dino_scanned_count > 0:
+            dino_status = STATUS_DONE
+        else:
+            dino_status = STATUS_READY
+        dino_metrics: list[tuple[str, str]] = [
+            ("Configured", "Enabled" if snap.dino_enabled else "Disabled"),
+            ("Mode", snap.dino_mode_label),
+            ("Confidence threshold", f"{snap.dino_aggressiveness_percent}%"),
+            ("pHash duplicates", "On" if snap.dino_phash_duplicate_enabled else "Off"),
+            ("pHash distance", str(snap.dino_phash_hamming_threshold)),
+            ("Model policy", snap.dino_model_policy or "base_model_only"),
+            ("Diagnostics", "On" if snap.dino_diagnostics_enabled else "Off"),
+        ]
+        if snap.dino_report_exists:
+            dino_metrics.extend(
+                [
+                    ("Last run", snap.dino_report_created_at or "—"),
+                    ("Scanned", str(snap.dino_scanned_count)),
+                    ("Quarantined", str(snap.dino_quarantined_count)),
+                    ("Removed from pool", str(snap.dino_removed_from_pool_count)),
+                    ("Rescued", str(snap.dino_rescued_count)),
+                    ("Cache", "Hit" if snap.dino_cache_hit else "Fresh run"),
+                ]
+            )
+            if snap.dino_reason_counts:
+                dino_metrics.append(("Trash reasons", _format_count_pairs(snap.dino_reason_counts)))
+            if snap.dino_rescue_counts:
+                dino_metrics.append(("Rescue rules", _format_count_pairs(snap.dino_rescue_counts)))
+        else:
+            dino_metrics.append(("Last run", "No DINO report for this folder."))
+        steps["dino"] = StepSpec(
+            key="dino",
+            title="DINO Prefilter",
+            subtitle="Optional base-model first pass before the AI culler judges the folder.",
+            description=(
+                "Run DINO Prefilter as its own first pass, then review the marks before moving "
+                "to Index & Score. Soft Quarantine marks likely trash while keeping the folder "
+                "in the downstream AI pool; Pool Removal excludes those candidates before the "
+                "current AI and adapter score the remaining images."
+            ),
+            status=dino_status,
+            metrics=dino_metrics,
+            actions=[
+                ActionSpec(
+                    label="Open DINO Settings",
+                    callback=lambda: self._invoke("_open_dino_prefilter_settings"),
+                    primary=not snap.dino_enabled,
+                    enabled=True,
+                ),
+                ActionSpec(
+                    label="Run DINO Prefilter",
+                    callback=lambda: self._invoke("_run_dino_prefilter"),
+                    primary=snap.dino_enabled,
+                    enabled=snap.dino_enabled and snap.runtime_ready and snap.folder_open,
+                    tooltip=(
+                        "Enable DINO Prefilter in settings before running this step."
+                        if not snap.dino_enabled
+                        else ""
+                    ),
+                ),
+                ActionSpec(
+                    label="Open DINO Artifacts",
+                    callback=lambda: self._invoke("_open_dino_prefilter_artifacts"),
+                    enabled=bool(snap.dino_artifact_dir and snap.dino_report_exists),
+                    tooltip=(
+                        "Runs are written after DINO Prefilter has executed for this folder."
+                        if not snap.dino_report_exists
+                        else ""
+                    ),
+                ),
+            ],
+        )
+
         index_status = STATUS_BLOCKED
+        dino_required = snap.dino_enabled
+        dino_ready_for_index = (not dino_required) or (
+            snap.dino_report_exists and snap.dino_rows_exists and snap.dino_scanned_count > 0
+        )
         if not snap.runtime_ready or not snap.folder_open:
+            index_status = STATUS_BLOCKED
+        elif not dino_ready_for_index:
             index_status = STATUS_BLOCKED
         elif snap.db_exists and snap.indexed_count > 0 and snap.cluster_run_id:
             index_status = STATUS_DONE
@@ -677,6 +880,8 @@ class AIWorkflowCenterDialog(QDialog):
         ]
         if snap.db_exists and snap.indexed_count != snap.file_count and snap.file_count:
             index_metrics.append(("Note", "Folder file count differs from indexed count — re-run AI Culler to catch up."))
+        if not dino_ready_for_index:
+            index_metrics.append(("Waiting on", "Run and review DINO Prefilter first."))
         steps["index"] = StepSpec(
             key="index",
             title="Index & Score",
@@ -690,10 +895,15 @@ class AIWorkflowCenterDialog(QDialog):
             metrics=index_metrics,
             actions=[
                 ActionSpec(
-                    label="Run AI Culler",
+                    label="Run Index & Score",
                     callback=lambda: self._invoke("_run_ai_pipeline"),
                     primary=True,
-                    enabled=snap.runtime_ready and snap.folder_open,
+                    enabled=snap.runtime_ready and snap.folder_open and dino_ready_for_index,
+                    tooltip=(
+                        "Run DINO Prefilter first, then review its marks before indexing and scoring."
+                        if not dino_ready_for_index
+                        else ""
+                    ),
                 ),
                 ActionSpec(
                     label="Quick Rerank",

@@ -64,4 +64,5 @@ _tmp_*.png
 .codex_*
 
 # Local benchmark outputs
+.benchmarks/
 benchmarks/*.json

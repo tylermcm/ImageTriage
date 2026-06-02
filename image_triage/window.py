@@ -65,9 +65,13 @@ from PySide6.QtWidgets import (
 
 from .ai_model import (
     AIModelInstallation,
+    DEFAULT_AICULLER_CLIP_SIZE_MB,
+    DEFAULT_AICULLER_TOPIQ_SIZE_MB,
     DEFAULT_AI_MODEL_SIZE_MB,
     DEFAULT_SEMANTIC_MODEL_SIZE_MB,
     download_ai_model as download_managed_ai_model,
+    resolve_aiculler_clip_model_installation,
+    resolve_aiculler_topiq_model_installation,
     resolve_ai_model_installation,
     resolve_semantic_model_installation,
 )
@@ -148,10 +152,13 @@ from .ai_workflow_center import AIWorkflowCenterDialog
 from .aiculler_workflow import (
     AICullerAdapterTask,
     AICullerRunTask,
+    DINOPrefilterRunTask,
     aiculler_db_path,
     aiculler_rerank_readiness,
     aiculler_runtime_available,
     build_aiculler_workflow_paths,
+    clip_model_variant_info,
+    coerce_clip_model_variant,
     default_aiculler_runtime,
     latest_adapter_model_version,
     load_adapter_review_candidates,
@@ -180,6 +187,14 @@ from .bursts import find_burst_groups
 from .catalog import CatalogRepository, catalog_cache_env_override
 from .decision_store import DecisionStore
 from .details_view import PhotoDetailsView
+from .dino_prefilter import (
+    DINOPrefilterDecision,
+    DINOPrefilterSettings,
+    build_dino_prefilter_paths,
+    coerce_dino_prefilter_mode,
+    default_dino_prefilter_settings,
+    load_dino_prefilter_decisions,
+)
 from .file_ops import FileMove, copy_paths, create_folder, delete_folder, move_folder, move_paths, rename_bundle_paths, rename_folder, unique_destination
 from .filtering import (
     AIStateFilter,
@@ -425,12 +440,20 @@ class AISetupSelection:
     """Captures the optional AI components the user chose to install."""
     install_runtime: bool
     runtime_variant: str
+    include_dino_runtime: bool
+    download_aiculler_clip_model: bool
+    download_aiculler_topiq_model: bool
     download_dino_model: bool
     download_semantic_model: bool
 
     @property
     def download_model(self) -> bool:
-        return self.download_dino_model or self.download_semantic_model
+        return (
+            self.download_aiculler_clip_model
+            or self.download_aiculler_topiq_model
+            or self.download_dino_model
+            or self.download_semantic_model
+        )
 
 
 @dataclass(slots=True)
@@ -2230,6 +2253,7 @@ class MainWindow(QMainWindow):
     CATALOG_CACHE_ENABLED_KEY = "catalog/cache_enabled"
     CATALOG_WATCH_CURRENT_FOLDER_KEY = "catalog/watch_current_folder"
     AI_EMBED_BATCH_SIZE_KEY = "ai/embed_batch_size"
+    AI_CLIP_MODEL_VARIANT_KEY = "ai/clip_model_variant"
     AI_REVIEW_DETAIL_PROGRESS_KEY = "ai/review_detail_progress"
     AI_DISPUTE_WEIGHT_KEY = "ai/dispute_weight"
     AI_DISPUTE_WEIGHT_DEFAULT = 3
@@ -2247,6 +2271,19 @@ class MainWindow(QMainWindow):
     AI_BASE_SCORE_WEIGHT_PERCENT_DEFAULT = 65
     AI_BASE_SCORE_WEIGHT_PERCENT_MIN = 0
     AI_BASE_SCORE_WEIGHT_PERCENT_MAX = 100
+    DINO_PREFILTER_ENABLED_KEY = "ai/dino_prefilter/enabled"
+    DINO_PREFILTER_MODE_KEY = "ai/dino_prefilter/mode"
+    DINO_PREFILTER_AGGRESSIVENESS_KEY = "ai/dino_prefilter/aggressiveness_percent"
+    DINO_PREFILTER_TECHNICAL_TRASH_KEY = "ai/dino_prefilter/technical_trash"
+    DINO_PREFILTER_DUPLICATE_TRASH_KEY = "ai/dino_prefilter/duplicate_trash"
+    DINO_PREFILTER_PHASH_DUPLICATE_KEY = "ai/dino_prefilter/phash_duplicate"
+    DINO_PREFILTER_PHASH_HAMMING_THRESHOLD_KEY = "ai/dino_prefilter/phash_hamming_threshold"
+    DINO_PREFILTER_LOW_INFORMATION_KEY = "ai/dino_prefilter/low_information"
+    DINO_PREFILTER_RESCUE_AI_HIGH_SCORE_KEY = "ai/dino_prefilter/rescue_ai_high_score"
+    DINO_PREFILTER_RESCUE_USER_KEEP_KEY = "ai/dino_prefilter/rescue_user_keep"
+    DINO_PREFILTER_RESCUE_SEMANTIC_UNIQUE_KEY = "ai/dino_prefilter/rescue_semantic_unique"
+    DINO_PREFILTER_RESCUE_BEST_REPRESENTATIVE_KEY = "ai/dino_prefilter/rescue_best_representative"
+    DINO_PREFILTER_DIAGNOSTICS_KEY = "ai/dino_prefilter/diagnostics"
     TRAIN_RANKER_LAST_RUN_NAME_KEY = "training/ranker_last_run_name"
     TRAIN_RANKER_LAST_PROFILE_KEY = "training/ranker_last_profile"
     TRAIN_RANKER_LAST_EPOCHS_KEY = "training/ranker_last_epochs"
@@ -2613,6 +2650,8 @@ class MainWindow(QMainWindow):
         self._preview_preload_timer.timeout.connect(self._run_preview_preload)
         self._ai_model_installation = resolve_ai_model_installation()
         self._semantic_model_installation = resolve_semantic_model_installation()
+        self._aiculler_clip_model_installation = resolve_aiculler_clip_model_installation()
+        self._aiculler_topiq_model_installation = resolve_aiculler_topiq_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
         if self._ai_runtime.model_installation is not None:
             self._ai_model_installation = self._ai_runtime.model_installation
@@ -2733,6 +2772,8 @@ class MainWindow(QMainWindow):
         self._archive_job_key = "archive:create"
         self._ai_runtime_job_key = "ai:runtime"
         self._ai_model_job_key = "ai:model"
+        self._pending_ai_aiculler_clip_download_after_runtime = False
+        self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self._current_folder = ""
@@ -2776,6 +2817,7 @@ class MainWindow(QMainWindow):
         self._taste_profile = TasteProfile()
         self._burst_recommendations: dict[str, BurstRecommendation] = {}
         self._workflow_insights_by_path: dict[str, RecordWorkflowInsight] = {}
+        self._dino_prefilter_decisions_by_path: dict[str, DINOPrefilterDecision] = {}
         self._records_view_cache = RecordsViewCache()
         self._last_view_record_paths: tuple[str, ...] = ()
         self._chunked_load_scan_tokens: set[int] = set()
@@ -2847,6 +2889,9 @@ class MainWindow(QMainWindow):
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(
             self._settings.value(self.AI_EMBED_BATCH_SIZE_KEY, self.AI_EMBED_BATCH_SIZE_AUTO, int)
         )
+        self._ai_clip_model_variant = coerce_clip_model_variant(
+            self._settings.value(self.AI_CLIP_MODEL_VARIANT_KEY, "uint8", str)
+        )
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(
             self._settings.value(self.AI_DISPUTE_WEIGHT_KEY, self.AI_DISPUTE_WEIGHT_DEFAULT, int)
         )
@@ -2880,6 +2925,7 @@ class MainWindow(QMainWindow):
                 float,
             )
         )
+        self._dino_prefilter_settings = self._load_dino_prefilter_settings()
         self._catalog_load_source = "idle"
         self._catalog_load_detail = "Ready"
         self._review_grouping_cache_source = "idle"
@@ -4907,8 +4953,8 @@ class MainWindow(QMainWindow):
             add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
             add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
             add_action_command("search.clear_filters", self.actions.clear_filters, section="Search", keywords=("reset filters", "clear search"))
-            add_action_command("ai.open_culler_root", self.actions.install_ai_runtime, section="AI", keywords=("cli culler", "open ai folder", "runtime folder"))
-            add_action_command("ai.edit_categories", self.actions.download_ai_model, section="AI", keywords=("categories", "category prompts", "semantic labels"))
+            add_action_command("ai.install_runtime", self.actions.install_ai_runtime, section="AI", keywords=("runtime", "dependencies", "install ai", "pytorch", "onnxruntime"))
+            add_action_command("ai.download_models", self.actions.download_ai_model, section="AI", keywords=("download models", "hugging face", "clip", "topiq", "dino"))
             add_action_command("ai.workflow_center", self.actions.open_ai_workflow_center, section="AI", keywords=("workflow center", "ai workflow", "guide", "steps", "wizard"))
             add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run ai culler", "rank images"))
             add_action_command("ai.quick_rerank", self.actions.quick_rerank_ai_culling, section="AI", keywords=("quick rerank", "rerank", "re-rank", "rerun rank", "fast rerank", "rerank only"))
@@ -5635,6 +5681,12 @@ class MainWindow(QMainWindow):
     def _managed_semantic_model_installation(self) -> AIModelInstallation:
         return self._semantic_model_installation
 
+    def _managed_aiculler_clip_model_installation(self) -> AIModelInstallation:
+        return self._aiculler_clip_model_installation
+
+    def _managed_aiculler_topiq_model_installation(self) -> AIModelInstallation:
+        return self._aiculler_topiq_model_installation
+
     def _managed_ai_runtime_status(self) -> AIRuntimeInstallationStatus:
         return load_ai_runtime_installation_status()
 
@@ -5717,6 +5769,104 @@ class MainWindow(QMainWindow):
             parsed = cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT
         return max(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN, min(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX, parsed))
 
+    @classmethod
+    def _normalize_dino_prefilter_aggressiveness(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default_dino_prefilter_settings().aggressiveness_percent
+        return max(1, min(100, parsed))
+
+    def _load_dino_prefilter_settings(self) -> DINOPrefilterSettings:
+        defaults = default_dino_prefilter_settings()
+        return DINOPrefilterSettings(
+            enabled=self._settings.value(self.DINO_PREFILTER_ENABLED_KEY, defaults.enabled, bool),
+            mode=coerce_dino_prefilter_mode(
+                self._settings.value(self.DINO_PREFILTER_MODE_KEY, defaults.mode.value, str)
+            ),
+            aggressiveness_percent=self._normalize_dino_prefilter_aggressiveness(
+                self._settings.value(
+                    self.DINO_PREFILTER_AGGRESSIVENESS_KEY,
+                    defaults.aggressiveness_percent,
+                    int,
+                )
+            ),
+            technical_trash_enabled=self._settings.value(
+                self.DINO_PREFILTER_TECHNICAL_TRASH_KEY,
+                defaults.technical_trash_enabled,
+                bool,
+            ),
+            duplicate_trash_enabled=self._settings.value(
+                self.DINO_PREFILTER_DUPLICATE_TRASH_KEY,
+                defaults.duplicate_trash_enabled,
+                bool,
+            ),
+            phash_duplicate_enabled=self._settings.value(
+                self.DINO_PREFILTER_PHASH_DUPLICATE_KEY,
+                defaults.phash_duplicate_enabled,
+                bool,
+            ),
+            phash_hamming_threshold=max(
+                0,
+                min(
+                    64,
+                    int(
+                        self._settings.value(
+                            self.DINO_PREFILTER_PHASH_HAMMING_THRESHOLD_KEY,
+                            defaults.phash_hamming_threshold,
+                            int,
+                        )
+                    ),
+                ),
+            ),
+            low_information_enabled=self._settings.value(
+                self.DINO_PREFILTER_LOW_INFORMATION_KEY,
+                defaults.low_information_enabled,
+                bool,
+            ),
+            rescue_ai_high_score_enabled=self._settings.value(
+                self.DINO_PREFILTER_RESCUE_AI_HIGH_SCORE_KEY,
+                defaults.rescue_ai_high_score_enabled,
+                bool,
+            ),
+            rescue_user_keep_enabled=self._settings.value(
+                self.DINO_PREFILTER_RESCUE_USER_KEEP_KEY,
+                defaults.rescue_user_keep_enabled,
+                bool,
+            ),
+            rescue_semantic_unique_enabled=self._settings.value(
+                self.DINO_PREFILTER_RESCUE_SEMANTIC_UNIQUE_KEY,
+                defaults.rescue_semantic_unique_enabled,
+                bool,
+            ),
+            rescue_best_representative_enabled=self._settings.value(
+                self.DINO_PREFILTER_RESCUE_BEST_REPRESENTATIVE_KEY,
+                defaults.rescue_best_representative_enabled,
+                bool,
+            ),
+            diagnostics_enabled=self._settings.value(
+                self.DINO_PREFILTER_DIAGNOSTICS_KEY,
+                defaults.diagnostics_enabled,
+                bool,
+            ),
+        ).normalized()
+
+    def _save_dino_prefilter_settings(self, settings: DINOPrefilterSettings) -> None:
+        normalized = settings.normalized()
+        self._settings.setValue(self.DINO_PREFILTER_ENABLED_KEY, normalized.enabled)
+        self._settings.setValue(self.DINO_PREFILTER_MODE_KEY, normalized.mode.value)
+        self._settings.setValue(self.DINO_PREFILTER_AGGRESSIVENESS_KEY, normalized.aggressiveness_percent)
+        self._settings.setValue(self.DINO_PREFILTER_TECHNICAL_TRASH_KEY, normalized.technical_trash_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_DUPLICATE_TRASH_KEY, normalized.duplicate_trash_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_PHASH_DUPLICATE_KEY, normalized.phash_duplicate_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_PHASH_HAMMING_THRESHOLD_KEY, normalized.phash_hamming_threshold)
+        self._settings.setValue(self.DINO_PREFILTER_LOW_INFORMATION_KEY, normalized.low_information_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_RESCUE_AI_HIGH_SCORE_KEY, normalized.rescue_ai_high_score_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_RESCUE_USER_KEEP_KEY, normalized.rescue_user_keep_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_RESCUE_SEMANTIC_UNIQUE_KEY, normalized.rescue_semantic_unique_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_RESCUE_BEST_REPRESENTATIVE_KEY, normalized.rescue_best_representative_enabled)
+        self._settings.setValue(self.DINO_PREFILTER_DIAGNOSTICS_KEY, normalized.diagnostics_enabled)
+
     def _default_ai_embed_batch_size(self) -> int:
         runtime_status = self._managed_ai_runtime_status()
         device = (self._ai_runtime.device or "auto").strip().lower()
@@ -5740,6 +5890,15 @@ class MainWindow(QMainWindow):
         if self._ai_embed_batch_size_setting > 0:
             return str(self._ai_embed_batch_size_setting)
         return f"Auto ({self._configured_ai_embed_batch_size()})"
+
+    def _configured_aiculler_runtime(self, *, workers: int | None = None):
+        return default_aiculler_runtime(
+            workers=workers,
+            clip_model_variant=self._ai_clip_model_variant,
+        )
+
+    def _ai_clip_model_variant_label(self) -> str:
+        return clip_model_variant_info(self._ai_clip_model_variant).label
 
     def _refresh_ai_runtime_preferences(self) -> None:
         runtime_status = self._managed_ai_runtime_status()
@@ -5765,6 +5924,10 @@ class MainWindow(QMainWindow):
     def _ai_runtime_available(self) -> bool:
         return self._managed_ai_runtime_status().is_installed
 
+    def _dino_runtime_available(self) -> bool:
+        status = self._managed_ai_runtime_status()
+        return bool(set(status.installed_variants) & set(status.dino_installed_variants))
+
     def _ai_runtime_explanation_text(self) -> str:
         status = self._managed_ai_runtime_status()
         installed = ", ".join(ai_runtime_variant_label(variant) for variant in status.installed_variants)
@@ -5781,8 +5944,8 @@ class MainWindow(QMainWindow):
         return (
             "Image Triage can install PyTorch and the larger AI support packages on demand.\n\n"
             "This keeps the MSI much smaller and moves heavy dependencies into your local AI cache. "
-            "The runtime install includes PyTorch, torchvision, transformers, timm, scikit-learn, "
-            "and OpenCV.\n\n"
+            "The core runtime includes ONNX Runtime, scikit-learn, Pillow, and OpenCV. "
+            "DINO Prefilter dependencies add PyTorch, torchvision, transformers, timm, and safetensors.\n\n"
             f"Estimated GPU runtime download: about {gpu_download / 1024:.1f} GB "
             f"({gpu_installed / 1024:.1f} GB installed)\n"
             f"Estimated CPU runtime download: about {cpu_download / 1024:.1f} GB "
@@ -5818,6 +5981,12 @@ class MainWindow(QMainWindow):
             return True
         return self._managed_semantic_model_installation().is_installed
 
+    def _aiculler_clip_model_available(self) -> bool:
+        return self._managed_aiculler_clip_model_installation().is_installed
+
+    def _aiculler_topiq_model_available(self) -> bool:
+        return self._managed_aiculler_topiq_model_installation().is_installed
+
     def _ai_model_explanation_text(self) -> str:
         installation = self._managed_ai_model_installation()
         installed_size = directory_size_bytes(installation.install_dir)
@@ -5850,6 +6019,33 @@ class MainWindow(QMainWindow):
             f"{installed_line}"
         )
 
+    def _aiculler_clip_model_explanation_text(self) -> str:
+        installation = self._managed_aiculler_clip_model_installation()
+        installed_size = directory_size_bytes(installation.install_dir)
+        installed_line = ""
+        if installed_size > 0:
+            installed_line = f"\nCurrent CLIP cache: {_format_bytes(installed_size)}"
+        return (
+            "CLI-Culler uses this local CLIP ONNX bundle for image embeddings and category scoring. "
+            "It includes the selectable UInt8, Int8, Quantized, Q4, and BNB4 vision/text pairs.\n\n"
+            f"Download size: about {DEFAULT_AICULLER_CLIP_SIZE_MB} MB\n"
+            f"Install location:\n{installation.install_dir}"
+            f"{installed_line}"
+        )
+
+    def _aiculler_topiq_model_explanation_text(self) -> str:
+        installation = self._managed_aiculler_topiq_model_installation()
+        installed_size = directory_size_bytes(installation.install_dir)
+        installed_line = ""
+        if installed_size > 0:
+            installed_line = f"\nCurrent TOPIQ cache: {_format_bytes(installed_size)}"
+        return (
+            "CLI-Culler uses TOPIQ as an optional technical quality model during ingest.\n\n"
+            f"Download size: about {DEFAULT_AICULLER_TOPIQ_SIZE_MB} MB\n"
+            f"Install location:\n{installation.install_dir}"
+            f"{installed_line}"
+        )
+
     def _show_ai_setup_dialog(
         self,
         *,
@@ -5859,12 +6055,17 @@ class MainWindow(QMainWindow):
         allow_runtime: bool,
         allow_model: bool,
         default_install_runtime: bool,
+        default_include_dino_runtime: bool,
+        default_download_aiculler_clip_model: bool,
+        default_download_aiculler_topiq_model: bool,
         default_download_dino_model: bool,
         default_download_semantic_model: bool,
     ) -> AISetupSelection | None:
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setModal(True)
+        dialog.setMinimumWidth(720)
+        dialog.resize(760, 720)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -5875,6 +6076,7 @@ class MainWindow(QMainWindow):
 
         runtime_checkbox: QCheckBox | None = None
         runtime_variant_combo: QComboBox | None = None
+        dino_runtime_checkbox: QCheckBox | None = None
         if allow_runtime:
             runtime_checkbox = QCheckBox("Install AI runtime packages now", dialog)
             runtime_checkbox.setChecked(default_install_runtime)
@@ -5892,6 +6094,12 @@ class MainWindow(QMainWindow):
             layout.addWidget(runtime_variant_label)
             layout.addWidget(runtime_variant_combo)
 
+            dino_runtime_checkbox = QCheckBox("Include optional DINO Prefilter dependencies", dialog)
+            dino_runtime_checkbox.setChecked(default_include_dino_runtime)
+            dino_runtime_checkbox.setEnabled(default_install_runtime)
+            runtime_checkbox.toggled.connect(dino_runtime_checkbox.setEnabled)
+            layout.addWidget(dino_runtime_checkbox)
+
             runtime_details = QLabel(self._ai_runtime_explanation_text(), dialog)
             runtime_details.setWordWrap(True)
             runtime_details.setEnabled(default_install_runtime)
@@ -5900,11 +6108,35 @@ class MainWindow(QMainWindow):
 
         dino_model_checkbox: QCheckBox | None = None
         semantic_model_checkbox: QCheckBox | None = None
+        aiculler_clip_checkbox: QCheckBox | None = None
+        aiculler_topiq_checkbox: QCheckBox | None = None
         if allow_model:
+            clip_status = "Installed" if self._aiculler_clip_model_available() else "Missing"
+            topiq_status = "Installed" if self._aiculler_topiq_model_available() else "Missing"
             dino_status = "Installed" if self._ai_model_available() else "Missing"
             semantic_status = "Installed" if self._semantic_model_available() else "Missing"
 
-            dino_model_checkbox = QCheckBox(f"DINOv3 ranking model ({dino_status})", dialog)
+            aiculler_clip_checkbox = QCheckBox(f"CLI-Culler CLIP ONNX bundle ({clip_status})", dialog)
+            aiculler_clip_checkbox.setChecked(default_download_aiculler_clip_model)
+            layout.addWidget(aiculler_clip_checkbox)
+
+            aiculler_clip_details = QLabel(self._aiculler_clip_model_explanation_text(), dialog)
+            aiculler_clip_details.setWordWrap(True)
+            aiculler_clip_details.setEnabled(default_download_aiculler_clip_model)
+            aiculler_clip_checkbox.toggled.connect(aiculler_clip_details.setEnabled)
+            layout.addWidget(aiculler_clip_details)
+
+            aiculler_topiq_checkbox = QCheckBox(f"TOPIQ technical quality model ({topiq_status})", dialog)
+            aiculler_topiq_checkbox.setChecked(default_download_aiculler_topiq_model)
+            layout.addWidget(aiculler_topiq_checkbox)
+
+            aiculler_topiq_details = QLabel(self._aiculler_topiq_model_explanation_text(), dialog)
+            aiculler_topiq_details.setWordWrap(True)
+            aiculler_topiq_details.setEnabled(default_download_aiculler_topiq_model)
+            aiculler_topiq_checkbox.toggled.connect(aiculler_topiq_details.setEnabled)
+            layout.addWidget(aiculler_topiq_details)
+
+            dino_model_checkbox = QCheckBox(f"Optional DINO Prefilter model ({dino_status})", dialog)
             dino_model_checkbox.setChecked(default_download_dino_model)
             layout.addWidget(dino_model_checkbox)
 
@@ -5948,6 +6180,9 @@ class MainWindow(QMainWindow):
         return AISetupSelection(
             install_runtime=bool(runtime_checkbox and runtime_checkbox.isChecked()),
             runtime_variant=runtime_variant,
+            include_dino_runtime=bool(dino_runtime_checkbox and dino_runtime_checkbox.isChecked()),
+            download_aiculler_clip_model=bool(aiculler_clip_checkbox and aiculler_clip_checkbox.isChecked()),
+            download_aiculler_topiq_model=bool(aiculler_topiq_checkbox and aiculler_topiq_checkbox.isChecked()),
             download_dino_model=bool(dino_model_checkbox and dino_model_checkbox.isChecked()),
             download_semantic_model=bool(semantic_model_checkbox and semantic_model_checkbox.isChecked()),
         )
@@ -5992,9 +6227,11 @@ class MainWindow(QMainWindow):
         if not getattr(sys, "frozen", False):
             return
         runtime_missing = not self._ai_runtime_available()
+        aiculler_clip_missing = not self._aiculler_clip_model_available()
+        aiculler_topiq_missing = not self._aiculler_topiq_model_available()
         dino_model_missing = self._ai_runtime.model_installation is not None and not self._ai_model_available()
         semantic_model_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
-        if not runtime_missing and not dino_model_missing and not semantic_model_missing:
+        if not runtime_missing and not aiculler_clip_missing and not aiculler_topiq_missing and not dino_model_missing and not semantic_model_missing:
             return
         if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
             return
@@ -6009,8 +6246,11 @@ class MainWindow(QMainWindow):
                 "Choose which AI components to install now."
             ),
             allow_runtime=runtime_missing,
-            allow_model=dino_model_missing or semantic_model_missing,
+            allow_model=aiculler_clip_missing or aiculler_topiq_missing or dino_model_missing or semantic_model_missing,
             default_install_runtime=runtime_missing,
+            default_include_dino_runtime=dino_model_missing or self._dino_prefilter_settings.enabled,
+            default_download_aiculler_clip_model=aiculler_clip_missing,
+            default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_dino_model=dino_model_missing,
             default_download_semantic_model=semantic_model_missing,
         )
@@ -6021,12 +6261,17 @@ class MainWindow(QMainWindow):
             self._start_ai_runtime_install(
                 selection.runtime_variant,
                 force=False,
+                include_dino=selection.include_dino_runtime,
+                download_aiculler_clip_after=selection.download_aiculler_clip_model and aiculler_clip_missing,
+                download_aiculler_topiq_after=selection.download_aiculler_topiq_model and aiculler_topiq_missing,
                 download_dino_model_after=selection.download_dino_model and dino_model_missing,
                 download_semantic_model_after=selection.download_semantic_model and semantic_model_missing,
             )
             return
         if selection.download_model:
             self._start_ai_model_download(
+                download_aiculler_clip=selection.download_aiculler_clip_model and aiculler_clip_missing,
+                download_aiculler_topiq=selection.download_aiculler_topiq_model and aiculler_topiq_missing,
                 download_dino=selection.download_dino_model and dino_model_missing,
                 download_semantic=selection.download_semantic_model and semantic_model_missing,
                 force=False,
@@ -6035,6 +6280,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("AI setup skipped for now.")
 
     def _prompt_for_ai_model_install(self, *, automatic: bool) -> None:
+        aiculler_clip_missing = not self._aiculler_clip_model_available()
+        aiculler_topiq_missing = not self._aiculler_topiq_model_available()
         dino_missing = not self._ai_model_available()
         semantic_missing = not self._semantic_model_available()
         selection = self._show_ai_setup_dialog(
@@ -6044,6 +6291,9 @@ class MainWindow(QMainWindow):
             allow_runtime=False,
             allow_model=True,
             default_install_runtime=False,
+            default_include_dino_runtime=False,
+            default_download_aiculler_clip_model=aiculler_clip_missing,
+            default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_dino_model=dino_missing,
             default_download_semantic_model=semantic_missing,
         )
@@ -6051,8 +6301,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("AI model download skipped for now.")
             return
         self._start_ai_model_download(
+            download_aiculler_clip=selection.download_aiculler_clip_model,
+            download_aiculler_topiq=selection.download_aiculler_topiq_model,
             download_dino=selection.download_dino_model,
             download_semantic=selection.download_semantic_model,
+            force_aiculler_clip=self._managed_aiculler_clip_model_installation().is_installed,
+            force_aiculler_topiq=self._managed_aiculler_topiq_model_installation().is_installed,
             force_dino=self._managed_ai_model_installation().is_installed,
             force_semantic=self._managed_semantic_model_installation().is_installed,
         )
@@ -6068,6 +6322,9 @@ class MainWindow(QMainWindow):
             allow_runtime=True,
             allow_model=False,
             default_install_runtime=True,
+            default_include_dino_runtime=self._dino_prefilter_settings.enabled,
+            default_download_aiculler_clip_model=False,
+            default_download_aiculler_topiq_model=False,
             default_download_dino_model=False,
             default_download_semantic_model=False,
         )
@@ -6077,6 +6334,9 @@ class MainWindow(QMainWindow):
         self._start_ai_runtime_install(
             selection.runtime_variant,
             force=self._ai_runtime_available(),
+            include_dino=selection.include_dino_runtime,
+            download_aiculler_clip_after=False,
+            download_aiculler_topiq_after=False,
             download_dino_model_after=False,
             download_semantic_model_after=False,
         )
@@ -6086,6 +6346,9 @@ class MainWindow(QMainWindow):
         variant_choice: str,
         *,
         force: bool = False,
+        include_dino: bool = True,
+        download_aiculler_clip_after: bool = False,
+        download_aiculler_topiq_after: bool = False,
         download_dino_model_after: bool = False,
         download_semantic_model_after: bool = False,
     ) -> None:
@@ -6107,6 +6370,8 @@ class MainWindow(QMainWindow):
             cwd = workspace_root
         if force:
             command.append("--force")
+        if not include_dino:
+            command.append("--no-dino")
         task = AIRuntimeInstallTask(
             command=command,
             cwd=cwd,
@@ -6118,6 +6383,8 @@ class MainWindow(QMainWindow):
         task.signals.finished.connect(self._handle_ai_runtime_install_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_ai_runtime_install_failed, Qt.ConnectionType.QueuedConnection)
         self._active_ai_runtime_task = task
+        self._pending_ai_aiculler_clip_download_after_runtime = bool(download_aiculler_clip_after)
+        self._pending_ai_aiculler_topiq_download_after_runtime = bool(download_aiculler_topiq_after)
         self._pending_ai_dino_model_download_after_runtime = bool(download_dino_model_after)
         self._pending_ai_semantic_model_download_after_runtime = bool(download_semantic_model_after)
         controller = self._show_job_progress_dialog(
@@ -6187,19 +6454,33 @@ class MainWindow(QMainWindow):
         self._update_action_states()
         self._update_ai_toolbar_state()
         self.statusBar().showMessage("AI runtime installed.")
+        download_aiculler_clip = (
+            self._pending_ai_aiculler_clip_download_after_runtime
+            and not self._aiculler_clip_model_available()
+        )
+        download_aiculler_topiq = (
+            self._pending_ai_aiculler_topiq_download_after_runtime
+            and not self._aiculler_topiq_model_available()
+        )
         download_dino = self._pending_ai_dino_model_download_after_runtime and not self._ai_model_available()
         download_semantic = (
             self._pending_ai_semantic_model_download_after_runtime and not self._semantic_model_available()
         )
-        if download_dino or download_semantic:
+        if download_aiculler_clip or download_aiculler_topiq or download_dino or download_semantic:
+            self._pending_ai_aiculler_clip_download_after_runtime = False
+            self._pending_ai_aiculler_topiq_download_after_runtime = False
             self._pending_ai_dino_model_download_after_runtime = False
             self._pending_ai_semantic_model_download_after_runtime = False
             self._start_ai_model_download(
+                download_aiculler_clip=download_aiculler_clip,
+                download_aiculler_topiq=download_aiculler_topiq,
                 download_dino=download_dino,
                 download_semantic=download_semantic,
                 force=False,
             )
             return
+        self._pending_ai_aiculler_clip_download_after_runtime = False
+        self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         QMessageBox.information(
@@ -6210,6 +6491,8 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_runtime_install_failed(self, message: str) -> None:
         self._active_ai_runtime_task = None
+        self._pending_ai_aiculler_clip_download_after_runtime = False
+        self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self._close_job_progress_dialog(self._ai_runtime_job_key)
@@ -6227,17 +6510,37 @@ class MainWindow(QMainWindow):
     def _start_ai_model_download(
         self,
         *,
+        download_aiculler_clip: bool = False,
+        download_aiculler_topiq: bool = False,
         download_dino: bool = True,
         download_semantic: bool = False,
         force: bool = False,
+        force_aiculler_clip: bool | None = None,
+        force_aiculler_topiq: bool | None = None,
         force_dino: bool | None = None,
         force_semantic: bool | None = None,
     ) -> None:
         requests: list[AIModelDownloadRequest] = []
+        if download_aiculler_clip:
+            requests.append(
+                AIModelDownloadRequest(
+                    label="CLI-Culler CLIP",
+                    installation=self._managed_aiculler_clip_model_installation(),
+                    force=force if force_aiculler_clip is None else force_aiculler_clip,
+                )
+            )
+        if download_aiculler_topiq:
+            requests.append(
+                AIModelDownloadRequest(
+                    label="TOPIQ",
+                    installation=self._managed_aiculler_topiq_model_installation(),
+                    force=force if force_aiculler_topiq is None else force_aiculler_topiq,
+                )
+            )
         if download_dino:
             requests.append(
                 AIModelDownloadRequest(
-                    label="DINOv3",
+                    label="DINO Prefilter",
                     installation=self._managed_ai_model_installation(),
                     force=force if force_dino is None else force_dino,
                 )
@@ -10112,6 +10415,28 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.statusBar().showMessage(f"Saved category prompts to {category_path.name}.")
 
+    def _open_dino_prefilter_settings(self) -> None:
+        self._show_settings(initial_section="DINO Prefilter")
+        self._refresh_ai_workflow_center()
+
+    def _open_dino_prefilter_artifacts(self) -> None:
+        if not self._current_folder:
+            QMessageBox.information(self, "DINO Prefilter", "Open a folder before viewing DINO Prefilter artifacts.")
+            return
+        try:
+            paths = build_dino_prefilter_paths(self._current_folder)
+        except Exception as exc:
+            QMessageBox.warning(self, "DINO Prefilter", f"Could not resolve the DINO Prefilter artifact folder.\n\n{exc}")
+            return
+        if not paths.artifact_dir.exists():
+            QMessageBox.information(
+                self,
+                "DINO Prefilter",
+                "No DINO Prefilter artifacts exist for this folder yet. Run DINO Prefilter first.",
+            )
+            return
+        open_with_default(str(paths.artifact_dir))
+
     def _aiculler_paths_for_current_folder(self):
         if not self._current_folder:
             return None
@@ -10831,7 +11156,7 @@ class MainWindow(QMainWindow):
             return
         model_version = self._new_aiculler_adapter_model_version(global_labels=True)
         task = AICullerAdapterTask(
-            runtime=default_aiculler_runtime(),
+            runtime=self._configured_aiculler_runtime(),
             paths=paths,
             mode="train",
             ratings_csv=ratings_path,
@@ -10865,7 +11190,7 @@ class MainWindow(QMainWindow):
             return
         model_version = self._new_aiculler_adapter_model_version()
         task = AICullerAdapterTask(
-            runtime=default_aiculler_runtime(),
+            runtime=self._configured_aiculler_runtime(),
             paths=paths,
             mode="train",
             ratings_csv=ratings_path,
@@ -10890,7 +11215,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Train an adapter before evaluating it.")
             return
         task = AICullerAdapterTask(
-            runtime=default_aiculler_runtime(),
+            runtime=self._configured_aiculler_runtime(),
             paths=paths,
             mode="evaluate",
             model_version=model_version,
@@ -10913,7 +11238,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Train an adapter before ranking with it.")
             return
         task = AICullerAdapterTask(
-            runtime=default_aiculler_runtime(),
+            runtime=self._configured_aiculler_runtime(),
             paths=paths,
             mode="rank",
             model_version=model_version,
@@ -14250,6 +14575,13 @@ class MainWindow(QMainWindow):
                 self.actions.filter_actions[FilterMode.AI_TOP_PICKS].setEnabled(ai_loaded)
             if FilterMode.AI_DISAGREEMENTS in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_DISAGREEMENTS].setEnabled(ai_loaded)
+            try:
+                dino_available = bool(current_folder and build_dino_prefilter_paths(self._current_folder).rows_path.exists())
+            except Exception:
+                dino_available = False
+            for mode in (FilterMode.DINO_QUARANTINE, FilterMode.DINO_REMOVED, FilterMode.DINO_RESCUED):
+                if mode in self.actions.filter_actions:
+                    self.actions.filter_actions[mode].setEnabled(dino_available)
         step_start = log_step("ai_toolbar_state.actions", step_start)
         for mode, action in self._ai_state_actions.items():
             action.setEnabled(ai_loaded or mode == AIStateFilter.ALL)
@@ -14293,6 +14625,7 @@ class MainWindow(QMainWindow):
             f"Semantic model installed: {semantic_model_ready}",
             f"Checkpoint: {active_checkpoint or self._ai_runtime.checkpoint_path}",
             f"Embedding batch size: {self._ai_embed_batch_size_label()}",
+            f"CLI-Culler CLIP model: {self._ai_clip_model_variant_label()}",
             f"Embedding workers: {self._ai_runtime.num_workers}",
             f"Local staging: {self._ai_runtime.local_stage_mode}",
             f"Semantic sidecar: {'enabled' if self._ai_semantic_sidecar_enabled else 'disabled'}",
@@ -14367,14 +14700,16 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            runtime = default_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
+            runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
             runtime.validate()
+            self._refresh_ai_runtime_preferences()
             paths = build_aiculler_workflow_paths(self._current_folder)
             task = AICullerRunTask(
                 folder=Path(self._current_folder),
                 runtime=runtime,
                 paths=paths,
                 records=tuple(record for record in self._all_records if not record.is_folder),
+                dino_prefilter_settings=self._dino_prefilter_settings,
             )
         except Exception as exc:
             if logger.enabled:
@@ -14427,6 +14762,76 @@ class MainWindow(QMainWindow):
                 backend="cli-culler",
             )
 
+    def _run_dino_prefilter(self) -> None:
+        if not self._current_folder:
+            self.statusBar().showMessage("Choose a folder before running DINO Prefilter.")
+            return
+        if not self._all_records:
+            self.statusBar().showMessage("No images are loaded for the current folder yet.")
+            return
+        if not self._dino_prefilter_settings.enabled:
+            self.statusBar().showMessage("Enable DINO Prefilter before running it.")
+            self._show_settings(initial_section="DINO Prefilter")
+            return
+        if not self._dino_runtime_available():
+            QMessageBox.information(
+                self,
+                "DINO Prefilter",
+                "DINO Prefilter needs the optional DINO runtime dependencies. "
+                "Run AI runtime setup and enable the DINO dependency option.",
+            )
+            self._install_ai_runtime()
+            return
+        if self._active_ai_task is not None:
+            self.statusBar().showMessage("AI review is already running for the current folder")
+            self._show_ai_review_progress_dialog(folder=self._current_folder)
+            return
+
+        try:
+            self._refresh_ai_runtime_preferences()
+            paths = build_aiculler_workflow_paths(self._current_folder)
+            task = DINOPrefilterRunTask(
+                folder=Path(self._current_folder),
+                paths=paths,
+                dino_prefilter_settings=self._dino_prefilter_settings,
+                dino_runtime=self._ai_runtime,
+                records=tuple(self._all_records),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "DINO Prefilter", f"Could not prepare the DINO Prefilter run.\n\n{exc}")
+            return
+
+        task.signals.started.connect(self._handle_ai_run_started, Qt.ConnectionType.QueuedConnection)
+        task.signals.stage.connect(self._handle_ai_run_stage, Qt.ConnectionType.QueuedConnection)
+        task.signals.progress.connect(self._handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.detail.connect(self._handle_ai_run_detail, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_dino_prefilter_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_ai_run_failed, Qt.ConnectionType.QueuedConnection)
+        task.signals.cancelled.connect(self._handle_ai_run_cancelled, Qt.ConnectionType.QueuedConnection)
+        self._active_ai_task = task
+        self._defer_background_review_work_for_ai(reason="dino_prefilter")
+        self._active_ai_run_start_perf = 0.0
+        self._active_ai_embedding_cache_key = ""
+        self._active_ai_cluster_cache_key = ""
+        self._active_ai_report_cache_key = ""
+        self._active_ai_semantic_cache_key = ""
+        self._ai_stage_index = 0
+        self._ai_stage_total = 1
+        self._ai_stage_message = "Queued DINO Prefilter"
+        self._ai_progress_current = 0
+        self._ai_progress_total = 0
+        self._ai_progress_eta_text = ""
+        self._show_ai_review_progress_dialog(folder=self._current_folder, reset=True)
+        if self._ai_review_progress_dialog is not None:
+            self._ai_review_progress_dialog.set_stage(
+                stage_index=self._ai_stage_index,
+                stage_total=self._ai_stage_total,
+                message=self._ai_stage_message,
+            )
+        self._update_ai_toolbar_state()
+        self.statusBar().showMessage(f"Queued DINO Prefilter for {self._current_folder}")
+        self._ai_run_pool.start(task)
+
     def _rerank_ai_pipeline(self) -> None:
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before reranking.")
@@ -14450,7 +14855,7 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            runtime = default_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
+            runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
             runtime.validate()
             task = AICullerRunTask(
                 folder=Path(self._current_folder),
@@ -14458,6 +14863,7 @@ class MainWindow(QMainWindow):
                 paths=paths,
                 records=tuple(record for record in self._all_records if not record.is_folder),
                 stages=("rank",),
+                dino_prefilter_settings=self._dino_prefilter_settings,
             )
         except Exception as exc:
             QMessageBox.warning(self, "Quick Rerank", f"Could not prepare the rerank.\n\n{exc}")
@@ -14731,6 +15137,7 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_run_started(self, folder: str) -> None:
         perf_logger().log("ai.run_started", folder=folder)
+        self._last_ai_perf_progress_signature = None
         self._show_ai_review_progress_dialog(folder=folder)
         if self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.set_stage(
@@ -14777,7 +15184,8 @@ class MainWindow(QMainWindow):
         total: int,
         eta_text: str,
     ) -> None:
-        perf_logger().log("ai.progress", folder=folder, message=message, current=current, total=total, eta=eta_text)
+        if self._should_log_ai_progress_perf(message=message, current=current, total=total):
+            perf_logger().log("ai.progress", folder=folder, message=message, current=current, total=total, eta=eta_text)
         if self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.set_progress(
                 message=message,
@@ -14793,6 +15201,29 @@ class MainWindow(QMainWindow):
         self._ai_progress_eta_text = eta_text.strip()
         self.ai_status_label.setText(self._build_ai_progress_text())
         self._refresh_ai_progress_bar()
+
+    def _should_log_ai_progress_perf(self, *, message: str, current: int, total: int) -> bool:
+        logger = perf_logger()
+        if not logger.enabled:
+            return False
+        normalized_message = " ".join((message or "").split())
+        current = max(0, int(current))
+        total = max(0, int(total))
+        previous = getattr(self, "_last_ai_perf_progress_signature", None)
+        if previous is None:
+            self._last_ai_perf_progress_signature = (normalized_message, current, total)
+            return True
+        previous_message, previous_current, previous_total = previous
+        if normalized_message != previous_message or total != previous_total:
+            self._last_ai_perf_progress_signature = (normalized_message, current, total)
+            return True
+        if total <= 0:
+            return False
+        step = max(1, total // 20)
+        if current >= total or current - int(previous_current) >= step:
+            self._last_ai_perf_progress_signature = (normalized_message, current, total)
+            return True
+        return False
 
     def _handle_ai_run_detail(self, folder: str, message: str) -> None:
         if self._ai_review_progress_dialog is not None:
@@ -15055,6 +15486,30 @@ class MainWindow(QMainWindow):
             self._handle_post_ai_run_bundle_failed, Qt.ConnectionType.QueuedConnection
         )
         QThreadPool.globalInstance().start(task, -50)
+
+    def _handle_dino_prefilter_finished(self, folder: str, artifact_dir: str, report_path: str) -> None:
+        self._active_ai_task = None
+        self._ai_stage_index = self._ai_stage_total
+        self._ai_stage_message = "DINO Prefilter complete"
+        if self._ai_progress_total <= 0:
+            self._ai_progress_total = 1
+        self._ai_progress_current = self._ai_progress_total
+        self._ai_progress_eta_text = ""
+        self._close_ai_review_progress_dialog()
+        same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        if same_folder:
+            current_path = self._current_visible_record_path()
+            self._refresh_dino_prefilter_decisions_for_current_folder()
+            self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
+            self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
+            self._apply_records_view(current_path=current_path)
+            self.statusBar().showMessage("DINO Prefilter complete. Review the marked images, then run Index & Score.")
+        else:
+            self.statusBar().showMessage(f"DINO Prefilter complete for {folder}")
+        self._update_ai_toolbar_state()
+        self._refresh_ai_workflow_center()
+        self._resume_deferred_background_review_work_after_ai(reason="dino_prefilter_finished")
+        self._active_ai_run_start_perf = 0.0
 
     def _handle_post_ai_run_bundle_loaded(
         self,
@@ -15721,6 +16176,30 @@ class MainWindow(QMainWindow):
         if record is None:
             return None
         return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(_memory_path_key(record.path))
+
+    def _dino_prefilter_decision_for_record(self, record: ImageRecord | None) -> DINOPrefilterDecision | None:
+        if record is None:
+            return None
+        for path in record.stack_paths:
+            decision = self._dino_prefilter_decisions_by_path.get(normalized_path_key(path))
+            if decision is not None:
+                return decision
+        return None
+
+    def _refresh_dino_prefilter_decisions_for_current_folder(self) -> None:
+        if not self._current_folder:
+            self._dino_prefilter_decisions_by_path = {}
+            return
+        try:
+            paths = build_dino_prefilter_paths(self._current_folder)
+            decisions = load_dino_prefilter_decisions(paths)
+        except Exception:
+            decisions = {}
+        self._dino_prefilter_decisions_by_path = {
+            normalized_path_key(path): decision
+            for path, decision in decisions.items()
+            if normalized_path_key(path)
+        }
 
     def _workflow_summary_for_record(self, record: ImageRecord | None) -> str:
         insight = self._workflow_insight_for_record(record)
@@ -16578,12 +17057,13 @@ class MainWindow(QMainWindow):
 
                 ## Model Download
 
-                The installer now opens a first-launch setup step for the optional AI runtime and local DINO model.
+                The installer now opens a first-launch setup step for the optional AI runtime and local model files.
 
-                - Leave the AI runtime install on if you want PyTorch and the rest of the AI stack ready immediately.
-                - Leave the model download on if you want AI review and AI training available immediately.
+                - Leave the AI runtime install on if you want the core ONNX/TOPIQ stack ready immediately.
+                - Include DINO dependencies only if you plan to use DINO Prefilter.
+                - Leave model downloads on if you want CLI-Culler CLIP, TOPIQ, and optional DINO assets cached locally.
                 - Turn it off if you only want the core browser for now.
-                - If you skip it, use **`AI > Install AI Runtime...`** and **`AI > Download AI Model...`** later.
+                - If you skip it, use **`AI > Install AI Runtime...`** and **`AI > Download AI Models...`** later.
 
                 ## What AI Adds To Review
 
@@ -16644,7 +17124,7 @@ class MainWindow(QMainWindow):
 
                 - If rankings look stale, run **Rank Current Folder With Adapter** again.
                 - If the folder changed heavily, rerun **Run AI Culler** before training or ranking.
-                - If AI actions are disabled, open **`AI > Runtime > Open AI Culler Source`** and check the configured AI Culler paths.
+                - If AI actions are disabled, open **`AI > Install AI Runtime...`** or **`AI > Download AI Models...`** and check the setup state.
                 - If you only want to review AI results, you do **not** need the adapter steps.
                 """
             ),
@@ -16739,7 +17219,7 @@ class MainWindow(QMainWindow):
         self._apply_default_workspace()
         self.statusBar().showMessage("Reset window layout")
 
-    def _show_settings(self) -> None:
+    def _show_settings(self, initial_section: str | None = None) -> None:
         def persist_workflow_presets(presets: tuple[WorkflowPreset, ...]) -> None:
             self._workflow_presets = list(presets)
             self._save_workflow_presets()
@@ -16760,11 +17240,14 @@ class MainWindow(QMainWindow):
             catalog_cache_enabled=self._catalog_cache_enabled,
             watch_current_folder=self._watch_current_folder_enabled,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
+            ai_clip_model_variant=self._ai_clip_model_variant,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
             ai_dispute_weight=self._ai_dispute_weight_setting,
             ai_keep_top_percent=self._ai_keep_top_percent_setting,
             ai_review_band_percent=self._ai_review_band_percent_setting,
             ai_base_score_weight_percent=self._ai_base_score_weight_percent_setting,
+            ai_label_near_duplicate_threshold=self._ai_label_near_duplicate_threshold,
+            dino_prefilter_settings=self._dino_prefilter_settings,
             catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
             preset_save_callback=persist_workflow_presets,
@@ -16773,6 +17256,7 @@ class MainWindow(QMainWindow):
             toolbar_callback=self._show_workspace_toolbar_editor,
             reset_layout_callback=self._reset_window_layout,
             shortcut_overrides=load_shortcut_overrides(),
+            initial_section=initial_section,
             parent=self,
         )
         if self._exec_dialog_with_geometry(dialog, "settings_compact") != dialog.DialogCode.Accepted:
@@ -16799,7 +17283,9 @@ class MainWindow(QMainWindow):
         catalog_changed = result.catalog_cache_enabled != self._catalog_cache_enabled
         watch_changed = result.watch_current_folder != self._watch_current_folder_enabled
         ai_batch_changed = result.ai_embed_batch_size != self._ai_embed_batch_size_setting
+        ai_clip_model_changed = coerce_clip_model_variant(result.ai_clip_model_variant) != self._ai_clip_model_variant
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
+        dino_prefilter_changed = result.dino_prefilter_settings.normalized() != self._dino_prefilter_settings
 
         self._session_id = new_session
         self._winner_mode = result.winner_mode
@@ -16815,7 +17301,10 @@ class MainWindow(QMainWindow):
         self._catalog_cache_enabled = result.catalog_cache_enabled
         self._watch_current_folder_enabled = result.watch_current_folder
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
+        self._ai_clip_model_variant = coerce_clip_model_variant(result.ai_clip_model_variant)
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
+        self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(result.ai_label_near_duplicate_threshold)
+        self._dino_prefilter_settings = result.dino_prefilter_settings.normalized()
         new_keep_top = self._normalize_ai_keep_top_percent(result.ai_keep_top_percent)
         new_review_band = self._normalize_ai_review_band_percent(result.ai_review_band_percent)
         cull_thresholds_changed = (
@@ -16846,10 +17335,13 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.CATALOG_CACHE_ENABLED_KEY, self._catalog_cache_enabled)
         self._settings.setValue(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, self._watch_current_folder_enabled)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
+        self._settings.setValue(self.AI_CLIP_MODEL_VARIANT_KEY, self._ai_clip_model_variant)
         self._settings.setValue(self.AI_DISPUTE_WEIGHT_KEY, self._ai_dispute_weight_setting)
         self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
         self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
         self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
+        self._settings.setValue(self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY, self._ai_label_near_duplicate_threshold)
+        self._save_dino_prefilter_settings(self._dino_prefilter_settings)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Session: {self._session_id}")
@@ -16929,9 +17421,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Current-folder watch {state}")
         elif ai_batch_changed:
             self.statusBar().showMessage(f"AI embedding batch size set to {self._ai_embed_batch_size_label()}")
+        elif ai_clip_model_changed:
+            self.statusBar().showMessage(f"CLIP model set to {self._ai_clip_model_variant_label()}")
         elif ai_progress_detail_changed:
             state = "enabled" if self._ai_review_detail_progress_enabled else "disabled"
             self.statusBar().showMessage(f"Detailed AI Review progress {state}")
+        elif dino_prefilter_changed:
+            state = "enabled" if self._dino_prefilter_settings.enabled else "disabled"
+            self.statusBar().showMessage(f"DINO Prefilter {state}")
 
     def _empty_recycle_bin(self) -> None:
         recycle_root = self._recycle_root_for_folder()
@@ -18590,6 +19087,10 @@ class MainWindow(QMainWindow):
 
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
         step_start = log_step("records_view.finalize.ai_results", step_start)
+        if self._dino_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
+            self._refresh_dino_prefilter_decisions_for_current_folder()
+        self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
+        step_start = log_step("records_view.finalize.dino_prefilter", step_start)
         if not structural_changed:
             self.details_view.refresh_rows()
         step_start = log_step("records_view.finalize.details_refresh", step_start)
@@ -18660,6 +19161,9 @@ class MainWindow(QMainWindow):
         self.details_view.set_records([])
         self._set_annotation_views()
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
+        if self._dino_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
+            self._refresh_dino_prefilter_decisions_for_current_folder()
+        self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
         self.details_view.refresh_rows()
         self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
         self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
@@ -18769,11 +19273,18 @@ class MainWindow(QMainWindow):
         )
         needs_ai = self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
         needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
+        needs_dino = self._filter_query.quick_filter in {
+            FilterMode.DINO_QUARANTINE,
+            FilterMode.DINO_REMOVED,
+            FilterMode.DINO_RESCUED,
+        }
         needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
         needs_workflow = self._filter_query.quick_filter in {FilterMode.AI_DISAGREEMENTS, FilterMode.REVIEW_ROUNDS}
         needs_workflow = needs_workflow or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
         needs_workflow = needs_workflow or bool(normalize_review_round(self._filter_query.review_round))
         needs_metadata = self._filter_query.requires_metadata
+        if needs_dino:
+            self._refresh_dino_prefilter_decisions_for_current_folder()
         if not self._filter_query.has_active_filters:
             records = [*visible_folder_records, *sorted_records]
         else:
@@ -18786,6 +19297,7 @@ class MainWindow(QMainWindow):
                 workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
                 metadata = self._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
                 is_disputed = self._is_record_disputed(record) if needs_dispute else False
+                dino_decision = self._dino_prefilter_decision_for_record(record) if needs_dino else None
                 if matches_record_query(
                     record,
                     self._filter_query,
@@ -18795,6 +19307,7 @@ class MainWindow(QMainWindow):
                     review_insight=review_insight,
                     workflow_insight=workflow_insight,
                     is_disputed=is_disputed,
+                    dino_decision=dino_decision,
                 ):
                     records.append(record)
 

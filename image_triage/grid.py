@@ -100,6 +100,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._ai_result_cache: dict[str, AIImageResult | None] = {}
         self._review_insights_by_path: dict[str, object] = {}
         self._workflow_insights_by_path: dict[str, object] = {}
+        self._dino_prefilter_decisions_by_path: dict[str, object] = {}
         self._normalized_path_cache: dict[str, str] = {}
         self._failed_paths: set[str] = set()
         self._failed_messages: dict[str, str] = {}
@@ -619,6 +620,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         'Disputed' badge that paints in AI Review mode."""
 
         self._disputed_paths = {_fast_path_key(p) for p in (paths or set()) if p}
+        self.viewport().update()
+
+    def set_dino_prefilter_decisions(self, decisions_by_path: dict[str, object]) -> None:
+        self._dino_prefilter_decisions_by_path = {
+            _fast_path_key(path): decision
+            for path, decision in decisions_by_path.items()
+            if path
+        }
         self.viewport().update()
 
     def set_review_insights(self, insights_by_path: dict[str, object]) -> None:
@@ -1684,6 +1693,19 @@ class ThumbnailGridView(QAbstractScrollArea):
                 QColor("#fff1d6"),
             )
             left_badge_y += 30
+        dino_decision = self._dino_prefilter_decision_for(record)
+        if self._show_ai_annotations and dino_decision is not None:
+            dino_badge = self._dino_prefilter_badge(dino_decision)
+            if dino_badge is not None:
+                badge_text, fill, text, badge_width = dino_badge
+                self._paint_state_badge(
+                    painter,
+                    QRect(left_badge_x, left_badge_y, badge_width, 24),
+                    badge_text,
+                    fill,
+                    text,
+                )
+                left_badge_y += 30
         if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
             fill, text = self._workflow_disagreement_palette(getattr(workflow_insight, "disagreement_level", ""))
             self._paint_state_badge(
@@ -1910,6 +1932,13 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _workflow_insight_for(self, record: ImageRecord):
         return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(_fast_path_key(record.path))
 
+    def _dino_prefilter_decision_for(self, record: ImageRecord):
+        for candidate in record.stack_paths:
+            decision = self._dino_prefilter_decisions_by_path.get(_fast_path_key(candidate))
+            if decision is not None:
+                return decision
+        return None
+
     def _visible_workflow_summary(self, workflow_insight) -> str:
         if workflow_insight is None:
             return ""
@@ -1953,6 +1982,16 @@ class ThumbnailGridView(QAbstractScrollArea):
         label = ai_result.confidence_bucket_short_label
         fill, text = self._confidence_badge_palette(label)
         return (label, fill, text, 106)
+
+    def _dino_prefilter_badge(self, decision) -> tuple[str, QColor, QColor, int] | None:
+        action = str(getattr(decision, "action", "") or "")
+        if action == "quarantine":
+            return ("DINO Quarantine", self._workflow_review_badge_fill, self._workflow_review_badge_text, 126)
+        if action == "remove_from_pool":
+            return ("DINO Removed", self._workflow_miss_badge_fill, self._workflow_miss_badge_text, 112)
+        if action == "rescued":
+            return ("DINO Rescued", self._workflow_best_badge_fill, self._workflow_best_badge_text, 112)
+        return None
 
     def _workflow_disagreement_palette(self, level: str) -> tuple[QColor, QColor]:
         if level == "strong":

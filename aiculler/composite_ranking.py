@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -74,6 +75,7 @@ class CompositeRanker:
         preference_alpha: float = 0.0001,
         record_feedback: bool = True,
         diagnostic_top_n: int = 10,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
     ) -> CompositeRankResult:
         rows = self.store.list_images(require_embedding=True)
         if not rows:
@@ -95,7 +97,12 @@ class CompositeRanker:
         normalized_profile = (
             normalize_scores(profile_scores, mode="minmax") if profile_name else {int(row["id"]): 0.0 for row in rows}
         )
-        tag_penalties, tag_flags = self._tag_penalties(rows, tag_configs or [], avoid_tags or [])
+        tag_penalties, tag_flags = self._tag_penalties(
+            rows,
+            tag_configs or [],
+            avoid_tags or [],
+            progress_callback=progress_callback,
+        )
 
         unranked: list[CompositeRankRecord] = []
         updates: dict[int, dict] = {}
@@ -228,7 +235,14 @@ class CompositeRanker:
             return learned_scores, normalize_scores(learned_scores, mode="minmax"), None
         return learned_scores, {int(row["id"]): 0.0 for row in rows}, None
 
-    def _tag_penalties(self, rows, configs: list[TagPenaltyConfig], avoid_tags: list[str]) -> tuple[dict[int, float], dict[int, str]]:
+    def _tag_penalties(
+        self,
+        rows,
+        configs: list[TagPenaltyConfig],
+        avoid_tags: list[str],
+        *,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+    ) -> tuple[dict[int, float], dict[int, str]]:
         if not avoid_tags:
             return ({int(row["id"]): 0.0 for row in rows}, {int(row["id"]): "" for row in rows})
         selected = [config for config in configs if config.tag in set(avoid_tags)]
@@ -236,9 +250,12 @@ class CompositeRanker:
             raise ValueError(f"No matching tag configs for: {', '.join(avoid_tags)}")
         penalties: dict[int, float] = {}
         flags: dict[int, str] = {}
-        for row in rows:
+        total = len(rows)
+        for index, row in enumerate(rows, start=1):
             image_id = int(row["id"])
             image_path = Path(row["preview_path"] or row["source_path"])
+            if progress_callback is not None:
+                progress_callback("tag-metrics", index, total, image_path.name)
             metrics = compute_technical_metrics(image_path)
             penalty, triggered = compute_tag_penalty(metrics, selected)
             penalties[image_id] = penalty

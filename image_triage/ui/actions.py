@@ -346,13 +346,13 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
         install_ai_runtime=_create_action(
             window,
-            "Open AI Culler Source",
-            slot=window._open_aiculler_root,
+            "Install AI Runtime...",
+            slot=window._install_ai_runtime,
         ),
         download_ai_model=_create_action(
             window,
-            "Edit Category Prompts...",
-            slot=window._open_aiculler_categories,
+            "Download AI Models...",
+            slot=window._download_ai_model,
         ),
         open_ai_workflow_center=_create_action(
             window,

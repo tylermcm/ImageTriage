@@ -20,6 +20,7 @@ from .review_workflows import (
 
 if TYPE_CHECKING:
     from .ai_results import AIImageResult
+    from .dino_prefilter import DINOPrefilterDecision
     from .metadata import CaptureMetadata
     from .review_intelligence import ReviewInsight
     from .review_workflows import RecordWorkflowInsight
@@ -163,6 +164,7 @@ def matches_record_query(
     review_insight: "ReviewInsight | None" = None,
     workflow_insight: "RecordWorkflowInsight | None" = None,
     is_disputed: bool = False,
+    dino_decision: "DINOPrefilterDecision | None" = None,
 ) -> bool:
     resolved_annotation = annotation if annotation is not None else SessionAnnotation()
     return (
@@ -174,6 +176,7 @@ def matches_record_query(
             review_insight,
             workflow_insight,
             is_disputed=is_disputed,
+            dino_decision=dino_decision,
         )
         and _matches_search(record, query)
         and _matches_file_type(record, query.file_type)
@@ -195,6 +198,7 @@ def _matches_quick_filter(
     workflow_insight: "RecordWorkflowInsight | None",
     *,
     is_disputed: bool = False,
+    dino_decision: "DINOPrefilterDecision | None" = None,
 ) -> bool:
     if quick_filter == FilterMode.WINNERS:
         return annotation.winner
@@ -219,6 +223,12 @@ def _matches_quick_filter(
         if is_disputed:
             return True
         return workflow_insight is not None and workflow_insight.has_disagreement
+    if quick_filter == FilterMode.DINO_QUARANTINE:
+        return dino_decision is not None and dino_decision.action == "quarantine"
+    if quick_filter == FilterMode.DINO_REMOVED:
+        return dino_decision is not None and dino_decision.action == "remove_from_pool"
+    if quick_filter == FilterMode.DINO_RESCUED:
+        return dino_decision is not None and dino_decision.action == "rescued"
     if quick_filter == FilterMode.REVIEW_ROUNDS:
         return workflow_insight is not None and workflow_insight.has_round
     return True
@@ -507,6 +517,24 @@ def builtin_filter_presets() -> tuple[SavedFilterPreset, ...]:
             name="AI Disagreements",
             query=RecordFilterQuery(
                 quick_filter=FilterMode.AI_DISAGREEMENTS,
+            ),
+        ),
+        SavedFilterPreset(
+            name="DINO Quarantine",
+            query=RecordFilterQuery(
+                quick_filter=FilterMode.DINO_QUARANTINE,
+            ),
+        ),
+        SavedFilterPreset(
+            name="DINO Removed",
+            query=RecordFilterQuery(
+                quick_filter=FilterMode.DINO_REMOVED,
+            ),
+        ),
+        SavedFilterPreset(
+            name="DINO Rescued",
+            query=RecordFilterQuery(
+                quick_filter=FilterMode.DINO_RESCUED,
             ),
         ),
         SavedFilterPreset(

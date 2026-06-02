@@ -24,9 +24,7 @@ AI_RUNTIME_VARIANTS = (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT)
 AI_RUNTIME_INSTALL_CHOICES = (*AI_RUNTIME_VARIANTS, AI_RUNTIME_BOTH_VARIANT)
 DEFAULT_CPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 DEFAULT_GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
-AI_RUNTIME_PIP_REQUIREMENTS = (
-    "torch",
-    "torchvision",
+AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     "numpy>=1.26",
     "onnxruntime>=1.16",
     "Pillow>=10.4",
@@ -34,26 +32,34 @@ AI_RUNTIME_PIP_REQUIREMENTS = (
     "scikit-learn>=1.5",
     "tqdm>=4.66",
     "PyYAML>=6.0",
+)
+AI_RUNTIME_DINO_PIP_REQUIREMENTS = (
+    "torch",
+    "torchvision",
     "timm>=1.0",
     "transformers>=4.56",
     "safetensors>=0.4",
     "tokenizers>=0.15",
 )
-AI_RUNTIME_REQUIRED_MODULE_NAMES = (
-    "torch",
-    "torchvision",
+AI_RUNTIME_PIP_REQUIREMENTS = AI_RUNTIME_BASE_PIP_REQUIREMENTS + AI_RUNTIME_DINO_PIP_REQUIREMENTS
+AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "numpy",
     "onnxruntime",
     "cv2",
     "sklearn",
-    "timm",
-    "transformers",
-    "safetensors",
-    "tokenizers",
     "PIL",
     "yaml",
     "tqdm",
 )
+AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES = (
+    "torch",
+    "torchvision",
+    "timm",
+    "transformers",
+    "safetensors",
+    "tokenizers",
+)
+AI_RUNTIME_REQUIRED_MODULE_NAMES = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES
 AI_RUNTIME_REQUIRED_VERSION_FLOORS = {
     "transformers": (4, 56),
 }
@@ -98,6 +104,7 @@ class AIRuntimeInstallationStatus:
     profiles: dict[str, AIRuntimeProfileStatus]
     installed_variants: tuple[str, ...]
     preferred_variant: str
+    dino_installed_variants: tuple[str, ...] = ()
 
     @property
     def is_installed(self) -> bool:
@@ -176,8 +183,20 @@ def load_ai_runtime_installation_status(
 ) -> AIRuntimeInstallationStatus:
     directories = resolve_ai_runtime_directories(install_root=install_root)
     metadata = _load_ai_runtime_metadata(directories.metadata_path)
+    dino_enabled_value = metadata.get("dino_enabled_variants")
+    if isinstance(dino_enabled_value, list):
+        dino_enabled_variants = {
+            normalize_ai_runtime_variant(str(variant))
+            for variant in dino_enabled_value
+        }
+    else:
+        installed_metadata = metadata.get("installed_variants")
+        dino_enabled_variants = {
+            normalize_ai_runtime_variant(str(variant))
+            for variant in installed_metadata
+        } if isinstance(installed_metadata, list) else set(AI_RUNTIME_VARIANTS)
     profiles = {
-        variant: _profile_status(directories, variant)
+        variant: _profile_status(directories, variant, include_dino=variant in dino_enabled_variants)
         for variant in AI_RUNTIME_VARIANTS
     }
     installed_variants = tuple(
@@ -190,11 +209,18 @@ def load_ai_runtime_installation_status(
         or metadata.get("preferred_variant")
         or (installed_variants[0] if installed_variants else AI_RUNTIME_GPU_VARIANT)
     )
+    dino_installed_variants = tuple(
+        variant
+        for variant in AI_RUNTIME_VARIANTS
+        if variant in dino_enabled_variants
+        and _profile_status(directories, variant, include_dino=True).is_installed
+    )
     return AIRuntimeInstallationStatus(
         directories=directories,
         profiles=profiles,
         installed_variants=installed_variants,
         preferred_variant=preferred_variant,
+        dino_installed_variants=dino_installed_variants,
     )
 
 
@@ -220,6 +246,7 @@ def install_ai_runtime(
     variant_choice: str,
     *,
     force: bool = False,
+    include_dino: bool = True,
     install_root: str | Path | None = None,
     output_callback: Callable[[str], None] | None = None,
     pip_runner: PipRunner | None = None,
@@ -244,14 +271,19 @@ def install_ai_runtime(
             output_callback(
                 f"Installing {ai_runtime_variant_label(variant)} AI runtime packages to {target_dir}"
             )
-        args = build_ai_runtime_pip_install_args(variant=variant, target_dir=target_dir, force=force)
+        args = build_ai_runtime_pip_install_args(
+            variant=variant,
+            target_dir=target_dir,
+            force=force,
+            include_dino=include_dino,
+        )
         exit_code = runner(args, directories.root)
         if exit_code != 0:
             shutil.rmtree(target_dir, ignore_errors=True)
             raise RuntimeError(
                 f"AI runtime install failed for {ai_runtime_variant_label(variant)} (exit code {exit_code})."
             )
-        profile_status = _profile_status(directories, variant)
+        profile_status = _profile_status(directories, variant, include_dino=include_dino)
         if not profile_status.is_installed:
             missing = ", ".join(profile_status.missing_modules)
             raise RuntimeError(
@@ -268,6 +300,10 @@ def install_ai_runtime(
     metadata = {
         "installed_variants": sorted(installed_variants),
         "preferred_variant": preferred_variant,
+        "dino_enabled_variants": sorted(
+            set(current_status.dino_installed_variants)
+            | (set(target_variants) if include_dino else set())
+        ),
         "runtime_tag": _python_runtime_tag(),
     }
     directories.metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -279,6 +315,7 @@ def build_ai_runtime_pip_install_args(
     variant: str,
     target_dir: str | Path,
     force: bool = False,
+    include_dino: bool = True,
 ) -> list[str]:
     normalized = normalize_ai_runtime_variant(variant)
     args = [
@@ -302,11 +339,13 @@ def build_ai_runtime_pip_install_args(
         args.extend(["--upgrade", "--force-reinstall"])
     else:
         args.append("--upgrade")
-    args.extend(_ai_runtime_pip_requirements_for_variant(normalized))
+    args.extend(_ai_runtime_pip_requirements_for_variant(normalized, include_dino=include_dino))
     return args
 
 
-def _ai_runtime_pip_requirements_for_variant(variant: str) -> tuple[str, ...]:
+def _ai_runtime_pip_requirements_for_variant(variant: str, *, include_dino: bool = True) -> tuple[str, ...]:
+    if not include_dino:
+        return AI_RUNTIME_BASE_PIP_REQUIREMENTS
     if normalize_ai_runtime_variant(variant) != AI_RUNTIME_GPU_VARIANT:
         return AI_RUNTIME_PIP_REQUIREMENTS
     return tuple(
@@ -336,17 +375,20 @@ def _default_pip_runner(args: list[str], cwd: Path) -> int:
     return int(process.returncode)
 
 
-def _profile_status(directories: AIRuntimeDirectories, variant: str) -> AIRuntimeProfileStatus:
+def _profile_status(directories: AIRuntimeDirectories, variant: str, *, include_dino: bool = True) -> AIRuntimeProfileStatus:
     target_dir = directories.site_packages_dir(variant)
     missing_items: list[str] = []
-    for module_name in AI_RUNTIME_REQUIRED_MODULE_NAMES:
+    module_names = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (
+        AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES if include_dino else ()
+    )
+    for module_name in module_names:
         if not _module_present(target_dir, module_name):
             missing_items.append(module_name)
             continue
         minimum_version = AI_RUNTIME_REQUIRED_VERSION_FLOORS.get(module_name)
         if minimum_version and not _module_version_at_least(target_dir, module_name, minimum_version):
             missing_items.append(f"{module_name}>={'.'.join(str(part) for part in minimum_version)}")
-    if normalize_ai_runtime_variant(variant) == AI_RUNTIME_GPU_VARIANT:
+    if include_dino and normalize_ai_runtime_variant(variant) == AI_RUNTIME_GPU_VARIANT:
         if not _torch_cuda_binaries_present(target_dir):
             missing_items.append("torch CUDA binaries")
         if not _torch_runtime_version_at_least(target_dir, AI_RUNTIME_GPU_TORCH_MINIMUM_VERSION):

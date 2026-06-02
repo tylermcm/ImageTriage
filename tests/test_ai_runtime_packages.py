@@ -9,6 +9,7 @@ from unittest.mock import patch
 from image_triage.ai_runtime_packages import (
     AI_RUNTIME_CPU_VARIANT,
     AI_RUNTIME_GPU_VARIANT,
+    AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES,
     AI_RUNTIME_REQUIRED_MODULE_NAMES,
     build_ai_runtime_pip_install_args,
     directory_size_bytes,
@@ -44,6 +45,13 @@ def _materialize_runtime_modules(target_dir: Path) -> None:
         "Name: transformers\nVersion: 5.5.4\n",
         encoding="utf-8",
     )
+
+
+def _materialize_base_runtime_modules(target_dir: Path) -> None:
+    for module_name in AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES:
+        package_dir = target_dir / module_name
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
 
 
 class AIRuntimePackageTests(unittest.TestCase):
@@ -101,6 +109,28 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("https://download.pytorch.org/whl/cu128", args)
         self.assertIn("torch==2.9.0+cu128", args)
         self.assertIn("torchvision==0.24.0+cu128", args)
+
+    def test_runtime_install_can_skip_optional_dino_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir) / "runtime"
+            recorded_calls: list[list[str]] = []
+
+            def fake_pip_runner(args: list[str], cwd: Path) -> int:
+                recorded_calls.append(args)
+                target_dir = Path(args[args.index("--target") + 1])
+                _materialize_base_runtime_modules(target_dir)
+                return 0
+
+            status = install_ai_runtime(
+                AI_RUNTIME_CPU_VARIANT,
+                include_dino=False,
+                install_root=install_root,
+                pip_runner=fake_pip_runner,
+            )
+
+            self.assertEqual(status.installed_variants, (AI_RUNTIME_CPU_VARIANT,))
+            self.assertEqual(status.dino_installed_variants, ())
+            self.assertNotIn("transformers>=4.56", recorded_calls[0])
 
     def test_old_gpu_torch_runtime_is_reported_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import textwrap
 
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QKeySequence
@@ -27,6 +28,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .aiculler_workflow import (
+    DEFAULT_CLIP_MODEL_VARIANT,
+    clip_model_variant_info,
+    clip_model_variant_options,
+    coerce_clip_model_variant,
+)
+from .dino_prefilter import (
+    DINOPrefilterMode,
+    DINOPrefilterSettings,
+    coerce_dino_prefilter_mode,
+    default_dino_prefilter_settings,
+    dino_prefilter_mode_label,
+)
 from .models import DeleteMode, WinnerMode
 from .ui.shortcuts import SHORTCUT_REGISTRY
 
@@ -55,11 +69,14 @@ class WorkflowSettingsResult:
     catalog_cache_enabled: bool = True
     watch_current_folder: bool = True
     ai_embed_batch_size: int = 0
+    ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     ai_review_detail_progress_enabled: bool = False
     ai_dispute_weight: int = 3
     ai_keep_top_percent: int = 10       # % of folder to mark as Keeper
     ai_review_band_percent: int = 10    # % below Keeper cutoff to mark as Review
     ai_base_score_weight_percent: int = 65  # blend weight (0=adapter only, 100=base only)
+    ai_label_near_duplicate_threshold: float = 0.965
+    dino_prefilter_settings: DINOPrefilterSettings = field(default_factory=default_dino_prefilter_settings)
     presets: tuple[WorkflowPreset, ...] = ()
     # Keybind overrides: attr_name -> chord string. Empty / missing entries
     # mean "use the registered default."
@@ -81,6 +98,24 @@ def _compact_catalog_summary(summary: str) -> str:
     return "\n".join(compact[:5]) if compact else lines[0]
 
 
+def _settings_tooltip(text: str, *, width: int = 54) -> str:
+    paragraphs = [part.strip() for part in str(text or "").splitlines()]
+    wrapped: list[str] = []
+    for paragraph in paragraphs:
+        if not paragraph:
+            wrapped.append("")
+            continue
+        wrapped.extend(
+            textwrap.wrap(
+                paragraph,
+                width=width,
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+        )
+    return "\n".join(wrapped)
+
+
 class WorkflowSettingsDialog(QDialog):
     def __init__(
         self,
@@ -100,11 +135,14 @@ class WorkflowSettingsDialog(QDialog):
         catalog_cache_enabled: bool = True,
         watch_current_folder: bool = True,
         ai_embed_batch_size: int = 0,
+        ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT,
         ai_review_detail_progress_enabled: bool = False,
         ai_dispute_weight: int = 3,
         ai_keep_top_percent: int = 10,
         ai_review_band_percent: int = 10,
         ai_base_score_weight_percent: int = 65,
+        ai_label_near_duplicate_threshold: float = 0.965,
+        dino_prefilter_settings: DINOPrefilterSettings | None = None,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
@@ -113,6 +151,7 @@ class WorkflowSettingsDialog(QDialog):
         toolbar_callback: Callable[[], None] | None = None,
         reset_layout_callback: Callable[[], None] | None = None,
         shortcut_overrides: dict[str, str] | None = None,
+        initial_section: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -123,6 +162,7 @@ class WorkflowSettingsDialog(QDialog):
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
+        dino_settings = (dino_prefilter_settings or default_dino_prefilter_settings()).normalized()
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -221,9 +261,9 @@ class WorkflowSettingsDialog(QDialog):
         self.preview_preload_batch_spin.setSuffix(" images")
         self.preview_preload_batch_spin.setValue(max(0, min(128, int(preview_preload_batch_size))))
         self.preview_preload_batch_spin.setMinimumWidth(120)
-        self.preview_preload_batch_spin.setToolTip(
+        self.preview_preload_batch_spin.setToolTip(_settings_tooltip(
             "Nearby images to preload while using the popout preview. Higher values can improve rapid navigation but use more CPU and RAM."
-        )
+        ))
 
         self.show_hidden_folders_checkbox = QCheckBox("Show hidden folders")
         self.show_hidden_folders_checkbox.setChecked(show_hidden_folders)
@@ -272,20 +312,43 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_embed_batch_size_spin.setSpecialValueText("Auto")
         self.ai_embed_batch_size_spin.setValue(max(0, int(ai_embed_batch_size)))
         self.ai_embed_batch_size_spin.setMinimumWidth(120)
-        self.ai_embed_batch_size_spin.setToolTip(
+        self.ai_embed_batch_size_spin.setToolTip(_settings_tooltip(
             "Concurrent workers in CLI-Culler's ingest pipeline. Both stages "
             "(preview extraction + CLIP/TOPIQ feature extraction) get this "
             "many threads each. Auto picks a balanced default for your "
             "hardware (4 on CPU, 8 on GPU). Higher values speed up ingest "
             "up to your CPU core count; very high values can oversubscribe "
             "ONNX's internal thread pool."
+        ))
+
+        self.ai_clip_model_combo = QComboBox()
+        self.ai_clip_model_combo.setMinimumWidth(260)
+        for variant in clip_model_variant_options():
+            self.ai_clip_model_combo.addItem(variant.label, variant.key)
+            index = self.ai_clip_model_combo.count() - 1
+            self.ai_clip_model_combo.setItemData(
+                index,
+                _settings_tooltip(f"{variant.description}\n{variant.expected_delta}"),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        selected_clip_variant = coerce_clip_model_variant(ai_clip_model_variant)
+        self.ai_clip_model_combo.setCurrentIndex(
+            max(0, self.ai_clip_model_combo.findData(selected_clip_variant))
         )
+        self.ai_clip_model_combo.setToolTip(_settings_tooltip(
+            "Select the paired CLIP vision/text ONNX export used by CLI-Culler ingest and category scoring."
+        ))
+        self.ai_clip_model_warning_label = QLabel("")
+        self.ai_clip_model_warning_label.setWordWrap(True)
+        self.ai_clip_model_warning_label.setObjectName("mutedText")
+        self.ai_clip_model_warning_label.setStyleSheet("font-size: 11px; color: #d0a85c;")
+        self.ai_clip_model_combo.currentIndexChanged.connect(self._update_ai_clip_model_summary)
 
         self.ai_review_detail_progress_checkbox = QCheckBox("Show detailed AI Review activity")
         self.ai_review_detail_progress_checkbox.setChecked(ai_review_detail_progress_enabled)
-        self.ai_review_detail_progress_checkbox.setToolTip(
+        self.ai_review_detail_progress_checkbox.setToolTip(_settings_tooltip(
             "Shows model loading, library loading, and per-stage technical activity in the AI Review progress window."
-        )
+        ))
 
         self.ai_dispute_weight_spin = QSpinBox()
         self.ai_dispute_weight_spin.setRange(2, 5)
@@ -293,12 +356,12 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_dispute_weight_spin.setSuffix("x")
         self.ai_dispute_weight_spin.setValue(max(2, min(5, int(ai_dispute_weight))))
         self.ai_dispute_weight_spin.setMinimumWidth(120)
-        self.ai_dispute_weight_spin.setToolTip(
+        self.ai_dispute_weight_spin.setToolTip(_settings_tooltip(
             "How heavily a disputed image counts in adapter training relative "
             "to a normal label. 3x means each dispute is worth three normal "
             "labels. Higher values let disputes correct the model faster but "
             "make a few mis-clicks louder."
-        )
+        ))
 
         # Cull aggressiveness: two spinners that together determine the bucket
         # distribution. The auto-derived label below them tells the user what
@@ -309,11 +372,11 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_keep_top_spin.setSuffix("%")
         self.ai_keep_top_spin.setValue(max(1, min(50, int(ai_keep_top_percent))))
         self.ai_keep_top_spin.setMinimumWidth(120)
-        self.ai_keep_top_spin.setToolTip(
+        self.ai_keep_top_spin.setToolTip(_settings_tooltip(
             "Top percentile of the folder marked as Keeper. 10% means the AI "
             "passes through roughly the top 10% of images as 'Likely Keeper' "
             "after each run."
-        )
+        ))
 
         self.ai_review_band_spin = QSpinBox()
         self.ai_review_band_spin.setRange(0, 30)
@@ -321,12 +384,12 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_review_band_spin.setSuffix("%")
         self.ai_review_band_spin.setValue(max(0, min(30, int(ai_review_band_percent))))
         self.ai_review_band_spin.setMinimumWidth(120)
-        self.ai_review_band_spin.setToolTip(
+        self.ai_review_band_spin.setToolTip(_settings_tooltip(
             "Additional band of close-to-keeper images marked as 'Needs "
             "Review' (sitting just below the Keeper cutoff). Set to 0 to "
             "disable the Review band entirely so every card is either Keeper "
             "or Reject."
-        )
+        ))
 
         self.ai_cull_summary_label = QLabel("")
         self.ai_cull_summary_label.setObjectName("mutedText")
@@ -344,7 +407,7 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_base_score_weight_spin.setSuffix("%")
         self.ai_base_score_weight_spin.setValue(max(0, min(100, int(ai_base_score_weight_percent))))
         self.ai_base_score_weight_spin.setMinimumWidth(120)
-        self.ai_base_score_weight_spin.setToolTip(
+        self.ai_base_score_weight_spin.setToolTip(_settings_tooltip(
             "Weight of the tag-penalty-aware base score vs. the trained "
             "adapter when blending the final ranking. 100% = base score wins "
             "outright (heavily penalized images can never pass as Keeper); "
@@ -352,19 +415,147 @@ class WorkflowSettingsDialog(QDialog):
             "have no effect). Default 65% favors the base score so the "
             "negative prompts stay authoritative, while still letting the "
             "adapter influence borderline calls."
-        )
+        ))
+
+        self.ai_label_near_duplicate_slider = QSpinBox()
+        self.ai_label_near_duplicate_slider.setRange(500, 995)
+        self.ai_label_near_duplicate_slider.setSingleStep(5)
+        self.ai_label_near_duplicate_slider.setValue(max(500, min(995, int(round(float(ai_label_near_duplicate_threshold) * 1000)))))
+        self.ai_label_near_duplicate_slider.setMinimumWidth(120)
+        self.ai_label_near_duplicate_slider.setToolTip(_settings_tooltip(
+            "Similarity threshold used by legacy adapter label grouping helpers. "
+            "Higher values require images to be closer before they are treated as near-duplicates."
+        ))
 
         ai_page, ai_layout = self._build_settings_page("AI")
         self._add_form_row(ai_layout, "AI ingest workers", self.ai_embed_batch_size_spin)
+        self._add_form_row(ai_layout, "CLIP model", self.ai_clip_model_combo)
+        self._add_text_row(ai_layout, "Model notes", self.ai_clip_model_warning_label)
         self._add_checkbox_row(ai_layout, "Progress details", self.ai_review_detail_progress_checkbox)
         self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
         self._add_form_row(ai_layout, "Cull breakdown", self.ai_cull_summary_label)
         self._add_form_row(ai_layout, "Base score weight", self.ai_base_score_weight_spin)
         self._add_form_row(ai_layout, "Dispute training weight", self.ai_dispute_weight_spin)
+        self._add_form_row(ai_layout, "Near-duplicate label threshold", self.ai_label_near_duplicate_slider)
         ai_layout.addStretch(1)
+        self._update_ai_clip_model_summary()
         self._update_ai_cull_summary()
         self._add_settings_page("AI", ai_page)
+
+        self.dino_prefilter_enabled_checkbox = QCheckBox("Enable DINO Prefilter")
+        self.dino_prefilter_enabled_checkbox.setChecked(dino_settings.enabled)
+        self.dino_prefilter_enabled_checkbox.setToolTip(_settings_tooltip(
+            "Runs a base-model DINO visual screen before the AI Culler. Off keeps the current AI workflow unchanged."
+        ))
+
+        self.dino_prefilter_mode_combo = QComboBox()
+        self.dino_prefilter_mode_combo.setMinimumWidth(220)
+        for mode in DINOPrefilterMode:
+            self.dino_prefilter_mode_combo.addItem(dino_prefilter_mode_label(mode), mode)
+        self.dino_prefilter_mode_combo.setCurrentIndex(
+            max(0, self.dino_prefilter_mode_combo.findData(dino_settings.mode))
+        )
+        self.dino_prefilter_mode_combo.setToolTip(_settings_tooltip(
+            "Soft Quarantine marks candidates while keeping them in the AI pool. "
+            "Pool Removal excludes candidates from downstream AI scoring while keeping them visible in review."
+        ))
+
+        self.dino_prefilter_aggressiveness_spin = QSpinBox()
+        self.dino_prefilter_aggressiveness_spin.setRange(1, 100)
+        self.dino_prefilter_aggressiveness_spin.setSingleStep(1)
+        self.dino_prefilter_aggressiveness_spin.setSuffix("%")
+        self.dino_prefilter_aggressiveness_spin.setValue(dino_settings.aggressiveness_percent)
+        self.dino_prefilter_aggressiveness_spin.setMinimumWidth(120)
+        self.dino_prefilter_aggressiveness_spin.setToolTip(_settings_tooltip(
+            "How confident DINO must be before it marks an image as trash. "
+            "Higher is more conservative."
+        ))
+
+        self.dino_technical_trash_checkbox = QCheckBox("Technical trash")
+        self.dino_technical_trash_checkbox.setChecked(dino_settings.technical_trash_enabled)
+        self.dino_duplicate_trash_checkbox = QCheckBox("Duplicate trash")
+        self.dino_duplicate_trash_checkbox.setChecked(dino_settings.duplicate_trash_enabled)
+        self.dino_phash_duplicate_checkbox = QCheckBox("pHash duplicate trash")
+        self.dino_phash_duplicate_checkbox.setChecked(dino_settings.phash_duplicate_enabled)
+        self.dino_phash_duplicate_checkbox.setToolTip(_settings_tooltip(
+            "Adds a perceptual hash pass for very similar frames that DINO clustering may miss."
+        ))
+        self.dino_phash_hamming_spin = QSpinBox()
+        self.dino_phash_hamming_spin.setRange(0, 64)
+        self.dino_phash_hamming_spin.setSingleStep(1)
+        self.dino_phash_hamming_spin.setValue(dino_settings.phash_hamming_threshold)
+        self.dino_phash_hamming_spin.setMinimumWidth(120)
+        self.dino_phash_hamming_spin.setToolTip(_settings_tooltip(
+            "Maximum pHash Hamming distance treated as a duplicate. "
+            "Lower is stricter. 6 catches tight visual repeats while avoiding broad pose changes."
+        ))
+        self.dino_low_information_checkbox = QCheckBox("Low-information filler")
+        self.dino_low_information_checkbox.setChecked(dino_settings.low_information_enabled)
+
+        self.dino_rescue_ai_high_score_checkbox = QCheckBox("Rescue if current AI scores high")
+        self.dino_rescue_ai_high_score_checkbox.setChecked(dino_settings.rescue_ai_high_score_enabled)
+        self.dino_rescue_user_keep_checkbox = QCheckBox("Rescue if adapter or user label says keep")
+        self.dino_rescue_user_keep_checkbox.setChecked(dino_settings.rescue_user_keep_enabled)
+        self.dino_rescue_semantic_unique_checkbox = QCheckBox("Rescue if semantically unique")
+        self.dino_rescue_semantic_unique_checkbox.setChecked(dino_settings.rescue_semantic_unique_enabled)
+        self.dino_rescue_best_representative_checkbox = QCheckBox("Rescue if best visual representative")
+        self.dino_rescue_best_representative_checkbox.setChecked(dino_settings.rescue_best_representative_enabled)
+
+        self.dino_diagnostics_checkbox = QCheckBox("Write per-run diagnostics and audit rows")
+        self.dino_diagnostics_checkbox.setChecked(dino_settings.diagnostics_enabled)
+
+        dino_page, dino_layout = self._build_settings_page("DINO Prefilter")
+        dino_hint = QLabel(
+            "DINO Prefilter uses the base DINO model only. It is an optional first-pass screen for obvious trash and redundancy; it does not train, adapt, or decide final keeps."
+        )
+        dino_hint.setWordWrap(True)
+        dino_hint.setObjectName("settingsRowLabel")
+        dino_layout.addWidget(dino_hint)
+        dino_layout.addSpacing(4)
+        self._add_checkbox_row(dino_layout, "Status", self.dino_prefilter_enabled_checkbox)
+        self._add_form_row(dino_layout, "Mode", self.dino_prefilter_mode_combo)
+        self._add_form_row(dino_layout, "Confidence threshold", self.dino_prefilter_aggressiveness_spin)
+        reason_heading = QLabel("Allowed trash reasons")
+        reason_heading.setObjectName("settingsCategoryHeading")
+        dino_layout.addSpacing(8)
+        dino_layout.addWidget(reason_heading)
+        self._add_checkbox_row(dino_layout, "Technical", self.dino_technical_trash_checkbox)
+        self._add_checkbox_row(dino_layout, "Duplicates", self.dino_duplicate_trash_checkbox)
+        self._add_checkbox_row(dino_layout, "pHash duplicates", self.dino_phash_duplicate_checkbox)
+        self._add_form_row(dino_layout, "pHash distance", self.dino_phash_hamming_spin)
+        self._add_checkbox_row(dino_layout, "Low information", self.dino_low_information_checkbox)
+        rescue_heading = QLabel("Rescue rules")
+        rescue_heading.setObjectName("settingsCategoryHeading")
+        dino_layout.addSpacing(8)
+        dino_layout.addWidget(rescue_heading)
+        self._add_checkbox_row(dino_layout, "AI score", self.dino_rescue_ai_high_score_checkbox)
+        self._add_checkbox_row(dino_layout, "User labels", self.dino_rescue_user_keep_checkbox)
+        self._add_checkbox_row(dino_layout, "Uniqueness", self.dino_rescue_semantic_unique_checkbox)
+        self._add_checkbox_row(dino_layout, "Representative", self.dino_rescue_best_representative_checkbox)
+        diagnostics_heading = QLabel("Diagnostics")
+        diagnostics_heading.setObjectName("settingsCategoryHeading")
+        dino_layout.addSpacing(8)
+        dino_layout.addWidget(diagnostics_heading)
+        self._add_checkbox_row(dino_layout, "Audit logging", self.dino_diagnostics_checkbox)
+        dino_layout.addStretch(1)
+        self._dino_dependent_controls = (
+            self.dino_prefilter_mode_combo,
+            self.dino_prefilter_aggressiveness_spin,
+            self.dino_technical_trash_checkbox,
+            self.dino_duplicate_trash_checkbox,
+            self.dino_phash_duplicate_checkbox,
+            self.dino_phash_hamming_spin,
+            self.dino_low_information_checkbox,
+            self.dino_rescue_ai_high_score_checkbox,
+            self.dino_rescue_user_keep_checkbox,
+            self.dino_rescue_semantic_unique_checkbox,
+            self.dino_rescue_best_representative_checkbox,
+            self.dino_diagnostics_checkbox,
+        )
+        self.dino_prefilter_enabled_checkbox.toggled.connect(self._set_dino_prefilter_controls_enabled)
+        self._set_dino_prefilter_controls_enabled(self.dino_prefilter_enabled_checkbox.isChecked())
+        self._add_settings_page("DINO Prefilter", dino_page)
 
         shortcuts_page = self._build_shortcuts_page(shortcut_overrides or {})
         self._add_settings_page("Shortcuts", shortcuts_page)
@@ -382,6 +573,8 @@ class WorkflowSettingsDialog(QDialog):
         root_layout.addWidget(footer, 0)
         self.section_list.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.section_list.setCurrentRow(0)
+        if initial_section:
+            self._select_section(initial_section)
         self._refresh_preset_dropdown()
 
     def _build_settings_page(self, title: str) -> tuple[QWidget, QVBoxLayout]:
@@ -412,6 +605,16 @@ class WorkflowSettingsDialog(QDialog):
         item = QListWidgetItem(title)
         self.section_list.addItem(item)
         self.pages.addWidget(page)
+
+    def _select_section(self, title: str) -> None:
+        target = title.strip().casefold()
+        if not target:
+            return
+        for row in range(self.section_list.count()):
+            item = self.section_list.item(row)
+            if item is not None and item.text().strip().casefold() == target:
+                self.section_list.setCurrentRow(row)
+                return
 
     def _row_frame(self) -> tuple[QWidget, QHBoxLayout]:
         row = QWidget()
@@ -524,6 +727,19 @@ class WorkflowSettingsDialog(QDialog):
     def _reset_all_shortcuts(self) -> None:
         for attr_name, editor in self._shortcut_editors.items():
             editor.setKeySequence(QKeySequence(self._shortcut_defaults.get(attr_name, "")))
+
+    def _set_dino_prefilter_controls_enabled(self, enabled: bool) -> None:
+        for control in getattr(self, "_dino_dependent_controls", ()):
+            control.setEnabled(bool(enabled))
+
+    def _update_ai_clip_model_summary(self) -> None:
+        info = clip_model_variant_info(self.ai_clip_model_combo.currentData())
+        parts = [info.description, info.expected_delta]
+        if info.warning:
+            parts.append(f"Warning: {info.warning}")
+        elif info.recommended:
+            parts.append("Recommended default.")
+        self.ai_clip_model_warning_label.setText("\n".join(parts))
 
     def _collect_shortcut_state(self) -> tuple[dict[str, str], dict[str, list[str]]]:
         """Return (effective_chords_by_attr, conflicts_by_chord) from current editor state."""
@@ -704,11 +920,28 @@ class WorkflowSettingsDialog(QDialog):
             catalog_cache_enabled=self.catalog_cache_checkbox.isChecked(),
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
+            ai_clip_model_variant=coerce_clip_model_variant(self.ai_clip_model_combo.currentData()),
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
             ai_keep_top_percent=max(1, min(50, int(self.ai_keep_top_spin.value()))),
             ai_review_band_percent=max(0, min(30, int(self.ai_review_band_spin.value()))),
             ai_base_score_weight_percent=max(0, min(100, int(self.ai_base_score_weight_spin.value()))),
+            ai_label_near_duplicate_threshold=max(0.500, min(0.995, int(self.ai_label_near_duplicate_slider.value()) / 1000.0)),
+            dino_prefilter_settings=DINOPrefilterSettings(
+                enabled=self.dino_prefilter_enabled_checkbox.isChecked(),
+                mode=coerce_dino_prefilter_mode(self.dino_prefilter_mode_combo.currentData()),
+                aggressiveness_percent=int(self.dino_prefilter_aggressiveness_spin.value()),
+                technical_trash_enabled=self.dino_technical_trash_checkbox.isChecked(),
+                duplicate_trash_enabled=self.dino_duplicate_trash_checkbox.isChecked(),
+                phash_duplicate_enabled=self.dino_phash_duplicate_checkbox.isChecked(),
+                phash_hamming_threshold=int(self.dino_phash_hamming_spin.value()),
+                low_information_enabled=self.dino_low_information_checkbox.isChecked(),
+                rescue_ai_high_score_enabled=self.dino_rescue_ai_high_score_checkbox.isChecked(),
+                rescue_user_keep_enabled=self.dino_rescue_user_keep_checkbox.isChecked(),
+                rescue_semantic_unique_enabled=self.dino_rescue_semantic_unique_checkbox.isChecked(),
+                rescue_best_representative_enabled=self.dino_rescue_best_representative_checkbox.isChecked(),
+                diagnostics_enabled=self.dino_diagnostics_checkbox.isChecked(),
+            ).normalized(),
             presets=tuple(self._presets) if include_presets else (),
             shortcut_overrides=self._shortcut_overrides_from_state()
             if getattr(self, "_shortcut_editors", None)

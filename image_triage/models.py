@@ -132,6 +132,9 @@ class FilterMode(str, Enum):
     AI_TOP_PICKS = "AI Top Picks"
     AI_GROUPED = "AI Grouped"
     AI_DISAGREEMENTS = "AI Disagreements"
+    DINO_QUARANTINE = "DINO Quarantine"
+    DINO_REMOVED = "DINO Removed"
+    DINO_RESCUED = "DINO Rescued"
     REVIEW_ROUNDS = "Review Rounds"
 
 
