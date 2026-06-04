@@ -4,6 +4,8 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QMenu, QToolBar, QToolButton
 
 from .actions import MainWindowActions
+from ..filtering import AIStateFilter
+from ..models import FilterMode
 
 
 def _add_toolbar_action(toolbar: QToolBar, action, *, toolbar_text: str, min_width: int = 98) -> None:
@@ -43,13 +45,27 @@ def build_primary_toolbar(window, actions: MainWindowActions) -> QToolBar:
     _add_toolbar_action(toolbar, actions.run_ai_culling, toolbar_text="Run Culler", min_width=112)
     _add_toolbar_action(toolbar, actions.quick_rerank_ai_culling, toolbar_text="Quick Rerank", min_width=120)
     _add_toolbar_action(toolbar, actions.review_ai_adapter_labels, toolbar_text="Review Labels", min_width=124)
+    _add_toolbar_action(toolbar, actions.dispute_current_ai_result, toolbar_text="Dispute AI", min_width=112)
     ai_results_menu = QMenu("AI Results", toolbar)
-    ai_results_menu.addAction(actions.load_saved_ai)
-    ai_results_menu.addAction(actions.load_ai_results)
-    ai_results_menu.addAction(actions.clear_ai_results)
-    ai_results_menu.addAction(actions.reset_ai_review_cache)
+    ai_state_menu = ai_results_menu.addMenu("AI Result Buckets")
+    for mode in (
+        AIStateFilter.TOP_PICKS,
+        AIStateFilter.NEEDS_REVIEW,
+        AIStateFilter.LIKELY_REJECTS,
+    ):
+        ai_state_menu.addAction(actions.ai_state_actions[mode])
+    prefilter_menu = ai_results_menu.addMenu("Ingest And Prefilter")
+    for mode in (
+        FilterMode.AI_INGESTED,
+        FilterMode.AI_PREFILTER_DUMPED,
+        FilterMode.DINO_QUARANTINE,
+        FilterMode.DINO_REMOVED,
+    ):
+        prefilter_menu.addAction(actions.filter_actions[mode])
     ai_results_menu.addSeparator()
     ai_results_menu.addAction(actions.open_ai_report)
+    ai_results_menu.addAction(actions.show_ai_review_summary)
+    ai_results_menu.addAction(actions.ai_review_tag_legend)
     _add_toolbar_menu(toolbar, text="AI Results", menu=ai_results_menu, min_width=104)
     ai_training_menu = QMenu("Adapter", toolbar)
     ai_training_menu.addAction(actions.review_ai_adapter_labels)

@@ -155,6 +155,15 @@ class SQLiteFeatureStore:
                 CREATE INDEX IF NOT EXISTS idx_semantic_clusters_run ON semantic_clusters(run_id);
                 CREATE INDEX IF NOT EXISTS idx_ratings_image ON ratings(image_id);
                 CREATE INDEX IF NOT EXISTS idx_adapter_scores_version ON adapter_scores(model_version);
+
+                CREATE TABLE IF NOT EXISTS technical_metrics_cache (
+                    path_key TEXT PRIMARY KEY,
+                    path TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    mtime_ns INTEGER NOT NULL,
+                    metrics_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             self._ensure_column("images", "prompt_score", "REAL")
@@ -189,7 +198,7 @@ class SQLiteFeatureStore:
     ) -> int:
         source = str(Path(source_path))
         preview = str(Path(preview_path)) if preview_path is not None else None
-        metadata_json = json.dumps(metadata or {}, sort_keys=True)
+        metadata_json = json.dumps(metadata, sort_keys=True) if metadata is not None else None
         with self.lock:
             cur = self.connection.execute(
                 """
@@ -203,7 +212,7 @@ class SQLiteFeatureStore:
                     width = COALESCE(excluded.width, images.width),
                     height = COALESCE(excluded.height, images.height),
                     error = excluded.error,
-                    metadata_json = excluded.metadata_json,
+                    metadata_json = COALESCE(excluded.metadata_json, images.metadata_json),
                     updated_at = CURRENT_TIMESTAMP
                 RETURNING id
                 """,
@@ -243,8 +252,10 @@ class SQLiteFeatureStore:
         tag_flags: str | None = None,
         final_score: float | None = None,
         status: str = "ready",
+        metadata: dict | None = None,
     ) -> None:
         vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        metadata_json = json.dumps(metadata, sort_keys=True) if metadata is not None else None
         with self.lock:
             self.connection.execute(
                 """
@@ -272,6 +283,7 @@ class SQLiteFeatureStore:
                     tag_penalty = COALESCE(?, tag_penalty),
                     tag_flags = COALESCE(?, tag_flags),
                     final_score = COALESCE(?, final_score),
+                    metadata_json = COALESCE(?, metadata_json),
                     status = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
@@ -289,9 +301,42 @@ class SQLiteFeatureStore:
                     tag_penalty,
                     tag_flags,
                     final_score,
+                    metadata_json,
                     status,
                     image_id,
                 ),
+            )
+            self.connection.commit()
+
+    def get_technical_metrics_cache(self, path_key: str) -> sqlite3.Row | None:
+        with self.lock:
+            return self.connection.execute(
+                "SELECT * FROM technical_metrics_cache WHERE path_key = ?",
+                (str(path_key),),
+            ).fetchone()
+
+    def set_technical_metrics_cache(
+        self,
+        *,
+        path_key: str,
+        path: str | Path,
+        size: int,
+        mtime_ns: int,
+        metrics_json: str,
+    ) -> None:
+        with self.lock:
+            self.connection.execute(
+                """
+                INSERT INTO technical_metrics_cache (path_key, path, size, mtime_ns, metrics_json)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(path_key) DO UPDATE SET
+                    path = excluded.path,
+                    size = excluded.size,
+                    mtime_ns = excluded.mtime_ns,
+                    metrics_json = excluded.metrics_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (str(path_key), str(Path(path)), int(size), int(mtime_ns), metrics_json),
             )
             self.connection.commit()
 

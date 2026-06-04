@@ -35,6 +35,8 @@ from ..workflows import (
     recipe_key_for_name,
     recipe_summary_lines,
 )
+from .help_dialog import build_help_button, show_paged_help
+from .help_topics import workflow_builder_help_pages
 
 
 @dataclass(slots=True, frozen=True)
@@ -67,12 +69,19 @@ class HandoffBuilderDialog(QDialog):
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(12)
 
+        intro_row = QHBoxLayout()
+        intro_row.setContentsMargins(0, 0, 0, 0)
+        intro_row.setSpacing(8)
         intro = QLabel(
             "Build a repeatable handoff using existing triage operations. Recipes stay human-readable: bundle copy/move/archive or export deliverables with format and sizing options."
         )
         intro.setWordWrap(True)
         intro.setObjectName("secondaryText")
-        root_layout.addWidget(intro)
+        intro_row.addWidget(intro, 1)
+        help_button = build_help_button(self, tooltip="Open workflow recipe help")
+        help_button.clicked.connect(self._show_help)
+        intro_row.addWidget(help_button, 0, Qt.AlignmentFlag.AlignTop)
+        root_layout.addLayout(intro_row)
 
         recipe_group = QGroupBox("Recipe")
         recipe_layout = QGridLayout(recipe_group)
@@ -222,6 +231,13 @@ class HandoffBuilderDialog(QDialog):
 
     def saved_recipes(self) -> tuple[WorkflowRecipe, ...]:
         return tuple(self._saved_recipes)
+
+    def _show_help(self) -> None:
+        show_paged_help(
+            self,
+            title="Workflow Recipe Help",
+            pages=workflow_builder_help_pages(),
+        )
 
     def _refresh_recipe_picker(self) -> None:
         self.recipe_picker.blockSignals(True)

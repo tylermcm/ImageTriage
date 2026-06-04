@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -247,12 +248,14 @@ class IngestionEngine:
         extractor: HeadlessFeatureExtractor | None = None,
         max_workers: int = 4,
         on_event: Callable[[IngestionEvent], None] | None = None,
+        feature_cache_identity: dict[str, object] | None = None,
     ):
         self.store = store
         self.preview_extractor = PreviewExtractor(cache_dir)
         self.extractor = extractor
         self.max_workers = max(1, int(max_workers))
         self.on_event = on_event
+        self.feature_cache_identity = feature_cache_identity or {}
 
     def scan(self, folder: str | Path, *, recursive: bool = True) -> list[Path]:
         root = Path(folder)
@@ -404,6 +407,20 @@ class IngestionEngine:
         started_at: float = preview_result["started_at"]
         try:
             feature_started_at = time.perf_counter()
+            if self._feature_cache_hit(image_id, source_path, preview_path):
+                self._emit(
+                    IngestionEvent(
+                        image_id,
+                        source_path,
+                        preview_path,
+                        "ready",
+                        "feature_cache_hit",
+                        preview_seconds=preview_seconds,
+                        feature_seconds=0.0,
+                        total_seconds=time.perf_counter() - started_at,
+                    )
+                )
+                return image_id
             features = self.extractor.extract_features(preview_path)
             feature_seconds = time.perf_counter() - feature_started_at
             self.store.save_features(
@@ -412,6 +429,9 @@ class IngestionEngine:
                 technical_score=float(features["technical_score"]),
                 aesthetic_prior=float(features["technical_score"]),
                 status="ready",
+                metadata={
+                    "aiculler_feature_cache": self._feature_cache_payload(source_path, preview_path),
+                },
             )
             self._emit(
                 IngestionEvent(
@@ -442,3 +462,45 @@ class IngestionEngine:
     def _emit(self, event: IngestionEvent) -> None:
         if self.on_event is not None:
             self.on_event(event)
+
+    def _feature_cache_hit(self, image_id: int, source_path: Path, preview_path: Path) -> bool:
+        if not self.feature_cache_identity:
+            return False
+        try:
+            row = self.store.get_image(image_id)
+            self.store.get_embedding(image_id)
+        except Exception:
+            return False
+        if row is None:
+            return False
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return False
+        cache_payload = metadata.get("aiculler_feature_cache")
+        return cache_payload == self._feature_cache_payload(source_path, preview_path)
+
+    def _feature_cache_payload(self, source_path: Path, preview_path: Path) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "feature_cache_identity": self.feature_cache_identity,
+            "source_signature": _file_signature(source_path),
+            "preview_signature": _file_signature(preview_path),
+        }
+
+
+def _file_signature(path: Path) -> dict[str, object]:
+    try:
+        resolved = path.expanduser().resolve()
+        stat = resolved.stat()
+    except OSError:
+        return {
+            "path": str(path),
+            "exists": False,
+        }
+    return {
+        "path": str(resolved).casefold(),
+        "exists": True,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }

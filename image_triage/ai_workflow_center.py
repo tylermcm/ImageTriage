@@ -9,6 +9,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -17,16 +18,20 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from .ui.help_dialog import build_help_button, show_paged_help
+from .ui.help_topics import ai_workflow_center_help_pages
 from .aiculler_workflow import (
     aiculler_db_path,
     aiculler_rerank_readiness,
     aiculler_runtime_status,
     build_aiculler_workflow_paths,
     clip_model_variant_info,
+    global_aiculler_db_path,
     list_adapter_model_summaries,
     load_adapter_status_summary,
 )
@@ -36,6 +41,7 @@ from .dino_prefilter import (
     default_dino_prefilter_settings,
     dino_prefilter_mode_label,
 )
+from .phash_prefilter import build_phash_prefilter_paths
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -112,6 +118,22 @@ def _format_count_pairs(pairs: tuple[tuple[str, int], ...]) -> str:
     return ", ".join(f"{label.replace('_', ' ')}: {count}" for label, count in pairs)
 
 
+def _compact_metric_value(label: str, value: str) -> str:
+    text = str(value or "")
+    if label not in {"Culler source", "Model root", "Current folder"}:
+        return text
+    normalized = text.replace("\\", "/")
+    if len(normalized) <= 44:
+        return normalized
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) >= 3:
+        prefix = normalized[:2] if len(normalized) >= 2 and normalized[1] == ":" else ""
+        suffix = "/".join(parts[-3:])
+        compact = f"{prefix}/.../{suffix}" if prefix else f".../{suffix}"
+        return compact if len(compact) <= 52 else f".../{suffix[-48:]}"
+    return f"...{normalized[-48:]}"
+
+
 @dataclass
 class WorkflowSnapshot:
     runtime_ready: bool
@@ -125,8 +147,9 @@ class WorkflowSnapshot:
     cluster_run_id: str
     can_rerank: bool
     label_count: int           # ratings already imported into the CLI-Culler DB
-    pending_label_count: int   # in-progress labels saved via the adapter combo (not yet trained on)
+    pending_label_count: int   # saved folder labels available for adapter training
     global_label_count: int
+    global_label_values: int
     global_matching_label_count: int
     global_matching_label_values: int
     global_matching_dispute_count: int
@@ -137,6 +160,8 @@ class WorkflowSnapshot:
     train_rank_lift: float | None
     scored_count: int
     adapter_models: tuple[dict[str, object], ...] = ()
+    global_adapter_models: tuple[dict[str, object], ...] = ()
+    global_adapter_version: str = ""
     folder_path: str = ""
     file_count: int = 0
     dino_enabled: bool = False
@@ -157,6 +182,8 @@ class WorkflowSnapshot:
     dino_reason_counts: tuple[tuple[str, int], ...] = ()
     dino_rescue_counts: tuple[tuple[str, int], ...] = ()
     dino_artifact_dir: str = ""
+    phash_report_exists: bool = False
+    phash_artifact_dir: str = ""
 
     @property
     def total_label_count(self) -> int:
@@ -165,6 +192,10 @@ class WorkflowSnapshot:
     @property
     def can_train_from_global_labels(self) -> bool:
         return self.global_matching_label_count >= 2 and self.global_matching_label_values >= 2
+
+    @property
+    def can_train_global_adapter(self) -> bool:
+        return self.global_label_count >= 2 and self.global_label_values >= 2
 
     @property
     def has_trainable_labels(self) -> bool:
@@ -206,6 +237,7 @@ class _StepPage(QWidget):
         title_font.setBold(True)
         self._title_label.setFont(title_font)
         self._title_label.setWordWrap(True)
+        self._title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         header.addWidget(self._title_label, 1)
         self._status_pill = QLabel()
         self._status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -217,11 +249,15 @@ class _StepPage(QWidget):
         self._subtitle_label = QLabel()
         self._subtitle_label.setStyleSheet("color: #9aa7b8;")
         self._subtitle_label.setWordWrap(True)
+        self._subtitle_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._subtitle_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         outer.addWidget(self._subtitle_label)
 
         self._description_label = QLabel()
         self._description_label.setWordWrap(True)
         self._description_label.setStyleSheet("color: #d4dbe4;")
+        self._description_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._description_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         outer.addWidget(self._description_label)
 
         self._metrics_frame = QFrame()
@@ -233,14 +269,19 @@ class _StepPage(QWidget):
             " border-radius: 6px;"
             "}"
         )
-        self._metrics_layout = QVBoxLayout(self._metrics_frame)
+        self._metrics_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._metrics_layout = QGridLayout(self._metrics_frame)
         self._metrics_layout.setContentsMargins(14, 12, 14, 12)
-        self._metrics_layout.setSpacing(6)
+        self._metrics_layout.setHorizontalSpacing(10)
+        self._metrics_layout.setVerticalSpacing(10)
+        self._metrics_layout.setColumnStretch(0, 0)
+        self._metrics_layout.setColumnStretch(1, 1)
         outer.addWidget(self._metrics_frame)
 
         self._action_row = QVBoxLayout()
         self._action_row.setSpacing(8)
         outer.addLayout(self._action_row)
+        outer.addStretch(1)
 
     def apply(self, step: StepSpec) -> None:
         self._title_label.setText(step.title)
@@ -263,21 +304,22 @@ class _StepPage(QWidget):
             self._metrics_frame.hide()
         else:
             self._metrics_frame.show()
-            for label, value in step.metrics:
-                row = QHBoxLayout()
-                row.setSpacing(8)
+            for row_index, (label, value) in enumerate(step.metrics):
                 key_label = QLabel(label)
                 key_label.setStyleSheet("color: #8d99ac;")
-                key_label.setMinimumWidth(118)
-                value_label = QLabel(value)
+                key_label.setMinimumWidth(122)
+                key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                display_value = _compact_metric_value(label, value)
+                value_label = QLabel(display_value)
                 value_label.setStyleSheet("color: #e6ecf4;")
                 value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 value_label.setWordWrap(True)
-                row.addWidget(key_label, 0)
-                row.addWidget(value_label, 1)
-                wrapper = QWidget()
-                wrapper.setLayout(row)
-                self._metrics_layout.addWidget(wrapper)
+                if display_value != value:
+                    value_label.setToolTip(value)
+                value_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+                value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                self._metrics_layout.addWidget(key_label, row_index, 0)
+                self._metrics_layout.addWidget(value_label, row_index, 1)
 
         while self._action_row.count():
             item = self._action_row.takeAt(0)
@@ -319,8 +361,8 @@ class AIWorkflowCenterDialog(QDialog):
         self.setWindowTitle("AI Workflow Center")
         self.setObjectName("aiWorkflowCenter")
         self.setModal(False)
-        self.resize(820, 540)
-        self.setMinimumSize(720, 460)
+        self.resize(980, 650)
+        self.setMinimumSize(900, 560)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -339,12 +381,19 @@ class AIWorkflowCenterDialog(QDialog):
         sidebar_layout.setContentsMargins(16, 18, 16, 18)
         sidebar_layout.setSpacing(10)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
         header_label = QLabel("AI Workflow")
         header_font = QFont()
         header_font.setPointSize(13)
         header_font.setBold(True)
         header_label.setFont(header_font)
-        sidebar_layout.addWidget(header_label)
+        header_row.addWidget(header_label, 1)
+        help_button = build_help_button(self, tooltip="Open AI Workflow Center help")
+        help_button.clicked.connect(self._show_help)
+        header_row.addWidget(help_button, 0)
+        sidebar_layout.addLayout(header_row)
 
         self._sidebar_subtitle = QLabel("")
         self._sidebar_subtitle.setStyleSheet("color: #8d99ac; font-size: 11px;")
@@ -386,6 +435,7 @@ class AIWorkflowCenterDialog(QDialog):
         root.addWidget(sidebar, 0)
 
         self._pages = QStackedWidget()
+        self._pages.setMinimumWidth(390)
         root.addWidget(self._pages, 1)
 
         adapter_panel = QFrame()
@@ -406,14 +456,44 @@ class AIWorkflowCenterDialog(QDialog):
         adapter_title_font.setBold(True)
         adapter_title.setFont(adapter_title_font)
         adapter_layout.addWidget(adapter_title)
-        self._adapter_summary_label = QLabel("")
-        self._adapter_summary_label.setStyleSheet("color: #8d99ac; font-size: 11px;")
-        self._adapter_summary_label.setWordWrap(True)
-        adapter_layout.addWidget(self._adapter_summary_label)
-        self._adapter_list = QListWidget()
-        self._adapter_list.setObjectName("adapterHistoryList")
-        self._adapter_list.setMaximumHeight(190)
-        self._adapter_list.setStyleSheet(
+        self._adapter_tabs = QTabWidget()
+        self._adapter_tabs.setObjectName("adapterScopeTabs")
+        self._adapter_tabs.setStyleSheet(
+            "QTabWidget#adapterScopeTabs::pane { border: none; }"
+            "QTabBar::tab {"
+            " background: rgba(255,255,255,0.04); color: #aab6c7;"
+            " border: 1px solid rgba(255,255,255,0.08);"
+            " padding: 5px 12px; margin-right: 4px; border-radius: 5px;"
+            "}"
+            "QTabBar::tab:selected { background: #203b64; color: white; }"
+        )
+        self._local_adapter_summary_label = QLabel("")
+        self._local_adapter_summary_label.setStyleSheet("color: #8d99ac; font-size: 11px;")
+        self._local_adapter_summary_label.setWordWrap(True)
+        self._global_adapter_summary_label = QLabel("")
+        self._global_adapter_summary_label.setStyleSheet("color: #8d99ac; font-size: 11px;")
+        self._global_adapter_summary_label.setWordWrap(True)
+        self._local_adapter_list = self._build_adapter_list()
+        self._global_adapter_list = self._build_adapter_list()
+        local_tab = QWidget()
+        local_layout = QVBoxLayout(local_tab)
+        local_layout.setContentsMargins(0, 8, 0, 0)
+        local_layout.setSpacing(8)
+        local_layout.addWidget(self._local_adapter_summary_label)
+        local_layout.addWidget(self._local_adapter_list, 0)
+        global_tab = QWidget()
+        global_layout = QVBoxLayout(global_tab)
+        global_layout.setContentsMargins(0, 8, 0, 0)
+        global_layout.setSpacing(8)
+        global_layout.addWidget(self._global_adapter_summary_label)
+        global_layout.addWidget(self._global_adapter_list, 0)
+        self._adapter_tabs.addTab(local_tab, "Local")
+        self._adapter_tabs.addTab(global_tab, "Global")
+        self._adapter_tabs.currentChanged.connect(lambda _index: self._handle_adapter_selected(self._current_adapter_row()))
+        adapter_layout.addWidget(self._adapter_tabs, 0)
+        self._local_adapter_list.currentRowChanged.connect(self._handle_adapter_selected)
+        self._global_adapter_list.currentRowChanged.connect(self._handle_adapter_selected)
+        self._adapter_list_style = (
             "QListWidget#adapterHistoryList {"
             " background: transparent; border: none;"
             "} QListWidget#adapterHistoryList::item {"
@@ -423,8 +503,19 @@ class AIWorkflowCenterDialog(QDialog):
             " background: rgba(47, 111, 214, 0.25); color: white;"
             "}"
         )
-        self._adapter_list.currentRowChanged.connect(self._handle_adapter_selected)
-        adapter_layout.addWidget(self._adapter_list, 0)
+        self._local_adapter_list.setStyleSheet(self._adapter_list_style)
+        self._global_adapter_list.setStyleSheet(self._adapter_list_style)
+        self._delete_adapter_button = QPushButton("Delete Adapter")
+        self._delete_adapter_button.setEnabled(False)
+        self._delete_adapter_button.setStyleSheet(
+            "QPushButton {"
+            " background: rgba(126, 49, 43, 0.72); color: #f3d2ce;"
+            " border: 1px solid rgba(255, 255, 255, 0.12);"
+            " border-radius: 6px; padding: 7px 10px;"
+            "} QPushButton:disabled { background: rgba(255,255,255,0.04); color: #6c7488; }"
+        )
+        self._delete_adapter_button.clicked.connect(self._delete_selected_adapter)
+        adapter_layout.addWidget(self._delete_adapter_button, 0)
         self._adapter_detail_label = QLabel("")
         self._adapter_detail_label.setStyleSheet("color: #d4dbe4; font-size: 11px;")
         self._adapter_detail_label.setWordWrap(True)
@@ -445,8 +536,24 @@ class AIWorkflowCenterDialog(QDialog):
         self._step_keys: list[str] = []
         self._page_widgets: dict[str, _StepPage] = {}
         self._adapter_models: tuple[dict[str, object], ...] = ()
+        self._global_adapter_models: tuple[dict[str, object], ...] = ()
         self._build_pages()
         self.refresh()
+
+    def _build_adapter_list(self) -> QListWidget:
+        adapter_list = QListWidget()
+        adapter_list.setObjectName("adapterHistoryList")
+        adapter_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        adapter_list.setMinimumHeight(58)
+        adapter_list.setMaximumHeight(190)
+        return adapter_list
+
+    def _show_help(self) -> None:
+        show_paged_help(
+            self,
+            title="AI Workflow Center Help",
+            pages=ai_workflow_center_help_pages(),
+        )
 
     def _build_pages(self) -> None:
         for key, label in (
@@ -463,23 +570,48 @@ class AIWorkflowCenterDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, key)
             self._step_list.addItem(item)
             page = _StepPage()
+            page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+            scroll.setWidget(page)
             self._page_widgets[key] = page
-            self._pages.addWidget(page)
+            self._pages.addWidget(scroll)
         if self._step_list.count():
             self._step_list.setCurrentRow(0)
 
     def _handle_step_selected(self, row: int) -> None:
         if 0 <= row < self._pages.count():
             self._pages.setCurrentIndex(row)
+            widget = self._pages.widget(row)
+            if isinstance(widget, QScrollArea):
+                widget.verticalScrollBar().setValue(0)
+                widget.horizontalScrollBar().setValue(0)
 
     def _handle_adapter_selected(self, row: int) -> None:
         self._update_adapter_detail(row)
+        self._delete_adapter_button.setEnabled(0 <= row < len(self._active_adapter_models()))
+
+    def _delete_selected_adapter(self) -> None:
+        row = self._current_adapter_row()
+        models = self._active_adapter_models()
+        if row < 0 or row >= len(models):
+            return
+        version = str(models[row].get("model_version") or "").strip()
+        if not version:
+            return
+        handler = getattr(self._window, "_delete_aiculler_adapter", None)
+        if callable(handler):
+            handler(version, scope=self._active_adapter_scope())
 
     def refresh(self) -> None:
         snapshot = self._capture_snapshot()
         folder_text = snapshot.folder_path or "(no folder open)"
         self._sidebar_subtitle.setText(f"Folder:\n{folder_text}")
-        self._populate_adapter_history(snapshot.adapter_models)
+        self._populate_adapter_history(snapshot.adapter_models, snapshot.global_adapter_models)
 
         steps = self._build_steps(snapshot)
         for key, step in steps.items():
@@ -502,18 +634,54 @@ class AIWorkflowCenterDialog(QDialog):
                 item.setForeground(Qt.GlobalColor.lightGray if step.status == STATUS_BLOCKED else Qt.GlobalColor.white)
                 item.setToolTip(_STATUS_LABELS.get(step.status, ""))
 
-    def _populate_adapter_history(self, adapter_models: tuple[dict[str, object], ...]) -> None:
-        selected_version = ""
-        current_item = self._adapter_list.currentItem()
+    def _populate_adapter_history(
+        self,
+        adapter_models: tuple[dict[str, object], ...],
+        global_adapter_models: tuple[dict[str, object], ...],
+    ) -> None:
+        selected_versions = {"local": "", "global": ""}
+        current_item = self._local_adapter_list.currentItem()
         if current_item is not None:
-            selected_version = str(current_item.data(Qt.ItemDataRole.UserRole) or "")
+            selected_versions["local"] = str(current_item.data(Qt.ItemDataRole.UserRole) or "")
+        current_item = self._global_adapter_list.currentItem()
+        if current_item is not None:
+            selected_versions["global"] = str(current_item.data(Qt.ItemDataRole.UserRole) or "")
         self._adapter_models = adapter_models
-        self._adapter_list.clear()
-        self._adapter_summary_label.setText(
-            f"{len(adapter_models)} trained adapter{'s' if len(adapter_models) != 1 else ''}"
-            if adapter_models
-            else "No trained adapters for this folder yet."
+        self._global_adapter_models = global_adapter_models
+        self._populate_adapter_list(
+            self._local_adapter_list,
+            adapter_models,
+            selected_versions["local"],
+            empty_text="No local adapters for this folder yet.",
         )
+        self._populate_adapter_list(
+            self._global_adapter_list,
+            global_adapter_models,
+            selected_versions["global"],
+            empty_text="No global adapters trained yet.",
+        )
+        self._local_adapter_summary_label.setText(
+            f"{len(adapter_models)} local adapter{'s' if len(adapter_models) != 1 else ''}"
+            if adapter_models
+            else "No local adapters for this folder yet."
+        )
+        self._global_adapter_summary_label.setText(
+            f"{len(global_adapter_models)} global adapter{'s' if len(global_adapter_models) != 1 else ''}"
+            if global_adapter_models
+            else "No global adapters trained yet."
+        )
+        self._update_adapter_detail(self._current_adapter_row())
+        self._delete_adapter_button.setEnabled(0 <= self._current_adapter_row() < len(self._active_adapter_models()))
+
+    def _populate_adapter_list(
+        self,
+        adapter_list: QListWidget,
+        adapter_models: tuple[dict[str, object], ...],
+        selected_version: str,
+        *,
+        empty_text: str,
+    ) -> None:
+        adapter_list.clear()
         selected_row = 0
         for index, model in enumerate(adapter_models):
             version = str(model.get("model_version") or "")
@@ -522,19 +690,34 @@ class AIWorkflowCenterDialog(QDialog):
             item = QListWidgetItem(f"{_display_adapter_version(version, compact=True)}\nAccuracy {accuracy_text}")
             item.setData(Qt.ItemDataRole.UserRole, version)
             item.setToolTip(_display_adapter_version(version))
-            self._adapter_list.addItem(item)
+            adapter_list.addItem(item)
             if version == selected_version:
                 selected_row = index
+        list_height = 58 if not adapter_models else max(58, min(190, len(adapter_models) * 62 + 12))
+        adapter_list.setMinimumHeight(list_height)
+        adapter_list.setMaximumHeight(list_height)
         if adapter_models:
-            self._adapter_list.setCurrentRow(selected_row)
-        else:
-            self._adapter_detail_label.setText("Train an adapter to see accuracy, failure rate, and scored image counts here.")
+            adapter_list.setCurrentRow(selected_row)
+
+    def _active_adapter_scope(self) -> str:
+        return "global" if self._adapter_tabs.currentIndex() == 1 else "local"
+
+    def _active_adapter_models(self) -> tuple[dict[str, object], ...]:
+        return self._global_adapter_models if self._active_adapter_scope() == "global" else self._adapter_models
+
+    def _active_adapter_list(self) -> QListWidget:
+        return self._global_adapter_list if self._active_adapter_scope() == "global" else self._local_adapter_list
+
+    def _current_adapter_row(self) -> int:
+        return self._active_adapter_list().currentRow()
 
     def _update_adapter_detail(self, row: int) -> None:
-        if row < 0 or row >= len(self._adapter_models):
-            self._adapter_detail_label.setText("Train an adapter to see accuracy, failure rate, and scored image counts here.")
+        models = self._active_adapter_models()
+        if row < 0 or row >= len(models):
+            scope_label = "global" if self._active_adapter_scope() == "global" else "local"
+            self._adapter_detail_label.setText(f"Train a {scope_label} adapter to see accuracy, failure rate, and scored image counts here.")
             return
-        model = self._adapter_models[row]
+        model = models[row]
         accuracy = model.get("accuracy_percent")
         holdout_mae = model.get("holdout_mae")
         train_mae = model.get("train_mae")
@@ -601,6 +784,7 @@ class AIWorkflowCenterDialog(QDialog):
         label_count = 0
         pending_label_count = 0
         global_label_count = 0
+        global_label_values = 0
         global_matching_label_count = 0
         global_matching_label_values = 0
         global_matching_dispute_count = 0
@@ -611,6 +795,8 @@ class AIWorkflowCenterDialog(QDialog):
         train_rank_lift: float | None = None
         scored_count = 0
         adapter_models: tuple[dict[str, object], ...] = ()
+        global_adapter_models: tuple[dict[str, object], ...] = ()
+        global_adapter_version = ""
         dino_settings = getattr(self._window, "_dino_prefilter_settings", default_dino_prefilter_settings())
         dino_settings = dino_settings.normalized()
         dino_report_exists = False
@@ -625,6 +811,8 @@ class AIWorkflowCenterDialog(QDialog):
         dino_reason_counts: tuple[tuple[str, int], ...] = ()
         dino_rescue_counts: tuple[tuple[str, int], ...] = ()
         dino_artifact_dir = ""
+        phash_report_exists = False
+        phash_artifact_dir = ""
         if paths is not None:
             db_path = aiculler_db_path(paths)
             readiness = aiculler_rerank_readiness(db_path)
@@ -676,11 +864,26 @@ class AIWorkflowCenterDialog(QDialog):
             except Exception:
                 dino_report_exists = False
                 dino_rows_exists = False
+            try:
+                phash_paths = build_phash_prefilter_paths(paths)
+                phash_artifact_dir = str(phash_paths.artifact_dir)
+                phash_report_exists = phash_paths.report_path.exists() or phash_paths.cache_path.exists()
+            except Exception:
+                phash_report_exists = False
         current_file_paths = tuple(record.path for record in self._window._all_records if not record.is_folder)
+        try:
+            global_db_path = global_aiculler_db_path()
+            global_adapter_models = tuple(list_adapter_model_summaries(global_db_path))
+            global_adapter_version = str(global_adapter_models[0].get("model_version") or "") if global_adapter_models else ""
+        except Exception:
+            global_adapter_models = ()
+            global_adapter_version = ""
         try:
             store = GlobalAdapterLabelStore(default_global_adapter_label_store_path())
             try:
-                global_label_count = store.summary().total_count
+                all_global_labels = store.all_labels()
+                global_label_count = len(all_global_labels)
+                global_label_values = len({label.label for label in all_global_labels})
                 matching_labels = store.labels_for_paths(current_file_paths)
                 global_matching_label_count = len(matching_labels)
                 global_matching_label_values = len({label.label for label in matching_labels.values()})
@@ -689,6 +892,7 @@ class AIWorkflowCenterDialog(QDialog):
                 store.close()
         except Exception:
             global_label_count = 0
+            global_label_values = 0
             global_matching_label_count = 0
             global_matching_label_values = 0
             global_matching_dispute_count = 0
@@ -706,6 +910,7 @@ class AIWorkflowCenterDialog(QDialog):
             label_count=label_count,
             pending_label_count=pending_label_count,
             global_label_count=global_label_count,
+            global_label_values=global_label_values,
             global_matching_label_count=global_matching_label_count,
             global_matching_label_values=global_matching_label_values,
             global_matching_dispute_count=global_matching_dispute_count,
@@ -716,13 +921,13 @@ class AIWorkflowCenterDialog(QDialog):
             train_rank_lift=train_rank_lift,
             scored_count=scored_count,
             adapter_models=adapter_models,
+            global_adapter_models=global_adapter_models,
+            global_adapter_version=global_adapter_version,
             folder_path=folder_path,
             file_count=file_count,
             dino_enabled=dino_settings.enabled,
             dino_mode_label=dino_prefilter_mode_label(dino_settings.mode),
             dino_aggressiveness_percent=dino_settings.aggressiveness_percent,
-            dino_phash_duplicate_enabled=dino_settings.phash_duplicate_enabled,
-            dino_phash_hamming_threshold=dino_settings.phash_hamming_threshold,
             dino_diagnostics_enabled=dino_settings.diagnostics_enabled,
             dino_report_exists=dino_report_exists,
             dino_rows_exists=dino_rows_exists,
@@ -736,6 +941,8 @@ class AIWorkflowCenterDialog(QDialog):
             dino_reason_counts=dino_reason_counts,
             dino_rescue_counts=dino_rescue_counts,
             dino_artifact_dir=dino_artifact_dir,
+            phash_report_exists=phash_report_exists,
+            phash_artifact_dir=phash_artifact_dir,
         )
 
     def _build_steps(self, snap: WorkflowSnapshot) -> dict[str, StepSpec]:
@@ -795,8 +1002,6 @@ class AIWorkflowCenterDialog(QDialog):
             ("Configured", "Enabled" if snap.dino_enabled else "Disabled"),
             ("Mode", snap.dino_mode_label),
             ("Confidence threshold", f"{snap.dino_aggressiveness_percent}%"),
-            ("pHash duplicates", "On" if snap.dino_phash_duplicate_enabled else "Off"),
-            ("pHash distance", str(snap.dino_phash_hamming_threshold)),
             ("Model policy", snap.dino_model_policy or "base_model_only"),
             ("Diagnostics", "On" if snap.dino_diagnostics_enabled else "Off"),
         ]
@@ -848,12 +1053,22 @@ class AIWorkflowCenterDialog(QDialog):
                     ),
                 ),
                 ActionSpec(
-                    label="Open DINO Artifacts",
-                    callback=lambda: self._invoke("_open_dino_prefilter_artifacts"),
+                    label="Delete DINO Artifacts",
+                    callback=lambda: self._invoke("_delete_dino_prefilter_artifacts"),
                     enabled=bool(snap.dino_artifact_dir and snap.dino_report_exists),
                     tooltip=(
                         "Runs are written after DINO Prefilter has executed for this folder."
                         if not snap.dino_report_exists
+                        else ""
+                    ),
+                ),
+                ActionSpec(
+                    label="Delete pHash Artifacts",
+                    callback=lambda: self._invoke("_delete_phash_prefilter_artifacts"),
+                    enabled=bool(snap.phash_artifact_dir and snap.phash_report_exists),
+                    tooltip=(
+                        "pHash artifacts are written after pHash Prefilter has run for this folder."
+                        if not snap.phash_report_exists
                         else ""
                     ),
                 ),
@@ -918,17 +1133,15 @@ class AIWorkflowCenterDialog(QDialog):
             ],
         )
 
-        # Label step is "done" if you have ANY usable labels — pending ones from
-        # the current session count too. Without this, a freshly-ingested folder
-        # always shows label_count=0 (the DB ratings table is only populated
-        # after the first successful training run) and the user thinks they
-        # need to label every visible candidate before they can proceed.
+        # Label step is "done" if any usable folder/global training labels exist.
+        # The DB ratings table is only populated after successful training, so
+        # saved labels outside that table need to count here too.
         label_status = STATUS_BLOCKED
         if index_status == STATUS_DONE:
             label_status = STATUS_DONE if snap.has_trainable_labels else STATUS_READY
         label_metrics = []
         if snap.pending_label_count:
-            label_metrics.append(("Pending labels", str(snap.pending_label_count)))
+            label_metrics.append(("Training Labels Available", str(snap.pending_label_count)))
         label_metrics.append(("Trained-on labels", str(snap.label_count)))
         label_metrics.append(("Global labels", str(snap.global_label_count)))
         label_metrics.append(("Matching global labels", str(snap.global_matching_label_count)))
@@ -969,10 +1182,11 @@ class AIWorkflowCenterDialog(QDialog):
             train_status = STATUS_DONE if snap.adapter_version else STATUS_READY
         train_metrics: list[tuple[str, str]] = []
         if snap.pending_label_count:
-            train_metrics.append(("Pending labels", str(snap.pending_label_count)))
+            train_metrics.append(("Training Labels Available", str(snap.pending_label_count)))
         train_metrics.append(("Trained-on labels", str(snap.label_count)))
-        train_metrics.append(("Matching global labels", str(snap.global_matching_label_count)))
-        train_metrics.append(("Current adapter", _display_adapter_version(snap.adapter_version) if snap.adapter_version else "untrained"))
+        train_metrics.append(("Global labels", str(snap.global_label_count)))
+        train_metrics.append(("Local adapter", _display_adapter_version(snap.adapter_version) if snap.adapter_version else "untrained"))
+        train_metrics.append(("Global adapter", _display_adapter_version(snap.global_adapter_version) if snap.global_adapter_version else "untrained"))
         if snap.adapter_created_at:
             train_metrics.append(("Trained at", snap.adapter_created_at))
         if snap.train_mae is not None:
@@ -985,7 +1199,7 @@ class AIWorkflowCenterDialog(QDialog):
             subtitle="Fit a personal model from your saved labels.",
             description=(
                 "Trains the adapter on every label saved for this folder — "
-                "both the pending labels from the current session and any "
+                "both the available folder training labels and any "
                 "previously-trained labels in the DB. Training is fast "
                 "(a few seconds per hundred labels) and produces a new model "
                 "version you can evaluate or rank with."
@@ -994,18 +1208,18 @@ class AIWorkflowCenterDialog(QDialog):
             metrics=train_metrics,
             actions=[
                 ActionSpec(
-                    label="Train Adapter",
+                    label="Train Local Adapter",
                     callback=lambda: self._invoke("_train_aiculler_adapter"),
                     primary=True,
                     enabled=snap.db_exists and snap.total_label_count > 0,
                 ),
                 ActionSpec(
-                    label="Train From Global Labels",
+                    label="Train Global Adapter",
                     callback=lambda: self._invoke("_train_aiculler_adapter_from_global_labels"),
-                    enabled=snap.db_exists and snap.can_train_from_global_labels,
+                    enabled=snap.can_train_global_adapter,
                     tooltip=(
-                        "Needs at least two matching global labels with two different rating values."
-                        if not snap.can_train_from_global_labels
+                        "Needs at least two global labels with two different rating values."
+                        if not snap.can_train_global_adapter
                         else ""
                     ),
                 ),
@@ -1046,11 +1260,14 @@ class AIWorkflowCenterDialog(QDialog):
             ],
         )
 
+        active_adapter_version = snap.global_adapter_version if self._active_adapter_scope() == "global" else snap.adapter_version
+        active_adapter_count = len(snap.global_adapter_models) if self._active_adapter_scope() == "global" else len(snap.adapter_models)
         apply_status = STATUS_BLOCKED
-        if snap.adapter_version:
+        if active_adapter_version:
             apply_status = STATUS_DONE if snap.scored_count > 0 else STATUS_READY
         apply_metrics = [
-            ("Adapter version", snap.adapter_version or "untrained"),
+            ("Adapter scope", self._active_adapter_scope().title()),
+            ("Adapter version", active_adapter_version or "untrained"),
             ("Adapter-scored images", str(snap.scored_count) if snap.scored_count else "—"),
         ]
         steps["apply"] = StepSpec(
@@ -1061,16 +1278,18 @@ class AIWorkflowCenterDialog(QDialog):
                 "Ranks the current folder with the trained adapter and writes "
                 "fresh GUI exports. From there you can move the top picks into "
                 "your winners folder, sort by AI category, or push rejects to "
-                "the recycle bin."
+                "the recycle bin. If the AI is wrong on a card, use Dispute AI "
+                "in AI Review to save your correction as a stronger adapter "
+                "training label."
             ),
             status=apply_status,
             metrics=apply_metrics,
             actions=[
                 ActionSpec(
                     label="Rank with Adapter",
-                    callback=lambda: self._invoke("_rank_aiculler_adapter"),
+                    callback=self._rank_selected_adapter,
                     primary=True,
-                    enabled=bool(snap.adapter_version),
+                    enabled=bool(active_adapter_version and active_adapter_count),
                 ),
                 ActionSpec(
                     label="Apply AI Culling",
@@ -1091,4 +1310,11 @@ class AIWorkflowCenterDialog(QDialog):
         if not callable(slot):
             return
         slot()
+        self.refresh()
+
+    def _rank_selected_adapter(self) -> None:
+        slot = getattr(self._window, "_rank_aiculler_adapter", None)
+        if not callable(slot):
+            return
+        slot(scope=self._active_adapter_scope())
         self.refresh()

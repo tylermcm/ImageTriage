@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
+from ..filtering import AIStateFilter
+from ..models import FilterMode
 from .actions import MainWindowActions
 from .theme import AppearanceMode
 
@@ -180,7 +182,6 @@ def build_main_menu_bar(
     ai_menu = menu_bar.addMenu("&AI")
     ai_menu.addAction(actions.open_ai_workflow_center)
     ai_menu.addSeparator()
-    ai_menu.addAction(actions.run_ai_culling)
     ai_menu.addAction(actions.quick_rerank_ai_culling)
     ai_menu.addAction(actions.apply_ai_culling)
     ai_menu.addAction(actions.sort_ai_semantic_folders)
@@ -190,9 +191,21 @@ def build_main_menu_bar(
     _add_ai_training_actions(training_menu, actions)
 
     results_menu = ai_menu.addMenu("Results")
-    results_menu.addAction(actions.load_saved_ai)
-    results_menu.addAction(actions.load_ai_results)
-    results_menu.addAction(actions.clear_ai_results)
+    result_buckets_menu = results_menu.addMenu("AI Result Buckets")
+    for mode in (
+        AIStateFilter.TOP_PICKS,
+        AIStateFilter.NEEDS_REVIEW,
+        AIStateFilter.LIKELY_REJECTS,
+    ):
+        result_buckets_menu.addAction(actions.ai_state_actions[mode])
+    prefilter_menu = results_menu.addMenu("Ingest And Prefilter")
+    for mode in (
+        FilterMode.AI_INGESTED,
+        FilterMode.AI_PREFILTER_DUMPED,
+        FilterMode.DINO_QUARANTINE,
+        FilterMode.DINO_REMOVED,
+    ):
+        prefilter_menu.addAction(actions.filter_actions[mode])
     results_menu.addSeparator()
     results_menu.addAction(actions.open_ai_report)
     results_menu.addAction(actions.show_ai_review_summary)
@@ -202,6 +215,7 @@ def build_main_menu_bar(
     review_tools_menu.addAction(actions.next_ai_pick)
     review_tools_menu.addAction(actions.next_unreviewed_ai_pick)
     review_tools_menu.addAction(actions.compare_ai_group)
+    review_tools_menu.addAction(actions.dispute_current_ai_result)
     review_tools_menu.addAction(actions.review_ai_disagreements)
 
     ai_menu.addSeparator()

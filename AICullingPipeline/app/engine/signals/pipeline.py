@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import time
 from typing import Dict, Mapping
 
 from app.engine.signals.combiner import ScoringProfile, apply_combiner, choose_profile
@@ -33,11 +34,13 @@ def build_culling_signals(
     embeddings_filename: str = "embeddings.npy",
     image_ids_filename: str = "image_ids.json",
     clusters_filename: str = "clusters.csv",
+    timing_callback=None,
 ) -> Dict[str, ImageSignalRecord]:
     """Build image signals and apply the transparent combiner."""
 
     artifacts_dir = Path(artifacts_dir).expanduser().resolve()
     if ranking_artifacts is None:
+        phase_started = time.perf_counter()
         ranking_artifacts = load_ranking_artifacts(
             artifacts_dir,
             metadata_filename=metadata_filename,
@@ -45,6 +48,7 @@ def build_culling_signals(
             image_ids_filename=image_ids_filename,
             clusters_filename=clusters_filename,
         )
+        _emit_timing(timing_callback, "load_ranking_artifacts", phase_started, images=len(ranking_artifacts.ordered_images))
 
     context = SignalLayerContext(
         artifacts_dir=artifacts_dir,
@@ -52,16 +56,27 @@ def build_culling_signals(
         profile_name=profile_name,
         max_preview_side=max_preview_side,
     )
+    phase_started = time.perf_counter()
     records = base_signal_records(ranking_artifacts)
-    records = DinoSignalLayer().analyze(records, context)
+    _emit_timing(timing_callback, "base_signal_records", phase_started, records=len(records))
+    phase_started = time.perf_counter()
+    records = DinoSignalLayer(timing_callback=timing_callback).analyze(records, context)
+    _emit_timing(timing_callback, "dino_signal_layer", phase_started, records=len(records))
     if run_technical:
+        phase_started = time.perf_counter()
         records = TechnicalSignalLayer().analyze(records, context)
+        _emit_timing(timing_callback, "technical_signal_layer", phase_started, records=len(records))
     if run_specialists:
         for layer in specialist_layers():
+            phase_started = time.perf_counter()
             records = layer.analyze(records, context)
+            _emit_timing(timing_callback, f"specialist_layer:{layer.layer_id}", phase_started, records=len(records))
 
     profile: ScoringProfile = choose_profile(profile_name)
-    return apply_combiner(records, profile=profile, learned_weights=learned_weights)
+    phase_started = time.perf_counter()
+    combined = apply_combiner(records, profile=profile, learned_weights=learned_weights)
+    _emit_timing(timing_callback, "apply_combiner", phase_started, records=len(combined))
+    return combined
 
 
 def save_culling_signals(
@@ -148,3 +163,9 @@ def _save_signal_csv(path: Path, records: list[ImageSignalRecord]) -> None:
                     "warnings": "; ".join(record.final.warnings),
                 }
             )
+
+
+def _emit_timing(callback, phase: str, started_at: float, **payload) -> None:
+    if callback is None:
+        return
+    callback(phase, time.perf_counter() - started_at, payload)

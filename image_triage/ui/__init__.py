@@ -20,7 +20,7 @@ from .docks import InspectorPanel, WorkspaceDocks, build_workspace_docks
 from .filter_dialog import AdvancedFilterDialog
 from .file_associations_dialog import FileAssociationsDialog
 from .handoff_dialog import HandoffBuilderDialog
-from .help_dialog import HelpMarkdownDialog
+from .help_dialog import HelpMarkdownDialog, HelpPage, PagedHelpDialog, build_help_button, show_paged_help
 from .icons import build_pin_icon, build_symbol_icon, build_undo_icon
 from .keyboard_dialog import KeyboardShortcutDialog
 from .layout_state import clear_window_layout, restore_window_layout, save_window_layout
@@ -58,6 +58,7 @@ __all__ = [
     "FileAssociationsDialog",
     "HandoffBuilderDialog",
     "HelpMarkdownDialog",
+    "HelpPage",
     "InspectorPanel",
     "KeyboardShortcutDialog",
     "MainWindowActions",
@@ -66,6 +67,7 @@ __all__ = [
     "load_shortcut_overrides",
     "save_shortcut_overrides",
     "PaletteCommand",
+    "PagedHelpDialog",
     "PrepareTrainingSourcesDialog",
     "ResizeDialog",
     "ThemePalette",
@@ -77,6 +79,7 @@ __all__ = [
     "build_main_menu_bar",
     "build_main_window_actions",
     "build_primary_toolbar",
+    "build_help_button",
     "build_pin_icon",
     "build_workspace_docks",
     "build_symbol_icon",
@@ -87,4 +90,5 @@ __all__ = [
     "restore_window_layout",
     "resolve_theme",
     "save_window_layout",
+    "show_paged_help",
 ]

@@ -154,6 +154,26 @@ class GlobalAdapterLabelStore:
             )
         return result
 
+    def all_labels(self) -> list[GlobalAdapterLabel]:
+        rows = self.connection.execute(
+            """
+            SELECT source_path, filename, folder, label, weight, is_dispute
+            FROM adapter_labels
+            ORDER BY updated_at ASC, source_path ASC
+            """
+        ).fetchall()
+        return [
+            GlobalAdapterLabel(
+                source_path=str(row["source_path"]),
+                label=str(row["label"]),
+                filename=str(row["filename"]),
+                folder=str(row["folder"]),
+                weight=float(row["weight"] or 1.0),
+                is_dispute=bool(row["is_dispute"]),
+            )
+            for row in rows
+        ]
+
     def summary(self) -> GlobalAdapterLabelStats:
         row = self.connection.execute(
             """
@@ -186,6 +206,14 @@ class GlobalAdapterLabelStore:
 
 def default_global_adapter_label_store_path() -> Path:
     return _default_user_data_root() / "ai_training" / "global_adapter_labels.sqlite"
+
+
+def default_global_adapter_workspace_path() -> Path:
+    return _default_user_data_root() / "ai_training" / "global_adapter"
+
+
+def default_global_adapter_db_path() -> Path:
+    return default_global_adapter_workspace_path() / "artifacts" / "aiculler.sqlite"
 
 
 def _default_user_data_root() -> Path:

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from image_triage.models import DeleteMode, WinnerMode
 from image_triage.dino_prefilter import DINOPrefilterMode, DINOPrefilterSettings
+from image_triage.phash_prefilter import PHashExecutionMode, PHashPrefilterSettings
 from image_triage.settings_dialog import WorkflowSettingsDialog, _settings_tooltip
 
 
@@ -118,8 +119,6 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
                 aggressiveness_percent=92,
                 technical_trash_enabled=False,
                 duplicate_trash_enabled=True,
-                phash_duplicate_enabled=False,
-                phash_hamming_threshold=4,
                 low_information_enabled=True,
                 rescue_ai_high_score_enabled=False,
                 rescue_user_keep_enabled=True,
@@ -135,11 +134,35 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(DINOPrefilterMode.POOL_REMOVAL, result.mode)
         self.assertEqual(92, result.aggressiveness_percent)
         self.assertFalse(result.technical_trash_enabled)
-        self.assertFalse(result.phash_duplicate_enabled)
-        self.assertEqual(4, result.phash_hamming_threshold)
         self.assertTrue(result.low_information_enabled)
         self.assertFalse(result.rescue_ai_high_score_enabled)
         self.assertFalse(result.rescue_semantic_unique_enabled)
+        dialog.deleteLater()
+
+    def test_phash_prefilter_result_settings_round_trip_controls(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+            phash_prefilter_settings=PHashPrefilterSettings(
+                enabled=True,
+                mode=DINOPrefilterMode.POOL_REMOVAL,
+                execution_mode=PHashExecutionMode.PARALLEL_WITH_DINO,
+                hamming_threshold=4,
+                cache_enabled=False,
+                diagnostics_enabled=True,
+            ),
+        )
+
+        result = dialog.result_settings().phash_prefilter_settings
+
+        self.assertTrue(result.enabled)
+        self.assertEqual(DINOPrefilterMode.POOL_REMOVAL, result.mode)
+        self.assertEqual(PHashExecutionMode.PARALLEL_WITH_DINO, result.execution_mode)
+        self.assertEqual(4, result.hamming_threshold)
+        self.assertFalse(result.cache_enabled)
+        self.assertTrue(result.diagnostics_enabled)
         dialog.deleteLater()
 
 

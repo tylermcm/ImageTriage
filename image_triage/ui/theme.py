@@ -987,12 +987,42 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             padding: 1px 2px;
         }}
         QTextBrowser#helpMarkdownView {{
-            background-color: {theme.panel_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 14px;
+            background-color: transparent;
+            border: none;
+            border-radius: 0;
             color: {theme.text_primary.css};
-            padding: 12px 14px;
+            font-size: 14px;
+            padding: 2px 4px;
             selection-background-color: {theme.selection_fill.css};
+        }}
+        QListWidget#helpPageList {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 10px;
+            padding: 6px;
+            outline: none;
+        }}
+        QListWidget#helpPageList::item {{
+            color: {theme.text_secondary.css};
+            font-size: 13px;
+            padding: 9px 10px;
+            margin: 2px 0;
+            border-radius: 6px;
+        }}
+        QListWidget#helpPageList::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#contextHelpButton {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 13px;
+            color: {theme.text_secondary.css};
+            font-weight: 700;
+        }}
+        QToolButton#contextHelpButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
         }}
         QPlainTextEdit#aiTrainingLogView, QPlainTextEdit#aiReviewProgressLog {{
             background-color: {theme.chrome_bg.css};

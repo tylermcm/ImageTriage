@@ -8,12 +8,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QVBoxLayout,
 )
 
 from ..library_store import CatalogRoot
+from .help_dialog import build_help_button, show_paged_help
+from .help_topics import catalog_help_pages
 
 
 @dataclass(slots=True, frozen=True)
@@ -33,12 +36,19 @@ class CatalogSearchDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        intro_row = QHBoxLayout()
+        intro_row.setContentsMargins(0, 0, 0, 0)
+        intro_row.setSpacing(8)
         intro = QLabel(
             "The optional catalog indexes filename, path, and bundle snapshots across chosen folders. It helps you search across multiple folders without replacing the normal folder-first workflow."
         )
         intro.setWordWrap(True)
         intro.setObjectName("secondaryText")
-        layout.addWidget(intro)
+        intro_row.addWidget(intro, 1)
+        help_button = build_help_button(self, tooltip="Open catalog help")
+        help_button.clicked.connect(self._show_help)
+        intro_row.addWidget(help_button, 0)
+        layout.addLayout(intro_row)
 
         indexed_roots = len(roots)
         indexed_records = sum(root.indexed_record_count for root in roots)
@@ -76,4 +86,11 @@ class CatalogSearchDialog(QDialog):
         return CatalogSearchDialogResult(
             search_text=self.search_field.text().strip(),
             root_path=str(self.root_combo.currentData() or ""),
+        )
+
+    def _show_help(self) -> None:
+        show_paged_help(
+            self,
+            title="Global Catalog Help",
+            pages=catalog_help_pages(),
         )

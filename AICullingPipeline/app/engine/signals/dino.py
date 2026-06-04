@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import time
 from typing import Dict
 
 import numpy as np
@@ -17,6 +18,9 @@ class DinoSignalLayer:
     layer_id = "dino"
     display_name = "DINO Base Layer"
     required_stack_slot = True
+
+    def __init__(self, *, timing_callback=None) -> None:
+        self.timing_callback = timing_callback
 
     def status(self) -> LayerStatus:
         return LayerStatus(
@@ -34,7 +38,7 @@ class DinoSignalLayer:
         context: SignalLayerContext,
     ) -> Dict[str, ImageSignalRecord]:
         updated = dict(records)
-        signals = build_dino_signals(context.ranking_artifacts)
+        signals = build_dino_signals(context.ranking_artifacts, timing_callback=self.timing_callback)
         for image_id, dino_signals in signals.items():
             record = updated.get(image_id)
             if record is not None:
@@ -42,7 +46,7 @@ class DinoSignalLayer:
         return append_layer_status(updated, self.status())
 
 
-def build_dino_signals(ranking_artifacts) -> Dict[str, DinoSignals]:
+def build_dino_signals(ranking_artifacts, *, timing_callback=None) -> Dict[str, DinoSignals]:
     """Build DINO centrality/group signals for every ranked artifact image."""
 
     normalized_embeddings = _l2_normalize(ranking_artifacts.embeddings)
@@ -51,6 +55,7 @@ def build_dino_signals(ranking_artifacts) -> Dict[str, DinoSignals]:
     for cluster_id, members in ranking_artifacts.clusters_by_id.items():
         if not members:
             continue
+        cluster_started = time.perf_counter()
         indices = [member.embedding_index for member in members]
         cluster_embeddings = normalized_embeddings[indices]
         if len(members) == 1:
@@ -90,6 +95,16 @@ def build_dino_signals(ranking_artifacts) -> Dict[str, DinoSignals]:
                 nearest_neighbor_similarity=nearest_value,
                 duplicate_risk=_duplicate_risk(nearest_value),
                 status="analyzed",
+            )
+        if timing_callback is not None:
+            timing_callback(
+                "dino_cluster",
+                time.perf_counter() - cluster_started,
+                {
+                    "cluster_id": cluster_id,
+                    "members": len(members),
+                    "similarity_comparisons": len(members) * len(members) if len(members) > 1 else 0,
+                },
             )
 
     return signals
