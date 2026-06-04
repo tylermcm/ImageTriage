@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import QStyle
 
+from ..filtering import AIStateFilter
 from ..models import FilterMode, SortMode
 from .shortcuts import (
     SHORTCUT_REGISTRY,
@@ -95,6 +96,7 @@ class MainWindowActions:
     next_ai_pick: QAction
     next_unreviewed_ai_pick: QAction
     compare_ai_group: QAction
+    dispute_current_ai_result: QAction
     review_ai_disagreements: QAction
     winner_ladder_mode: QAction
     assign_review_round_first_pass: QAction
@@ -134,6 +136,7 @@ class MainWindowActions:
     appearance_actions: dict[AppearanceMode, QAction] = field(default_factory=dict)
     sort_actions: dict[SortMode, QAction] = field(default_factory=dict)
     filter_actions: dict[FilterMode, QAction] = field(default_factory=dict)
+    ai_state_actions: dict[AIStateFilter, QAction] = field(default_factory=dict)
     column_actions: dict[int, QAction] = field(default_factory=dict)
     mode_actions: dict[str, QAction] = field(default_factory=dict)
 
@@ -363,7 +366,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         run_ai_culling=_create_action(
             window,
             "Run AI Culler",
-            slot=window._run_ai_pipeline,
+            slot=window._open_ai_workflow_center,
             icon=QStyle.StandardPixmap.SP_MediaPlay,
         ),
         quick_rerank_ai_culling=_create_action(
@@ -411,7 +414,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         train_ai_ranker_from_global=_create_action(
             window,
-            "Train Adapter From Global Labels...",
+            "Train Global Adapter...",
             slot=window._train_aiculler_adapter_from_global_labels,
         ),
         evaluate_ai_ranker=_create_action(window, "Evaluate Adapter", slot=window._evaluate_aiculler_adapter),
@@ -431,6 +434,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Compare Current AI Group",
             slot=window._open_current_ai_group_compare,
             shortcut="Ctrl+Alt+G",
+        ),
+        dispute_current_ai_result=_create_action(
+            window,
+            "Dispute Current AI Decision...",
+            slot=window._dispute_current_ai_result,
         ),
         review_ai_disagreements=_create_action(
             window,
@@ -650,5 +658,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         )
         column_group.addAction(action)
         actions.column_actions[count] = action
+
+    actions.dispute_current_ai_result.setToolTip(
+        "Dispute the selected AI result and choose the correct 1-5 label. "
+        "Keyboard path in AI Review: press D, then 1-5."
+    )
+    actions.dispute_current_ai_result.setStatusTip(actions.dispute_current_ai_result.toolTip())
 
     return actions

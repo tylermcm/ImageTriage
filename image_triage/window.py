@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -151,6 +152,7 @@ from .ai_workflow import (
 from .ai_workflow_center import AIWorkflowCenterDialog
 from .aiculler_workflow import (
     AICullerAdapterTask,
+    AICullerGlobalAdapterTask,
     AICullerRunTask,
     DINOPrefilterRunTask,
     aiculler_db_path,
@@ -160,6 +162,8 @@ from .aiculler_workflow import (
     clip_model_variant_info,
     coerce_clip_model_variant,
     default_aiculler_runtime,
+    delete_adapter_model,
+    global_aiculler_db_path,
     latest_adapter_model_version,
     load_adapter_review_candidates,
     load_adapter_status_summary,
@@ -194,6 +198,13 @@ from .dino_prefilter import (
     coerce_dino_prefilter_mode,
     default_dino_prefilter_settings,
     load_dino_prefilter_decisions,
+)
+from .phash_prefilter import (
+    PHashPrefilterSettings,
+    build_phash_prefilter_paths,
+    coerce_phash_execution_mode,
+    default_phash_prefilter_settings,
+    load_phash_prefilter_decisions,
 )
 from .file_ops import FileMove, copy_paths, create_folder, delete_folder, move_folder, move_paths, rename_bundle_paths, rename_folder, unique_destination
 from .filtering import (
@@ -305,6 +316,7 @@ from .ui import (
     save_shortcut_overrides,
     build_app_palette,
     build_app_stylesheet,
+    build_help_button,
     build_main_menu_bar,
     build_main_window_actions,
     build_pin_icon,
@@ -314,7 +326,9 @@ from .ui import (
     restore_window_layout,
     resolve_theme,
     save_window_layout,
+    show_paged_help,
 )
+from .ui.help_topics import library_help_pages, settings_help_pages
 from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
 
 
@@ -476,6 +490,16 @@ class ShortcutTarget:
 def _memory_path_key(path: str) -> str:
     """Create a cheap case-insensitive in-memory lookup key for loaded paths."""
     return os.path.normpath(path).casefold()
+
+
+def _path_parent_stem_key(path: str) -> str:
+    try:
+        candidate = Path(path).expanduser()
+        parent = normalized_path_key(str(candidate.parent))
+        stem = candidate.stem.casefold()
+    except (OSError, ValueError):
+        return ""
+    return f"{parent}|{stem}" if parent and stem else ""
 
 
 def _is_unc_path(path: str | None) -> bool:
@@ -838,6 +862,7 @@ class ToolbarCustomizerDialog(QDialog):
             "next_ai_pick": "Next Pick",
             "next_unreviewed_ai_pick": "Next Unreviewed",
             "compare_ai_group": "AI Compare",
+            "dispute_current_ai_result": "Dispute AI",
             "review_ai_disagreements": "Disagree",
             "taste_calibration": "Calibrate",
         }.get(item_id, self._labels.get(item_id, item_id))
@@ -2284,6 +2309,12 @@ class MainWindow(QMainWindow):
     DINO_PREFILTER_RESCUE_SEMANTIC_UNIQUE_KEY = "ai/dino_prefilter/rescue_semantic_unique"
     DINO_PREFILTER_RESCUE_BEST_REPRESENTATIVE_KEY = "ai/dino_prefilter/rescue_best_representative"
     DINO_PREFILTER_DIAGNOSTICS_KEY = "ai/dino_prefilter/diagnostics"
+    PHASH_PREFILTER_ENABLED_KEY = "ai/phash_prefilter/enabled"
+    PHASH_PREFILTER_MODE_KEY = "ai/phash_prefilter/mode"
+    PHASH_PREFILTER_EXECUTION_MODE_KEY = "ai/phash_prefilter/execution_mode"
+    PHASH_PREFILTER_HAMMING_THRESHOLD_KEY = "ai/phash_prefilter/hamming_threshold"
+    PHASH_PREFILTER_CACHE_ENABLED_KEY = "ai/phash_prefilter/cache_enabled"
+    PHASH_PREFILTER_DIAGNOSTICS_KEY = "ai/phash_prefilter/diagnostics"
     TRAIN_RANKER_LAST_RUN_NAME_KEY = "training/ranker_last_run_name"
     TRAIN_RANKER_LAST_PROFILE_KEY = "training/ranker_last_profile"
     TRAIN_RANKER_LAST_EPOCHS_KEY = "training/ranker_last_epochs"
@@ -2383,6 +2414,7 @@ class MainWindow(QMainWindow):
             "sort_ai_semantic_folders",
             "reset_ai_review_cache",
             "ai_results",
+            "dispute_current_ai_result",
             "review",
             "view",
             "selection_count",
@@ -2455,6 +2487,7 @@ class MainWindow(QMainWindow):
             "next_ai_pick",
             "next_unreviewed_ai_pick",
             "compare_ai_group",
+            "dispute_current_ai_result",
             "review_ai_disagreements",
             "taste_calibration",
             "open_folder",
@@ -2492,6 +2525,7 @@ class MainWindow(QMainWindow):
         "sort_ai_semantic_folders": "Semantic Sort",
         "reset_ai_review_cache": "Reset AI Cache",
         "ai_results": "AI Results",
+        "dispute_current_ai_result": "Dispute AI",
         "command_palette": "Command Palette",
         "columns": "Columns",
         "sort": "Sort",
@@ -2532,6 +2566,7 @@ class MainWindow(QMainWindow):
         "next_ai_pick": "Next AI Pick",
         "next_unreviewed_ai_pick": "Next Unreviewed",
         "compare_ai_group": "Compare AI Group",
+        "dispute_current_ai_result": "Dispute AI",
         "review_ai_disagreements": "AI Disagreements",
         "taste_calibration": "Calibration",
     }
@@ -2544,6 +2579,7 @@ class MainWindow(QMainWindow):
         "sort_ai_semantic_folders": ("F207", "F1D5"),
         "reset_ai_review_cache": ("EA99", "E99A"),
         "ai_results": ("E8BC", "E99A"),
+        "dispute_current_ai_result": ("E7BA", "E99A"),
         "command_palette": ("E756", None),
         "columns": ("F246", None),
         "sort": ("E8CB", None),
@@ -2584,6 +2620,7 @@ class MainWindow(QMainWindow):
         "next_ai_pick": ("E893", "E99A"),
         "next_unreviewed_ai_pick": ("F142", "E99A"),
         "compare_ai_group": ("E89A", "E99A"),
+        "dispute_current_ai_result": ("E7BA", "E99A"),
         "review_ai_disagreements": ("E8DF", "E7BA"),
         "taste_calibration": ("F272", "F1D5"),
         "more": ("E712", None),
@@ -2818,6 +2855,9 @@ class MainWindow(QMainWindow):
         self._burst_recommendations: dict[str, BurstRecommendation] = {}
         self._workflow_insights_by_path: dict[str, RecordWorkflowInsight] = {}
         self._dino_prefilter_decisions_by_path: dict[str, DINOPrefilterDecision] = {}
+        self._aiculler_ingested_path_keys: set[str] = set()
+        self._aiculler_ingested_sibling_keys: set[str] = set()
+        self._aiculler_ingested_cache_folder_key = ""
         self._records_view_cache = RecordsViewCache()
         self._last_view_record_paths: tuple[str, ...] = ()
         self._chunked_load_scan_tokens: set[int] = set()
@@ -2926,6 +2966,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._dino_prefilter_settings = self._load_dino_prefilter_settings()
+        self._phash_prefilter_settings = self._load_phash_prefilter_settings()
         self._catalog_load_source = "idle"
         self._catalog_load_detail = "Ready"
         self._review_grouping_cache_source = "idle"
@@ -3051,6 +3092,14 @@ class MainWindow(QMainWindow):
 
         self.library_label = QLabel("Folders")
         self.library_label.setObjectName("sectionLabel")
+        library_header = QWidget()
+        library_header_layout = QHBoxLayout(library_header)
+        library_header_layout.setContentsMargins(0, 0, 0, 0)
+        library_header_layout.setSpacing(8)
+        library_header_layout.addWidget(self.library_label, 1)
+        library_help_button = build_help_button(self, tooltip="Open library, collection, and catalog help")
+        library_help_button.clicked.connect(self._show_library_help)
+        library_header_layout.addWidget(library_help_button, 0)
 
         self.left_panel = QWidget()
         self.left_panel.setObjectName("libraryPanelContent")
@@ -3061,7 +3110,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.favorites_label)
         left_layout.addWidget(self.favorites_list)
         left_layout.addWidget(self.favorites_divider)
-        left_layout.addWidget(self.library_label)
+        left_layout.addWidget(library_header)
         left_layout.addWidget(self.folder_tree, 1)
         self._refresh_favorites_panel()
 
@@ -3705,13 +3754,21 @@ class MainWindow(QMainWindow):
 
     def _build_ai_results_menu(self) -> QMenu:
         menu = QMenu("AI Results", self)
-        menu.addAction(self.actions.apply_ai_culling)
-        menu.addAction(self.actions.sort_ai_semantic_folders)
-        menu.addSeparator()
-        menu.addAction(self.actions.load_saved_ai)
-        menu.addAction(self.actions.load_ai_results)
-        menu.addAction(self.actions.clear_ai_results)
-        menu.addAction(self.actions.reset_ai_review_cache)
+        ai_state_menu = menu.addMenu("AI Result Buckets")
+        for mode in (
+            AIStateFilter.TOP_PICKS,
+            AIStateFilter.NEEDS_REVIEW,
+            AIStateFilter.LIKELY_REJECTS,
+        ):
+            ai_state_menu.addAction(self._ai_state_actions[mode])
+        prefilter_menu = menu.addMenu("Ingest And Prefilter")
+        for mode in (
+            FilterMode.AI_INGESTED,
+            FilterMode.AI_PREFILTER_DUMPED,
+            FilterMode.DINO_QUARANTINE,
+            FilterMode.DINO_REMOVED,
+        ):
+            prefilter_menu.addAction(self.actions.filter_actions[mode])
         menu.addSeparator()
         menu.addAction(self.actions.open_ai_report)
         menu.addAction(self.actions.show_ai_review_summary)
@@ -3840,6 +3897,7 @@ class MainWindow(QMainWindow):
             "next_ai_pick": (self.actions.next_ai_pick, "Next Pick"),
             "next_unreviewed_ai_pick": (self.actions.next_unreviewed_ai_pick, "Next Unreviewed"),
             "compare_ai_group": (self.actions.compare_ai_group, "AI Compare"),
+            "dispute_current_ai_result": (self.actions.dispute_current_ai_result, "Dispute AI"),
             "review_ai_disagreements": (self.actions.review_ai_disagreements, "Disagree"),
         }
         for item_id, (action, text) in action_items.items():
@@ -3903,6 +3961,15 @@ class MainWindow(QMainWindow):
                 ai_items.insert(insert_at, "sort_ai_semantic_folders")
             else:
                 ai_items.insert(0, "sort_ai_semantic_folders")
+        if "dispute_current_ai_result" not in ai_items:
+            if "ai_results" in ai_items:
+                insert_at = ai_items.index("ai_results") + 1
+                ai_items.insert(insert_at, "dispute_current_ai_result")
+            elif "compare_ai_group" in ai_items:
+                insert_at = ai_items.index("compare_ai_group") + 1
+                ai_items.insert(insert_at, "dispute_current_ai_result")
+            else:
+                ai_items.insert(0, "dispute_current_ai_result")
         layouts["ai"] = self._normalize_workspace_toolbar_items("ai", ai_items)
 
     def _normalize_workspace_toolbar_items(self, mode: str, raw_items: list[object] | tuple[object, ...]) -> list[str]:
@@ -4487,6 +4554,7 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _checked=False, selected=mode: self._set_ai_state_filter(selected))
             ai_group.addAction(action)
             self._ai_state_actions[mode] = action
+            self.actions.ai_state_actions[mode] = action
 
     def _populate_saved_filter_menu(self, menu: QMenu) -> None:
         menu.addAction(self.actions.save_filter_preset)
@@ -5866,6 +5934,58 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.DINO_PREFILTER_RESCUE_SEMANTIC_UNIQUE_KEY, normalized.rescue_semantic_unique_enabled)
         self._settings.setValue(self.DINO_PREFILTER_RESCUE_BEST_REPRESENTATIVE_KEY, normalized.rescue_best_representative_enabled)
         self._settings.setValue(self.DINO_PREFILTER_DIAGNOSTICS_KEY, normalized.diagnostics_enabled)
+
+    def _load_phash_prefilter_settings(self) -> PHashPrefilterSettings:
+        defaults = default_phash_prefilter_settings()
+        return PHashPrefilterSettings(
+            enabled=self._settings.value(
+                self.PHASH_PREFILTER_ENABLED_KEY,
+                defaults.enabled,
+                bool,
+            ),
+            mode=coerce_dino_prefilter_mode(
+                self._settings.value(self.PHASH_PREFILTER_MODE_KEY, defaults.mode.value, str)
+            ),
+            execution_mode=coerce_phash_execution_mode(
+                self._settings.value(
+                    self.PHASH_PREFILTER_EXECUTION_MODE_KEY,
+                    defaults.execution_mode.value,
+                    str,
+                )
+            ),
+            hamming_threshold=max(
+                0,
+                min(
+                    64,
+                    int(
+                        self._settings.value(
+                            self.PHASH_PREFILTER_HAMMING_THRESHOLD_KEY,
+                            defaults.hamming_threshold,
+                            int,
+                        )
+                    ),
+                ),
+            ),
+            cache_enabled=self._settings.value(
+                self.PHASH_PREFILTER_CACHE_ENABLED_KEY,
+                defaults.cache_enabled,
+                bool,
+            ),
+            diagnostics_enabled=self._settings.value(
+                self.PHASH_PREFILTER_DIAGNOSTICS_KEY,
+                defaults.diagnostics_enabled,
+                bool,
+            ),
+        ).normalized()
+
+    def _save_phash_prefilter_settings(self, settings: PHashPrefilterSettings) -> None:
+        normalized = settings.normalized()
+        self._settings.setValue(self.PHASH_PREFILTER_ENABLED_KEY, normalized.enabled)
+        self._settings.setValue(self.PHASH_PREFILTER_MODE_KEY, normalized.mode.value)
+        self._settings.setValue(self.PHASH_PREFILTER_EXECUTION_MODE_KEY, normalized.execution_mode.value)
+        self._settings.setValue(self.PHASH_PREFILTER_HAMMING_THRESHOLD_KEY, normalized.hamming_threshold)
+        self._settings.setValue(self.PHASH_PREFILTER_CACHE_ENABLED_KEY, normalized.cache_enabled)
+        self._settings.setValue(self.PHASH_PREFILTER_DIAGNOSTICS_KEY, normalized.diagnostics_enabled)
 
     def _default_ai_embed_batch_size(self) -> int:
         runtime_status = self._managed_ai_runtime_status()
@@ -7951,13 +8071,18 @@ class MainWindow(QMainWindow):
         if normalized_action in {"train_adapter", "train_global_adapter"}:
             model_version = str(payload.get("model_version") or "")
             report_dir = str(payload.get("report_dir") or "")
+            scope = str(payload.get("scope") or "local")
             self._update_ai_toolbar_state()
             self._refresh_adapter_status_indicator()
             self._refresh_ai_workflow_center()
             diagnostics_path = str(Path(report_dir) / "aiculler_diagnostics.json") if report_dir else ""
-            status_text = f"Adapter trained{f' ({model_version})' if model_version else ''}."
+            prefix = "Global adapter" if scope == "global" else "Adapter"
+            status_text = f"{prefix} trained{f' ({model_version})' if model_version else ''}."
             if diagnostics_path:
                 status_text += " Diagnostics written."
+            if scope == "global":
+                self.statusBar().showMessage(status_text)
+                return
             if report_dir and folder_key == current_key:
                 self._kick_off_async_ai_results_reload(
                     folder=context.folder,
@@ -9109,6 +9234,14 @@ class MainWindow(QMainWindow):
         self.actions.restore_selection.setEnabled(has_selection and has_physical_folder and in_recycle_folder)
         self.actions.reveal_in_explorer.setEnabled(bool(display_path))
         self.actions.open_in_photoshop.setEnabled(bool(selected_records and self._photoshop_executable))
+        can_dispute_current_ai = (
+            self._ui_mode == "ai"
+            and self._ai_bundle is not None
+            and current_record is not None
+            and not current_record.is_folder
+            and current_ai is not None
+        )
+        self.actions.dispute_current_ai_result.setEnabled(can_dispute_current_ai)
         self.actions.review_ai_disagreements.setEnabled(self._ai_bundle is not None)
         self.actions.assign_review_round_first_pass.setEnabled(has_selection)
         self.actions.assign_review_round_second_pass.setEnabled(has_selection)
@@ -9173,6 +9306,49 @@ class MainWindow(QMainWindow):
         self._filter_query.quick_filter = FilterMode.AI_DISAGREEMENTS
         self._apply_filter_query_change()
         self.statusBar().showMessage("Showing AI disagreement cases for targeted review.")
+
+    def _dispute_current_ai_result(self) -> None:
+        if self._ai_bundle is None:
+            self.statusBar().showMessage("Load AI results first before disputing an AI decision.")
+            return
+        if self._ui_mode != "ai":
+            self._set_ui_mode("ai")
+        index = self.grid.current_index()
+        record = self._record_at(index)
+        if record is None or record.is_folder:
+            self.statusBar().showMessage("Select an AI-reviewed image before disputing the AI decision.")
+            return
+        displayed_path = self.grid.displayed_variant_path(index) or record.path
+        current_ai = self._ai_result_for_record(record, preferred_path=displayed_path)
+        if current_ai is None:
+            self.statusBar().showMessage("The selected image does not have an AI result to dispute.")
+            return
+
+        label_options = {
+            "1 Best": "hero",
+            "2 Strong": "strong",
+            "3 Maybe": "maybe",
+            "4 Weak": "weak",
+            "5 Reject": "reject",
+        }
+        labels = list(label_options)
+        choice, accepted = QInputDialog.getItem(
+            self,
+            "Dispute AI Decision",
+            (
+                f"Choose the correct label for {record.name}.\n\n"
+                "This saves a weighted adapter training dispute."
+            ),
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        normalized = label_options.get(str(choice))
+        if not normalized:
+            return
+        self._handle_dispute_label_requested(record.path, normalized)
 
     def _open_taste_calibration_wizard(self) -> None:
         if not self._current_folder or len(self._all_records) < 2:
@@ -10437,6 +10613,127 @@ class MainWindow(QMainWindow):
             return
         open_with_default(str(paths.artifact_dir))
 
+    def _delete_dino_prefilter_artifacts(self) -> None:
+        if not self._current_folder:
+            QMessageBox.information(self, "DINO Prefilter", "Open a folder before deleting DINO Prefilter artifacts.")
+            return
+        if self._active_ai_task is not None:
+            self.statusBar().showMessage("Wait for the current AI task to finish before deleting DINO artifacts.")
+            return
+        try:
+            paths = build_dino_prefilter_paths(self._current_folder)
+        except Exception as exc:
+            QMessageBox.warning(self, "DINO Prefilter", f"Could not resolve the DINO Prefilter artifact folder.\n\n{exc}")
+            return
+        if not paths.artifact_dir.exists():
+            QMessageBox.information(
+                self,
+                "DINO Prefilter",
+                "No DINO Prefilter artifacts exist for this folder.",
+            )
+            self._refresh_ai_workflow_center()
+            return
+        message = dedent(
+            f"""
+            Delete DINO Prefilter artifacts for this folder?
+
+            This deletes:
+            - DINO embeddings, cluster outputs, and extraction cache marker
+            - DINO prefilter rows, report, and diagnostics log
+
+            It does not delete AI Culler indexes, adapter labels, pHash artifacts, or images.
+
+            Folder:
+            {paths.artifact_dir}
+            """
+        ).strip()
+        choice = QMessageBox.question(
+            self,
+            "Delete DINO Artifacts",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.rmtree(paths.artifact_dir, ignore_errors=False)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Delete DINO Artifacts",
+                f"Could not delete the DINO Prefilter artifacts.\n\n{exc}",
+            )
+            self.statusBar().showMessage("DINO artifact deletion failed")
+            return
+        self._dino_prefilter_decisions_by_path = {}
+        self.grid.set_dino_prefilter_decisions({})
+        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
+        self._apply_records_view(current_path=self._current_visible_record_path())
+        self._update_ai_toolbar_state()
+        self._refresh_ai_workflow_center()
+        self.statusBar().showMessage("Deleted DINO Prefilter artifacts for this folder.")
+
+    def _delete_phash_prefilter_artifacts(self) -> None:
+        if not self._current_folder:
+            QMessageBox.information(self, "pHash Prefilter", "Open a folder before deleting pHash Prefilter artifacts.")
+            return
+        if self._active_ai_task is not None:
+            self.statusBar().showMessage("Wait for the current AI task to finish before deleting pHash artifacts.")
+            return
+        try:
+            paths = build_phash_prefilter_paths(self._current_folder)
+        except Exception as exc:
+            QMessageBox.warning(self, "pHash Prefilter", f"Could not resolve the pHash Prefilter artifact folder.\n\n{exc}")
+            return
+        if not paths.artifact_dir.exists():
+            QMessageBox.information(
+                self,
+                "pHash Prefilter",
+                "No pHash Prefilter artifacts exist for this folder.",
+            )
+            self._refresh_ai_workflow_center()
+            return
+        message = dedent(
+            f"""
+            Delete pHash Prefilter artifacts for this folder?
+
+            This deletes:
+            - pHash duplicate rows, report, diagnostics log, and pHash cache
+
+            It does not delete DINO artifacts, AI Culler indexes, adapter labels, or images.
+
+            Folder:
+            {paths.artifact_dir}
+            """
+        ).strip()
+        choice = QMessageBox.question(
+            self,
+            "Delete pHash Artifacts",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.rmtree(paths.artifact_dir, ignore_errors=False)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Delete pHash Artifacts",
+                f"Could not delete the pHash Prefilter artifacts.\n\n{exc}",
+            )
+            self.statusBar().showMessage("pHash artifact deletion failed")
+            return
+        self._refresh_dino_prefilter_decisions_for_current_folder()
+        self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
+        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
+        self._apply_records_view(current_path=self._current_visible_record_path())
+        self._update_ai_toolbar_state()
+        self._refresh_ai_workflow_center()
+        self.statusBar().showMessage("Deleted pHash Prefilter artifacts for this folder.")
+
     def _aiculler_paths_for_current_folder(self):
         if not self._current_folder:
             return None
@@ -10717,7 +11014,9 @@ class MainWindow(QMainWindow):
         ratings_path = self._write_aiculler_ratings_csv()
         if ratings_path is None:
             return
-        self.statusBar().showMessage(f"Prepared {ratings_path.name} for adapter training.")
+        message = f"Prepared {ratings_path.name} for adapter training."
+        self.statusBar().showMessage(message)
+        QMessageBox.information(self, "Prepare Adapter Ratings", message)
 
     def _review_aiculler_adapter_labels(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
@@ -11137,6 +11436,68 @@ class MainWindow(QMainWindow):
         prefix = "Global Adapter" if global_labels else "Adapter"
         return f"{prefix} {time.strftime('%Y-%m-%d %H.%M.%S')}"
 
+    def _delete_aiculler_adapter(self, model_version: str, *, scope: str = "local") -> None:
+        version = str(model_version or "").strip()
+        if not version:
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        normalized_scope = "global" if str(scope).strip().lower() == "global" else "local"
+        if paths is None and normalized_scope == "local":
+            self.statusBar().showMessage("Choose a folder before deleting an adapter.")
+            return
+        if self._active_ai_task is not None or self._active_ai_training_task is not None:
+            self.statusBar().showMessage("Wait for the current AI task to finish before deleting an adapter.")
+            return
+        db_path = global_aiculler_db_path() if normalized_scope == "global" else aiculler_db_path(paths)
+        if not db_path.exists():
+            self.statusBar().showMessage("No adapters exist in that scope yet.")
+            return
+        scope_label = "global" if normalized_scope == "global" else "this folder"
+        choice = QMessageBox.question(
+            self,
+            "Delete Adapter",
+            (
+                f"Delete adapter \"{version}\"?\n\n"
+                f"This removes the trained adapter model and its adapter scores for {scope_label}.\n"
+                "It does not delete your saved labels, global labels, base AI results, or images."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            deleted = delete_adapter_model(db_path, version)
+            if normalized_scope == "local" and paths is not None:
+                self._delete_aiculler_adapter_artifacts(paths, version)
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete Adapter", f"Could not delete the adapter.\n\n{exc}")
+            return
+        if not deleted:
+            self.statusBar().showMessage("Adapter was already deleted or no longer exists.")
+        else:
+            self.statusBar().showMessage(f"Deleted {normalized_scope} adapter: {version}")
+        self._refresh_adapter_status_indicator()
+        self._update_ai_toolbar_state()
+        self._refresh_ai_workflow_center()
+
+    @staticmethod
+    def _delete_aiculler_adapter_artifacts(paths, model_version: str) -> None:
+        version = str(model_version or "").strip()
+        if not version:
+            return
+        candidates = [
+            paths.report_dir / f"adapter_scores_{version}.csv",
+            paths.report_dir / f"adapter_evaluation_{version}.csv",
+            paths.report_dir / f"adapter_ranking_{version}.csv",
+            paths.artifacts_dir / f".adapter_ratings_{version}.csv",
+        ]
+        for candidate in candidates:
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def _train_aiculler_adapter(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
@@ -11172,38 +11533,37 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Training adapter from current ratings...")
 
     def _train_aiculler_adapter_from_global_labels(self) -> None:
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            self.statusBar().showMessage("Choose a folder before training an adapter.")
-            return
-        db_path = aiculler_db_path(paths)
-        if not db_path.exists():
-            self.statusBar().showMessage("Run AI Culler before training an adapter.")
-            return
-        ratings_path = self._write_aiculler_ratings_csv(global_only=True)
-        if ratings_path is None:
-            return
         try:
-            ratings_csv_text = ratings_path.read_text(encoding="utf-8")
+            store = self._aiculler_global_label_store()
+            try:
+                labels = tuple(store.all_labels())
+            finally:
+                store.close()
         except OSError as exc:
             QMessageBox.warning(self, "Train Adapter From Global Labels", f"Could not prepare global adapter ratings.\n\n{exc}")
             return
-        model_version = self._new_aiculler_adapter_model_version()
-        task = AICullerAdapterTask(
+        except Exception as exc:
+            QMessageBox.warning(self, "Train Global Adapter", f"Could not load global adapter labels.\n\n{exc}")
+            return
+        if len(labels) < 2:
+            self.statusBar().showMessage("Global adapter training needs at least two global labels.")
+            return
+        if len({label.label for label in labels}) < 2:
+            self.statusBar().showMessage("Global adapter training needs at least two different rating labels.")
+            return
+        model_version = self._new_aiculler_adapter_model_version(global_labels=True)
+        task = AICullerGlobalAdapterTask(
             runtime=self._configured_aiculler_runtime(),
-            paths=paths,
-            mode="train",
-            ratings_csv=ratings_path,
-            ratings_csv_text=ratings_csv_text,
+            labels=labels,
             model_version=model_version,
         )
         if self._start_ai_training_task(
             task,
             action="train_global_adapter",
-            title="Train Adapter From Global Labels",
+            title="Train Global Adapter",
             run_label=model_version,
         ):
-            self.statusBar().showMessage("Training adapter from matching global labels...")
+            self.statusBar().showMessage("Training global adapter from all global labels...")
 
     def _evaluate_aiculler_adapter(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
@@ -11228,28 +11588,33 @@ class MainWindow(QMainWindow):
         ):
             self.statusBar().showMessage("Evaluating adapter against stored ratings...")
 
-    def _rank_aiculler_adapter(self) -> None:
+    def _rank_aiculler_adapter(self, checked: bool = False, *, scope: str = "local") -> None:
+        del checked
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
             self.statusBar().showMessage("Choose a folder before ranking with an adapter.")
             return
-        model_version = latest_adapter_model_version(aiculler_db_path(paths))
+        normalized_scope = "global" if str(scope).strip().lower() == "global" else "local"
+        source_db = global_aiculler_db_path() if normalized_scope == "global" else aiculler_db_path(paths)
+        model_version = latest_adapter_model_version(source_db)
         if not model_version:
-            self.statusBar().showMessage("Train an adapter before ranking with it.")
+            self.statusBar().showMessage(f"Train a {normalized_scope} adapter before ranking with it.")
             return
         task = AICullerAdapterTask(
             runtime=self._configured_aiculler_runtime(),
             paths=paths,
             mode="rank",
             model_version=model_version,
+            source_model_db=source_db if normalized_scope == "global" else None,
+            apply_before_rank=normalized_scope == "global",
         )
         if self._start_ai_training_task(
             task,
             action="rank_adapter",
-            title="Rank With Adapter",
-            run_label=f"Adapter {model_version}",
+            title=f"Rank With {'Global' if normalized_scope == 'global' else 'Local'} Adapter",
+            run_label=f"{normalized_scope.title()} Adapter {model_version}",
         ):
-            self.statusBar().showMessage("Ranking current folder with adapter...")
+            self.statusBar().showMessage(f"Ranking current folder with {normalized_scope} adapter...")
 
     def _accept_selected_records(self) -> None:
         records = self._selected_records_for_actions()
@@ -13924,6 +14289,7 @@ class MainWindow(QMainWindow):
         next_pick_action = menu.addAction(self.actions.next_ai_pick)
         next_unreviewed_pick_action = menu.addAction(self.actions.next_unreviewed_ai_pick)
         compare_group_action = menu.addAction(self.actions.compare_ai_group)
+        dispute_action = menu.addAction(self.actions.dispute_current_ai_result)
         jump_group_top_action = menu.addAction("Jump To AI Top Pick In Group")
         current_index = self.grid.current_index()
         current_ai_result = self._ai_result_for_index(current_index)
@@ -14337,34 +14703,59 @@ class MainWindow(QMainWindow):
         ):
             self.statusBar().showMessage("Wait for the current AI task to finish before resetting the AI cache.")
             return
-        message = dedent(
-            """
-            Reset the AI review cache for this folder?
+        selected = self._prompt_ai_cache_reset_options()
+        if not selected:
+            return
+        labels = {
+            "dino": "DINO embeddings and prefilter artifacts",
+            "phash": "pHash duplicate artifacts",
+            "clip_topiq": "CLIP/TOPIQ scoring artifacts, exports, and report",
+        }
+        chosen_text = "\n".join(f"- {labels[key]}" for key in selected)
+        warning = dedent(
+            f"""
+            Reset selected AI artifacts for this folder?
 
-            This deletes:
-            - cached embeddings, image IDs, and clusters
-            - ranked AI exports and the HTML report
-            - saved AI cache registration for this folder
+            This will delete:
+            {chosen_text}
 
-            It does not remove labels, training runs, evaluations, or the reference bank.
+            It does not delete images, adapter labels, global labels, or training label history.
             """
         ).strip()
-        choice = QMessageBox.question(
+        choice = QMessageBox.warning(
             self,
-            "Reset AI Review Cache",
-            message,
+            "Reset Selected AI Artifacts",
+            warning,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
-        paths = build_ai_workflow_paths(self._current_folder)
-        self._clear_ai_results_state()
-        cached_summary = getattr(self, "_last_ai_review_summary", None)
-        if cached_summary and normalized_path_key(str(cached_summary.get("folder", ""))) == normalized_path_key(self._current_folder):
-            self._last_ai_review_summary = None
+        reset_parts: list[str] = []
         try:
-            reset_hidden_ai_review_cache(paths)
+            if "dino" in selected:
+                dino_paths = build_dino_prefilter_paths(self._current_folder)
+                if dino_paths.artifact_dir.exists():
+                    shutil.rmtree(dino_paths.artifact_dir, ignore_errors=False)
+                reset_parts.append("DINO")
+            if "phash" in selected:
+                phash_paths = build_phash_prefilter_paths(self._current_folder)
+                if phash_paths.artifact_dir.exists():
+                    shutil.rmtree(phash_paths.artifact_dir, ignore_errors=False)
+                reset_parts.append("pHash")
+            if "clip_topiq" in selected:
+                paths = build_ai_workflow_paths(self._current_folder)
+                self._clear_ai_results_state()
+                cached_summary = getattr(self, "_last_ai_review_summary", None)
+                if cached_summary and normalized_path_key(str(cached_summary.get("folder", ""))) == normalized_path_key(self._current_folder):
+                    self._last_ai_review_summary = None
+                reset_hidden_ai_review_cache(paths)
+                self._aiculler_ingested_cache_folder_key = ""
+                self._aiculler_ingested_path_keys = set()
+                self._aiculler_ingested_sibling_keys = set()
+                self._catalog_repository.delete_ai_workflow_cache(self._current_folder)
+                self._catalog_repository.delete_ai_bundle_cache(self._current_folder)
+                reset_parts.append("CLIP/TOPIQ")
         except OSError as exc:
             QMessageBox.warning(
                 self,
@@ -14373,10 +14764,71 @@ class MainWindow(QMainWindow):
             )
             self.statusBar().showMessage("AI review cache reset failed")
             return
-        self._catalog_repository.delete_ai_workflow_cache(self._current_folder)
-        self._catalog_repository.delete_ai_bundle_cache(self._current_folder)
+        if "dino" in selected or "phash" in selected:
+            self._refresh_dino_prefilter_decisions_for_current_folder()
+            self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
+            self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
+            self._apply_records_view(current_path=self._current_visible_record_path())
         self._update_ai_toolbar_state()
-        self.statusBar().showMessage(f"Reset AI review cache for {self._current_folder}")
+        self._refresh_ai_workflow_center()
+        suffix = ", ".join(reset_parts) if reset_parts else "selected artifacts"
+        self.statusBar().showMessage(f"Reset {suffix} for {self._current_folder}")
+
+    def _prompt_ai_cache_reset_options(self) -> tuple[str, ...]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Reset AI Artifacts")
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        intro = QLabel("Choose which AI artifacts to reset for this folder.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        dino_checkbox = QCheckBox("DINO embeddings and prefilter artifacts")
+        phash_checkbox = QCheckBox("pHash duplicate artifacts")
+        clip_checkbox = QCheckBox("CLIP/TOPIQ scoring artifacts, exports, and report")
+        for checkbox in (dino_checkbox, phash_checkbox, clip_checkbox):
+            checkbox.setChecked(False)
+            layout.addWidget(checkbox)
+
+        warning_label = QLabel(
+            "Adapter labels, global labels, images, and training label history are not deleted by this reset."
+        )
+        warning_label.setWordWrap(True)
+        warning_label.setObjectName("secondaryText")
+        layout.addWidget(warning_label)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        reset_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if reset_button is not None:
+            reset_button.setText("Reset Selected")
+            reset_button.setEnabled(False)
+        remove_all_button = QPushButton("Remove All")
+        button_box.addButton(remove_all_button, QDialogButtonBox.ButtonRole.ActionRole)
+
+        def sync_enabled() -> None:
+            if reset_button is not None:
+                reset_button.setEnabled(dino_checkbox.isChecked() or phash_checkbox.isChecked() or clip_checkbox.isChecked())
+
+        for checkbox in (dino_checkbox, phash_checkbox, clip_checkbox):
+            checkbox.toggled.connect(sync_enabled)
+        remove_all_button.clicked.connect(lambda _checked=False: [checkbox.setChecked(True) for checkbox in (dino_checkbox, phash_checkbox, clip_checkbox)])
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if self._exec_dialog_with_geometry(dialog, "reset_ai_artifacts") != dialog.DialogCode.Accepted:
+            return ()
+        selected: list[str] = []
+        if dino_checkbox.isChecked():
+            selected.append("dino")
+        if phash_checkbox.isChecked():
+            selected.append("phash")
+        if clip_checkbox.isChecked():
+            selected.append("clip_topiq")
+        return tuple(selected)
 
     def _open_ai_report(self) -> None:
         if self._ai_bundle is None or not self._ai_bundle.report_html_path:
@@ -14490,7 +14942,9 @@ class MainWindow(QMainWindow):
             # Hidden-cache existence checks can hit slow shares; only probe them in AI mode.
             saved_exists = bool(ai_paths and ai_paths.ranked_export_path.exists())
         step_start = log_step("ai_toolbar_state.saved_probe", step_start, saved_exists=saved_exists, has_paths=ai_paths is not None)
-        current_ai = self._ai_result_for_index(self.grid.current_index())
+        current_index = self.grid.current_index()
+        current_record = self._record_at(current_index)
+        current_ai = self._ai_result_for_index(current_index)
         can_compare_group = bool(current_ai and current_ai.group_size > 1)
         step_start = log_step("ai_toolbar_state.current_ai", step_start, can_compare_group=can_compare_group)
 
@@ -14567,6 +15021,13 @@ class MainWindow(QMainWindow):
             self.actions.next_ai_pick.setEnabled(ai_loaded)
             self.actions.next_unreviewed_ai_pick.setEnabled(ai_loaded)
             self.actions.compare_ai_group.setEnabled(ai_loaded and can_compare_group)
+            self.actions.dispute_current_ai_result.setEnabled(
+                self._ui_mode == "ai"
+                and ai_loaded
+                and current_record is not None
+                and not current_record.is_folder
+                and current_ai is not None
+            )
             self.actions.review_ai_disagreements.setEnabled(ai_loaded)
             self.actions.clear_ai_results.setEnabled(ai_loaded)
             if FilterMode.AI_GROUPED in self.actions.filter_actions:
@@ -14576,9 +15037,22 @@ class MainWindow(QMainWindow):
             if FilterMode.AI_DISAGREEMENTS in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_DISAGREEMENTS].setEnabled(ai_loaded)
             try:
+                aiculler_available = bool(current_folder and aiculler_db_path(build_aiculler_workflow_paths(self._current_folder)).exists())
+            except Exception:
+                aiculler_available = False
+            if FilterMode.AI_INGESTED in self.actions.filter_actions:
+                self.actions.filter_actions[FilterMode.AI_INGESTED].setEnabled(aiculler_available)
+            try:
                 dino_available = bool(current_folder and build_dino_prefilter_paths(self._current_folder).rows_path.exists())
             except Exception:
                 dino_available = False
+            try:
+                phash_available = bool(current_folder and build_phash_prefilter_paths(self._current_folder).rows_path.exists())
+            except Exception:
+                phash_available = False
+            prefilter_available = dino_available or phash_available
+            if FilterMode.AI_PREFILTER_DUMPED in self.actions.filter_actions:
+                self.actions.filter_actions[FilterMode.AI_PREFILTER_DUMPED].setEnabled(prefilter_available)
             for mode in (FilterMode.DINO_QUARANTINE, FilterMode.DINO_REMOVED, FilterMode.DINO_RESCUED):
                 if mode in self.actions.filter_actions:
                     self.actions.filter_actions[mode].setEnabled(dino_available)
@@ -14710,6 +15184,7 @@ class MainWindow(QMainWindow):
                 paths=paths,
                 records=tuple(record for record in self._all_records if not record.is_folder),
                 dino_prefilter_settings=self._dino_prefilter_settings,
+                phash_prefilter_settings=self._phash_prefilter_settings,
             )
         except Exception as exc:
             if logger.enabled:
@@ -14795,6 +15270,7 @@ class MainWindow(QMainWindow):
                 paths=paths,
                 dino_prefilter_settings=self._dino_prefilter_settings,
                 dino_runtime=self._ai_runtime,
+                phash_prefilter_settings=self._phash_prefilter_settings,
                 records=tuple(self._all_records),
             )
         except Exception as exc:
@@ -14864,6 +15340,7 @@ class MainWindow(QMainWindow):
                 records=tuple(record for record in self._all_records if not record.is_folder),
                 stages=("rank",),
                 dino_prefilter_settings=self._dino_prefilter_settings,
+                phash_prefilter_settings=self._phash_prefilter_settings,
             )
         except Exception as exc:
             QMessageBox.warning(self, "Quick Rerank", f"Could not prepare the rerank.\n\n{exc}")
@@ -15135,8 +15612,29 @@ class MainWindow(QMainWindow):
         self._update_ai_toolbar_state()
         self.statusBar().showMessage("Stopping AI review...")
 
+    def _ai_run_signal_matches_active_task(self, folder: str) -> bool:
+        task = self._active_ai_task
+        if task is None or not folder:
+            return False
+        task_folder = str(getattr(task, "folder", "") or "")
+        if not task_folder:
+            return False
+        if os.path.normpath(task_folder).casefold() == os.path.normpath(folder).casefold():
+            return True
+        return normalized_path_key(task_folder) == normalized_path_key(folder)
+
+    def _ai_run_signal_matches_current_folder(self, folder: str) -> bool:
+        if not self._current_folder or not folder:
+            return False
+        if os.path.normpath(self._current_folder).casefold() == os.path.normpath(folder).casefold():
+            return True
+        return normalized_path_key(self._current_folder) == normalized_path_key(folder)
+
     def _handle_ai_run_started(self, folder: str) -> None:
         perf_logger().log("ai.run_started", folder=folder)
+        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
+            perf_logger().log("ai.run_signal_ignored", signal="started", folder=folder)
+            return
         self._last_ai_perf_progress_signature = None
         self._show_ai_review_progress_dialog(folder=folder)
         if self._ai_review_progress_dialog is not None:
@@ -15145,8 +15643,6 @@ class MainWindow(QMainWindow):
                 stage_total=max(1, self._ai_stage_total),
                 message="Preparing AI review",
             )
-        if normalized_path_key(folder) != normalized_path_key(self._current_folder):
-            return
         self._ai_stage_index = 0
         self._ai_stage_total = max(1, self._ai_stage_total)
         self._ai_stage_message = "Preparing AI review"
@@ -15158,14 +15654,15 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_run_stage(self, folder: str, stage_index: int, stage_total: int, message: str) -> None:
         perf_logger().log("ai.stage", folder=folder, stage_index=stage_index, stage_total=stage_total, message=message)
+        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
+            perf_logger().log("ai.run_signal_ignored", signal="stage", folder=folder, message=message)
+            return
         if self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.set_stage(
                 stage_index=max(0, stage_index),
                 stage_total=max(1, stage_total),
                 message=message,
             )
-        if normalized_path_key(folder) != normalized_path_key(self._current_folder):
-            return
         self._ai_stage_index = max(0, stage_index)
         self._ai_stage_total = max(1, stage_total)
         self._ai_stage_message = message
@@ -15184,6 +15681,9 @@ class MainWindow(QMainWindow):
         total: int,
         eta_text: str,
     ) -> None:
+        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
+            perf_logger().log("ai.run_signal_ignored", signal="progress", folder=folder, message=message)
+            return
         if self._should_log_ai_progress_perf(message=message, current=current, total=total):
             perf_logger().log("ai.progress", folder=folder, message=message, current=current, total=total, eta=eta_text)
         if self._ai_review_progress_dialog is not None:
@@ -15193,8 +15693,6 @@ class MainWindow(QMainWindow):
                 total=max(0, total),
                 eta_text=eta_text.strip(),
             )
-        if normalized_path_key(folder) != normalized_path_key(self._current_folder):
-            return
         self._ai_stage_message = message
         self._ai_progress_current = max(0, current)
         self._ai_progress_total = max(0, total)
@@ -15226,6 +15724,9 @@ class MainWindow(QMainWindow):
         return False
 
     def _handle_ai_run_detail(self, folder: str, message: str) -> None:
+        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
+            perf_logger().log("ai.run_signal_ignored", signal="detail", folder=folder, message=message)
+            return
         if self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.append_detail(message)
 
@@ -15369,6 +15870,9 @@ class MainWindow(QMainWindow):
             )
             return now
 
+        if not self._ai_run_signal_matches_active_task(folder):
+            perf_logger().log("ai.run_signal_ignored", signal="finished", folder=folder, report_dir=report_dir)
+            return
         if logger.enabled and self._active_ai_run_start_perf:
             logger.duration(
                 "ai.run_ui_total",
@@ -15414,46 +15918,21 @@ class MainWindow(QMainWindow):
         self._ai_progress_current = self._ai_progress_total
         self._ai_progress_eta_text = ""
         self._close_ai_review_progress_dialog()
-        same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        same_folder = self._ai_run_signal_matches_current_folder(folder)
 
         if not same_folder:
-            # Different folder: nothing to load into the current view. Skip the
-            # async load entirely, refresh toolbar, show the (bundle-less)
-            # completion dialog and we're done.
+            # Different visible folder: clean up the completed worker, but do
+            # not mutate the current progress dialog or load foreign results.
             self._update_ai_toolbar_state()
             step_start = log_step("ai.run_finished.toolbar_state", step_start)
-            self.statusBar().showMessage(f"AI review complete for {folder}")
             if logger.enabled:
-                logger.duration(
-                    "ai.run_finished_handler.pre_dialog",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=folder,
-                    report_dir=report_dir,
-                    same_folder=False,
-                    loaded_results=False,
-                )
-            dialog_start = time.perf_counter() if logger.enabled else 0.0
-            self._show_ai_review_complete_dialog(
-                folder=folder,
-                report_dir=report_dir,
-                html_report_path=html_report_path,
-                same_folder=False,
-                bundle=None,
-            )
-            if logger.enabled:
-                logger.duration(
-                    "ai.run_finished.dialog",
-                    (time.perf_counter() - dialog_start) * 1000.0,
-                    folder=folder,
-                    report_dir=report_dir,
-                    same_folder=False,
-                )
                 logger.duration(
                     "ai.run_finished_handler",
                     (time.perf_counter() - start) * 1000.0,
                     folder=folder,
                     report_dir=report_dir,
                     same_folder=False,
+                    loaded_results=False,
                 )
             self._resume_deferred_background_review_work_after_ai(reason="finished")
             self._active_ai_run_start_perf = 0.0
@@ -15488,6 +15967,9 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(task, -50)
 
     def _handle_dino_prefilter_finished(self, folder: str, artifact_dir: str, report_path: str) -> None:
+        if not self._ai_run_signal_matches_active_task(folder):
+            perf_logger().log("ai.run_signal_ignored", signal="dino_finished", folder=folder, artifact_dir=artifact_dir)
+            return
         self._active_ai_task = None
         self._ai_stage_index = self._ai_stage_total
         self._ai_stage_message = "DINO Prefilter complete"
@@ -15496,7 +15978,7 @@ class MainWindow(QMainWindow):
         self._ai_progress_current = self._ai_progress_total
         self._ai_progress_eta_text = ""
         self._close_ai_review_progress_dialog()
-        same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        same_folder = self._ai_run_signal_matches_current_folder(folder)
         if same_folder:
             current_path = self._current_visible_record_path()
             self._refresh_dino_prefilter_decisions_for_current_folder()
@@ -15504,8 +15986,6 @@ class MainWindow(QMainWindow):
             self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
             self._apply_records_view(current_path=current_path)
             self.statusBar().showMessage("DINO Prefilter complete. Review the marked images, then run Index & Score.")
-        else:
-            self.statusBar().showMessage(f"DINO Prefilter complete for {folder}")
         self._update_ai_toolbar_state()
         self._refresh_ai_workflow_center()
         self._resume_deferred_background_review_work_after_ai(reason="dino_prefilter_finished")
@@ -15522,8 +16002,11 @@ class MainWindow(QMainWindow):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         bundle = bundle_obj if isinstance(bundle_obj, AIBundle) else None
-        same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
-        if bundle is not None:
+        same_folder = self._ai_run_signal_matches_current_folder(folder)
+        if bundle is not None and same_folder:
+            self._aiculler_ingested_cache_folder_key = ""
+            self._aiculler_ingested_path_keys = set()
+            self._aiculler_ingested_sibling_keys = set()
             self._ai_bundle = bundle
             self._recompute_ai_demoted_burst_paths()
             source_path = getattr(source_details_obj, "source_path", "") or report_dir
@@ -15535,6 +16018,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"AI review complete. Loaded {Path(html_report_path).name}"
             )
+        else:
+            self._resume_deferred_background_review_work_after_ai(reason="finished")
+            self._active_ai_run_start_perf = 0.0
+            return
         self._show_ai_review_complete_dialog(
             folder=folder,
             report_dir=report_dir,
@@ -15561,7 +16048,11 @@ class MainWindow(QMainWindow):
         html_report_path: str,
         error: str,
     ) -> None:
-        same_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        same_folder = self._ai_run_signal_matches_current_folder(folder)
+        if not same_folder:
+            self._resume_deferred_background_review_work_after_ai(reason="finished_with_error")
+            self._active_ai_run_start_perf = 0.0
+            return
         self.statusBar().showMessage(f"AI review complete, but loading results failed: {error}")
         self._show_ai_review_complete_dialog(
             folder=folder,
@@ -15673,6 +16164,9 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_run_failed(self, folder: str, message: str) -> None:
         logger = perf_logger()
+        if not self._ai_run_signal_matches_active_task(folder):
+            logger.log("ai.run_signal_ignored", signal="failed", folder=folder, message=message)
+            return
         if logger.enabled and self._active_ai_run_start_perf:
             logger.duration(
                 "ai.run_ui_total",
@@ -15690,15 +16184,19 @@ class MainWindow(QMainWindow):
         self._ai_stage_message = "AI review failed"
         self._ai_progress_eta_text = ""
         self._update_ai_toolbar_state()
-        if self._ai_review_progress_dialog is not None:
+        same_folder = self._ai_run_signal_matches_current_folder(folder)
+        if same_folder and self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.mark_failed("AI Review failed")
-        if normalized_path_key(folder) == normalized_path_key(self._current_folder):
+        if same_folder:
             QMessageBox.warning(self, "AI Review Failed", message)
             self.statusBar().showMessage("AI review failed")
         self._resume_deferred_background_review_work_after_ai(reason="failed")
 
     def _handle_ai_run_cancelled(self, folder: str, message: str) -> None:
         logger = perf_logger()
+        if not self._ai_run_signal_matches_active_task(folder):
+            logger.log("ai.run_signal_ignored", signal="cancelled", folder=folder, message=message)
+            return
         if logger.enabled and self._active_ai_run_start_perf:
             logger.duration(
                 "ai.run_ui_total",
@@ -15718,9 +16216,10 @@ class MainWindow(QMainWindow):
         self._ai_progress_total = 1
         self._ai_progress_eta_text = ""
         self._update_ai_toolbar_state()
-        if self._ai_review_progress_dialog is not None:
+        same_folder = self._ai_run_signal_matches_current_folder(folder)
+        if same_folder and self._ai_review_progress_dialog is not None:
             self._ai_review_progress_dialog.mark_finished(message or "AI Review stopped")
-        if normalized_path_key(folder) == normalized_path_key(self._current_folder):
+        if same_folder:
             self.statusBar().showMessage(message or "AI review stopped")
         self._resume_deferred_background_review_work_after_ai(reason="cancelled")
 
@@ -16195,11 +16694,71 @@ class MainWindow(QMainWindow):
             decisions = load_dino_prefilter_decisions(paths)
         except Exception:
             decisions = {}
+        try:
+            phash_paths = build_phash_prefilter_paths(self._current_folder)
+            decisions.update(load_phash_prefilter_decisions(phash_paths))
+        except Exception:
+            pass
         self._dino_prefilter_decisions_by_path = {
             normalized_path_key(path): decision
             for path, decision in decisions.items()
             if normalized_path_key(path)
         }
+
+    def _refresh_aiculler_ingested_paths_for_current_folder(self) -> None:
+        folder_key = normalized_path_key(self._current_folder) if self._current_folder else ""
+        if not folder_key:
+            self._aiculler_ingested_path_keys = set()
+            self._aiculler_ingested_sibling_keys = set()
+            self._aiculler_ingested_cache_folder_key = ""
+            return
+        if self._aiculler_ingested_cache_folder_key == folder_key:
+            return
+        path_keys: set[str] = set()
+        sibling_keys: set[str] = set()
+        try:
+            paths = build_aiculler_workflow_paths(self._current_folder)
+            db_path = aiculler_db_path(paths)
+            if db_path.exists():
+                connection = sqlite3.connect(db_path)
+                try:
+                    rows = connection.execute(
+                        """
+                        SELECT images.source_path
+                        FROM images
+                        INNER JOIN embeddings ON embeddings.image_id = images.id
+                        WHERE images.status = 'ready'
+                        """
+                    ).fetchall()
+                finally:
+                    connection.close()
+                for (source_path,) in rows:
+                    key = normalized_path_key(str(source_path))
+                    if not key:
+                        continue
+                    path_keys.add(key)
+                    sibling_key = _path_parent_stem_key(str(source_path))
+                    if sibling_key:
+                        sibling_keys.add(sibling_key)
+        except Exception:
+            path_keys = set()
+            sibling_keys = set()
+        self._aiculler_ingested_path_keys = path_keys
+        self._aiculler_ingested_sibling_keys = sibling_keys
+        self._aiculler_ingested_cache_folder_key = folder_key
+
+    def _record_was_aiculler_ingested(self, record: ImageRecord | None) -> bool:
+        if record is None:
+            return False
+        if self._aiculler_ingested_cache_folder_key != (normalized_path_key(self._current_folder) if self._current_folder else ""):
+            self._refresh_aiculler_ingested_paths_for_current_folder()
+        for path in record.stack_paths:
+            if normalized_path_key(path) in self._aiculler_ingested_path_keys:
+                return True
+            sibling_key = _path_parent_stem_key(path)
+            if sibling_key and sibling_key in self._aiculler_ingested_sibling_keys:
+                return True
+        return False
 
     def _workflow_summary_for_record(self, record: ImageRecord | None) -> str:
         insight = self._workflow_insight_for_record(record)
@@ -16997,6 +17556,21 @@ class MainWindow(QMainWindow):
         dialog = HelpMarkdownDialog(title=title, markdown=markdown, parent=self)
         self._exec_dialog_with_geometry(dialog, f"help_{title}")
 
+    def _show_paged_help_dialog(self, *, title: str, pages: tuple[object, ...]) -> None:
+        show_paged_help(self, title=title, pages=pages)
+
+    def _show_library_help(self) -> None:
+        self._show_paged_help_dialog(
+            title="Library Help",
+            pages=library_help_pages(),
+        )
+
+    def _show_settings_help(self) -> None:
+        self._show_paged_help_dialog(
+            title="Settings Help",
+            pages=settings_help_pages(),
+        )
+
     def _show_help(self) -> None:
         self._show_markdown_help_dialog(
             title="Image Triage Quick Start",
@@ -17019,6 +17593,7 @@ class MainWindow(QMainWindow):
 
                 - Open **`Help > AI Guide`** for the full AI workflow.
                 - Open **`Help > Advanced Help`** for broader controls and shortcuts.
+                - Use the **`?`** buttons in AI Workflow Center, Settings, Library, Catalog, Collections, and Workflow dialogs for focused step-by-step help.
                 """
             ),
         )
@@ -17077,7 +17652,7 @@ class MainWindow(QMainWindow):
 
                 ## AI Review Workflow
 
-                Use this when you want the app to score a folder and help you review it faster.
+                Use this when you want the app to score a folder and help you review it faster. Open **AI > AI Workflow Center...** and use its **`?`** button for the detailed stage-by-stage guide.
 
                 1. Open the folder you want to review.
                 2. Choose **`AI > Run AI Review`**.
@@ -17187,6 +17762,9 @@ class MainWindow(QMainWindow):
 
                 - right-click folders or favorites to create, rename, move, delete, or favorite folders
                 - recent destinations appear in copy and move menus for faster sorting
+                - the Library panel **`?`** explains favorites, virtual collections, and catalog search
+                - Workflow dialogs include their own **`?`** help for recipes, content mode, transfer mode, and saved recipes
+                - Settings includes a **`?`** help button for the growing AI, DINO, and pHash sections
                 - **AI Review** lets you run AI review, apply AI culling, or load saved AI results for the current folder
                 - **`Help > AI Guide`** is the dedicated walkthrough for the AI side of the app
                 - `Ctrl+Alt+P` jumps to the next AI top pick
@@ -17248,6 +17826,7 @@ class MainWindow(QMainWindow):
             ai_base_score_weight_percent=self._ai_base_score_weight_percent_setting,
             ai_label_near_duplicate_threshold=self._ai_label_near_duplicate_threshold,
             dino_prefilter_settings=self._dino_prefilter_settings,
+            phash_prefilter_settings=self._phash_prefilter_settings,
             catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
             preset_save_callback=persist_workflow_presets,
@@ -17286,6 +17865,7 @@ class MainWindow(QMainWindow):
         ai_clip_model_changed = coerce_clip_model_variant(result.ai_clip_model_variant) != self._ai_clip_model_variant
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
         dino_prefilter_changed = result.dino_prefilter_settings.normalized() != self._dino_prefilter_settings
+        phash_prefilter_changed = result.phash_prefilter_settings.normalized() != self._phash_prefilter_settings
 
         self._session_id = new_session
         self._winner_mode = result.winner_mode
@@ -17305,6 +17885,7 @@ class MainWindow(QMainWindow):
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
         self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(result.ai_label_near_duplicate_threshold)
         self._dino_prefilter_settings = result.dino_prefilter_settings.normalized()
+        self._phash_prefilter_settings = result.phash_prefilter_settings.normalized()
         new_keep_top = self._normalize_ai_keep_top_percent(result.ai_keep_top_percent)
         new_review_band = self._normalize_ai_review_band_percent(result.ai_review_band_percent)
         cull_thresholds_changed = (
@@ -17342,6 +17923,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
         self._settings.setValue(self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY, self._ai_label_near_duplicate_threshold)
         self._save_dino_prefilter_settings(self._dino_prefilter_settings)
+        self._save_phash_prefilter_settings(self._phash_prefilter_settings)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Session: {self._session_id}")
@@ -17429,6 +18011,9 @@ class MainWindow(QMainWindow):
         elif dino_prefilter_changed:
             state = "enabled" if self._dino_prefilter_settings.enabled else "disabled"
             self.statusBar().showMessage(f"DINO Prefilter {state}")
+        elif phash_prefilter_changed:
+            state = "enabled" if self._phash_prefilter_settings.enabled else "disabled"
+            self.statusBar().showMessage(f"pHash Prefilter {state}")
 
     def _empty_recycle_bin(self) -> None:
         recycle_root = self._recycle_root_for_folder()
@@ -18823,16 +19408,24 @@ class MainWindow(QMainWindow):
         if not self._photoshop_executable:
             photoshop_action.setText("Open In Photoshop (Not Found)")
         ai_result = self._ai_result_for_index(index)
+        dispute_ai_action = None
         compare_ai_group_action = None
         jump_ai_pick_action = None
-        if ai_result is not None and ai_result.group_size > 1:
+        if ai_result is not None:
             menu.addSeparator()
-            compare_ai_group_action = menu.addAction(
-                self._menu_text_with_action_shortcut("Compare AI Group", self.actions.compare_ai_group if self.actions else None)
+            dispute_ai_action = menu.addAction(
+                self._menu_text_with_action_shortcut(
+                    "Dispute AI Decision...",
+                    self.actions.dispute_current_ai_result if self.actions else None,
+                )
             )
-            jump_ai_pick_action = menu.addAction(
-                self._menu_text_with_action_shortcut("Jump To AI Top Pick", self.actions.next_ai_pick if self.actions else None)
-            )
+            if ai_result.group_size > 1:
+                compare_ai_group_action = menu.addAction(
+                    self._menu_text_with_action_shortcut("Compare AI Group", self.actions.compare_ai_group if self.actions else None)
+                )
+                jump_ai_pick_action = menu.addAction(
+                    self._menu_text_with_action_shortcut("Jump To AI Top Pick", self.actions.next_ai_pick if self.actions else None)
+                )
         if self._is_recycle_folder():
             menu.addSeparator()
             restore_action = menu.addAction("Restore")
@@ -18859,6 +19452,11 @@ class MainWindow(QMainWindow):
             return
         if chosen == open_action:
             open_with_default(display_path)
+            return
+        if dispute_ai_action is not None and chosen == dispute_ai_action:
+            if index != self.grid.current_index():
+                self.grid.set_current_index(index)
+            self._dispute_current_ai_result()
             return
         if compare_ai_group_action is not None and chosen == compare_ai_group_action:
             self._open_current_ai_group_compare(index)
@@ -19087,7 +19685,7 @@ class MainWindow(QMainWindow):
 
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
         step_start = log_step("records_view.finalize.ai_results", step_start)
-        if self._dino_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
+        if self._dino_prefilter_settings.enabled or self._phash_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
             self._refresh_dino_prefilter_decisions_for_current_folder()
         self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
         step_start = log_step("records_view.finalize.dino_prefilter", step_start)
@@ -19161,7 +19759,7 @@ class MainWindow(QMainWindow):
         self.details_view.set_records([])
         self._set_annotation_views()
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
-        if self._dino_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
+        if self._dino_prefilter_settings.enabled or self._phash_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
             self._refresh_dino_prefilter_decisions_for_current_folder()
         self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
         self.details_view.refresh_rows()
@@ -19273,7 +19871,9 @@ class MainWindow(QMainWindow):
         )
         needs_ai = self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
         needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
+        needs_aiculler_ingested = self._filter_query.quick_filter == FilterMode.AI_INGESTED
         needs_dino = self._filter_query.quick_filter in {
+            FilterMode.AI_PREFILTER_DUMPED,
             FilterMode.DINO_QUARANTINE,
             FilterMode.DINO_REMOVED,
             FilterMode.DINO_RESCUED,
@@ -19285,6 +19885,8 @@ class MainWindow(QMainWindow):
         needs_metadata = self._filter_query.requires_metadata
         if needs_dino:
             self._refresh_dino_prefilter_decisions_for_current_folder()
+        if needs_aiculler_ingested:
+            self._refresh_aiculler_ingested_paths_for_current_folder()
         if not self._filter_query.has_active_filters:
             records = [*visible_folder_records, *sorted_records]
         else:
@@ -19298,6 +19900,7 @@ class MainWindow(QMainWindow):
                 metadata = self._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
                 is_disputed = self._is_record_disputed(record) if needs_dispute else False
                 dino_decision = self._dino_prefilter_decision_for_record(record) if needs_dino else None
+                ai_ingested = self._record_was_aiculler_ingested(record) if needs_aiculler_ingested else False
                 if matches_record_query(
                     record,
                     self._filter_query,
@@ -19308,6 +19911,7 @@ class MainWindow(QMainWindow):
                     workflow_insight=workflow_insight,
                     is_disputed=is_disputed,
                     dino_decision=dino_decision,
+                    ai_ingested=ai_ingested,
                 ):
                     records.append(record)
 

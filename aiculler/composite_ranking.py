@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Callable
 
 import numpy as np
@@ -9,7 +10,7 @@ import numpy as np
 from aiculler.preference_learning import PreferenceDiagnostics, PreferenceLearningScorer
 from aiculler.profile_scoring import ProfilePromptAtom, profile_similarity
 from aiculler.storage import SQLiteFeatureStore
-from aiculler.technical_tags import TagPenaltyConfig, compute_tag_penalty, compute_technical_metrics
+from aiculler.technical_tags import TagPenaltyConfig, compute_tag_penalty, compute_technical_metrics_batch
 from aiculler.text_scoring import CLIPTextEncoder, cosine_similarity, normalize_scores
 
 
@@ -76,14 +77,24 @@ class CompositeRanker:
         record_feedback: bool = True,
         diagnostic_top_n: int = 10,
         progress_callback: Callable[[str, int, int, str], None] | None = None,
+        timing_callback: Callable[[str, float, dict], None] | None = None,
     ) -> CompositeRankResult:
+        phase_started_at = time.perf_counter()
         rows = self.store.list_images(require_embedding=True)
+        _emit_timing(timing_callback, "list_images", phase_started_at, rows=len(rows))
         if not rows:
             return CompositeRankResult([], self.weights, None)
 
+        phase_started_at = time.perf_counter()
         embeddings = {int(row["id"]): self.store.get_embedding(int(row["id"])) for row in rows}
+        _emit_timing(timing_callback, "load_embeddings", phase_started_at, rows=len(rows))
+        phase_started_at = time.perf_counter()
         prompt_scores = self._prompt_scores(rows, embeddings, text_encoder, prompt)
+        _emit_timing(timing_callback, "prompt_scores", phase_started_at, active=bool(prompt), rows=len(rows))
+        phase_started_at = time.perf_counter()
         profile_scores = self._profile_scores(rows, embeddings, text_encoder, profile_name, profile_atoms or [])
+        _emit_timing(timing_callback, "profile_scores", phase_started_at, active=bool(profile_name), rows=len(rows))
+        phase_started_at = time.perf_counter()
         learned_scores, normalized_learned, diagnostics = self._preference_scores(
             rows,
             feedback_csv=feedback_csv,
@@ -93,17 +104,43 @@ class CompositeRanker:
             record_feedback=record_feedback,
             diagnostic_top_n=diagnostic_top_n,
         )
+        _emit_timing(
+            timing_callback,
+            "preference_scores",
+            phase_started_at,
+            feedback_csv=str(feedback_csv or ""),
+            use_existing_preference=use_existing_preference,
+            diagnostics=diagnostics is not None,
+            rows=len(rows),
+        )
+        phase_started_at = time.perf_counter()
         normalized_prompt = normalize_scores(prompt_scores, mode="minmax") if prompt else {int(row["id"]): 0.0 for row in rows}
         normalized_profile = (
             normalize_scores(profile_scores, mode="minmax") if profile_name else {int(row["id"]): 0.0 for row in rows}
         )
+        _emit_timing(timing_callback, "normalize_scores", phase_started_at, rows=len(rows))
+        phase_started_at = time.perf_counter()
         tag_penalties, tag_flags = self._tag_penalties(
             rows,
             tag_configs or [],
             avoid_tags or [],
             progress_callback=progress_callback,
         )
+        tag_stats = getattr(self, "_last_tag_metric_stats", None)
+        _emit_timing(
+            timing_callback,
+            "tag_penalties",
+            phase_started_at,
+            active=bool(avoid_tags),
+            tags=len(avoid_tags or []),
+            rows=len(rows),
+            metric_cache_hits=getattr(tag_stats, "cache_hits", 0),
+            metric_cache_misses=getattr(tag_stats, "cache_misses", 0),
+            metric_failures=getattr(tag_stats, "failures", 0),
+            metric_workers=getattr(tag_stats, "workers", 0),
+        )
 
+        phase_started_at = time.perf_counter()
         unranked: list[CompositeRankRecord] = []
         updates: dict[int, dict] = {}
         for row in rows:
@@ -146,7 +183,9 @@ class CompositeRanker:
                 "tag_flags": tag_flags[image_id],
                 "final_score": final_score,
             }
+        _emit_timing(timing_callback, "compose_records", phase_started_at, rows=len(unranked))
 
+        phase_started_at = time.perf_counter()
         ranked_records = [
             CompositeRankRecord(
                 rank=index,
@@ -167,7 +206,10 @@ class CompositeRanker:
             )
             for index, record in enumerate(sorted(unranked, key=lambda item: item.final_score, reverse=True), start=1)
         ]
+        _emit_timing(timing_callback, "sort_records", phase_started_at, rows=len(ranked_records))
+        phase_started_at = time.perf_counter()
         self.store.update_composite_scores(updates)
+        _emit_timing(timing_callback, "update_composite_scores", phase_started_at, rows=len(updates))
         return CompositeRankResult(ranked_records, self.weights, diagnostics)
 
     def _prompt_scores(self, rows, embeddings, text_encoder, prompt: str | None) -> dict[int, float]:
@@ -248,15 +290,29 @@ class CompositeRanker:
         selected = [config for config in configs if config.tag in set(avoid_tags)]
         if not selected:
             raise ValueError(f"No matching tag configs for: {', '.join(avoid_tags)}")
+        items = [
+            (int(row["id"]), Path(row["preview_path"] or row["source_path"]))
+            for row in rows
+        ]
+        def on_metric_progress(current: int, total: int, message: str) -> None:
+            if progress_callback is not None:
+                progress_callback("tag-metrics", current, total, message)
+
+        metrics_by_id, stats = compute_technical_metrics_batch(
+            self.store,
+            items,
+            progress_callback=on_metric_progress,
+        )
+        self._last_tag_metric_stats = stats
         penalties: dict[int, float] = {}
         flags: dict[int, str] = {}
-        total = len(rows)
-        for index, row in enumerate(rows, start=1):
+        for row in rows:
             image_id = int(row["id"])
-            image_path = Path(row["preview_path"] or row["source_path"])
-            if progress_callback is not None:
-                progress_callback("tag-metrics", index, total, image_path.name)
-            metrics = compute_technical_metrics(image_path)
+            metrics = metrics_by_id.get(image_id)
+            if metrics is None:
+                penalties[image_id] = 0.0
+                flags[image_id] = ""
+                continue
             penalty, triggered = compute_tag_penalty(metrics, selected)
             penalties[image_id] = penalty
             flags[image_id] = ",".join(triggered)
@@ -306,3 +362,14 @@ def resolve_active_weights(
         preference=preference,
         penalty=float(penalty_weight),
     )
+
+
+def _emit_timing(
+    callback: Callable[[str, float, dict], None] | None,
+    phase: str,
+    started_at: float,
+    **payload,
+) -> None:
+    if callback is None:
+        return
+    callback(phase, time.perf_counter() - started_at, payload)

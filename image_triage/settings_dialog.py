@@ -42,6 +42,15 @@ from .dino_prefilter import (
     dino_prefilter_mode_label,
 )
 from .models import DeleteMode, WinnerMode
+from .phash_prefilter import (
+    PHashExecutionMode,
+    PHashPrefilterSettings,
+    coerce_phash_execution_mode,
+    default_phash_prefilter_settings,
+    phash_execution_mode_label,
+)
+from .ui.help_dialog import build_help_button, show_paged_help
+from .ui.help_topics import settings_help_pages
 from .ui.shortcuts import SHORTCUT_REGISTRY
 
 
@@ -77,6 +86,7 @@ class WorkflowSettingsResult:
     ai_base_score_weight_percent: int = 65  # blend weight (0=adapter only, 100=base only)
     ai_label_near_duplicate_threshold: float = 0.965
     dino_prefilter_settings: DINOPrefilterSettings = field(default_factory=default_dino_prefilter_settings)
+    phash_prefilter_settings: PHashPrefilterSettings = field(default_factory=default_phash_prefilter_settings)
     presets: tuple[WorkflowPreset, ...] = ()
     # Keybind overrides: attr_name -> chord string. Empty / missing entries
     # mean "use the registered default."
@@ -143,6 +153,7 @@ class WorkflowSettingsDialog(QDialog):
         ai_base_score_weight_percent: int = 65,
         ai_label_near_duplicate_threshold: float = 0.965,
         dino_prefilter_settings: DINOPrefilterSettings | None = None,
+        phash_prefilter_settings: PHashPrefilterSettings | None = None,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
@@ -163,6 +174,7 @@ class WorkflowSettingsDialog(QDialog):
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
         dino_settings = (dino_prefilter_settings or default_dino_prefilter_settings()).normalized()
+        phash_settings = (phash_prefilter_settings or default_phash_prefilter_settings()).normalized()
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -476,20 +488,6 @@ class WorkflowSettingsDialog(QDialog):
         self.dino_technical_trash_checkbox.setChecked(dino_settings.technical_trash_enabled)
         self.dino_duplicate_trash_checkbox = QCheckBox("Duplicate trash")
         self.dino_duplicate_trash_checkbox.setChecked(dino_settings.duplicate_trash_enabled)
-        self.dino_phash_duplicate_checkbox = QCheckBox("pHash duplicate trash")
-        self.dino_phash_duplicate_checkbox.setChecked(dino_settings.phash_duplicate_enabled)
-        self.dino_phash_duplicate_checkbox.setToolTip(_settings_tooltip(
-            "Adds a perceptual hash pass for very similar frames that DINO clustering may miss."
-        ))
-        self.dino_phash_hamming_spin = QSpinBox()
-        self.dino_phash_hamming_spin.setRange(0, 64)
-        self.dino_phash_hamming_spin.setSingleStep(1)
-        self.dino_phash_hamming_spin.setValue(dino_settings.phash_hamming_threshold)
-        self.dino_phash_hamming_spin.setMinimumWidth(120)
-        self.dino_phash_hamming_spin.setToolTip(_settings_tooltip(
-            "Maximum pHash Hamming distance treated as a duplicate. "
-            "Lower is stricter. 6 catches tight visual repeats while avoiding broad pose changes."
-        ))
         self.dino_low_information_checkbox = QCheckBox("Low-information filler")
         self.dino_low_information_checkbox.setChecked(dino_settings.low_information_enabled)
 
@@ -522,8 +520,6 @@ class WorkflowSettingsDialog(QDialog):
         dino_layout.addWidget(reason_heading)
         self._add_checkbox_row(dino_layout, "Technical", self.dino_technical_trash_checkbox)
         self._add_checkbox_row(dino_layout, "Duplicates", self.dino_duplicate_trash_checkbox)
-        self._add_checkbox_row(dino_layout, "pHash duplicates", self.dino_phash_duplicate_checkbox)
-        self._add_form_row(dino_layout, "pHash distance", self.dino_phash_hamming_spin)
         self._add_checkbox_row(dino_layout, "Low information", self.dino_low_information_checkbox)
         rescue_heading = QLabel("Rescue rules")
         rescue_heading.setObjectName("settingsCategoryHeading")
@@ -544,8 +540,6 @@ class WorkflowSettingsDialog(QDialog):
             self.dino_prefilter_aggressiveness_spin,
             self.dino_technical_trash_checkbox,
             self.dino_duplicate_trash_checkbox,
-            self.dino_phash_duplicate_checkbox,
-            self.dino_phash_hamming_spin,
             self.dino_low_information_checkbox,
             self.dino_rescue_ai_high_score_checkbox,
             self.dino_rescue_user_keep_checkbox,
@@ -557,6 +551,74 @@ class WorkflowSettingsDialog(QDialog):
         self._set_dino_prefilter_controls_enabled(self.dino_prefilter_enabled_checkbox.isChecked())
         self._add_settings_page("DINO Prefilter", dino_page)
 
+        self.phash_prefilter_enabled_checkbox = QCheckBox("Enable pHash Prefilter")
+        self.phash_prefilter_enabled_checkbox.setChecked(phash_settings.enabled)
+        self.phash_prefilter_enabled_checkbox.setToolTip(_settings_tooltip(
+            "Runs a perceptual hash duplicate pass independent of DINO. "
+            "This catches tight visual repeats and near-identical frames."
+        ))
+        self.phash_prefilter_mode_combo = QComboBox()
+        self.phash_prefilter_mode_combo.setMinimumWidth(220)
+        for mode in DINOPrefilterMode:
+            self.phash_prefilter_mode_combo.addItem(dino_prefilter_mode_label(mode), mode)
+        self.phash_prefilter_mode_combo.setCurrentIndex(
+            max(0, self.phash_prefilter_mode_combo.findData(phash_settings.mode))
+        )
+        self.phash_execution_mode_combo = QComboBox()
+        self.phash_execution_mode_combo.setMinimumWidth(220)
+        for mode in PHashExecutionMode:
+            self.phash_execution_mode_combo.addItem(phash_execution_mode_label(mode), mode)
+        self.phash_execution_mode_combo.setCurrentIndex(
+            max(0, self.phash_execution_mode_combo.findData(phash_settings.execution_mode))
+        )
+        self.phash_execution_mode_combo.setToolTip(_settings_tooltip(
+            "Before AI scoring can remove duplicates from the current pool. "
+            "Async with DINO overlaps both prefilters. "
+            "Async with main AI only annotates the current run because ingest has already started."
+        ))
+        self.phash_hamming_spin = QSpinBox()
+        self.phash_hamming_spin.setRange(0, 64)
+        self.phash_hamming_spin.setSingleStep(1)
+        self.phash_hamming_spin.setValue(phash_settings.hamming_threshold)
+        self.phash_hamming_spin.setMinimumWidth(120)
+        self.phash_hamming_spin.setToolTip(_settings_tooltip(
+            "Maximum pHash Hamming distance treated as a duplicate. "
+            "Lower is stricter. 6 catches tight visual repeats while avoiding broad pose changes."
+        ))
+        self.phash_cache_checkbox = QCheckBox("Cache pHash metadata")
+        self.phash_cache_checkbox.setChecked(phash_settings.cache_enabled)
+        self.phash_cache_checkbox.setToolTip(_settings_tooltip(
+            "Stores hash values only. It does not copy or cache image files."
+        ))
+        self.phash_diagnostics_checkbox = QCheckBox("Write per-run diagnostics and audit rows")
+        self.phash_diagnostics_checkbox.setChecked(phash_settings.diagnostics_enabled)
+
+        phash_page, phash_layout = self._build_settings_page("pHash Prefilter")
+        phash_hint = QLabel(
+            "pHash Prefilter is independent of DINO. It detects tight visual duplicates using hash metadata only; it does not train or copy images."
+        )
+        phash_hint.setWordWrap(True)
+        phash_hint.setObjectName("settingsRowLabel")
+        phash_layout.addWidget(phash_hint)
+        phash_layout.addSpacing(4)
+        self._add_checkbox_row(phash_layout, "Status", self.phash_prefilter_enabled_checkbox)
+        self._add_form_row(phash_layout, "Mode", self.phash_prefilter_mode_combo)
+        self._add_form_row(phash_layout, "Execution", self.phash_execution_mode_combo)
+        self._add_form_row(phash_layout, "pHash distance", self.phash_hamming_spin)
+        self._add_checkbox_row(phash_layout, "Cache", self.phash_cache_checkbox)
+        self._add_checkbox_row(phash_layout, "Audit logging", self.phash_diagnostics_checkbox)
+        phash_layout.addStretch(1)
+        self._phash_dependent_controls = (
+            self.phash_prefilter_mode_combo,
+            self.phash_execution_mode_combo,
+            self.phash_hamming_spin,
+            self.phash_cache_checkbox,
+            self.phash_diagnostics_checkbox,
+        )
+        self.phash_prefilter_enabled_checkbox.toggled.connect(self._set_phash_prefilter_controls_enabled)
+        self._set_phash_prefilter_controls_enabled(self.phash_prefilter_enabled_checkbox.isChecked())
+        self._add_settings_page("pHash Prefilter", phash_page)
+
         shortcuts_page = self._build_shortcuts_page(shortcut_overrides or {})
         self._add_settings_page("Shortcuts", shortcuts_page)
 
@@ -565,6 +627,9 @@ class WorkflowSettingsDialog(QDialog):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(24, 12, 24, 14)
         footer_layout.setSpacing(8)
+        help_button = build_help_button(self, tooltip="Open settings help")
+        help_button.clicked.connect(self._show_help)
+        footer_layout.addWidget(help_button, 0)
         footer_layout.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -576,6 +641,13 @@ class WorkflowSettingsDialog(QDialog):
         if initial_section:
             self._select_section(initial_section)
         self._refresh_preset_dropdown()
+
+    def _show_help(self) -> None:
+        show_paged_help(
+            self,
+            title="Settings Help",
+            pages=settings_help_pages(),
+        )
 
     def _build_settings_page(self, title: str) -> tuple[QWidget, QVBoxLayout]:
         scroll = QScrollArea()
@@ -730,6 +802,10 @@ class WorkflowSettingsDialog(QDialog):
 
     def _set_dino_prefilter_controls_enabled(self, enabled: bool) -> None:
         for control in getattr(self, "_dino_dependent_controls", ()):
+            control.setEnabled(bool(enabled))
+
+    def _set_phash_prefilter_controls_enabled(self, enabled: bool) -> None:
+        for control in getattr(self, "_phash_dependent_controls", ()):
             control.setEnabled(bool(enabled))
 
     def _update_ai_clip_model_summary(self) -> None:
@@ -933,14 +1009,20 @@ class WorkflowSettingsDialog(QDialog):
                 aggressiveness_percent=int(self.dino_prefilter_aggressiveness_spin.value()),
                 technical_trash_enabled=self.dino_technical_trash_checkbox.isChecked(),
                 duplicate_trash_enabled=self.dino_duplicate_trash_checkbox.isChecked(),
-                phash_duplicate_enabled=self.dino_phash_duplicate_checkbox.isChecked(),
-                phash_hamming_threshold=int(self.dino_phash_hamming_spin.value()),
                 low_information_enabled=self.dino_low_information_checkbox.isChecked(),
                 rescue_ai_high_score_enabled=self.dino_rescue_ai_high_score_checkbox.isChecked(),
                 rescue_user_keep_enabled=self.dino_rescue_user_keep_checkbox.isChecked(),
                 rescue_semantic_unique_enabled=self.dino_rescue_semantic_unique_checkbox.isChecked(),
                 rescue_best_representative_enabled=self.dino_rescue_best_representative_checkbox.isChecked(),
                 diagnostics_enabled=self.dino_diagnostics_checkbox.isChecked(),
+            ).normalized(),
+            phash_prefilter_settings=PHashPrefilterSettings(
+                enabled=self.phash_prefilter_enabled_checkbox.isChecked(),
+                mode=coerce_dino_prefilter_mode(self.phash_prefilter_mode_combo.currentData()),
+                execution_mode=coerce_phash_execution_mode(self.phash_execution_mode_combo.currentData()),
+                hamming_threshold=int(self.phash_hamming_spin.value()),
+                cache_enabled=self.phash_cache_checkbox.isChecked(),
+                diagnostics_enabled=self.phash_diagnostics_checkbox.isChecked(),
             ).normalized(),
             presets=tuple(self._presets) if include_presets else (),
             shortcut_overrides=self._shortcut_overrides_from_state()

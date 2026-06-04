@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -25,6 +26,15 @@ class PerceptualHashStats:
     computed: int
     failed: int
     cache_path: str = ""
+    hash_count: int = 0
+    worker_count: int = 0
+    comparison_count: int = 0
+    cache_read_ms: float = 0.0
+    signature_lookup_ms: float = 0.0
+    compute_ms: float = 0.0
+    cache_write_ms: float = 0.0
+    pairwise_ms: float = 0.0
+    grouping_ms: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -84,7 +94,7 @@ def find_perceptual_duplicate_groups_with_stats(
     hashes, stats = _load_or_compute_hashes(paths, cache_path=cache_path, max_workers=max_workers)
 
     if len(hashes) < 2:
-        return PerceptualDuplicateResult(groups=[], stats=stats)
+        return PerceptualDuplicateResult(groups=[], stats=replace(stats, hash_count=len(hashes)))
 
     threshold = max(0, min(64, int(hamming_threshold)))
     parent = list(range(len(hashes)))
@@ -101,12 +111,17 @@ def find_perceptual_duplicate_groups_with_stats(
         if left_root != right_root:
             parent[right_root] = left_root
 
+    pairwise_started = time.perf_counter()
+    comparison_count = 0
     for left_index, (_left_path, left_hash) in enumerate(hashes):
         for right_index in range(left_index + 1, len(hashes)):
+            comparison_count += 1
             _right_path, right_hash = hashes[right_index]
             if hamming_distance_int(left_hash, right_hash) <= threshold:
                 union(left_index, right_index)
+    pairwise_ms = (time.perf_counter() - pairwise_started) * 1000.0
 
+    grouping_started = time.perf_counter()
     grouped_indexes: dict[int, list[int]] = {}
     for index in range(len(hashes)):
         grouped_indexes.setdefault(find(index), []).append(index)
@@ -128,8 +143,18 @@ def find_perceptual_duplicate_groups_with_stats(
                 max_distance=max_distance,
             )
         )
+    grouping_ms = (time.perf_counter() - grouping_started) * 1000.0
 
-    return PerceptualDuplicateResult(groups=groups, stats=stats)
+    return PerceptualDuplicateResult(
+        groups=groups,
+        stats=replace(
+            stats,
+            hash_count=len(hashes),
+            comparison_count=comparison_count,
+            pairwise_ms=pairwise_ms,
+            grouping_ms=grouping_ms,
+        ),
+    )
 
 
 def _load_or_compute_hashes(
@@ -139,12 +164,15 @@ def _load_or_compute_hashes(
     max_workers: int | None,
 ) -> tuple[list[tuple[str, int]], PerceptualHashStats]:
     cache_file = Path(cache_path).expanduser().resolve() if cache_path is not None else None
+    cache_read_started = time.perf_counter()
     cache = _read_cache(cache_file)
+    cache_read_ms = (time.perf_counter() - cache_read_started) * 1000.0
     entries = cache.setdefault("entries", {})
     hashes_by_path: dict[str, int] = {}
     missing: list[tuple[str, Path, dict[str, object], str]] = []
     cached = 0
 
+    lookup_started = time.perf_counter()
     for raw_path in paths:
         path = Path(raw_path)
         signature = _file_signature(path)
@@ -159,16 +187,21 @@ def _load_or_compute_hashes(
             cached += 1
             continue
         missing.append((raw_path, path, signature, key))
+    signature_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
 
     computed = 0
     failed = 0
+    worker_count = 0
+    compute_ms = 0.0
     if missing:
         worker_count = _worker_count(max_workers=max_workers, item_count=len(missing))
+        compute_started = time.perf_counter()
         if worker_count <= 1:
             computed_rows = [_compute_cache_row(item) for item in missing]
         else:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 computed_rows = list(executor.map(_compute_cache_row, missing))
+        compute_ms = (time.perf_counter() - compute_started) * 1000.0
         for raw_path, key, signature, value in computed_rows:
             entries[key] = {**signature, "hash": value}
             if value is None:
@@ -177,8 +210,11 @@ def _load_or_compute_hashes(
                 hashes_by_path[raw_path] = value
                 computed += 1
 
+    cache_write_ms = 0.0
     if cache_file is not None and missing:
+        cache_write_started = time.perf_counter()
         _write_cache(cache_file, cache)
+        cache_write_ms = (time.perf_counter() - cache_write_started) * 1000.0
 
     hashes = [(path, hashes_by_path[path]) for path in paths if path in hashes_by_path]
     stats = PerceptualHashStats(
@@ -187,6 +223,12 @@ def _load_or_compute_hashes(
         computed=computed,
         failed=failed,
         cache_path=str(cache_file) if cache_file is not None else "",
+        hash_count=len(hashes),
+        worker_count=worker_count,
+        cache_read_ms=cache_read_ms,
+        signature_lookup_ms=signature_lookup_ms,
+        compute_ms=compute_ms,
+        cache_write_ms=cache_write_ms,
     )
     return hashes, stats
 

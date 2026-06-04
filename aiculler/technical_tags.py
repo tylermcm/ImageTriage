@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import csv
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PIL import Image
@@ -43,6 +47,15 @@ class TagPenaltyRecord:
     metrics: ImageTechnicalMetrics
 
 
+@dataclass(frozen=True)
+class TechnicalMetricCacheStats:
+    total: int
+    cache_hits: int
+    cache_misses: int
+    failures: int
+    workers: int
+
+
 class TechnicalTagScorer:
     """Apply measurable technical reject-tag penalties to existing scores."""
 
@@ -67,12 +80,20 @@ class TechnicalTagScorer:
             raise ValueError(f"No matching tag configs for: {', '.join(tags)}")
 
         rows = self.store.list_images(require_embedding=True)
+        metrics_by_id, _stats = compute_technical_metrics_batch(
+            self.store,
+            [
+                (int(row["id"]), Path(row["preview_path"] or row["source_path"]))
+                for row in rows
+            ],
+        )
         records: list[TagPenaltyRecord] = []
         updates: dict[int, tuple[float, float, str, float]] = {}
         for row in rows:
             image_id = int(row["id"])
-            image_path = Path(row["preview_path"] or row["source_path"])
-            metrics = compute_technical_metrics(image_path)
+            metrics = metrics_by_id.get(image_id)
+            if metrics is None:
+                continue
             tag_penalty, triggered_tags = compute_tag_penalty(metrics, selected)
             base_score = row[self.base_column]
             if self.base_column == "final_score" and row["tag_base_score"] is not None:
@@ -98,6 +119,82 @@ class TechnicalTagScorer:
 
         self.store.update_tag_scores(updates)
         return sorted(records, key=lambda record: record.adjusted_score, reverse=True)
+
+
+def compute_technical_metrics_batch(
+    store: SQLiteFeatureStore,
+    items: list[tuple[int, Path]],
+    *,
+    max_workers: int | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> tuple[dict[int, ImageTechnicalMetrics], TechnicalMetricCacheStats]:
+    metrics_by_id: dict[int, ImageTechnicalMetrics] = {}
+    missing: list[tuple[int, Path, str, int, int]] = []
+    cache_hits = 0
+    failures = 0
+    for image_id, image_path in items:
+        signature = _path_signature(image_path)
+        if signature is None:
+            failures += 1
+            continue
+        path_key, size, mtime_ns = signature
+        cached = store.get_technical_metrics_cache(path_key)
+        if cached is not None and int(cached["size"]) == size and int(cached["mtime_ns"]) == mtime_ns:
+            try:
+                metrics_by_id[image_id] = technical_metrics_from_dict(json.loads(cached["metrics_json"]))
+                cache_hits += 1
+                continue
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        missing.append((image_id, image_path, path_key, size, mtime_ns))
+
+    total = len(items)
+    completed = len(metrics_by_id) + failures
+    workers = _technical_worker_count(max_workers=max_workers, item_count=len(missing))
+    if missing:
+        if workers <= 1:
+            for item in missing:
+                image_id, image_path, path_key, size, mtime_ns, metrics = _compute_metrics_cache_row(item)
+                if metrics is None:
+                    failures += 1
+                else:
+                    store.set_technical_metrics_cache(
+                        path_key=path_key,
+                        path=image_path,
+                        size=size,
+                        mtime_ns=mtime_ns,
+                        metrics_json=json.dumps(technical_metrics_to_dict(metrics), sort_keys=True, separators=(",", ":")),
+                    )
+                    metrics_by_id[image_id] = metrics
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, total, image_path.name)
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tag-metrics") as executor:
+                futures = [executor.submit(_compute_metrics_cache_row, item) for item in missing]
+                for future in as_completed(futures):
+                    image_id, image_path, path_key, size, mtime_ns, metrics = future.result()
+                    if metrics is None:
+                        failures += 1
+                    else:
+                        store.set_technical_metrics_cache(
+                            path_key=path_key,
+                            path=image_path,
+                            size=size,
+                            mtime_ns=mtime_ns,
+                            metrics_json=json.dumps(technical_metrics_to_dict(metrics), sort_keys=True, separators=(",", ":")),
+                        )
+                        metrics_by_id[image_id] = metrics
+                    completed += 1
+                    if progress_callback is not None:
+                        progress_callback(completed, total, image_path.name)
+    return metrics_by_id, TechnicalMetricCacheStats(
+        total=total,
+        cache_hits=cache_hits,
+        cache_misses=len(missing),
+        failures=failures,
+        workers=workers,
+    )
 
 
 def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
@@ -167,6 +264,58 @@ def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
         noise_score=noise_score,
         harsh_light_score=harsh_light_score,
     )
+
+
+def technical_metrics_to_dict(metrics: ImageTechnicalMetrics) -> dict[str, float]:
+    return {
+        "focus_score": float(metrics.focus_score),
+        "motion_blur_score": float(metrics.motion_blur_score),
+        "highlight_clip_ratio": float(metrics.highlight_clip_ratio),
+        "shadow_clip_ratio": float(metrics.shadow_clip_ratio),
+        "contrast_score": float(metrics.contrast_score),
+        "noise_score": float(metrics.noise_score),
+        "harsh_light_score": float(metrics.harsh_light_score),
+    }
+
+
+def technical_metrics_from_dict(payload: dict[str, object]) -> ImageTechnicalMetrics:
+    return ImageTechnicalMetrics(
+        focus_score=float(payload["focus_score"]),
+        motion_blur_score=float(payload["motion_blur_score"]),
+        highlight_clip_ratio=float(payload["highlight_clip_ratio"]),
+        shadow_clip_ratio=float(payload["shadow_clip_ratio"]),
+        contrast_score=float(payload["contrast_score"]),
+        noise_score=float(payload["noise_score"]),
+        harsh_light_score=float(payload["harsh_light_score"]),
+    )
+
+
+def _compute_metrics_cache_row(
+    item: tuple[int, Path, str, int, int],
+) -> tuple[int, Path, str, int, int, ImageTechnicalMetrics | None]:
+    image_id, image_path, path_key, size, mtime_ns = item
+    try:
+        metrics = compute_technical_metrics(image_path)
+    except Exception:
+        metrics = None
+    return image_id, image_path, path_key, size, mtime_ns, metrics
+
+
+def _path_signature(path: Path) -> tuple[str, int, int] | None:
+    try:
+        resolved = path.expanduser().resolve()
+        stat = resolved.stat()
+    except OSError:
+        return None
+    return str(resolved).casefold(), int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def _technical_worker_count(*, max_workers: int | None, item_count: int) -> int:
+    if item_count <= 1:
+        return item_count
+    if max_workers is not None:
+        return max(1, min(int(max_workers), item_count))
+    return max(1, min(8, os.cpu_count() or 4, item_count))
 
 
 def local_mean(gray: np.ndarray) -> np.ndarray:

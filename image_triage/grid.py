@@ -1985,12 +1985,15 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _dino_prefilter_badge(self, decision) -> tuple[str, QColor, QColor, int] | None:
         action = str(getattr(decision, "action", "") or "")
+        reason = str(getattr(decision, "reason", "") or "")
+        prefix = "pHash" if reason == "phash_duplicate_trash" else "DINO"
         if action == "quarantine":
-            return ("DINO Quarantine", self._workflow_review_badge_fill, self._workflow_review_badge_text, 126)
+            label = "pHash Duplicate" if prefix == "pHash" else "DINO Quarantine"
+            return (label, self._workflow_review_badge_fill, self._workflow_review_badge_text, 126)
         if action == "remove_from_pool":
-            return ("DINO Removed", self._workflow_miss_badge_fill, self._workflow_miss_badge_text, 112)
+            return (f"{prefix} Removed", self._workflow_miss_badge_fill, self._workflow_miss_badge_text, 112)
         if action == "rescued":
-            return ("DINO Rescued", self._workflow_best_badge_fill, self._workflow_best_badge_text, 112)
+            return (f"{prefix} Rescued", self._workflow_best_badge_fill, self._workflow_best_badge_text, 112)
         return None
 
     def _workflow_disagreement_palette(self, level: str) -> tuple[QColor, QColor]:

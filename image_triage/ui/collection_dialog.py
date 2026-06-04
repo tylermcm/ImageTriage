@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QTextEdit,
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..library_store import COLLECTION_KINDS
+from .help_dialog import build_help_button, show_paged_help
+from .help_topics import collection_help_pages
 
 
 @dataclass(slots=True, frozen=True)
@@ -42,12 +45,19 @@ class CollectionEditDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        intro_row = QHBoxLayout()
+        intro_row.setContentsMargins(0, 0, 0, 0)
+        intro_row.setSpacing(8)
         intro = QLabel(
             "Virtual collections are non-destructive sets. They reference files where they already live so you can assemble portfolios, edit queues, proofing groups, or themes without moving anything."
         )
         intro.setWordWrap(True)
         intro.setObjectName("secondaryText")
-        layout.addWidget(intro)
+        intro_row.addWidget(intro, 1)
+        help_button = build_help_button(self, tooltip="Open collection help")
+        help_button.clicked.connect(self._show_help)
+        intro_row.addWidget(help_button, 0)
+        layout.addLayout(intro_row)
 
         if selection_count > 0:
             count_label = QLabel(f"{selection_count} selected image bundle(s) will be added.")
@@ -85,6 +95,13 @@ class CollectionEditDialog(QDialog):
             name=" ".join(self.name_field.text().split()),
             kind=str(self.kind_combo.currentData() or "Custom"),
             description=self.description_field.toPlainText().strip(),
+        )
+
+    def _show_help(self) -> None:
+        show_paged_help(
+            self,
+            title="Virtual Collection Help",
+            pages=collection_help_pages(),
         )
 
     def _accept_if_valid(self) -> None:

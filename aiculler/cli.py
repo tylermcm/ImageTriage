@@ -41,14 +41,35 @@ def _loggable_args(args) -> dict:
     return normalize_value({key: value for key, value in vars(args).items() if key != "func"})
 
 
+def _log_speed_phase(logger: RunLogger, phase: str, started_at: float, **payload) -> None:
+    logger.event(
+        "speed_phase",
+        {
+            "phase": phase,
+            "duration_seconds": round(time.perf_counter() - started_at, 6),
+            **payload,
+        },
+    )
+
+
 def command_ingest(args) -> int:
     from aiculler.features import IngestionEngine
 
     logger = _open_logger(args)
     store = _open_store(args)
     events: list[dict] = []
+    command_started_at = time.perf_counter()
     try:
+        phase_started_at = time.perf_counter()
         extractor = _build_extractor(args)
+        _log_speed_phase(
+            logger,
+            "build_extractor",
+            phase_started_at,
+            clip_model=str(args.clip or ""),
+            topiq_model=str(args.topiq or ""),
+            features_enabled=not args.no_features,
+        )
 
         def on_event(event) -> None:
             _event_printer(event)
@@ -62,8 +83,17 @@ def command_ingest(args) -> int:
             extractor=extractor,
             max_workers=args.workers,
             on_event=on_event,
+            feature_cache_identity=_feature_cache_identity(args),
         )
+        phase_started_at = time.perf_counter()
         include_paths = _load_include_paths(args.include_paths_file) if args.include_paths_file else None
+        _log_speed_phase(
+            logger,
+            "load_include_paths",
+            phase_started_at,
+            include_paths_file=str(args.include_paths_file or ""),
+            include_paths=0 if include_paths is None else len(include_paths),
+        )
         logger.event(
             "ingest_start",
             {
@@ -72,9 +102,16 @@ def command_ingest(args) -> int:
                 "include_paths": 0 if include_paths is None else len(include_paths),
             },
         )
+        phase_started_at = time.perf_counter()
         ids = engine.ingest_paths(include_paths) if include_paths is not None else engine.ingest(args.folder, recursive=not args.no_recursive)
+        ingest_elapsed = time.perf_counter() - phase_started_at
+        logger.event("ingest_speed_summary", _ingestion_speed_summary(events, ingest_elapsed))
+        _log_speed_phase(logger, "ingest_pipeline", phase_started_at, image_count=len(ids), events=len(events))
+        phase_started_at = time.perf_counter()
         logger.table("ingestion_events", events)
-        logger.summary({"image_count": len(ids), "events": len(events)})
+        _log_speed_phase(logger, "write_ingestion_event_table", phase_started_at, events=len(events))
+        summary = {"image_count": len(ids), "events": len(events), "command_seconds": round(time.perf_counter() - command_started_at, 6)}
+        logger.summary(summary)
         print(f"Ingested {len(ids)} image(s).")
         return 0
     finally:
@@ -118,8 +155,9 @@ def command_benchmark(args) -> int:
             extractor=extractor,
             max_workers=args.workers,
             on_event=on_event,
+            feature_cache_identity=_feature_cache_identity(args),
         )
-        paths = engine.scan(args.folder, recursive=not args.no_recursive)
+        paths = _load_include_paths(args.include_paths_file) if args.include_paths_file else engine.scan(args.folder, recursive=not args.no_recursive)
         if args.limit is not None:
             paths = paths[: max(0, args.limit)]
         logger.event(
@@ -211,6 +249,7 @@ def command_rank(args) -> int:
 
     logger = _open_logger(args)
     store = _open_store(args)
+    command_started_at = time.perf_counter()
     try:
         prompt_active = bool(args.prompt)
         profile_active = bool(args.profile)
@@ -228,9 +267,27 @@ def command_rank(args) -> int:
 
         text_encoder = None
         if prompt_active or profile_active:
+            phase_started_at = time.perf_counter()
             text_encoder = CLIPTextEncoder(args.text_model, args.tokenizer)
+            _log_speed_phase(
+                logger,
+                "load_text_encoder",
+                phase_started_at,
+                text_model=str(args.text_model),
+                tokenizer=str(args.tokenizer),
+            )
+        phase_started_at = time.perf_counter()
         profile_atoms = load_profile_atoms(args.profiles) if profile_active else []
         tag_configs = load_tag_penalty_configs(args.tag_config) if args.avoid else []
+        _log_speed_phase(
+            logger,
+            "load_rank_configs",
+            phase_started_at,
+            profile_active=profile_active,
+            profile_atoms=len(profile_atoms),
+            avoid_tags=len(args.avoid),
+            tag_configs=len(tag_configs),
+        )
 
         ranker = CompositeRanker(store, weights=weights)
 
@@ -245,6 +302,17 @@ def command_rank(args) -> int:
                 logger.event("rank_progress", record)
             print(f"[{label}] {current}/{total} {message}", flush=True)
 
+        def on_rank_phase(phase: str, duration_seconds: float, payload: dict) -> None:
+            logger.event(
+                "rank_speed_phase",
+                {
+                    "phase": phase,
+                    "duration_seconds": round(float(duration_seconds), 6),
+                    **payload,
+                },
+            )
+
+        phase_started_at = time.perf_counter()
         result = ranker.rank(
             text_encoder=text_encoder,
             prompt=args.prompt,
@@ -259,7 +327,10 @@ def command_rank(args) -> int:
             record_feedback=not args.no_record_feedback,
             diagnostic_top_n=args.diagnostic_top_n,
             progress_callback=on_rank_progress,
+            timing_callback=on_rank_phase,
         )
+        _log_speed_phase(logger, "rank_total", phase_started_at, ranked_count=len(result.records))
+        phase_started_at = time.perf_counter()
         output_records = [_composite_record_to_csv(record) for record in result.records]
         if args.out is not None:
             _write_csv(args.out, output_records)
@@ -267,6 +338,14 @@ def command_rank(args) -> int:
         if args.diagnostics_out is not None and result.preference_diagnostics is not None:
             _write_csv(args.diagnostics_out, _diagnostic_records_to_csv(result.preference_diagnostics.records))
             print(f"Wrote preference diagnostics CSV to {args.diagnostics_out}.", file=sys.stderr)
+        _log_speed_phase(
+            logger,
+            "write_rank_outputs",
+            phase_started_at,
+            ranked_count=len(output_records),
+            wrote_ranking=bool(args.out),
+            wrote_diagnostics=bool(args.diagnostics_out and result.preference_diagnostics is not None),
+        )
 
         logger.event(
             "rank_equation",
@@ -283,6 +362,7 @@ def command_rank(args) -> int:
                 "avoid_tags": args.avoid,
             },
         )
+        phase_started_at = time.perf_counter()
         logger.table("rank_components", output_records)
         if profile_active:
             logger.table("profile_atoms", [atom.__dict__ for atom in profile_atoms if atom.profile == args.profile])
@@ -290,11 +370,13 @@ def command_rank(args) -> int:
             logger.table("tag_configs", [config.__dict__ for config in tag_configs if config.tag in set(args.avoid)])
         if result.preference_diagnostics is not None:
             logger.table("preference_diagnostics", _diagnostic_records_to_csv(result.preference_diagnostics.records))
+        _log_speed_phase(logger, "write_rank_log_tables", phase_started_at, ranked_count=len(output_records))
         logger.summary(
             {
                 "ranked_count": len(output_records),
                 "weights": result.weights.__dict__,
                 "preference_diagnostics": _diagnostic_summary(result.preference_diagnostics),
+                "command_seconds": round(time.perf_counter() - command_started_at, 6),
             }
         )
 
@@ -446,25 +528,40 @@ def command_assign_categories(args) -> int:
 
     logger = _open_logger(args)
     store = _open_store(args)
+    command_started_at = time.perf_counter()
     try:
+        phase_started_at = time.perf_counter()
         encoder = CLIPTextEncoder(args.text_model, args.tokenizer)
+        _log_speed_phase(logger, "load_text_encoder", phase_started_at, text_model=str(args.text_model), tokenizer=str(args.tokenizer))
+        phase_started_at = time.perf_counter()
         category_prompts = load_category_prompts(args.categories) if args.categories is not None else None
+        _log_speed_phase(
+            logger,
+            "load_category_prompts",
+            phase_started_at,
+            categories=str(args.categories or ""),
+            category_count=0 if category_prompts is None else len(category_prompts),
+        )
         assigner = PrimaryCategoryAssigner(
             store,
             encoder,
             category_prompts=category_prompts,
             min_confidence=args.min_confidence,
         )
+        phase_started_at = time.perf_counter()
         assignments = assigner.assign()
+        _log_speed_phase(logger, "assign_categories", phase_started_at, assigned_count=len(assignments))
+        phase_started_at = time.perf_counter()
         records = [category_assignment_to_csv(record) for record in assignments]
         if args.out is not None:
             _write_csv(args.out, records)
             print(f"Wrote category CSV to {args.out}.", file=sys.stderr)
+        _log_speed_phase(logger, "write_category_output", phase_started_at, rows=len(records), wrote_output=bool(args.out))
         counts: dict[str, int] = {}
         for record in assignments:
             counts[record.primary_category] = counts.get(record.primary_category, 0) + 1
         logger.table("category_assignments", records)
-        logger.summary({"assigned_count": len(records), "category_counts": counts, "categories": args.categories})
+        logger.summary({"assigned_count": len(records), "category_counts": counts, "categories": args.categories, "command_seconds": round(time.perf_counter() - command_started_at, 6)})
         for category, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
             print(f"{category}: {count}")
         return 0
@@ -492,6 +589,7 @@ def command_cluster_categories(args) -> int:
 
     logger = _open_logger(args)
     store = _open_store(args)
+    command_started_at = time.perf_counter()
     try:
         run_id = args.cluster_run_id or args.run_id or time.strftime("%Y%m%dT%H%M%S")
         clusterer = CategoryClusterer(
@@ -500,13 +598,25 @@ def command_cluster_categories(args) -> int:
             min_cluster_size=args.min_cluster_size,
             max_clusters_per_category=args.max_clusters_per_category,
         )
+        phase_started_at = time.perf_counter()
         clusters, memberships = clusterer.cluster()
+        _log_speed_phase(
+            logger,
+            "cluster_categories",
+            phase_started_at,
+            cluster_count=len(clusters),
+            membership_count=len(memberships),
+            min_cluster_size=args.min_cluster_size,
+            max_clusters_per_category=args.max_clusters_per_category,
+        )
+        phase_started_at = time.perf_counter()
         records = [semantic_cluster_to_csv(record) for record in clusters]
         if args.out is not None:
             _write_csv(args.out, records)
             print(f"Wrote cluster CSV to {args.out}.", file=sys.stderr)
+        _log_speed_phase(logger, "write_cluster_output", phase_started_at, rows=len(records), wrote_output=bool(args.out))
         logger.table("semantic_clusters", records)
-        logger.summary({"run_id": run_id, "cluster_count": len(records), "membership_count": len(memberships)})
+        logger.summary({"run_id": run_id, "cluster_count": len(records), "membership_count": len(memberships), "command_seconds": round(time.perf_counter() - command_started_at, 6)})
         for record in records:
             print(
                 f"#{record['cluster_id']} {record['primary_category']} "
@@ -523,8 +633,18 @@ def command_import_ratings(args) -> int:
 
     logger = _open_logger(args)
     store = _open_store(args)
+    command_started_at = time.perf_counter()
     try:
-        records = import_ratings_csv(store, args.ratings, source=args.source)
+        phase_started_at = time.perf_counter()
+        records = import_ratings_csv(store, args.ratings, source=args.source, skip_unmatched=args.skip_missing)
+        _log_speed_phase(
+            logger,
+            "import_ratings",
+            phase_started_at,
+            imported_count=len(records),
+            ratings=str(args.ratings),
+            skip_missing=bool(args.skip_missing),
+        )
         output_records = [
             {
                 "id": record.image_id,
@@ -552,6 +672,7 @@ def command_import_ratings(args) -> int:
             "source": args.source,
             "origin_counts": origin_counts,
             "label_counts": label_counts,
+            "command_seconds": round(time.perf_counter() - command_started_at, 6),
         })
         print(f"Imported {len(records)} rating(s). origins={origin_counts} labels={label_counts}")
         return 0
@@ -565,6 +686,7 @@ def command_train_adapter(args) -> int:
 
     logger = _open_logger(args)
     store = _open_store(args)
+    command_started_at = time.perf_counter()
     try:
         model_version = args.model_version or args.run_id or time.strftime("%Y%m%dT%H%M%S")
         trainer = AdapterTrainer(
@@ -580,13 +702,25 @@ def command_train_adapter(args) -> int:
             holdout_fraction=args.holdout_fraction,
             seed=args.seed,
         )
+        phase_started_at = time.perf_counter()
         result = trainer.train(model_version=model_version)
+        _log_speed_phase(
+            logger,
+            "train_adapter",
+            phase_started_at,
+            model_version=model_version,
+            scored_count=len(result.scores),
+            train_count=result.metrics.get("train_count"),
+            holdout_count=result.metrics.get("holdout_count"),
+        )
+        phase_started_at = time.perf_counter()
         output_records = [adapter_score_to_csv(record, rank) for rank, record in enumerate(result.scores, start=1)]
         if args.out is not None:
             _write_csv(args.out, output_records)
             print(f"Wrote adapter score CSV to {args.out}.", file=sys.stderr)
+        _log_speed_phase(logger, "write_adapter_outputs", phase_started_at, scored_count=len(output_records), wrote_output=bool(args.out))
         logger.table("adapter_scores", output_records)
-        logger.summary({"model_version": model_version, "metrics": result.metrics, "scored_count": len(output_records)})
+        logger.summary({"model_version": model_version, "metrics": result.metrics, "scored_count": len(output_records), "command_seconds": round(time.perf_counter() - command_started_at, 6)})
         print(f"Trained adapter {model_version}: scored {len(output_records)} image(s).")
         print(json.dumps(result.metrics, indent=2, sort_keys=True))
         return 0
@@ -612,6 +746,39 @@ def command_evaluate_adapter(args) -> int:
             print(f"Evaluated {len(rows)} rating(s), mean absolute error={mean_error:.4f}.")
         else:
             print("No adapter scores matched stored ratings.")
+        return 0
+    finally:
+        store.close()
+        logger.close()
+
+
+def command_apply_adapter(args) -> int:
+    from aiculler.adapter_training import adapter_score_to_csv, apply_serialized_adapter_model
+
+    logger = _open_logger(args)
+    store = _open_store(args)
+    command_started_at = time.perf_counter()
+    try:
+        phase_started_at = time.perf_counter()
+        result = apply_serialized_adapter_model(store, args.model_version)
+        _log_speed_phase(
+            logger,
+            "apply_adapter",
+            phase_started_at,
+            model_version=args.model_version,
+            scored_count=len(result.scores),
+        )
+        output_records = [adapter_score_to_csv(record, rank) for rank, record in enumerate(result.scores, start=1)]
+        if args.out is not None:
+            _write_csv(args.out, output_records)
+            print(f"Wrote adapter score CSV to {args.out}.", file=sys.stderr)
+        logger.table("adapter_scores", output_records)
+        logger.summary({
+            "model_version": args.model_version,
+            "scored_count": len(output_records),
+            "command_seconds": round(time.perf_counter() - command_started_at, 6),
+        })
+        print(f"Applied adapter {args.model_version}: scored {len(output_records)} image(s).")
         return 0
     finally:
         store.close()
@@ -1098,6 +1265,82 @@ def _ingestion_event_record(event) -> dict:
     }
 
 
+def _ingestion_speed_summary(events: list[dict], elapsed_seconds: float) -> dict:
+    ready = [record for record in events if record.get("status") == "ready"]
+    previewed = [record for record in events if record.get("status") == "previewed"]
+    errors = [record for record in events if record.get("status") == "error"]
+    feature_cache_hits = sum(1 for record in ready if str(record.get("message") or "") == "feature_cache_hit")
+    preview_seconds = [_float_record_value(record, "preview_seconds") for record in previewed + ready]
+    feature_seconds = [_float_record_value(record, "feature_seconds") for record in ready]
+    total_seconds = [_float_record_value(record, "total_seconds") for record in ready + errors]
+    completed = len(ready) + len(errors)
+    return {
+        "elapsed_seconds": round(elapsed_seconds, 6),
+        "ready_count": len(ready),
+        "previewed_count": len(previewed),
+        "error_count": len(errors),
+        "completed_count": completed,
+        "feature_cache_hits": feature_cache_hits,
+        "images_per_second": round(completed / elapsed_seconds, 6) if elapsed_seconds > 0 else 0.0,
+        "preview_total_seconds": round(sum(preview_seconds), 6),
+        "preview_avg_seconds": _mean(preview_seconds),
+        "preview_p95_seconds": _percentile(preview_seconds, 0.95),
+        "feature_total_seconds": round(sum(feature_seconds), 6),
+        "feature_avg_seconds": _mean(feature_seconds),
+        "feature_p95_seconds": _percentile(feature_seconds, 0.95),
+        "image_total_avg_seconds": _mean(total_seconds),
+        "image_total_p95_seconds": _percentile(total_seconds, 0.95),
+    }
+
+
+def _float_record_value(record: dict, key: str) -> float:
+    try:
+        return float(record.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 6)
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * percentile))))
+    return round(ordered[index], 6)
+
+
+def _feature_cache_identity(args) -> dict[str, object]:
+    if getattr(args, "no_features", False):
+        return {}
+    return {
+        "schema_version": 1,
+        "clip": _file_identity(getattr(args, "clip", None)),
+        "topiq": _file_identity(getattr(args, "topiq", None)),
+    }
+
+
+def _file_identity(path: Path | None) -> dict[str, object]:
+    if path is None:
+        return {"path": "", "exists": False}
+    candidate = Path(path)
+    try:
+        resolved = candidate.expanduser().resolve()
+        stat = resolved.stat()
+    except OSError:
+        return {"path": str(candidate), "exists": False}
+    return {
+        "path": str(resolved).casefold(),
+        "exists": True,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
 def _ranked_rows(store: SQLiteFeatureStore, *, require_scored: bool) -> list:
     rows = store.list_images(require_embedding=True)
     if require_scored:
@@ -1219,6 +1462,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--quiet", action="store_true", help="Only print final summary")
     benchmark.add_argument("--no-recursive", action="store_true")
     benchmark.add_argument("--no-features", action="store_true", help="Only benchmark preview extraction")
+    benchmark.add_argument("--include-paths-file", type=Path, help="Optional newline-delimited image pool to benchmark instead of scanning the folder")
     benchmark.set_defaults(func=command_benchmark)
 
     sort = subparsers.add_parser("sort", help="Run active culling sort")
@@ -1313,6 +1557,11 @@ def build_parser() -> argparse.ArgumentParser:
     import_ratings = subparsers.add_parser("import-ratings", help="Import binary or bucket image ratings from CSV")
     import_ratings.add_argument("--ratings", required=True, type=Path, help="CSV with label plus id, filename, or source_path")
     import_ratings.add_argument("--source", default="csv", help="Rating source name to store in the audit table")
+    import_ratings.add_argument(
+        "--skip-missing",
+        action="store_true",
+        help="Skip rating rows that do not match an indexed image in the current scoped database",
+    )
     import_ratings.set_defaults(func=command_import_ratings)
 
     train_adapter = subparsers.add_parser("train-adapter", help="Train global/category/cluster style adapter scores")
@@ -1334,6 +1583,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_adapter.add_argument("--model-version", required=True)
     evaluate_adapter.add_argument("--out", type=Path, help="Optional per-rating evaluation CSV output")
     evaluate_adapter.set_defaults(func=command_evaluate_adapter)
+
+    apply_adapter = subparsers.add_parser("apply-adapter", help="Apply a serialized adapter model to this database")
+    apply_adapter.add_argument("--model-version", required=True)
+    apply_adapter.add_argument("--out", type=Path, help="Optional adapter score CSV output")
+    apply_adapter.set_defaults(func=command_apply_adapter)
 
     rank_adapter = subparsers.add_parser("rank-adapter", help="Write a ranking CSV from stored adapter scores")
     rank_adapter.add_argument("--model-version", required=True)

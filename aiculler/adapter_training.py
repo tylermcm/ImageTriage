@@ -80,8 +80,16 @@ def import_ratings_csv(
     ratings_csv_path: str | Path,
     *,
     source: str = "csv",
+    skip_unmatched: bool = False,
 ) -> list[RatingExample]:
-    records = load_rating_records(store, ratings_csv_path, source=source)
+    unmatched_rows: list[int] = []
+    records = load_rating_records(
+        store,
+        ratings_csv_path,
+        source=source,
+        skip_unmatched=skip_unmatched,
+        unmatched_rows=unmatched_rows,
+    )
     existing_count = len(store.list_ratings())
     store.delete_ratings_for_source_origins(source, {record.label_origin for record in records})
     after_delete_count = len(store.list_ratings())
@@ -110,7 +118,8 @@ def import_ratings_csv(
     print(
         "Rating import diagnostics: "
         f"existing={existing_count} after_origin_delete={after_delete_count} final={final_count} "
-        f"origins={label_origin_counts(records)} labels={_label_counts(records)}"
+        f"origins={label_origin_counts(records)} labels={_label_counts(records)} "
+        f"skipped_unmatched={len(unmatched_rows)}"
     )
     return records
 
@@ -120,14 +129,20 @@ def load_rating_records(
     ratings_csv_path: str | Path,
     *,
     source: str = "csv",
+    skip_unmatched: bool = False,
+    unmatched_rows: list[int] | None = None,
 ) -> list[RatingExample]:
     context = image_context(store)
     rows = store.list_images(require_embedding=True)
     by_id = {int(row["id"]): row for row in rows}
     by_source = {normalize_key(row["source_path"]): row for row in rows}
     by_filename: dict[str, list] = {}
+    by_stem: dict[str, list] = {}
     for row in rows:
-        by_filename.setdefault(normalize_key(Path(row["source_path"]).name), []).append(row)
+        source = Path(row["source_path"])
+        by_filename.setdefault(normalize_key(source.name), []).append(row)
+        if source.stem:
+            by_stem.setdefault(normalize_key(source.stem), []).append(row)
 
     examples: list[RatingExample] = []
     with Path(ratings_csv_path).open("r", encoding="utf-8-sig", newline="") as handle:
@@ -135,8 +150,12 @@ def load_rating_records(
         if reader.fieldnames is None:
             raise ValueError("ratings CSV must include headers")
         for line_number, record in enumerate(reader, start=2):
-            row = resolve_rating_row(record, by_id=by_id, by_source=by_source, by_filename=by_filename)
+            row = resolve_rating_row(record, by_id=by_id, by_source=by_source, by_filename=by_filename, by_stem=by_stem)
             if row is None:
+                if skip_unmatched:
+                    if unmatched_rows is not None:
+                        unmatched_rows.append(line_number)
+                    continue
                 raise ValueError(f"ratings row {line_number} did not match any image")
             label = (record.get("label") or record.get("rating") or "").strip().lower()
             label_type, numeric_score = parse_rating_label(label)
@@ -316,6 +335,13 @@ class AdapterTrainer:
             "label_origin_counts": label_origin_counts(examples),
             "category_models": sorted(category_models),
             "cluster_models": sorted(cluster_models),
+            "model_data": serialize_adapter_model(
+                projector=projector,
+                standardizer=standardizer,
+                global_model=global_model,
+                category_models=category_models,
+                cluster_models=cluster_models,
+            ),
         }
         self.store.save_adapter_model(model_version, "centroid_style_adapter", config, metrics)
         self.store.save_adapter_scores(model_version, output_scores)
@@ -333,6 +359,58 @@ class CentroidPreferenceModel:
 
     def score(self, values: np.ndarray) -> np.ndarray:
         return np.asarray(values, dtype=np.float32) @ self.weights + self.bias
+
+
+def serialize_adapter_model(
+    *,
+    projector: PrincipalProjector,
+    standardizer: Standardizer,
+    global_model: CentroidPreferenceModel,
+    category_models: dict[str, CentroidPreferenceModel],
+    cluster_models: dict[str, CentroidPreferenceModel],
+) -> dict:
+    if projector.mean_ is None or projector.components_ is None:
+        raise RuntimeError("projector must be fitted before serialization")
+    if standardizer.mean_ is None or standardizer.scale_ is None:
+        raise RuntimeError("standardizer must be fitted before serialization")
+    return {
+        "schema_version": 1,
+        "projector": {
+            "mean": _array_to_payload(projector.mean_),
+            "components": _array_to_payload(projector.components_),
+        },
+        "standardizer": {
+            "mean": _array_to_payload(standardizer.mean_),
+            "scale": _array_to_payload(standardizer.scale_),
+        },
+        "global_model": _model_to_payload(global_model),
+        "category_models": {
+            str(key): _model_to_payload(model)
+            for key, model in sorted(category_models.items())
+        },
+        "cluster_models": {
+            str(key): _model_to_payload(model)
+            for key, model in sorted(cluster_models.items())
+        },
+    }
+
+
+def _array_to_payload(values: np.ndarray) -> list:
+    return np.asarray(values, dtype=np.float32).round(6).tolist()
+
+
+def _model_to_payload(model: CentroidPreferenceModel) -> dict:
+    return {
+        "weights": _array_to_payload(model.weights),
+        "bias": round(float(model.bias), 6),
+    }
+
+
+def _model_from_payload(payload: dict) -> CentroidPreferenceModel:
+    return CentroidPreferenceModel(
+        np.asarray(payload.get("weights") or [], dtype=np.float32),
+        float(payload.get("bias") or 0.0),
+    )
 
 
 def fit_preference_model(
@@ -459,7 +537,7 @@ def image_context(store: SQLiteFeatureStore) -> dict[int, dict]:
     }
 
 
-def resolve_rating_row(record: dict, *, by_id: dict, by_source: dict, by_filename: dict):
+def resolve_rating_row(record: dict, *, by_id: dict, by_source: dict, by_filename: dict, by_stem: dict | None = None):
     image_id = (record.get("id") or record.get("image_id") or "").strip()
     if image_id:
         try:
@@ -489,6 +567,14 @@ def resolve_rating_row(record: dict, *, by_id: dict, by_source: dict, by_filenam
                 )
             if matches:
                 return matches[0]
+            stem_matches = _stem_matches(filename_candidate, by_stem)
+            if len(stem_matches) > 1:
+                raise ValueError(
+                    f"source_path {source_path!r} did not match exactly and filename stem "
+                    f"{Path(filename_candidate).stem!r} matched multiple images; use id to disambiguate"
+                )
+            if stem_matches:
+                return stem_matches[0]
         return None
 
     filename = (record.get("filename") or "").strip()
@@ -496,8 +582,22 @@ def resolve_rating_row(record: dict, *, by_id: dict, by_source: dict, by_filenam
         matches = by_filename.get(normalize_key(filename), [])
         if len(matches) > 1:
             raise ValueError(f"filename {filename!r} matched multiple images; use id or source_path")
-        return matches[0] if matches else None
+        if matches:
+            return matches[0]
+        stem_matches = _stem_matches(filename, by_stem)
+        if len(stem_matches) > 1:
+            raise ValueError(f"filename stem {Path(filename).stem!r} matched multiple images; use id or source_path")
+        return stem_matches[0] if stem_matches else None
     return None
+
+
+def _stem_matches(filename_or_path: str, by_stem: dict | None) -> list:
+    if not by_stem:
+        return []
+    stem = Path(filename_or_path).stem
+    if not stem:
+        return []
+    return by_stem.get(normalize_key(stem), [])
 
 
 def parse_rating_label(label: str) -> tuple[str, float]:
@@ -611,6 +711,153 @@ def adapter_score_to_csv(record: AdapterScoreRecord, rank: int) -> dict:
         "confidence": record.confidence,
         "final_score": record.final_score,
     }
+
+
+def apply_serialized_adapter_model(
+    store: SQLiteFeatureStore,
+    model_version: str,
+) -> AdapterTrainingResult:
+    model_row = store.connection.execute(
+        """
+        SELECT model_version, model_type, training_config_json, metrics_json
+        FROM adapter_models
+        WHERE model_version = ?
+        """,
+        (str(model_version),),
+    ).fetchone()
+    if model_row is None:
+        raise ValueError(f"adapter model {model_version!r} was not found")
+    try:
+        config = json.loads(model_row["training_config_json"] or "{}")
+    except (TypeError, ValueError):
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    model_data = config.get("model_data")
+    if not isinstance(model_data, dict):
+        raise ValueError(
+            f"adapter model {model_version!r} cannot be applied to this folder because it has no serialized model data"
+        )
+
+    rows = store.list_images(require_embedding=True)
+    if not rows:
+        raise ValueError("No embeddings are available for adapter scoring")
+    image_ids = [int(row["id"]) for row in rows]
+    embeddings = np.vstack([store.get_embedding(image_id) for image_id in image_ids])
+    features = _transform_with_serialized_model(embeddings, model_data)
+    index_by_id = {image_id: idx for idx, image_id in enumerate(image_ids)}
+    context = image_context(store)
+
+    global_model = _model_from_payload(model_data.get("global_model") or {})
+    category_models = {
+        str(key): _model_from_payload(value)
+        for key, value in (model_data.get("category_models") or {}).items()
+        if isinstance(value, dict)
+    }
+    # Cluster IDs are database-local, so serialized cluster models are not
+    # portable when a global adapter is applied to a different folder DB.
+    cluster_models: dict[str, CentroidPreferenceModel] = {}
+
+    global_scores = normalize_vector(global_model.score(features))
+    category_scores_by_key = {
+        key: normalize_vector(model.score(features))
+        for key, model in category_models.items()
+    }
+    cluster_scores_by_key = {
+        key: normalize_vector(model.score(features))
+        for key, model in cluster_models.items()
+    }
+    global_weight = float(config.get("global_weight") or 0.45)
+    category_weight = float(config.get("category_weight") or 0.45)
+    cluster_weight = float(config.get("cluster_weight") or 0.10)
+    base_weight = float(config.get("base_weight") or 0.0)
+    adapter_weight = float(config.get("adapter_weight") or 1.0)
+
+    output_scores: dict[int, dict] = {}
+    records: list[AdapterScoreRecord] = []
+    for row in rows:
+        image_id = int(row["id"])
+        idx = index_by_id[image_id]
+        item_context = context.get(image_id, {})
+        primary_category = item_context.get("primary_category") or "uncategorized"
+        cluster_id = item_context.get("cluster_id")
+        category_score = (
+            float(category_scores_by_key[primary_category][idx])
+            if primary_category in category_scores_by_key
+            else None
+        )
+        cluster_key = str(cluster_id) if cluster_id is not None else ""
+        cluster_score = (
+            float(cluster_scores_by_key[cluster_key][idx])
+            if cluster_key in cluster_scores_by_key
+            else None
+        )
+        blend_parts = [(global_weight, float(global_scores[idx]))]
+        if category_score is not None:
+            blend_parts.append((category_weight, category_score))
+        if cluster_score is not None:
+            blend_parts.append((cluster_weight, cluster_score))
+        weight_sum = sum(weight for weight, _ in blend_parts) or 1.0
+        adapter_score = sum(weight * score for weight, score in blend_parts) / weight_sum
+        confidence = min(1.0, weight_sum / (global_weight + category_weight + cluster_weight))
+        base_score = float(row["final_score"] if row["final_score"] is not None else row["technical_score"] or 0.0)
+        final_score = base_weight * base_score + adapter_weight * adapter_score
+        output_scores[image_id] = {
+            "global_score": float(global_scores[idx]),
+            "category_score": category_score,
+            "cluster_score": cluster_score,
+            "adapter_score": float(adapter_score),
+            "confidence": float(confidence),
+            "primary_category": primary_category,
+            "cluster_id": cluster_id,
+        }
+        records.append(
+            AdapterScoreRecord(
+                image_id=image_id,
+                filename=Path(row["source_path"]).name,
+                source_path=row["source_path"],
+                primary_category=primary_category,
+                cluster_id=cluster_id,
+                base_score=base_score,
+                global_score=float(global_scores[idx]),
+                category_score=category_score,
+                cluster_score=cluster_score,
+                adapter_score=float(adapter_score),
+                confidence=float(confidence),
+                final_score=float(final_score),
+            )
+        )
+
+    store.save_adapter_scores(str(model_version), output_scores)
+    metrics = {"applied": {"count": len(records)}, "source_metrics": _load_metrics(model_row["metrics_json"])}
+    return AdapterTrainingResult(
+        model_version=str(model_version),
+        scores=sorted(records, key=lambda record: record.final_score, reverse=True),
+        metrics=metrics,
+    )
+
+
+def _transform_with_serialized_model(embeddings: np.ndarray, model_data: dict) -> np.ndarray:
+    projector_payload = model_data.get("projector") or {}
+    standardizer_payload = model_data.get("standardizer") or {}
+    mean = np.asarray(projector_payload.get("mean") or [], dtype=np.float32)
+    components = np.asarray(projector_payload.get("components") or [], dtype=np.float32)
+    std_mean = np.asarray(standardizer_payload.get("mean") or [], dtype=np.float32)
+    std_scale = np.asarray(standardizer_payload.get("scale") or [], dtype=np.float32)
+    if mean.ndim != 1 or components.ndim != 2 or not len(mean) or not len(components):
+        raise ValueError("serialized adapter projector is incomplete")
+    projected = (np.asarray(embeddings, dtype=np.float32) - mean) @ components.T
+    if std_mean.ndim != 1 or std_scale.ndim != 1 or len(std_mean) != projected.shape[1] or len(std_scale) != projected.shape[1]:
+        raise ValueError("serialized adapter standardizer is incomplete")
+    return (projected - std_mean) / np.where(std_scale == 0.0, 1.0, std_scale)
+
+
+def _load_metrics(value: object) -> dict:
+    try:
+        payload = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def adapter_scores_from_store(

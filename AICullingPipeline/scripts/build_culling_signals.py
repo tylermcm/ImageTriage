@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +32,26 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    started_at = time.perf_counter()
+
+    def timing_callback(phase: str, duration_seconds: float, payload: dict[str, object]) -> None:
+        print(
+            "[signal-timing] "
+            + json.dumps(
+                {
+                    "phase": phase,
+                    "duration_seconds": round(float(duration_seconds), 6),
+                    **payload,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+    phase_started = time.perf_counter()
     learned_weights = load_learned_weights(args.weights_path) if args.weights_path else None
+    timing_callback("load_learned_weights", time.perf_counter() - phase_started, {"enabled": bool(args.weights_path)})
+    phase_started = time.perf_counter()
     records = build_culling_signals(
         artifacts_dir=args.artifacts_dir,
         profile_name=args.profile,
@@ -39,9 +59,14 @@ def main() -> None:
         run_specialists=not args.skip_specialists,
         max_preview_side=max(64, int(args.max_preview_side)),
         learned_weights=learned_weights,
+        timing_callback=timing_callback,
     )
+    timing_callback("build_culling_signals_total", time.perf_counter() - phase_started, {"records": len(records)})
+    phase_started = time.perf_counter()
     outputs = save_culling_signals(records, args.output_dir)
+    timing_callback("save_culling_signals", time.perf_counter() - phase_started, {"records": len(records)})
     summary = _summarize(records)
+    timing_callback("script_total", time.perf_counter() - started_at, {"records": len(records)})
 
     print("Culling signal build complete.")
     for name, path in outputs.items():

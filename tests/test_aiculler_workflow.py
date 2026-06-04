@@ -15,6 +15,7 @@ from image_triage.aiculler_workflow import (
     SOURCE_AICULLER_ROOT,
     coerce_clip_model_variant,
     default_aiculler_runtime,
+    delete_adapter_model,
     list_adapter_model_summaries,
     _rows_to_gui_output,
 )
@@ -484,6 +485,54 @@ class AICullerWorkflowTests(unittest.TestCase):
         self.assertEqual("adapter-v1", summaries[0]["model_version"])
         self.assertEqual(2, summaries[0]["scored_count"])
         self.assertEqual(85.0, summaries[0]["accuracy_percent"])
+
+    def test_delete_adapter_model_removes_model_and_scores(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_adapter_delete_") as temp_dir:
+            db_path = Path(temp_dir) / "aiculler.sqlite"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE adapter_models (
+                        model_version TEXT PRIMARY KEY,
+                        model_type TEXT NOT NULL,
+                        training_config_json TEXT NOT NULL,
+                        metrics_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE TABLE adapter_scores (
+                        model_version TEXT NOT NULL,
+                        image_id INTEGER NOT NULL
+                    );
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO adapter_models (
+                        model_version, model_type, training_config_json, metrics_json, created_at
+                    )
+                    VALUES ('adapter-v1', 'centroid_style_adapter', '{}', '{}', '2026-05-31T12:00:00')
+                    """
+                )
+                connection.executemany(
+                    "INSERT INTO adapter_scores (model_version, image_id) VALUES (?, ?)",
+                    (("adapter-v1", 1), ("adapter-v1", 2)),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            self.assertTrue(delete_adapter_model(db_path, "adapter-v1"))
+
+            connection = sqlite3.connect(db_path)
+            try:
+                model_count = connection.execute("SELECT COUNT(*) FROM adapter_models").fetchone()[0]
+                score_count = connection.execute("SELECT COUNT(*) FROM adapter_scores").fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertEqual(0, model_count)
+        self.assertEqual(0, score_count)
 
     def test_gui_export_interleaves_groups_and_penalizes_duplicate_frames(self) -> None:
         connection = sqlite3.connect(":memory:")
