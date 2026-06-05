@@ -137,7 +137,7 @@ class FilterMode(str, Enum):
     DINO_QUARANTINE = "DINO Quarantine"
     DINO_REMOVED = "DINO Removed"
     DINO_RESCUED = "DINO Rescued"
-    REVIEW_ROUNDS = "Review Rounds"
+    REVIEW_ROUNDS = "Review Stage"
 
 
 class WinnerMode(str, Enum):

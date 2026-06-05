@@ -557,28 +557,28 @@ def builtin_filter_presets() -> tuple[SavedFilterPreset, ...]:
             ),
         ),
         SavedFilterPreset(
-            name="First Pass Rejects",
+            name="First-Pass Rejects",
             query=RecordFilterQuery(
                 quick_filter=FilterMode.REVIEW_ROUNDS,
                 review_round=REVIEW_ROUND_FIRST_PASS,
             ),
         ),
         SavedFilterPreset(
-            name="Second Pass Keepers",
+            name="Keeper Candidates",
             query=RecordFilterQuery(
                 quick_filter=FilterMode.REVIEW_ROUNDS,
                 review_round=REVIEW_ROUND_SECOND_PASS,
             ),
         ),
         SavedFilterPreset(
-            name="Third Pass Finalists",
+            name="Finalists",
             query=RecordFilterQuery(
                 quick_filter=FilterMode.REVIEW_ROUNDS,
                 review_round=REVIEW_ROUND_THIRD_PASS,
             ),
         ),
         SavedFilterPreset(
-            name="Final Hero Selects",
+            name="Hero Selects",
             query=RecordFilterQuery(
                 quick_filter=FilterMode.REVIEW_ROUNDS,
                 review_round=REVIEW_ROUND_HERO,

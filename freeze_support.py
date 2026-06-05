@@ -381,10 +381,22 @@ def stage_ai_site_packages(layout: FreezeAssetLayout) -> None:
         )
     _reset_directory(layout.ai_site_packages_stage_root)
 
-    ordered_entries = list(AI_SITE_PACKAGES_ENTRIES) + [
-        entry for entry in AI_SITE_PACKAGES_OPTIONAL_ENTRIES if entry not in AI_SITE_PACKAGES_ENTRIES
-    ]
-    for entry_name in ordered_entries:
+    for entry_name in AI_SITE_PACKAGES_ENTRIES:
+        source = layout.ai_site_packages_source / entry_name
+        target = layout.ai_site_packages_stage_root / entry_name
+        if source.is_dir():
+            _copy_tree(source, target)
+        elif source.is_file():
+            _copy_file(source, target)
+        else:
+            raise FileNotFoundError(
+                f"Required bundled AI dependency entry not found: {source}\n"
+                f"Install the dependency into {layout.ai_site_packages_source} or set IMAGE_TRIAGE_BUNDLE_AI_RUNTIME_SITE_PACKAGES=0."
+            )
+
+    for entry_name in AI_SITE_PACKAGES_OPTIONAL_ENTRIES:
+        if entry_name in AI_SITE_PACKAGES_ENTRIES:
+            continue
         source = layout.ai_site_packages_source / entry_name
         target = layout.ai_site_packages_stage_root / entry_name
         if source.is_dir():

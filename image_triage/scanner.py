@@ -448,8 +448,6 @@ class FolderRecordsPersistTask(QRunnable):
 
 
 class FolderScanTask(QRunnable):
-    _catalog = CatalogRepository()
-
     def __init__(
         self,
         folder: str,
@@ -525,7 +523,7 @@ class FolderScanTask(QRunnable):
         if not self.read_cached_records:
             return None, ""
         if catalog_cache_enabled(self.use_catalog_cache):
-            cached_records = self._catalog.load_folder_records(self.folder)
+            cached_records = CatalogRepository().load_folder_records(self.folder)
             if cached_records is not None:
                 return cached_records, "catalog"
         return None, ""

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -27,7 +27,6 @@ class AIReviewProgressDialog(QDialog):
         self.setModal(False)
         self.setMinimumWidth(560)
         self.resize(720 if detailed else 560, 520 if detailed else 260)
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)

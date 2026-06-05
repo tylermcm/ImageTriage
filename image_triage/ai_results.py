@@ -97,7 +97,7 @@ def set_cull_thresholds(*, keeper_percentile: float, reject_percentile: float) -
 AI_REVIEW_TAG_DEFINITIONS: tuple[tuple[str, str], ...] = (
     (
         "AI Pick",
-        "The strongest automatic keep. Apply AI Culling moves these frames into _winners without another prompt.",
+        "The strongest automatic keep. Apply AI Decisions moves these frames into _winners without another prompt.",
     ),
     (
         "Keeper",
@@ -109,7 +109,7 @@ AI_REVIEW_TAG_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ),
     (
         "Reject",
-        "A low-confidence frame that Apply AI Culling can move into the program recycle bin.",
+        "A low-confidence frame that Apply AI Decisions can move into the program recycle bin.",
     ),
     (
         "Best Frame",

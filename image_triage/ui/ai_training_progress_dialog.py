@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QProgressBar, QVBoxLayout
 
 
@@ -12,7 +12,6 @@ class AITrainingProgressDialog(QDialog):
         self.setWindowTitle(title)
         self.setModal(False)
         self.setMinimumWidth(460)
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)

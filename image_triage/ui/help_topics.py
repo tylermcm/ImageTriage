@@ -430,9 +430,9 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
 
             Controls the overall app behavior, layout, and display preferences.
 
-            ## Folders
+            ## Library and Folders
 
-            Controls folder loading, cache behavior, and how the app handles image bundle data.
+            Controls folder loading, catalog cache behavior, and how the app handles image bundle data.
 
             ## AI
 

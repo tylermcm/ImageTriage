@@ -181,7 +181,7 @@ class ReviewWorkflowTests(unittest.TestCase):
             taste_profile=TasteProfile(summary_lines=("Recent picks lean toward crisper detail.",)),
         )
 
-        self.assertEqual(insight.review_round_label, "Final Hero Selects")
+        self.assertEqual(insight.review_round_label, "Hero Select")
         self.assertTrue(insight.best_in_group)
         self.assertEqual(insight.disagreement_level, "strong")
         self.assertEqual(insight.disagreement_badge, "AI Miss")

@@ -13,6 +13,36 @@ EPOCH_LOG_PATTERN = re.compile(
     r"validation_loss=(?P<validation_loss>[^ ]+)\s+"
     r"validation_pairwise_accuracy=(?P<validation_accuracy>[^ ]+)"
 )
+IMPORTED_RATINGS_PATTERN = re.compile(r"Imported\s+(?P<count>\d+)\s+rating\(s\)")
+ADAPTER_SCORED_PATTERN = re.compile(r"(?:Trained|Applied)\s+adapter\s+.*:\s+scored\s+(?P<count>\d+)\s+image\(s\)")
+ADAPTER_EVALUATED_PATTERN = re.compile(
+    r"Evaluated\s+(?P<count>\d+)\s+rating\(s\),\s+mean absolute error=(?P<mae>[0-9]+(?:\.[0-9]+)?)"
+)
+
+
+RANKER_PROFILE_ROWS = (
+    ("Stage", "Waiting for output"),
+    ("Run", "Not started"),
+    ("Latest Epoch", "n/a"),
+    ("Train Loss", "n/a"),
+    ("Validation Loss", "n/a"),
+    ("Validation Pairwise Acc", "n/a"),
+    ("Training Health", "Pending"),
+    ("Summary", "Run training or evaluation to get a simple health check."),
+    ("Try Next", ""),
+)
+
+ADAPTER_PROFILE_ROWS = (
+    ("Current Step", "Waiting for output"),
+    ("Adapter", "Not started"),
+    ("Images Scored", "n/a"),
+    ("Labels Imported", "n/a"),
+    ("Evaluation MAE", "n/a"),
+    ("Estimated Accuracy", "n/a"),
+    ("Adapter Status", "Pending"),
+    ("Summary", "Run adapter training or evaluation to get a simple health check."),
+    ("Try Next", ""),
+)
 
 
 class AITrainingStatsDialog(QDialog):
@@ -20,6 +50,7 @@ class AITrainingStatsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(860, 620)
+        self._profile = ""
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(16, 16, 16, 16)
@@ -56,20 +87,22 @@ class AITrainingStatsDialog(QDialog):
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             label.setWordWrap(True)
 
+        self._row_title_labels: list[QLabel] = []
         rows = (
-            ("Stage", self.stage_value_label),
-            ("Run", self.run_value_label),
-            ("Latest Epoch", self.epoch_value_label),
-            ("Train Loss", self.train_loss_value_label),
-            ("Validation Loss", self.validation_loss_value_label),
-            ("Validation Pairwise Acc", self.validation_accuracy_value_label),
-            ("Training Health", self.fit_health_value_label),
-            ("Summary", self.fit_summary_value_label),
-            ("Try Next", self.fit_remedy_value_label),
+            self.stage_value_label,
+            self.run_value_label,
+            self.epoch_value_label,
+            self.train_loss_value_label,
+            self.validation_loss_value_label,
+            self.validation_accuracy_value_label,
+            self.fit_health_value_label,
+            self.fit_summary_value_label,
+            self.fit_remedy_value_label,
         )
-        for row_index, (title_text, value_label) in enumerate(rows):
-            key_label = QLabel(title_text, summary_card)
+        for row_index, value_label in enumerate(rows):
+            key_label = QLabel("", summary_card)
             key_label.setObjectName("mutedText")
+            self._row_title_labels.append(key_label)
             summary_layout.addWidget(key_label, row_index, 0)
             summary_layout.addWidget(value_label, row_index, 1)
 
@@ -125,6 +158,30 @@ class AITrainingStatsDialog(QDialog):
         button_row.addWidget(self.close_button)
 
         root_layout.addLayout(button_row)
+        self.set_profile("ranker")
+
+    def set_profile(self, profile: str) -> None:
+        normalized = (profile or "ranker").strip().casefold()
+        if normalized not in {"adapter", "ranker"}:
+            normalized = "ranker"
+        if normalized == self._profile and self._row_title_labels:
+            return
+        self._profile = normalized
+        row_config = ADAPTER_PROFILE_ROWS if normalized == "adapter" else RANKER_PROFILE_ROWS
+        value_labels = (
+            self.stage_value_label,
+            self.run_value_label,
+            self.epoch_value_label,
+            self.train_loss_value_label,
+            self.validation_loss_value_label,
+            self.validation_accuracy_value_label,
+            self.fit_health_value_label,
+            self.fit_summary_value_label,
+            self.fit_remedy_value_label,
+        )
+        for row_label, value_label, (title, default_text) in zip(self._row_title_labels, value_labels, row_config):
+            row_label.setText(title)
+            value_label.setText(default_text)
 
     def set_stage_text(self, text: str) -> None:
         self.stage_value_label.setText(text or "Waiting for output")
@@ -167,6 +224,8 @@ class AITrainingStatsDialog(QDialog):
         self.task_progress_bar.setRange(0, 1)
         self.task_progress_bar.setValue(1)
         self.task_progress_bar.setFormat(text or "Done")
+        if self._profile == "adapter":
+            self.fit_health_value_label.setText(text or "Done")
 
     def mark_failed(self, text: str = "Failed") -> None:
         self.stage_progress_bar.setRange(0, 1)
@@ -175,6 +234,8 @@ class AITrainingStatsDialog(QDialog):
         self.task_progress_bar.setRange(0, 1)
         self.task_progress_bar.setValue(1)
         self.task_progress_bar.setFormat(text or "Failed")
+        if self._profile == "adapter":
+            self.fit_health_value_label.setText(text or "Failed")
 
     def set_run_text(self, text: str) -> None:
         self.run_value_label.setText(text or "Not started")
@@ -184,7 +245,12 @@ class AITrainingStatsDialog(QDialog):
 
     def set_fit_diagnosis(self, label: str, summary: str = "", remedy: str = "") -> None:
         self.fit_health_value_label.setText(label or "Pending")
-        self.fit_summary_value_label.setText(summary or "Run training or evaluation to get a simple health check.")
+        default_summary = (
+            "Run adapter training or evaluation to get a simple health check."
+            if self._profile == "adapter"
+            else "Run training or evaluation to get a simple health check."
+        )
+        self.fit_summary_value_label.setText(summary or default_summary)
         self.fit_remedy_value_label.setText(remedy or "")
 
     def append_log_line(self, line: str) -> None:
@@ -199,10 +265,13 @@ class AITrainingStatsDialog(QDialog):
 
     def load_lines(self, lines: list[str]) -> None:
         self.log_view.setPlainText("\n".join(lines))
-        if lines:
-            self._update_metrics_from_line(lines[-1])
+        for line in lines:
+            self._update_metrics_from_line(line)
 
     def _update_metrics_from_line(self, line: str) -> None:
+        if self._profile == "adapter":
+            self._update_adapter_metrics_from_line(line)
+            return
         match = EPOCH_LOG_PATTERN.search(line)
         if match is None:
             return
@@ -210,3 +279,28 @@ class AITrainingStatsDialog(QDialog):
         self.train_loss_value_label.setText(match.group("train_loss"))
         self.validation_loss_value_label.setText(match.group("validation_loss"))
         self.validation_accuracy_value_label.setText(match.group("validation_accuracy"))
+
+    def _update_adapter_metrics_from_line(self, line: str) -> None:
+        import_match = IMPORTED_RATINGS_PATTERN.search(line)
+        if import_match is not None:
+            self.train_loss_value_label.setText(import_match.group("count"))
+            self.fit_health_value_label.setText("Labels imported")
+            return
+
+        scored_match = ADAPTER_SCORED_PATTERN.search(line)
+        if scored_match is not None:
+            self.epoch_value_label.setText(scored_match.group("count"))
+            self.fit_health_value_label.setText("Adapter trained")
+            return
+
+        evaluated_match = ADAPTER_EVALUATED_PATTERN.search(line)
+        if evaluated_match is None:
+            return
+        mae_text = evaluated_match.group("mae")
+        self.validation_loss_value_label.setText(mae_text)
+        try:
+            accuracy = max(0.0, min(100.0, (1.0 - float(mae_text)) * 100.0))
+            self.validation_accuracy_value_label.setText(f"{accuracy:.1f}%")
+        except ValueError:
+            self.validation_accuracy_value_label.setText("n/a")
+        self.fit_health_value_label.setText(f"Evaluated {evaluated_match.group('count')} label(s)")
