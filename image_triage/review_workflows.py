@@ -25,10 +25,10 @@ REVIEW_ROUND_HERO = "final_hero_selects"
 AI_DISAGREEMENT_SOURCE_MODE = "ai_disagreement"
 
 REVIEW_ROUND_PRESETS: tuple[tuple[str, str, str], ...] = (
-    (REVIEW_ROUND_FIRST_PASS, "First Pass Rejects", "Pass 1"),
-    (REVIEW_ROUND_SECOND_PASS, "Second Pass Keepers", "Pass 2"),
-    (REVIEW_ROUND_THIRD_PASS, "Third Pass Finalists", "Finalist"),
-    (REVIEW_ROUND_HERO, "Final Hero Selects", "Hero"),
+    (REVIEW_ROUND_FIRST_PASS, "First-Pass Reject", "Reject"),
+    (REVIEW_ROUND_SECOND_PASS, "Keeper Candidate", "Candidate"),
+    (REVIEW_ROUND_THIRD_PASS, "Finalist", "Finalist"),
+    (REVIEW_ROUND_HERO, "Hero Select", "Hero"),
 )
 
 _ROUND_LABELS = {identifier: label for identifier, label, _short in REVIEW_ROUND_PRESETS}

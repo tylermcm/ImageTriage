@@ -1125,7 +1125,7 @@ class AIWorkflowCenterDialog(QDialog):
                     callback=lambda: self._invoke("_rerank_ai_pipeline"),
                     enabled=snap.can_rerank,
                     tooltip=(
-                        "Skips ingest/cluster — only available after a full Run AI Culler has populated the index."
+                        "Skips ingest and clustering. Available after Index & Score has populated this folder."
                         if not snap.can_rerank
                         else ""
                     ),
@@ -1208,7 +1208,7 @@ class AIWorkflowCenterDialog(QDialog):
             metrics=train_metrics,
             actions=[
                 ActionSpec(
-                    label="Train Local Adapter",
+                    label="Train Adapter",
                     callback=lambda: self._invoke("_train_aiculler_adapter"),
                     primary=True,
                     enabled=snap.db_exists and snap.total_label_count > 0,
@@ -1292,7 +1292,7 @@ class AIWorkflowCenterDialog(QDialog):
                     enabled=bool(active_adapter_version and active_adapter_count),
                 ),
                 ActionSpec(
-                    label="Apply AI Culling",
+                    label="Apply AI Decisions",
                     callback=lambda: self._invoke("_apply_ai_culling"),
                     enabled=snap.scored_count > 0,
                 ),

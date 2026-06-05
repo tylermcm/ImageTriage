@@ -11,13 +11,37 @@ from .actions import MainWindowActions
 from .theme import AppearanceMode
 
 
-def _add_ai_training_actions(menu: QMenu, actions: MainWindowActions) -> None:
+def add_ai_adapter_actions(menu: QMenu, actions: MainWindowActions) -> None:
     menu.addAction(actions.review_ai_adapter_labels)
     menu.addAction(actions.open_ai_data_selection)
+    menu.addSeparator()
     menu.addAction(actions.train_ai_ranker)
     menu.addAction(actions.train_ai_ranker_from_global)
+    menu.addSeparator()
     menu.addAction(actions.evaluate_ai_ranker)
     menu.addAction(actions.score_ai_with_trained_ranker)
+
+
+def add_ai_results_actions(menu: QMenu, actions: MainWindowActions) -> None:
+    result_buckets_menu = menu.addMenu("Pick / Review / Reject")
+    for mode in (
+        AIStateFilter.TOP_PICKS,
+        AIStateFilter.NEEDS_REVIEW,
+        AIStateFilter.LIKELY_REJECTS,
+    ):
+        result_buckets_menu.addAction(actions.ai_state_actions[mode])
+    prefilter_menu = menu.addMenu("Prefilter / Ingest")
+    for mode in (
+        FilterMode.AI_INGESTED,
+        FilterMode.AI_PREFILTER_DUMPED,
+        FilterMode.DINO_QUARANTINE,
+        FilterMode.DINO_REMOVED,
+    ):
+        prefilter_menu.addAction(actions.filter_actions[mode])
+    menu.addSeparator()
+    menu.addAction(actions.open_ai_report)
+    menu.addAction(actions.show_ai_review_summary)
+    menu.addAction(actions.ai_review_tag_legend)
 
 
 def _add_selection_actions(menu: QMenu, actions: MainWindowActions) -> None:
@@ -139,7 +163,7 @@ def build_main_menu_bar(
     review_menu.addSeparator()
     _add_selection_actions(review_menu, actions)
     review_menu.addSeparator()
-    rounds_menu = review_menu.addMenu("Review Rounds")
+    rounds_menu = review_menu.addMenu("Review Stage")
     rounds_menu.addAction(actions.assign_review_round_first_pass)
     rounds_menu.addAction(actions.assign_review_round_second_pass)
     rounds_menu.addAction(actions.assign_review_round_third_pass)
@@ -182,34 +206,17 @@ def build_main_menu_bar(
     ai_menu = menu_bar.addMenu("&AI")
     ai_menu.addAction(actions.open_ai_workflow_center)
     ai_menu.addSeparator()
-    ai_menu.addAction(actions.quick_rerank_ai_culling)
-    ai_menu.addAction(actions.apply_ai_culling)
-    ai_menu.addAction(actions.sort_ai_semantic_folders)
-    ai_menu.addSeparator()
 
-    training_menu = ai_menu.addMenu("Adapter")
-    _add_ai_training_actions(training_menu, actions)
+    run_menu = ai_menu.addMenu("Run And Apply")
+    run_menu.addAction(actions.quick_rerank_ai_culling)
+    run_menu.addAction(actions.apply_ai_culling)
+    run_menu.addAction(actions.sort_ai_semantic_folders)
 
-    results_menu = ai_menu.addMenu("Results")
-    result_buckets_menu = results_menu.addMenu("AI Result Buckets")
-    for mode in (
-        AIStateFilter.TOP_PICKS,
-        AIStateFilter.NEEDS_REVIEW,
-        AIStateFilter.LIKELY_REJECTS,
-    ):
-        result_buckets_menu.addAction(actions.ai_state_actions[mode])
-    prefilter_menu = results_menu.addMenu("Ingest And Prefilter")
-    for mode in (
-        FilterMode.AI_INGESTED,
-        FilterMode.AI_PREFILTER_DUMPED,
-        FilterMode.DINO_QUARANTINE,
-        FilterMode.DINO_REMOVED,
-    ):
-        prefilter_menu.addAction(actions.filter_actions[mode])
-    results_menu.addSeparator()
-    results_menu.addAction(actions.open_ai_report)
-    results_menu.addAction(actions.show_ai_review_summary)
-    results_menu.addAction(actions.ai_review_tag_legend)
+    training_menu = ai_menu.addMenu("Adapter Training")
+    add_ai_adapter_actions(training_menu, actions)
+
+    results_menu = ai_menu.addMenu("Results And Filters")
+    add_ai_results_actions(results_menu, actions)
 
     review_tools_menu = ai_menu.addMenu("Review Tools")
     review_tools_menu.addAction(actions.next_ai_pick)
@@ -219,7 +226,7 @@ def build_main_menu_bar(
     review_tools_menu.addAction(actions.review_ai_disagreements)
 
     ai_menu.addSeparator()
-    setup_menu = ai_menu.addMenu("Runtime")
+    setup_menu = ai_menu.addMenu("Runtime And Cache")
     setup_menu.addAction(actions.install_ai_runtime)
     setup_menu.addAction(actions.download_ai_model)
     setup_menu.addSeparator()
@@ -268,7 +275,6 @@ def build_main_menu_bar(
     # related dialog). Ctrl+, still opens the main dialog directly.
     settings_menu = menu_bar.addMenu("&Settings")
     settings_menu.addAction(actions.workflow_settings)
-    settings_menu.addAction(actions.keyboard_help)
     settings_menu.addAction(actions.file_associations)
     settings_menu.addSeparator()
     settings_menu.addAction(actions.reset_layout)

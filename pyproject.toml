@@ -30,3 +30,16 @@ include = ["image_triage*", "aiculler*"]
 
 [tool.setuptools.package-data]
 aiculler = ["resources/*.csv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".git",
+    ".msi_build_venv",
+    ".pytest_cache",
+    "__pycache__",
+    "build",
+    "build_assets",
+    "dist",
+    "vendor",
+]

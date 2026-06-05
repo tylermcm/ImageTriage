@@ -365,7 +365,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         run_ai_culling=_create_action(
             window,
-            "Run AI Culler",
+            "Open AI Workflow Center",
             slot=window._open_ai_workflow_center,
             icon=QStyle.StandardPixmap.SP_MediaPlay,
         ),
@@ -377,12 +377,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         apply_ai_culling=_create_action(
             window,
-            "Apply AI Culling",
+            "Apply AI Decisions",
             slot=window._apply_ai_culling,
         ),
         sort_ai_semantic_folders=_create_action(
             window,
-            "Move Into AI Categories...",
+            "Move To AI Category Folders...",
             slot=window._sort_images_into_semantic_folders,
         ),
         reset_ai_review_cache=_create_action(
@@ -402,7 +402,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         open_ai_data_selection=_create_action(
             window,
-            "Prepare Adapter Ratings",
+            "Prepare Rating CSV",
             slot=window._export_aiculler_ratings,
             shortcut="Ctrl+Shift+L",
         ),
@@ -420,7 +420,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         evaluate_ai_ranker=_create_action(window, "Evaluate Adapter", slot=window._evaluate_aiculler_adapter),
         score_ai_with_trained_ranker=_create_action(
             window,
-            "Rank Current Folder With Adapter",
+            "Rank Folder With Local Adapter",
             slot=window._rank_aiculler_adapter,
         ),
         next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+P"),
@@ -454,31 +454,31 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         assign_review_round_first_pass=_create_action(
             window,
-            "Mark First Pass Rejects",
+            "Mark As First-Pass Reject",
             slot=lambda _checked=False: window._assign_review_round_to_selection("first_pass_rejects"),
             shortcut="Alt+1",
         ),
         assign_review_round_second_pass=_create_action(
             window,
-            "Mark Second Pass Keepers",
+            "Mark As Keeper Candidate",
             slot=lambda _checked=False: window._assign_review_round_to_selection("second_pass_keepers"),
             shortcut="Alt+2",
         ),
         assign_review_round_third_pass=_create_action(
             window,
-            "Mark Third Pass Finalists",
+            "Mark As Finalist",
             slot=lambda _checked=False: window._assign_review_round_to_selection("third_pass_finalists"),
             shortcut="Alt+3",
         ),
         assign_review_round_hero=_create_action(
             window,
-            "Mark Final Hero Selects",
+            "Mark As Hero Select",
             slot=lambda _checked=False: window._assign_review_round_to_selection("final_hero_selects"),
             shortcut="Alt+4",
         ),
         clear_review_round=_create_action(
             window,
-            "Clear Review Round",
+            "Clear Review Stage",
             slot=lambda _checked=False: window._assign_review_round_to_selection(""),
             shortcut="Alt+0",
         ),

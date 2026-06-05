@@ -14,6 +14,9 @@ def app_data_root() -> Path:
             root = Path(value) / "ImageTriage"
             root.mkdir(parents=True, exist_ok=True)
             return root
-    root = Path.home() / ".image-triage"
+    try:
+        root = Path.home() / ".image-triage"
+    except RuntimeError:
+        root = Path.cwd() / ".image-triage"
     root.mkdir(parents=True, exist_ok=True)
     return root

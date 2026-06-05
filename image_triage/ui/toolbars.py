@@ -4,8 +4,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QMenu, QToolBar, QToolButton
 
 from .actions import MainWindowActions
-from ..filtering import AIStateFilter
-from ..models import FilterMode
+from .menus import add_ai_adapter_actions, add_ai_results_actions
 
 
 def _add_toolbar_action(toolbar: QToolBar, action, *, toolbar_text: str, min_width: int = 98) -> None:
@@ -41,39 +40,15 @@ def build_primary_toolbar(window, actions: MainWindowActions) -> QToolBar:
     _add_toolbar_action(toolbar, actions.refresh_folder, toolbar_text="Refresh", min_width=108)
     _add_toolbar_action(toolbar, actions.undo, toolbar_text="Undo", min_width=92)
     toolbar.addSeparator()
-    _add_toolbar_action(toolbar, actions.open_ai_workflow_center, toolbar_text="Workflow", min_width=104)
-    _add_toolbar_action(toolbar, actions.run_ai_culling, toolbar_text="Run Culler", min_width=112)
+    _add_toolbar_action(toolbar, actions.open_ai_workflow_center, toolbar_text="AI Workflow", min_width=118)
     _add_toolbar_action(toolbar, actions.quick_rerank_ai_culling, toolbar_text="Quick Rerank", min_width=120)
     _add_toolbar_action(toolbar, actions.review_ai_adapter_labels, toolbar_text="Review Labels", min_width=124)
     _add_toolbar_action(toolbar, actions.dispute_current_ai_result, toolbar_text="Dispute AI", min_width=112)
-    ai_results_menu = QMenu("AI Results", toolbar)
-    ai_state_menu = ai_results_menu.addMenu("AI Result Buckets")
-    for mode in (
-        AIStateFilter.TOP_PICKS,
-        AIStateFilter.NEEDS_REVIEW,
-        AIStateFilter.LIKELY_REJECTS,
-    ):
-        ai_state_menu.addAction(actions.ai_state_actions[mode])
-    prefilter_menu = ai_results_menu.addMenu("Ingest And Prefilter")
-    for mode in (
-        FilterMode.AI_INGESTED,
-        FilterMode.AI_PREFILTER_DUMPED,
-        FilterMode.DINO_QUARANTINE,
-        FilterMode.DINO_REMOVED,
-    ):
-        prefilter_menu.addAction(actions.filter_actions[mode])
-    ai_results_menu.addSeparator()
-    ai_results_menu.addAction(actions.open_ai_report)
-    ai_results_menu.addAction(actions.show_ai_review_summary)
-    ai_results_menu.addAction(actions.ai_review_tag_legend)
+    ai_results_menu = QMenu("AI Results And Filters", toolbar)
+    add_ai_results_actions(ai_results_menu, actions)
     _add_toolbar_menu(toolbar, text="AI Results", menu=ai_results_menu, min_width=104)
-    ai_training_menu = QMenu("Adapter", toolbar)
-    ai_training_menu.addAction(actions.review_ai_adapter_labels)
-    ai_training_menu.addAction(actions.open_ai_data_selection)
-    ai_training_menu.addAction(actions.train_ai_ranker)
-    ai_training_menu.addAction(actions.train_ai_ranker_from_global)
-    ai_training_menu.addAction(actions.evaluate_ai_ranker)
-    ai_training_menu.addAction(actions.score_ai_with_trained_ranker)
+    ai_training_menu = QMenu("Adapter Training", toolbar)
+    add_ai_adapter_actions(ai_training_menu, actions)
     _add_toolbar_menu(toolbar, text="Adapter", menu=ai_training_menu, min_width=104)
     if toolbar.layout() is not None:
         toolbar.layout().setContentsMargins(2, 2, 2, 2)

@@ -209,6 +209,9 @@ class WorkflowSettingsDialog(QDialog):
         self._refresh_session_combo(sessions=sessions, current_session=current_session)
         self.session_combo.setCurrentText(current_session)
         self.session_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.session_combo.setToolTip(_settings_tooltip(
+            "Named workspace preset used for review behavior like accepted-image handling and delete behavior."
+        ))
         self.session_combo.currentTextChanged.connect(self._handle_session_text_changed)
         if self.session_combo.lineEdit() is not None:
             self.session_combo.lineEdit().setObjectName("settingsSessionLineEdit")
@@ -222,6 +225,9 @@ class WorkflowSettingsDialog(QDialog):
         for mode in WinnerMode:
             self.winner_mode_combo.addItem(mode.value, mode)
         self.winner_mode_combo.setCurrentIndex(max(0, self.winner_mode_combo.findData(winner_mode)))
+        self.winner_mode_combo.setToolTip(_settings_tooltip(
+            "What happens when you accept an image as a winner."
+        ))
 
         self.delete_mode_combo = QComboBox()
         self.delete_mode_combo.setMinimumWidth(240)
@@ -229,6 +235,9 @@ class WorkflowSettingsDialog(QDialog):
         for mode in DeleteMode:
             self.delete_mode_combo.addItem(mode.value, mode)
         self.delete_mode_combo.setCurrentIndex(max(0, self.delete_mode_combo.findData(delete_mode)))
+        self.delete_mode_combo.setToolTip(_settings_tooltip(
+            "Where rejected or deleted images go when you delete from Image Triage."
+        ))
 
         self.toolbar_style_combo = QComboBox()
         self.toolbar_style_combo.setMinimumWidth(180)
@@ -237,14 +246,23 @@ class WorkflowSettingsDialog(QDialog):
         self.toolbar_style_combo.addItem("Large icons", "large_icons")
         toolbar_index = self.toolbar_style_combo.findData(toolbar_style)
         self.toolbar_style_combo.setCurrentIndex(max(0, toolbar_index))
+        self.toolbar_style_combo.setToolTip(_settings_tooltip(
+            "Choose whether toolbar buttons show text, icons, or larger icons."
+        ))
 
         session_row = QWidget()
+        session_row.setToolTip(_settings_tooltip(
+            "Choose or name the settings preset used for this review session."
+        ))
         session_layout = QHBoxLayout(session_row)
         session_layout.setContentsMargins(0, 0, 0, 0)
         session_layout.setSpacing(8)
         session_layout.addWidget(self.session_combo)
         self.save_preset_button = QPushButton("Save Preset")
         self.save_preset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.save_preset_button.setToolTip(_settings_tooltip(
+            "Save the current General settings under the selected session name."
+        ))
         self.save_preset_button.clicked.connect(self._save_current_preset)
         session_layout.addWidget(self.save_preset_button)
         session_layout.addStretch(1)
@@ -262,9 +280,15 @@ class WorkflowSettingsDialog(QDialog):
 
         self.compact_cards_checkbox = QCheckBox("Use compact image cards")
         self.compact_cards_checkbox.setChecked(compact_cards_enabled)
+        self.compact_cards_checkbox.setToolTip(_settings_tooltip(
+            "Shows more images on screen by reducing card spacing and metadata height."
+        ))
 
         self.free_smooth_scroll_checkbox = QCheckBox("Use free smooth scrolling")
         self.free_smooth_scroll_checkbox.setChecked(free_smooth_scroll_enabled)
+        self.free_smooth_scroll_checkbox.setToolTip(_settings_tooltip(
+            "Allows smoother pixel-by-pixel scrolling instead of snapping by rows."
+        ))
 
         self.preview_preload_batch_spin = QSpinBox()
         self.preview_preload_batch_spin.setRange(0, 128)
@@ -279,15 +303,27 @@ class WorkflowSettingsDialog(QDialog):
 
         self.show_hidden_folders_checkbox = QCheckBox("Show hidden folders")
         self.show_hidden_folders_checkbox.setChecked(show_hidden_folders)
+        self.show_hidden_folders_checkbox.setToolTip(_settings_tooltip(
+            "Shows dot folders and hidden folders in the folder browser."
+        ))
 
         self.auto_advance_checkbox = QCheckBox("Advance after Accept or Reject")
         self.auto_advance_checkbox.setChecked(auto_advance_enabled)
+        self.auto_advance_checkbox.setToolTip(_settings_tooltip(
+            "Moves to the next image automatically after you accept or reject the current one."
+        ))
 
         self.burst_groups_checkbox = QCheckBox("Group burst sequences")
         self.burst_groups_checkbox.setChecked(burst_groups_enabled)
+        self.burst_groups_checkbox.setToolTip(_settings_tooltip(
+            "Groups likely capture bursts so related frames are easier to review together."
+        ))
 
         self.burst_stacks_checkbox = QCheckBox("Stack similar burst frames")
         self.burst_stacks_checkbox.setChecked(burst_stacks_enabled)
+        self.burst_stacks_checkbox.setToolTip(_settings_tooltip(
+            "Stacks very similar burst frames behind one visible representative in the grid."
+        ))
 
         interface_page, interface_layout = self._build_settings_page("Interface")
         self._add_form_row(interface_layout, "Toolbar", self.toolbar_style_combo)
@@ -303,20 +339,29 @@ class WorkflowSettingsDialog(QDialog):
 
         self.catalog_cache_checkbox = QCheckBox("Use catalog cache for faster folder open")
         self.catalog_cache_checkbox.setChecked(catalog_cache_enabled)
+        self.catalog_cache_checkbox.setToolTip(_settings_tooltip(
+            "Stores lightweight folder information so previously indexed folders open faster."
+        ))
 
         self.watch_current_folder_checkbox = QCheckBox("Refresh the open folder when files change on disk")
         self.watch_current_folder_checkbox.setChecked(watch_current_folder)
+        self.watch_current_folder_checkbox.setToolTip(_settings_tooltip(
+            "Automatically refreshes the current folder when files are added, removed, or renamed outside the app."
+        ))
 
         self.catalog_summary_label = QLabel(_compact_catalog_summary(catalog_summary_text))
         self.catalog_summary_label.setWordWrap(True)
         self.catalog_summary_label.setObjectName("mutedText")
         self.catalog_summary_label.setStyleSheet("font-size: 11px;")
-        folders_page, folders_layout = self._build_settings_page("Folders")
+        self.catalog_summary_label.setToolTip(_settings_tooltip(
+            "Current catalog cache status and indexed-file summary."
+        ))
+        folders_page, folders_layout = self._build_settings_page("Library & Folders")
         self._add_checkbox_row(folders_layout, "Catalog cache", self.catalog_cache_checkbox)
         self._add_checkbox_row(folders_layout, "Watch folder", self.watch_current_folder_checkbox)
         self._add_text_row(folders_layout, "Catalog", self.catalog_summary_label)
         folders_layout.addStretch(1)
-        self._add_settings_page("Folders", folders_page)
+        self._add_settings_page("Library & Folders", folders_page)
 
         self.ai_embed_batch_size_spin = QSpinBox()
         self.ai_embed_batch_size_spin.setRange(0, 64)
@@ -354,6 +399,9 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_clip_model_warning_label.setWordWrap(True)
         self.ai_clip_model_warning_label.setObjectName("mutedText")
         self.ai_clip_model_warning_label.setStyleSheet("font-size: 11px; color: #d0a85c;")
+        self.ai_clip_model_warning_label.setToolTip(_settings_tooltip(
+            "Shows cautions for the selected CLIP model version."
+        ))
         self.ai_clip_model_combo.currentIndexChanged.connect(self._update_ai_clip_model_summary)
 
         self.ai_review_detail_progress_checkbox = QCheckBox("Show detailed AI Review activity")
@@ -405,6 +453,9 @@ class WorkflowSettingsDialog(QDialog):
 
         self.ai_cull_summary_label = QLabel("")
         self.ai_cull_summary_label.setObjectName("mutedText")
+        self.ai_cull_summary_label.setToolTip(_settings_tooltip(
+            "Shows how the Keep top and Review band settings split the folder into keep, review, and reject buckets."
+        ))
         self.ai_keep_top_spin.valueChanged.connect(self._update_ai_cull_summary)
         self.ai_review_band_spin.valueChanged.connect(self._update_ai_cull_summary)
 
@@ -440,16 +491,16 @@ class WorkflowSettingsDialog(QDialog):
         ))
 
         ai_page, ai_layout = self._build_settings_page("AI")
-        self._add_form_row(ai_layout, "AI ingest workers", self.ai_embed_batch_size_spin)
-        self._add_form_row(ai_layout, "CLIP model", self.ai_clip_model_combo)
+        self._add_form_row(ai_layout, "Processing workers", self.ai_embed_batch_size_spin)
+        self._add_form_row(ai_layout, "CLIP model version", self.ai_clip_model_combo)
         self._add_text_row(ai_layout, "Model notes", self.ai_clip_model_warning_label)
-        self._add_checkbox_row(ai_layout, "Progress details", self.ai_review_detail_progress_checkbox)
+        self._add_checkbox_row(ai_layout, "Detailed progress log", self.ai_review_detail_progress_checkbox)
         self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
         self._add_form_row(ai_layout, "Cull breakdown", self.ai_cull_summary_label)
-        self._add_form_row(ai_layout, "Base score weight", self.ai_base_score_weight_spin)
-        self._add_form_row(ai_layout, "Dispute training weight", self.ai_dispute_weight_spin)
-        self._add_form_row(ai_layout, "Near-duplicate label threshold", self.ai_label_near_duplicate_slider)
+        self._add_form_row(ai_layout, "Base score influence", self.ai_base_score_weight_spin)
+        self._add_form_row(ai_layout, "Dispute label weight", self.ai_dispute_weight_spin)
+        self._add_form_row(ai_layout, "Legacy duplicate threshold", self.ai_label_near_duplicate_slider)
         ai_layout.addStretch(1)
         self._update_ai_clip_model_summary()
         self._update_ai_cull_summary()
@@ -486,22 +537,46 @@ class WorkflowSettingsDialog(QDialog):
 
         self.dino_technical_trash_checkbox = QCheckBox("Technical trash")
         self.dino_technical_trash_checkbox.setChecked(dino_settings.technical_trash_enabled)
+        self.dino_technical_trash_checkbox.setToolTip(_settings_tooltip(
+            "Allows DINO to mark images with obvious technical failures such as blur or unusable exposure."
+        ))
         self.dino_duplicate_trash_checkbox = QCheckBox("Duplicate trash")
         self.dino_duplicate_trash_checkbox.setChecked(dino_settings.duplicate_trash_enabled)
+        self.dino_duplicate_trash_checkbox.setToolTip(_settings_tooltip(
+            "Allows DINO to mark redundant images when a better representative exists."
+        ))
         self.dino_low_information_checkbox = QCheckBox("Low-information filler")
         self.dino_low_information_checkbox.setChecked(dino_settings.low_information_enabled)
+        self.dino_low_information_checkbox.setToolTip(_settings_tooltip(
+            "Allows DINO to mark low-content filler frames that are unlikely to be useful."
+        ))
 
         self.dino_rescue_ai_high_score_checkbox = QCheckBox("Rescue if current AI scores high")
         self.dino_rescue_ai_high_score_checkbox.setChecked(dino_settings.rescue_ai_high_score_enabled)
+        self.dino_rescue_ai_high_score_checkbox.setToolTip(_settings_tooltip(
+            "Keeps a DINO-marked image in the pool if the current AI score says it may be strong."
+        ))
         self.dino_rescue_user_keep_checkbox = QCheckBox("Rescue if adapter or user label says keep")
         self.dino_rescue_user_keep_checkbox.setChecked(dino_settings.rescue_user_keep_enabled)
+        self.dino_rescue_user_keep_checkbox.setToolTip(_settings_tooltip(
+            "Keeps a DINO-marked image in the pool if your labels or adapter indicate it should be kept."
+        ))
         self.dino_rescue_semantic_unique_checkbox = QCheckBox("Rescue if semantically unique")
         self.dino_rescue_semantic_unique_checkbox.setChecked(dino_settings.rescue_semantic_unique_enabled)
+        self.dino_rescue_semantic_unique_checkbox.setToolTip(_settings_tooltip(
+            "Keeps a DINO-marked image if it is visually or semantically different from the surrounding set."
+        ))
         self.dino_rescue_best_representative_checkbox = QCheckBox("Rescue if best visual representative")
         self.dino_rescue_best_representative_checkbox.setChecked(dino_settings.rescue_best_representative_enabled)
+        self.dino_rescue_best_representative_checkbox.setToolTip(_settings_tooltip(
+            "Keeps the strongest representative from a similar-image group even when other frames are dumped."
+        ))
 
         self.dino_diagnostics_checkbox = QCheckBox("Write per-run diagnostics and audit rows")
         self.dino_diagnostics_checkbox.setChecked(dino_settings.diagnostics_enabled)
+        self.dino_diagnostics_checkbox.setToolTip(_settings_tooltip(
+            "Writes per-run DINO decisions and reason counts for debugging and threshold tuning."
+        ))
 
         dino_page, dino_layout = self._build_settings_page("DINO Prefilter")
         dino_hint = QLabel(
@@ -511,9 +586,9 @@ class WorkflowSettingsDialog(QDialog):
         dino_hint.setObjectName("settingsRowLabel")
         dino_layout.addWidget(dino_hint)
         dino_layout.addSpacing(4)
-        self._add_checkbox_row(dino_layout, "Status", self.dino_prefilter_enabled_checkbox)
-        self._add_form_row(dino_layout, "Mode", self.dino_prefilter_mode_combo)
-        self._add_form_row(dino_layout, "Confidence threshold", self.dino_prefilter_aggressiveness_spin)
+        self._add_checkbox_row(dino_layout, "DINO Prefilter", self.dino_prefilter_enabled_checkbox)
+        self._add_form_row(dino_layout, "Marking mode", self.dino_prefilter_mode_combo)
+        self._add_form_row(dino_layout, "Trash confidence", self.dino_prefilter_aggressiveness_spin)
         reason_heading = QLabel("Allowed trash reasons")
         reason_heading.setObjectName("settingsCategoryHeading")
         dino_layout.addSpacing(8)
@@ -533,7 +608,7 @@ class WorkflowSettingsDialog(QDialog):
         diagnostics_heading.setObjectName("settingsCategoryHeading")
         dino_layout.addSpacing(8)
         dino_layout.addWidget(diagnostics_heading)
-        self._add_checkbox_row(dino_layout, "Audit logging", self.dino_diagnostics_checkbox)
+        self._add_checkbox_row(dino_layout, "Run diagnostics", self.dino_diagnostics_checkbox)
         dino_layout.addStretch(1)
         self._dino_dependent_controls = (
             self.dino_prefilter_mode_combo,
@@ -564,6 +639,9 @@ class WorkflowSettingsDialog(QDialog):
         self.phash_prefilter_mode_combo.setCurrentIndex(
             max(0, self.phash_prefilter_mode_combo.findData(phash_settings.mode))
         )
+        self.phash_prefilter_mode_combo.setToolTip(_settings_tooltip(
+            "Soft Quarantine labels duplicates; Pool Removal keeps duplicate candidates out of the main AI scoring pool."
+        ))
         self.phash_execution_mode_combo = QComboBox()
         self.phash_execution_mode_combo.setMinimumWidth(220)
         for mode in PHashExecutionMode:
@@ -592,6 +670,9 @@ class WorkflowSettingsDialog(QDialog):
         ))
         self.phash_diagnostics_checkbox = QCheckBox("Write per-run diagnostics and audit rows")
         self.phash_diagnostics_checkbox.setChecked(phash_settings.diagnostics_enabled)
+        self.phash_diagnostics_checkbox.setToolTip(_settings_tooltip(
+            "Writes per-run pHash duplicate groups and decision rows for debugging and threshold tuning."
+        ))
 
         phash_page, phash_layout = self._build_settings_page("pHash Prefilter")
         phash_hint = QLabel(
@@ -601,12 +682,12 @@ class WorkflowSettingsDialog(QDialog):
         phash_hint.setObjectName("settingsRowLabel")
         phash_layout.addWidget(phash_hint)
         phash_layout.addSpacing(4)
-        self._add_checkbox_row(phash_layout, "Status", self.phash_prefilter_enabled_checkbox)
-        self._add_form_row(phash_layout, "Mode", self.phash_prefilter_mode_combo)
-        self._add_form_row(phash_layout, "Execution", self.phash_execution_mode_combo)
-        self._add_form_row(phash_layout, "pHash distance", self.phash_hamming_spin)
-        self._add_checkbox_row(phash_layout, "Cache", self.phash_cache_checkbox)
-        self._add_checkbox_row(phash_layout, "Audit logging", self.phash_diagnostics_checkbox)
+        self._add_checkbox_row(phash_layout, "pHash Prefilter", self.phash_prefilter_enabled_checkbox)
+        self._add_form_row(phash_layout, "Marking mode", self.phash_prefilter_mode_combo)
+        self._add_form_row(phash_layout, "Run timing", self.phash_execution_mode_combo)
+        self._add_form_row(phash_layout, "Duplicate distance", self.phash_hamming_spin)
+        self._add_checkbox_row(phash_layout, "Cache hash metadata", self.phash_cache_checkbox)
+        self._add_checkbox_row(phash_layout, "Run diagnostics", self.phash_diagnostics_checkbox)
         phash_layout.addStretch(1)
         self._phash_dependent_controls = (
             self.phash_prefilter_mode_combo,
@@ -703,6 +784,10 @@ class WorkflowSettingsDialog(QDialog):
         label = QLabel(label_text)
         label.setFixedWidth(self._ROW_LABEL_WIDTH)
         label.setObjectName("settingsRowLabel")
+        tooltip = field.toolTip()
+        if tooltip:
+            label.setToolTip(tooltip)
+            row.setToolTip(tooltip)
         row_layout.addWidget(label)
         row_layout.addWidget(field, 1)
         layout.addWidget(row)
@@ -712,6 +797,10 @@ class WorkflowSettingsDialog(QDialog):
         label = QLabel(label_text)
         label.setFixedWidth(self._ROW_LABEL_WIDTH)
         label.setObjectName("settingsRowLabel")
+        tooltip = checkbox.toolTip()
+        if tooltip:
+            label.setToolTip(tooltip)
+            row.setToolTip(tooltip)
         row_layout.addWidget(label)
         row_layout.addWidget(checkbox, 1)
         layout.addWidget(row)
@@ -721,6 +810,10 @@ class WorkflowSettingsDialog(QDialog):
         label = QLabel(label_text)
         label.setFixedWidth(self._ROW_LABEL_WIDTH)
         label.setObjectName("settingsRowLabel")
+        tooltip = value.toolTip()
+        if tooltip:
+            label.setToolTip(tooltip)
+            row.setToolTip(tooltip)
         row_layout.addWidget(label)
         row_layout.addWidget(value, 1)
         layout.addWidget(row)
@@ -736,6 +829,9 @@ class WorkflowSettingsDialog(QDialog):
         )
         hint.setWordWrap(True)
         hint.setObjectName("settingsRowLabel")
+        hint.setToolTip(_settings_tooltip(
+            "Change keyboard shortcuts for common app commands."
+        ))
         layout.addWidget(hint)
         layout.addSpacing(4)
 
@@ -762,12 +858,18 @@ class WorkflowSettingsDialog(QDialog):
                 label = QLabel(display)
                 label.setFixedWidth(self._ROW_LABEL_WIDTH * 2)
                 label.setObjectName("settingsRowLabel")
+                tooltip = _settings_tooltip(
+                    f"Keyboard shortcut for {display}. Default: {default or 'none'}."
+                )
+                label.setToolTip(tooltip)
+                row.setToolTip(tooltip)
                 row_layout.addWidget(label)
 
                 editor = QKeySequenceEdit()
                 editor.setObjectName("shortcutEditor")
                 editor.setMinimumWidth(160)
                 editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                editor.setToolTip(tooltip)
                 effective = current_overrides.get(attr_name, default)
                 if effective:
                     editor.setKeySequence(QKeySequence(effective))
@@ -777,6 +879,9 @@ class WorkflowSettingsDialog(QDialog):
                 reset_button.setObjectName("settingsRowReset")
                 reset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 reset_button.setFixedWidth(64)
+                reset_button.setToolTip(_settings_tooltip(
+                    f"Restore the default shortcut for {display}."
+                ))
                 reset_button.clicked.connect(
                     lambda _checked=False, edit=editor, default_chord=default: edit.setKeySequence(
                         QKeySequence(default_chord)
@@ -791,6 +896,9 @@ class WorkflowSettingsDialog(QDialog):
         reset_all = QPushButton("Reset all to defaults")
         reset_all.setObjectName("settingsResetAll")
         reset_all.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        reset_all.setToolTip(_settings_tooltip(
+            "Restore every shortcut on this page to its default key binding."
+        ))
         reset_all.clicked.connect(self._reset_all_shortcuts)
         layout.addWidget(reset_all, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addStretch(1)

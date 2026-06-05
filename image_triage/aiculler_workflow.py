@@ -1499,7 +1499,7 @@ class AICullerAdapterTask(QRunnable):
             self.runtime.validate()
             db_path = aiculler_db_path(self.paths)
             if not db_path.exists():
-                raise FileNotFoundError("Run AI Culler before training or ranking with an adapter.")
+                raise FileNotFoundError("Run Index & Score in the AI Workflow Center before training or ranking with an adapter.")
             self.paths.report_dir.mkdir(parents=True, exist_ok=True)
             if self.mode == "train" and self.ratings_csv_text:
                 self.paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -1548,7 +1548,7 @@ class AICullerAdapterTask(QRunnable):
                 raise FileNotFoundError("No ratings CSV is available for adapter training.")
             return [
                 (
-                    "Importing ratings",
+                    "Importing adapter labels",
                     self._command(
                         db_path,
                         "import-ratings",
@@ -1560,7 +1560,7 @@ class AICullerAdapterTask(QRunnable):
                     ),
                 ),
                 (
-                    "Training adapter",
+                    "Training local preference adapter",
                     self._command(
                         db_path,
                         "train-adapter",
@@ -1575,7 +1575,7 @@ class AICullerAdapterTask(QRunnable):
                     ),
                 ),
                 (
-                    "Evaluating adapter",
+                    "Evaluating local preference adapter",
                     self._command(
                         db_path,
                         "evaluate-adapter",
@@ -1589,7 +1589,7 @@ class AICullerAdapterTask(QRunnable):
         if self.mode == "evaluate":
             return [
                 (
-                    "Evaluating adapter",
+                    "Evaluating local preference adapter",
                     self._command(
                         db_path,
                         "evaluate-adapter",
@@ -1720,7 +1720,7 @@ class AICullerGlobalAdapterTask(QRunnable):
 
             commands = [
                 (
-                    "Ingesting global labeled images",
+                    "Building global adapter image set",
                     self._command(
                         db_path,
                         "ingest",
@@ -1762,7 +1762,7 @@ class AICullerGlobalAdapterTask(QRunnable):
                     ),
                 ),
                 (
-                    "Importing global ratings",
+                    "Importing global adapter labels",
                     self._command(
                         db_path,
                         "import-ratings",
@@ -1774,7 +1774,7 @@ class AICullerGlobalAdapterTask(QRunnable):
                     ),
                 ),
                 (
-                    "Training global adapter",
+                    "Training global preference adapter",
                     self._command(
                         db_path,
                         "train-adapter",
@@ -1789,7 +1789,7 @@ class AICullerGlobalAdapterTask(QRunnable):
                     ),
                 ),
                 (
-                    "Evaluating global adapter",
+                    "Evaluating global preference adapter",
                     self._command(
                         db_path,
                         "evaluate-adapter",
@@ -2537,7 +2537,7 @@ def load_adapter_review_candidates(
     run_id = _latest_cluster_run_id(db_path)
     rows = _load_ranked_gui_rows(db_path, run_id)
     if not rows:
-        raise ValueError("Run AI Culler before reviewing adapter labels.")
+        raise ValueError("Run Index & Score in the AI Workflow Center before reviewing adapter labels.")
 
     selected: dict[str, dict[str, object]] = {}
     reasons: dict[str, list[str]] = {}

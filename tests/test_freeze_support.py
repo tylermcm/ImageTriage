@@ -216,6 +216,53 @@ class FreezeSupportTests(unittest.TestCase):
             self.assertFalse(layout.ai_site_packages_stage_root.exists())
             self.assertTrue((layout.ai_stdlib_stage_root / "json.py").exists())
 
+    def test_prepare_ai_build_assets_fails_when_required_site_package_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ai_source = root / "AICullingPipeline"
+            scripts_dir = ai_source / "scripts"
+            config_dir = ai_source / "configs"
+            app_dir = ai_source / "app"
+            app_dir.mkdir(parents=True)
+            config_dir.mkdir(parents=True)
+            scripts_dir.mkdir(parents=True)
+            (app_dir / "__init__.py").write_text("", encoding="utf-8")
+            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
+            for script_name in (
+                "extract_embeddings.py",
+                "cluster_embeddings.py",
+                "export_ranked_report.py",
+            ):
+                (scripts_dir / script_name).write_text("print('hello')\n", encoding="utf-8")
+
+            site_packages = root / "site-packages"
+            site_packages.mkdir(parents=True)
+            stdlib = root / "stdlib"
+            stdlib.mkdir(parents=True)
+            binary_modules = root / "binary-modules"
+            binary_modules.mkdir(parents=True)
+
+            layout = FreezeAssetLayout(
+                ai_source=ai_source,
+                ai_site_packages_source=site_packages,
+                ai_stdlib_source=stdlib,
+                ai_binary_modules_source=binary_modules,
+                bundle_ai_site_packages=True,
+                ai_stage_root=root / "stage" / "ai_runtime" / "AICullingPipeline",
+                ai_site_packages_stage_root=root / "stage" / "ai_site_packages",
+                ai_stdlib_stage_root=root / "stage" / "ai_stdlib",
+                ai_binary_modules_stage_root=root / "stage" / "lib",
+            )
+
+            with patch("freeze_support.AI_SITE_PACKAGES_ENTRIES", ("onnxruntime",)), patch(
+                "freeze_support.AI_SITE_PACKAGES_OPTIONAL_ENTRIES",
+                (),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "Required bundled AI dependency"):
+                    prepare_ai_build_assets(layout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -329,6 +329,7 @@ from .ui import (
     show_paged_help,
 )
 from .ui.help_topics import library_help_pages, settings_help_pages
+from .ui.menus import add_ai_results_actions
 from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
 
 
@@ -824,8 +825,8 @@ class ToolbarCustomizerDialog(QDialog):
             "columns": "Columns",
             "sort": "Sort",
             "quick_filter": "Quick Filter",
-            "run_ai_culling": "Run AI Review",
-            "apply_ai_culling": "Apply AI Culling",
+            "run_ai_culling": "AI Workflow",
+            "apply_ai_culling": "Apply AI",
             "reset_ai_review_cache": "Reset AI Cache",
             "ai_results": "AI Results",
             "open_folder": "Open",
@@ -2520,8 +2521,8 @@ class MainWindow(QMainWindow):
         "refresh_folder": "Refresh",
         "undo": "Undo",
         "separator": "Separator",
-        "run_ai_culling": "Run AI Review",
-        "apply_ai_culling": "Apply AI Culling",
+        "run_ai_culling": "AI Workflow",
+        "apply_ai_culling": "Apply AI Decisions",
         "sort_ai_semantic_folders": "Semantic Sort",
         "reset_ai_review_cache": "Reset AI Cache",
         "ai_results": "AI Results",
@@ -2784,6 +2785,7 @@ class MainWindow(QMainWindow):
         self._ai_training_log_lines: list[str] = []
         self._ai_training_stage_text = ""
         self._ai_training_run_label = ""
+        self._ai_training_stats_profile = "ranker"
         self._ai_training_fit_label = "Pending"
         self._ai_training_fit_summary = "Run training or evaluation to get a simple health check."
         self._ai_training_fit_remedy = ""
@@ -3753,26 +3755,8 @@ class MainWindow(QMainWindow):
         return button
 
     def _build_ai_results_menu(self) -> QMenu:
-        menu = QMenu("AI Results", self)
-        ai_state_menu = menu.addMenu("AI Result Buckets")
-        for mode in (
-            AIStateFilter.TOP_PICKS,
-            AIStateFilter.NEEDS_REVIEW,
-            AIStateFilter.LIKELY_REJECTS,
-        ):
-            ai_state_menu.addAction(self._ai_state_actions[mode])
-        prefilter_menu = menu.addMenu("Ingest And Prefilter")
-        for mode in (
-            FilterMode.AI_INGESTED,
-            FilterMode.AI_PREFILTER_DUMPED,
-            FilterMode.DINO_QUARANTINE,
-            FilterMode.DINO_REMOVED,
-        ):
-            prefilter_menu.addAction(self.actions.filter_actions[mode])
-        menu.addSeparator()
-        menu.addAction(self.actions.open_ai_report)
-        menu.addAction(self.actions.show_ai_review_summary)
-        menu.addAction(self.actions.ai_review_tag_legend)
+        menu = QMenu("AI Results And Filters", self)
+        add_ai_results_actions(menu, self.actions)
         return menu
 
     def _build_columns_toolbar_menu(self) -> QMenu:
@@ -8282,6 +8266,7 @@ class MainWindow(QMainWindow):
             dialog = AITrainingStatsDialog(title=title, parent=self)
             self._ai_training_stats_dialog = dialog
         dialog.setWindowTitle(title)
+        dialog.set_profile(self._ai_training_progress_profile())
         dialog.set_stage_text(self._ai_training_stage_text or "Preparing AI training task...")
         dialog.set_run_text(self._ai_training_run_label or "Not started")
         dialog.set_fit_diagnosis(
@@ -8307,6 +8292,7 @@ class MainWindow(QMainWindow):
         if dialog is None:
             dialog = AITrainingStatsDialog(parent=self)
             self._ai_training_stats_dialog = dialog
+        dialog.set_profile(self._ai_training_progress_profile())
         dialog.set_stage_text(self._ai_training_stage_text or "Waiting for output")
         dialog.set_run_text(self._ai_training_run_label or "Not started")
         dialog.set_fit_diagnosis(
@@ -8318,6 +8304,20 @@ class MainWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _ai_training_progress_profile(self) -> str:
+        context = self._ai_training_context
+        action = context.action if context is not None else ""
+        if action:
+            return self._ai_training_profile_for_action(action)
+        return self._ai_training_stats_profile
+
+    @staticmethod
+    def _ai_training_profile_for_action(action: str) -> str:
+        if action in {"train_adapter", "train_global_adapter", "evaluate_adapter", "rank_adapter"}:
+            return "adapter"
+        return "ranker"
+
 
     def _set_ai_training_fit_diagnosis(self, diagnosis: RankerFitDiagnosis | None) -> None:
         if diagnosis is None:
@@ -10528,8 +10528,10 @@ class MainWindow(QMainWindow):
         self._ai_training_log_lines = []
         self._ai_training_stage_text = "Preparing AI training task..."
         self._ai_training_run_label = run_label.strip()
+        self._ai_training_stats_profile = self._ai_training_profile_for_action(action)
         self._set_ai_training_fit_diagnosis(None)
         if self._ai_training_stats_dialog is not None:
+            self._ai_training_stats_dialog.set_profile(self._ai_training_stats_profile)
             self._ai_training_stats_dialog.set_stage_text(self._ai_training_stage_text)
             self._ai_training_stats_dialog.set_run_text(self._ai_training_run_label or "Not started")
             self._ai_training_stats_dialog.clear_log()
@@ -11016,7 +11018,7 @@ class MainWindow(QMainWindow):
             return
         message = f"Prepared {ratings_path.name} for adapter training."
         self.statusBar().showMessage(message)
-        QMessageBox.information(self, "Prepare Adapter Ratings", message)
+        QMessageBox.information(self, "Prepare Rating CSV", message)
 
     def _review_aiculler_adapter_labels(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
@@ -11025,7 +11027,7 @@ class MainWindow(QMainWindow):
             return
         db_path = aiculler_db_path(paths)
         if not db_path.exists():
-            self.statusBar().showMessage("Run AI Culler before reviewing adapter labels.")
+            self.statusBar().showMessage("Run Index & Score in the AI Workflow Center before reviewing adapter labels.")
             return
         saved_labels = self._load_aiculler_internal_labels(paths)
         try:
@@ -11505,7 +11507,7 @@ class MainWindow(QMainWindow):
             return
         db_path = aiculler_db_path(paths)
         if not db_path.exists():
-            self.statusBar().showMessage("Run AI Culler before training an adapter.")
+            self.statusBar().showMessage("Run Index & Score in the AI Workflow Center before training an adapter.")
             return
         ratings_path = self._write_aiculler_ratings_csv()
         if ratings_path is None:
@@ -11540,7 +11542,7 @@ class MainWindow(QMainWindow):
             finally:
                 store.close()
         except OSError as exc:
-            QMessageBox.warning(self, "Train Adapter From Global Labels", f"Could not prepare global adapter ratings.\n\n{exc}")
+            QMessageBox.warning(self, "Train Global Adapter", f"Could not prepare global adapter ratings.\n\n{exc}")
             return
         except Exception as exc:
             QMessageBox.warning(self, "Train Global Adapter", f"Could not load global adapter labels.\n\n{exc}")
@@ -14023,7 +14025,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _adapter_status_display(summary: dict[str, object] | None) -> tuple[str, str]:
         if summary is None or not summary.get("db_exists"):
-            return ("Adapter: —", "Run AI Culler on a folder to begin building the adapter.")
+            return ("Adapter: —", "Run Index & Score in the AI Workflow Center to begin building the adapter.")
         rating_count = int(summary.get("rating_count") or 0)
         model_version = str(summary.get("model_version") or "")
         if not model_version:
@@ -15326,7 +15328,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Quick Rerank",
-                "Run AI Culler at least once for this folder before using Quick Rerank.\n\n"
+                "Run Index & Score at least once for this folder before using Quick Rerank.\n\n"
                 "Quick Rerank reuses the existing ingest, categories, and clusters.",
             )
             return
@@ -15417,13 +15419,13 @@ class MainWindow(QMainWindow):
 
     def _apply_ai_culling(self) -> None:
         if not self._current_folder:
-            self.statusBar().showMessage("Open a source folder before applying AI culling.")
+            self.statusBar().showMessage("Open a source folder before applying AI decisions.")
             return
         if self._ai_bundle is None:
-            self.statusBar().showMessage("Run AI Review or load AI results before applying AI culling.")
+            self.statusBar().showMessage("Run Index & Score or load AI results before applying AI decisions.")
             return
         if self._is_winners_folder() or self._is_recycle_folder():
-            self.statusBar().showMessage("Apply AI Culling only from the source folder, not from _winners or the recycle bin.")
+            self.statusBar().showMessage("Apply AI Decisions only from the source folder, not from _winners or the recycle bin.")
             return
         if self._active_ai_task is not None:
             self.statusBar().showMessage("Wait for the current AI review run to finish first.")
@@ -15441,7 +15443,7 @@ class MainWindow(QMainWindow):
 
         confirmation = QMessageBox.question(
             self,
-            "Apply AI Culling",
+            "Apply AI Decisions",
             (
                 "This will organize the current folder using the loaded AI review.\n\n"
                 f"- Move {len(ai_pick_records)} AI Pick image(s) into _winners\n"
@@ -15473,7 +15475,7 @@ class MainWindow(QMainWindow):
                     moved_rejects += 1
 
         self.statusBar().showMessage(
-            f"Applied AI culling: moved {moved_winners} AI Pick image(s) to _winners and {moved_rejects} Reject image(s) to the recycle bin."
+            f"Applied AI decisions: moved {moved_winners} AI Pick image(s) to _winners and {moved_rejects} Reject image(s) to the recycle bin."
         )
 
         reviewable_paths = tuple(path for path in follow_up_paths if self._record_index_for_path(path) is not None)
@@ -15511,7 +15513,7 @@ class MainWindow(QMainWindow):
                     "Semantic Sort",
                     (
                         "Semantic classifications are missing or incomplete for this folder.\n\n"
-                        "Run AI Review again now to generate the semantic classifications? "
+                        "Run Index & Score again now to generate the semantic classifications? "
                         "Existing DINO embeddings and clusters will be reused when possible."
                     ),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -15520,7 +15522,7 @@ class MainWindow(QMainWindow):
                 if rerun == QMessageBox.StandardButton.Yes:
                     self._run_ai_pipeline()
                 return
-            self.statusBar().showMessage("Run AI Review with Semantic sidecar enabled before sorting into semantic folders.")
+            self.statusBar().showMessage("Run Index & Score with Semantic sidecar enabled before sorting into semantic folders.")
             return
         try:
             classifications = load_semantic_classifications(paths.semantic_export_path)
@@ -17638,7 +17640,7 @@ class MainWindow(QMainWindow):
                 - Include DINO dependencies only if you plan to use DINO Prefilter.
                 - Leave model downloads on if you want CLI-Culler CLIP, TOPIQ, and optional DINO assets cached locally.
                 - Turn it off if you only want the core browser for now.
-                - If you skip it, use **`AI > Install AI Runtime...`** and **`AI > Download AI Models...`** later.
+                - If you skip it, use **`AI > Runtime And Cache > Install AI Runtime...`** and **`AI > Runtime And Cache > Download AI Models...`** later.
 
                 ## What AI Adds To Review
 
@@ -17655,12 +17657,12 @@ class MainWindow(QMainWindow):
                 Use this when you want the app to score a folder and help you review it faster. Open **AI > AI Workflow Center...** and use its **`?`** button for the detailed stage-by-stage guide.
 
                 1. Open the folder you want to review.
-                2. Choose **`AI > Run AI Review`**.
+                2. Open **`AI > AI Workflow Center...`** and run **Index & Score**.
                 3. Wait for extraction, grouping, scoring, and report export to finish.
                 4. The app will automatically load the new results and switch into **AI Review**.
                 5. Use **`Ctrl+Alt+P`** to jump to the next AI top pick.
                 6. Use **`Ctrl+Alt+G`** to compare the current AI group.
-                7. Use **`AI > Apply AI Culling`** when you want the app to auto-file only the clearest winners and rejects.
+                7. Use **`AI > Run And Apply > Apply AI Decisions`** when you want the app to auto-file only the clearest winners and rejects.
                 8. Later, use **`AI > Load Saved AI For Folder`** if you want to reopen cached results without rerunning the model.
 
                 ## AI Review Tags
@@ -17672,12 +17674,12 @@ class MainWindow(QMainWindow):
                 Use this when you want CLI-Culler to learn from your own decisions.
 
                 1. Open the folder you want to train from.
-                2. Run **`AI > Run AI Culler`** so the folder has a CLI-Culler database.
-                3. Mark images with ratings, Accept, or Reject in the grid, or choose **`AI > Adapter > Review Adapter Labels...`** to work through suggested label candidates.
-                4. Choose **`AI > Adapter > Prepare Adapter Ratings`** to materialize the current labels.
-                5. Choose **`AI > Adapter > Train Adapter...`**.
-                6. Choose **`AI > Adapter > Evaluate Adapter`** to check the latest adapter against stored ratings.
-                7. Choose **`AI > Adapter > Rank Current Folder With Adapter`** to refresh the folder ranking.
+                2. Open **`AI > AI Workflow Center...`** and run **Index & Score** so the folder has a CLI-Culler database.
+                3. Mark images with ratings, Accept, or Reject in the grid, or choose **`AI > Adapter Training > Review Adapter Labels...`** to work through suggested label candidates.
+                4. Choose **`AI > Adapter Training > Prepare Rating CSV`** to materialize the current labels.
+                5. Choose **`AI > Adapter Training > Train Adapter...`**.
+                6. Choose **`AI > Adapter Training > Evaluate Adapter`** to check the latest adapter against stored ratings.
+                7. Choose **`AI > Adapter Training > Rank Folder With Local Adapter`** to refresh the folder ranking.
                 8. Review the refreshed result in **AI Review**.
 
                 ## Where AI Files Live
@@ -17697,9 +17699,9 @@ class MainWindow(QMainWindow):
 
                 ## Troubleshooting
 
-                - If rankings look stale, run **Rank Current Folder With Adapter** again.
-                - If the folder changed heavily, rerun **Run AI Culler** before training or ranking.
-                - If AI actions are disabled, open **`AI > Install AI Runtime...`** or **`AI > Download AI Models...`** and check the setup state.
+                - If rankings look stale, run **Rank Folder With Local Adapter** again.
+                - If the folder changed heavily, rerun **Index & Score** in the AI Workflow Center before training or ranking.
+                - If AI actions are disabled, open **`AI > Runtime And Cache > Install AI Runtime...`** or **`AI > Runtime And Cache > Download AI Models...`** and check the setup state.
                 - If you only want to review AI results, you do **not** need the adapter steps.
                 """
             ),
@@ -17744,7 +17746,7 @@ class MainWindow(QMainWindow):
                 - Batch tools use the checkbox mode in the grid
                 - Resize and Convert are also available from the image right-click menu
                 - RAW files are skipped for Resize and Convert
-                - The **AI > Adapter** menu contains the current label review, adapter training, evaluation, and ranking flow
+                - The **AI > Adapter Training** menu contains the current label review, adapter training, evaluation, and ranking flow
                 - long AI tasks use centered progress dialogs while scripts are running, and **Stats For Nerds** opens the live training log
 
                 ## Preview
