@@ -49,6 +49,28 @@ If you are updating an existing install, rerun the install command so dependenci
 py -3 -m pip install -e .
 ```
 
+## Windows MSI Updates
+
+The Windows app includes `Help > Check For Updates...`. By default it checks the latest GitHub Release for `tylermcm/ImageTriage`, looks for an `.msi` asset, downloads it, and launches `msiexec` so the newer MSI can upgrade the existing install without requiring an uninstall.
+
+For this to work in production:
+
+- Bump `project.version` in [pyproject.toml](pyproject.toml) and `__version__` in [image_triage/_version.py](image_triage/_version.py) for every release.
+- Keep the `upgrade_code` in [setup_msi.py](setup_msi.py) unchanged.
+- Publish the compiled MSI as a GitHub Release asset with a tag newer than the installed version, for example `v1.1.4`.
+- Prefer attaching a release asset digest or hosting a JSON update manifest with a `sha256` value so downloads can be verified before install.
+
+To use a custom feed instead of GitHub Releases, set `IMAGE_TRIAGE_UPDATE_FEED_URL` to the URL of a JSON document like:
+
+```json
+{
+  "version": "1.1.4",
+  "installer_url": "https://example.com/downloads/ImageTriage-1.1.4.msi",
+  "sha256": "0123456789abcdef...",
+  "release_notes_url": "https://example.com/releases/1.1.4"
+}
+```
+
 ## Linux AppImage
 
 Build and install a local AppImage from this repo with:

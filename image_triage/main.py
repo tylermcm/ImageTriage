@@ -7,6 +7,7 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import QApplication
 
+from image_triage.updater import current_app_version
 from image_triage.window import MainWindow
 
 
@@ -21,6 +22,7 @@ def launch_target_from_argv(argv: Sequence[str]) -> str:
 def main() -> int:
     QCoreApplication.setOrganizationName("Codex")
     QCoreApplication.setApplicationName("Image Triage")
+    QCoreApplication.setApplicationVersion(current_app_version())
     # Large edited derivatives can legitimately exceed Qt's conservative default.
     QImageReader.setAllocationLimit(1024)
 

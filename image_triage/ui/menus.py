@@ -285,4 +285,6 @@ def build_main_menu_bar(
     help_menu.addAction(actions.ai_review_tag_legend)
     help_menu.addAction(actions.advanced_help)
     help_menu.addSeparator()
+    help_menu.addAction(actions.check_for_updates)
+    help_menu.addSeparator()
     help_menu.addAction(actions.about)
