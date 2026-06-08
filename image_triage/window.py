@@ -285,6 +285,14 @@ from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
 from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
 from .thumbnails import ThumbnailManager
+from .updater import (
+    UpdateCheckResult,
+    UpdateInfo,
+    check_for_update,
+    current_app_version,
+    download_update_installer,
+    launch_update_installer,
+)
 from .ui import (
     AdvancedFilterDialog,
     AIReviewProgressDialog,
@@ -2140,6 +2148,56 @@ class AIModelDownloadTask(QRunnable):
         self.signals.finished.emit("\n".join(completed))
 
 
+class AppUpdateCheckSignals(QObject):
+    """Signals for the application update check worker."""
+    finished = Signal(object)
+    failed = Signal(str)
+
+
+class AppUpdateCheckTask(QRunnable):
+    """Checks the configured release feed without blocking the UI."""
+    def __init__(self, *, current_version: str) -> None:
+        super().__init__()
+        self.current_version = current_version
+        self.signals = AppUpdateCheckSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(check_for_update(current_version=self.current_version))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class AppUpdateDownloadSignals(QObject):
+    """Signals for downloading a newer MSI installer."""
+    started = Signal(str)
+    progress = Signal(object, object, str)
+    finished = Signal(str)
+    failed = Signal(str)
+
+
+class AppUpdateDownloadTask(QRunnable):
+    """Downloads an update installer without blocking the UI."""
+    def __init__(self, *, update: UpdateInfo) -> None:
+        super().__init__()
+        self.update = update
+        self.signals = AppUpdateDownloadSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            self.signals.started.emit(self.update.installer_filename)
+
+            def emit_progress(current: int, total: int, filename: str) -> None:
+                self.signals.progress.emit(current, total, filename)
+
+            installer_path = download_update_installer(self.update, progress_callback=emit_progress)
+            self.signals.finished.emit(str(installer_path))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
 class AIRuntimeInstallSignals(QObject):
     """Signals for the on-demand AI runtime package installer."""
     started = Signal(str, str)
@@ -2710,6 +2768,8 @@ class MainWindow(QMainWindow):
         self._ai_training_pool.setMaxThreadCount(1)
         self._ai_model_pool = QThreadPool(self)
         self._ai_model_pool.setMaxThreadCount(1)
+        self._app_update_pool = QThreadPool(self)
+        self._app_update_pool.setMaxThreadCount(1)
         self._batch_rename_pool = QThreadPool(self)
         self._batch_rename_pool.setMaxThreadCount(1)
         self._resize_pool = QThreadPool(self)
@@ -2737,6 +2797,9 @@ class MainWindow(QMainWindow):
         self._active_ai_run_start_perf = 0.0
         self._active_ai_runtime_task: AIRuntimeInstallTask | None = None
         self._active_ai_model_task: AIModelDownloadTask | None = None
+        self._active_update_check_task: AppUpdateCheckTask | None = None
+        self._active_update_download_task: AppUpdateDownloadTask | None = None
+        self._update_progress_dialog: QProgressDialog | None = None
         self._active_review_intelligence_task: BuildReviewIntelligenceTask | None = None
         self._active_scope_enrichment_task: ScopeEnrichmentTask | None = None
         self._scope_enrichment_token = 0
@@ -5039,6 +5102,7 @@ class MainWindow(QMainWindow):
             add_action_command("help.ai_guide", self.actions.ai_guide, section="Help", keywords=("ai guide", "ai training guide", "model guide", "ai help"))
             add_action_command("help.ai_tag_legend", self.actions.ai_review_tag_legend, section="Help", keywords=("ai tags", "ai review tags", "tag legend", "badge legend"))
             add_action_command("help.advanced_help", self.actions.advanced_help, section="Help", keywords=("advanced help", "reference", "guide"))
+            add_action_command("help.check_updates", self.actions.check_for_updates, section="Help", keywords=("update", "installer", "new version", "upgrade"))
             add_action_command("help.about", self.actions.about, section="Help", keywords=("about", "version"))
 
             commands.append(
@@ -9277,6 +9341,9 @@ class MainWindow(QMainWindow):
         self.actions.save_filter_preset.setEnabled(self._filter_query.has_active_filters)
         self.actions.delete_filter_preset.setEnabled(self._matching_saved_filter_preset() is not None)
         self.actions.clear_filters.setEnabled(self._filter_query.has_active_filters)
+        self.actions.check_for_updates.setEnabled(
+            self._active_update_check_task is None and self._active_update_download_task is None
+        )
         self._refresh_tool_mode_ui()
         self._refresh_directory_navigation_buttons()
         if self._toolbar_edit_mode:
@@ -17791,12 +17858,161 @@ class MainWindow(QMainWindow):
             "\n".join(
                 [
                     "Image Triage",
+                    f"Version {current_app_version()}",
                     "",
                     "A desktop photo triage tool focused on speed, keyboard flow, and AI-assisted review.",
                     "This UI pass adds a command-driven shell foundation with a real menu bar, toolbar, and theme support.",
                 ]
             ),
         )
+
+    def _check_for_updates(self) -> None:
+        if self._active_update_check_task is not None or self._active_update_download_task is not None:
+            return
+        if self.actions is not None:
+            self.actions.check_for_updates.setEnabled(False)
+        self.statusBar().showMessage("Checking for updates...")
+        task = AppUpdateCheckTask(current_version=current_app_version())
+        self._active_update_check_task = task
+        task.signals.finished.connect(self._handle_update_check_finished)
+        task.signals.failed.connect(self._handle_update_check_failed)
+        self._app_update_pool.start(task)
+
+    def _handle_update_check_finished(self, raw_result: object) -> None:
+        self._active_update_check_task = None
+        self._update_action_states()
+        if not isinstance(raw_result, UpdateCheckResult):
+            QMessageBox.warning(self, "Check For Updates", "The update check returned an unexpected result.")
+            self.statusBar().showMessage("Update check failed")
+            return
+        result = raw_result
+        latest = result.latest
+        if not result.update_available:
+            QMessageBox.information(
+                self,
+                "Check For Updates",
+                f"Image Triage is up to date.\n\nInstalled version: {result.current_version}",
+            )
+            self.statusBar().showMessage("Image Triage is up to date")
+            return
+
+        details = [
+            f"Image Triage {latest.version} is available.",
+            "",
+            f"Installed version: {result.current_version}",
+        ]
+        if latest.release_notes_url:
+            details.extend(["", f"Release notes: {latest.release_notes_url}"])
+        details.extend(["", "Download the new MSI installer now?"])
+        choice = QMessageBox.question(
+            self,
+            "Update Available",
+            "\n".join(details),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            self.statusBar().showMessage("Update download skipped")
+            return
+        self._download_update_installer(latest)
+
+    def _handle_update_check_failed(self, message: str) -> None:
+        self._active_update_check_task = None
+        self._update_action_states()
+        QMessageBox.warning(self, "Check For Updates", message)
+        self.statusBar().showMessage("Update check failed")
+
+    def _download_update_installer(self, update: UpdateInfo) -> None:
+        if self._active_update_download_task is not None:
+            return
+        if self.actions is not None:
+            self.actions.check_for_updates.setEnabled(False)
+        task = AppUpdateDownloadTask(update=update)
+        self._active_update_download_task = task
+        task.signals.started.connect(self._handle_update_download_started)
+        task.signals.progress.connect(self._handle_update_download_progress)
+        task.signals.finished.connect(self._handle_update_download_finished)
+        task.signals.failed.connect(self._handle_update_download_failed)
+        self._app_update_pool.start(task)
+
+    def _handle_update_download_started(self, filename: str) -> None:
+        dialog = self._show_update_progress_dialog()
+        dialog.setRange(0, 0)
+        dialog.setValue(0)
+        dialog.setLabelText(f"Downloading {filename}...")
+        dialog.show()
+        self.statusBar().showMessage("Downloading update...")
+
+    def _handle_update_download_progress(self, current: int, total: int, filename: str) -> None:
+        dialog = self._show_update_progress_dialog()
+        if total > 0:
+            unit = 1024 * 1024
+            total_units = max(1, (int(total) + unit - 1) // unit)
+            current_units = min(total_units, (int(current) + unit - 1) // unit)
+            dialog.setRange(0, total_units)
+            dialog.setValue(current_units)
+            dialog.setLabelText(f"Downloading {filename} ({current_units}/{total_units} MB)...")
+        else:
+            dialog.setRange(0, 0)
+            dialog.setLabelText(f"Downloading {filename}...")
+
+    def _handle_update_download_finished(self, installer_path: str) -> None:
+        self._active_update_download_task = None
+        self._close_update_progress_dialog()
+        self._update_action_states()
+        choice = QMessageBox.question(
+            self,
+            "Install Update",
+            "\n".join(
+                [
+                    "The update installer has been downloaded.",
+                    "",
+                    "Launch the MSI installer now? Image Triage will close after the installer starts.",
+                ]
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            self.statusBar().showMessage(f"Update downloaded: {installer_path}")
+            return
+        try:
+            launch_update_installer(installer_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Install Update", str(exc))
+            self.statusBar().showMessage("Could not launch update installer")
+            return
+        self.statusBar().showMessage("Update installer launched")
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(300, app.quit)
+
+    def _handle_update_download_failed(self, message: str) -> None:
+        self._active_update_download_task = None
+        self._close_update_progress_dialog()
+        self._update_action_states()
+        QMessageBox.warning(self, "Download Update", message)
+        self.statusBar().showMessage("Update download failed")
+
+    def _show_update_progress_dialog(self) -> QProgressDialog:
+        if self._update_progress_dialog is None:
+            dialog = QProgressDialog(self)
+            dialog.setWindowTitle("Image Triage Update")
+            dialog.setLabelText("Downloading update...")
+            dialog.setCancelButton(None)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setMinimumDuration(0)
+            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+            self._update_progress_dialog = dialog
+        return self._update_progress_dialog
+
+    def _close_update_progress_dialog(self) -> None:
+        if self._update_progress_dialog is None:
+            return
+        self._update_progress_dialog.close()
+        self._update_progress_dialog.deleteLater()
+        self._update_progress_dialog = None
 
     def _reset_window_layout(self) -> None:
         clear_window_layout(self._settings, self.GEOMETRY_KEY, self.STATE_KEY)

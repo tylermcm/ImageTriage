@@ -132,6 +132,7 @@ class MainWindowActions:
     ai_guide: QAction
     ai_review_tag_legend: QAction
     advanced_help: QAction
+    check_for_updates: QAction
     about: QAction
     appearance_actions: dict[AppearanceMode, QAction] = field(default_factory=dict)
     sort_actions: dict[SortMode, QAction] = field(default_factory=dict)
@@ -597,6 +598,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ai_guide=_create_action(window, "AI Guide", slot=window._show_ai_guide),
         ai_review_tag_legend=_create_action(window, "AI Review Tag Legend", slot=window._show_ai_review_tag_legend),
         advanced_help=_create_action(window, "Advanced Help", slot=window._show_advanced_help),
+        check_for_updates=_create_action(window, "Check For Updates...", slot=window._check_for_updates),
         about=_create_action(window, "About Image Triage", slot=window._show_about_dialog),
     )
 

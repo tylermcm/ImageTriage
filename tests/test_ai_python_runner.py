@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -22,6 +23,30 @@ def _load_runner_module():
 
 
 class AIPythonRunnerTests(unittest.TestCase):
+    def test_configure_runtime_adds_packaged_aiculler_root_for_cli_script(self) -> None:
+        runner = _load_runner_module()
+        with tempfile.TemporaryDirectory(prefix="image_triage_runner_aiculler_") as temp_dir:
+            root = Path(temp_dir)
+            cli_path = root / "aiculler" / "cli.py"
+            cli_path.parent.mkdir(parents=True)
+            cli_path.write_text("print('cli')\n", encoding="utf-8")
+            (cli_path.parent / "__init__.py").write_text("", encoding="utf-8")
+            captured_path: list[str] = []
+
+            with (
+                patch.object(runner, "_prepend_ai_stdlib"),
+                patch.object(runner, "_prepend_ai_binary_modules"),
+                patch.object(runner, "_prepend_ai_site_packages"),
+                patch.object(runner, "_prepend_engine_root"),
+                patch.object(runner.sys, "executable", str(root / "ai_python_runner.exe")),
+                patch.object(runner.sys, "path", []),
+                patch.object(runner.Path, "cwd", return_value=root),
+            ):
+                runner._configure_runtime_environment(cli_path)
+                captured_path = list(runner.sys.path)
+
+            self.assertEqual(str(root), captured_path[0])
+
     def test_cached_runtime_site_packages_take_precedence_over_bundled_fallback(self) -> None:
         runner = _load_runner_module()
         fallback_site_packages = Path(r"C:\fallback\ai_site_packages")

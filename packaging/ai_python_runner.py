@@ -34,6 +34,29 @@ def _prepend_path_entry(path: Path) -> None:
     sys.path.insert(0, path_text)
 
 
+def _prepend_app_package_roots(script_path: Path | None = None) -> None:
+    candidates = [
+        Path(sys.executable).resolve().parent,
+        Path.cwd(),
+    ]
+    if script_path is not None:
+        candidates.extend(script_path.resolve().parents)
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not ((candidate / "aiculler").exists() or (candidate / "image_triage").exists()):
+            continue
+        key = str(candidate.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(candidate)
+
+    for root in reversed(roots):
+        _prepend_path_entry(root)
+
+
 def _prepend_ai_site_packages(script_path: Path | None = None) -> None:
     device = _requested_device_from_argv()
     for root in _candidate_runtime_roots(script_path):
@@ -121,6 +144,7 @@ def _cached_runtime_site_packages(*, device: str) -> tuple[Path, ...]:
 
 
 def _configure_runtime_environment(script_path: Path | None = None) -> None:
+    _prepend_app_package_roots(script_path)
     _prepend_ai_stdlib(script_path)
     _prepend_ai_binary_modules(script_path)
     _prepend_ai_site_packages(script_path)
