@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tarfile
 import zipfile
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ EXTRACT_ARCHIVE_FILTER = (
     "TAR.XZ Archive (*.tar.xz *.txz);;"
     "TAR Archive (*.tar)"
 )
+MAX_ARCHIVE_ENTRY_COUNT = 100_000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 100 * 1024 * 1024 * 1024
 
 
 def archive_format_for_key(key: str) -> ArchiveFormat:
@@ -270,10 +273,13 @@ def _write_tar_archive(target_path: Path, entries: tuple[ArchiveEntry, ...], *, 
 def _extract_zip_archive(archive_path: str, destination_dir: Path, *, progress_callback=None) -> tuple[str, ...]:
     with zipfile.ZipFile(archive_path, "r") as archive:
         infos = archive.infolist()
+        _validate_archive_limits(len(infos), (max(0, info.file_size) for info in infos))
         targets = [(info, _validated_archive_member_path(destination_dir, info.filename)) for info in infos]
         extracted: list[str] = []
         total = max(1, len(targets))
         for index, (info, target_path) in enumerate(targets, start=1):
+            if _zip_info_is_symlink(info):
+                raise ValueError("Archives with symbolic links are not supported.")
             if info.is_dir():
                 target_path.mkdir(parents=True, exist_ok=True)
             else:
@@ -289,6 +295,7 @@ def _extract_zip_archive(archive_path: str, destination_dir: Path, *, progress_c
 def _extract_tar_archive(archive_path: str, destination_dir: Path, *, mode: str, progress_callback=None) -> tuple[str, ...]:
     with tarfile.open(archive_path, mode) as archive:
         members = archive.getmembers()
+        _validate_archive_limits(len(members), (max(0, member.size) for member in members))
         targets: list[tuple[tarfile.TarInfo, Path]] = []
         for member in members:
             if member.issym() or member.islnk():
@@ -316,6 +323,7 @@ def _extract_tar_archive(archive_path: str, destination_dir: Path, *, mode: str,
 def _extract_7z_archive(archive_path: str, destination_dir: Path, *, progress_callback=None) -> tuple[str, ...]:
     with py7zr.SevenZipFile(archive_path, "r") as archive:
         infos = archive.list()
+        _validate_archive_limits(len(infos), (_archive_info_size(info) for info in infos))
         targets: list[tuple[object, Path]] = []
         for info in infos:
             if getattr(info, "is_symlink", False):
@@ -385,6 +393,29 @@ def _validated_archive_member_path(destination_dir: Path, member_name: str) -> P
     except ValueError as exc:
         raise ValueError("Archive item would extract outside the destination folder.") from exc
     return candidate
+
+
+def _validate_archive_limits(entry_count: int, sizes: object) -> None:
+    if entry_count > MAX_ARCHIVE_ENTRY_COUNT:
+        raise ValueError(f"Archive contains too many entries ({entry_count:,}).")
+    total = 0
+    for size in sizes:
+        total += int(size or 0)
+        if total > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise ValueError("Archive is too large to extract safely.")
+
+
+def _archive_info_size(info: object) -> int:
+    for attribute in ("uncompressed", "size", "file_size"):
+        value = getattr(info, attribute, None)
+        if value is not None:
+            return max(0, int(value))
+    return 0
+
+
+def _zip_info_is_symlink(info: zipfile.ZipInfo) -> bool:
+    mode = (info.external_attr >> 16) & 0o170000
+    return mode == stat.S_IFLNK
 
 
 def _path_key(path: str | Path) -> str:

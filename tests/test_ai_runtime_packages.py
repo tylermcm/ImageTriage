@@ -18,6 +18,7 @@ from image_triage.ai_runtime_packages import (
     install_ai_runtime,
     load_ai_runtime_installation_status,
     resolve_ai_runtime_site_packages,
+    _default_pip_runner,
 )
 
 
@@ -98,6 +99,19 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("--progress-bar", args)
         self.assertIn("raw", args)
         self.assertIn("transformers>=4.56", args)
+
+    def test_default_pip_runner_uses_embedded_pip_when_frozen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch("image_triage.ai_runtime_packages.sys.frozen", True, create=True),
+                patch("image_triage.ai_runtime_packages._run_embedded_pip", return_value=7) as embedded_runner,
+                patch("image_triage.ai_runtime_packages.subprocess.run") as subprocess_run,
+            ):
+                result = _default_pip_runner(["install", "example"], Path(temp_dir))
+
+        self.assertEqual(result, 7)
+        embedded_runner.assert_called_once()
+        subprocess_run.assert_not_called()
 
     def test_gpu_runtime_pins_torch_pair_compatible_with_dinov3_transformers(self) -> None:
         args = build_ai_runtime_pip_install_args(

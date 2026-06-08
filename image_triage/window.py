@@ -2099,29 +2099,36 @@ class AIModelDownloadTask(QRunnable):
     def run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        try:
-            completed: list[str] = []
-            for request in self.requests:
-                self.signals.started.emit(f"{request.label}: {request.installation.install_dir}")
+        completed: list[str] = []
+        failures: list[str] = []
+        for request in self.requests:
+            self.signals.started.emit(f"{request.label}: {request.installation.install_dir}")
 
-                def emit_progress(filename: str, current: int, total: int, *, label: str = request.label) -> None:
-                    self.signals.progress.emit(f"{label}: {filename}", current, total)
+            def emit_progress(filename: str, current: int, total: int, *, label: str = request.label) -> None:
+                self.signals.progress.emit(f"{label}: {filename}", current, total)
 
+            try:
                 download_managed_ai_model(
                     request.installation,
                     force=request.force,
                     progress_callback=emit_progress,
                 )
                 completed.append(f"{request.label}: {request.installation.install_dir}")
-        except Exception as exc:
+            except Exception as exc:
+                failures.append(f"{request.label}: {exc}")
+        if failures:
             if logger.enabled:
                 logger.duration(
                     "ai.model_download.failed",
                     (time.perf_counter() - start) * 1000.0,
                     requests=len(self.requests),
-                    error=str(exc),
+                    completed=len(completed),
+                    failures=len(failures),
                 )
-            self.signals.failed.emit(str(exc))
+            message = "Some AI model downloads failed:\n" + "\n".join(failures)
+            if completed:
+                message += "\n\nCompleted:\n" + "\n".join(completed)
+            self.signals.failed.emit(message)
             return
         if logger.enabled:
             logger.duration(
@@ -6250,15 +6257,16 @@ class MainWindow(QMainWindow):
             dino_model_checkbox.toggled.connect(dino_model_details.setEnabled)
             layout.addWidget(dino_model_details)
 
-            semantic_model_checkbox = QCheckBox(f"Semantic CLIP classification model ({semantic_status})", dialog)
-            semantic_model_checkbox.setChecked(default_download_semantic_model)
-            layout.addWidget(semantic_model_checkbox)
+            if self._ai_semantic_sidecar_enabled:
+                semantic_model_checkbox = QCheckBox(f"Semantic CLIP classification model ({semantic_status})", dialog)
+                semantic_model_checkbox.setChecked(default_download_semantic_model)
+                layout.addWidget(semantic_model_checkbox)
 
-            semantic_model_details = QLabel(self._semantic_model_explanation_text(), dialog)
-            semantic_model_details.setWordWrap(True)
-            semantic_model_details.setEnabled(default_download_semantic_model)
-            semantic_model_checkbox.toggled.connect(semantic_model_details.setEnabled)
-            layout.addWidget(semantic_model_details)
+                semantic_model_details = QLabel(self._semantic_model_explanation_text(), dialog)
+                semantic_model_details.setWordWrap(True)
+                semantic_model_details.setEnabled(default_download_semantic_model)
+                semantic_model_checkbox.toggled.connect(semantic_model_details.setEnabled)
+                layout.addWidget(semantic_model_details)
 
         button_box = QDialogButtonBox(dialog)
         button_box.addButton(
@@ -6387,7 +6395,7 @@ class MainWindow(QMainWindow):
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
         dino_missing = not self._ai_model_available()
-        semantic_missing = not self._semantic_model_available()
+        semantic_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
         selection = self._show_ai_setup_dialog(
             automatic=automatic,
             title="Install AI Model",
@@ -6741,6 +6749,7 @@ class MainWindow(QMainWindow):
     def _handle_ai_model_download_failed(self, message: str) -> None:
         self._active_ai_model_task = None
         self._close_job_progress_dialog(self._ai_model_job_key)
+        self._refresh_ai_runtime_preferences()
         self._update_action_states()
         self._update_ai_toolbar_state()
         QMessageBox.warning(self, "AI Model Download", f"Could not download the AI model.\n\n{message}")

@@ -60,7 +60,7 @@ def load_ranker_checkpoint(
     """Load a saved ranker checkpoint and rebuild the model."""
 
     resolved_device = resolve_device(device)
-    checkpoint = torch.load(checkpoint_path, map_location=resolved_device)
+    checkpoint = torch.load(checkpoint_path, map_location=resolved_device, weights_only=True)
     model_config = checkpoint["model_config"]
     model = build_ranker(
         input_dim=int(model_config["input_dim"]),
