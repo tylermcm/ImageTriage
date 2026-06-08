@@ -39,24 +39,6 @@ msi_data = {
     "Directory": [
         ("ProgramMenuFolder", "TARGETDIR", "."),
     ],
-    "CustomAction": [
-        (
-            "CleanupPreviousImageTriageData",
-            34,
-            "TARGETDIR",
-            r'"[TARGETDIR]image_triage_cleanup.exe" --mode previous-install --yes --quiet',
-        ),
-        (
-            "CleanupImageTriageDataOnUninstall",
-            34,
-            "TARGETDIR",
-            r'"[TARGETDIR]image_triage_cleanup.exe" --mode uninstall --yes --quiet',
-        ),
-    ],
-    "InstallExecuteSequence": [
-        ("CleanupImageTriageDataOnUninstall", 'REMOVE="ALL"', 3499),
-        ("CleanupPreviousImageTriageData", "NOT Installed", 4001),
-    ],
 }
 
 bdist_msi_options = {
@@ -65,9 +47,9 @@ bdist_msi_options = {
     "data": msi_data,
     "initial_target_dir": r"[ProgramFiles64Folder]\ImageTriage",
     "install_icon": str(APP_ICON_WINDOWS_PATH),
-    "launch_on_finish": True,
+    "launch_on_finish": False,
     "product_name": "Image Triage",
-    "upgrade_code": "{D2ED08E1-991F-42CE-94A3-E95CD4D624AB}",
+    "upgrade_code": "{2C50910A-F1EA-4C94-A730-2D39264677E1}",
 }
 
 executables = [

@@ -22,6 +22,7 @@ import tempfile
 import time
 import traceback
 import urllib.request
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
@@ -1308,6 +1309,10 @@ def _download_asset(source: str, destination: Path) -> None:
     if source_path.exists():
         shutil.copy2(source_path, destination)
         return
+
+    parsed = urlparse(source_text)
+    if parsed.scheme != "https":
+        raise ValueError("Checkpoint URL must use https:// or point to an existing local file.")
 
     temp_destination = destination.with_suffix(destination.suffix + ".download")
     if temp_destination.exists():

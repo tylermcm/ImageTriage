@@ -367,12 +367,40 @@ def _gpu_torchvision_version_spec() -> str:
 
 
 def _default_pip_runner(args: list[str], cwd: Path) -> int:
+    if getattr(sys, "frozen", False):
+        return _run_embedded_pip(args, cwd)
     process = subprocess.run(
         [sys.executable, "-m", "pip", *args],
         cwd=str(cwd),
         text=True,
     )
     return int(process.returncode)
+
+
+def _run_embedded_pip(args: list[str], cwd: Path) -> int:
+    """Run pip inside a frozen helper executable.
+
+    In cx_Freeze builds, sys.executable is ai_runtime_installer.exe rather than
+    a python.exe. Spawning ``sys.executable -m pip`` re-enters this installer and
+    sends pip's argv to our argparse parser. Importing pip directly avoids that
+    recursion while keeping source runs on the normal subprocess path.
+    """
+
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(cwd)
+        try:
+            from pip._internal.cli.main import main as pip_main
+        except Exception as exc:
+            print(f"Could not import bundled pip: {exc}", file=sys.stderr)
+            return 2
+        try:
+            return int(pip_main(list(args)))
+        except SystemExit as exc:
+            code = exc.code
+            return int(code) if isinstance(code, int) else 1
+    finally:
+        os.chdir(previous_cwd)
 
 
 def _profile_status(directories: AIRuntimeDirectories, variant: str, *, include_dino: bool = True) -> AIRuntimeProfileStatus:

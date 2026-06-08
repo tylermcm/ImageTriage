@@ -95,10 +95,6 @@ def _prepend_engine_root(script_path: Path) -> None:
         if engine_root_text not in sys.path:
             sys.path.insert(0, engine_root_text)
 
-    cwd_text = str(Path.cwd())
-    if cwd_text not in sys.path:
-        sys.path.insert(0, cwd_text)
-
 
 def _requested_device_from_argv() -> str:
     args = sys.argv[2:]
@@ -109,7 +105,7 @@ def _requested_device_from_argv() -> str:
 
 
 def _cached_runtime_site_packages(*, device: str) -> tuple[Path, ...]:
-    candidate_roots = [Path(__file__).resolve().parents[1], Path.cwd()]
+    candidate_roots = [Path(__file__).resolve().parents[1]]
     for root in candidate_roots:
         root_text = str(root)
         if root_text not in sys.path:

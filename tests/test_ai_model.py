@@ -3,6 +3,9 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import hashlib
+import urllib.error
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -89,6 +92,8 @@ class AIModelTests(unittest.TestCase):
         self.assertEqual(installation.install_dir.name, "clip-vit-large-patch14")
         self.assertEqual(installation.install_dir.parent.name, "Clip")
         self.assertEqual(installation.required_filenames, AICULLER_CLIP_MODEL_REQUIRED_FILENAMES)
+        self.assertIn("Skulleton12/Clip", installation.download_url("tokenizer.json"))
+        self.assertIn("Skulleton12/Clip", installation.download_url("onnx/text_model_uint8.onnx"))
 
     def test_default_aiculler_topiq_model_installation_uses_runtime_cache_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -178,6 +183,106 @@ class AIModelTests(unittest.TestCase):
             self.assertTrue(installation.is_installed)
             self.assertEqual((installation.install_dir / "pytorch_model.bin").read_bytes(), b"pytorch_model.bin")
             self.assertTrue(any(filename == "pytorch_model.bin" for filename, _, _ in seen_progress))
+
+    def test_download_ai_model_verifies_expected_sha256(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            payload = b"weights"
+            installation = replace(
+                resolve_ai_model_installation(
+                    install_dir=Path(temp_dir) / "downloaded-model",
+                    repo_id="owner/repo",
+                    revision="main",
+                ),
+                required_filenames=("model.safetensors",),
+                expected_sha256={"model.safetensors": hashlib.sha256(payload).hexdigest()},
+            )
+
+            with patch("urllib.request.urlopen", return_value=_FakeResponse(payload)):
+                download_ai_model(installation)
+
+            self.assertEqual((installation.install_dir / "model.safetensors").read_bytes(), payload)
+
+    def test_download_ai_model_rejects_sha256_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = replace(
+                resolve_ai_model_installation(
+                    install_dir=Path(temp_dir) / "downloaded-model",
+                    repo_id="owner/repo",
+                    revision="main",
+                ),
+                required_filenames=("model.safetensors",),
+                expected_sha256={"model.safetensors": "0" * 64},
+            )
+
+            with patch("urllib.request.urlopen", return_value=_FakeResponse(b"weights")):
+                with self.assertRaisesRegex(ValueError, "SHA256"):
+                    download_ai_model(installation)
+
+            self.assertFalse((installation.install_dir / "model.safetensors").exists())
+
+    def test_download_ai_model_rejects_non_https_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = replace(
+                resolve_ai_model_installation(
+                    install_dir=Path(temp_dir) / "downloaded-model",
+                    repo_id="owner/repo",
+                    revision="main",
+                ),
+                required_filenames=("model.safetensors",),
+            )
+
+            with patch("image_triage.ai_model.AIModelInstallation.download_url", return_value="file:///tmp/model.safetensors"):
+                with self.assertRaisesRegex(ValueError, "https"):
+                    download_ai_model(installation)
+
+    def test_download_ai_model_reports_http_error_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = replace(
+                resolve_ai_model_installation(
+                    install_dir=Path(temp_dir) / "downloaded-model",
+                    repo_id="owner/repo",
+                    revision="main",
+                ),
+                required_filenames=("missing.bin",),
+            )
+
+            error = urllib.error.HTTPError(
+                url=installation.download_url("missing.bin"),
+                code=404,
+                msg="Not Found",
+                hdrs={},
+                fp=None,
+            )
+            with patch("urllib.request.urlopen", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, "missing.bin.*HTTP 404"):
+                    download_ai_model(installation)
+
+    def test_download_ai_model_tries_alternate_source_filenames(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = replace(
+                resolve_ai_model_installation(
+                    install_dir=Path(temp_dir) / "downloaded-model",
+                    repo_id="owner/repo",
+                    revision="main",
+                ),
+                required_filenames=("tokenizer.json",),
+                alternate_download_filenames={"tokenizer.json": ("onnx/tokenizer.json",)},
+            )
+            seen_urls: list[str] = []
+
+            def fake_urlopen(request):
+                url = getattr(request, "full_url", str(request))
+                seen_urls.append(url)
+                if "/tokenizer.json" in url and "/onnx/tokenizer.json" not in url:
+                    raise urllib.error.HTTPError(url=url, code=404, msg="Not Found", hdrs={}, fp=None)
+                return _FakeResponse(b"tokenizer")
+
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                download_ai_model(installation)
+
+            self.assertEqual((installation.install_dir / "tokenizer.json").read_bytes(), b"tokenizer")
+            self.assertEqual(len(seen_urls), 2)
+            self.assertIn("/onnx/tokenizer.json", seen_urls[-1])
 
     def test_download_aiculler_clip_model_fetches_nested_onnx_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

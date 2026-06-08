@@ -12,6 +12,7 @@ from unittest.mock import patch
 from image_triage.ai_workflow import (
     AIWorkflowRuntime,
     _build_stage_failure_message,
+    _download_asset,
     _parse_ai_metric_line,
     _parse_tqdm_progress,
     _resolve_stage_command,
@@ -532,6 +533,13 @@ class AIWorkflowStreamingTests(unittest.TestCase):
         self.assertNotIn("line 0", message)
         self.assertIn("line 99", message)
         self.assertIn("AI run log: C:\\temp\\latest_ai_culling.log", message)
+
+    def test_download_asset_rejects_non_https_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir) / "checkpoint.pt"
+
+            with self.assertRaisesRegex(ValueError, "https"):
+                _download_asset("file:///tmp/checkpoint.pt", destination)
 
 
 if __name__ == "__main__":
