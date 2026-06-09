@@ -57,7 +57,7 @@ For this to work in production:
 
 - Bump `project.version` in [pyproject.toml](pyproject.toml) and `__version__` in [image_triage/_version.py](image_triage/_version.py) for every release.
 - Keep the `upgrade_code` in [setup_msi.py](setup_msi.py) unchanged.
-- Publish the compiled MSI as a GitHub Release asset with a tag newer than the installed version, for example `v1.1.4`.
+- Push a matching version tag, for example `v1.1.4`. The `Build And Release Windows MSI` GitHub Actions workflow builds the MSI and uploads it to that GitHub Release.
 - Prefer attaching a release asset digest or hosting a JSON update manifest with a `sha256` value so downloads can be verified before install.
 
 To use a custom feed instead of GitHub Releases, set `IMAGE_TRIAGE_UPDATE_FEED_URL` to the URL of a JSON document like:

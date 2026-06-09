@@ -161,6 +161,63 @@ def launch_update_installer(installer_path: str | Path, *, passive: bool = True)
     return subprocess.Popen(command)
 
 
+def launch_update_installer_and_restart(
+    installer_path: str | Path,
+    *,
+    app_executable: str | Path | None = None,
+    current_pid: int | None = None,
+) -> subprocess.Popen:
+    path = Path(installer_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Installer not found: {path}")
+    if path.suffix.casefold() != ".msi":
+        raise ValueError(f"Update installer must be an MSI file: {path}")
+    if os.name != "nt" and sys.platform != "win32":
+        raise OSError("MSI updates are only supported on Windows.")
+
+    executable = Path(app_executable) if app_executable is not None else Path(sys.executable)
+    if not executable.exists():
+        raise FileNotFoundError(f"Application executable not found: {executable}")
+
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        _build_update_handoff_command(path, executable, int(current_pid or os.getpid())),
+    ]
+    kwargs: dict[str, object] = {}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.Popen(command, **kwargs)
+
+
+def _build_update_handoff_command(installer_path: Path, app_executable: Path, current_pid: int) -> str:
+    installer = _powershell_quote(str(installer_path))
+    executable = _powershell_quote(str(app_executable))
+    pid = max(0, int(current_pid))
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$imageTriagePid = {pid}",
+            f"$installer = {installer}",
+            f"$app = {executable}",
+            "if ($imageTriagePid -gt 0) {",
+            "    try { Wait-Process -Id $imageTriagePid -Timeout 180 -ErrorAction SilentlyContinue } catch {}",
+            "}",
+            "$msiArgs = @('/i', ('\"' + $installer + '\"'), '/qn', '/norestart') -join ' '",
+            "$msi = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru",
+            "Start-Process -FilePath $app",
+            "exit $msi.ExitCode",
+        ]
+    )
+
+
+def _powershell_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _fetch_json(url: str) -> object:
     request = urllib.request.Request(
         url,

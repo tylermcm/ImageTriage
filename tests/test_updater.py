@@ -4,8 +4,8 @@ import hashlib
 import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
 
 from image_triage import updater
 
@@ -31,7 +31,23 @@ class _FakeResponse:
         return self._payload[start:end]
 
 
+@contextmanager
+def _urlopen_returning(response: _FakeResponse):
+    original = updater.urllib.request.urlopen
+    updater.urllib.request.urlopen = lambda *args, **kwargs: response
+    try:
+        yield
+    finally:
+        updater.urllib.request.urlopen = original
+
+
 class UpdaterTests(unittest.TestCase):
+    def test_default_update_feed_points_to_project_release_repo(self) -> None:
+        self.assertEqual(
+            "https://api.github.com/repos/tylermcm/ImageTriage/releases/latest",
+            updater.DEFAULT_UPDATE_FEED_URL,
+        )
+
     def test_check_for_update_uses_manifest_payload(self) -> None:
         payload = {
             "version": "1.2.0",
@@ -40,7 +56,7 @@ class UpdaterTests(unittest.TestCase):
             "sha256": "sha256:" + "a" * 64,
         }
 
-        with patch("image_triage.updater.urllib.request.urlopen", return_value=_FakeResponse(json.dumps(payload).encode("utf-8"))):
+        with _urlopen_returning(_FakeResponse(json.dumps(payload).encode("utf-8"))):
             result = updater.check_for_update(current_version="1.1.3", feed_url="https://example.test/update.json")
 
         self.assertTrue(result.update_available)
@@ -54,7 +70,7 @@ class UpdaterTests(unittest.TestCase):
             "msi_url": "https://example.test/ImageTriage-1.1.3.msi",
         }
 
-        with patch("image_triage.updater.urllib.request.urlopen", return_value=_FakeResponse(json.dumps(payload).encode("utf-8"))):
+        with _urlopen_returning(_FakeResponse(json.dumps(payload).encode("utf-8"))):
             result = updater.check_for_update(current_version="1.1.3", feed_url="https://example.test/update.json")
 
         self.assertFalse(result.update_available)
@@ -77,7 +93,7 @@ class UpdaterTests(unittest.TestCase):
             ],
         }
 
-        with patch("image_triage.updater.urllib.request.urlopen", return_value=_FakeResponse(json.dumps(payload).encode("utf-8"))):
+        with _urlopen_returning(_FakeResponse(json.dumps(payload).encode("utf-8"))):
             info = updater.fetch_update_info("https://api.github.com/repos/tylermcm/ImageTriage/releases/latest")
 
         self.assertEqual(info.version, "1.2.0")
@@ -100,10 +116,7 @@ class UpdaterTests(unittest.TestCase):
         )
         progress: list[tuple[int, int, str]] = []
 
-        with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "image_triage.updater.urllib.request.urlopen",
-            return_value=_FakeResponse(payload),
-        ):
+        with tempfile.TemporaryDirectory() as temp_dir, _urlopen_returning(_FakeResponse(payload)):
             path = updater.download_update_installer(
                 info,
                 destination_dir=temp_dir,
@@ -124,13 +137,26 @@ class UpdaterTests(unittest.TestCase):
             sha256="0" * 64,
         )
 
-        with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "image_triage.updater.urllib.request.urlopen",
-            return_value=_FakeResponse(b"not expected"),
-        ):
+        with tempfile.TemporaryDirectory() as temp_dir, _urlopen_returning(_FakeResponse(b"not expected")):
             with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
                 updater.download_update_installer(info, destination_dir=temp_dir)
             self.assertFalse((Path(temp_dir) / "ImageTriage-1.2.0.msi").exists())
+
+    def test_update_handoff_command_waits_installs_silently_and_restarts(self) -> None:
+        command = updater._build_update_handoff_command(
+            Path("C:/Users/Test User/Downloads/Image Triage 1.2.0.msi"),
+            Path("C:/Program Files/Image Triage/ImageTriage.exe"),
+            1234,
+        )
+
+        self.assertIn("Wait-Process -Id $imageTriagePid", command)
+        self.assertIn("/qn", command)
+        self.assertIn("/norestart", command)
+        self.assertIn("Start-Process -FilePath $app", command)
+        self.assertIn("Image Triage 1.2.0.msi", command)
+
+    def test_powershell_quote_escapes_single_quotes(self) -> None:
+        self.assertEqual("'C:/Bob''s App/ImageTriage.exe'", updater._powershell_quote("C:/Bob's App/ImageTriage.exe"))
 
 
 if __name__ == "__main__":
