@@ -3,6 +3,8 @@ name: Build And Release Windows MSI
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
