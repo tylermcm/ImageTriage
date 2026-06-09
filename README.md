@@ -100,9 +100,9 @@ Useful options:
 - `--install-dir PATH`: change the install target
 - `--no-desktop`: skip desktop entry creation
 
-GitHub Actions also builds an AppImage artifact on pull requests, pushes to `main`, and manual runs through [build-linux-appimage.yml](/C:/Users/tylle/OneDrive/Documents/Playground/.github/workflows/build-linux-appimage.yml).
+GitHub Actions also builds an AppImage artifact on pull requests, pushes to `main`, and manual runs through [build-linux-appimage.yml](/C:/Users/tylle/OneDrive/Documents/Playground/.github/workflows/build-linux-appimage.yml). Pushing a matching `v*` tag builds the same AppImage and uploads it to that GitHub Release.
 
-The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/tylle/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same integrated `AICullingPipeline` tree and the same Python-side AI dependencies.
+The Linux build and the Windows MSI now share the same AI runtime staging logic through [freeze_support.py](/Users/tylle/OneDrive/Documents/Playground/freeze_support.py), so both package types bundle the same integrated `AICullingPipeline` tree, helper launchers, and Python-side AI dependencies.
 
 The active CLI-Culler source lives in the in-repo [aiculler package](/Users/tylle/OneDrive/Documents/Playground/aiculler) and is the default AI culler implementation used by the app. CLIP/TOPIQ weights remain outside git; set `IMAGE_TRIAGE_AICULLER_MODEL_ROOT` to point at a local `models` directory when the defaults do not apply.
 
