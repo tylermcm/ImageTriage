@@ -36,6 +36,34 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(0, result.ai_embed_batch_size)
         dialog.deleteLater()
 
+    def test_result_settings_defaults_startup_update_checks_on(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+        )
+
+        result = dialog.result_settings()
+
+        self.assertTrue(result.check_updates_on_startup)
+        dialog.deleteLater()
+
+    def test_result_settings_returns_startup_update_check_choice(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+            check_updates_on_startup=False,
+        )
+        dialog.check_updates_on_startup_checkbox.setChecked(True)
+
+        result = dialog.result_settings()
+
+        self.assertTrue(result.check_updates_on_startup)
+        dialog.deleteLater()
+
     def test_settings_tooltip_wraps_long_lines(self) -> None:
         tooltip = _settings_tooltip(
             "Weight of the tag-penalty-aware base score vs. the trained adapter when blending the final ranking.",

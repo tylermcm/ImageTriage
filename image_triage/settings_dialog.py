@@ -77,6 +77,7 @@ class WorkflowSettingsResult:
     burst_stacks_enabled: bool = False
     catalog_cache_enabled: bool = True
     watch_current_folder: bool = True
+    check_updates_on_startup: bool = True
     ai_embed_batch_size: int = 0
     ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     ai_review_detail_progress_enabled: bool = False
@@ -144,6 +145,7 @@ class WorkflowSettingsDialog(QDialog):
         burst_stacks_enabled: bool = False,
         catalog_cache_enabled: bool = True,
         watch_current_folder: bool = True,
+        check_updates_on_startup: bool = True,
         ai_embed_batch_size: int = 0,
         ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT,
         ai_review_detail_progress_enabled: bool = False,
@@ -239,6 +241,12 @@ class WorkflowSettingsDialog(QDialog):
             "Where rejected or deleted images go when you delete from Image Triage."
         ))
 
+        self.check_updates_on_startup_checkbox = QCheckBox("Check for app updates on startup")
+        self.check_updates_on_startup_checkbox.setChecked(check_updates_on_startup)
+        self.check_updates_on_startup_checkbox.setToolTip(_settings_tooltip(
+            "Checks the configured GitHub release feed when Image Triage starts. If a newer MSI is available, the top-right download button lights up."
+        ))
+
         self.toolbar_style_combo = QComboBox()
         self.toolbar_style_combo.setMinimumWidth(180)
         self.toolbar_style_combo.addItem("Text", "text")
@@ -271,6 +279,7 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(general_layout, "Session", session_row)
         self._add_form_row(general_layout, "Accepted images", self.winner_mode_combo)
         self._add_form_row(general_layout, "Delete behavior", self.delete_mode_combo)
+        self._add_checkbox_row(general_layout, "Updates", self.check_updates_on_startup_checkbox)
         self.preset_status_label = QLabel("")
         self.preset_status_label.setObjectName("mutedText")
         self.preset_status_label.setStyleSheet("font-size: 11px;")
@@ -1103,6 +1112,7 @@ class WorkflowSettingsDialog(QDialog):
             burst_stacks_enabled=self.burst_stacks_checkbox.isChecked(),
             catalog_cache_enabled=self.catalog_cache_checkbox.isChecked(),
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
+            check_updates_on_startup=self.check_updates_on_startup_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
             ai_clip_model_variant=coerce_clip_model_variant(self.ai_clip_model_combo.currentData()),
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),

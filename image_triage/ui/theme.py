@@ -840,6 +840,32 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border-color: transparent;
             color: {theme.text_primary.css};
         }}
+        QWidget#menuCornerWidget {{
+            background-color: transparent;
+        }}
+        QToolButton#updateDownloadButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            color: {theme.text_muted.css};
+            margin: 1px 2px 1px 4px;
+            padding: 0px;
+        }}
+        QToolButton#updateDownloadButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#updateDownloadButton[updateAvailable="true"] {{
+            background-color: {theme.success_soft.css};
+            border-color: {theme.success.css};
+            color: {theme.success.css};
+        }}
+        QToolButton#updateDownloadButton[updateAvailable="true"]:hover {{
+            background-color: {theme.success_soft.css};
+            border-color: {theme.success.css};
+            color: {theme.success.css};
+        }}
         QLabel#zenHintOverlay {{
             background-color: {theme.badge_bg.css};
             border: 1px solid {theme.border.css};
@@ -938,13 +964,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
         }}
         QToolButton#pathNavButton {{
-            min-width: 28px;
-            max-width: 28px;
+            min-width: 38px;
+            max-width: 38px;
             min-height: 28px;
             max-height: 28px;
-            padding: 0;
-            font-size: 15px;
-            font-weight: 700;
+            margin: 0px 1px;
+            padding: 0px;
             color: {theme.text_secondary.css};
         }}
         QToolButton#pathNavButton:hover {{

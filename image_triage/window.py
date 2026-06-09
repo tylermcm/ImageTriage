@@ -28,7 +28,7 @@ from queue import Empty, SimpleQueue
 from textwrap import dedent
 
 from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSettings, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -291,7 +291,7 @@ from .updater import (
     check_for_update,
     current_app_version,
     download_update_installer,
-    launch_update_installer,
+    launch_update_installer_and_restart,
 )
 from .ui import (
     AdvancedFilterDialog,
@@ -2449,6 +2449,7 @@ class MainWindow(QMainWindow):
     DETAILS_SORT_ORDER_KEY = "view/details_sort_order"
     PREVIEW_PRELOAD_BATCH_SIZE_KEY = "preview/preload_batch_size"
     PERFORMANCE_LOGGING_KEY = "diagnostics/performance_logging"
+    CHECK_UPDATES_ON_STARTUP_KEY = "updates/check_on_startup"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
     TOOLBAR_STYLE_KEY = "view/toolbar_style"
     FOLDER_VIEW_STATE_KEY = "view/folder_state"
@@ -2800,6 +2801,9 @@ class MainWindow(QMainWindow):
         self._active_update_check_task: AppUpdateCheckTask | None = None
         self._active_update_download_task: AppUpdateDownloadTask | None = None
         self._update_progress_dialog: QProgressDialog | None = None
+        self._pending_update_result: UpdateCheckResult | None = None
+        self._update_check_silent = False
+        self._update_installing = False
         self._active_review_intelligence_task: BuildReviewIntelligenceTask | None = None
         self._active_scope_enrichment_task: ScopeEnrichmentTask | None = None
         self._scope_enrichment_token = 0
@@ -2949,6 +2953,7 @@ class MainWindow(QMainWindow):
             self._settings.value(self.DETAILS_ROW_DENSITY_KEY, "comfortable", str)
         )
         self._performance_logging_enabled = self._settings.value(self.PERFORMANCE_LOGGING_KEY, False, bool)
+        self._check_updates_on_startup = self._settings.value(self.CHECK_UPDATES_ON_STARTUP_KEY, True, bool)
         perf_logger().set_enabled(self._performance_logging_enabled, reason="startup")
         self._syncing_browser_selection = False
         self._zen_mode_enabled = False
@@ -3451,7 +3456,16 @@ class MainWindow(QMainWindow):
         self.zen_menu_pin_button.setChecked(self._zen_menu_pinned)
         self.zen_menu_pin_button.toggled.connect(self._handle_zen_menu_pin_toggled)
         self.zen_menu_pin_button.hide()
-        self.menuBar().setCornerWidget(self.zen_menu_pin_button, Qt.Corner.TopRightCorner)
+        self.update_download_button = self._build_update_download_button()
+        self.menu_corner_widget = QWidget()
+        self.menu_corner_widget.setObjectName("menuCornerWidget")
+        menu_corner_layout = QHBoxLayout(self.menu_corner_widget)
+        menu_corner_layout.setContentsMargins(4, 0, 8, 0)
+        menu_corner_layout.setSpacing(2)
+        menu_corner_layout.addWidget(self.update_download_button)
+        menu_corner_layout.addWidget(self.zen_menu_pin_button)
+        self.menuBar().setCornerWidget(self.menu_corner_widget, Qt.Corner.TopRightCorner)
+        self._refresh_update_button_state()
         self._zen_menu_animation = QPropertyAnimation(self.menuBar(), b"maximumHeight", self)
         self._zen_menu_animation.setDuration(145)
         self._zen_menu_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -3589,6 +3603,8 @@ class MainWindow(QMainWindow):
         self._handle_mode_tab_changed(self.mode_tabs.currentIndex())
         self._update_action_states()
         QTimer.singleShot(0, self._finish_startup_restore)
+        if self._check_updates_on_startup:
+            QTimer.singleShot(2500, self._check_for_updates_on_startup)
 
     def _build_section_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -3610,6 +3626,74 @@ class MainWindow(QMainWindow):
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         button.setMenu(menu)
         return button
+
+    def _build_update_download_button(self) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("updateDownloadButton")
+        button.setText("")
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setIconSize(QSize(28, 28))
+        button.setFixedSize(48, 28)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.CursorShape.ArrowCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(self._handle_update_button_clicked)
+        return button
+
+    def _update_download_icon(self, color: QColor) -> QIcon:
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(color, 5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawLine(32, 10, 32, 38)
+        painter.drawLine(20, 28, 32, 40)
+        painter.drawLine(44, 28, 32, 40)
+        painter.drawLine(17, 50, 47, 50)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _refresh_update_button_state(self) -> None:
+        button = getattr(self, "update_download_button", None)
+        if button is None:
+            return
+        checking = self._active_update_check_task is not None
+        downloading = self._active_update_download_task is not None
+        installing = bool(getattr(self, "_update_installing", False))
+        update_available = bool(
+            self._pending_update_result is not None and self._pending_update_result.update_available
+        )
+        theme = self._theme
+        color = QColor(88, 196, 132) if update_available else QColor(129, 135, 146)
+        if theme is not None:
+            color = theme.success.qcolor() if update_available else theme.text_muted.qcolor()
+        if checking:
+            tooltip = "Checking for updates..."
+        elif downloading:
+            tooltip = "Downloading update..."
+        elif installing:
+            tooltip = "Installing update..."
+        elif update_available and self._pending_update_result is not None:
+            tooltip = f"Image Triage {self._pending_update_result.latest.version} is available"
+        else:
+            tooltip = "Check for updates"
+        button.setEnabled(not checking and not downloading and not installing)
+        button.setToolTip(tooltip)
+        button.setStatusTip(tooltip)
+        button.setProperty("updateAvailable", update_available)
+        button.setIcon(self._update_download_icon(color))
+        button.style().unpolish(button)
+        button.style().polish(button)
+
+    def _handle_update_button_clicked(self) -> None:
+        result = self._pending_update_result
+        if result is not None and result.update_available:
+            self._prompt_for_update_download(result)
+            return
+        self._check_for_updates(silent=False)
 
     def _build_review_toolbar_menu(self) -> QMenu:
         menu = QMenu(self)
@@ -3678,15 +3762,47 @@ class MainWindow(QMainWindow):
     def _build_directory_nav_button(self, text: str, tooltip: str, *, mode: str) -> QToolButton:
         button = QToolButton()
         button.setObjectName("pathNavButton")
-        button.setText(text)
+        button.setText("")
         button.setToolTip(tooltip)
+        button.setStatusTip(tooltip)
         button.setAutoRaise(True)
         button.setCursor(Qt.CursorShape.ArrowCursor)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setFixedSize(28, 28)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setFixedSize(38, 28)
+        button.setIconSize(QSize(24, 24))
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        color = self._theme.text_muted.qcolor() if self._theme is not None else QColor(129, 135, 146)
+        direction = "up" if text == "\u2191" else "down"
+        button.setIcon(self._directory_nav_icon(direction, color))
         self._configure_toolbar_context_target(button, mode)
         return button
+
+    def _directory_nav_icon(self, direction: str, color: QColor) -> QIcon:
+        pixmap = QPixmap(56, 56)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(color, 4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        if direction == "up":
+            painter.drawLine(28, 12, 28, 42)
+            painter.drawLine(17, 23, 28, 12)
+            painter.drawLine(39, 23, 28, 12)
+        else:
+            painter.drawLine(28, 14, 28, 44)
+            painter.drawLine(17, 33, 28, 44)
+            painter.drawLine(39, 33, 28, 44)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _refresh_directory_nav_button_icons(self) -> None:
+        color = self._theme.text_muted.qcolor() if self._theme is not None else QColor(129, 135, 146)
+        for button in getattr(self, "_directory_up_buttons", ()):
+            button.setIcon(self._directory_nav_icon("up", color))
+        for button in getattr(self, "_directory_down_buttons", ()):
+            button.setIcon(self._directory_nav_icon("down", color))
 
     def _build_path_control(self, combo: QComboBox, *, mode: str) -> QWidget:
         wrapper = QWidget()
@@ -5617,6 +5733,8 @@ class MainWindow(QMainWindow):
         app.setStyleSheet(build_app_stylesheet(self._theme))
         self._write_child_sync_state()
         self._update_dynamic_action_icons()
+        self._refresh_update_button_state()
+        self._refresh_directory_nav_button_icons()
         if self.workspace_docks is not None:
             self.workspace_docks.apply_theme(self._theme)
         self.grid.apply_theme(self._theme)
@@ -9342,8 +9460,11 @@ class MainWindow(QMainWindow):
         self.actions.delete_filter_preset.setEnabled(self._matching_saved_filter_preset() is not None)
         self.actions.clear_filters.setEnabled(self._filter_query.has_active_filters)
         self.actions.check_for_updates.setEnabled(
-            self._active_update_check_task is None and self._active_update_download_task is None
+            self._active_update_check_task is None
+            and self._active_update_download_task is None
+            and not self._update_installing
         )
+        self._refresh_update_button_state()
         self._refresh_tool_mode_ui()
         self._refresh_directory_navigation_buttons()
         if self._toolbar_edit_mode:
@@ -17866,35 +17987,60 @@ class MainWindow(QMainWindow):
             ),
         )
 
-    def _check_for_updates(self) -> None:
+    def _check_for_updates_on_startup(self) -> None:
+        if not self._check_updates_on_startup:
+            return
+        self._check_for_updates(silent=True)
+
+    def _check_for_updates(self, checked: bool = False, *, silent: bool = False) -> None:
         if self._active_update_check_task is not None or self._active_update_download_task is not None:
             return
+        self._update_check_silent = bool(silent)
         if self.actions is not None:
             self.actions.check_for_updates.setEnabled(False)
-        self.statusBar().showMessage("Checking for updates...")
+        if not silent:
+            self.statusBar().showMessage("Checking for updates...")
         task = AppUpdateCheckTask(current_version=current_app_version())
         self._active_update_check_task = task
+        self._refresh_update_button_state()
         task.signals.finished.connect(self._handle_update_check_finished)
         task.signals.failed.connect(self._handle_update_check_failed)
         self._app_update_pool.start(task)
 
     def _handle_update_check_finished(self, raw_result: object) -> None:
+        silent = self._update_check_silent
+        self._update_check_silent = False
         self._active_update_check_task = None
         self._update_action_states()
         if not isinstance(raw_result, UpdateCheckResult):
-            QMessageBox.warning(self, "Check For Updates", "The update check returned an unexpected result.")
+            if not silent:
+                QMessageBox.warning(self, "Check For Updates", "The update check returned an unexpected result.")
             self.statusBar().showMessage("Update check failed")
             return
         result = raw_result
         latest = result.latest
         if not result.update_available:
-            QMessageBox.information(
-                self,
-                "Check For Updates",
-                f"Image Triage is up to date.\n\nInstalled version: {result.current_version}",
-            )
-            self.statusBar().showMessage("Image Triage is up to date")
+            self._pending_update_result = None
+            self._refresh_update_button_state()
+            if not silent:
+                QMessageBox.information(
+                    self,
+                    "Check For Updates",
+                    f"Image Triage is up to date.\n\nInstalled version: {result.current_version}",
+                )
+                self.statusBar().showMessage("Image Triage is up to date")
             return
+
+        self._pending_update_result = result
+        self._refresh_update_button_state()
+        if silent:
+            self.statusBar().showMessage(f"Update available: Image Triage {latest.version}")
+            return
+
+        self._prompt_for_update_download(result)
+
+    def _prompt_for_update_download(self, result: UpdateCheckResult) -> None:
+        latest = result.latest
 
         details = [
             f"Image Triage {latest.version} is available.",
@@ -17903,7 +18049,13 @@ class MainWindow(QMainWindow):
         ]
         if latest.release_notes_url:
             details.extend(["", f"Release notes: {latest.release_notes_url}"])
-        details.extend(["", "Download the new MSI installer now?"])
+        details.extend(
+            [
+                "",
+                "Download and install this update now?",
+                "Image Triage will close and restart after the silent MSI install finishes.",
+            ]
+        )
         choice = QMessageBox.question(
             self,
             "Update Available",
@@ -17917,10 +18069,13 @@ class MainWindow(QMainWindow):
         self._download_update_installer(latest)
 
     def _handle_update_check_failed(self, message: str) -> None:
+        silent = self._update_check_silent
+        self._update_check_silent = False
         self._active_update_check_task = None
         self._update_action_states()
-        QMessageBox.warning(self, "Check For Updates", message)
-        self.statusBar().showMessage("Update check failed")
+        if not silent:
+            QMessageBox.warning(self, "Check For Updates", message)
+            self.statusBar().showMessage("Update check failed")
 
     def _download_update_installer(self, update: UpdateInfo) -> None:
         if self._active_update_download_task is not None:
@@ -17929,6 +18084,7 @@ class MainWindow(QMainWindow):
             self.actions.check_for_updates.setEnabled(False)
         task = AppUpdateDownloadTask(update=update)
         self._active_update_download_task = task
+        self._refresh_update_button_state()
         task.signals.started.connect(self._handle_update_download_started)
         task.signals.progress.connect(self._handle_update_download_progress)
         task.signals.finished.connect(self._handle_update_download_finished)
@@ -17960,29 +18116,17 @@ class MainWindow(QMainWindow):
         self._active_update_download_task = None
         self._close_update_progress_dialog()
         self._update_action_states()
-        choice = QMessageBox.question(
-            self,
-            "Install Update",
-            "\n".join(
-                [
-                    "The update installer has been downloaded.",
-                    "",
-                    "Launch the MSI installer now? Image Triage will close after the installer starts.",
-                ]
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if choice != QMessageBox.StandardButton.Yes:
-            self.statusBar().showMessage(f"Update downloaded: {installer_path}")
-            return
         try:
-            launch_update_installer(installer_path)
+            self._update_installing = True
+            self._refresh_update_button_state()
+            launch_update_installer_and_restart(installer_path)
         except Exception as exc:
+            self._update_installing = False
+            self._refresh_update_button_state()
             QMessageBox.warning(self, "Install Update", str(exc))
             self.statusBar().showMessage("Could not launch update installer")
             return
-        self.statusBar().showMessage("Update installer launched")
+        self.statusBar().showMessage("Installing update; Image Triage will restart when finished")
         app = QApplication.instance()
         if app is not None:
             QTimer.singleShot(300, app.quit)
@@ -18044,6 +18188,7 @@ class MainWindow(QMainWindow):
             burst_stacks_enabled=self._burst_stacks_enabled,
             catalog_cache_enabled=self._catalog_cache_enabled,
             watch_current_folder=self._watch_current_folder_enabled,
+            check_updates_on_startup=self._check_updates_on_startup,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
             ai_clip_model_variant=self._ai_clip_model_variant,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
@@ -18088,6 +18233,7 @@ class MainWindow(QMainWindow):
         burst_stacks_changed = result.burst_stacks_enabled != self._burst_stacks_enabled
         catalog_changed = result.catalog_cache_enabled != self._catalog_cache_enabled
         watch_changed = result.watch_current_folder != self._watch_current_folder_enabled
+        update_check_changed = result.check_updates_on_startup != self._check_updates_on_startup
         ai_batch_changed = result.ai_embed_batch_size != self._ai_embed_batch_size_setting
         ai_clip_model_changed = coerce_clip_model_variant(result.ai_clip_model_variant) != self._ai_clip_model_variant
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
@@ -18107,6 +18253,7 @@ class MainWindow(QMainWindow):
         self._burst_stacks_enabled = result.burst_stacks_enabled
         self._catalog_cache_enabled = result.catalog_cache_enabled
         self._watch_current_folder_enabled = result.watch_current_folder
+        self._check_updates_on_startup = result.check_updates_on_startup
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
         self._ai_clip_model_variant = coerce_clip_model_variant(result.ai_clip_model_variant)
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
@@ -18142,6 +18289,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.BURST_STACKS_KEY, self._burst_stacks_enabled)
         self._settings.setValue(self.CATALOG_CACHE_ENABLED_KEY, self._catalog_cache_enabled)
         self._settings.setValue(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, self._watch_current_folder_enabled)
+        self._settings.setValue(self.CHECK_UPDATES_ON_STARTUP_KEY, self._check_updates_on_startup)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
         self._settings.setValue(self.AI_CLIP_MODEL_VARIANT_KEY, self._ai_clip_model_variant)
         self._settings.setValue(self.AI_DISPUTE_WEIGHT_KEY, self._ai_dispute_weight_setting)
@@ -18228,6 +18376,9 @@ class MainWindow(QMainWindow):
         elif watch_changed:
             state = "enabled" if self._watch_current_folder_enabled else "disabled"
             self.statusBar().showMessage(f"Current-folder watch {state}")
+        elif update_check_changed:
+            state = "enabled" if self._check_updates_on_startup else "disabled"
+            self.statusBar().showMessage(f"Startup update checks {state}")
         elif ai_batch_changed:
             self.statusBar().showMessage(f"AI embedding batch size set to {self._ai_embed_batch_size_label()}")
         elif ai_clip_model_changed:

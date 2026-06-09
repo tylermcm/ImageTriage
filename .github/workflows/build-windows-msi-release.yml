@@ -1,0 +1,94 @@
+name: Build And Release Windows MSI
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-msi:
+    name: Build Windows MSI
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install cx_Freeze
+          python -m pip install -e .
+
+      - name: Verify release tag matches pyproject version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: python
+        run: |
+          import os
+          import tomllib
+
+          tag_version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          with open("pyproject.toml", "rb") as handle:
+              project_version = tomllib.load(handle)["project"]["version"]
+          if tag_version != project_version:
+              raise SystemExit(
+                  f"Tag v{tag_version} does not match pyproject version {project_version}."
+              )
+
+      - name: Verify bundled AI runtime source
+        shell: pwsh
+        run: |
+          $requiredPaths = @(
+            "AICullingPipeline/app",
+            "AICullingPipeline/configs",
+            "AICullingPipeline/scripts"
+          )
+          foreach ($path in $requiredPaths) {
+            if (-not (Test-Path $path)) {
+              throw "Missing required MSI build input: $path"
+            }
+          }
+
+      - name: Run packaging smoke tests
+        run: |
+          python -m unittest tests.test_freeze_support tests.test_version tests.test_updater
+
+      - name: Compile packaging scripts
+        run: |
+          python -m compileall freeze_support.py setup_msi.py packaging/ai_python_runner.py packaging/ai_runtime_installer.py packaging/image_triage_cleanup.py
+
+      - name: Build MSI
+        run: python setup_msi.py bdist_msi
+
+      - name: List build output
+        shell: pwsh
+        run: Get-ChildItem dist
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-triage-msi-${{ github.sha }}
+          path: dist/*.msi
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create release and upload MSI
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME dist/*.msi `
+            --title "Image Triage $env:GITHUB_REF_NAME" `
+            --notes "Automated Windows MSI release for $env:GITHUB_REF_NAME"
