@@ -67,8 +67,8 @@ class WorkflowSettingsResult:
     session_id: str
     winner_mode: WinnerMode
     delete_mode: DeleteMode
-    toolbar_style: str = "text"
-    compact_cards_enabled: bool = False
+    toolbar_style: str = "icons"
+    compact_cards_enabled: bool = True
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
@@ -135,8 +135,8 @@ class WorkflowSettingsDialog(QDialog):
         current_session: str,
         winner_mode: WinnerMode,
         delete_mode: DeleteMode,
-        toolbar_style: str = "text",
-        compact_cards_enabled: bool = False,
+        toolbar_style: str = "icons",
+        compact_cards_enabled: bool = True,
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
@@ -249,9 +249,9 @@ class WorkflowSettingsDialog(QDialog):
 
         self.toolbar_style_combo = QComboBox()
         self.toolbar_style_combo.setMinimumWidth(180)
-        self.toolbar_style_combo.addItem("Text", "text")
         self.toolbar_style_combo.addItem("Icons", "icons")
         self.toolbar_style_combo.addItem("Large icons", "large_icons")
+        self.toolbar_style_combo.addItem("Text", "text")
         toolbar_index = self.toolbar_style_combo.findData(toolbar_style)
         self.toolbar_style_combo.setCurrentIndex(max(0, toolbar_index))
         self.toolbar_style_combo.setToolTip(_settings_tooltip(
