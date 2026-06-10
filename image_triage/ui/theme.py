@@ -205,7 +205,7 @@ def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
         return _midnight_theme()
     if mode == AppearanceMode.LIGHT:
         return _light_theme()
-    return _dark_theme() if _system_prefers_dark(app) else _light_theme()
+    return _dark_theme()
 
 
 def default_theme() -> ThemePalette:
@@ -506,6 +506,122 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
         }}
+        QWidget#generatedLeftTaskRail {{
+            background-color: {theme.chrome_bg.css};
+            border-right: 1px solid {theme.border_muted.css};
+        }}
+        QToolButton#generatedLeftRailButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            padding: 0px;
+        }}
+        QToolButton#generatedLeftRailButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+        }}
+        QWidget#libraryStack {{
+            background-color: transparent;
+            border: none;
+            padding: 8px;
+        }}
+        QFrame#leftPreviewPanel, QFrame#leftRatingPanel {{
+            background-color: {theme.panel_alt_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 8px;
+        }}
+        QLabel#leftPreviewTitle {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 750;
+        }}
+        QLabel#leftPreviewMeta {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+        }}
+        QLabel#leftPreviewImage {{
+            background-color: {theme.image_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 6px;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 650;
+            padding: 2px;
+        }}
+        QToolButton#leftPreviewActionButton, QToolButton#leftRatingClearButton {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 6px;
+            color: {theme.text_secondary.css};
+            min-width: 24px;
+            min-height: 22px;
+            padding: 0px;
+        }}
+        QToolButton#leftPreviewActionButton:hover, QToolButton#leftRatingClearButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#leftRatingStar {{
+            background-color: transparent;
+            border: none;
+            color: {theme.text_disabled.css};
+            font-family: "Segoe UI Symbol", "Segoe UI";
+            font-size: 17px;
+            min-width: 22px;
+            min-height: 22px;
+            padding: 0px;
+        }}
+        QToolButton#leftRatingStar:hover {{
+            color: {theme.warning.css};
+            background-color: transparent;
+            border: none;
+        }}
+        QToolButton#leftRatingStar:checked {{
+            color: {theme.warning.css};
+            background-color: transparent;
+            border: none;
+        }}
+        QLabel#leftFilterLabel {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 650;
+        }}
+        QLabel#leftFilterMarker_accepted {{
+            color: {theme.success.css};
+        }}
+        QLabel#leftFilterMarker_rejected {{
+            color: {theme.danger.css};
+        }}
+        QLabel#leftFilterMarker_unreviewed {{
+            color: {theme.text_muted.css};
+        }}
+        QToolButton#leftColorSwatch_red {{
+            background-color: rgb(239, 78, 78);
+        }}
+        QToolButton#leftColorSwatch_amber {{
+            background-color: rgb(238, 167, 38);
+        }}
+        QToolButton#leftColorSwatch_lime {{
+            background-color: rgb(157, 220, 48);
+        }}
+        QToolButton#leftColorSwatch_green {{
+            background-color: rgb(35, 210, 122);
+        }}
+        QToolButton#leftColorSwatch_blue {{
+            background-color: rgb(82, 125, 255);
+        }}
+        QToolButton#leftColorSwatch_purple {{
+            background-color: rgb(163, 80, 232);
+        }}
+        QToolButton#leftColorSwatch_red, QToolButton#leftColorSwatch_amber,
+        QToolButton#leftColorSwatch_lime, QToolButton#leftColorSwatch_green,
+        QToolButton#leftColorSwatch_blue, QToolButton#leftColorSwatch_purple {{
+            border: 1px solid {theme.border.css};
+            border-radius: 3px;
+            padding: 0px;
+        }}
         QScrollArea#inspectorScrollArea, QWidget#inspectorBody {{
             background-color: transparent;
             border: none;
@@ -581,14 +697,20 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QTreeView#folderTree, QListWidget#favoritesList {{
             background-color: transparent;
             border: none;
+            show-decoration-selected: 1;
         }}
         QTreeView::item, QListWidget::item {{
-            padding: 4px 6px;
-            border-radius: 8px;
+            min-height: 22px;
+            padding: 2px 7px;
+            border-radius: 5px;
+            margin: 1px 0px;
         }}
         QTreeView::item:selected, QListWidget::item:selected {{
-            background-color: {theme.selection_fill.css};
+            background-color: {theme.input_hover_bg.css};
             color: {theme.text_primary.css};
+        }}
+        QTreeView::branch {{
+            background: transparent;
         }}
         QTableView#detailsTableView {{
             background-color: {theme.chrome_bg.css};
@@ -794,9 +916,9 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLabel#paneTitle {{
             color: {theme.text_primary.css};
             font-family: "Segoe UI Variable Display", "Segoe UI";
-            font-size: 18px;
-            font-weight: 700;
-            letter-spacing: 0.4px;
+            font-size: 13px;
+            font-weight: 750;
+            letter-spacing: 0px;
             padding: 0 1px 2px 1px;
         }}
         QLabel#panelHeaderSubtitle {{
@@ -1109,6 +1231,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#workspaceFiltersButton, QToolButton#workspacePresetsButton {{
             min-height: 28px;
+            border-radius: 7px;
             padding: 4px 10px;
         }}
         QToolButton#workspaceIconButton {{
@@ -1165,6 +1288,43 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QStatusBar::item {{
             border: none;
+        }}
+        QScrollBar:vertical {{
+            background-color: {theme.chrome_bg.css};
+            border: none;
+            width: 11px;
+            margin: 0px;
+        }}
+        QScrollBar::handle:vertical {{
+            background-color: {theme.border.css};
+            border-radius: 5px;
+            min-height: 36px;
+            margin: 2px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background-color: {theme.text_muted.css};
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0px;
+            border: none;
+            background: transparent;
+        }}
+        QScrollBar:horizontal {{
+            background-color: {theme.chrome_bg.css};
+            border: none;
+            height: 11px;
+            margin: 0px;
+        }}
+        QScrollBar::handle:horizontal {{
+            background-color: {theme.border.css};
+            border-radius: 5px;
+            min-width: 36px;
+            margin: 2px;
+        }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+            width: 0px;
+            border: none;
+            background: transparent;
         }}
         QTreeView#folderTree QHeaderView::section {{
             background-color: transparent;
