@@ -155,6 +155,8 @@ def _create_action(
     action = QAction(text, window)
     action.setProperty("imageTriageBaseText", text)
     action.setAutoRepeat(auto_repeat)
+    if icon is not None:
+        action.setIcon(window.style().standardIcon(icon))
     if shortcut is not None:
         action.setShortcut(shortcut)
     shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)

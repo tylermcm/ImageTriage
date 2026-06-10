@@ -201,8 +201,8 @@ class WorkspacePanelHeader(QWidget):
         self.setCursor(Qt.CursorShape.SizeAllCursor)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 10, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(10, 7, 8, 7)
+        layout.setSpacing(2)
 
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)

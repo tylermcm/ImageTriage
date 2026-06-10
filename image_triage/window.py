@@ -2719,7 +2719,7 @@ class MainWindow(QMainWindow):
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
         self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
         self._workspace_toolbar_overflow_update_pending: set[str] = set()
-        self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.AUTO.value, str))
+        self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.DARK.value, str))
         self._theme = None
         self._child_sync_state_path = self._prepare_child_sync_state_path()
         self._child_processes: dict[int, ChildAppProcess] = {}
@@ -3139,6 +3139,10 @@ class MainWindow(QMainWindow):
         self.folder_tree.setRootIndex(QModelIndex())
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.header().hide()
+        self.folder_tree.setAnimated(True)
+        self.folder_tree.setIndentation(16)
+        self.folder_tree.setIconSize(QSize(18, 18))
+        self.folder_tree.setUniformRowHeights(True)
         for column in range(1, self.folder_model.columnCount()):
             self.folder_tree.hideColumn(column)
         self.folder_tree.clicked.connect(self._handle_tree_selection)
@@ -3178,17 +3182,45 @@ class MainWindow(QMainWindow):
         library_help_button.clicked.connect(self._show_library_help)
         library_header_layout.addWidget(library_help_button, 0)
 
+        self.left_preview_image = QLabel()
+        self.left_preview_image.setObjectName("leftPreviewImage")
+        self.left_preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.left_preview_image.setMinimumHeight(132)
+        self.left_preview_image.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.left_preview_image.setText("No image selected")
+        self.left_preview_title = QLabel("Preview")
+        self.left_preview_title.setObjectName("leftPreviewTitle")
+        self.left_preview_title.setWordWrap(False)
+        self.left_preview_meta = QLabel("Select a photo")
+        self.left_preview_meta.setObjectName("leftPreviewMeta")
+        self.left_preview_meta.setWordWrap(True)
+        self.left_preview_panel = self._build_generated_left_preview_panel()
+        self.left_rating_buttons: list[QToolButton] = []
+        self.left_color_buttons: list[QToolButton] = []
+        self.left_rating_panel = self._build_generated_rating_panel()
+        self.left_task_rail = self._build_generated_left_task_rail()
+
+        library_stack = QWidget()
+        library_stack.setObjectName("libraryStack")
+        library_stack_layout = QVBoxLayout(library_stack)
+        library_stack_layout.setContentsMargins(0, 0, 0, 0)
+        library_stack_layout.setSpacing(8)
+        library_stack_layout.addWidget(self.favorites_label)
+        library_stack_layout.addWidget(self.favorites_list)
+        library_stack_layout.addWidget(self.favorites_divider)
+        library_stack_layout.addWidget(library_header)
+        library_stack_layout.addWidget(self.folder_tree, 1)
+        library_stack_layout.addWidget(self.left_preview_panel)
+        library_stack_layout.addWidget(self.left_rating_panel)
+
         self.left_panel = QWidget()
         self.left_panel.setObjectName("libraryPanelContent")
-        self.left_panel.setMinimumWidth(280)
-        left_layout = QVBoxLayout(self.left_panel)
-        left_layout.setContentsMargins(10, 10, 10, 10)
-        left_layout.setSpacing(10)
-        left_layout.addWidget(self.favorites_label)
-        left_layout.addWidget(self.favorites_list)
-        left_layout.addWidget(self.favorites_divider)
-        left_layout.addWidget(library_header)
-        left_layout.addWidget(self.folder_tree, 1)
+        self.left_panel.setMinimumWidth(320)
+        left_layout = QHBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        left_layout.addWidget(self.left_task_rail, 0)
+        left_layout.addWidget(library_stack, 1)
         self._refresh_favorites_panel()
 
         self._directory_up_buttons: list[QToolButton] = []
@@ -3926,6 +3958,183 @@ class MainWindow(QMainWindow):
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setFixedSize(24, 24)
         return button
+
+    def _build_generated_left_task_rail(self) -> QWidget:
+        rail = QWidget()
+        rail.setObjectName("generatedLeftTaskRail")
+        rail.setFixedWidth(42)
+        layout = QVBoxLayout(rail)
+        layout.setContentsMargins(6, 8, 6, 8)
+        layout.setSpacing(8)
+        specs = (
+            ("E80F", "Library"),
+            ("E721", "Search"),
+            ("E71C", "Filters"),
+            ("E8EF", "Collections"),
+            ("E9D2", "AI Review"),
+        )
+        for glyph, tooltip in specs:
+            button = QToolButton(rail)
+            button.setObjectName("generatedLeftRailButton")
+            button.setIcon(self._fluent_toolbar_icon(glyph))
+            button.setIconSize(QSize(20, 20))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            button.setToolTip(tooltip)
+            button.setAutoRaise(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFixedSize(30, 30)
+            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch(1)
+        for glyph, tooltip in (("E713", "Settings"), ("E946", "Help")):
+            button = QToolButton(rail)
+            button.setObjectName("generatedLeftRailButton")
+            button.setIcon(self._fluent_toolbar_icon(glyph))
+            button.setIconSize(QSize(18, 18))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            button.setToolTip(tooltip)
+            button.setAutoRaise(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFixedSize(30, 30)
+            if tooltip == "Settings":
+                button.clicked.connect(lambda _checked=False: self._show_settings())
+            else:
+                button.clicked.connect(lambda _checked=False: self._show_library_help())
+            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+        return rail
+
+    def _build_generated_left_preview_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("leftPreviewPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        header.addWidget(self.left_preview_title, 1)
+        preview_button = QToolButton(panel)
+        preview_button.setObjectName("leftPreviewActionButton")
+        preview_button.setIcon(self._fluent_toolbar_icon("E8A7"))
+        preview_button.setIconSize(QSize(17, 17))
+        preview_button.setToolTip("Open preview")
+        preview_button.clicked.connect(lambda _checked=False: self.actions.open_preview.trigger() if self.actions else None)
+        header.addWidget(preview_button, 0)
+        layout.addLayout(header)
+        layout.addWidget(self.left_preview_image)
+        layout.addWidget(self.left_preview_meta)
+        return panel
+
+    def _build_generated_rating_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("leftRatingPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        rating_header = QHBoxLayout()
+        rating_header.setContentsMargins(0, 0, 0, 0)
+        rating_header.setSpacing(6)
+        title = QLabel("Rating")
+        title.setObjectName("leftPreviewTitle")
+        rating_header.addWidget(title, 1)
+        clear_button = QToolButton(panel)
+        clear_button.setObjectName("leftRatingClearButton")
+        clear_button.setText("0")
+        clear_button.setToolTip("Clear rating")
+        clear_button.clicked.connect(lambda _checked=False: self._rate_current_from_left_panel(0))
+        rating_header.addWidget(clear_button, 0)
+        layout.addLayout(rating_header)
+
+        star_row = QHBoxLayout()
+        star_row.setContentsMargins(0, 0, 0, 0)
+        star_row.setSpacing(4)
+        for rating in range(1, 6):
+            button = QToolButton(panel)
+            button.setObjectName("leftRatingStar")
+            button.setText("\u2605")
+            button.setToolTip(f"Rate {rating} star{'s' if rating != 1 else ''}")
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda _checked=False, value=rating: self._rate_current_from_left_panel(value))
+            self.left_rating_buttons.append(button)
+            star_row.addWidget(button)
+        star_row.addStretch(1)
+        layout.addLayout(star_row)
+
+        color_row = QHBoxLayout()
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(8)
+        for name in ("red", "amber", "lime", "green", "blue", "purple"):
+            swatch = QToolButton(panel)
+            swatch.setObjectName(f"leftColorSwatch_{name}")
+            swatch.setToolTip(f"{name.title()} label")
+            swatch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            swatch.setFixedSize(16, 16)
+            self.left_color_buttons.append(swatch)
+            color_row.addWidget(swatch)
+        color_row.addStretch(1)
+        layout.addLayout(color_row)
+
+        filter_rows = QGridLayout()
+        filter_rows.setContentsMargins(0, 4, 0, 0)
+        filter_rows.setHorizontalSpacing(8)
+        filter_rows.setVerticalSpacing(5)
+        for row, (label, glyph) in enumerate((("Accepted", "\u25a0"), ("Rejected", "\u25a0"), ("Unreviewed", "\u25a1"))):
+            marker = QLabel(glyph)
+            marker.setObjectName(f"leftFilterMarker_{label.casefold()}")
+            text = QLabel(label)
+            text.setObjectName("leftFilterLabel")
+            filter_rows.addWidget(marker, row, 0)
+            filter_rows.addWidget(text, row, 1)
+        filter_rows.setColumnStretch(1, 1)
+        layout.addLayout(filter_rows)
+        return panel
+
+    def _rate_current_from_left_panel(self, rating: int) -> None:
+        index = self.grid.current_index()
+        if index < 0:
+            return
+        self._rate_record(index, max(0, min(5, int(rating))))
+        self._refresh_generated_left_context(index)
+
+    def _refresh_generated_left_context(self, index: int | None = None) -> None:
+        if not hasattr(self, "left_preview_image"):
+            return
+        if index is None:
+            index = self.grid.current_index()
+        record = self._record_at(index)
+        if record is None:
+            self.left_preview_title.setText("Preview")
+            self.left_preview_meta.setText("Select a photo")
+            self.left_preview_image.setPixmap(QPixmap())
+            self.left_preview_image.setText("No image selected")
+            self._sync_left_rating_buttons(0, enabled=False)
+            return
+
+        annotation = self._annotations.get(record.path, SessionAnnotation())
+        self._sync_left_rating_buttons(annotation.rating, enabled=not record.is_folder)
+        self.left_preview_title.setText(record.name)
+        suffix = suffix_for_path(record.path).upper().lstrip(".") or ("Folder" if record.is_folder else "File")
+        selected = self.grid.selected_count()
+        self.left_preview_meta.setText(f"{suffix} · {selected} selected")
+        thumbnail = self.grid.thumbnail_for(index)
+        if thumbnail is None or thumbnail.isNull() or record.is_folder:
+            self.left_preview_image.setPixmap(QPixmap())
+            self.left_preview_image.setText("Preview loading" if not record.is_folder else "Folder")
+            return
+        pixmap = QPixmap.fromImage(thumbnail)
+        target = self.left_preview_image.size().boundedTo(QSize(280, 160))
+        if target.width() < 20 or target.height() < 20:
+            target = QSize(260, 140)
+        self.left_preview_image.setText("")
+        self.left_preview_image.setPixmap(
+            pixmap.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+        )
+
+    def _sync_left_rating_buttons(self, rating: int, *, enabled: bool) -> None:
+        for index, button in enumerate(getattr(self, "left_rating_buttons", ()), start=1):
+            button.setEnabled(enabled)
+            button.setChecked(enabled and index <= int(rating or 0))
 
     def _build_workspace_toolbar_overflow_button(self, mode: str) -> QToolButton:
         menu = QMenu(self)
@@ -14433,6 +14642,7 @@ class MainWindow(QMainWindow):
             logger.duration("window.current_changed.enqueue_metadata", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
             step_start = now
         self._update_action_states()
+        self._refresh_generated_left_context(index)
         if logger.enabled:
             now = time.perf_counter()
             logger.duration("window.current_changed.action_states", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
@@ -14458,6 +14668,7 @@ class MainWindow(QMainWindow):
         if normalized_path_key(getattr(key, "path", "")) != normalized_path_key(displayed_path):
             return
         self._update_inspector_context()
+        self._refresh_generated_left_context()
 
     def _handle_grid_selection_changed(self) -> None:
         logger = perf_logger()
@@ -14465,6 +14676,7 @@ class MainWindow(QMainWindow):
         self._sync_details_view_from_grid()
         self._update_action_states()
         self._update_status()
+        self._refresh_generated_left_context()
         self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(lookahead=100), front=True)
         if logger.enabled:
             logger.duration("window.selection_changed", (time.perf_counter() - start) * 1000.0, selected=self.grid.selected_count(), view=self._browser_view_mode)
@@ -18686,6 +18898,7 @@ class MainWindow(QMainWindow):
         self._queue_annotation_persist(record, previous_annotation=previous_annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="rating")
         self._apply_annotation_change_effects([record.path], current_path=record.path)
+        self._refresh_generated_left_context(index)
         self.statusBar().showMessage(f"Rated {record.name}: {rating}/5")
         if logger.enabled:
             logger.duration("annotation.rating", (time.perf_counter() - start) * 1000.0, path=record.path, rating=rating)
