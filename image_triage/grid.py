@@ -152,12 +152,12 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._meta_font = QFont("Segoe UI", 9)
         self._placeholder_font = QFont("Segoe UI", 11)
         self._empty_font = QFont("Segoe UI", 14)
-        self._border_active = QColor("#63a0ff")
-        self._border_selected = QColor("#4e6d94")
-        self._border_idle = QColor("#364152")
-        self._background_active = QColor("#1d232d")
-        self._background_selected = QColor("#18202c")
-        self._background_idle = QColor("#141922")
+        self._border_active = QColor("#2ed58e")
+        self._border_selected = QColor("#39454a")
+        self._border_idle = QColor("#252a31")
+        self._background_active = QColor("#1f2926")
+        self._background_selected = QColor("#1a211f")
+        self._background_idle = QColor("#121417")
         self._title_color = QColor("#f4f7fb")
         self._capture_color = QColor("#c6d2e0")
         self._meta_color = QColor("#9aa9bd")
@@ -251,8 +251,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._failed_text_color = theme.danger.qcolor()
         self._badge_background = theme.badge_bg.qcolor()
         self._badge_text_color = theme.badge_text.qcolor()
-        self._winner_color = theme.danger.qcolor()
-        self._winner_button_fill = theme.danger_soft.with_alpha(42).qcolor()
+        self._winner_color = theme.success.qcolor()
+        self._winner_button_fill = theme.success_soft.with_alpha(58).qcolor()
         self._winner_button_border = theme.border.with_alpha(105).qcolor()
         self._winner_button_hover = theme.border.with_alpha(150).qcolor()
         self._accepted_color = theme.success.qcolor()
@@ -1577,10 +1577,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.save()
         if is_rejected:
             border_color = self._reject_color
-            background_color = QColor("#191317")
+            background_color = QColor("#171113")
         elif is_winner:
             border_color = self._accepted_color
-            background_color = QColor("#142018")
+            background_color = QColor("#111c16")
         else:
             if is_current:
                 border_color = self._border_active
@@ -1591,9 +1591,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             else:
                 border_color = self._border_idle
                 background_color = self._background_idle
-        painter.setPen(QPen(border_color, 2))
+        painter.setPen(QPen(border_color, 1.4 if is_current or is_selected else 1.0))
         painter.setBrush(background_color)
-        painter.drawRoundedRect(QRectF(rect), 12, 12)
+        painter.drawRoundedRect(QRectF(rect), 7, 7)
 
         image_rect = self._image_rect(rect)
         if burst_info is not None:
@@ -1601,11 +1601,15 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._paint_burst_stack_layers(painter, image_rect, highlighted=is_current or is_selected)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._placeholder_color)
-        painter.drawRoundedRect(QRectF(image_rect), 10, 10)
+        painter.drawRoundedRect(QRectF(image_rect), 5, 5)
 
         if pixmap is not None and not pixmap.isNull():
             draw_rect = self._image_draw_rect(image_rect, pixmap)
             zoom_pixmap = self._zoom_pixmap_for_tile(index, record, variant, image_rect)
+            clip_path = QPainterPath()
+            clip_path.addRoundedRect(QRectF(image_rect), 5, 5)
+            painter.save()
+            painter.setClipPath(clip_path)
             if index == self._zoom_index and self._zoom_factor > 1.0:
                 zoom_source = zoom_pixmap if zoom_pixmap is not None and not zoom_pixmap.isNull() else pixmap
                 source_rect = self._zoom_source_rect(zoom_source, self._zoom_factor, self._zoom_focus)
@@ -1613,6 +1617,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 painter.drawPixmap(draw_rect, zoom_source, source_rect)
             else:
                 painter.drawPixmap(draw_rect, pixmap)
+            painter.restore()
         elif record.is_folder:
             self._paint_folder_thumbnail(painter, image_rect)
         elif variant.path in self._failed_paths:
@@ -1851,7 +1856,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _annotation_badge(self, annotation: SessionAnnotation) -> str:
         parts: list[str] = []
         if annotation.rating:
-            parts.append(f"{annotation.rating}/5")
+            rating = max(0, min(5, int(annotation.rating)))
+            parts.append("\u2605" * rating + "\u2606" * (5 - rating))
         if annotation.tags:
             parts.append(", ".join(annotation.tags[:2]))
         return " | ".join(parts)
@@ -2213,13 +2219,15 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _image_draw_rect(self, image_rect: QRect, pixmap: QPixmap) -> QRect:
         draw_size = pixmap.size()
-        if draw_size.width() > image_rect.width() or draw_size.height() > image_rect.height():
-            draw_size.scale(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
-        draw_rect = QRect(QPoint(0, 0), draw_size)
         if self._columns == 1:
+            if draw_size.width() > image_rect.width() or draw_size.height() > image_rect.height():
+                draw_size.scale(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            draw_rect = QRect(QPoint(0, 0), draw_size)
             draw_rect.moveTop(image_rect.top())
             draw_rect.moveLeft(image_rect.left() + max(0, (image_rect.width() - draw_rect.width()) // 2))
         else:
+            draw_size.scale(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+            draw_rect = QRect(QPoint(0, 0), draw_size)
             draw_rect.moveCenter(image_rect.center())
         return draw_rect
 
@@ -3021,17 +3029,17 @@ class ThumbnailGridView(QAbstractScrollArea):
         return self._thumbnail_target_size_value
 
     def _recalculate_metrics(self) -> None:
-        self._margin = 10 if self._compact_card_mode else 18
-        self._spacing = 10 if self._compact_card_mode else 18
-        self._image_padding = 8 if self._compact_card_mode else 10
+        self._margin = 10 if self._compact_card_mode else 12
+        self._spacing = 10 if self._compact_card_mode else 12
+        self._image_padding = 6 if self._compact_card_mode else 7
         self._caption_height = 20 if self._compact_card_mode else 22
         self._capture_height = 0 if self._compact_card_mode else 16
         self._meta_height = 0 if self._compact_card_mode else 16
         available = max(320, self.viewport().width() - (self._margin * 2) - ((self._columns - 1) * self._spacing))
-        minimum_tile_width = (180 if self._columns <= 4 else 108) if self._compact_card_mode else (220 if self._columns <= 4 else 120)
-        minimum_image_height = (128 if self._columns <= 4 else 72) if self._compact_card_mode else (180 if self._columns <= 4 else 90)
-        image_ratio = 0.64 if self._compact_card_mode else 0.72
-        footer_height = 12 if self._compact_card_mode else 20
+        minimum_tile_width = (170 if self._columns <= 4 else 104) if self._compact_card_mode else (205 if self._columns <= 4 else 116)
+        minimum_image_height = (124 if self._columns <= 4 else 72) if self._compact_card_mode else (168 if self._columns <= 4 else 88)
+        image_ratio = 0.62 if self._compact_card_mode else 0.68
+        footer_height = 10 if self._compact_card_mode else 16
         card_chrome_height = (
             self._image_padding * 2
             + self._caption_height

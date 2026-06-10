@@ -73,34 +73,34 @@ def _dark_theme() -> ThemePalette:
     return ThemePalette(
         name="dark",
         is_dark=True,
-        window_bg=ColorToken(24, 25, 27),
-        chrome_bg=ColorToken(17, 18, 20),
-        toolbar_bg=ColorToken(28, 30, 33),
-        panel_bg=ColorToken(38, 41, 45),
-        panel_alt_bg=ColorToken(29, 31, 35),
-        raised_bg=ColorToken(48, 51, 57),
-        input_bg=ColorToken(21, 23, 26),
-        input_hover_bg=ColorToken(32, 35, 40),
-        border=ColorToken(58, 62, 69),
-        border_muted=ColorToken(43, 46, 51),
-        text_primary=ColorToken(235, 237, 241),
-        text_secondary=ColorToken(184, 188, 197),
-        text_muted=ColorToken(129, 135, 146),
-        text_disabled=ColorToken(96, 101, 111),
-        accent=ColorToken(96, 144, 255),
-        accent_hover=ColorToken(123, 163, 255),
-        accent_soft=ColorToken(96, 144, 255, 40),
-        selection_fill=ColorToken(96, 144, 255, 42),
-        selection_outline=ColorToken(120, 160, 250),
-        success=ColorToken(88, 196, 132),
-        success_soft=ColorToken(38, 84, 58, 210),
-        warning=ColorToken(213, 170, 89),
-        warning_soft=ColorToken(88, 67, 23, 214),
-        danger=ColorToken(236, 123, 123),
-        danger_soft=ColorToken(96, 42, 46, 215),
-        image_bg=ColorToken(20, 21, 23),
-        badge_bg=ColorToken(21, 22, 25, 220),
-        badge_text=ColorToken(244, 246, 250),
+        window_bg=ColorToken(11, 12, 14),
+        chrome_bg=ColorToken(7, 8, 10),
+        toolbar_bg=ColorToken(18, 19, 22),
+        panel_bg=ColorToken(25, 27, 31),
+        panel_alt_bg=ColorToken(16, 18, 21),
+        raised_bg=ColorToken(34, 37, 42),
+        input_bg=ColorToken(13, 15, 18),
+        input_hover_bg=ColorToken(30, 33, 38),
+        border=ColorToken(45, 49, 56),
+        border_muted=ColorToken(31, 35, 41),
+        text_primary=ColorToken(242, 245, 247),
+        text_secondary=ColorToken(187, 195, 204),
+        text_muted=ColorToken(111, 120, 131),
+        text_disabled=ColorToken(80, 88, 98),
+        accent=ColorToken(25, 195, 125),
+        accent_hover=ColorToken(60, 219, 150),
+        accent_soft=ColorToken(25, 195, 125, 44),
+        selection_fill=ColorToken(25, 195, 125, 38),
+        selection_outline=ColorToken(46, 213, 142),
+        success=ColorToken(35, 210, 122),
+        success_soft=ColorToken(23, 88, 54, 218),
+        warning=ColorToken(238, 167, 38),
+        warning_soft=ColorToken(96, 66, 15, 218),
+        danger=ColorToken(239, 78, 78),
+        danger_soft=ColorToken(96, 28, 34, 218),
+        image_bg=ColorToken(8, 9, 11),
+        badge_bg=ColorToken(8, 10, 13, 224),
+        badge_text=ColorToken(246, 248, 250),
     )
 
 
@@ -249,13 +249,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.chrome_bg.css};
             border-bottom: 1px solid {theme.border.css};
             color: {theme.text_primary.css};
-            padding: 2px 8px;
+            padding: 1px 8px;
         }}
         QMenuBar::item {{
             background: transparent;
-            border-radius: 8px;
-            padding: 6px 10px;
-            margin: 2px 2px;
+            border-radius: 6px;
+            padding: 5px 10px;
+            margin: 1px 2px;
         }}
         QMenuBar::item:selected {{
             background: {theme.accent_soft.css};
@@ -282,7 +282,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolBar#primaryToolbar {{
             background-color: {theme.toolbar_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 12px;
+            border-radius: 8px;
             spacing: 2px;
             padding: 0px 4px;
         }}
@@ -305,7 +305,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton {{
             background-color: transparent;
             border: 1px solid transparent;
-            border-radius: 8px;
+            border-radius: 6px;
             color: {theme.text_primary.css};
             padding: 4px 8px;
         }}
@@ -330,7 +330,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton {{
             background-color: {theme.raised_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 10px;
+            border-radius: 7px;
             color: {theme.text_primary.css};
             padding: 6px 12px;
         }}
@@ -351,7 +351,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLineEdit {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 10px;
+            border-radius: 7px;
             color: {theme.text_primary.css};
             min-height: 28px;
             padding: 2px 10px;
@@ -367,7 +367,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QComboBox {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 10px;
+            border-radius: 7px;
             color: {theme.text_primary.css};
             min-height: 28px;
             padding: 2px 10px;
@@ -402,7 +402,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QTreeView, QListWidget {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 12px;
+            border-radius: 8px;
             color: {theme.text_primary.css};
             alternate-background-color: {theme.panel_alt_bg.css};
             outline: none;
@@ -479,12 +479,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#libraryWorkspacePanel {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 14px;
+            border-radius: 8px;
         }}
         QWidget#inspectorWorkspacePanel {{
             background-color: {theme.chrome_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 14px;
+            border-radius: 8px;
         }}
         QWidget#libraryPanelHeader {{
             background-color: transparent;
@@ -663,7 +663,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#workspaceBar {{
             background-color: {theme.toolbar_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 12px;
+            border-radius: 8px;
         }}
         QFrame#workspaceBarDivider {{
             background-color: {theme.border_muted.css};
@@ -1112,17 +1112,19 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             padding: 4px 10px;
         }}
         QToolButton#workspaceIconButton {{
-            background-color: transparent;
-            border: none;
-            border-radius: 8px;
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 7px;
             padding: 3px;
         }}
         QToolButton#workspaceIconButton:hover {{
             background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
         }}
         QToolButton#workspaceIconButton:pressed,
         QToolButton#workspaceIconButton:checked {{
             background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.css};
         }}
         QToolButton#statusFilterClearButton {{
             padding: 2px 8px;
@@ -1130,7 +1132,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QTabBar#modeTabs::tab {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
-            border-radius: 12px;
+            border-radius: 7px;
             color: {theme.text_secondary.css};
             min-width: 120px;
             max-width: 120px;

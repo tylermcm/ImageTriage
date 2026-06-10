@@ -2989,7 +2989,7 @@ class MainWindow(QMainWindow):
         self._auto_bracket_enabled = self._settings.value(self.AUTO_BRACKET_KEY, True, bool)
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
-        self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, False, bool)
+        self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, True, bool)
         self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
         self._preview_preload_batch_size = self._normalize_preview_preload_batch_size(
             self._settings.value(
@@ -3000,7 +3000,7 @@ class MainWindow(QMainWindow):
         )
         self.preview.set_preload_batch_size(self._preview_preload_batch_size)
         self._show_hidden_folders = self._settings.value(self.SHOW_HIDDEN_FOLDERS_KEY, False, bool)
-        self._toolbar_style = self._normalize_toolbar_style(self._settings.value(self.TOOLBAR_STYLE_KEY, "text", str))
+        self._toolbar_style = self._normalize_toolbar_style(self._settings.value(self.TOOLBAR_STYLE_KEY, "icons", str))
         self._catalog_cache_enabled = self._settings.value(self.CATALOG_CACHE_ENABLED_KEY, True, bool)
         self._watch_current_folder_enabled = self._settings.value(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, True, bool)
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(
@@ -3864,8 +3864,9 @@ class MainWindow(QMainWindow):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        color = QColor(218, 226, 238)
-        accent = QColor(105, 147, 255)
+        theme = getattr(self, "_theme", None)
+        color = theme.text_secondary.qcolor() if theme is not None else QColor(218, 226, 238)
+        accent = theme.accent.qcolor() if theme is not None else QColor(25, 195, 125)
 
         def draw_glyph(glyph: str, *, x: int, y: int, size: int, selected_color: QColor) -> None:
             font_family = "Segoe MDL2 Assets" if len(glyph) > 2 else "Segoe UI"
