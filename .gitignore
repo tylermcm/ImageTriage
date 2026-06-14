@@ -7,6 +7,10 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyre/
+.pytype/
+.nox/
+.tox/
 .coverage
 .coverage.*
 coverage.xml
@@ -25,6 +29,8 @@ pip-wheel-metadata/
 
 # Virtual environments
 .venv/
+.linux_build_venv/
+.msi_build_venv/
 venv/
 env/
 ENV/
@@ -33,11 +39,16 @@ ENV/
 # Editor / OS junk
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
 # Local app runtime state
 AppData/
+.codex-smoke-appdata/
+.image-triage/
 decisions.sqlite3
 decisions.sqlite3-shm
 decisions.sqlite3-wal
@@ -62,6 +73,31 @@ ai_smoke_input/
 ai_smoke_input2/
 _tmp_*.png
 .codex_*
+
+# Logs and local environment files
+*.log
+*.tmp
+.env
+.env.*
+!.env.example
+
+# Node / web tooling
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+vite.svg
 
 # Local benchmark outputs
 .benchmarks/
