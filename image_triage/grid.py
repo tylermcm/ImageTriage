@@ -55,6 +55,10 @@ class ThumbnailGridView(QAbstractScrollArea):
     LEFT_ARROW_SYMBOL = "\u276e"
     RIGHT_ARROW_SYMBOL = "\u276f"
 
+    # Bounds for the continuous (smooth) zoom tile width, in logical px.
+    MIN_TILE_WIDTH = 120
+    MAX_TILE_WIDTH = 620
+
     current_changed = Signal(int)
     preview_requested = Signal(int)
     delete_requested = Signal(int)
@@ -131,6 +135,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._adapter_labels_by_path: dict[str, str] = {}
         self._adapter_label_combos: dict[int, QComboBox] = {}
         self._columns = 3
+        # Zoom can be driven two ways: discrete "column" mode (combo/presets,
+        # fills the row width) or continuous "tile" mode (the zoom slider, fixed
+        # tile width that reflows columns to fit — this is what feels smooth).
+        self._zoom_mode = "column"
+        self._zoom_columns = 3
+        self._zoom_tile_width = 240
+        self._row_x_offset = 0
         self._margin = 18
         self._spacing = 18
         self._caption_height = 22
@@ -650,11 +661,35 @@ class ThumbnailGridView(QAbstractScrollArea):
             self.viewport().update()
 
     def set_column_count(self, columns: int) -> None:
-        self._columns = max(1, min(8, columns))
+        self._zoom_mode = "column"
+        self._zoom_columns = max(1, min(8, columns))
+        self._columns = self._zoom_columns
         self._recalculate_metrics()
         self._update_scrollbar()
         self.viewport().update()
         self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def set_zoom_tile_width(self, width: int) -> None:
+        """Continuous zoom: render tiles at a fixed width, reflowing columns.
+
+        This is what makes the zoom slider feel smooth — the tile size tracks
+        the slider 1:1 instead of snapping to whole-column steps.
+        """
+        self._zoom_mode = "tile"
+        self._zoom_tile_width = max(self.MIN_TILE_WIDTH, min(self.MAX_TILE_WIDTH, int(width)))
+        self._recalculate_metrics()
+        self._update_scrollbar()
+        self.viewport().update()
+        self._schedule_visible_thumbnail_requests(immediate=True)
+
+    def current_columns(self) -> int:
+        return self._columns
+
+    def current_tile_width(self) -> int:
+        return int(self._tile_width_value)
+
+    def zoom_mode(self) -> str:
+        return self._zoom_mode
 
     def set_compact_card_mode(self, enabled: bool) -> None:
         normalized = bool(enabled)
@@ -3037,9 +3072,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._caption_height = 20 if self._compact_card_mode else 22
         self._capture_height = 0 if self._compact_card_mode else 16
         self._meta_height = 0 if self._compact_card_mode else 16
-        available = max(320, self.viewport().width() - (self._margin * 2) - ((self._columns - 1) * self._spacing))
-        minimum_tile_width = (170 if self._columns <= 4 else 104) if self._compact_card_mode else (205 if self._columns <= 4 else 116)
-        minimum_image_height = (124 if self._columns <= 4 else 72) if self._compact_card_mode else (168 if self._columns <= 4 else 88)
+        minimum_image_height = 72 if self._compact_card_mode else 88
         image_ratio = 0.62 if self._compact_card_mode else 0.68
         footer_height = 10 if self._compact_card_mode else 16
         card_chrome_height = (
@@ -3050,15 +3083,30 @@ class ThumbnailGridView(QAbstractScrollArea):
             + self._meta_height
             + footer_height
         )
-        default_tile_width = max(minimum_tile_width, available // self._columns)
-        default_image_height = max(minimum_image_height, int(default_tile_width * image_ratio))
-        if self._columns == 1:
-            self._tile_width_value = available
+        inner = max(320, self.viewport().width() - (self._margin * 2))
+        if self._zoom_mode == "tile":
+            # Continuous zoom: tiles are a fixed target width; derive how many
+            # whole columns fit so the grid reflows smoothly as the slider moves.
+            target = max(self.MIN_TILE_WIDTH, min(self.MAX_TILE_WIDTH, int(self._zoom_tile_width)))
+            columns = max(1, int((inner + self._spacing) // (target + self._spacing)))
+        else:
+            # Discrete zoom: a whole number of columns that fill the row width.
+            columns = max(1, min(8, self._zoom_columns))
+            target = max(
+                self.MIN_TILE_WIDTH,
+                (inner - ((columns - 1) * self._spacing)) // columns,
+            )
+        self._columns = columns
+        if columns == 1:
+            self._tile_width_value = inner
             max_tile_height = max(160, self.viewport().height() - (self._margin * 2))
             self._image_height_value = max(64, max_tile_height - card_chrome_height)
+            self._row_x_offset = 0
         else:
-            self._tile_width_value = default_tile_width
-            self._image_height_value = default_image_height
+            self._tile_width_value = target
+            self._image_height_value = max(minimum_image_height, int(target * image_ratio))
+            used = columns * target + ((columns - 1) * self._spacing)
+            self._row_x_offset = max(0, (inner - used) // 2)
         self._tile_height_value = card_chrome_height + self._image_height_value
         self._row_height_value = self._tile_height_value + self._spacing
         self._thumbnail_target_size_value = QSize(
@@ -3122,7 +3170,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             return QRect()
         row = slot // self._columns
         column = slot % self._columns
-        x = self._margin + column * (self._tile_width() + self._spacing)
+        x = self._margin + self._row_x_offset + column * (self._tile_width() + self._spacing)
         y = self._margin + row * (self._tile_height() + self._spacing)
         return QRect(x, y, self._tile_width(), self._tile_height())
 
@@ -3133,19 +3181,20 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _index_at(self, x: int, y: int) -> int:
         content_y = y + self.verticalScrollBar().value()
-        if x < self._margin:
+        left = self._margin + self._row_x_offset
+        if x < left:
             return -1
         tile_width = self._tile_width()
         tile_height = self._tile_height()
         column_span = tile_width + self._spacing
         row_span = tile_height + self._spacing
 
-        column = (x - self._margin) // column_span
+        column = (x - left) // column_span
         row = (content_y - self._margin) // row_span
         if column < 0 or column >= self._columns or row < 0:
             return -1
 
-        x_in_tile = (x - self._margin) % column_span
+        x_in_tile = (x - left) % column_span
         y_in_tile = (content_y - self._margin) % row_span
         if x_in_tile >= tile_width or y_in_tile >= tile_height:
             return -1

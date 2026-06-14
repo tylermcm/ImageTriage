@@ -2439,6 +2439,7 @@ class MainWindow(QMainWindow):
     BURST_STACKS_KEY = "view/burst_stacks"
     AUTO_ADVANCE_KEY = "view/auto_advance"
     VIEW_COLUMNS_KEY = "view/columns"
+    VIEW_ZOOM_WIDTH_KEY = "view/zoom_width"
     COMPACT_CARDS_KEY = "view/compact_cards"
     FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
@@ -3300,6 +3301,11 @@ class MainWindow(QMainWindow):
         default_columns_index = self.columns_combo.findData(saved_columns)
         self.columns_combo.setCurrentIndex(default_columns_index if default_columns_index >= 0 else 0)
         self.grid.set_column_count(saved_columns)
+        # If the user last left a continuous zoom level, restore that smooth
+        # tile width on top of the column baseline (the slider owns it).
+        saved_zoom_width = self._settings.value(self.VIEW_ZOOM_WIDTH_KEY, 0, int)
+        if saved_zoom_width and saved_zoom_width > 0:
+            self.grid.set_zoom_tile_width(saved_zoom_width)
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
         self.actions = build_main_window_actions(self)
@@ -4016,14 +4022,16 @@ class MainWindow(QMainWindow):
         zoom_large.setObjectName("topbarZoomIconLarge")
         self.topbar_zoom_slider = QSlider(Qt.Orientation.Horizontal, zoom_cluster)
         self.topbar_zoom_slider.setObjectName("topbarZoomSlider")
-        self.topbar_zoom_slider.setMinimum(1)
-        self.topbar_zoom_slider.setMaximum(8)
-        self.topbar_zoom_slider.setSingleStep(1)
-        self.topbar_zoom_slider.setPageStep(1)
+        # Continuous thumbnail size: the value is the tile width in px so the
+        # grid resizes smoothly instead of snapping between column counts.
+        self.topbar_zoom_slider.setMinimum(ThumbnailGridView.MIN_TILE_WIDTH)
+        self.topbar_zoom_slider.setMaximum(560)
+        self.topbar_zoom_slider.setSingleStep(8)
+        self.topbar_zoom_slider.setPageStep(32)
         self.topbar_zoom_slider.setFixedWidth(118)
         self.topbar_zoom_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.topbar_zoom_slider.setToolTip("Thumbnail size")
-        self.topbar_zoom_slider.setValue(9 - self._normalize_column_count(self.columns_combo.currentData()))
+        self.topbar_zoom_slider.setValue(self._initial_zoom_width())
         self.topbar_zoom_slider.valueChanged.connect(self._handle_zoom_slider_changed)
         zoom_layout.addWidget(zoom_small, 0)
         zoom_layout.addWidget(self.topbar_zoom_slider, 0)
@@ -7716,6 +7724,9 @@ class MainWindow(QMainWindow):
         # Don't auto-focus/select any control on startup (the path bar used to
         # grab focus and highlight its text).
         QTimer.singleShot(0, self._clear_startup_focus)
+        # Once the viewport has a real width, snap the zoom slider to the grid's
+        # actual tile width so dragging starts from the right place.
+        QTimer.singleShot(0, self._sync_zoom_slider_from_grid)
         if self._startup_window_state in {"maximized", "fullscreen"}:
             QTimer.singleShot(0, self._apply_startup_window_state_fixup)
 
@@ -9722,6 +9733,23 @@ class MainWindow(QMainWindow):
         text = str(value or "").strip().casefold()
         return text if text in {"compact", "comfortable"} else "comfortable"
 
+    def _initial_zoom_width(self) -> int:
+        """Slider value to show on first build: saved smooth width, else grid."""
+        saved = self._settings.value(self.VIEW_ZOOM_WIDTH_KEY, 0, int)
+        if saved and saved > 0:
+            return self._clamp_zoom_width(saved)
+        return self._clamp_zoom_width(self.grid.current_tile_width())
+
+    def _clamp_zoom_width(self, width: object) -> int:
+        slider = getattr(self, "topbar_zoom_slider", None)
+        try:
+            value = int(width)
+        except (TypeError, ValueError):
+            value = ThumbnailGridView.MIN_TILE_WIDTH
+        low = slider.minimum() if slider is not None else ThumbnailGridView.MIN_TILE_WIDTH
+        high = slider.maximum() if slider is not None else 560
+        return max(low, min(high, value))
+
     def _set_column_count(self, count: int) -> None:
         columns = self._normalize_column_count(count)
         combo_index = self.columns_combo.findData(columns)
@@ -9730,21 +9758,39 @@ class MainWindow(QMainWindow):
             return
         self.grid.set_column_count(columns)
         self._settings.setValue(self.VIEW_COLUMNS_KEY, columns)
-        self._sync_zoom_slider(columns)
+        # A discrete column choice clears any continuous zoom level.
+        self._settings.remove(self.VIEW_ZOOM_WIDTH_KEY)
+        self._sync_zoom_slider_from_grid()
         self._remember_current_folder_view_state()
         self._update_action_states()
 
-    def _sync_zoom_slider(self, columns: int) -> None:
+    def _sync_zoom_slider_from_grid(self) -> None:
         slider = getattr(self, "topbar_zoom_slider", None)
         if slider is None:
             return
-        value = 9 - self._normalize_column_count(columns)
+        value = self._clamp_zoom_width(self.grid.current_tile_width())
         if slider.value() != value:
             with QSignalBlocker(slider):
                 slider.setValue(value)
 
+    def _sync_columns_combo(self, columns: int) -> None:
+        combo = getattr(self, "columns_combo", None)
+        if combo is None:
+            return
+        index = combo.findData(self._normalize_column_count(columns))
+        if index >= 0 and index != combo.currentIndex():
+            with QSignalBlocker(combo):
+                combo.setCurrentIndex(index)
+
     def _handle_zoom_slider_changed(self, value: int) -> None:
-        self._set_column_count(9 - int(value))
+        width = int(value)
+        self.grid.set_zoom_tile_width(width)
+        self._settings.setValue(self.VIEW_ZOOM_WIDTH_KEY, width)
+        # Keep the column combo reflecting how many columns now fit.
+        self._sync_columns_combo(self.grid.current_columns())
+        self._settings.setValue(self.VIEW_COLUMNS_KEY, self.grid.current_columns())
+        self._remember_current_folder_view_state()
+        self._update_action_states()
 
     def _set_browser_view_mode(self, mode: str) -> None:
         normalized = self._normalize_browser_view_mode(mode)
@@ -13118,11 +13164,14 @@ class MainWindow(QMainWindow):
         return None
 
     def _current_folder_view_state(self) -> dict[str, object]:
-        return {
+        state: dict[str, object] = {
             "columns": self._normalize_column_count(self.columns_combo.currentData()),
             "sort": self._sort_mode.value,
             "scroll": max(0, int(self.grid.current_scroll_value())),
         }
+        if self.grid.zoom_mode() == "tile":
+            state["zoom_width"] = int(self.grid.current_tile_width())
+        return state
 
     def _remember_current_folder_view_state(self) -> None:
         if not getattr(self, "_current_folder", ""):
@@ -13146,6 +13195,13 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(self.columns_combo):
                 self.columns_combo.setCurrentIndex(combo_index)
         self.grid.set_column_count(columns)
+        try:
+            zoom_width = int(state.get("zoom_width", 0))
+        except (TypeError, ValueError):
+            zoom_width = 0
+        if zoom_width > 0:
+            self.grid.set_zoom_tile_width(zoom_width)
+        self._sync_zoom_slider_from_grid()
 
         sort_mode = self._sort_mode_from_state(state.get("sort"))
         if sort_mode is not None:

@@ -33,6 +33,8 @@ PROTO_DIVIDER = "#242527"          # connected-pane definition lines
 PROTO_CARD_RADIUS = 10
 
 PROTO_FOLDER_COLOR = "#d3b15b"     # flat folder icon gold
+PROTO_DRIVE_COLOR = "#8f9bb0"      # flat drive icon steel
+PROTO_DRIVE_LED_COLOR = "#5ad17e"  # drive activity LED accent
 
 
 def folder_icon_pixmap(size: int = 16, color: str = PROTO_FOLDER_COLOR) -> QPixmap:
@@ -112,18 +114,71 @@ class FolderTreeView(QTreeView):
         painter.restore()
 
 
+def drive_icon_pixmap(
+    size: int = 16,
+    color: str = PROTO_DRIVE_COLOR,
+    led_color: str = PROTO_DRIVE_LED_COLOR,
+) -> QPixmap:
+    """A flat, single-tone external-drive icon with a small activity LED.
+
+    Deliberately a different silhouette and colour from the folder icon so
+    drive roots read as distinct from ordinary directories in the tree.
+    """
+    scale = 2
+    s = size * scale
+    pixmap = QPixmap(s, s)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    body = QColor(color)
+    # Drive body: a landscape rounded rectangle.
+    rect = QRectF(s * 0.12, s * 0.34, s * 0.76, s * 0.34)
+    path = QPainterPath()
+    path.addRoundedRect(rect, s * 0.07, s * 0.07)
+    painter.fillPath(path, body)
+    # A subtle separator slot near the top, carved darker for depth.
+    slot = QColor(0, 0, 0, 60)
+    slot_pen = QPen(slot, s * 0.03)
+    painter.setPen(slot_pen)
+    painter.drawLine(QPointF(s * 0.22, s * 0.43), QPointF(s * 0.78, s * 0.43))
+    # Activity LED on the right side.
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(led_color))
+    painter.drawEllipse(QPointF(s * 0.74, s * 0.58), s * 0.035, s * 0.035)
+    painter.end()
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
 class PrototypeFileIconProvider(QFileIconProvider):
     """Supplies the flat prototype folder icon for directories in tree views."""
 
     def __init__(self, size: int = 18) -> None:
         super().__init__()
         self._folder_icon = QIcon(folder_icon_pixmap(size))
+        self._drive_icon = QIcon(drive_icon_pixmap(size))
 
     def icon(self, info) -> QIcon:  # type: ignore[override]
         if isinstance(info, QFileInfo):
             if info.isDir():
+                if self._is_drive(info):
+                    return self._drive_icon
                 return self._folder_icon
             return super().icon(info)
+        if info == QFileIconProvider.IconType.Drive:
+            return self._drive_icon
         if info == QFileIconProvider.IconType.Folder:
             return self._folder_icon
         return super().icon(info)
+
+    @staticmethod
+    def _is_drive(info: QFileInfo) -> bool:
+        """True for drive/filesystem roots (e.g. ``C:\\`` or a UNC share root)."""
+        if info.isRoot():
+            return True
+        path = info.absoluteFilePath()
+        # Normalise so ``C:`` and ``C:/`` both register as drive roots.
+        stripped = path.rstrip("/\\")
+        if len(stripped) == 2 and stripped[1] == ":":
+            return True
+        return False

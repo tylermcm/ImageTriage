@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Image Triage | Fast Local Image Review</title>
+    <meta
+      name="description"
+      content="Image Triage is a local-first desktop app for reviewing, comparing, ranking, and culling large image folders fast."
+    >
+    <meta property="og:title" content="Image Triage">
+    <meta
+      property="og:description"
+      content="Cull, compare, and keep the best shots without sending your image library to the cloud."
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="assets/image-triage-workspace.png">
+    <link rel="icon" href="assets/image-triage-icon.png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="Image Triage home">
+        <img src="assets/image-triage-icon.png" alt="" width="32" height="32">
+        <span>Image Triage</span>
+      </a>
+      <nav>
+        <a href="#workflow">Workflow</a>
+        <a href="#ai">Local AI</a>
+        <a href="#downloads">Downloads</a>
+        <a href="https://github.com/tylermcm/ImageTriage" rel="noreferrer">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <img class="hero-bg" src="assets/image-triage-workspace.png" alt="Image Triage desktop workspace">
+        <div class="hero-shade" aria-hidden="true"></div>
+        <div class="hero-copy">
+          <p class="eyebrow">Local-first desktop culling</p>
+          <h1 id="hero-title">Image Triage</h1>
+          <p class="hero-lede">
+            Review huge folders, compare near-duplicates, mark keepers, and use optional local AI without handing your library to a cloud service.
+          </p>
+          <div class="hero-actions" aria-label="Download actions">
+            <a class="button primary platform-windows" href="https://github.com/tylermcm/ImageTriage/releases/latest">Download for Windows</a>
+            <a class="button secondary platform-linux" href="https://github.com/tylermcm/ImageTriage/releases/latest">Download AppImage</a>
+            <a class="button ghost" href="#workflow">See workflow</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="quick-strip" aria-label="Product highlights">
+        <div>
+          <strong>Built for large folders</strong>
+          <span>Virtualized thumbnails and background caching keep review sessions moving.</span>
+        </div>
+        <div>
+          <strong>Decisions stay local</strong>
+          <span>Ratings, tags, keep/reject state, and AI assets are stored on your machine.</span>
+        </div>
+        <div>
+          <strong>Windows and Linux</strong>
+          <span>MSI for Windows, AppImage for Linux, both published through GitHub Releases.</span>
+        </div>
+      </section>
+
+      <section id="workflow" class="section split">
+        <div class="section-copy">
+          <p class="eyebrow">Review flow</p>
+          <h2>Move from folder chaos to a clean keeper set.</h2>
+          <p>
+            Image Triage is tuned for the repetitive part of image work: opening a folder, scanning quickly, comparing similar shots, and preserving the choices you make along the way.
+          </p>
+        </div>
+        <div class="workflow-steps" aria-label="Image Triage workflow steps">
+          <div><span>01</span><strong>Open</strong><p>Load a working folder and keep navigation visible.</p></div>
+          <div><span>02</span><strong>Review</strong><p>Scroll fast with cached thumbnails and async previews.</p></div>
+          <div><span>03</span><strong>Compare</strong><p>Check exposure brackets, duplicates, and close alternates.</p></div>
+          <div><span>04</span><strong>Cull</strong><p>Mark keepers, reject misses, rate, tag, move, or export.</p></div>
+        </div>
+      </section>
+
+      <section class="section product-band" aria-label="Application interface preview">
+        <div class="interface-frame">
+          <div class="window-bar">
+            <span></span><span></span><span></span>
+          </div>
+          <img src="assets/image-triage-toolbar.png" alt="Image Triage compact toolbar">
+          <div class="interface-grid" aria-hidden="true">
+            <div class="side-panel"></div>
+            <div class="thumb-grid">
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+        </div>
+        <div class="feature-list">
+          <article>
+            <h3>Fast culling controls</h3>
+            <p>Accept, reject, rate, tag, move, and delete from the keyboard without changing context.</p>
+          </article>
+          <article>
+            <h3>Persistent folder memory</h3>
+            <p>Warm-start folder scans and disk thumbnail caches help repeat sessions open faster.</p>
+          </article>
+          <article>
+            <h3>Designed for inspection</h3>
+            <p>Preview and compare modes keep EXIF details and file actions close to the image.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="ai" class="section ai-section">
+        <div>
+          <p class="eyebrow">Optional local AI</p>
+          <h2>AI help when you want it, normal review when you do not.</h2>
+          <p>
+            The app can install local runtime packages and model assets for DINO prefiltering, CLIP scoring, and TOPIQ quality checks. They are optional downloads so the core installer stays lean.
+          </p>
+        </div>
+        <ul class="ai-list">
+          <li><strong>DINO prefilter</strong><span>Ranks and prepares candidates for AI-assisted review.</span></li>
+          <li><strong>CLIP ONNX bundle</strong><span>Runs local embeddings and category scoring.</span></li>
+          <li><strong>TOPIQ quality model</strong><span>Adds technical quality signals during ingest.</span></li>
+        </ul>
+      </section>
+
+      <section id="downloads" class="section downloads">
+        <div class="section-copy">
+          <p class="eyebrow">Installers</p>
+          <h2>Download the latest release from GitHub.</h2>
+          <p>
+            Use the Windows MSI for normal installs and updates. Use the Linux AppImage when you want a portable build that can be placed in your local applications folder.
+          </p>
+        </div>
+        <div class="download-options">
+          <a class="download-tile platform-windows" href="https://github.com/tylermcm/ImageTriage/releases/latest">
+            <span>Windows</span>
+            <strong>MSI installer</strong>
+            <small>Recommended for Windows 10 and 11.</small>
+          </a>
+          <a class="download-tile platform-linux" href="https://github.com/tylermcm/ImageTriage/releases/latest">
+            <span>Linux</span>
+            <strong>x86_64 AppImage</strong>
+            <small>Portable build for modern Linux desktops.</small>
+          </a>
+          <a class="download-tile" href="https://github.com/tylermcm/ImageTriage/releases">
+            <span>Archive</span>
+            <strong>All releases</strong>
+            <small>Previous versions, tags, and release notes.</small>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Image Triage</span>
+      <a href="https://github.com/tylermcm/ImageTriage" rel="noreferrer">github.com/tylermcm/ImageTriage</a>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
