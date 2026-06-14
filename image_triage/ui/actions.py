@@ -121,6 +121,7 @@ class MainWindowActions:
     save_workspace_preset: QAction
     customize_workspace_toolbar: QAction
     show_workspace_toolbar: QAction
+    open_ui_prototype: QAction
     open_command_palette: QAction
     performance_logging: QAction
     open_performance_log_folder: QAction
@@ -574,6 +575,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Show Workspace Toolbar",
             slot=window._handle_workspace_toolbar_visibility_action,
             checkable=True,
+        ),
+        open_ui_prototype=_create_action(
+            window,
+            "Open UI Prototype",
+            slot=window._open_ui_prototype,
         ),
         open_command_palette=_create_action(
             window,
