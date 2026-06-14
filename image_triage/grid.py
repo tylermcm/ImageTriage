@@ -243,6 +243,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._background_active = theme.raised_bg.qcolor()
         self._background_selected = theme.panel_bg.qcolor()
         self._background_idle = theme.panel_alt_bg.qcolor()
+        self._viewport_bg = theme.image_bg.qcolor()           # #070707 viewport
+        self._footer_bg = theme.panel_alt_bg.qcolor().darker(110)  # rating strip under each image
         self._title_color = theme.text_primary.qcolor()
         self._capture_color = theme.text_secondary.qcolor()
         self._meta_color = theme.text_muted.qcolor()
@@ -287,7 +289,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._checkbox_check = theme.badge_text.qcolor() if theme.is_dark else QColor("#ffffff")
 
         palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Base, theme.panel_alt_bg.qcolor())
+        # Darker viewport so the thumbnail cards float over it (prototype look).
+        palette.setColor(QPalette.ColorRole.Base, theme.window_bg.qcolor())
         palette.setColor(QPalette.ColorRole.Window, theme.panel_bg.qcolor())
         palette.setColor(QPalette.ColorRole.Text, theme.text_primary.qcolor())
         palette.setColor(QPalette.ColorRole.Mid, theme.border.qcolor())
@@ -877,7 +880,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         painter = QPainter(self.viewport())
-        painter.fillRect(self.viewport().rect(), self.palette().color(QPalette.ColorRole.Base))
+        painter.fillRect(self.viewport().rect(), getattr(self, "_viewport_bg", None) or self.palette().color(QPalette.ColorRole.Base))
 
         if not self._items:
             self._paint_empty_state(painter)
@@ -1637,6 +1640,19 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.setFont(self._placeholder_font)
             painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, "Loading...")
 
+        # Rating/meta footer strip under the image (slightly darker than the card).
+        footer_top = image_rect.bottom() + 1
+        if footer_top < rect.bottom() - 1:
+            footer_clip = QPainterPath()
+            footer_clip.addRoundedRect(QRectF(rect).adjusted(1, 1, -1, -1), 6, 6)
+            painter.save()
+            painter.setClipPath(footer_clip)
+            painter.fillRect(
+                QRectF(rect.left() + 1, footer_top, rect.width() - 2, rect.bottom() - footer_top - 1),
+                getattr(self, "_footer_bg", self._background_idle),
+            )
+            painter.restore()
+
         if annotation and (annotation.rating or annotation.tags):
             badge = self._annotation_badge(annotation)
             badge_rect = QRect(image_rect.right() - 160, image_rect.bottom() - 30, 150, 24)
@@ -2141,45 +2157,31 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.restore()
             return
 
-        tab_height = max(18, bounds.height() // 4)
-        tab_width = max(58, bounds.width() // 3)
-        body_top = bounds.top() + tab_height // 2
+        # Flat single-tone folder matching the prototype folder icon
+        # (see ui/prototype_style.folder_icon_pixmap).
+        bx, by, bw, bh = bounds.left(), bounds.top(), bounds.width(), bounds.height()
+
+        def px(fraction: float) -> float:
+            return bx + bw * fraction
+
+        def py(fraction: float) -> float:
+            return by + bh * fraction
+
+        color = QColor("#d3b15b")
         folder_path = QPainterPath()
-        folder_path.moveTo(bounds.left(), body_top)
-        folder_path.lineTo(bounds.left(), bounds.top() + tab_height)
-        folder_path.quadTo(bounds.left(), bounds.top(), bounds.left() + tab_height, bounds.top())
-        folder_path.lineTo(bounds.left() + tab_width, bounds.top())
-        folder_path.quadTo(
-            bounds.left() + tab_width + tab_height // 3,
-            bounds.top(),
-            bounds.left() + tab_width + tab_height // 2,
-            bounds.top() + tab_height // 2,
-        )
-        folder_path.lineTo(bounds.right() - tab_height, bounds.top() + tab_height // 2)
-        folder_path.quadTo(bounds.right(), bounds.top() + tab_height // 2, bounds.right(), bounds.top() + tab_height)
-        folder_path.lineTo(bounds.right(), bounds.bottom() - tab_height // 2)
-        folder_path.quadTo(bounds.right(), bounds.bottom(), bounds.right() - tab_height // 2, bounds.bottom())
-        folder_path.lineTo(bounds.left() + tab_height // 2, bounds.bottom())
-        folder_path.quadTo(bounds.left(), bounds.bottom(), bounds.left(), bounds.bottom() - tab_height // 2)
+        folder_path.moveTo(px(0.08), py(0.84))
+        folder_path.lineTo(px(0.08), py(0.20))
+        folder_path.lineTo(px(0.42), py(0.20))
+        folder_path.lineTo(px(0.52), py(0.34))
+        folder_path.lineTo(px(0.92), py(0.34))
+        folder_path.lineTo(px(0.92), py(0.84))
         folder_path.closeSubpath()
-
-        painter.setPen(QPen(QColor("#e2a900"), 2))
-        painter.setBrush(QColor("#ffc83d"))
+        pen = QPen(color, max(3.0, bw * 0.05))
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(color)
         painter.drawPath(folder_path)
-
-        pocket = QRect(
-            bounds.left() + max(8, bounds.width() // 18),
-            bounds.top() + tab_height,
-            bounds.width() - max(16, bounds.width() // 9),
-            max(24, bounds.height() // 2),
-        )
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 230, 150, 190))
-        painter.drawRoundedRect(QRectF(pocket), 6, 6)
-
-        front = QRect(bounds.left(), body_top + tab_height, bounds.width(), max(28, bounds.height() - tab_height))
-        painter.setBrush(QColor("#ffd862"))
-        painter.drawRoundedRect(QRectF(front), 10, 10)
         painter.restore()
 
     def _paint_tool_checkbox(self, painter: QPainter, rect: QRect, *, checked: bool, hovered: bool) -> None:

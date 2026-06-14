@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QCloseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QScrollBar,
     QSizePolicy,
     QSizeGrip,
     QSplitter,
@@ -24,7 +25,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..ai_results import build_ai_explanation_lines
-from ..formats import suffix_for_path
 from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats
 from ..review_workflows import review_round_label
 from .theme import ThemePalette, default_theme
@@ -545,6 +545,8 @@ class WorkspacePanel(QWidget):
         variant: str,
         content: QWidget,
         preferred_width: int,
+        minimum_width: int = 0,
+        maximum_width: int = 0,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -553,7 +555,8 @@ class WorkspacePanel(QWidget):
         self.side = side
         self.variant = variant
         self._expanded_width = preferred_width
-        self._minimum_expanded_width = max(236, preferred_width - 44)
+        self._minimum_expanded_width = minimum_width if minimum_width > 0 else max(236, preferred_width - 44)
+        self._maximum_expanded_width = maximum_width if maximum_width > 0 else preferred_width + 180
         self._mode = "expanded"
 
         self.setObjectName(f"{variant}PanelSlot")
@@ -609,9 +612,17 @@ class WorkspacePanel(QWidget):
     def expanded_width(self) -> int:
         return self._expanded_width
 
+    @property
+    def minimum_expanded_width(self) -> int:
+        return self._minimum_expanded_width
+
+    @property
+    def maximum_expanded_width(self) -> int:
+        return self._maximum_expanded_width
+
     def set_expanded_width(self, width: int) -> None:
         if width > 120:
-            self._expanded_width = width
+            self._expanded_width = max(self._minimum_expanded_width, min(width, self._maximum_expanded_width))
 
     def apply_theme(self, theme: ThemePalette) -> None:
         self.side_tab.apply_theme(theme)
@@ -672,7 +683,7 @@ class WorkspacePanel(QWidget):
 
     def _apply_expanded_constraints(self) -> None:
         self.setMinimumWidth(self._minimum_expanded_width)
-        self.setMaximumWidth(16777215)
+        self.setMaximumWidth(self._maximum_expanded_width)
 
     def _tab_alignment(self) -> Qt.AlignmentFlag:
         alignment = Qt.AlignmentFlag.AlignTop
@@ -1041,6 +1052,14 @@ class WorkspaceDocks:
                 panel.set_expanded_width(sizes[2])
 
     def _rebalance_sizes(self) -> None:
+        # Refresh each side column's width bounds and visibility for the current
+        # panel modes so a hidden/collapsed panel never keeps reserving space —
+        # the center viewport reclaims it instead of leaving dead space.
+        for side in ("left", "right"):
+            column = self._side_columns[side]
+            docked = [panel for panel in self._panels_for_side(side) if panel.mode in {"expanded", "collapsed"}]
+            self._apply_column_width_constraints(column, docked)
+            column.setVisible(bool(docked))
         total = max(sum(self.splitter.sizes()), self.splitter.width(), 1200)
         left = self._side_width("left")
         right = self._side_width("right")
@@ -1108,10 +1127,27 @@ class WorkspaceDocks:
         tab_widget.tabBar().setVisible(len(tabbed) > 1)
         tab_widget.setVisible(len(tabbed) > 0)
         column.setVisible(bool(visible_panels))
+        self._apply_column_width_constraints(column, visible_panels)
         if column.count() > 1:
             column.setSizes([1 for _ in range(column.count())])
         column.updateGeometry()
         column.update()
+
+    @staticmethod
+    def _apply_column_width_constraints(column: QSplitter, panels: list["WorkspacePanel"]) -> None:
+        # Mirror the contained panels' width bounds onto the side column so the
+        # main splitter handle cannot drag a docked panel narrower (clipping its
+        # contents) or wider than its allowed range.
+        expanded = [panel for panel in panels if panel.mode == "expanded"]
+        if expanded:
+            minimum = max(panel.minimum_expanded_width for panel in expanded)
+            maximum = max(panel.maximum_expanded_width for panel in expanded)
+        elif any(panel.mode == "collapsed" for panel in panels):
+            minimum = maximum = TAB_WIDTH
+        else:
+            minimum, maximum = 0, 16777215
+        column.setMinimumWidth(minimum)
+        column.setMaximumWidth(max(minimum, maximum))
 
     @staticmethod
     def _clear_splitter(splitter: QSplitter) -> None:
@@ -1476,6 +1512,10 @@ class InspectorPanel(QWidget):
     best_of_set_requested = Signal()
     open_editor_requested = Signal()
     reveal_requested = Signal()
+    popout_requested = Signal()
+    swap_side_requested = Signal()
+    close_requested = Signal()
+    preview_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1489,26 +1529,81 @@ class InspectorPanel(QWidget):
         scroll.setObjectName("inspectorScrollArea")
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
+        # The trailing File Details section absorbs slack so there is no dead
+        # space when everything fits. The real scrollbar is hidden (takes no
+        # layout width) so the cards stay flush with the panel's right edge
+        # (colinear with the top bar); an overlay scrollbar floats over the
+        # content when scrolling is actually needed.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         root_layout.addWidget(scroll)
+        self._scroll = scroll
+        self._overlay_scrollbar = QScrollBar(Qt.Orientation.Vertical, scroll)
+        self._overlay_scrollbar.setObjectName("inspectorOverlayScrollBar")
+        self._overlay_scrollbar.hide()
+        real_bar = scroll.verticalScrollBar()
+        self._overlay_scrollbar.valueChanged.connect(real_bar.setValue)
+        real_bar.valueChanged.connect(self._overlay_scrollbar.setValue)
+        real_bar.rangeChanged.connect(lambda _lo, _hi: self._sync_overlay_scrollbar())
 
         content = QWidget(scroll)
         content.setObjectName("inspectorBody")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        # Flush on all sides so the cards' right edge stays colinear with the top
+        # bar; a vertical scrollbar (when present) takes its own space rather than
+        # overlapping the cards.
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
-        self.title_label = QLabel("No Selection")
-        self.title_label.setObjectName("inspectorTitle")
-        self.title_label.setWordWrap(True)
-        self.title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.title_label)
+        # Preview card: the small header bar (pop-out / swap / close) sits above
+        # the selection preview image, replacing the old folder-name header.
+        self.preview_card = QWidget(content)
+        self.preview_card.setObjectName("inspectorPreviewCard")
+        self.preview_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        preview_layout = QVBoxLayout(self.preview_card)
+        preview_layout.setContentsMargins(8, 8, 8, 10)
+        preview_layout.setSpacing(8)
 
-        self.subtitle_label = QLabel("")
-        self.subtitle_label.setObjectName("inspectorSubtitle")
-        self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.subtitle_label)
+        header_bar = QWidget(self.preview_card)
+        header_bar.setObjectName("inspectorHeaderBar")
+        header_layout = QHBoxLayout(header_bar)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+        self.preview_collapse_button = self._make_header_button("▾", "Minimize preview", "inspectorHeaderButton")
+        self.preview_collapse_button.setCheckable(True)
+        self.preview_collapse_button.setChecked(True)
+        self.preview_collapse_button.toggled.connect(self._set_preview_expanded)
+        self.popout_button = self._make_header_button("⊞", "Pop out inspector", "inspectorHeaderButton")
+        self.swap_side_button = self._make_header_button("⌖", "Swap the left and right panel sides", "inspectorHeaderButton")
+        self.close_button = self._make_header_button("✕", "Hide inspector", "inspectorHeaderCloseButton")
+        self.popout_button.clicked.connect(lambda _checked=False: self.popout_requested.emit())
+        self.swap_side_button.clicked.connect(lambda _checked=False: self.swap_side_requested.emit())
+        self.close_button.clicked.connect(lambda _checked=False: self.close_requested.emit())
+        header_layout.addWidget(self.preview_collapse_button, 0)
+        header_layout.addWidget(self.popout_button, 0)
+        header_layout.addWidget(self.swap_side_button, 0)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self.close_button, 0)
+        preview_layout.addWidget(header_bar)
 
+        self.preview_image = QLabel(self.preview_card)
+        self.preview_image.setObjectName("inspectorPreviewImage")
+        self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image.setFixedHeight(168)
+        # Ignored width + zero minimum so a loaded pixmap never forces the panel
+        # wider than its column (which would clip everything on the right when
+        # the panel is resized narrow). The pixmap is rescaled on resize instead.
+        self.preview_image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.preview_image.setMinimumWidth(0)
+        self.preview_image.setText("No image selected")
+        self._preview_source: QImage | None = None
+        preview_layout.addWidget(self.preview_image)
+
+        layout.addWidget(self.preview_card)
+
+        # Histogram sits directly below the preview.
+        self.histogram_widget = InspectorHistogram(self)
+        self._make_custom_section(layout, "Histogram", self.histogram_widget)
         self.culling_rows = self._make_section(layout, "Culling", ("Decision", "Rating", "AI Suggestion", "Confidence", "Reason"))
         self.quality_rows = self._make_section(layout, "Quality", ("Detail", "Focus", "Motion Blur", "Noise", "Exposure", "Confidence"))
         self.group_rows = self._make_section(
@@ -1517,33 +1612,17 @@ class InspectorPanel(QWidget):
             ("Group Size", "Rank", "Best Candidate", "Similar Files", "Duplicate Risk", "Why"),
         )
         self.edit_rows = self._make_section(layout, "Edit Potential", ("Worth Editing", "Main Issue", "Fixes Needed", "Effort", "Notes"))
-        self.capture_summary = QLabel("")
-        self.capture_summary.setObjectName("inspectorValue")
-        self.capture_summary.setWordWrap(True)
-        self.capture_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._make_custom_section(layout, "Capture", self.capture_summary)
-        self.histogram_widget = InspectorHistogram(self)
-        self._make_custom_section(layout, "Histogram", self.histogram_widget)
-        self.quick_action_buttons = self._make_quick_actions(layout)
-        self.file_details_button = QToolButton(self)
-        self.file_details_button.setObjectName("inspectorDisclosureButton")
-        self.file_details_button.setText("File Details")
-        self.file_details_button.setCheckable(True)
-        self.file_details_button.setChecked(False)
-        self.file_details_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.file_details_button.setArrowType(Qt.ArrowType.RightArrow)
-        self.file_details_button.toggled.connect(self._set_file_details_visible)
-        layout.addWidget(self.file_details_button)
-        self.file_details_section = QWidget(self)
+        # Quick Actions now live in the left "Review Controls" pane.
+        self.quick_action_buttons: dict[str, QPushButton] = {}
+        # File Details is the trailing section: it stretches to fill whatever
+        # vertical space is left so the inspector reaches the bottom with no
+        # dead gap (the other sections stay statically sized).
         self.file_details_rows = self._make_section(
             layout,
-            "",
+            "File Details",
             ("Path", "Folder", "Modified", "Mode", "Selection", "Stack", "Companions", "Workflow"),
-            section=self.file_details_section,
+            stretch=1,
         )
-        self.file_details_section.hide()
-
-        layout.addStretch(1)
         scroll.setWidget(content)
 
         self.clear()
@@ -1551,9 +1630,10 @@ class InspectorPanel(QWidget):
     def _make_custom_section(self, layout: QVBoxLayout, title: str, widget: QWidget) -> QWidget:
         section = QWidget(self)
         section.setObjectName("inspectorSection")
+        section.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         section_layout = QVBoxLayout(section)
-        section_layout.setContentsMargins(0, 0, 0, 0)
-        section_layout.setSpacing(6)
+        section_layout.setContentsMargins(10, 7, 10, 7)
+        section_layout.setSpacing(5)
         body = QWidget(section)
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
@@ -1564,7 +1644,7 @@ class InspectorPanel(QWidget):
         layout.addWidget(section)
         return section
 
-    def _add_section_header(self, layout: QVBoxLayout, title: str, body: QWidget) -> None:
+    def _add_section_header(self, layout: QVBoxLayout, title: str, body: QWidget, *, collapsed: bool = False) -> None:
         header = QWidget(self)
         header.setObjectName("inspectorSectionHeader")
         header_layout = QHBoxLayout(header)
@@ -1579,10 +1659,7 @@ class InspectorPanel(QWidget):
         toggle = QToolButton(header)
         toggle.setObjectName("inspectorSectionToggle")
         toggle.setCheckable(True)
-        toggle.setChecked(True)
-        toggle.setArrowType(Qt.ArrowType.DownArrow)
         toggle.setAutoRaise(True)
-        toggle.setToolTip(f"Collapse {title}")
 
         def update_section(visible: bool, *, target: QWidget = body, button: QToolButton = toggle, label: str = title) -> None:
             target.setVisible(visible)
@@ -1590,6 +1667,8 @@ class InspectorPanel(QWidget):
             button.setToolTip(f"{'Collapse' if visible else 'Expand'} {label}")
 
         toggle.toggled.connect(update_section)
+        toggle.setChecked(not collapsed)
+        update_section(not collapsed)
         header_layout.addWidget(toggle, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(header)
 
@@ -1600,12 +1679,15 @@ class InspectorPanel(QWidget):
         rows: tuple[str, ...],
         *,
         section: QWidget | None = None,
+        collapsed: bool = False,
+        stretch: int = 0,
     ) -> dict[str, QLabel]:
         target = section or QWidget(self)
         target.setObjectName("inspectorSection")
+        target.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         section_layout = QVBoxLayout(target)
-        section_layout.setContentsMargins(0, 0, 0, 0)
-        section_layout.setSpacing(6)
+        section_layout.setContentsMargins(10, 7, 10, 7)
+        section_layout.setSpacing(5)
 
         body = QWidget(target)
         grid = QGridLayout()
@@ -1628,17 +1710,22 @@ class InspectorPanel(QWidget):
         grid.setColumnStretch(1, 1)
         body.setLayout(grid)
         if title:
-            self._add_section_header(section_layout, title, body)
+            self._add_section_header(section_layout, title, body, collapsed=collapsed)
         section_layout.addWidget(body)
-        layout.addWidget(target)
+        if stretch:
+            # Keep the rows pinned to the top while the section card itself
+            # stretches to fill the remaining height.
+            section_layout.addStretch(1)
+        layout.addWidget(target, stretch)
         return values
 
     def _make_quick_actions(self, layout: QVBoxLayout) -> dict[str, QPushButton]:
         section = QWidget(self)
         section.setObjectName("inspectorSection")
+        section.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         section_layout = QVBoxLayout(section)
-        section_layout.setContentsMargins(0, 0, 0, 0)
-        section_layout.setSpacing(6)
+        section_layout.setContentsMargins(10, 7, 10, 7)
+        section_layout.setSpacing(5)
 
         body = QWidget(section)
         row = QGridLayout()
@@ -1667,9 +1754,75 @@ class InspectorPanel(QWidget):
             button.clicked.connect(lambda _checked=False, target=signal: target.emit())
         return button
 
+    def _make_header_button(self, text: str, tooltip: str, object_name: str) -> QToolButton:
+        button = QToolButton(self)
+        button.setObjectName(object_name)
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFixedSize(24, 22)
+        return button
+
+    def _set_preview_expanded(self, expanded: bool) -> None:
+        self.preview_image.setVisible(expanded)
+        self.preview_collapse_button.setText("▾" if expanded else "▸")
+        self.preview_collapse_button.setToolTip("Minimize preview" if expanded else "Expand preview")
+
+    def set_preview(self, image: "QImage | None", *, placeholder: str = "No image selected") -> None:
+        if image is None or image.isNull():
+            self._preview_source = None
+            self.preview_image.setPixmap(QPixmap())
+            self.preview_image.setText(placeholder)
+            return
+        self._preview_source = image
+        self.preview_image.setText("")
+        self._rescale_preview()
+
+    def _rescale_preview(self) -> None:
+        source = getattr(self, "_preview_source", None)
+        if source is None or source.isNull():
+            return
+        width = max(20, self.preview_image.width())
+        height = max(20, self.preview_image.height())
+        self.preview_image.setPixmap(
+            QPixmap.fromImage(source).scaled(
+                QSize(width, height),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _sync_overlay_scrollbar(self) -> None:
+        scroll = getattr(self, "_scroll", None)
+        bar = getattr(self, "_overlay_scrollbar", None)
+        if scroll is None or bar is None:
+            return
+        real_bar = scroll.verticalScrollBar()
+        bar.setRange(real_bar.minimum(), real_bar.maximum())
+        bar.setPageStep(real_bar.pageStep())
+        bar.setSingleStep(max(1, real_bar.singleStep()))
+        bar.setValue(real_bar.value())
+        bar.setVisible(real_bar.maximum() > real_bar.minimum())
+        self._position_overlay_scrollbar()
+
+    def _position_overlay_scrollbar(self) -> None:
+        scroll = getattr(self, "_scroll", None)
+        bar = getattr(self, "_overlay_scrollbar", None)
+        if scroll is None or bar is None:
+            return
+        width = bar.sizeHint().width() or 8
+        bar.setGeometry(scroll.width() - width, 0, width, scroll.height())
+        bar.raise_()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._rescale_preview()
+        self._sync_overlay_scrollbar()
+
     def clear(self) -> None:
-        self.title_label.setText("No Selection")
-        self.subtitle_label.setText("Open a folder and select an item.")
+        self.set_preview(None)
         for rows in (
             self.culling_rows,
             self.quality_rows,
@@ -1689,7 +1842,6 @@ class InspectorPanel(QWidget):
         self.quality_rows["Confidence"].setText("Not analyzed")
         self.group_rows["Group Size"].setText("Single image / No similar group")
         self.edit_rows["Worth Editing"].setText("Not analyzed")
-        self.capture_summary.setText("-")
         self.histogram_widget.set_stats(None)
         self._set_quick_actions_enabled(False, grouped=False)
 
@@ -1710,6 +1862,7 @@ class InspectorPanel(QWidget):
         review_summary: str = "",
         workflow_summary: str = "",
         workflow_details: tuple[str, ...] = (),
+        thumbnail: "QImage | None" = None,
     ) -> None:
         if current_record is None:
             self.clear()
@@ -1718,15 +1871,13 @@ class InspectorPanel(QWidget):
             self.file_details_rows["Selection"].setText(f"{selected_count} selected" if selected_count else "Nothing selected")
             return
 
+        if current_record.is_folder:
+            self.set_preview(None, placeholder="Folder")
+        else:
+            self.set_preview(thumbnail, placeholder="Preview loading")
+
         active_path = display_path or current_record.path
-        suffix = suffix_for_path(active_path)
-        file_type = "Folder" if current_record.is_folder else ((suffix[1:].upper() if suffix else "File"))
-        size_text = self._format_size(current_record.size)
         decision = self._decision_text(annotation)
-        self.title_label.setText(Path(active_path).name)
-        self.title_label.setToolTip(active_path)
-        self.subtitle_label.setText(f"{decision} | {file_type} | {size_text}")
-        self.subtitle_label.setToolTip(active_path)
 
         self.culling_rows["Decision"].setText(decision)
         self.culling_rows["Rating"].setText(self._rating_text(annotation))
@@ -1771,7 +1922,6 @@ class InspectorPanel(QWidget):
         self.edit_rows["Effort"].setText("Not analyzed")
         self.edit_rows["Notes"].setText(self._first_text(workflow_summary, review_summary) or "-")
 
-        self.capture_summary.setText(self._capture_summary(metadata, current_record, file_type, size_text))
         self.histogram_widget.set_stats(stats)
 
         self.file_details_rows["Path"].setText(active_path)
@@ -1786,10 +1936,6 @@ class InspectorPanel(QWidget):
         self.file_details_rows["Companions"].setText(companion_text or "-")
         self.file_details_rows["Workflow"].setText("\n".join(workflow_details) if workflow_details else "-")
         self._set_quick_actions_enabled(not current_record.is_folder, grouped=is_grouped)
-
-    def _set_file_details_visible(self, visible: bool) -> None:
-        self.file_details_button.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
-        self.file_details_section.setVisible(visible)
 
     def _set_quick_actions_enabled(self, enabled: bool, *, grouped: bool) -> None:
         for key, button in self.quick_action_buttons.items():
@@ -1953,47 +2099,6 @@ class InspectorPanel(QWidget):
             return "Yes"
         return "Not analyzed"
 
-    def _capture_summary(self, metadata: "CaptureMetadata | None", record: "ImageRecord", file_type: str, size_text: str) -> str:
-        dimensions = "-"
-        captured = ""
-        camera_line = "-"
-        exposure_line = "-"
-        if metadata is not None and metadata.path:
-            lens = self._safe_text(getattr(metadata, "lens", ""), "")
-            focal = self._safe_text(getattr(metadata, "focal_length", ""), "")
-            lens_or_focal = lens or focal
-            camera = self._safe_text(getattr(metadata, "camera", ""), "")
-            camera_line = " | ".join(part for part in (camera, lens_or_focal) if part) or "-"
-            exposure_line = self._safe_text(getattr(metadata, "summary", ""), "-")
-            if getattr(metadata, "width", 0) and getattr(metadata, "height", 0):
-                dimensions = f"{metadata.width} x {metadata.height}"
-            captured = self._safe_text(getattr(metadata, "captured_at", ""), "")
-        if not captured:
-            captured = f"Modified {self._format_modified(record.modified_ns)}" if record.modified_ns > 0 else ""
-        lines = [
-            camera_line,
-            exposure_line,
-            f"{dimensions} | {file_type} | {size_text}",
-        ]
-        if captured:
-            lines.append(f"Captured {captured}" if metadata is not None and metadata.path and getattr(metadata, "captured_at", "") else captured)
-        return "\n".join(line for line in lines if line and line != "-") or "-"
-
-    @staticmethod
-    def _format_size(size: int) -> str:
-        if size <= 0:
-            return "-"
-        units = ("B", "KB", "MB", "GB", "TB")
-        value = float(size)
-        unit = units[0]
-        for unit in units:
-            if value < 1024 or unit == units[-1]:
-                break
-            value /= 1024
-        if unit == "B":
-            return f"{int(value)} {unit}"
-        return f"{value:.1f} {unit}"
-
     @staticmethod
     def _format_modified(modified_ns: int) -> str:
         if modified_ns <= 0:
@@ -2027,6 +2132,8 @@ def build_workspace_docks(
         variant="library",
         content=library_panel,
         preferred_width=316,
+        minimum_width=292,
+        maximum_width=460,
     )
     inspector = WorkspacePanel(
         "inspector",
@@ -2035,8 +2142,15 @@ def build_workspace_docks(
         side="right",
         variant="inspector",
         content=inspector_panel,
-        preferred_width=296,
+        preferred_width=300,
+        minimum_width=300,
+        maximum_width=460,
     )
+
+    # Prototype look: floating rounded cards with their own in-content headers,
+    # so the panel chrome headers ("Library"/"Inspector") are hidden.
+    library.header.setVisible(False)
+    inspector.header.setVisible(False)
 
     shell = QWidget(window)
     shell.setObjectName("workspaceShell")

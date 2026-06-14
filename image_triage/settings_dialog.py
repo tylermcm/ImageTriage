@@ -251,11 +251,12 @@ class WorkflowSettingsDialog(QDialog):
         self.toolbar_style_combo.setMinimumWidth(180)
         self.toolbar_style_combo.addItem("Icons", "icons")
         self.toolbar_style_combo.addItem("Large icons", "large_icons")
+        self.toolbar_style_combo.addItem("Icons & Labels", "icon_text")
         self.toolbar_style_combo.addItem("Text", "text")
         toolbar_index = self.toolbar_style_combo.findData(toolbar_style)
         self.toolbar_style_combo.setCurrentIndex(max(0, toolbar_index))
         self.toolbar_style_combo.setToolTip(_settings_tooltip(
-            "Choose whether toolbar buttons show text, icons, or larger icons."
+            "Choose whether toolbar buttons show text, icons, larger icons, or icons with labels."
         ))
 
         session_row = QWidget()

@@ -73,16 +73,17 @@ def _dark_theme() -> ThemePalette:
     return ThemePalette(
         name="dark",
         is_dark=True,
-        window_bg=ColorToken(11, 12, 14),
-        chrome_bg=ColorToken(7, 8, 10),
-        toolbar_bg=ColorToken(18, 19, 22),
-        panel_bg=ColorToken(25, 27, 31),
-        panel_alt_bg=ColorToken(16, 18, 21),
-        raised_bg=ColorToken(34, 37, 42),
-        input_bg=ColorToken(13, 15, 18),
-        input_hover_bg=ColorToken(30, 33, 38),
-        border=ColorToken(45, 49, 56),
-        border_muted=ColorToken(31, 35, 41),
+        # Tuned to the UI-prototype colour spec (see ui/prototype_style.py).
+        window_bg=ColorToken(7, 7, 7),          # #070707 viewport / outer
+        chrome_bg=ColorToken(13, 13, 13),       # #0d0d0d rail / darkest chrome
+        toolbar_bg=ColorToken(20, 20, 21),      # #141415 top bar
+        panel_bg=ColorToken(22, 21, 22),        # #161516 directory panel
+        panel_alt_bg=ColorToken(21, 21, 21),    # #151515 floating cards
+        raised_bg=ColorToken(32, 32, 31),       # #20201f buttons
+        input_bg=ColorToken(17, 17, 17),
+        input_hover_bg=ColorToken(24, 24, 24),  # #181818 rail hover
+        border=ColorToken(37, 38, 40),          # #252628 dividers
+        border_muted=ColorToken(30, 30, 31),
         text_primary=ColorToken(242, 245, 247),
         text_secondary=ColorToken(187, 195, 204),
         text_muted=ColorToken(111, 120, 131),
@@ -98,7 +99,7 @@ def _dark_theme() -> ThemePalette:
         warning_soft=ColorToken(96, 66, 15, 218),
         danger=ColorToken(239, 78, 78),
         danger_soft=ColorToken(96, 28, 34, 218),
-        image_bg=ColorToken(8, 9, 11),
+        image_bg=ColorToken(7, 7, 7),
         badge_bg=ColorToken(8, 10, 13, 224),
         badge_text=ColorToken(246, 248, 250),
     )
@@ -108,16 +109,17 @@ def _midnight_theme() -> ThemePalette:
     return ThemePalette(
         name="midnight",
         is_dark=True,
-        window_bg=ColorToken(15, 21, 30),
-        chrome_bg=ColorToken(11, 16, 24),
-        toolbar_bg=ColorToken(20, 28, 39),
-        panel_bg=ColorToken(23, 33, 46),
-        panel_alt_bg=ColorToken(18, 26, 37),
-        raised_bg=ColorToken(29, 40, 54),
-        input_bg=ColorToken(16, 24, 34),
-        input_hover_bg=ColorToken(24, 34, 47),
-        border=ColorToken(45, 59, 78),
-        border_muted=ColorToken(32, 43, 58),
+        # Prototype neutral-dark backgrounds, retaining Midnight's blue accent.
+        window_bg=ColorToken(7, 7, 7),
+        chrome_bg=ColorToken(13, 13, 13),
+        toolbar_bg=ColorToken(20, 20, 21),
+        panel_bg=ColorToken(22, 21, 22),
+        panel_alt_bg=ColorToken(21, 21, 21),
+        raised_bg=ColorToken(32, 32, 31),
+        input_bg=ColorToken(17, 17, 17),
+        input_hover_bg=ColorToken(24, 24, 24),
+        border=ColorToken(37, 38, 40),
+        border_muted=ColorToken(30, 30, 31),
         text_primary=ColorToken(232, 238, 246),
         text_secondary=ColorToken(178, 192, 211),
         text_muted=ColorToken(126, 144, 168),
@@ -133,7 +135,7 @@ def _midnight_theme() -> ThemePalette:
         warning_soft=ColorToken(92, 70, 18, 220),
         danger=ColorToken(242, 124, 124),
         danger_soft=ColorToken(108, 43, 48, 215),
-        image_bg=ColorToken(11, 17, 24),
+        image_bg=ColorToken(7, 7, 7),
         badge_bg=ColorToken(9, 14, 22, 210),
         badge_text=ColorToken(244, 247, 251),
     )
@@ -476,15 +478,127 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QTabWidget#dockedPanelTabs QWidget#inspectorWorkspacePanel {{
             border-top-left-radius: 0px;
         }}
+        QWidget#appTopBar {{
+            background-color: {theme.toolbar_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 10px;
+        }}
+        QToolButton#appTopBarButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 7px;
+            padding: 0px;
+            color: {theme.text_secondary.css};
+            font-family: "Segoe UI Symbol", "Segoe UI";
+        }}
+        QToolButton#appTopBarButton:hover {{
+            background-color: rgb(49, 49, 48);
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#appTopBarButton:checked {{
+            background-color: rgb(49, 49, 48);
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#appTopBarButton:disabled {{
+            background-color: {theme.panel_alt_bg.css};
+            color: {theme.text_disabled.css};
+        }}
+        QToolButton#appTopBarButton::menu-indicator {{
+            image: none;
+            width: 0px;
+        }}
+        QLineEdit#workspaceSearchField {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 7px;
+            padding: 4px 8px;
+            color: {theme.text_primary.css};
+        }}
+        QSlider#topbarZoomSlider::groove:horizontal {{
+            height: 2px;
+            background: {theme.border.css};
+            border-radius: 1px;
+        }}
+        QSlider#topbarZoomSlider::handle:horizontal {{
+            width: 8px;
+            height: 8px;
+            margin: -3px 0px;
+            border-radius: 4px;
+            background: {theme.text_muted.css};
+        }}
+        QSlider#topbarZoomSlider::handle:horizontal:hover {{
+            background: {theme.text_secondary.css};
+        }}
+        QLabel#topbarZoomIconSmall {{
+            color: {theme.text_muted.css};
+            font-family: "Segoe UI Symbol";
+            font-size: 13px;
+        }}
+        QLabel#topbarZoomIconLarge {{
+            color: {theme.text_muted.css};
+            font-family: "Segoe UI Symbol";
+            font-size: 18px;
+        }}
+        QWidget#appTopBar QToolButton#appTopBarActionButton,
+        QWidget#appTopBar QToolButton#workspacePresetsButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 7px;
+            color: {theme.text_secondary.css};
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 600;
+        }}
+        QWidget#appTopBar QToolButton#appTopBarIconButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 7px;
+            color: {theme.text_secondary.css};
+            padding: 0px;
+        }}
+        QWidget#appTopBar QToolButton#appTopBarActionButton:hover,
+        QWidget#appTopBar QToolButton#workspacePresetsButton:hover,
+        QWidget#appTopBar QToolButton#appTopBarIconButton:hover {{
+            background-color: rgb(49, 49, 48);
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QWidget#appTopBar QToolButton#appTopBarActionButton::menu-indicator,
+        QWidget#appTopBar QToolButton#workspacePresetsButton::menu-indicator,
+        QWidget#appTopBar QToolButton#appTopBarIconButton::menu-indicator {{
+            image: none;
+            width: 0px;
+        }}
+        QTabBar#leftModeTabs {{
+            qproperty-drawBase: 0;
+        }}
+        QTabBar#leftModeTabs::tab {{
+            background-color: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: {theme.text_muted.css};
+            padding: 6px 12px;
+            margin-right: 4px;
+            font-size: 12px;
+            font-weight: 650;
+        }}
+        QTabBar#leftModeTabs::tab:selected {{
+            color: {theme.text_primary.css};
+            border-bottom: 2px solid {theme.accent.css};
+        }}
+        QTabBar#leftModeTabs::tab:hover:!selected {{
+            color: {theme.text_secondary.css};
+        }}
         QWidget#libraryWorkspacePanel {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 8px;
         }}
         QWidget#inspectorWorkspacePanel {{
-            background-color: {theme.chrome_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 8px;
+            background-color: transparent;
+            border: none;
         }}
         QWidget#libraryPanelHeader {{
             background-color: transparent;
@@ -509,6 +623,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#generatedLeftTaskRail {{
             background-color: {theme.chrome_bg.css};
             border-right: 1px solid {theme.border_muted.css};
+            border-top-left-radius: 8px;
+            border-bottom-left-radius: 8px;
         }}
         QToolButton#generatedLeftRailButton {{
             background-color: transparent;
@@ -518,38 +634,65 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#generatedLeftRailButton:hover {{
             background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
+            border-color: transparent;
         }}
         QWidget#libraryStack {{
             background-color: transparent;
             border: none;
             padding: 8px;
         }}
-        QFrame#leftPreviewPanel, QFrame#leftRatingPanel {{
-            background-color: {theme.panel_alt_bg.css};
+        QFrame#leftRatingPanel, QFrame#leftQuickActionsPanel {{
+            background-color: transparent;
+            border: none;
+        }}
+        QToolButton#leftQuickActionIcon {{
+            background-color: {theme.raised_bg.css};
             border: 1px solid {theme.border_muted.css};
-            border-radius: 8px;
+            border-radius: 6px;
+            padding: 0px;
+            min-height: 26px;
+        }}
+        QToolButton#leftQuickActionIcon:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+        }}
+        QToolButton#leftQuickActionIcon:disabled {{
+            background-color: {theme.panel_alt_bg.css};
+        }}
+        QWidget#reviewControlsPane {{
+            background-color: {theme.input_bg.css};
+            border: none;
+        }}
+        QSplitter#leftBodySplitter::handle:vertical {{
+            background-color: {theme.border.css};
+            margin: 0px;
+        }}
+        QSplitter#leftBodySplitter::handle:vertical:hover {{
+            background-color: {theme.text_muted.css};
+        }}
+        QFrame#leftSettingsBar {{
+            background-color: {theme.panel_bg.css};
+            border: none;
+            border-top: 1px solid {theme.border.css};
+            border-bottom-right-radius: 8px;
+        }}
+        QToolButton#leftSettingsBarButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            color: {theme.text_muted.css};
+            padding: 0px;
+        }}
+        QToolButton#leftSettingsBarButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
         }}
         QLabel#leftPreviewTitle {{
             color: {theme.text_primary.css};
             font-size: 12px;
             font-weight: 750;
         }}
-        QLabel#leftPreviewMeta {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 600;
-        }}
-        QLabel#leftPreviewImage {{
-            background-color: {theme.image_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 6px;
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 650;
-            padding: 2px;
-        }}
-        QToolButton#leftPreviewActionButton, QToolButton#leftRatingClearButton {{
+        QToolButton#leftRatingClearButton {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border_muted.css};
             border-radius: 6px;
@@ -558,7 +701,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             min-height: 22px;
             padding: 0px;
         }}
-        QToolButton#leftPreviewActionButton:hover, QToolButton#leftRatingClearButton:hover {{
+        QToolButton#leftRatingClearButton:hover {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
@@ -568,9 +711,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border: none;
             color: {theme.text_disabled.css};
             font-family: "Segoe UI Symbol", "Segoe UI";
-            font-size: 17px;
-            min-width: 22px;
-            min-height: 22px;
+            font-size: 23px;
+            min-height: 28px;
             padding: 0px;
         }}
         QToolButton#leftRatingStar:hover {{
@@ -583,7 +725,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
         }}
-        QLabel#leftFilterLabel {{
+        QLabel#leftFilterLabel, QLabel#leftColorLabel {{
             color: {theme.text_muted.css};
             font-size: 11px;
             font-weight: 650;
@@ -626,19 +768,67 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
         }}
-        QLabel#inspectorTitle {{
-            color: {theme.text_primary.css};
-            font-size: 15px;
-            font-weight: 650;
+        QScrollBar#inspectorOverlayScrollBar:vertical {{
+            background: transparent;
+            width: 8px;
+            margin: 2px 1px 2px 0px;
         }}
-        QLabel#inspectorSubtitle {{
+        QScrollBar#inspectorOverlayScrollBar::handle:vertical {{
+            background-color: {theme.border.css};
+            border-radius: 3px;
+            min-height: 36px;
+        }}
+        QScrollBar#inspectorOverlayScrollBar::handle:vertical:hover {{
+            background-color: {theme.text_muted.css};
+        }}
+        QScrollBar#inspectorOverlayScrollBar::add-line:vertical,
+        QScrollBar#inspectorOverlayScrollBar::sub-line:vertical {{
+            height: 0px;
+            background: transparent;
+            border: none;
+        }}
+        QScrollBar#inspectorOverlayScrollBar::add-page:vertical,
+        QScrollBar#inspectorOverlayScrollBar::sub-page:vertical {{
+            background: transparent;
+        }}
+        QWidget#inspectorPreviewCard {{
+            background-color: {theme.panel_alt_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 8px;
+        }}
+        QWidget#inspectorHeaderBar {{
+            background-color: transparent;
+            border: none;
+        }}
+        QToolButton#inspectorHeaderButton, QToolButton#inspectorHeaderCloseButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 5px;
+            color: {theme.text_muted.css};
+            font-size: 14px;
+            padding: 0px;
+        }}
+        QToolButton#inspectorHeaderButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#inspectorHeaderCloseButton:hover {{
+            background-color: {theme.danger.css};
+            color: #ffffff;
+        }}
+        QLabel#inspectorPreviewImage {{
+            background-color: {theme.image_bg.css};
+            border: none;
+            border-radius: 6px;
             color: {theme.text_muted.css};
             font-size: 11px;
+            font-weight: 650;
+            padding: 2px;
         }}
         QWidget#inspectorSection {{
-            background-color: transparent;
-            border-top: 1px solid {theme.border_muted.css};
-            padding-top: 8px;
+            background-color: {theme.panel_alt_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 8px;
         }}
         QWidget#inspectorSectionHeader {{
             background-color: transparent;
@@ -686,13 +876,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#inspectorActionButton:disabled {{
             color: {theme.text_disabled.css};
             border-color: {theme.border_muted.css};
-        }}
-        QToolButton#inspectorDisclosureButton {{
-            background-color: transparent;
-            border: none;
-            color: {theme.text_secondary.css};
-            padding: 4px 0px;
-            text-align: left;
         }}
         QTreeView#folderTree, QListWidget#favoritesList {{
             background-color: transparent;
