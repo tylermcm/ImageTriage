@@ -20,6 +20,7 @@ from .perf import perf_logger
 from .review_workflows import review_round_short_label
 from .scanner import normalized_path_key
 from .thumbnails import ThumbnailManager
+from .ui.prototype_style import folder_icon_pixmap
 from .ui.theme import ThemePalette, default_theme
 
 
@@ -248,8 +249,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._recalculate_metrics()
 
     def apply_theme(self, theme: ThemePalette) -> None:
-        self._border_active = theme.accent.qcolor()
-        self._border_selected = theme.selection_outline.qcolor()
+        self._border_active = QColor("#6090ff")
+        self._border_selected = QColor("#78a0fa")
         self._border_idle = theme.border.qcolor()
         self._background_active = theme.raised_bg.qcolor()
         self._background_selected = theme.panel_bg.qcolor()
@@ -2181,7 +2182,6 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _paint_folder_thumbnail(self, painter: QPainter, image_rect: QRect) -> None:
         painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         bounds = image_rect.adjusted(
             max(12, image_rect.width() // 12),
             max(12, image_rect.height() // 8),
@@ -2192,31 +2192,12 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.restore()
             return
 
-        # Flat single-tone folder matching the prototype folder icon
-        # (see ui/prototype_style.folder_icon_pixmap).
-        bx, by, bw, bh = bounds.left(), bounds.top(), bounds.width(), bounds.height()
-
-        def px(fraction: float) -> float:
-            return bx + bw * fraction
-
-        def py(fraction: float) -> float:
-            return by + bh * fraction
-
-        color = QColor("#d3b15b")
-        folder_path = QPainterPath()
-        folder_path.moveTo(px(0.08), py(0.84))
-        folder_path.lineTo(px(0.08), py(0.20))
-        folder_path.lineTo(px(0.42), py(0.20))
-        folder_path.lineTo(px(0.52), py(0.34))
-        folder_path.lineTo(px(0.92), py(0.34))
-        folder_path.lineTo(px(0.92), py(0.84))
-        folder_path.closeSubpath()
-        pen = QPen(color, max(3.0, bw * 0.05))
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.setBrush(color)
-        painter.drawPath(folder_path)
+        icon_size = max(24, int(min(bounds.width() * 0.84, bounds.height() * 0.854)))
+        icon = folder_icon_pixmap(icon_size)
+        target = QRect(0, 0, icon_size, icon_size)
+        target.moveCenter(bounds.center())
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.drawPixmap(target, icon, icon.rect())
         painter.restore()
 
     def _paint_tool_checkbox(self, painter: QPainter, rect: QRect, *, checked: bool, hovered: bool) -> None:
@@ -2256,12 +2237,15 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _image_draw_rect(self, image_rect: QRect, pixmap: QPixmap) -> QRect:
         draw_size = pixmap.size()
-        if self._columns == 1:
+        if self._columns == 1 or pixmap.height() > pixmap.width():
             if draw_size.width() > image_rect.width() or draw_size.height() > image_rect.height():
                 draw_size.scale(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
             draw_rect = QRect(QPoint(0, 0), draw_size)
-            draw_rect.moveTop(image_rect.top())
-            draw_rect.moveLeft(image_rect.left() + max(0, (image_rect.width() - draw_rect.width()) // 2))
+            if self._columns == 1:
+                draw_rect.moveTop(image_rect.top())
+                draw_rect.moveLeft(image_rect.left() + max(0, (image_rect.width() - draw_rect.width()) // 2))
+            else:
+                draw_rect.moveCenter(image_rect.center())
         else:
             draw_size.scale(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding)
             draw_rect = QRect(QPoint(0, 0), draw_size)

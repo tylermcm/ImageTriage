@@ -217,6 +217,8 @@ from .filtering import (
     ReviewStateFilter,
     SavedFilterPreset,
     active_filter_labels,
+    ai_cull_bucket_label,
+    ai_workflow_tag_label,
     builtin_filter_presets,
     deserialize_saved_filter_preset,
     matches_record_query,
@@ -340,7 +342,7 @@ from .ui import (
 )
 from .ui.help_topics import library_help_pages, settings_help_pages
 from .ui.menus import add_ai_results_actions
-from .ui.prototype_style import FolderTreeView, PrototypeFileIconProvider
+from .ui.prototype_style import FolderTreeView
 from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
 
 
@@ -2494,6 +2496,53 @@ class MainWindow(QMainWindow):
             "address",
         ),
     }
+    RAIL_TOOL_LAYOUT_KEY = "left_rail"
+    RAIL_TOOL_DEFAULTS = (
+        "command_palette",
+        "advanced_filters",
+        "show_hidden_folders",
+        "keyboard_shortcuts",
+        "batch_resize",
+    )
+    RAIL_TOOL_ALLOWED_ITEMS = (
+        "command_palette",
+        "advanced_filters",
+        "clear_filters",
+        "show_hidden_folders",
+        "keyboard_shortcuts",
+        "batch_rename",
+        "batch_resize",
+        "batch_convert",
+        "handoff_builder",
+        "send_to_editor",
+        "best_of_set",
+        "open_in_photoshop",
+        "reveal_in_explorer",
+        "run_ai_culling",
+        "apply_ai_culling",
+        "sort_ai_semantic_folders",
+        "reset_ai_review_cache",
+        "load_saved_ai",
+        "load_ai_results",
+        "clear_ai_results",
+        "open_ai_report",
+        "next_ai_pick",
+        "next_unreviewed_ai_pick",
+        "compare_ai_group",
+        "dispute_current_ai_result",
+        "review_ai_disagreements",
+        "performance_logging",
+        "open_performance_logs",
+    )
+    AI_ACTIVITY_TAG_SPECS = (
+        ("bucket:ai_pick", "AI Pick", "#b48a1a"),
+        ("bucket:reject", "Reject", "#781c24"),
+        ("bucket:keeper", "Keeper", "#1c5278"),
+        ("bucket:needs_review", "Needs Review", "#755212"),
+        ("workflow:best_frame", "Best Frame", "#226040"),
+        ("workflow:ai_review", "AI Review", "#8c4e10"),
+        ("workflow:ai_miss", "AI Miss", "#781c24"),
+    )
     # Items the top bar renders as fixed chrome (nav glyphs, path combo, search)
     # rather than in the customizable centre action cluster, so they are skipped
     # when mirroring the editable layout into the top bar.
@@ -2653,6 +2702,8 @@ class MainWindow(QMainWindow):
         "dispute_current_ai_result": "Dispute AI",
         "review_ai_disagreements": "AI Disagreements",
         "taste_calibration": "Calibration",
+        "performance_logging": "Performance Logging",
+        "open_performance_logs": "Performance Logs",
     }
     WORKSPACE_TOOLBAR_FLUENT_ICONS = {
         "open_folder": ("F89A", None),
@@ -2707,6 +2758,8 @@ class MainWindow(QMainWindow):
         "dispute_current_ai_result": ("E7BA", "E99A"),
         "review_ai_disagreements": ("E8DF", "E7BA"),
         "taste_calibration": ("F272", "F1D5"),
+        "performance_logging": ("E9D9", None),
+        "open_performance_logs": ("E8A7", None),
         "more": ("E712", None),
     }
 
@@ -2719,6 +2772,7 @@ class MainWindow(QMainWindow):
         self._settings = QSettings()
         self._startup_window_state = "normal"
         self._startup_window_state_fixup_applied = False
+        self._left_rail_items = list(self.RAIL_TOOL_DEFAULTS)
         self._workspace_toolbar_layouts = self._load_workspace_toolbar_layouts()
         # Prototype migration: the workspace bar is retired in favour of the
         # top bar (nav/search/path) and the left mode tabs, so it starts hidden.
@@ -3148,8 +3202,6 @@ class MainWindow(QMainWindow):
         self._folder_watch_refresh_timer.timeout.connect(self._run_watched_folder_refresh)
 
         self.folder_model = QFileSystemModel(self)
-        self._folder_icon_provider = PrototypeFileIconProvider()
-        self.folder_model.setIconProvider(self._folder_icon_provider)
         self.folder_model.setFilter(self._folder_tree_filter())
         self.folder_model.setRootPath("")
 
@@ -3159,10 +3211,6 @@ class MainWindow(QMainWindow):
         self.folder_tree.setRootIndex(QModelIndex())
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.header().hide()
-        self.folder_tree.setAnimated(True)
-        self.folder_tree.setIndentation(16)
-        self.folder_tree.setIconSize(QSize(18, 18))
-        self.folder_tree.setUniformRowHeights(True)
         for column in range(1, self.folder_model.columnCount()):
             self.folder_tree.hideColumn(column)
         self.folder_tree.clicked.connect(self._handle_tree_selection)
@@ -3205,7 +3253,10 @@ class MainWindow(QMainWindow):
         # The selection preview now lives in the right-hand Inspector pane.
         self.left_rating_buttons: list[QToolButton] = []
         self.left_color_buttons: list[QToolButton] = []
+        self.left_ai_activity_buttons: dict[str, tuple[QToolButton, QToolButton]] = {}
         self.left_rating_panel = self._build_generated_rating_panel()
+        self.left_ai_activity_panel = self._build_generated_ai_activity_panel()
+        self.left_ai_activity_panel.hide()
         self.left_settings_bar = self._build_generated_left_settings_bar()
         self.left_task_rail = self._build_generated_left_task_rail()
 
@@ -3245,6 +3296,7 @@ class MainWindow(QMainWindow):
         self._review_controls_layout.setSpacing(8)
         self._review_controls_layout.addWidget(self.left_mode_tabs)
         self._review_controls_layout.addWidget(self.left_rating_panel)
+        self._review_controls_layout.addWidget(self.left_ai_activity_panel)
         # Quick Actions are appended once self.actions exists (see below).
         self.left_body_splitter.addWidget(self.review_controls_pane)
         # Both halves fill their region; the Review Controls pane defaults to
@@ -3326,6 +3378,7 @@ class MainWindow(QMainWindow):
         self._register_shortcut_targets()
         self._apply_shortcut_overrides()
         self._build_record_filter_actions()
+        self._rebuild_left_rail()
         # Quick Actions live in the left Review Controls pane (needs self.actions).
         self.left_quick_actions_panel = self._build_generated_quick_actions_panel()
         self._review_controls_layout.addWidget(self.left_quick_actions_panel)
@@ -4375,15 +4428,26 @@ class MainWindow(QMainWindow):
         return self._fluent_toolbar_icon(primary, secondary)
 
     def _fluent_toolbar_icon(self, primary: str, secondary: str | None = None, *, color: QColor | None = None) -> QIcon:
+        theme = getattr(self, "_theme", None)
+        if color is None:
+            color = theme.text_secondary.qcolor() if theme is not None else QColor(218, 226, 238)
+        accent = theme.accent.qcolor() if theme is not None else QColor(25, 195, 125)
+        # The rendered glyph depends only on (primary, secondary, color, accent) —
+        # never on the owning action's enabled/checked state (Qt auto-dims the
+        # disabled variant). Memoize so the per-action.changed toolbar syncs are
+        # cache hits instead of re-rasterizing a 64x64 pixmap each time, which
+        # otherwise stalls folder loads by seconds when the icon toolbar style
+        # is active. The colour key makes the cache self-invalidate on theme change.
+        cache = self.__dict__.setdefault("_fluent_toolbar_icon_cache", {})
+        cache_key = (primary, secondary, color.rgba(), accent.rgba())
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        theme = getattr(self, "_theme", None)
-        if color is None:
-            color = theme.text_secondary.qcolor() if theme is not None else QColor(218, 226, 238)
-        accent = theme.accent.qcolor() if theme is not None else QColor(25, 195, 125)
 
         def draw_glyph(glyph: str, *, x: int, y: int, size: int, selected_color: QColor) -> None:
             font_family = "Segoe MDL2 Assets" if len(glyph) > 2 else "Segoe UI"
@@ -4401,7 +4465,9 @@ class MainWindow(QMainWindow):
         if secondary:
             draw_glyph(secondary, x=30, y=30, size=19, selected_color=accent)
         painter.end()
-        return QIcon(pixmap)
+        icon = QIcon(pixmap)
+        cache[cache_key] = icon
+        return icon
 
     def _configure_workspace_toolbar_button(self, button: QToolButton, *, item_id: str, text: str) -> None:
         style = self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text"))
@@ -4452,28 +4518,257 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(8)
         self._left_rail_buttons: list[tuple[QToolButton, int]] = []
-        specs = (
-            ("E80F", "Library"),
-            ("E721", "Search"),
-            ("E71C", "Filters"),
-            ("E8EF", "Collections"),
-            ("E9D2", "AI Review"),
+        self._left_rail_action_buttons: dict[str, tuple[QToolButton, QAction, str]] = {}
+        self._left_rail_tool_host = QWidget(rail)
+        self._left_rail_tool_layout = QVBoxLayout(self._left_rail_tool_host)
+        self._left_rail_tool_layout.setContentsMargins(0, 0, 0, 0)
+        self._left_rail_tool_layout.setSpacing(8)
+        layout.addWidget(self._left_rail_tool_host, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch(1)
+
+        self._left_rail_add_button = QToolButton(rail)
+        self._left_rail_add_button.setObjectName("generatedLeftRailButton")
+        self._left_rail_add_button.setIcon(self._fluent_toolbar_icon("E710", color=QColor("#8a909a")))
+        self._left_rail_add_button.setIconSize(QSize(22, 22))
+        self._left_rail_add_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._left_rail_add_button.setToolTip("Add rail tool")
+        self._left_rail_add_button.setAutoRaise(True)
+        self._left_rail_add_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._left_rail_add_button.setFixedSize(30, 30)
+        self._left_rail_add_button.clicked.connect(self._open_rail_tool_picker)
+        self._left_rail_buttons.append((self._left_rail_add_button, 22))
+        layout.addWidget(self._left_rail_add_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        return rail
+
+    def _rail_tool_action_specs(self) -> dict[str, tuple[QAction, str]]:
+        if self.actions is None:
+            return {}
+        specs = dict(self._workspace_toolbar_action_specs())
+        specs.update(
+            {
+                "performance_logging": (self.actions.performance_logging, "Performance"),
+                "open_performance_logs": (self.actions.open_performance_log_folder, "Perf Logs"),
+            }
         )
-        for glyph, tooltip in specs:
-            button = QToolButton(rail)
+        return specs
+
+    def _normalize_rail_tool_items(self, raw_items: list[object] | tuple[object, ...]) -> list[str]:
+        allowed = set(self.RAIL_TOOL_ALLOWED_ITEMS)
+        normalized: list[str] = []
+        for item in raw_items:
+            if not isinstance(item, str) or item not in allowed or item in normalized:
+                continue
+            normalized.append(item)
+        return normalized
+
+    def _rebuild_left_rail(self) -> None:
+        layout = getattr(self, "_left_rail_tool_layout", None)
+        if layout is None:
+            return
+        self._clear_layout_items(layout, delete_widgets=True)
+        self._left_rail_buttons = []
+        self._left_rail_action_buttons = {}
+        specs = self._rail_tool_action_specs()
+        self._left_rail_items = self._normalize_rail_tool_items(self._left_rail_items)
+        for item_id in self._left_rail_items:
+            spec = specs.get(item_id)
+            if spec is None:
+                continue
+            action, label = spec
+            button = QToolButton(self._left_rail_tool_host)
             button.setObjectName("generatedLeftRailButton")
-            button.setIcon(self._fluent_filled_icon(glyph, self._chrome_icon_color()))
+            button.setIcon(self._workspace_toolbar_icon(item_id))
             button.setIconSize(QSize(20, 20))
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            button.setToolTip(tooltip)
+            button.setText("")
+            button.clicked.connect(lambda _checked=False, source=action: source.trigger())
             button.setAutoRaise(True)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setFixedSize(30, 30)
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda point, selected=item_id, target=button: self._show_left_rail_item_menu(
+                    selected,
+                    target.mapToGlobal(point),
+                )
+            )
             self._left_rail_buttons.append((button, 20))
+            self._left_rail_action_buttons[item_id] = (button, action, label)
+            self._sync_left_rail_action_button(button, action, label)
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
-        # Settings + Help live in the bottom settings bar; no longer duplicated here.
-        layout.addStretch(1)
-        return rail
+        add_button = getattr(self, "_left_rail_add_button", None)
+        if add_button is not None:
+            self._left_rail_buttons.append((add_button, 20))
+        self._apply_chrome_icon_scale()
+
+    def _sync_left_rail_action_button(self, button: QToolButton, action: QAction, label: str) -> None:
+        try:
+            button.setEnabled(action.isEnabled())
+            button.setCheckable(action.isCheckable())
+            if action.isCheckable():
+                with QSignalBlocker(button):
+                    button.setChecked(action.isChecked())
+            button.setToolTip(action.toolTip() or label)
+        except RuntimeError:
+            return
+
+    def _refresh_left_rail_action_buttons(self) -> None:
+        for button, action, label in getattr(self, "_left_rail_action_buttons", {}).values():
+            self._sync_left_rail_action_button(button, action, label)
+
+    def _save_left_rail_items(self) -> None:
+        self._left_rail_items = self._normalize_rail_tool_items(self._left_rail_items)
+        self._save_workspace_toolbar_layouts()
+
+    def _pin_left_rail_tool(self, item_id: str, *, replace_item_id: str | None = None) -> None:
+        if item_id not in self.RAIL_TOOL_ALLOWED_ITEMS:
+            return
+        items = self._normalize_rail_tool_items(self._left_rail_items)
+        if replace_item_id in items:
+            replace_index = items.index(replace_item_id)
+            items.pop(replace_index)
+            if item_id in items:
+                items.remove(item_id)
+            items.insert(replace_index, item_id)
+        elif item_id not in items:
+            items.append(item_id)
+        self._left_rail_items = items
+        self._save_left_rail_items()
+        self._rebuild_left_rail()
+
+    def _unpin_left_rail_tool(self, item_id: str) -> None:
+        items = [item for item in self._normalize_rail_tool_items(self._left_rail_items) if item != item_id]
+        self._left_rail_items = items
+        self._save_left_rail_items()
+        self._rebuild_left_rail()
+
+    def _move_left_rail_tool(self, item_id: str, direction: int) -> None:
+        items = self._normalize_rail_tool_items(self._left_rail_items)
+        if item_id not in items:
+            return
+        index = items.index(item_id)
+        target = index + direction
+        if target < 0 or target >= len(items):
+            return
+        items[index], items[target] = items[target], items[index]
+        self._left_rail_items = items
+        self._save_left_rail_items()
+        self._rebuild_left_rail()
+
+    def _reset_left_rail_tools(self) -> None:
+        self._left_rail_items = list(self.RAIL_TOOL_DEFAULTS)
+        self._save_left_rail_items()
+        self._rebuild_left_rail()
+
+    def _show_left_rail_item_menu(self, item_id: str, global_pos: QPoint) -> None:
+        items = self._normalize_rail_tool_items(self._left_rail_items)
+        if item_id not in items:
+            return
+        label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
+        index = items.index(item_id)
+        menu = QMenu(self)
+        replace_action = menu.addAction(f"Replace {label}...")
+        move_up_action = menu.addAction("Move Up")
+        move_down_action = menu.addAction("Move Down")
+        menu.addSeparator()
+        unpin_action = menu.addAction(f"Unpin {label}")
+        reset_action = menu.addAction("Reset Rail")
+        move_up_action.setEnabled(index > 0)
+        move_down_action.setEnabled(index < len(items) - 1)
+        chosen = menu.exec(global_pos)
+        if chosen == replace_action:
+            self._open_rail_tool_picker(replace_item_id=item_id)
+        elif chosen == move_up_action:
+            self._move_left_rail_tool(item_id, -1)
+        elif chosen == move_down_action:
+            self._move_left_rail_tool(item_id, 1)
+        elif chosen == unpin_action:
+            self._unpin_left_rail_tool(item_id)
+        elif chosen == reset_action:
+            self._reset_left_rail_tools()
+
+    def _build_rail_tool_picker_commands(self, *, replace_item_id: str | None = None) -> list[PaletteCommand]:
+        pinned = set(self._normalize_rail_tool_items(self._left_rail_items))
+        specs = self._rail_tool_action_specs()
+        commands: list[PaletteCommand] = []
+        for item_id in self.RAIL_TOOL_ALLOWED_ITEMS:
+            if item_id in pinned and item_id != replace_item_id:
+                continue
+            spec = specs.get(item_id)
+            if spec is None:
+                continue
+            action, fallback_label = spec
+            label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, fallback_label)
+            keywords = (
+                item_id.replace("_", " "),
+                action.text().replace("&", ""),
+                action.toolTip(),
+                action.statusTip(),
+            )
+            commands.append(
+                PaletteCommand(
+                    id=f"rail.{item_id}",
+                    title=label,
+                    subtitle="Pinned Tool Shelf",
+                    section="Tools",
+                    keywords=tuple(part for part in keywords if part),
+                    callback=lambda selected=item_id, replace=replace_item_id: self._pin_left_rail_tool(
+                        selected,
+                        replace_item_id=replace,
+                    ),
+                )
+            )
+        return commands
+
+    def _ensure_rail_tool_picker_dialog(self) -> CommandPaletteDialog:
+        dialog = getattr(self, "_rail_tool_picker_dialog", None)
+        if isinstance(dialog, CommandPaletteDialog):
+            return dialog
+        dialog = CommandPaletteDialog(
+            [],
+            recent_command_ids=(),
+            title="Add Rail Tool",
+            placeholder="Search tools",
+            hint="Enter pins the selected tool.",
+            card_size=QSize(520, 420),
+            parent=self,
+        )
+        dialog.finished.connect(self._handle_rail_tool_picker_finished)
+        self._rail_tool_picker_dialog = dialog
+        return dialog
+
+    def _open_rail_tool_picker(self, _checked: bool = False, *, replace_item_id: str | None = None) -> None:
+        if self._active_command_palette is not None and self._active_command_palette.isVisible():
+            return
+        dialog = self._ensure_rail_tool_picker_dialog()
+        dialog.configure(
+            self._build_rail_tool_picker_commands(replace_item_id=replace_item_id),
+            title="Replace Rail Tool" if replace_item_id else "Add Rail Tool",
+            placeholder="Search tools",
+            hint="Enter pins the selected tool.",
+            card_size=QSize(520, 420),
+        )
+        dialog.set_prominent(False)
+        self._command_palette_open = True
+        self._active_command_palette = dialog
+        self._set_command_palette_shortcuts_enabled(False)
+        dialog.present()
+
+    def _handle_rail_tool_picker_finished(self, result: int) -> None:
+        dialog = self.sender()
+        if not isinstance(dialog, CommandPaletteDialog):
+            self._command_palette_open = False
+            self._active_command_palette = None
+            self._set_command_palette_shortcuts_enabled(True)
+            return
+        self._command_palette_open = False
+        self._active_command_palette = None
+        self._set_command_palette_shortcuts_enabled(True)
+        if result != dialog.DialogCode.Accepted:
+            return
+        command = dialog.selected_command
+        if command is not None:
+            command.callback()
 
     def _build_generated_left_settings_bar(self) -> QWidget:
         bar = QFrame()
@@ -4502,6 +4797,7 @@ class MainWindow(QMainWindow):
         add_button("E8EC", "Tags", None)
         add_button("E9D2", "Activity", None)
         layout.addStretch(1)
+        add_button("E72C", "Restart App", self._restart_app_for_development)
         add_button("E946", "Help", self._show_library_help)
         add_button("E713", "Settings", self._show_settings)
         return bar
@@ -4572,6 +4868,119 @@ class MainWindow(QMainWindow):
         filter_rows.setColumnStretch(1, 1)
         layout.addLayout(filter_rows)
         return panel
+
+    def _build_generated_ai_activity_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("leftAiActivityPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        title = QLabel("AI Output Tags")
+        title.setObjectName("leftPreviewTitle")
+        layout.addWidget(title)
+
+        tag_grid = QGridLayout()
+        tag_grid.setContentsMargins(0, 4, 0, 0)
+        tag_grid.setHorizontalSpacing(10)
+        tag_grid.setVerticalSpacing(6)
+
+        self.left_ai_activity_buttons = {}
+        for row_idx, (tag_key, label_text, color_hex) in enumerate(self.AI_ACTIVITY_TAG_SPECS):
+            swatch = QToolButton(panel)
+            swatch.setObjectName("leftAiActivitySwatch")
+            swatch.setProperty("aiColor", color_hex)
+            swatch.setToolTip(f"Filter {label_text}")
+            swatch.setCheckable(True)
+            swatch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            swatch.setFixedSize(16, 16)
+            swatch.clicked.connect(lambda _checked=False, selected=tag_key: self._toggle_ai_activity_tag_filter(selected))
+
+            label = QToolButton(panel)
+            label.setObjectName("leftAiActivityTextButton")
+            label.setText(label_text)
+            label.setToolTip(f"Filter {label_text}")
+            label.setCheckable(True)
+            label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            label.setAutoRaise(True)
+            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            label.clicked.connect(lambda _checked=False, selected=tag_key: self._toggle_ai_activity_tag_filter(selected))
+
+            self.left_ai_activity_buttons[tag_key] = (swatch, label)
+            self._set_ai_activity_swatch_style(swatch, checked=False)
+            tag_grid.addWidget(swatch, row_idx, 0)
+            tag_grid.addWidget(label, row_idx, 1)
+
+        tag_grid.setColumnStretch(1, 1)
+        layout.addLayout(tag_grid)
+        layout.addStretch(1)
+        return panel
+
+    def _set_ai_activity_swatch_style(self, swatch: QToolButton, *, checked: bool) -> None:
+        color = str(swatch.property("aiColor") or "#8a909a")
+        border = "#dbe6f5" if checked else "rgba(255, 255, 255, 0.22)"
+        swatch.setStyleSheet(
+            "QToolButton {"
+            f"background-color: {color};"
+            f"border: 1px solid {border};"
+            "border-radius: 3px;"
+            "padding: 0px;"
+            "}"
+        )
+
+    def _ai_activity_tag_label(self, tag_key: str) -> str:
+        if tag_key.startswith("bucket:"):
+            try:
+                return ai_cull_bucket_label(AICullBucket(tag_key.split(":", 1)[1]))
+            except ValueError:
+                return ""
+        if tag_key.startswith("workflow:"):
+            return ai_workflow_tag_label(tag_key.split(":", 1)[1])
+        return ""
+
+    def _active_ai_activity_tag_key(self) -> str:
+        if self._filter_query.ai_cull_bucket is not None:
+            return f"bucket:{self._filter_query.ai_cull_bucket.value}"
+        workflow_tag = self._filter_query.ai_workflow_tag.strip()
+        if workflow_tag:
+            return f"workflow:{workflow_tag}"
+        return ""
+
+    def _toggle_ai_activity_tag_filter(self, tag_key: str) -> None:
+        if self._active_ai_activity_tag_key() == tag_key:
+            self._filter_query.ai_cull_bucket = None
+            self._filter_query.ai_workflow_tag = ""
+            label_text = ""
+        elif tag_key.startswith("bucket:"):
+            try:
+                self._filter_query.ai_cull_bucket = AICullBucket(tag_key.split(":", 1)[1])
+            except ValueError:
+                return
+            self._filter_query.ai_workflow_tag = ""
+            label_text = self._ai_activity_tag_label(tag_key)
+        elif tag_key.startswith("workflow:"):
+            workflow_tag = tag_key.split(":", 1)[1]
+            if not ai_workflow_tag_label(workflow_tag):
+                return
+            self._filter_query.ai_cull_bucket = None
+            self._filter_query.ai_workflow_tag = workflow_tag
+            label_text = self._ai_activity_tag_label(tag_key)
+        else:
+            return
+        self._apply_filter_query_change()
+        if not label_text:
+            self.statusBar().showMessage("Cleared AI tag filter")
+        else:
+            self.statusBar().showMessage(f"Filtered AI tag: {label_text}")
+
+    def _sync_left_ai_activity_filter_buttons(self) -> None:
+        active_tag = self._active_ai_activity_tag_key()
+        for tag_key, (swatch, label) in getattr(self, "left_ai_activity_buttons", {}).items():
+            checked = tag_key == active_tag
+            for button in (swatch, label):
+                with QSignalBlocker(button):
+                    button.setChecked(checked)
+            self._set_ai_activity_swatch_style(swatch, checked=checked)
 
     def _build_generated_quick_actions_panel(self) -> QWidget:
         panel = QFrame()
@@ -4853,6 +5262,11 @@ class MainWindow(QMainWindow):
             raw_items = raw_layouts.get(mode)
             if isinstance(raw_items, list):
                 layouts[mode] = self._normalize_workspace_toolbar_items(mode, raw_items)
+        raw_rail_items = raw_layouts.get(self.RAIL_TOOL_LAYOUT_KEY)
+        if isinstance(raw_rail_items, list):
+            self._left_rail_items = self._normalize_rail_tool_items(raw_rail_items)
+        else:
+            self._left_rail_items = self._normalize_rail_tool_items(self._left_rail_items)
         if legacy_primary_items:
             self._merge_legacy_primary_toolbar_items(layouts, legacy_primary_items)
         self._ensure_workspace_toolbar_migrations(layouts)
@@ -4933,9 +5347,11 @@ class MainWindow(QMainWindow):
             layouts[mode] = migrated_items + [item for item in existing if item not in migrated_items]
 
     def _save_workspace_toolbar_layouts(self) -> None:
+        toolbars = {mode: list(items) for mode, items in self._workspace_toolbar_layouts.items()}
+        toolbars[self.RAIL_TOOL_LAYOUT_KEY] = self._normalize_rail_tool_items(self._left_rail_items)
         payload = {
             "version": self.WORKSPACE_TOOLBAR_LAYOUT_VERSION,
-            "toolbars": self._workspace_toolbar_layouts,
+            "toolbars": toolbars,
         }
         self._settings.setValue(self.WORKSPACE_TOOLBAR_LAYOUT_KEY, json.dumps(payload))
 
@@ -5247,8 +5663,12 @@ class MainWindow(QMainWindow):
 
     def _show_workspace_toolbar_editor(self, mode: str | None = None) -> None:
         target_mode = mode if mode in self.WORKSPACE_TOOLBAR_DEFAULTS else self._ui_mode
+        editor_layouts = {
+            toolbar_mode: list(self._workspace_toolbar_layouts.get(toolbar_mode, ()))
+            for toolbar_mode in self.WORKSPACE_TOOLBAR_DEFAULTS
+        }
         dialog = ToolbarCustomizerDialog(
-            layouts=self._workspace_toolbar_layouts,
+            layouts=editor_layouts,
             allowed_items=self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS,
             labels=self.WORKSPACE_TOOLBAR_ITEM_LABELS,
             current_mode=target_mode,
@@ -5256,7 +5676,9 @@ class MainWindow(QMainWindow):
         )
         if self._exec_dialog_with_geometry(dialog, "toolbar_customizer") != QDialog.DialogCode.Accepted:
             return
-        self._workspace_toolbar_layouts = dialog.toolbar_layouts()
+        updated_layouts = dialog.toolbar_layouts()
+        for toolbar_mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            self._workspace_toolbar_layouts[toolbar_mode] = updated_layouts.get(toolbar_mode, [])
         self._save_workspace_toolbar_layouts()
         self._rebuild_workspace_toolbar("manual")
         self._rebuild_workspace_toolbar("ai")
@@ -6403,6 +6825,8 @@ class MainWindow(QMainWindow):
             file_type=query.file_type,
             review_state=query.review_state,
             ai_state=query.ai_state,
+            ai_cull_bucket=query.ai_cull_bucket,
+            ai_workflow_tag=query.ai_workflow_tag,
             review_round=query.review_round,
             camera_text=query.camera_text,
             lens_text=query.lens_text,
@@ -6640,6 +7064,27 @@ class MainWindow(QMainWindow):
     def _save_window_state(self) -> None:
         self._save_details_view_state()
         save_window_layout(self, self._settings, self.GEOMETRY_KEY, self.STATE_KEY, self.workspace_docks)
+
+    def _restart_app_for_development(self) -> None:
+        self.statusBar().showMessage("Restarting Image Triage...")
+        self._remember_current_folder_view_state()
+        self._save_window_state()
+        self._settings.sync()
+        args = [sys.executable, "-m", "image_triage", *sys.argv[1:]]
+        cwd = Path(__file__).resolve().parent.parent
+        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        try:
+            subprocess.Popen(
+                args,
+                cwd=str(cwd),
+                close_fds=True,
+                creationflags=creation_flags,
+            )
+        except OSError as exc:
+            QMessageBox.warning(self, "Restart Failed", f"Could not restart Image Triage.\n\n{exc}")
+            self.statusBar().showMessage("Restart failed.")
+            return
+        self.close()
 
     def _restore_details_view_state(self) -> None:
         splitter_state = self._settings.value(self.DETAILS_SPLITTER_STATE_KEY, QByteArray())
@@ -9484,6 +9929,15 @@ class MainWindow(QMainWindow):
         if left_tabs is not None and left_tabs.currentIndex() != index:
             with QSignalBlocker(left_tabs):
                 left_tabs.setCurrentIndex(index)
+        left_rating_panel = getattr(self, "left_rating_panel", None)
+        if left_rating_panel is not None:
+            left_rating_panel.setVisible(target_mode != "ai")
+        left_ai_activity_panel = getattr(self, "left_ai_activity_panel", None)
+        if left_ai_activity_panel is not None:
+            left_ai_activity_panel.setVisible(target_mode == "ai")
+        left_quick_actions_panel = getattr(self, "left_quick_actions_panel", None)
+        if left_quick_actions_panel is not None:
+            left_quick_actions_panel.setVisible(target_mode != "ai")
         self.toolbar_stack.setCurrentIndex(index)
         action_stack = getattr(self, "topbar_action_stack", None)
         if action_stack is not None:
@@ -9701,6 +10155,7 @@ class MainWindow(QMainWindow):
         for mode, action in self._ai_state_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(self._filter_query.ai_state == mode)
+        self._sync_left_ai_activity_filter_buttons()
 
     def _current_visible_record_path(self) -> str | None:
         current_record = self._record_at(self.grid.current_index())
@@ -10313,6 +10768,7 @@ class MainWindow(QMainWindow):
         self._refresh_update_button_state()
         self._refresh_tool_mode_ui()
         self._refresh_directory_navigation_buttons()
+        self._refresh_left_rail_action_buttons()
         if self._toolbar_edit_mode:
             self._set_workspace_toolbar_controls_enabled(False)
         if logger.enabled:
@@ -17554,6 +18010,8 @@ class MainWindow(QMainWindow):
         count = int(self._filter_query.file_type != FileTypeFilter.ALL)
         count += int(self._filter_query.review_state != ReviewStateFilter.ALL)
         count += int(self._filter_query.ai_state != AIStateFilter.ALL)
+        count += int(self._filter_query.ai_cull_bucket is not None)
+        count += int(bool(self._filter_query.ai_workflow_tag.strip()))
         count += int(bool(normalize_review_round(self._filter_query.review_round)))
         count += int(bool(self._filter_query.camera_text.strip()))
         count += int(bool(self._filter_query.lens_text.strip()))
@@ -21167,6 +21625,7 @@ class MainWindow(QMainWindow):
         )
         needs_ai = self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
         needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
+        needs_ai = needs_ai or self._filter_query.ai_cull_bucket is not None
         needs_aiculler_ingested = self._filter_query.quick_filter == FilterMode.AI_INGESTED
         needs_dino = self._filter_query.quick_filter in {
             FilterMode.AI_PREFILTER_DUMPED,
@@ -21178,6 +21637,7 @@ class MainWindow(QMainWindow):
         needs_workflow = self._filter_query.quick_filter in {FilterMode.AI_DISAGREEMENTS, FilterMode.REVIEW_ROUNDS}
         needs_workflow = needs_workflow or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
         needs_workflow = needs_workflow or bool(normalize_review_round(self._filter_query.review_round))
+        needs_workflow = needs_workflow or bool(self._filter_query.ai_workflow_tag.strip())
         needs_metadata = self._filter_query.requires_metadata
         if needs_dino:
             self._refresh_dino_prefilter_decisions_for_current_folder()

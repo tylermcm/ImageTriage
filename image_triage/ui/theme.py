@@ -730,6 +730,26 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 11px;
             font-weight: 650;
         }}
+        QToolButton#leftAiActivityTextButton {{
+            background-color: transparent;
+            border: none;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 650;
+            min-height: 18px;
+            padding: 0px;
+            text-align: left;
+        }}
+        QToolButton#leftAiActivityTextButton:hover {{
+            color: {theme.text_primary.css};
+            background-color: transparent;
+            border: none;
+        }}
+        QToolButton#leftAiActivityTextButton:checked {{
+            color: {theme.text_primary.css};
+            background-color: transparent;
+            border: none;
+        }}
         QLabel#leftFilterMarker_accepted {{
             color: {theme.success.css};
         }}
