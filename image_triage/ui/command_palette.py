@@ -41,6 +41,9 @@ class CommandPaletteDialog(QWidget):
         *,
         recent_command_ids: tuple[str, ...] = (),
         title: str = "Command Palette",
+        placeholder: str = "Type a command, action, preset, or alias",
+        hint: str = "Enter runs the selected command. Up and down keys move through results.",
+        card_size: QSize | None = None,
         debug_hook=None,
         parent=None,
     ) -> None:
@@ -56,6 +59,7 @@ class CommandPaletteDialog(QWidget):
         self._result_code = self.DialogCode.Rejected
         self._card_width = 720
         self._card_height = 520
+        self._card_size = card_size
         self._prominent = False
         self._debug_hook = debug_hook
 
@@ -69,7 +73,7 @@ class CommandPaletteDialog(QWidget):
         self.card = QFrame(self)
         self.card.setObjectName("commandPaletteCard")
         self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.card.setMinimumSize(540, 360)
+        self.card.setMinimumSize(420, 320)
         self.card.setMaximumWidth(760)
         self._root_layout.addWidget(self.card, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self._root_layout.addStretch(1)
@@ -79,7 +83,7 @@ class CommandPaletteDialog(QWidget):
         card_layout.setSpacing(10)
 
         self.search_field = QLineEdit(self)
-        self.search_field.setPlaceholderText("Type a command, action, preset, or alias")
+        self.search_field.setPlaceholderText(placeholder)
         self.search_field.textChanged.connect(self._refresh_results)
         self.search_field.installEventFilter(self)
         card_layout.addWidget(self.search_field)
@@ -92,7 +96,7 @@ class CommandPaletteDialog(QWidget):
         self.result_list.itemActivated.connect(self._accept_selected_item)
         card_layout.addWidget(self.result_list, 1)
 
-        self.hint_label = QLabel("Enter runs the selected command. Up and down keys move through results.")
+        self.hint_label = QLabel(hint)
         self.hint_label.setObjectName("mutedText")
         card_layout.addWidget(self.hint_label)
 
@@ -109,14 +113,22 @@ class CommandPaletteDialog(QWidget):
         *,
         recent_command_ids: tuple[str, ...] = (),
         title: str = "Command Palette",
+        placeholder: str | None = None,
+        hint: str | None = None,
+        card_size: QSize | None = None,
     ) -> None:
         self._commands = commands
         self._recent_command_ids = recent_command_ids
         self._selected_command = None
+        self._card_size = card_size
         self.setWindowTitle(title)
         search_blocker = QSignalBlocker(self.search_field)
         self.search_field.clear()
         del search_blocker
+        if placeholder is not None:
+            self.search_field.setPlaceholderText(placeholder)
+        if hint is not None:
+            self.hint_label.setText(hint)
         self._refresh_results("")
 
     def set_prominent(self, prominent: bool) -> None:
@@ -242,8 +254,12 @@ class CommandPaletteDialog(QWidget):
         max_height = 680 if self._prominent else 560
         margin_w = 180 if self._prominent else 120
         margin_h = 220 if self._prominent else 160
-        width = min(max_width, max(540, parent.width() - margin_w))
-        height = min(max_height, max(360, parent.height() - margin_h))
+        if self._card_size is not None and not self._prominent:
+            width = min(max_width, max(420, min(self._card_size.width(), parent.width() - 32)))
+            height = min(max_height, max(320, min(self._card_size.height(), parent.height() - 32)))
+        else:
+            width = min(max_width, max(540, parent.width() - margin_w))
+            height = min(max_height, max(360, parent.height() - margin_h))
         self.card.setFixedSize(QSize(width, height))
         self._debug(f"sync-geometry overlay={self.width()}x{self.height()} card={width}x{height}")
 

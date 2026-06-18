@@ -10,6 +10,9 @@ from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QImage, QImageReader
 
 
+THUMBNAIL_CACHE_VERSION = 4
+
+
 @dataclass(slots=True, frozen=True)
 class ThumbnailKey:
     path: str
@@ -17,9 +20,10 @@ class ThumbnailKey:
     file_size: int
     width: int
     height: int
+    version: int = THUMBNAIL_CACHE_VERSION
 
     def digest(self) -> str:
-        payload = f"{self.path}|{self.modified_ns}|{self.file_size}|{self.width}|{self.height}"
+        payload = f"{self.version}|{self.path}|{self.modified_ns}|{self.file_size}|{self.width}|{self.height}"
         return sha1(payload.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 

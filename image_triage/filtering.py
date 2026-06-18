@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .ai_results import AIConfidenceBucket
+from .ai_results import AICullBucket, AIConfidenceBucket, ai_cull_bucket_for_result
 from .formats import FITS_SUFFIXES, JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .models import FilterMode, ImageRecord, SessionAnnotation
 from .review_workflows import (
@@ -74,6 +74,8 @@ class RecordFilterQuery:
     file_type: FileTypeFilter = FileTypeFilter.ALL
     review_state: ReviewStateFilter = ReviewStateFilter.ALL
     ai_state: AIStateFilter = AIStateFilter.ALL
+    ai_cull_bucket: AICullBucket | None = None
+    ai_workflow_tag: str = ""
     review_round: str = ""
     camera_text: str = ""
     lens_text: str = ""
@@ -130,6 +132,11 @@ def active_filter_labels(query: RecordFilterQuery) -> list[str]:
         labels.append(query.review_state.value)
     if query.ai_state != AIStateFilter.ALL:
         labels.append(f"AI {query.ai_state.value}")
+    if query.ai_cull_bucket is not None:
+        labels.append(f"AI {ai_cull_bucket_label(query.ai_cull_bucket)}")
+    workflow_label = ai_workflow_tag_label(query.ai_workflow_tag)
+    if workflow_label:
+        labels.append(workflow_label if workflow_label.startswith("AI ") else f"AI {workflow_label}")
     round_label = review_round_label(query.review_round)
     if round_label:
         labels.append(round_label)
@@ -184,6 +191,8 @@ def matches_record_query(
         and _matches_file_type(record, query.file_type)
         and _matches_review_state(query.review_state, resolved_annotation)
         and _matches_ai_state(query.ai_state, resolved_annotation, ai_result, workflow_insight)
+        and _matches_ai_cull_bucket(query.ai_cull_bucket, ai_result)
+        and _matches_ai_workflow_tag(query.ai_workflow_tag, workflow_insight)
         and _matches_review_round(query.review_round, resolved_annotation)
         and _matches_rating(query.min_rating, resolved_annotation)
         and _matches_tags(query.tag_text, resolved_annotation)
@@ -336,6 +345,51 @@ def _matches_ai_state(
     return True
 
 
+def ai_cull_bucket_label(bucket: AICullBucket | str) -> str:
+    resolved = AICullBucket(bucket) if isinstance(bucket, str) else bucket
+    if resolved == AICullBucket.AI_PICK:
+        return "AI Pick"
+    if resolved == AICullBucket.KEEPER:
+        return "Keeper"
+    if resolved == AICullBucket.NEEDS_REVIEW:
+        return "Needs Review"
+    if resolved == AICullBucket.REJECT:
+        return "Reject"
+    return "Unrated"
+
+
+def _matches_ai_cull_bucket(ai_cull_bucket: AICullBucket | None, ai_result: "AIImageResult | None") -> bool:
+    if ai_cull_bucket is None:
+        return True
+    return ai_cull_bucket_for_result(ai_result) == ai_cull_bucket
+
+
+def ai_workflow_tag_label(tag: str) -> str:
+    normalized = tag.strip().casefold()
+    if normalized == "best_frame":
+        return "Best Frame"
+    if normalized == "ai_review":
+        return "AI Review"
+    if normalized == "ai_miss":
+        return "AI Miss"
+    return ""
+
+
+def _matches_ai_workflow_tag(tag: str, workflow_insight: "RecordWorkflowInsight | None") -> bool:
+    normalized = tag.strip().casefold()
+    if not normalized:
+        return True
+    if workflow_insight is None:
+        return False
+    if normalized == "best_frame":
+        return bool(getattr(workflow_insight, "best_in_group", False))
+    if normalized == "ai_review":
+        return getattr(workflow_insight, "disagreement_badge", "") == "AI Review"
+    if normalized == "ai_miss":
+        return getattr(workflow_insight, "disagreement_badge", "") == "AI Miss"
+    return True
+
+
 def _matches_review_round(review_round: str, annotation: SessionAnnotation) -> bool:
     normalized = normalize_review_round(review_round)
     if not normalized:
@@ -419,6 +473,8 @@ def serialize_filter_query(query: RecordFilterQuery) -> dict[str, object]:
         "file_type": query.file_type.value,
         "review_state": query.review_state.value,
         "ai_state": query.ai_state.value,
+        "ai_cull_bucket": query.ai_cull_bucket.value if query.ai_cull_bucket is not None else "",
+        "ai_workflow_tag": query.ai_workflow_tag,
         "review_round": query.review_round,
         "camera_text": query.camera_text,
         "lens_text": query.lens_text,
@@ -443,6 +499,8 @@ def deserialize_filter_query(payload: dict[str, object] | None) -> RecordFilterQ
         file_type=_enum_from_value(FileTypeFilter, payload.get("file_type"), FileTypeFilter.ALL),
         review_state=_enum_from_value(ReviewStateFilter, payload.get("review_state"), ReviewStateFilter.ALL),
         ai_state=_enum_from_value(AIStateFilter, payload.get("ai_state"), AIStateFilter.ALL),
+        ai_cull_bucket=_enum_from_value(AICullBucket, payload.get("ai_cull_bucket"), None),
+        ai_workflow_tag=_string_value(payload.get("ai_workflow_tag")),
         review_round=normalize_review_round(_string_value(payload.get("review_round"))),
         camera_text=_string_value(payload.get("camera_text")),
         lens_text=_string_value(payload.get("lens_text")),

@@ -129,6 +129,8 @@ class AdvancedFilterDialog(QDialog):
             file_type=self._source_query.file_type,
             review_state=self._source_query.review_state,
             ai_state=self._source_query.ai_state,
+            ai_cull_bucket=self._source_query.ai_cull_bucket,
+            ai_workflow_tag=self._source_query.ai_workflow_tag,
             review_round=self._source_query.review_round,
             camera_text=self.camera_field.text().strip(),
             lens_text=self.lens_field.text().strip(),

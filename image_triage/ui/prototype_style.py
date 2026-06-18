@@ -85,8 +85,7 @@ class FolderTreeView(QTreeView):
         size = 3.0
         cx = rect.right() - indent / 2.0 + 0.5
         cy = rect.center().y() + 0.5
-        color = self.palette().color(QPalette.ColorRole.Text)
-        color.setAlpha(165)
+        color = QColor("#8a909a")
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         pen = QPen(color, 1.5)

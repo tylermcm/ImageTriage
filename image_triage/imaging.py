@@ -16,7 +16,7 @@ from .fits_support import (
     load_basic_fits_image,
     normalize_basic_fits_array,
 )
-from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import JPEG_SUFFIXES, FITS_SUFFIXES, MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .perf import perf_logger
 from .plugins import DisplayLoadRequest, register_display_provider, resolve_display_provider
 from .raw_embedded_jpeg import extract_embedded_jpeg
@@ -56,6 +56,9 @@ _ASTROPY_IMPORT_ATTEMPTED = False
 _ASTROPY_FITS = None
 _ASTROPY_ZSCALE_INTERVAL = None
 _BUILTIN_DISPLAY_PROVIDERS_REGISTERED = False
+_JPEG_EXIF_MAX_SCAN_BYTES = 2 * 1024 * 1024
+_JPEG_EXIF_ORIENTATION = 0x0112
+_JPEG_EXIF_TYPE_SHORT = 3
 
 
 @dataclass(slots=True, frozen=True)
@@ -370,8 +373,8 @@ def _load_with_fallbacks(
 
 def _load_standard_image(path: str, target_size: QSize, *, auto_transform: bool = True) -> tuple[QImage, str | None]:
     reader = QImageReader(path)
-    reader.setAutoTransform(auto_transform)
     source_size = reader.size()
+    reader.setAutoTransform(auto_transform)
     if source_size.isValid() and _qt_decode_likely_exceeds_allocation_limit(source_size):
         return QImage(), "Qt image decoder skipped due allocation limit."
     if source_size.isValid() and _has_target(target_size):
@@ -383,7 +386,103 @@ def _load_standard_image(path: str, target_size: QSize, *, auto_transform: bool 
     if image.isNull():
         return QImage(), reader.errorString()
 
+    if auto_transform:
+        image = _apply_jpeg_orientation_fallback(path, image, source_size)
+
     return _scale_if_needed(image, target_size), None
+
+
+def _apply_jpeg_orientation_fallback(path: str, image: QImage, source_size: QSize) -> QImage:
+    """Rotate EXIF-oriented JPEGs when Qt leaves the decoded pixels unrotated."""
+
+    if image.isNull() or suffix_for_path(path) not in JPEG_SUFFIXES:
+        return image
+    orientation = _read_jpeg_exif_orientation(path)
+    if orientation not in (5, 6, 7, 8):
+        return image
+    # Most camera portrait JPEGs are stored as landscape pixels plus EXIF
+    # orientation. If Qt already honored the tag, the decoded image is portrait;
+    # if it did not, rotate it here. Avoid using QImageReader.size() for this
+    # decision because some Qt plugins report the transformed size there.
+    if image.height() > image.width():
+        return image
+    return _apply_exif_orientation(image, orientation)
+
+
+def _read_jpeg_exif_orientation(path: str) -> int:
+    try:
+        with open(path, "rb") as stream:
+            if stream.read(2) != b"\xff\xd8":
+                return 1
+            scanned = 2
+            while scanned < _JPEG_EXIF_MAX_SCAN_BYTES:
+                marker_prefix = stream.read(1)
+                scanned += 1
+                if marker_prefix != b"\xff":
+                    return 1
+                marker = stream.read(1)
+                scanned += 1
+                while marker == b"\xff":
+                    marker = stream.read(1)
+                    scanned += 1
+                if not marker:
+                    return 1
+                marker_value = marker[0]
+                if marker_value in {0x01, *range(0xD0, 0xD9)}:
+                    continue
+                length_data = stream.read(2)
+                scanned += 2
+                if len(length_data) != 2:
+                    return 1
+                segment_length = struct.unpack(">H", length_data)[0]
+                if segment_length < 2:
+                    return 1
+                payload_length = segment_length - 2
+                if marker_value == 0xE1:
+                    payload = stream.read(payload_length)
+                    scanned += payload_length
+                    orientation = _jpeg_exif_orientation_from_payload(payload)
+                    if orientation != 1:
+                        return orientation
+                    continue
+                stream.seek(payload_length, os.SEEK_CUR)
+                scanned += payload_length
+    except (OSError, struct.error):
+        return 1
+    return 1
+
+
+def _jpeg_exif_orientation_from_payload(payload: bytes) -> int:
+    if len(payload) < 14 or not payload.startswith(b"Exif\x00\x00"):
+        return 1
+    tiff = payload[6:]
+    if tiff[:2] == b"II":
+        endian = "<"
+    elif tiff[:2] == b"MM":
+        endian = ">"
+    else:
+        return 1
+    if len(tiff) < 8 or struct.unpack(endian + "H", tiff[2:4])[0] != 42:
+        return 1
+    first_ifd = struct.unpack(endian + "I", tiff[4:8])[0]
+    entry_count_offset = first_ifd
+    if entry_count_offset + 2 > len(tiff):
+        return 1
+    entry_count = struct.unpack(endian + "H", tiff[entry_count_offset : entry_count_offset + 2])[0]
+    entries_start = entry_count_offset + 2
+    entries_end = entries_start + entry_count * 12
+    if entry_count <= 0 or entries_end > len(tiff):
+        return 1
+    for offset in range(entries_start, entries_end, 12):
+        entry = tiff[offset : offset + 12]
+        tag, value_type, value_count = struct.unpack(endian + "HHI", entry[:8])
+        if tag != _JPEG_EXIF_ORIENTATION:
+            continue
+        if value_type != _JPEG_EXIF_TYPE_SHORT or value_count < 1:
+            return 1
+        orientation = struct.unpack(endian + "H", entry[8:10])[0]
+        return orientation if 1 <= orientation <= 8 else 1
+    return 1
 
 
 def _load_psd_image(path: str, target_size: QSize, *, auto_transform: bool = True) -> tuple[QImage, str | None]:

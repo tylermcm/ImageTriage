@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from .ai_results import AIImageResult, build_ai_explanation_lines
+from .cache import THUMBNAIL_CACHE_VERSION
 from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display, sanitize_display_error
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
@@ -2632,6 +2633,7 @@ class FullScreenPreview(QDialog):
         fits_display_settings: FitsDisplaySettings | None = None,
     ) -> tuple[object, ...]:
         return (
+            THUMBNAIL_CACHE_VERSION,
             path,
             source_signature,
             max(0, target_size.width()),
@@ -2706,7 +2708,7 @@ class FullScreenPreview(QDialog):
             self._preview_cache_bytes -= removed_cost
 
     def _invalidate_preview_cache(self, path: str) -> None:
-        matching_keys = [key for key in self._preview_cache if key[0] == path]
+        matching_keys = [key for key in self._preview_cache if len(key) > 1 and key[1] == path]
         for key in matching_keys:
             _image, cost = self._preview_cache.pop(key)
             self._preview_cache_bytes -= cost
