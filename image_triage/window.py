@@ -66,6 +66,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from aiculler.telemetry import TelemetryEvent, ThreadedTelemetryLogger, classify_override, normalize_bucket
+
 from .ai_model import (
     AIModelInstallation,
     DEFAULT_AICULLER_CLIP_SIZE_MB,
@@ -1358,32 +1360,32 @@ class AIReviewCompleteDialog(QDialog):
             counts_row.addWidget(
                 _AIBadgePreview(
                     f"AI Pick {bucket_counts.get(AICullBucket.AI_PICK, 0)}",
-                    background="rgba(180, 138, 26, 220)",
-                    foreground="#fff6d8",
+                    background="rgba(215, 164, 58, 218)",
+                    foreground="#fffaf2",
                     parent=self,
                 )
             )
             counts_row.addWidget(
                 _AIBadgePreview(
                     f"Reject {bucket_counts.get(AICullBucket.REJECT, 0)}",
-                    background="rgba(120, 28, 36, 220)",
-                    foreground="#ffe8ea",
+                    background="rgba(214, 90, 103, 218)",
+                    foreground="#fffaf2",
                     parent=self,
                 )
             )
             counts_row.addWidget(
                 _AIBadgePreview(
                     f"Keeper {bucket_counts.get(AICullBucket.KEEPER, 0)}",
-                    background="rgba(28, 82, 120, 220)",
-                    foreground="#e8f4ff",
+                    background="rgba(95, 130, 216, 218)",
+                    foreground="#fffaf2",
                     parent=self,
                 )
             )
             counts_row.addWidget(
                 _AIBadgePreview(
                     f"Needs Review {bucket_counts.get(AICullBucket.NEEDS_REVIEW, 0)}",
-                    background="rgba(117, 82, 18, 220)",
-                    foreground="#fff4d6",
+                    background="rgba(210, 135, 53, 218)",
+                    foreground="#fffaf2",
                     parent=self,
                 )
             )
@@ -1573,38 +1575,38 @@ class AIReviewCompleteDialog(QDialog):
             "AI Pick": (
                 (),
                 (
-                    ("AI Pick", "rgba(180, 138, 26, 220)", "#fff6d8"),
-                    ("Winner", "rgba(34, 96, 64, 220)", "#ebfff2"),
+                    ("AI Pick", "rgba(215, 164, 58, 218)", "#fffaf2"),
+                    ("Winner", "rgba(70, 189, 120, 218)", "#fffaf2"),
                 ),
                 "_DSC1024.NEF",
             ),
             "Keeper": (
                 (),
-                (("Keeper", "rgba(28, 82, 120, 220)", "#e8f4ff"),),
+                (("Keeper", "rgba(95, 130, 216, 218)", "#fffaf2"),),
                 "_DSC1031.NEF",
             ),
             "Needs Review": (
                 (),
-                (("Needs Review", "rgba(117, 82, 18, 220)", "#fff4d6"),),
+                (("Needs Review", "rgba(210, 135, 53, 218)", "#fffaf2"),),
                 "_DSC1040.NEF",
             ),
             "Reject": (
                 (),
-                (("Reject", "rgba(120, 28, 36, 220)", "#ffe8ea"),),
+                (("Reject", "rgba(214, 90, 103, 218)", "#fffaf2"),),
                 "_DSC1044.NEF",
             ),
             "Best Frame": (
-                (("Best Frame", "rgba(34, 96, 64, 220)", "#ebfff2"),),
+                (("Best Frame", "rgba(70, 189, 120, 218)", "#fffaf2"),),
                 (),
                 "_DSC1050.NEF",
             ),
             "AI Review": (
-                (("AI Review", "rgba(117, 82, 18, 220)", "#fff4d6"),),
+                (("AI Review", "rgba(217, 120, 53, 218)", "#fffaf2"),),
                 (),
                 "_DSC1056.NEF",
             ),
             "AI Miss": (
-                (("AI Miss", "rgba(120, 28, 36, 220)", "#ffe8ea"),),
+                (("AI Miss", "rgba(215, 84, 122, 218)", "#fffaf2"),),
                 (),
                 "_DSC1063.NEF",
             ),
@@ -2535,13 +2537,13 @@ class MainWindow(QMainWindow):
         "open_performance_logs",
     )
     AI_ACTIVITY_TAG_SPECS = (
-        ("bucket:ai_pick", "AI Pick", "#b48a1a"),
-        ("bucket:reject", "Reject", "#781c24"),
-        ("bucket:keeper", "Keeper", "#1c5278"),
-        ("bucket:needs_review", "Needs Review", "#755212"),
-        ("workflow:best_frame", "Best Frame", "#226040"),
-        ("workflow:ai_review", "AI Review", "#8c4e10"),
-        ("workflow:ai_miss", "AI Miss", "#781c24"),
+        ("bucket:ai_pick", "AI Pick", "#d7a43a"),
+        ("bucket:reject", "Reject", "#d65a67"),
+        ("bucket:keeper", "Keeper", "#5f82d8"),
+        ("bucket:needs_review", "Needs Review", "#d28735"),
+        ("workflow:best_frame", "Best Frame", "#46bd78"),
+        ("workflow:ai_review", "AI Review", "#d97835"),
+        ("workflow:ai_miss", "AI Miss", "#d7547a"),
     )
     # Items the top bar renders as fixed chrome (nav glyphs, path combo, search)
     # rather than in the customizable centre action cluster, so they are skipped
@@ -2919,6 +2921,9 @@ class MainWindow(QMainWindow):
         # Drives the dispute -> AI Disagreements filter inclusion and is
         # refreshed alongside the bucket overrides above.
         self._disputed_path_keys: set[str] = set()
+        self._aiculler_telemetry_logger: ThreadedTelemetryLogger | None = None
+        self._aiculler_telemetry_db_path: Path | None = None
+        self._aiculler_pending_telemetry_events: dict[str, tuple[QTimer, TelemetryEvent]] = {}
         # AI Review forces Smart Groups/Stacks off too (the cluster context
         # was producing misleading "weak cluster leader" rejects). We snapshot
         # the toggles the same way as adapter review so they can be restored
@@ -3252,6 +3257,9 @@ class MainWindow(QMainWindow):
 
         # The selection preview now lives in the right-hand Inspector pane.
         self.left_rating_buttons: list[QToolButton] = []
+        self._left_rating_hover_value = 0
+        self._left_rating_current_value = 0
+        self._left_rating_buttons_enabled = False
         self.left_color_buttons: list[QToolButton] = []
         self.left_ai_activity_buttons: dict[str, tuple[QToolButton, QToolButton]] = {}
         self.left_rating_panel = self._build_generated_rating_panel()
@@ -3353,11 +3361,7 @@ class MainWindow(QMainWindow):
         default_columns_index = self.columns_combo.findData(saved_columns)
         self.columns_combo.setCurrentIndex(default_columns_index if default_columns_index >= 0 else 0)
         self.grid.set_column_count(saved_columns)
-        # If the user last left a continuous zoom level, restore that smooth
-        # tile width on top of the column baseline (the slider owns it).
-        saved_zoom_width = self._settings.value(self.VIEW_ZOOM_WIDTH_KEY, 0, int)
-        if saved_zoom_width and saved_zoom_width > 0:
-            self.grid.set_zoom_tile_width(saved_zoom_width)
+        self._settings.remove(self.VIEW_ZOOM_WIDTH_KEY)
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
         self.actions = build_main_window_actions(self)
@@ -4075,16 +4079,14 @@ class MainWindow(QMainWindow):
         zoom_large.setObjectName("topbarZoomIconLarge")
         self.topbar_zoom_slider = QSlider(Qt.Orientation.Horizontal, zoom_cluster)
         self.topbar_zoom_slider.setObjectName("topbarZoomSlider")
-        # Continuous thumbnail size: the value is the tile width in px so the
-        # grid resizes smoothly instead of snapping between column counts.
-        self.topbar_zoom_slider.setMinimum(ThumbnailGridView.MIN_TILE_WIDTH)
-        self.topbar_zoom_slider.setMaximum(560)
-        self.topbar_zoom_slider.setSingleStep(8)
-        self.topbar_zoom_slider.setPageStep(32)
+        self.topbar_zoom_slider.setRange(0, 100)
+        self.topbar_zoom_slider.setSingleStep(1)
+        self.topbar_zoom_slider.setPageStep(12)
+        self.topbar_zoom_slider.setTickPosition(QSlider.TickPosition.NoTicks)
         self.topbar_zoom_slider.setFixedWidth(118)
         self.topbar_zoom_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.topbar_zoom_slider.setToolTip("Thumbnail size")
-        self.topbar_zoom_slider.setValue(self._initial_zoom_width())
+        self.topbar_zoom_slider.setValue(self._initial_zoom_level())
         self.topbar_zoom_slider.valueChanged.connect(self._handle_zoom_slider_changed)
         zoom_layout.addWidget(zoom_small, 0)
         zoom_layout.addWidget(self.topbar_zoom_slider, 0)
@@ -4821,11 +4823,14 @@ class MainWindow(QMainWindow):
         for rating in range(1, 6):
             button = QToolButton(panel)
             button.setObjectName("leftRatingStar")
+            button.setProperty("ratingValue", rating)
+            button.setProperty("ratingPreview", False)
             button.setText("\u2606")
             button.setToolTip(f"Rate {rating} star{'s' if rating != 1 else ''} (click again to clear)")
             button.setCheckable(True)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.installEventFilter(self)
             button.clicked.connect(lambda _checked=False, value=rating: self._handle_left_star_clicked(value))
             self.left_rating_buttons.append(button)
             star_row.addWidget(button, 1)
@@ -4903,22 +4908,23 @@ class MainWindow(QMainWindow):
             label.setCheckable(True)
             label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             label.setAutoRaise(True)
-            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             label.clicked.connect(lambda _checked=False, selected=tag_key: self._toggle_ai_activity_tag_filter(selected))
 
             self.left_ai_activity_buttons[tag_key] = (swatch, label)
             self._set_ai_activity_swatch_style(swatch, checked=False)
-            tag_grid.addWidget(swatch, row_idx, 0)
-            tag_grid.addWidget(label, row_idx, 1)
+            tag_grid.addWidget(swatch, row_idx, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            tag_grid.addWidget(label, row_idx, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        tag_grid.setColumnStretch(1, 1)
+        tag_grid.setColumnStretch(1, 0)
+        tag_grid.setColumnStretch(2, 1)
         layout.addLayout(tag_grid)
         layout.addStretch(1)
         return panel
 
     def _set_ai_activity_swatch_style(self, swatch: QToolButton, *, checked: bool) -> None:
         color = str(swatch.property("aiColor") or "#8a909a")
-        border = "#dbe6f5" if checked else "rgba(255, 255, 255, 0.22)"
+        border = "#eef4ff" if checked else "rgba(255, 255, 255, 0.28)"
         swatch.setStyleSheet(
             "QToolButton {"
             f"background-color: {color};"
@@ -5078,12 +5084,42 @@ class MainWindow(QMainWindow):
         self._sync_left_rating_buttons(annotation.rating, enabled=not record.is_folder)
 
     def _sync_left_rating_buttons(self, rating: int, *, enabled: bool) -> None:
+        self._left_rating_current_value = max(0, min(5, int(rating or 0)))
+        self._left_rating_buttons_enabled = bool(enabled)
+        if not enabled:
+            self._left_rating_hover_value = 0
+        self._refresh_left_rating_button_visuals()
+
+    def _refresh_left_rating_button_visuals(self) -> None:
+        enabled = bool(getattr(self, "_left_rating_buttons_enabled", False))
+        saved_rating = max(0, min(5, int(getattr(self, "_left_rating_current_value", 0) or 0)))
+        hover_rating = max(0, min(5, int(getattr(self, "_left_rating_hover_value", 0) or 0))) if enabled else 0
+        display_rating = hover_rating or saved_rating
         for index, button in enumerate(getattr(self, "left_rating_buttons", ()), start=1):
             button.setEnabled(enabled)
-            filled = enabled and index <= int(rating or 0)
+            filled = enabled and index <= display_rating
+            preview = bool(hover_rating and index <= hover_rating)
+            if button.property("ratingPreview") != preview:
+                button.setProperty("ratingPreview", preview)
+                button.style().unpolish(button)
+                button.style().polish(button)
             button.setChecked(filled)
             # Outline glyph when unset, solid glyph when the rating is set.
             button.setText("★" if filled else "☆")
+
+    def _set_left_rating_hover_preview(self, rating: int) -> None:
+        value = max(0, min(5, int(rating or 0)))
+        if self._left_rating_hover_value == value:
+            return
+        self._left_rating_hover_value = value
+        self._refresh_left_rating_button_visuals()
+
+    def _clear_left_rating_hover_preview_if_outside(self) -> None:
+        buttons = tuple(getattr(self, "left_rating_buttons", ()))
+        hovered = QApplication.widgetAt(QCursor.pos())
+        if hovered in buttons:
+            return
+        self._set_left_rating_hover_preview(0)
 
     def _build_workspace_toolbar_overflow_button(self, mode: str) -> QToolButton:
         menu = QMenu(self)
@@ -8154,6 +8190,7 @@ class MainWindow(QMainWindow):
         if self._folder_watcher.directories():
             self._folder_watcher.removePaths(list(self._folder_watcher.directories()))
         self._annotation_persistence_queue.flush_blocking()
+        self._shutdown_aiculler_telemetry_logger()
         self._shutdown_child_processes()
         self._cleanup_child_sync_state()
         self._save_window_state()
@@ -8412,6 +8449,13 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         try:
+            if watched in getattr(self, "left_rating_buttons", ()):
+                if event.type() == QEvent.Type.Enter:
+                    self._set_left_rating_hover_preview(int(watched.property("ratingValue") or 0))
+                    return False
+                if event.type() == QEvent.Type.Leave:
+                    QTimer.singleShot(0, self._clear_left_rating_hover_preview_if_outside)
+                    return False
             toolbar_mode = self._toolbar_context_mode_for(watched)
             if toolbar_mode and self._handle_toolbar_context_event(toolbar_mode, event):
                 return True
@@ -10188,34 +10232,39 @@ class MainWindow(QMainWindow):
         text = str(value or "").strip().casefold()
         return text if text in {"compact", "comfortable"} else "comfortable"
 
-    def _initial_zoom_width(self) -> int:
-        """Slider value to show on first build: saved smooth width, else grid."""
-        saved = self._settings.value(self.VIEW_ZOOM_WIDTH_KEY, 0, int)
-        if saved and saved > 0:
-            return self._clamp_zoom_width(saved)
-        return self._clamp_zoom_width(self.grid.current_tile_width())
+    def _initial_zoom_level(self) -> int:
+        return self._columns_to_zoom_slider_value(self.grid.current_columns())
 
-    def _clamp_zoom_width(self, width: object) -> int:
-        slider = getattr(self, "topbar_zoom_slider", None)
+    def _columns_to_zoom_slider_value(self, columns: object) -> int:
+        # Slider remains left = smaller/more columns, right = larger/fewer columns.
+        normalized = self._normalize_column_count(columns)
+        return int(round(((8 - normalized) / 7) * 100))
+
+    def _zoom_slider_value_to_columns(self, value: object) -> int:
         try:
-            value = int(width)
+            slider_value = int(value)
         except (TypeError, ValueError):
-            value = ThumbnailGridView.MIN_TILE_WIDTH
-        low = slider.minimum() if slider is not None else ThumbnailGridView.MIN_TILE_WIDTH
-        high = slider.maximum() if slider is not None else 560
-        return max(low, min(high, value))
+            slider_value = self._columns_to_zoom_slider_value(self.grid.current_columns())
+        slider_value = max(0, min(100, slider_value))
+        return self._normalize_column_count(round(8 - ((slider_value / 100) * 7)))
 
-    def _set_column_count(self, count: int) -> None:
+    def _set_column_count(self, count: int, *, sync_slider: bool = True) -> None:
         columns = self._normalize_column_count(count)
         combo_index = self.columns_combo.findData(columns)
-        if combo_index >= 0 and combo_index != self.columns_combo.currentIndex():
-            self.columns_combo.setCurrentIndex(combo_index)
+        if combo_index >= 0:
+            with QSignalBlocker(self.columns_combo):
+                self.columns_combo.setCurrentIndex(combo_index)
+        if self.grid.current_columns() == columns and self.grid.zoom_mode() == "column":
+            if sync_slider:
+                self._sync_zoom_slider_from_grid()
+            self._update_action_states()
             return
         self.grid.set_column_count(columns)
         self._settings.setValue(self.VIEW_COLUMNS_KEY, columns)
         # A discrete column choice clears any continuous zoom level.
         self._settings.remove(self.VIEW_ZOOM_WIDTH_KEY)
-        self._sync_zoom_slider_from_grid()
+        if sync_slider:
+            self._sync_zoom_slider_from_grid()
         self._remember_current_folder_view_state()
         self._update_action_states()
 
@@ -10223,7 +10272,7 @@ class MainWindow(QMainWindow):
         slider = getattr(self, "topbar_zoom_slider", None)
         if slider is None:
             return
-        value = self._clamp_zoom_width(self.grid.current_tile_width())
+        value = self._columns_to_zoom_slider_value(self.grid.current_columns())
         if slider.value() != value:
             with QSignalBlocker(slider):
                 slider.setValue(value)
@@ -10238,14 +10287,7 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(index)
 
     def _handle_zoom_slider_changed(self, value: int) -> None:
-        width = int(value)
-        self.grid.set_zoom_tile_width(width)
-        self._settings.setValue(self.VIEW_ZOOM_WIDTH_KEY, width)
-        # Keep the column combo reflecting how many columns now fit.
-        self._sync_columns_combo(self.grid.current_columns())
-        self._settings.setValue(self.VIEW_COLUMNS_KEY, self.grid.current_columns())
-        self._remember_current_folder_view_state()
-        self._update_action_states()
+        self._set_column_count(self._zoom_slider_value_to_columns(value), sync_slider=False)
 
     def _set_browser_view_mode(self, mode: str) -> None:
         normalized = self._normalize_browser_view_mode(mode)
@@ -12240,6 +12282,72 @@ class MainWindow(QMainWindow):
             return None
         return build_aiculler_workflow_paths(self._current_folder)
 
+    def _aiculler_telemetry_logger_for_current_folder(self) -> ThreadedTelemetryLogger | None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return None
+        db_path = aiculler_db_path(paths)
+        if self._aiculler_telemetry_logger is not None and self._aiculler_telemetry_db_path == db_path:
+            return self._aiculler_telemetry_logger
+        self._shutdown_aiculler_telemetry_logger()
+        self._aiculler_telemetry_db_path = db_path
+        self._aiculler_telemetry_logger = ThreadedTelemetryLogger(db_path)
+        return self._aiculler_telemetry_logger
+
+    def _shutdown_aiculler_telemetry_logger(self) -> None:
+        self._flush_pending_aiculler_telemetry()
+        logger = self._aiculler_telemetry_logger
+        self._aiculler_telemetry_logger = None
+        self._aiculler_telemetry_db_path = None
+        if logger is not None:
+            logger.shutdown()
+
+    def _flush_pending_aiculler_telemetry(self) -> None:
+        pending = getattr(self, "_aiculler_pending_telemetry_events", {})
+        if not pending:
+            return
+        for timer, event in list(pending.values()):
+            timer.stop()
+            self._log_aiculler_telemetry_now(event)
+        pending.clear()
+
+    def _queue_aiculler_telemetry_event(self, event: TelemetryEvent) -> None:
+        if self._aiculler_telemetry_logger_for_current_folder() is None:
+            return
+        key = event.image_id
+        pending = self._aiculler_pending_telemetry_events
+        existing = pending.pop(key, None)
+        if existing is not None:
+            timer, previous_event = existing
+            timer.stop()
+            self._log_aiculler_telemetry_now(
+                replace(
+                    previous_event,
+                    is_final=0,
+                    ignored_for_training=1,
+                )
+            )
+            event = replace(event, previous_bucket=previous_event.previous_bucket or previous_event.ai_initial_bucket)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(450)
+        timer.timeout.connect(lambda event_key=key: self._flush_pending_aiculler_telemetry_event(event_key))
+        pending[key] = (timer, event)
+        timer.start()
+
+    def _flush_pending_aiculler_telemetry_event(self, key: str) -> None:
+        pending = self._aiculler_pending_telemetry_events
+        item = pending.pop(key, None)
+        if item is None:
+            return
+        _timer, event = item
+        self._log_aiculler_telemetry_now(event)
+
+    def _log_aiculler_telemetry_now(self, event: TelemetryEvent) -> None:
+        logger = self._aiculler_telemetry_logger or self._aiculler_telemetry_logger_for_current_folder()
+        if logger is not None:
+            logger.log_event(event)
+
     def _write_aiculler_ratings_csv(self, *, global_only: bool = False) -> Path | None:
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
@@ -12756,6 +12864,7 @@ class MainWindow(QMainWindow):
 
         labels = self._load_aiculler_internal_labels(paths)
         disputes = self._load_aiculler_internal_disputes(paths)
+        previous_label = labels.get(record.path)
 
         ai_result = self._ai_result_for_record(record)
         ai_label = ""
@@ -12774,6 +12883,12 @@ class MainWindow(QMainWindow):
                 ai_label = ""
 
         labels[record.path] = normalized
+        self._record_aiculler_override_telemetry(
+            record,
+            user_label=normalized,
+            previous_label=previous_label,
+            action_source="dispute",
+        )
         disputes[record.path] = {
             "user_label": normalized,
             "ai_label": ai_label,
@@ -12785,12 +12900,32 @@ class MainWindow(QMainWindow):
         propagate_to_siblings = self._aiculler_should_propagate_label_to_siblings(normalized)
         if propagate_to_siblings:
             for sibling_path in siblings:
+                sibling_record = self._all_records_by_path.get(sibling_path)
+                sibling_previous_label = labels.get(sibling_path)
                 labels[sibling_path] = normalized
                 disputes[sibling_path] = dict(disputes[record.path])
+                if sibling_record is not None:
+                    self._record_aiculler_override_telemetry(
+                        sibling_record,
+                        user_label=normalized,
+                        previous_label=sibling_previous_label,
+                        action_source="auto_action",
+                        ignored_for_training=True,
+                    )
         else:
             for sibling_path in siblings:
+                sibling_record = self._all_records_by_path.get(sibling_path)
+                sibling_previous_label = labels.get(sibling_path)
                 labels.pop(sibling_path, None)
                 disputes.pop(sibling_path, None)
+                if sibling_record is not None and sibling_previous_label:
+                    self._record_aiculler_override_telemetry(
+                        sibling_record,
+                        user_label="",
+                        previous_label=sibling_previous_label,
+                        action_source="auto_action",
+                        ignored_for_training=True,
+                    )
 
         self._save_aiculler_internal_labels(paths, labels, disputes=disputes)
         dispute_weight = max(1, int(self._ai_dispute_weight_setting))
@@ -12901,18 +13036,63 @@ class MainWindow(QMainWindow):
         normalized = label.strip().lower()
         siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
         propagate_to_siblings = self._aiculler_should_propagate_label_to_siblings(normalized)
+        previous_label = labels.get(record.path)
         if normalized:
             labels[record.path] = normalized
+            self._record_aiculler_override_telemetry(
+                record,
+                user_label=normalized,
+                previous_label=previous_label,
+                action_source="adapter_label",
+            )
             if propagate_to_siblings:
                 for sibling_path in siblings:
+                    sibling_record = self._all_records_by_path.get(sibling_path)
+                    sibling_previous_label = labels.get(sibling_path)
                     labels[sibling_path] = normalized
+                    if sibling_record is not None:
+                        self._record_aiculler_override_telemetry(
+                            sibling_record,
+                            user_label=normalized,
+                            previous_label=sibling_previous_label,
+                            action_source="auto_action",
+                            ignored_for_training=True,
+                        )
             else:
                 for sibling_path in siblings:
+                    sibling_record = self._all_records_by_path.get(sibling_path)
+                    sibling_previous_label = labels.get(sibling_path)
                     labels.pop(sibling_path, None)
+                    if sibling_record is not None and sibling_previous_label:
+                        self._record_aiculler_override_telemetry(
+                            sibling_record,
+                            user_label="",
+                            previous_label=sibling_previous_label,
+                            action_source="auto_action",
+                            ignored_for_training=True,
+                        )
         else:
             labels.pop(record.path, None)
+            if previous_label:
+                self._record_aiculler_override_telemetry(
+                    record,
+                    user_label="",
+                    previous_label=previous_label,
+                    action_source="adapter_label",
+                    ignored_for_training=True,
+                )
             for sibling_path in siblings:
+                sibling_record = self._all_records_by_path.get(sibling_path)
+                sibling_previous_label = labels.get(sibling_path)
                 labels.pop(sibling_path, None)
+                if sibling_record is not None and sibling_previous_label:
+                    self._record_aiculler_override_telemetry(
+                        sibling_record,
+                        user_label="",
+                        previous_label=sibling_previous_label,
+                        action_source="auto_action",
+                        ignored_for_training=True,
+                    )
         self._save_aiculler_internal_labels(paths, labels)
         self._save_aiculler_global_label(record.path, normalized, weight=1.0, is_dispute=False)
         for sibling_path in siblings:
@@ -13625,8 +13805,6 @@ class MainWindow(QMainWindow):
             "sort": self._sort_mode.value,
             "scroll": max(0, int(self.grid.current_scroll_value())),
         }
-        if self.grid.zoom_mode() == "tile":
-            state["zoom_width"] = int(self.grid.current_tile_width())
         return state
 
     def _remember_current_folder_view_state(self) -> None:
@@ -13651,12 +13829,6 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(self.columns_combo):
                 self.columns_combo.setCurrentIndex(combo_index)
         self.grid.set_column_count(columns)
-        try:
-            zoom_width = int(state.get("zoom_width", 0))
-        except (TypeError, ValueError):
-            zoom_width = 0
-        if zoom_width > 0:
-            self.grid.set_zoom_tile_width(zoom_width)
         self._sync_zoom_slider_from_grid()
 
         sort_mode = self._sort_mode_from_state(state.get("sort"))
@@ -15600,6 +15772,9 @@ class MainWindow(QMainWindow):
             )
             return (label, tooltip)
         bits: list[str] = [f"v{model_version}", f"{rating_count} label(s)"]
+        score_fit = summary.get("score_fit_percent")
+        if isinstance(score_fit, (int, float)):
+            bits.append(f"fit {float(score_fit):.1f}%")
         train_mae = summary.get("train_mae")
         if isinstance(train_mae, (int, float)):
             bits.append(f"MAE {float(train_mae):.3f}")
@@ -15626,6 +15801,8 @@ class MainWindow(QMainWindow):
             tooltip_lines.append(f"Train fold: {train_count} label(s)")
         if isinstance(train_mae, (int, float)):
             tooltip_lines.append(f"Train MAE: {float(train_mae):.4f}")
+        if isinstance(score_fit, (int, float)):
+            tooltip_lines.append(f"Score Fit: {float(score_fit):.1f}%")
         if isinstance(train_lift, (int, float)):
             tooltip_lines.append(f"Train rank lift: {float(train_lift):+.3f}")
         holdout_count = summary.get("holdout_count")
@@ -15636,6 +15813,15 @@ class MainWindow(QMainWindow):
         holdout_lift = summary.get("holdout_rank_lift")
         if isinstance(holdout_lift, (int, float)):
             tooltip_lines.append(f"Holdout rank lift: {float(holdout_lift):+.3f}")
+        keeper_recall = summary.get("keeper_recall")
+        if isinstance(keeper_recall, (int, float)):
+            tooltip_lines.append(f"Keeper recall: {float(keeper_recall) * 100.0:.1f}%")
+        false_reject_rate = summary.get("false_reject_rate")
+        if isinstance(false_reject_rate, (int, float)):
+            tooltip_lines.append(f"False reject rate: {float(false_reject_rate) * 100.0:.1f}%")
+        review_reduction = summary.get("review_reduction_percent")
+        if isinstance(review_reduction, (int, float)):
+            tooltip_lines.append(f"Review reduction: {float(review_reduction):.1f}%")
         return (label, "\n".join(tooltip_lines))
 
     def _reset_review_cache_status(self) -> None:
@@ -18029,10 +18215,15 @@ class MainWindow(QMainWindow):
     def _ai_result_for_record(self, record: ImageRecord | None, *, preferred_path: str | None = None):
         if record is None or self._ai_bundle is None:
             return None
+        result = self._raw_ai_result_for_record(record, preferred_path=preferred_path)
+        return self._apply_user_label_override(result, record)
+
+    def _raw_ai_result_for_record(self, record: ImageRecord | None, *, preferred_path: str | None = None):
+        if record is None or self._ai_bundle is None:
+            return None
         result = find_ai_result_for_record(self._ai_bundle, record, preferred_path=preferred_path)
         refined = refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
-        deduped = self._apply_burst_dedup_to_ai_result(refined, record)
-        return self._apply_user_label_override(deduped, record)
+        return self._apply_burst_dedup_to_ai_result(refined, record)
 
     # Map adapter labels (1-5 ratings) to confidence buckets. Used by the
     # user-label override so a disputed/labeled card flips bucket immediately
@@ -18054,6 +18245,78 @@ class MainWindow(QMainWindow):
         "no": "LIKELY_REJECT",
         "0": "LIKELY_REJECT",
     }
+
+    @staticmethod
+    def _aiculler_bucket_for_user_label(label: str) -> str:
+        normalized = label.strip().lower()
+        if normalized in {"hero", "portfolio"}:
+            return "ai pick"
+        if normalized in {"strong", "keep", "good", "k", "yes", "1"}:
+            return "keeper"
+        if normalized == "maybe":
+            return "needs review"
+        if normalized in {"weak", "reject", "bad", "r", "no", "0"}:
+            return "reject"
+        return normalized
+
+    def _record_aiculler_override_telemetry(
+        self,
+        record: ImageRecord,
+        *,
+        user_label: str,
+        previous_label: str | None,
+        action_source: str,
+        ignored_for_training: bool = False,
+    ) -> None:
+        raw_result = self._raw_ai_result_for_record(record)
+        if raw_result is None:
+            return
+        user_bucket = self._aiculler_bucket_for_user_label(user_label)
+        if not user_bucket:
+            if not previous_label:
+                return
+            user_bucket = "unlabeled"
+            ignored_for_training = True
+        ai_bucket = ai_cull_bucket_for_result(raw_result).value
+        previous_bucket = self._aiculler_bucket_for_user_label(previous_label or "") or None
+        paths = self._aiculler_paths_for_current_folder()
+        adapter_version = ""
+        if paths is not None:
+            try:
+                adapter_version = latest_adapter_model_version(aiculler_db_path(paths))
+            except Exception:
+                adapter_version = ""
+        event = TelemetryEvent(
+            image_id=str(getattr(raw_result, "image_id", "") or record.path),
+            folder_id=str(self._current_folder or Path(record.path).parent),
+            cluster_id=str(getattr(raw_result, "group_id", "") or "") or None,
+            category_id=str(getattr(raw_result, "primary_category", "") or "") or None,
+            ai_initial_bucket=normalize_bucket(ai_bucket),
+            user_final_bucket=normalize_bucket(user_bucket),
+            previous_bucket=normalize_bucket(previous_bucket) if previous_bucket else None,
+            override_type=classify_override(ai_bucket, user_bucket),
+            action_source=action_source,
+            ai_initial_score=float(getattr(raw_result, "score", 0.0) or 0.0),
+            base_score=(
+                float(getattr(raw_result, "tag_base_score", 0.0) or 0.0)
+                if getattr(raw_result, "tag_base_score", None) is not None
+                else float(getattr(raw_result, "technical_score", 0.0) or 0.0)
+                if getattr(raw_result, "technical_score", None) is not None
+                else None
+            ),
+            adapter_score=None,
+            topiq_score=(
+                float(getattr(raw_result, "technical_score", 0.0) or 0.0)
+                if getattr(raw_result, "technical_score", None) is not None
+                else None
+            ),
+            adapter_version=adapter_version or None,
+            model_version=adapter_version or None,
+            is_final=1,
+            ignored_for_training=1 if ignored_for_training else 0,
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+        self._queue_aiculler_telemetry_event(event)
 
     def _apply_user_label_override(self, result, record):
         """If the user has saved a label for this path (via adapter combo or

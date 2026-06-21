@@ -23,7 +23,7 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 
             The workflow list on the left shows the main steps in order.
             The middle area explains the step you selected.
-            The right side shows trained adapters and their accuracy results.
+            The right side shows trained adapters and their Score Fit results.
             """,
         ),
         HelpPage(
@@ -81,7 +81,7 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 
             It helps the AI learn what you consider good or bad for this specific set of images.
 
-            Adapter accuracy shows how often the adapter matched your labels during testing. Higher accuracy means it agreed with your choices more often.
+            Score Fit shows how closely the adapter scores matched your saved labels during testing. It is a score-regression fit metric, not full culling accuracy.
 
             Train an adapter only after you have labeled enough clear examples across at least two different label types, such as keep and reject.
 

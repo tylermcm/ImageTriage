@@ -8,6 +8,8 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
+from aiculler.telemetry import ensure_user_overrides_schema
+
 
 class SQLiteFeatureStore:
     """Thread-safe SQLite contract for image metadata, embeddings, and feedback."""
@@ -175,6 +177,7 @@ class SQLiteFeatureStore:
             self._ensure_column("images", "tag_penalty", "REAL")
             self._ensure_column("images", "tag_flags", "TEXT")
             self._ensure_column("ratings", "label_origin", "TEXT NOT NULL DEFAULT 'legacy'")
+            ensure_user_overrides_schema(self.connection)
             self.connection.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -727,6 +730,19 @@ class SQLiteFeatureStore:
                     ORDER BY adapter_scores.adapter_score DESC, adapter_scores.image_id ASC
                     """,
                     (str(model_version),),
+                ).fetchall()
+            )
+
+    def list_user_overrides(self) -> list[sqlite3.Row]:
+        with self.lock:
+            ensure_user_overrides_schema(self.connection)
+            return list(
+                self.connection.execute(
+                    """
+                    SELECT *
+                    FROM user_overrides
+                    ORDER BY created_at ASC, id ASC
+                    """
                 ).fetchall()
             )
 

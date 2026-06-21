@@ -428,7 +428,26 @@ class AICullerWorkflowTests(unittest.TestCase):
             task.signals.failed.connect(lambda folder, message: failures.append(message))
             task.signals.finished.connect(lambda folder, artifact_dir, report_path: finished.append((folder, artifact_dir, report_path)))
 
-            task.run()
+            local_appdata = root / "AppData" / "Local"
+            appdata = root / "AppData" / "Roaming"
+            local_appdata.mkdir(parents=True, exist_ok=True)
+            appdata.mkdir(parents=True, exist_ok=True)
+            env_overrides = {
+                "USERPROFILE": str(root),
+                "HOME": str(root),
+                "LOCALAPPDATA": str(local_appdata),
+                "APPDATA": str(appdata),
+            }
+            previous_env = {key: os.environ.get(key) for key in env_overrides}
+            try:
+                os.environ.update(env_overrides)
+                task.run()
+            finally:
+                for key, value in previous_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
             dino_paths = build_dino_prefilter_paths(paths)
             self.assertEqual([], failures)
@@ -436,7 +455,7 @@ class AICullerWorkflowTests(unittest.TestCase):
             self.assertTrue(dino_paths.report_path.exists())
             self.assertIn("tail.jpg", dino_paths.rows_path.read_text(encoding="utf-8"))
 
-    def test_adapter_model_summaries_include_accuracy_from_failure_rate(self) -> None:
+    def test_adapter_model_summaries_include_score_fit_from_mae(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_adapter_summary_") as temp_dir:
             db_path = Path(temp_dir) / "aiculler.sqlite"
             connection = sqlite3.connect(db_path)
@@ -484,6 +503,7 @@ class AICullerWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(summaries))
         self.assertEqual("adapter-v1", summaries[0]["model_version"])
         self.assertEqual(2, summaries[0]["scored_count"])
+        self.assertEqual(85.0, summaries[0]["score_fit_percent"])
         self.assertEqual(85.0, summaries[0]["accuracy_percent"])
 
     def test_delete_adapter_model_removes_model_and_scores(self) -> None:

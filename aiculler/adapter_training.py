@@ -4,9 +4,11 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 
+from aiculler.metrics import CullingMetricRecord, compute_culling_metrics
 from aiculler.simple_ml import PrincipalProjector, Standardizer
 from aiculler.storage import SQLiteFeatureStore
 from aiculler.text_scoring import normalize_scores
@@ -50,6 +52,7 @@ class RatingExample:
     label_origin: str
     primary_category: str
     cluster_id: int | None
+    folder_id: str
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,7 @@ def import_ratings_csv(
                     "source_path": record.source_path,
                     "weight": record.weight,
                     "label_origin": record.label_origin,
+                    "folder_id": record.folder_id,
                 },
             }
             for record in records
@@ -163,6 +167,10 @@ def load_rating_records(
             label_origin = normalize_label_origin(record.get("review_round"))
             image_id = int(row["id"])
             item_context = context.get(image_id, {})
+            folder_id = (
+                str(record.get("folder_id") or record.get("folder") or "").strip()
+                or str(Path(row["source_path"]).parent)
+            )
             examples.append(
                 RatingExample(
                     image_id=image_id,
@@ -175,6 +183,7 @@ def load_rating_records(
                     label_origin=label_origin,
                     primary_category=item_context.get("primary_category") or "uncategorized",
                     cluster_id=item_context.get("cluster_id"),
+                    folder_id=folder_id,
                 )
             )
     return examples
@@ -194,6 +203,7 @@ class AdapterTrainer:
         base_weight: float = 0.50,
         adapter_weight: float = 0.50,
         holdout_fraction: float = 0.20,
+        validation_mode: str = "category_grouped_holdout",
         seed: int = 13,
     ):
         self.store = store
@@ -206,6 +216,7 @@ class AdapterTrainer:
         self.base_weight = float(base_weight)
         self.adapter_weight = float(adapter_weight)
         self.holdout_fraction = float(holdout_fraction)
+        self.validation_mode = normalize_validation_mode(validation_mode)
         self.seed = int(seed)
 
     def train(self, *, model_version: str) -> AdapterTrainingResult:
@@ -227,10 +238,11 @@ class AdapterTrainer:
         index_by_id = {image_id: idx for idx, image_id in enumerate(image_ids)}
         context = image_context(self.store)
 
-        train_examples, holdout_examples = split_holdout_by_category(
+        train_examples, holdout_examples, validation_info = split_holdout(
             examples,
             holdout_fraction=self.holdout_fraction,
             seed=self.seed,
+            validation_mode=self.validation_mode,
         )
         global_model = fit_preference_model(features, train_examples, index_by_id)
         category_models = fit_context_models(
@@ -259,7 +271,6 @@ class AdapterTrainer:
             for key, model in cluster_models.items()
         }
 
-        output_scores: dict[int, dict] = {}
         records: list[AdapterScoreRecord] = []
         for row in rows:
             image_id = int(row["id"])
@@ -288,15 +299,6 @@ class AdapterTrainer:
             confidence = min(1.0, weight_sum / (self.global_weight + self.category_weight + self.cluster_weight))
             base_score = float(row["final_score"] if row["final_score"] is not None else row["technical_score"] or 0.0)
             final_score = self.base_weight * base_score + self.adapter_weight * adapter_score
-            output_scores[image_id] = {
-                "global_score": float(global_scores[idx]),
-                "category_score": category_score,
-                "cluster_score": cluster_score,
-                "adapter_score": float(adapter_score),
-                "confidence": float(confidence),
-                "primary_category": primary_category,
-                "cluster_id": cluster_id,
-            }
             records.append(
                 AdapterScoreRecord(
                     image_id=image_id,
@@ -313,12 +315,15 @@ class AdapterTrainer:
                     final_score=float(final_score),
                 )
             )
+        output_scores = {record.image_id: adapter_record_to_store_payload(record) for record in records}
 
         metrics = evaluate_scores(
             records,
             train_examples=train_examples,
             holdout_examples=holdout_examples,
+            overrides=[dict(row) for row in self.store.list_user_overrides()],
         )
+        metrics["validation"] = validation_info
         config = {
             "projected_dim": self.projected_dim,
             "min_category_labels": self.min_category_labels,
@@ -329,6 +334,11 @@ class AdapterTrainer:
             "base_weight": self.base_weight,
             "adapter_weight": self.adapter_weight,
             "holdout_fraction": self.holdout_fraction,
+            "validation_mode": validation_info["validation_mode"],
+            "validation_requested_mode": validation_info["requested_mode"],
+            "validation_warning": validation_info.get("warning"),
+            "train_folder_count": validation_info.get("train_folder_count"),
+            "holdout_folder_count": validation_info.get("holdout_folder_count"),
             "seed": self.seed,
             "train_count": len(train_examples),
             "holdout_count": len(holdout_examples),
@@ -507,6 +517,7 @@ def rating_examples_from_store(store: SQLiteFeatureStore) -> list[RatingExample]
                 ),
                 primary_category=row["primary_category"] or "uncategorized",
                 cluster_id=int(row["cluster_id"]) if row["cluster_id"] is not None else None,
+                folder_id=str(metadata.get("folder_id") or Path(row["source_path"]).parent),
             )
         )
     return examples
@@ -633,6 +644,77 @@ def normalize_key(value: str) -> str:
     return str(Path(value)).replace("/", "\\").lower()
 
 
+VALIDATION_MODES = {"random_holdout", "category_grouped_holdout", "folder_grouped_holdout"}
+
+
+def normalize_validation_mode(value: str | None) -> str:
+    text = str(value or "category_grouped_holdout").strip().lower()
+    if text == "category":
+        text = "category_grouped_holdout"
+    if text == "folder":
+        text = "folder_grouped_holdout"
+    if text == "random":
+        text = "random_holdout"
+    if text not in VALIDATION_MODES:
+        raise ValueError(f"unsupported validation mode {value!r}")
+    return text
+
+
+def split_holdout(
+    examples: list[RatingExample],
+    *,
+    holdout_fraction: float,
+    seed: int,
+    validation_mode: str = "category_grouped_holdout",
+) -> tuple[list[RatingExample], list[RatingExample], dict[str, object]]:
+    requested_mode = normalize_validation_mode(validation_mode)
+    info: dict[str, object] = {
+        "requested_mode": requested_mode,
+        "validation_mode": requested_mode,
+        "warning": None,
+        "train_folder_count": None,
+        "holdout_folder_count": None,
+    }
+    if requested_mode == "random_holdout":
+        train, holdout = split_holdout_random(examples, holdout_fraction=holdout_fraction, seed=seed)
+    elif requested_mode == "folder_grouped_holdout":
+        folder_ids = {example.folder_id for example in examples if example.folder_id}
+        if len(folder_ids) < 2:
+            info["validation_mode"] = "category_grouped_holdout"
+            info["warning"] = "folder_grouped_holdout requires at least 2 labeled folders; fell back to category_grouped_holdout"
+            train, holdout = split_holdout_by_category(examples, holdout_fraction=holdout_fraction, seed=seed)
+        else:
+            train, holdout = split_holdout_by_folder(examples, holdout_fraction=holdout_fraction, seed=seed)
+    else:
+        train, holdout = split_holdout_by_category(examples, holdout_fraction=holdout_fraction, seed=seed)
+    train_folders = {example.folder_id for example in train if example.folder_id}
+    holdout_folders = {example.folder_id for example in holdout if example.folder_id}
+    info["train_folder_count"] = len(train_folders) if train_folders else None
+    info["holdout_folder_count"] = len(holdout_folders) if holdout_folders else None
+    return train, holdout, info
+
+
+def split_holdout_random(
+    examples: list[RatingExample],
+    *,
+    holdout_fraction: float,
+    seed: int,
+) -> tuple[list[RatingExample], list[RatingExample]]:
+    if holdout_fraction <= 0.0:
+        return list(examples), []
+    rng = np.random.default_rng(seed)
+    shuffled = list(examples)
+    rng.shuffle(shuffled)
+    holdout_count = int(round(len(shuffled) * holdout_fraction))
+    if len(shuffled) >= 4:
+        holdout_count = max(1, holdout_count)
+    train = shuffled[holdout_count:]
+    holdout = shuffled[:holdout_count]
+    if not train:
+        return list(examples), []
+    return train, holdout
+
+
 def split_holdout_by_category(
     examples: list[RatingExample],
     *,
@@ -660,18 +742,69 @@ def split_holdout_by_category(
     return train, holdout
 
 
+def split_holdout_by_folder(
+    examples: list[RatingExample],
+    *,
+    holdout_fraction: float,
+    seed: int,
+) -> tuple[list[RatingExample], list[RatingExample]]:
+    if holdout_fraction <= 0.0:
+        return list(examples), []
+    grouped: dict[str, list[RatingExample]] = {}
+    for example in examples:
+        grouped.setdefault(example.folder_id, []).append(example)
+    folders = sorted(grouped)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(folders)
+    target_holdout = max(1, int(round(len(examples) * holdout_fraction)))
+    holdout_folders: list[str] = []
+    holdout_count = 0
+    for folder_id in folders:
+        if len(holdout_folders) and holdout_count >= target_holdout:
+            break
+        holdout_folders.append(folder_id)
+        holdout_count += len(grouped[folder_id])
+    holdout_set = set(holdout_folders)
+    train = [example for example in examples if example.folder_id not in holdout_set]
+    holdout = [example for example in examples if example.folder_id in holdout_set]
+    if not train:
+        largest_folder = max(folders, key=lambda folder_id: len(grouped[folder_id]))
+        train = list(grouped[largest_folder])
+        holdout = [example for example in examples if example.folder_id != largest_folder]
+    if not holdout:
+        return list(examples), []
+    return train, holdout
+
+
 def evaluate_scores(
     records: list[AdapterScoreRecord],
     *,
     train_examples: list[RatingExample],
     holdout_examples: list[RatingExample],
+    overrides: Iterable[dict] = (),
 ) -> dict:
     score_by_id = {record.image_id: record.adapter_score for record in records}
+    holdout_metrics = evaluate_examples(holdout_examples, score_by_id)
+    train_metrics = evaluate_examples(train_examples, score_by_id)
+    culling_examples = holdout_examples or train_examples
+    final_score_by_id = {record.image_id: record.final_score for record in records}
+    culling_records = [
+        CullingMetricRecord(
+            image_id=example.image_id,
+            label=example.label,
+            score=float(final_score_by_id.get(example.image_id, score_by_id.get(example.image_id, 0.0))),
+            cluster_id=example.cluster_id,
+            folder_id=example.folder_id,
+        )
+        for example in culling_examples
+    ]
+    mae = holdout_metrics.get("mae") if holdout_examples else train_metrics.get("mae")
     return {
-        "train": evaluate_examples(train_examples, score_by_id),
-        "holdout": evaluate_examples(holdout_examples, score_by_id),
+        "train": train_metrics,
+        "holdout": holdout_metrics,
         "train_count": len(train_examples),
         "holdout_count": len(holdout_examples),
+        "culling": compute_culling_metrics(culling_records, mae=mae, overrides=overrides),
     }
 
 
@@ -710,6 +843,18 @@ def adapter_score_to_csv(record: AdapterScoreRecord, rank: int) -> dict:
         "adapter_score": record.adapter_score,
         "confidence": record.confidence,
         "final_score": record.final_score,
+    }
+
+
+def adapter_record_to_store_payload(record: AdapterScoreRecord) -> dict[str, object]:
+    return {
+        "global_score": record.global_score,
+        "category_score": record.category_score,
+        "cluster_score": record.cluster_score,
+        "adapter_score": record.adapter_score,
+        "confidence": record.confidence,
+        "primary_category": record.primary_category,
+        "cluster_id": record.cluster_id,
     }
 
 
@@ -773,7 +918,6 @@ def apply_serialized_adapter_model(
     base_weight = float(config.get("base_weight") or 0.0)
     adapter_weight = float(config.get("adapter_weight") or 1.0)
 
-    output_scores: dict[int, dict] = {}
     records: list[AdapterScoreRecord] = []
     for row in rows:
         image_id = int(row["id"])
@@ -802,15 +946,6 @@ def apply_serialized_adapter_model(
         confidence = min(1.0, weight_sum / (global_weight + category_weight + cluster_weight))
         base_score = float(row["final_score"] if row["final_score"] is not None else row["technical_score"] or 0.0)
         final_score = base_weight * base_score + adapter_weight * adapter_score
-        output_scores[image_id] = {
-            "global_score": float(global_scores[idx]),
-            "category_score": category_score,
-            "cluster_score": cluster_score,
-            "adapter_score": float(adapter_score),
-            "confidence": float(confidence),
-            "primary_category": primary_category,
-            "cluster_id": cluster_id,
-        }
         records.append(
             AdapterScoreRecord(
                 image_id=image_id,
@@ -828,8 +963,12 @@ def apply_serialized_adapter_model(
             )
         )
 
+    output_scores = {record.image_id: adapter_record_to_store_payload(record) for record in records}
     store.save_adapter_scores(str(model_version), output_scores)
-    metrics = {"applied": {"count": len(records)}, "source_metrics": _load_metrics(model_row["metrics_json"])}
+    metrics = {
+        "applied": {"count": len(records)},
+        "source_metrics": _load_metrics(model_row["metrics_json"]),
+    }
     return AdapterTrainingResult(
         model_version=str(model_version),
         scores=sorted(records, key=lambda record: record.final_score, reverse=True),
@@ -919,3 +1058,41 @@ def evaluation_rows(store: SQLiteFeatureStore, model_version: str) -> list[dict]
             }
         )
     return sorted(rows, key=lambda row: row["absolute_error"], reverse=True)
+
+
+def adapter_evaluation_report(store: SQLiteFeatureStore, model_version: str) -> dict[str, object]:
+    metrics = _stored_model_metrics(store, model_version)
+    culling = metrics.get("culling") if isinstance(metrics.get("culling"), dict) else None
+    if culling is not None:
+        return dict(culling)
+
+    rows = evaluation_rows(store, model_version)
+    mae = None
+    if rows:
+        mae = sum(float(row["absolute_error"]) for row in rows) / len(rows)
+    records = [
+        CullingMetricRecord(
+            image_id=int(row["id"]),
+            label=str(row["label"]),
+            score=float(row["adapter_score"]),
+            cluster_id=int(row["cluster_id"]) if row["cluster_id"] is not None else None,
+            folder_id=str(Path(row["source_path"]).parent),
+        )
+        for row in rows
+    ]
+    return compute_culling_metrics(
+        records,
+        mae=mae,
+        overrides=[dict(row) for row in store.list_user_overrides()],
+    )
+
+
+def _stored_model_metrics(store: SQLiteFeatureStore, model_version: str) -> dict:
+    with store.lock:
+        row = store.connection.execute(
+            "SELECT metrics_json FROM adapter_models WHERE model_version = ?",
+            (str(model_version),),
+        ).fetchone()
+    if row is None:
+        return {}
+    return _load_metrics(row["metrics_json"])
