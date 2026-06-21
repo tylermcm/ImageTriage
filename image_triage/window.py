@@ -12374,10 +12374,19 @@ class MainWindow(QMainWindow):
                         "weight": 1,
                     }
                 )
-            if len(rows) < 2 or len({str(row["label"]) for row in rows}) < 2:
-                internal_rows = self._aiculler_ratings_from_internal_labels(paths)
-                if internal_rows:
-                    rows = internal_rows
+            internal_rows = self._aiculler_ratings_from_internal_labels(paths)
+            if internal_rows:
+                rows_by_path = {
+                    os.path.normcase(os.path.normpath(str(row.get("source_path") or ""))): row
+                    for row in rows
+                    if row.get("source_path")
+                }
+                for row in internal_rows:
+                    source_path = str(row.get("source_path") or "")
+                    if not source_path:
+                        continue
+                    rows_by_path[os.path.normcase(os.path.normpath(source_path))] = row
+                rows = list(rows_by_path.values())
         existing_paths = set() if global_only else {
             os.path.normcase(os.path.normpath(str(row.get("source_path") or "")))
             for row in rows
@@ -12645,6 +12654,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
             return
+        if not candidates and saved_labels:
+            try:
+                candidates = load_adapter_review_candidates(db_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
+                return
 
         survivors, siblings_by_survivor = self._dedupe_adapter_candidates(candidates)
 
@@ -12661,23 +12676,42 @@ class MainWindow(QMainWindow):
         # filename (cheap, IO-free, works perfectly when filenames are unique
         # inside the folder — the norm for a photo shoot). When two records share
         # the same basename, fall back to comparing the casefolded full path
-        # (still no IO, just string ops) to disambiguate.
+        # (still no IO, just string ops) to disambiguate. RAW/JPG pairs can
+        # also mean the DB stores a scored JPG while the grid is showing a RAW
+        # primary record, so keep a same-stem fallback after exact basenames.
         records_by_basename: dict[str, list[str]] = {}
-        for record in self._all_records:
+        records_by_stem: dict[str, list[str]] = {}
+
+        def _index_grid_path(path: str) -> None:
+            basename = os.path.basename(path).casefold()
+            if not basename:
+                return
+            records_by_basename.setdefault(basename, []).append(path)
+            stem = os.path.splitext(basename)[0]
+            if stem:
+                records_by_stem.setdefault(stem, []).append(path)
+
+        grid_records = list(getattr(self.grid, "_items", ()) or ()) or list(self._all_records)
+        for record in grid_records:
             if record.is_folder:
                 continue
-            basename = os.path.basename(record.path).casefold()
-            if not basename:
-                continue
-            records_by_basename.setdefault(basename, []).append(record.path)
+            _index_grid_path(record.path)
+            for variant in getattr(record, "display_variants", ()) or ():
+                variant_path = str(getattr(variant, "path", "") or "")
+                if variant_path:
+                    _index_grid_path(variant_path)
 
-        def _resolve_to_grid(db_path: str) -> str:
+        unresolved_count = 0
+
+        def _resolve_to_grid(db_path: str) -> str | None:
             if not db_path:
-                return db_path
+                return None
             basename = os.path.basename(db_path).casefold()
             matches = records_by_basename.get(basename)
             if not matches:
-                return db_path
+                matches = records_by_stem.get(os.path.splitext(basename)[0])
+            if not matches:
+                return None
             if len(matches) == 1:
                 return matches[0]
             # Multiple records with the same filename — pick the one whose
@@ -12699,23 +12733,44 @@ class MainWindow(QMainWindow):
             return best
 
         review_paths: list[str] = []
+        seen_review_paths: set[str] = set()
         for row in survivors:
             db_path = str(row.get("file_path") or "")
             if not db_path:
                 continue
-            review_paths.append(_resolve_to_grid(db_path))
+            resolved = _resolve_to_grid(db_path)
+            if resolved is None:
+                unresolved_count += 1
+                continue
+            if resolved in seen_review_paths:
+                continue
+            seen_review_paths.add(resolved)
+            review_paths.append(resolved)
 
         if not review_paths:
-            self.statusBar().showMessage("No adapter label candidates are available for this folder.")
+            if unresolved_count:
+                message = (
+                    "Adapter review candidates were found, but none matched the images currently loaded in the grid. "
+                    "Refresh or reopen this folder, then try Review Labels again."
+                )
+                self.statusBar().showMessage(message)
+                QMessageBox.information(self, "Adapter Label Review", message)
+            else:
+                self.statusBar().showMessage("No adapter label candidates are available for this folder.")
             return
 
         # Re-key the sibling map so label propagation also lands on grid paths.
         translated_siblings: dict[str, list[str]] = {}
         for survivor_path, sibling_paths in siblings_by_survivor.items():
             grid_survivor = _resolve_to_grid(str(survivor_path))
-            translated_siblings[grid_survivor] = [
-                _resolve_to_grid(str(sib)) for sib in sibling_paths
+            if grid_survivor is None:
+                continue
+            resolved_siblings = [
+                resolved
+                for sib in sibling_paths
+                if (resolved := _resolve_to_grid(str(sib))) is not None
             ]
+            translated_siblings[grid_survivor] = resolved_siblings
         self._aiculler_dedupe_siblings = translated_siblings
 
         # Force burst grouping/stacking off while labeling so pHash dedup is the
