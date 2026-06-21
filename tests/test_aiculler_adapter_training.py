@@ -7,11 +7,23 @@ from pathlib import Path
 
 import numpy as np
 
-from aiculler.adapter_training import fit_preference_model, import_ratings_csv, load_rating_records
+from aiculler.adapter_training import AdapterTrainer, fit_preference_model, import_ratings_csv, load_rating_records, split_holdout
 from aiculler.storage import SQLiteFeatureStore
 
 
 class AICullerAdapterTrainingTests(unittest.TestCase):
+    @staticmethod
+    def _split_example(image_id: int, *, folder_id: str, primary_category: str):
+        return type(
+            "Example",
+            (),
+            {
+                "image_id": image_id,
+                "folder_id": folder_id,
+                "primary_category": primary_category,
+            },
+        )()
+
     def test_load_rating_records_reads_optional_sample_weight(self) -> None:
         with tempfile.TemporaryDirectory(prefix="aiculler_rating_weight_") as temp_dir:
             root = Path(temp_dir)
@@ -37,6 +49,7 @@ class AICullerAdapterTrainingTests(unittest.TestCase):
             self.assertEqual(1, len(records))
             self.assertEqual(4.0, records[0].weight)
             self.assertEqual("global", records[0].label_origin)
+            self.assertEqual(str(root), records[0].folder_id)
 
     def test_import_ratings_replaces_same_image_source_and_origin(self) -> None:
         with tempfile.TemporaryDirectory(prefix="aiculler_rating_dedupe_") as temp_dir:
@@ -172,6 +185,169 @@ class AICullerAdapterTrainingTests(unittest.TestCase):
         self.assertGreater(scores[0], scores[1])
         self.assertGreater(scores[0], scores[2])
 
+    def test_random_holdout_is_deterministic(self) -> None:
+        examples = [
+            self._split_example(index, folder_id=f"folder-{index % 2}", primary_category="cat-a")
+            for index in range(10)
+        ]
+
+        first_train, first_holdout, first_info = split_holdout(
+            examples,
+            holdout_fraction=0.3,
+            seed=42,
+            validation_mode="random_holdout",
+        )
+        second_train, second_holdout, second_info = split_holdout(
+            examples,
+            holdout_fraction=0.3,
+            seed=42,
+            validation_mode="random_holdout",
+        )
+
+        self.assertEqual("random_holdout", first_info["validation_mode"])
+        self.assertEqual([item.image_id for item in first_train], [item.image_id for item in second_train])
+        self.assertEqual([item.image_id for item in first_holdout], [item.image_id for item in second_holdout])
+        self.assertEqual(7, len(first_train))
+        self.assertEqual(3, len(first_holdout))
+
+    def test_category_grouped_holdout_samples_each_category(self) -> None:
+        examples = []
+        image_id = 0
+        for category in ("sports", "portrait"):
+            for _ in range(4):
+                image_id += 1
+                examples.append(self._split_example(image_id, folder_id="folder-a", primary_category=category))
+
+        train, holdout, info = split_holdout(
+            examples,
+            holdout_fraction=0.25,
+            seed=13,
+            validation_mode="category_grouped_holdout",
+        )
+
+        self.assertEqual("category_grouped_holdout", info["validation_mode"])
+        self.assertEqual({"sports", "portrait"}, {item.primary_category for item in holdout})
+        self.assertEqual(6, len(train))
+        self.assertEqual(2, len(holdout))
+
+    def test_folder_grouped_holdout_falls_back_for_single_folder(self) -> None:
+        examples = [
+            type(
+                "Example",
+                (),
+                {
+                    "folder_id": "folder-a",
+                    "primary_category": "cat-a",
+                },
+            )()
+            for _ in range(6)
+        ]
+
+        train, holdout, info = split_holdout(
+            examples,
+            holdout_fraction=0.25,
+            seed=13,
+            validation_mode="folder_grouped_holdout",
+        )
+
+        self.assertEqual("folder_grouped_holdout", info["requested_mode"])
+        self.assertEqual("category_grouped_holdout", info["validation_mode"])
+        self.assertIsNotNone(info["warning"])
+        self.assertTrue(train)
+        self.assertTrue(holdout)
+
+    def test_folder_grouped_holdout_keeps_folders_separate(self) -> None:
+        examples = []
+        for folder_id in ("folder-a", "folder-b", "folder-c"):
+            for _ in range(3):
+                examples.append(
+                    type(
+                        "Example",
+                        (),
+                        {
+                            "folder_id": folder_id,
+                            "primary_category": "cat-a",
+                        },
+                    )()
+                )
+
+        train, holdout, info = split_holdout(
+            examples,
+            holdout_fraction=0.33,
+            seed=13,
+            validation_mode="folder_grouped_holdout",
+        )
+
+        train_folders = {example.folder_id for example in train}
+        holdout_folders = {example.folder_id for example in holdout}
+        self.assertEqual("folder_grouped_holdout", info["validation_mode"])
+        self.assertTrue(train_folders)
+        self.assertTrue(holdout_folders)
+        self.assertFalse(train_folders & holdout_folders)
+
+    def test_folder_grouped_holdout_is_deterministic_when_one_folder_dominates(self) -> None:
+        examples = []
+        image_id = 0
+        for folder_id, count in (("dominant", 8), ("small-a", 1), ("small-b", 1)):
+            for _ in range(count):
+                image_id += 1
+                examples.append(self._split_example(image_id, folder_id=folder_id, primary_category="cat-a"))
+
+        first_train, first_holdout, first_info = split_holdout(
+            examples,
+            holdout_fraction=0.2,
+            seed=7,
+            validation_mode="folder_grouped_holdout",
+        )
+        second_train, second_holdout, second_info = split_holdout(
+            examples,
+            holdout_fraction=0.2,
+            seed=7,
+            validation_mode="folder_grouped_holdout",
+        )
+
+        self.assertEqual("folder_grouped_holdout", first_info["validation_mode"])
+        self.assertEqual([item.image_id for item in first_train], [item.image_id for item in second_train])
+        self.assertEqual([item.image_id for item in first_holdout], [item.image_id for item in second_holdout])
+        self.assertEqual(first_info["train_folder_count"], second_info["train_folder_count"])
+        self.assertEqual(first_info["holdout_folder_count"], second_info["holdout_folder_count"])
+        self.assertIsNotNone(first_info["train_folder_count"])
+        self.assertIsNotNone(first_info["holdout_folder_count"])
+
+    def test_adapter_training_records_validation_mode_and_culling_metrics(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="aiculler_validation_metrics_") as temp_dir:
+            root = Path(temp_dir)
+            store = SQLiteFeatureStore(root / "features.sqlite")
+            try:
+                rows = (
+                    ("a", "one.jpg", [1.0, 0.0], "hero"),
+                    ("a", "two.jpg", [0.8, 0.1], "keep"),
+                    ("b", "three.jpg", [0.0, 1.0], "reject"),
+                    ("b", "four.jpg", [0.1, 0.8], "weak"),
+                )
+                ratings_path = root / "ratings.csv"
+                with ratings_path.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=("source_path", "label", "folder_id"))
+                    writer.writeheader()
+                    for folder_id, filename, embedding, label in rows:
+                        image_path = root / folder_id / filename
+                        image_id = store.upsert_image(image_path, status="ready")
+                        store.save_features(image_id, np.asarray(embedding, dtype=np.float32), technical_score=0.5)
+                        writer.writerow({"source_path": str(image_path), "label": label, "folder_id": folder_id})
+                import_ratings_csv(store, ratings_path)
+
+                result = AdapterTrainer(
+                    store,
+                    projected_dim=2,
+                    holdout_fraction=0.5,
+                    validation_mode="folder_grouped_holdout",
+                ).train(model_version="adapter-v1")
+            finally:
+                store.close()
+
+        self.assertEqual("folder_grouped_holdout", result.metrics["validation"]["validation_mode"])
+        self.assertIn("culling", result.metrics)
+        self.assertIn("score_fit_percent", result.metrics["culling"])
 
 if __name__ == "__main__":
     unittest.main()

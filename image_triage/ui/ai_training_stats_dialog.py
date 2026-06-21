@@ -38,7 +38,7 @@ ADAPTER_PROFILE_ROWS = (
     ("Images Scored", "n/a"),
     ("Labels Imported", "n/a"),
     ("Evaluation MAE", "n/a"),
-    ("Estimated Accuracy", "n/a"),
+    ("Score Fit", "n/a"),
     ("Adapter Status", "Pending"),
     ("Summary", "Run adapter training or evaluation to get a simple health check."),
     ("Try Next", ""),
@@ -299,8 +299,8 @@ class AITrainingStatsDialog(QDialog):
         mae_text = evaluated_match.group("mae")
         self.validation_loss_value_label.setText(mae_text)
         try:
-            accuracy = max(0.0, min(100.0, (1.0 - float(mae_text)) * 100.0))
-            self.validation_accuracy_value_label.setText(f"{accuracy:.1f}%")
+            score_fit = max(0.0, min(100.0, (1.0 - float(mae_text)) * 100.0))
+            self.validation_accuracy_value_label.setText(f"{score_fit:.1f}%")
         except ValueError:
             self.validation_accuracy_value_label.setText("n/a")
         self.fit_health_value_label.setText(f"Evaluated {evaluated_match.group('count')} label(s)")

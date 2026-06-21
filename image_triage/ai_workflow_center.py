@@ -685,9 +685,9 @@ class AIWorkflowCenterDialog(QDialog):
         selected_row = 0
         for index, model in enumerate(adapter_models):
             version = str(model.get("model_version") or "")
-            accuracy = model.get("accuracy_percent")
-            accuracy_text = f"{float(accuracy):.1f}%" if isinstance(accuracy, (int, float)) else "n/a"
-            item = QListWidgetItem(f"{_display_adapter_version(version, compact=True)}\nAccuracy {accuracy_text}")
+            score_fit = model.get("score_fit_percent", model.get("accuracy_percent"))
+            score_fit_text = f"{float(score_fit):.1f}%" if isinstance(score_fit, (int, float)) else "n/a"
+            item = QListWidgetItem(f"{_display_adapter_version(version, compact=True)}\nScore Fit {score_fit_text}")
             item.setData(Qt.ItemDataRole.UserRole, version)
             item.setToolTip(_display_adapter_version(version))
             adapter_list.addItem(item)
@@ -715,21 +715,21 @@ class AIWorkflowCenterDialog(QDialog):
         models = self._active_adapter_models()
         if row < 0 or row >= len(models):
             scope_label = "global" if self._active_adapter_scope() == "global" else "local"
-            self._adapter_detail_label.setText(f"Train a {scope_label} adapter to see accuracy, failure rate, and scored image counts here.")
+            self._adapter_detail_label.setText(f"Train a {scope_label} adapter to see score fit, MAE, and scored image counts here.")
             return
         model = models[row]
-        accuracy = model.get("accuracy_percent")
+        score_fit = model.get("score_fit_percent", model.get("accuracy_percent"))
         holdout_mae = model.get("holdout_mae")
         train_mae = model.get("train_mae")
         failure_rate = holdout_mae if isinstance(holdout_mae, (int, float)) else train_mae
-        accuracy_text = f"{float(accuracy):.1f}%" if isinstance(accuracy, (int, float)) else "n/a"
+        score_fit_text = f"{float(score_fit):.1f}%" if isinstance(score_fit, (int, float)) else "n/a"
         failure_text = f"{float(failure_rate) * 100.0:.1f}%" if isinstance(failure_rate, (int, float)) else "n/a"
         holdout_text = f"{float(holdout_mae):.4f}" if isinstance(holdout_mae, (int, float)) else "n/a"
         train_text = f"{float(train_mae):.4f}" if isinstance(train_mae, (int, float)) else "n/a"
         details = [
             f"Version: {_display_adapter_version(str(model.get('model_version') or 'unknown'))}",
-            f"Accuracy: {accuracy_text}",
-            f"Failure rate: {failure_text}",
+            f"Score Fit: {score_fit_text}",
+            f"MAE as percent: {failure_text}",
             f"Holdout MAE: {holdout_text}",
             f"Train MAE: {train_text}",
             f"Scored images: {int(model.get('scored_count') or 0)}",

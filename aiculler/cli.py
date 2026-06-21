@@ -700,6 +700,7 @@ def command_train_adapter(args) -> int:
             base_weight=args.base_weight,
             adapter_weight=args.adapter_weight,
             holdout_fraction=args.holdout_fraction,
+            validation_mode=args.validation_mode,
             seed=args.seed,
         )
         phase_started_at = time.perf_counter()
@@ -730,22 +731,44 @@ def command_train_adapter(args) -> int:
 
 
 def command_evaluate_adapter(args) -> int:
-    from aiculler.adapter_training import evaluation_rows
+    from aiculler.adapter_training import adapter_evaluation_report, evaluation_rows
 
     logger = _open_logger(args)
     store = _open_store(args)
     try:
         rows = evaluation_rows(store, args.model_version)
+        report = adapter_evaluation_report(store, args.model_version)
         if args.out is not None:
             _write_csv(args.out, rows)
             print(f"Wrote adapter evaluation CSV to {args.out}.", file=sys.stderr)
         logger.table("adapter_evaluation", rows)
-        logger.summary({"model_version": args.model_version, "evaluated_count": len(rows)})
+        logger.summary({"model_version": args.model_version, "evaluated_count": len(rows), "report": report})
         if rows:
             mean_error = sum(float(row["absolute_error"]) for row in rows) / len(rows)
             print(f"Evaluated {len(rows)} rating(s), mean absolute error={mean_error:.4f}.")
         else:
             print("No adapter scores matched stored ratings.")
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    finally:
+        store.close()
+        logger.close()
+
+
+def command_override_report(args) -> int:
+    from aiculler.telemetry import build_override_report, format_override_report
+
+    logger = _open_logger(args)
+    store = _open_store(args)
+    try:
+        rows = [dict(row) for row in store.list_user_overrides()]
+        report = build_override_report(rows, top_n=args.top)
+        if args.format == "text":
+            output = format_override_report(report) + "\n"
+        else:
+            output = json.dumps(report, indent=2, sort_keys=True) + "\n"
+        _write_text(args.out, output)
+        logger.summary({"override_report": report})
         return 0
     finally:
         store.close()
@@ -1575,6 +1598,11 @@ def build_parser() -> argparse.ArgumentParser:
     train_adapter.add_argument("--base-weight", type=float, default=0.50)
     train_adapter.add_argument("--adapter-weight", type=float, default=0.50)
     train_adapter.add_argument("--holdout-fraction", type=float, default=0.20)
+    train_adapter.add_argument(
+        "--validation-mode",
+        choices=("random_holdout", "category_grouped_holdout", "folder_grouped_holdout"),
+        default="category_grouped_holdout",
+    )
     train_adapter.add_argument("--seed", type=int, default=13)
     train_adapter.add_argument("--out", type=Path, help="Optional adapter score CSV output")
     train_adapter.set_defaults(func=command_train_adapter)
@@ -1583,6 +1611,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_adapter.add_argument("--model-version", required=True)
     evaluate_adapter.add_argument("--out", type=Path, help="Optional per-rating evaluation CSV output")
     evaluate_adapter.set_defaults(func=command_evaluate_adapter)
+
+    override_report = subparsers.add_parser("override-report", help="Summarize user override telemetry")
+    override_report.add_argument("--format", choices=("json", "text"), default="json")
+    override_report.add_argument("--top", type=int, default=10, help="Maximum rows in top-count lists")
+    override_report.add_argument("--out", type=Path, help="Optional report output path")
+    override_report.set_defaults(func=command_override_report)
 
     apply_adapter = subparsers.add_parser("apply-adapter", help="Apply a serialized adapter model to this database")
     apply_adapter.add_argument("--model-version", required=True)

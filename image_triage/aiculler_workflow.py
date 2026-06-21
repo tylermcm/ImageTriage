@@ -2196,7 +2196,8 @@ def list_adapter_model_summaries(db_path: str | Path) -> list[dict[str, object]]
         train_mae = _as_optional_float(train.get("mae")) if isinstance(train, dict) else None
         holdout_mae = _as_optional_float(holdout.get("mae")) if isinstance(holdout, dict) else None
         failure_rate = holdout_mae if holdout_mae is not None else train_mae
-        accuracy_percent = None if failure_rate is None else max(0.0, min(100.0, (1.0 - failure_rate) * 100.0))
+        score_fit_percent = None if failure_rate is None else max(0.0, min(100.0, (1.0 - failure_rate) * 100.0))
+        culling = metrics.get("culling") if isinstance(metrics, dict) else None
         summaries.append(
             {
                 "model_version": str(row[0]),
@@ -2204,7 +2205,11 @@ def list_adapter_model_summaries(db_path: str | Path) -> list[dict[str, object]]
                 "scored_count": int(row[4] or 0),
                 "train_mae": train_mae,
                 "holdout_mae": holdout_mae,
-                "accuracy_percent": accuracy_percent,
+                "score_fit_percent": score_fit_percent,
+                "accuracy_percent": score_fit_percent,
+                "keeper_recall": _as_optional_float(culling.get("keeper_recall")) if isinstance(culling, dict) else None,
+                "false_reject_rate": _as_optional_float(culling.get("false_reject_rate")) if isinstance(culling, dict) else None,
+                "review_reduction_percent": _as_optional_float(culling.get("review_reduction_percent")) if isinstance(culling, dict) else None,
                 "train_count": _as_optional_int(train.get("count")) if isinstance(train, dict) else None,
                 "holdout_count": _as_optional_int(holdout.get("count")) if isinstance(holdout, dict) else None,
                 "train_rank_lift": _as_optional_float(train.get("rank_lift")) if isinstance(train, dict) else None,
@@ -2316,6 +2321,11 @@ def load_adapter_status_summary(db_path: str | Path) -> dict[str, object]:
         "holdout_rank_lift": None,
         "train_count": None,
         "holdout_count": None,
+        "score_fit_percent": None,
+        "accuracy_percent": None,
+        "keeper_recall": None,
+        "false_reject_rate": None,
+        "review_reduction_percent": None,
     }
     path = Path(db_path)
     if not path.exists():
@@ -2351,6 +2361,15 @@ def load_adapter_status_summary(db_path: str | Path) -> dict[str, object]:
             summary["holdout_mae"] = _as_optional_float(holdout.get("mae"))
             summary["holdout_rank_lift"] = _as_optional_float(holdout.get("rank_lift"))
             summary["holdout_count"] = _as_optional_int(holdout.get("count"))
+        failure_rate = summary["holdout_mae"] if summary["holdout_mae"] is not None else summary["train_mae"]
+        score_fit_percent = None if failure_rate is None else max(0.0, min(100.0, (1.0 - float(failure_rate)) * 100.0))
+        summary["score_fit_percent"] = score_fit_percent
+        summary["accuracy_percent"] = score_fit_percent
+        culling = metrics.get("culling") if isinstance(metrics, dict) else None
+        if isinstance(culling, dict):
+            summary["keeper_recall"] = _as_optional_float(culling.get("keeper_recall"))
+            summary["false_reject_rate"] = _as_optional_float(culling.get("false_reject_rate"))
+            summary["review_reduction_percent"] = _as_optional_float(culling.get("review_reduction_percent"))
         scored_row = connection.execute(
             "SELECT COUNT(*) FROM adapter_scores WHERE model_version = ?",
             (model_version,),
