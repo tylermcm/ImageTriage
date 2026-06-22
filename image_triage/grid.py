@@ -2618,6 +2618,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _set_adapter_label_for_index(self, index: int, label: str, *, emit: bool) -> None:
         if not 0 <= index < len(self._items):
             return
+        logger = perf_logger()
+        total_start = time.perf_counter() if logger.enabled else 0.0
         record = self._items[index]
         normalized = label.strip().lower()
         if normalized:
@@ -2630,26 +2632,85 @@ class ThumbnailGridView(QAbstractScrollArea):
             combo.setCurrentIndex(max(0, combo.findData(normalized)))
             combo.blockSignals(was_blocked)
         if emit:
+            emit_start = time.perf_counter() if logger.enabled else 0.0
             self.adapter_label_requested.emit(record.path, normalized)
+            if logger.enabled:
+                logger.duration(
+                    "adapter_review.grid.emit_wait",
+                    (time.perf_counter() - emit_start) * 1000.0,
+                    path=record.path,
+                    label=normalized,
+                    review_mode=self._adapter_review_mode,
+                )
             if normalized and self._adapter_review_mode:
                 self._advance_to_next_adapter_candidate(index)
+        if logger.enabled:
+            logger.duration(
+                "adapter_review.grid.label_total",
+                (time.perf_counter() - total_start) * 1000.0,
+                path=record.path,
+                label=normalized,
+                emitted=emit,
+                review_mode=self._adapter_review_mode,
+            )
 
     def _advance_to_next_adapter_candidate(self, from_index: int) -> None:
         if not self._items:
             return
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         total = len(self._items)
+        scanned = 0
         for offset in range(1, total + 1):
             candidate_index = (from_index + offset) % total
             if candidate_index == from_index:
                 break
+            scanned += 1
             if not self._record_in_adapter_review(candidate_index):
                 continue
             record = self._items[candidate_index]
             if record.path in self._adapter_labels_by_path:
                 continue
+            select_start = time.perf_counter() if logger.enabled else 0.0
             self.set_current_index(candidate_index)
+            if logger.enabled:
+                logger.duration(
+                    "adapter_review.grid.advance_select",
+                    (time.perf_counter() - select_start) * 1000.0,
+                    from_index=from_index,
+                    candidate_index=candidate_index,
+                    scanned=scanned,
+                    path=record.path,
+                )
+            scroll_start = time.perf_counter() if logger.enabled else 0.0
             self._ensure_index_visible(candidate_index)
+            if logger.enabled:
+                logger.duration(
+                    "adapter_review.grid.advance_scroll",
+                    (time.perf_counter() - scroll_start) * 1000.0,
+                    from_index=from_index,
+                    candidate_index=candidate_index,
+                    scanned=scanned,
+                    path=record.path,
+                )
+                logger.duration(
+                    "adapter_review.grid.advance_total",
+                    (time.perf_counter() - start) * 1000.0,
+                    from_index=from_index,
+                    candidate_index=candidate_index,
+                    scanned=scanned,
+                    path=record.path,
+                    found=True,
+                )
             return
+        if logger.enabled:
+            logger.duration(
+                "adapter_review.grid.advance_total",
+                (time.perf_counter() - start) * 1000.0,
+                from_index=from_index,
+                scanned=scanned,
+                found=False,
+            )
 
     def _ensure_index_visible(self, index: int) -> None:
         if not 0 <= index < len(self._items):

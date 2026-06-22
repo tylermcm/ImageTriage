@@ -235,6 +235,7 @@ from .keyboard_mapping import ShortcutBinding, normalize_shortcut_text, serializ
 from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoot, LibraryStore, VirtualCollection
 from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
 from .models import DeleteMode, FilterMode, ImageRecord, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
+from .perceptual_hash import hamming_distance_int
 from .perf import perf_logger, performance_log_dir
 from .preview import FullScreenPreview, PreviewEntry
 from .workflows import (
@@ -2905,8 +2906,21 @@ class MainWindow(QMainWindow):
         self._scope_enrichment_debounce_timer.setSingleShot(True)
         self._scope_enrichment_debounce_timer.setInterval(220)
         self._scope_enrichment_debounce_timer.timeout.connect(self._run_scope_enrichment_debounced)
+        self._adapter_review_action_state_timer = QTimer(self)
+        self._adapter_review_action_state_timer.setSingleShot(True)
+        self._adapter_review_action_state_timer.setInterval(180)
+        self._adapter_review_action_state_timer.timeout.connect(self._flush_adapter_review_action_state_update)
+        self._aiculler_internal_label_save_timer = QTimer(self)
+        self._aiculler_internal_label_save_timer.setSingleShot(True)
+        self._aiculler_internal_label_save_timer.setInterval(450)
+        self._aiculler_internal_label_save_timer.timeout.connect(self._flush_aiculler_internal_label_cache)
+        self._aiculler_global_label_save_timer = QTimer(self)
+        self._aiculler_global_label_save_timer.setSingleShot(True)
+        self._aiculler_global_label_save_timer.setInterval(550)
+        self._aiculler_global_label_save_timer.timeout.connect(self._flush_aiculler_global_label_queue)
         self._active_ai_training_task: object | None = None
         self._aiculler_dedupe_siblings: dict[str, list[str]] = {}
+        self._aiculler_force_propagate_siblings: set[str] = set()
         self._aiculler_review_burst_snapshot: tuple[bool, bool] | None = None
         # Paths the AI Review post-pass has demoted from Keeper/Review to
         # Reject because they're non-best frames in a visually similar burst.
@@ -2924,6 +2938,11 @@ class MainWindow(QMainWindow):
         self._aiculler_telemetry_logger: ThreadedTelemetryLogger | None = None
         self._aiculler_telemetry_db_path: Path | None = None
         self._aiculler_pending_telemetry_events: dict[str, tuple[QTimer, TelemetryEvent]] = {}
+        self._aiculler_internal_label_cache: dict[str, tuple[dict[str, str], dict[str, dict[str, object]]]] = {}
+        self._aiculler_internal_label_cache_folders: dict[str, str] = {}
+        self._aiculler_internal_label_dirty_paths: set[str] = set()
+        self._aiculler_global_label_pending: dict[str, tuple[str, float, bool]] = {}
+        self._aiculler_telemetry_adapter_version_cache: dict[str, tuple[int, str]] = {}
         # AI Review forces Smart Groups/Stacks off too (the cluster context
         # was producing misleading "weak cluster leader" rejects). We snapshot
         # the toggles the same way as adapter review so they can be restored
@@ -8190,6 +8209,8 @@ class MainWindow(QMainWindow):
         if self._folder_watcher.directories():
             self._folder_watcher.removePaths(list(self._folder_watcher.directories()))
         self._annotation_persistence_queue.flush_blocking()
+        self._flush_aiculler_internal_label_cache()
+        self._flush_aiculler_global_label_queue()
         self._shutdown_aiculler_telemetry_logger()
         self._shutdown_child_processes()
         self._cleanup_child_sync_state()
@@ -12353,6 +12374,8 @@ class MainWindow(QMainWindow):
         if paths is None:
             self.statusBar().showMessage("Choose a folder before exporting adapter ratings.")
             return None
+        self._flush_aiculler_internal_label_cache()
+        self._flush_aiculler_global_label_queue()
         rows: list[dict[str, object]] = []
         if not global_only:
             for record in self._all_records:
@@ -12447,6 +12470,9 @@ class MainWindow(QMainWindow):
         weight: float = 1.0,
         is_dispute: bool = False,
     ) -> None:
+        pending = getattr(self, "_aiculler_global_label_pending", None)
+        if pending is not None:
+            pending.pop(str(source_path), None)
         try:
             store = self._aiculler_global_label_store()
             try:
@@ -12468,7 +12494,36 @@ class MainWindow(QMainWindow):
             # writable.
             return
 
+    def _queue_aiculler_global_label(
+        self,
+        source_path: str,
+        label: str,
+        *,
+        weight: float = 1.0,
+        is_dispute: bool = False,
+    ) -> None:
+        self._aiculler_global_label_pending[str(source_path)] = (str(label), float(weight), bool(is_dispute))
+        self._aiculler_global_label_save_timer.start()
+
+    def _flush_aiculler_global_label_queue(self) -> None:
+        pending = dict(getattr(self, "_aiculler_global_label_pending", {}))
+        if not pending:
+            return
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        self._aiculler_global_label_save_timer.stop()
+        self._aiculler_global_label_pending.clear()
+        for source_path, (label, weight, is_dispute) in pending.items():
+            self._save_aiculler_global_label(source_path, label, weight=weight, is_dispute=is_dispute)
+        if logger.enabled:
+            logger.duration(
+                "adapter_review.window.flush_global_labels",
+                (time.perf_counter() - start) * 1000.0,
+                labels=len(pending),
+            )
+
     def _aiculler_global_ratings_for_current_records(self, existing_paths: set[str]) -> list[dict[str, object]]:
+        self._flush_aiculler_global_label_queue()
         file_records = [record for record in self._all_records if not record.is_folder]
         if not file_records:
             return []
@@ -12504,22 +12559,49 @@ class MainWindow(QMainWindow):
         return rows
 
     def _load_aiculler_internal_labels(self, paths) -> dict[str, str]:
+        labels, _disputes = self._load_aiculler_internal_label_cache(paths)
+        return dict(labels)
+
+    def _load_aiculler_internal_label_cache(self, paths) -> tuple[dict[str, str], dict[str, dict[str, object]]]:
         label_path = self._aiculler_internal_label_store_path(paths)
+        cache_key = str(label_path)
+        cached = self._aiculler_internal_label_cache.get(cache_key)
+        if cached is not None:
+            labels, disputes = cached
+            return labels, disputes
         if not label_path.exists():
-            return {}
+            labels: dict[str, str] = {}
+            disputes: dict[str, dict[str, object]] = {}
+            self._aiculler_internal_label_cache[cache_key] = (labels, disputes)
+            self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
+            return labels, disputes
         try:
             payload = json.loads(label_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {}
-        labels = payload.get("labels") if isinstance(payload, dict) else None
-        if not isinstance(labels, dict):
-            return {}
+            payload = {}
+        raw_labels = payload.get("labels") if isinstance(payload, dict) else None
         allowed_labels = {"hero", "portfolio", "strong", "keep", "good", "maybe", "weak", "reject", "bad", "k", "r", "yes", "no", "1", "0"}
-        return {
+        labels = {
             str(path): str(label).strip().lower()
-            for path, label in labels.items()
+            for path, label in (raw_labels.items() if isinstance(raw_labels, dict) else ())
             if str(label).strip().lower() in allowed_labels
         }
+        raw_disputes = payload.get("disputes") if isinstance(payload, dict) else None
+        disputes: dict[str, dict[str, object]] = {}
+        if isinstance(raw_disputes, dict):
+            for path, entry in raw_disputes.items():
+                if not isinstance(entry, dict):
+                    continue
+                disputes[str(path)] = {
+                    "user_label": str(entry.get("user_label") or "").strip().lower(),
+                    "ai_label": str(entry.get("ai_label") or "").strip(),
+                    "ai_score": float(entry.get("ai_score") or 0.0),
+                    "ai_bucket": str(entry.get("ai_bucket") or ""),
+                    "timestamp": str(entry.get("timestamp") or ""),
+                }
+        self._aiculler_internal_label_cache[cache_key] = (labels, disputes)
+        self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
+        return labels, disputes
 
     def _load_aiculler_internal_disputes(self, paths) -> dict[str, dict[str, object]]:
         """Disputes: per-image entries where the user overrode the AI.
@@ -12530,31 +12612,8 @@ class MainWindow(QMainWindow):
         a snapshot of what the AI said at dispute time (for debugging /
         analytics later).
         """
-
-        label_path = self._aiculler_internal_label_store_path(paths)
-        if not label_path.exists():
-            return {}
-        try:
-            payload = json.loads(label_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        raw = payload.get("disputes") if isinstance(payload, dict) else None
-        if not isinstance(raw, dict):
-            return {}
-        result: dict[str, dict[str, object]] = {}
-        for path, entry in raw.items():
-            if not isinstance(entry, dict):
-                continue
-            result[str(path)] = {
-                "user_label": str(entry.get("user_label") or "").strip().lower(),
-                # ai_label is a display string like "AI Pick" / "Keeper" — keep
-                # original casing, just trim whitespace.
-                "ai_label": str(entry.get("ai_label") or "").strip(),
-                "ai_score": float(entry.get("ai_score") or 0.0),
-                "ai_bucket": str(entry.get("ai_bucket") or ""),
-                "timestamp": str(entry.get("timestamp") or ""),
-            }
-        return result
+        _labels, disputes = self._load_aiculler_internal_label_cache(paths)
+        return {path: dict(entry) for path, entry in disputes.items()}
 
     def _save_aiculler_internal_labels(
         self,
@@ -12562,20 +12621,63 @@ class MainWindow(QMainWindow):
         labels: dict[str, str],
         *,
         disputes: dict[str, dict[str, object]] | None = None,
+        defer: bool = False,
     ) -> None:
         label_path = self._aiculler_internal_label_store_path(paths)
-        label_path.parent.mkdir(parents=True, exist_ok=True)
         # If disputes weren't passed in, preserve whatever is already on disk
         # so saving labels doesn't accidentally drop existing disputes.
         if disputes is None:
-            disputes = self._load_aiculler_internal_disputes(paths)
+            _cached_labels, cached_disputes = self._load_aiculler_internal_label_cache(paths)
+            disputes = cached_disputes
+        cache_key = str(label_path)
+        cached_labels = dict(labels)
+        cached_disputes = {str(path): dict(entry) for path, entry in disputes.items()}
+        self._aiculler_internal_label_cache[cache_key] = (cached_labels, cached_disputes)
+        self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
+        if defer:
+            self._aiculler_internal_label_dirty_paths.add(cache_key)
+            self._aiculler_internal_label_save_timer.start()
+            return
+        self._write_aiculler_internal_label_payload(label_path, paths.folder, cached_labels, cached_disputes)
+        self._aiculler_internal_label_dirty_paths.discard(cache_key)
+
+    def _write_aiculler_internal_label_payload(
+        self,
+        label_path: Path,
+        folder: object,
+        labels: dict[str, str],
+        disputes: dict[str, dict[str, object]],
+    ) -> None:
+        label_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "folder": str(paths.folder),
+            "folder": str(folder),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "labels": dict(sorted(labels.items(), key=lambda item: item[0].casefold())),
             "disputes": dict(sorted(disputes.items(), key=lambda item: item[0].casefold())),
         }
         label_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _flush_aiculler_internal_label_cache(self) -> None:
+        dirty = list(getattr(self, "_aiculler_internal_label_dirty_paths", set()))
+        if not dirty:
+            return
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        for cache_key in dirty:
+            cached = self._aiculler_internal_label_cache.get(cache_key)
+            if cached is None:
+                self._aiculler_internal_label_dirty_paths.discard(cache_key)
+                continue
+            labels, disputes = cached
+            folder = self._aiculler_internal_label_cache_folders.get(cache_key, "")
+            self._write_aiculler_internal_label_payload(Path(cache_key), folder, labels, disputes)
+            self._aiculler_internal_label_dirty_paths.discard(cache_key)
+        if logger.enabled:
+            logger.duration(
+                "adapter_review.window.flush_internal_labels",
+                (time.perf_counter() - start) * 1000.0,
+                files=len(dirty),
+            )
 
     def _aiculler_ratings_from_internal_labels(self, paths) -> list[dict[str, object]]:
         labels = self._load_aiculler_internal_labels(paths)
@@ -12646,23 +12748,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Run Index & Score in the AI Workflow Center before reviewing adapter labels.")
             return
         saved_labels = self._load_aiculler_internal_labels(paths)
-        try:
-            candidates = load_adapter_review_candidates(
-                db_path,
-                already_labeled=set(saved_labels.keys()),
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
-            return
-        if not candidates and saved_labels:
-            try:
-                candidates = load_adapter_review_candidates(db_path)
-            except Exception as exc:
-                QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
-                return
-
-        survivors, siblings_by_survivor = self._dedupe_adapter_candidates(candidates)
-
         # The CLI-Culler DB stores whatever path the AI run was given (often a
         # UNC path like \\server\share\...), but the grid records use whatever
         # form the user opened the folder with (often a mapped drive like X:).
@@ -12732,9 +12817,26 @@ class MainWindow(QMainWindow):
                     best_score = score
             return best
 
+        phash_group_by_path, phash_group_members = self._aiculler_phash_group_maps()
+        review_group_by_path, review_group_members = self._aiculler_review_group_maps()
+        try:
+            selection = load_adapter_review_candidates(
+                db_path,
+                already_labeled=set(saved_labels.keys()),
+                phash_group_by_path=phash_group_by_path,
+                phash_group_members=phash_group_members,
+                review_group_by_path=review_group_by_path,
+                review_group_members=review_group_members,
+                return_result=True,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
+            return
+
         review_paths: list[str] = []
         seen_review_paths: set[str] = set()
-        for row in survivors:
+        unresolved_count = 0
+        for row in selection.candidates:
             db_path = str(row.get("file_path") or "")
             if not db_path:
                 continue
@@ -12761,17 +12863,28 @@ class MainWindow(QMainWindow):
 
         # Re-key the sibling map so label propagation also lands on grid paths.
         translated_siblings: dict[str, list[str]] = {}
-        for survivor_path, sibling_paths in siblings_by_survivor.items():
+        translated_force_propagate: set[str] = set()
+        for survivor_path, sibling_paths in selection.siblings_by_survivor.items():
             grid_survivor = _resolve_to_grid(str(survivor_path))
             if grid_survivor is None:
                 continue
-            resolved_siblings = [
-                resolved
-                for sib in sibling_paths
-                if (resolved := _resolve_to_grid(str(sib))) is not None
-            ]
+            resolved_siblings: list[str] = []
+            seen_sibling_paths: set[str] = set()
+            survivor_key = os.path.normcase(os.path.normpath(grid_survivor))
+            for sib in sibling_paths:
+                resolved = _resolve_to_grid(str(sib))
+                if resolved is None:
+                    continue
+                resolved_key = os.path.normcase(os.path.normpath(resolved))
+                if resolved_key == survivor_key or resolved_key in seen_sibling_paths:
+                    continue
+                seen_sibling_paths.add(resolved_key)
+                resolved_siblings.append(resolved)
             translated_siblings[grid_survivor] = resolved_siblings
+            if str(survivor_path) in selection.force_propagate_survivors:
+                translated_force_propagate.add(grid_survivor)
         self._aiculler_dedupe_siblings = translated_siblings
+        self._aiculler_force_propagate_siblings = translated_force_propagate
 
         # Force burst grouping/stacking off while labeling so pHash dedup is the
         # only source of grouping. The previous toggle state is restored when
@@ -12789,67 +12902,119 @@ class MainWindow(QMainWindow):
         self.grid.set_adapter_review_mode(review_paths, saved_labels)
         self.mode_tabs.setCurrentIndex(0)
         self._refresh_adapter_review_banner()
-        hidden_count = sum(len(siblings) for siblings in siblings_by_survivor.values())
-        suffix = f" ({hidden_count} near-dup(s) hidden; weak/reject labels propagate)" if hidden_count else ""
+        dialog = getattr(self, "_ai_workflow_center_dialog", None)
+        if dialog is not None:
+            dialog.hide_for_adapter_review()
+        diagnostics = selection.diagnostics
+        hidden_count = int(diagnostics.collapsed_sibling_count)
+        cap_skips = int(diagnostics.cap_skip_count)
+        suffix_parts: list[str] = []
+        if hidden_count:
+            suffix_parts.append(f"{hidden_count} pHash sibling(s) hidden")
+        if cap_skips:
+            suffix_parts.append(f"{cap_skips} spread cap skip(s)")
+        if diagnostics.warning:
+            suffix_parts.append(str(diagnostics.warning))
+        suffix = f" ({'; '.join(suffix_parts)})" if suffix_parts else ""
         self.statusBar().showMessage(
             f"Reviewing {len(review_paths)} adapter candidates{suffix}. "
             f"Use 1=best, 2=strong, 3=maybe, 4=weak, 5=reject."
         )
 
-    def _dedupe_adapter_candidates(
-        self,
-        candidates: list[dict[str, object]],
-    ) -> tuple[list[dict[str, object]], dict[str, list[str]]]:
-        """Collapse adapter review candidates by perceptual-hash group.
+    def _aiculler_phash_group_maps(self) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+        if not self._current_folder:
+            return {}, {}
+        phash_paths = build_phash_prefilter_paths(self._current_folder)
+        if not phash_paths.cache_path.exists():
+            return {}, {}
+        try:
+            payload = json.loads(phash_paths.cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}, {}
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        if not isinstance(entries, dict):
+            return {}, {}
+        hashes: list[tuple[str, int]] = []
+        for path, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            value = entry.get("hash")
+            if isinstance(value, int):
+                hashes.append((str(path), value))
+        if len(hashes) < 2:
+            return {}, {}
+        threshold = getattr(getattr(self, "_phash_prefilter_settings", None), "hamming_threshold", 6)
+        try:
+            threshold = max(0, min(64, int(threshold)))
+        except (TypeError, ValueError):
+            threshold = 6
+        threshold = max(threshold, 12)
+        parent = list(range(len(hashes)))
 
-        For each visual group identified by ReviewIntelligence (which uses dhash
-        plus capture metadata to detect bursts / near-duplicates / similar
-        frames), keep only the highest-ranked candidate and remember every other
-        path in the group so labels can be propagated back to siblings at write
-        time. Candidates without an associated group pass through unchanged.
-        """
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
 
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        for left_index, (_left_path, left_hash) in enumerate(hashes):
+            for right_index in range(left_index + 1, len(hashes)):
+                _right_path, right_hash = hashes[right_index]
+                if hamming_distance_int(left_hash, right_hash) <= threshold:
+                    union(left_index, right_index)
+
+        grouped: dict[int, list[str]] = {}
+        for index, (path, _hash) in enumerate(hashes):
+            grouped.setdefault(find(index), []).append(path)
+        group_by_path: dict[str, str] = {}
+        group_members: dict[str, tuple[str, ...]] = {}
+        group_index = 1
+        for members in grouped.values():
+            if len(members) < 2:
+                continue
+            group_id = f"phash:{group_index:04d}"
+            group_index += 1
+            ordered = tuple(sorted(members, key=lambda item: item.casefold()))
+            group_members[group_id] = ordered
+            for member in ordered:
+                group_by_path[member] = group_id
+        return group_by_path, group_members
+
+    def _aiculler_review_group_maps(self) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
         bundle = self._review_intelligence
-        if bundle is None or not candidates:
-            return list(candidates), {}
-
-        members_by_group: dict[str, tuple[str, ...]] = {
-            group.id: tuple(group.member_paths) for group in bundle.groups
-        }
-
-        survivors: list[dict[str, object]] = []
-        siblings_by_survivor: dict[str, list[str]] = {}
-        seen_groups: dict[str, dict[str, object]] = {}
-
-        def candidate_rank(row: dict[str, object]) -> int:
-            try:
-                return int(row.get("rank") or 1_000_000)
-            except (TypeError, ValueError):
-                return 1_000_000
-
-        for candidate in candidates:
-            path = str(candidate.get("file_path") or "")
-            if not path:
+        if bundle is None:
+            return {}, {}
+        paths_by_record: dict[str, tuple[str, ...]] = {}
+        for record in self._all_records:
+            if record.is_folder:
                 continue
-            insight = bundle.insight_for_path(path)
-            if insight is None or not insight.has_group:
-                survivors.append(candidate)
-                continue
-            existing = seen_groups.get(insight.group_id)
-            if existing is None or candidate_rank(candidate) < candidate_rank(existing):
-                if existing is not None:
-                    survivors.remove(existing)
-                seen_groups[insight.group_id] = candidate
-                survivors.append(candidate)
-
-        for group_id, survivor in seen_groups.items():
-            survivor_path = str(survivor.get("file_path") or "")
-            all_members = members_by_group.get(group_id, ())
-            siblings = [member for member in all_members if member != survivor_path]
-            if siblings:
-                siblings_by_survivor[survivor_path] = siblings
-
-        return survivors, siblings_by_survivor
+            paths = [record.path]
+            paths.extend(str(getattr(variant, "path", "") or "") for variant in record.display_variants)
+            paths_by_record[os.path.normcase(os.path.normpath(record.path))] = tuple(path for path in paths if path)
+        group_by_path: dict[str, str] = {}
+        group_members: dict[str, tuple[str, ...]] = {}
+        for group in bundle.groups:
+            group_id = str(group.id)
+            members: list[str] = []
+            seen: set[str] = set()
+            for member_path in group.member_paths:
+                record_paths = paths_by_record.get(os.path.normcase(os.path.normpath(str(member_path))), (str(member_path),))
+                for path in record_paths:
+                    key = os.path.normcase(os.path.normpath(path))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    members.append(path)
+                    group_by_path[path] = group_id
+            if len(members) >= 2:
+                group_members[group_id] = tuple(members)
+        return group_by_path, group_members
 
     def _apply_ai_review_burst_lockout(self, *, locked: bool) -> None:
         """Lock or unlock Smart Groups/Stacks toggle actions for AI Review.
@@ -12952,7 +13117,7 @@ class MainWindow(QMainWindow):
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
-        propagate_to_siblings = self._aiculler_should_propagate_label_to_siblings(normalized)
+        propagate_to_siblings = self._aiculler_should_propagate_to_siblings(record.path, normalized)
         if propagate_to_siblings:
             for sibling_path in siblings:
                 sibling_record = self._all_records_by_path.get(sibling_path)
@@ -13000,6 +13165,7 @@ class MainWindow(QMainWindow):
 
     def _exit_aiculler_adapter_review_mode(self) -> None:
         self._aiculler_dedupe_siblings = {}
+        self._aiculler_force_propagate_siblings = set()
         snapshot = self._aiculler_review_burst_snapshot
         self._aiculler_review_burst_snapshot = None
         if snapshot is not None:
@@ -13009,6 +13175,13 @@ class MainWindow(QMainWindow):
         banner = getattr(self, "adapter_review_banner", None)
         if banner is not None:
             banner.hide()
+        timer = getattr(self, "_adapter_review_action_state_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._flush_adapter_review_action_state_update()
+        dialog = getattr(self, "_ai_workflow_center_dialog", None)
+        if dialog is not None:
+            dialog.restore_after_adapter_review()
 
     def _build_adapter_review_banner(self) -> QWidget:
         banner = QWidget()
@@ -13075,23 +13248,65 @@ class MainWindow(QMainWindow):
         parts = [f"{candidate_count} candidate(s)"]
         parts.append(f"{labeled} labeled")
         if hidden:
-            parts.append(f"{hidden} near-dup(s) hidden; weak/reject propagate")
+            parts.append(f"{hidden} pHash/near-dup(s) hidden; labels propagate")
         parts.append("Use 1-5 to rate, Esc to exit")
         self._adapter_review_banner_status.setText(" · ".join(parts))
         banner.show()
 
     def _handle_aiculler_adapter_label_requested(self, record_path: str, label: str) -> None:
+        logger = perf_logger()
+        total_start = time.perf_counter() if logger.enabled else 0.0
+        step_start = total_start
+
+        def log_step(event: str, **fields: object) -> None:
+            nonlocal step_start
+            if not logger.enabled:
+                return
+            now = time.perf_counter()
+            logger.duration(
+                event,
+                (now - step_start) * 1000.0,
+                path=record_path,
+                label=label,
+                **fields,
+            )
+            step_start = now
+
         record = self._all_records_by_path.get(record_path)
         if record is None:
+            if logger.enabled:
+                logger.duration(
+                    "adapter_review.window.label_blocked",
+                    (time.perf_counter() - total_start) * 1000.0,
+                    path=record_path,
+                    label=label,
+                    reason="record_missing",
+                )
             return
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
+            if logger.enabled:
+                logger.duration(
+                    "adapter_review.window.label_blocked",
+                    (time.perf_counter() - total_start) * 1000.0,
+                    path=record_path,
+                    label=label,
+                    reason="no_folder_paths",
+                )
             return
         labels = self._load_aiculler_internal_labels(paths)
+        log_step("adapter_review.window.load_labels", label_count=len(labels))
         normalized = label.strip().lower()
         siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
-        propagate_to_siblings = self._aiculler_should_propagate_label_to_siblings(normalized)
+        propagate_to_siblings = self._aiculler_should_propagate_to_siblings(record.path, normalized)
         previous_label = labels.get(record.path)
+        log_step(
+            "adapter_review.window.prepare",
+            normalized=normalized,
+            siblings=len(siblings),
+            propagate_to_siblings=propagate_to_siblings,
+            previous_label=previous_label or "",
+        )
         if normalized:
             labels[record.path] = normalized
             self._record_aiculler_override_telemetry(
@@ -13100,6 +13315,7 @@ class MainWindow(QMainWindow):
                 previous_label=previous_label,
                 action_source="adapter_label",
             )
+            log_step("adapter_review.window.telemetry_primary", ignored=False)
             if propagate_to_siblings:
                 for sibling_path in siblings:
                     sibling_record = self._all_records_by_path.get(sibling_path)
@@ -13126,6 +13342,11 @@ class MainWindow(QMainWindow):
                             action_source="auto_action",
                             ignored_for_training=True,
                         )
+            log_step(
+                "adapter_review.window.sibling_updates",
+                siblings=len(siblings),
+                propagated=propagate_to_siblings,
+            )
         else:
             labels.pop(record.path, None)
             if previous_label:
@@ -13136,6 +13357,7 @@ class MainWindow(QMainWindow):
                     action_source="adapter_label",
                     ignored_for_training=True,
                 )
+            log_step("adapter_review.window.telemetry_primary", ignored=True, had_previous=bool(previous_label))
             for sibling_path in siblings:
                 sibling_record = self._all_records_by_path.get(sibling_path)
                 sibling_previous_label = labels.get(sibling_path)
@@ -13148,24 +13370,53 @@ class MainWindow(QMainWindow):
                         action_source="auto_action",
                         ignored_for_training=True,
                     )
-        self._save_aiculler_internal_labels(paths, labels)
-        self._save_aiculler_global_label(record.path, normalized, weight=1.0, is_dispute=False)
+            log_step("adapter_review.window.sibling_updates", siblings=len(siblings), propagated=False)
+        self._save_aiculler_internal_labels(paths, labels, defer=True)
+        log_step("adapter_review.window.queue_internal_labels", label_count=len(labels))
+        self._queue_aiculler_global_label(record.path, normalized, weight=1.0, is_dispute=False)
+        log_step("adapter_review.window.queue_global_primary")
         for sibling_path in siblings:
             sibling_label = normalized if propagate_to_siblings else ""
-            self._save_aiculler_global_label(sibling_path, sibling_label, weight=1.0, is_dispute=False)
+            self._queue_aiculler_global_label(sibling_path, sibling_label, weight=1.0, is_dispute=False)
+        log_step("adapter_review.window.queue_global_siblings", siblings=len(siblings))
         self.grid.update_adapter_review_labels(labels)
+        log_step("adapter_review.window.grid_update_labels", label_count=len(labels))
         # Reflect the label in the AI Review bucket immediately so user
         # decisions show up the moment they save.
-        self._recompute_user_label_bucket_overrides()
+        self._apply_user_label_bucket_override_delta(record.path, normalized)
+        for sibling_path in siblings:
+            sibling_label = normalized if propagate_to_siblings else ""
+            self._apply_user_label_bucket_override_delta(sibling_path, sibling_label)
+        log_step("adapter_review.window.bucket_override_delta", siblings=len(siblings))
         self._refresh_adapter_review_banner()
+        log_step("adapter_review.window.refresh_banner")
         sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings and propagate_to_siblings else ""
         self.statusBar().showMessage(
             f"Saved adapter label for {record.name}: {normalized or 'unlabeled'}{sibling_suffix}"
         )
+        log_step("adapter_review.window.status_message")
+        if logger.enabled:
+            logger.duration(
+                "adapter_review.window.label_total",
+                (time.perf_counter() - total_start) * 1000.0,
+                path=record_path,
+                label=normalized,
+                siblings=len(siblings),
+                propagated=propagate_to_siblings,
+                final_label_count=len(labels),
+            )
 
     @staticmethod
     def _aiculler_should_propagate_label_to_siblings(label: str) -> bool:
         return label.strip().lower() in {"maybe", "weak", "reject", "bad", "r", "no", "0"}
+
+    def _aiculler_should_propagate_to_siblings(self, survivor_path: str, label: str) -> bool:
+        normalized = str(label).strip().lower()
+        if not normalized:
+            return False
+        if survivor_path in getattr(self, "_aiculler_force_propagate_siblings", set()):
+            return True
+        return self._aiculler_should_propagate_label_to_siblings(normalized)
 
     @staticmethod
     def _new_aiculler_adapter_model_version(*, global_labels: bool = False) -> str:
@@ -16038,12 +16289,21 @@ class MainWindow(QMainWindow):
             now = time.perf_counter()
             logger.duration("window.current_changed.enqueue_metadata", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
             step_start = now
-        self._update_action_states()
+        if self._adapter_review_mode_active():
+            self._schedule_adapter_review_action_state_update()
+        else:
+            self._update_action_states()
         self._refresh_generated_left_context(index)
         self._update_inspector_context(index)
         if logger.enabled:
             now = time.perf_counter()
-            logger.duration("window.current_changed.action_states", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
+            logger.duration(
+                "window.current_changed.action_states",
+                (now - step_start) * 1000.0,
+                index=index,
+                view=self._browser_view_mode,
+                deferred=self._adapter_review_mode_active(),
+            )
             step_start = now
         self._update_status(index=index)
         if logger.enabled:
@@ -16072,12 +16332,41 @@ class MainWindow(QMainWindow):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         self._sync_details_view_from_grid()
-        self._update_action_states()
+        deferred_action_state = self._adapter_review_mode_active()
+        if deferred_action_state:
+            self._schedule_adapter_review_action_state_update()
+        else:
+            self._update_action_states()
         self._update_status()
         self._refresh_generated_left_context()
         self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(lookahead=100), front=True)
         if logger.enabled:
-            logger.duration("window.selection_changed", (time.perf_counter() - start) * 1000.0, selected=self.grid.selected_count(), view=self._browser_view_mode)
+            logger.duration(
+                "window.selection_changed",
+                (time.perf_counter() - start) * 1000.0,
+                selected=self.grid.selected_count(),
+                view=self._browser_view_mode,
+                deferred_action_state=deferred_action_state,
+            )
+
+    def _adapter_review_mode_active(self) -> bool:
+        return bool(getattr(getattr(self, "grid", None), "_adapter_review_mode", False))
+
+    def _schedule_adapter_review_action_state_update(self) -> None:
+        timer = getattr(self, "_adapter_review_action_state_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _flush_adapter_review_action_state_update(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        self._update_action_states()
+        if logger.enabled:
+            logger.duration(
+                "adapter_review.window.deferred_action_states",
+                (time.perf_counter() - start) * 1000.0,
+                active=self._adapter_review_mode_active(),
+            )
 
     def _show_ai_menu(self) -> None:
         if self.actions is None:
@@ -18337,8 +18626,16 @@ class MainWindow(QMainWindow):
         paths = self._aiculler_paths_for_current_folder()
         adapter_version = ""
         if paths is not None:
+            db_path = aiculler_db_path(paths)
             try:
-                adapter_version = latest_adapter_model_version(aiculler_db_path(paths))
+                mtime_ns = db_path.stat().st_mtime_ns if db_path.exists() else 0
+                cache_key = str(db_path)
+                cached = self._aiculler_telemetry_adapter_version_cache.get(cache_key)
+                if cached is not None and cached[0] == mtime_ns:
+                    adapter_version = cached[1]
+                else:
+                    adapter_version = latest_adapter_model_version(db_path)
+                    self._aiculler_telemetry_adapter_version_cache[cache_key] = (mtime_ns, adapter_version)
             except Exception:
                 adapter_version = ""
         event = TelemetryEvent(
@@ -18435,6 +18732,16 @@ class MainWindow(QMainWindow):
         # disputed card appears (or stops appearing if it was undisputed).
         if self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS:
             self._apply_filter_query_change()
+
+    def _apply_user_label_bucket_override_delta(self, path: str, label: str) -> None:
+        key = _memory_path_key(path)
+        bucket_name = self._USER_LABEL_TO_BUCKET.get(str(label).strip().lower())
+        if bucket_name is None:
+            self._user_label_bucket_overrides.pop(key, None)
+        else:
+            self._user_label_bucket_overrides[key] = bucket_name
+        if hasattr(self, "grid") and self.grid is not None:
+            self.grid.viewport().update()
 
     def _is_record_disputed(self, record: ImageRecord | None) -> bool:
         if record is None or not self._disputed_path_keys:
@@ -19467,24 +19774,24 @@ class MainWindow(QMainWindow):
             title="Image Triage Quick Start",
             markdown=dedent(
                 """
-                # Quick Start
+                # Quick start
 
-                Use this when you just want to get moving.
+                The fastest path from opening a folder to a sorted set.
 
-                1. **Open a folder** with `File > Open Folder...`.
-                2. **Select images** with click, `Ctrl`-click, `Shift`-click, or drag-select.
-                3. **Sort fast** with `W` accept, `X` reject, `K` move to `_keep`, `M` move, and `Delete` trash.
-                4. **Preview** with `Space` or `Enter`.
-                5. **Use right-click or `Tools`** for rename, resize, convert, archive, and batch actions.
-                6. **Organize by drag-and-drop** onto folders or favorites. Hold `Ctrl` to copy instead of move.
-                7. **Toggle `View > Burst Groups`** to tag likely burst sequences, or **`View > Burst Stacks`** for a stack-style burst navigator in the main viewer.
-                8. **Open `Help > AI Guide`** for AI review, culling, and training.
+                1. **Open a folder** — `File > Open Folder...`.
+                2. **Select images** — click, `Ctrl`-click, `Shift`-click, or drag to marquee-select.
+                3. **Sort quickly** — `W` accept, `X` reject, `K` move to `_keep`, `M` move, `Delete` trash.
+                4. **Preview** — `Space` or `Enter`.
+                5. **Run batch actions** — right-click or the **Tools** menu for rename, resize, convert, and archive.
+                6. **Organize by drag and drop** — drop onto folders or favorites; hold `Ctrl` to copy instead of move.
+                7. **Toggle burst views** — **`View > Burst Groups`** tags likely burst sequences, or **`View > Burst Stacks`** opens a stacked burst navigator in the main viewer.
+                8. **Explore AI** — open **`Help > AI Guide`** for AI review, culling, and training.
 
-                ## Need More?
+                ## Need more?
 
-                - Open **`Help > AI Guide`** for the full AI workflow.
-                - Open **`Help > Advanced Help`** for broader controls and shortcuts.
-                - Use the **`?`** buttons in AI Workflow Center, Settings, Library, Catalog, Collections, and Workflow dialogs for focused step-by-step help.
+                - **`Help > AI Guide`** — the full AI workflow.
+                - **`Help > Advanced Help`** — broader controls and shortcuts.
+                - The **`?`** button in the AI Workflow Center, Settings, Library, Catalog, Collections, and Workflow dialogs — focused, step-by-step help.
                 """
             ),
         )
@@ -19498,9 +19805,9 @@ class MainWindow(QMainWindow):
             title="AI Review Tag Legend",
             markdown=dedent(
                 f"""
-                # AI Review Tag Legend
+                # AI Review tag legend
 
-                Use this as the quick reference for the badges you see in **AI Review**.
+                A quick reference for the badges you see in **AI Review**.
 
                 {self._ai_review_tags_markdown()}
                 """
@@ -19514,26 +19821,26 @@ class MainWindow(QMainWindow):
                 f"""
                 # AI Guide
 
-                AI is a core part of Image Triage. The app supports both:
+                AI is a core part of Image Triage. The app supports two complementary modes:
 
-                - **AI review** for grouping and ranking a folder
-                - **AI training** for teaching the model from your own preferences
+                - **AI review** — group and rank the images in a folder.
+                - **AI training** — teach the model from your own preferences.
 
-                The key principle is simple: **AI suggests, you stay in control**.
+                The guiding principle is simple: **AI suggests, you stay in control.**
 
-                ## Model Download
+                ## Model download
 
-                The installer now opens a first-launch setup step for the optional AI runtime and local model files.
+                The installer opens a first-launch setup step for the optional AI runtime and local model files.
 
-                - Leave the AI runtime install on if you want the core ONNX/TOPIQ stack ready immediately.
+                - Keep the AI runtime install on to have the core ONNX/TOPIQ stack ready immediately.
                 - Include DINO dependencies only if you plan to use DINO Prefilter.
-                - Leave model downloads on if you want CLI-Culler CLIP, TOPIQ, and optional DINO assets cached locally.
+                - Keep model downloads on to cache CLI-Culler CLIP, TOPIQ, and optional DINO assets locally.
                 - Turn it off if you only want the core browser for now.
-                - If you skip it, use **`AI > Runtime And Cache > Install AI Runtime...`** and **`AI > Runtime And Cache > Download AI Models...`** later.
+                - If you skip it, install later from **`AI > Runtime And Cache > Install AI Runtime...`** and **`AI > Runtime And Cache > Download AI Models...`**.
 
-                ## What AI Adds To Review
+                ## What AI adds to review
 
-                When AI results are loaded, the app can show:
+                Once AI results are loaded, the app can show:
 
                 - ranked groups
                 - per-image AI scores
@@ -19541,57 +19848,57 @@ class MainWindow(QMainWindow):
                 - compare groups inside preview
                 - a saved HTML report for the folder
 
-                ## AI Review Workflow
+                ## AI review workflow
 
-                Use this when you want the app to score a folder and help you review it faster. Open **AI > AI Workflow Center...** and use its **`?`** button for the detailed stage-by-stage guide.
+                Use this when you want the app to score a folder and help you review it faster. Open **`AI > AI Workflow Center...`** and use its **`?`** button for the detailed, stage-by-stage guide.
 
                 1. Open the folder you want to review.
                 2. Open **`AI > AI Workflow Center...`** and run **Index & Score**.
                 3. Wait for extraction, grouping, scoring, and report export to finish.
-                4. The app will automatically load the new results and switch into **AI Review**.
-                5. Use **`Ctrl+Alt+P`** to jump to the next AI top pick.
-                6. Use **`Ctrl+Alt+G`** to compare the current AI group.
-                7. Use **`AI > Run And Apply > Apply AI Decisions`** when you want the app to auto-file only the clearest winners and rejects.
-                8. Later, use **`AI > Load Saved AI For Folder`** if you want to reopen cached results without rerunning the model.
+                4. The app loads the new results and switches into **AI Review** automatically.
+                5. Press **`Ctrl+Alt+P`** to jump to the next AI top pick.
+                6. Press **`Ctrl+Alt+G`** to compare the current AI group.
+                7. Choose **`AI > Run And Apply > Apply AI Decisions`** to auto-file only the clearest winners and rejects.
+                8. Later, use **`AI > Load Saved AI For Folder`** to reopen cached results without rerunning the model.
 
-                ## AI Review Tags
+                ## AI review tags
 
                 {self._ai_review_tags_markdown()}
 
-                ## Adapter Workflow
+                ## Adapter workflow
 
                 Use this when you want CLI-Culler to learn from your own decisions.
 
                 1. Open the folder you want to train from.
                 2. Open **`AI > AI Workflow Center...`** and run **Index & Score** so the folder has a CLI-Culler database.
-                3. Mark images with ratings, Accept, or Reject in the grid, or choose **`AI > Adapter Training > Review Adapter Labels...`** to work through suggested label candidates.
+                3. Rate, Accept, or Reject images in the grid, or choose **`AI > Adapter Training > Review Adapter Labels...`** to work through suggested candidates.
                 4. Choose **`AI > Adapter Training > Prepare Rating CSV`** to materialize the current labels.
                 5. Choose **`AI > Adapter Training > Train Adapter...`**.
                 6. Choose **`AI > Adapter Training > Evaluate Adapter`** to check the latest adapter against stored ratings.
-                7. Choose **`AI > Adapter Training > Rank Folder With Local Adapter`** to refresh the folder ranking.
+                7. Choose **`AI > Adapter Training > Rank Folder With Local Adapter`** to refresh the ranking.
                 8. Review the refreshed result in **AI Review**.
 
-                ## Where AI Files Live
+                ## Where AI files live
 
                 Every AI-enabled folder gets a hidden workspace beside the images:
 
-                - **`.image_triage_ai/artifacts`**: CLI-Culler database and intermediate artifacts
-                - **`.image_triage_ai/ranker_report`**: scored exports and HTML report
+                - **`.image_triage_ai/artifacts`** — CLI-Culler database and intermediate artifacts.
+                - **`.image_triage_ai/ranker_report`** — scored exports and the HTML report.
 
-                ## Best Practices
+                ## Best practices
 
                 - Start with folders that match the kind of work you care about most.
                 - Label clear winners and clear rejects first.
                 - Use adapter label review to cover uncertain or informative cases before training.
-                - Retrain after a meaningful batch of labels, not after every tiny change.
+                - Retrain after a meaningful batch of labels, not after every small change.
                 - Evaluate a new adapter before trusting it broadly.
 
                 ## Troubleshooting
 
                 - If rankings look stale, run **Rank Folder With Local Adapter** again.
-                - If the folder changed heavily, rerun **Index & Score** in the AI Workflow Center before training or ranking.
+                - If the folder changed heavily, rerun **Index & Score** before training or ranking.
                 - If AI actions are disabled, open **`AI > Runtime And Cache > Install AI Runtime...`** or **`AI > Runtime And Cache > Download AI Models...`** and check the setup state.
-                - If you only want to review AI results, you do **not** need the adapter steps.
+                - To review AI results only, you do **not** need the adapter steps.
                 """
             ),
         )
@@ -19603,20 +19910,20 @@ class MainWindow(QMainWindow):
                 """
                 # Advanced Help
 
-                This is the broader reference for the rest of the app.
+                A broader reference for the rest of the app.
 
                 ## Selection
 
-                - `Ctrl`-click adds or removes images
+                - `Ctrl`-click adds or removes an image
                 - `Shift`-click selects a range
                 - `Ctrl+A` selects all visible images
-                - drag on empty space marquee-selects like File Explorer
-                - drag selected thumbnails onto folders or favorites to move them
-                - hold `Ctrl` while dragging to copy instead of move
-                - **`View > Burst Groups`** highlights likely capture bursts in the main grid as a toggle, not a permanent regrouping
+                - Drag on empty space to marquee-select, like File Explorer
+                - Drag selected thumbnails onto folders or favorites to move them
+                - Hold `Ctrl` while dragging to copy instead of move
+                - **`View > Burst Groups`** highlights likely capture bursts in the grid as a toggle, not a permanent regrouping
                 - **`View > Burst Stacks`** adds stacked burst visuals plus burst cycling in the main viewer with `[` and `]`
 
-                ## Core Review
+                ## Core review
 
                 - `Space` or `Enter` opens Preview
                 - `W` accepts
@@ -19625,7 +19932,7 @@ class MainWindow(QMainWindow):
                 - `M` moves to a folder
                 - `Delete` trashes
                 - `Ctrl+Z` undoes the last change
-                - `0-5` rates
+                - `0`-`5` rates
                 - `T` tags
                 - `C` toggles compare
 
@@ -19635,27 +19942,27 @@ class MainWindow(QMainWindow):
                 - Batch tools use the checkbox mode in the grid
                 - Resize and Convert are also available from the image right-click menu
                 - RAW files are skipped for Resize and Convert
-                - The **AI > Adapter Training** menu contains the current label review, adapter training, evaluation, and ranking flow
-                - long AI tasks use centered progress dialogs while scripts are running, and **Stats For Nerds** opens the live training log
+                - The **`AI > Adapter Training`** menu holds the label review, training, evaluation, and ranking flow
+                - Long AI tasks show centered progress dialogs, and **Stats For Nerds** opens the live training log
 
                 ## Preview
 
-                - mouse wheel or `Z` zooms
+                - Mouse wheel or `Z` zooms
                 - `0` returns to fit
-                - `L` toggles loupe
+                - `L` toggles the loupe
                 - `C` toggles compare
                 - `Tab` changes preview focus
                 - Left and Right navigate
                 - Before/After compares the original with the latest detected edit
                 - Open In Photoshop sends the current preview image to Photoshop
 
-                ## Folders And AI
+                ## Folders and AI
 
-                - right-click folders or favorites to create, rename, move, delete, or favorite folders
-                - recent destinations appear in copy and move menus for faster sorting
-                - the Library panel **`?`** explains favorites, virtual collections, and catalog search
+                - Right-click folders or favorites to create, rename, move, delete, or favorite them
+                - Recent destinations appear in the copy and move menus for faster sorting
+                - The Library panel **`?`** explains favorites, virtual collections, and catalog search
                 - Workflow dialogs include their own **`?`** help for recipes, content mode, transfer mode, and saved recipes
-                - Settings includes a **`?`** help button for the growing AI, DINO, and pHash sections
+                - Settings includes a **`?`** help button for the AI, DINO, and pHash sections
                 - **AI Review** lets you run AI review, apply AI culling, or load saved AI results for the current folder
                 - **`Help > AI Guide`** is the dedicated walkthrough for the AI side of the app
                 - `Ctrl+Alt+P` jumps to the next AI top pick
@@ -19673,8 +19980,8 @@ class MainWindow(QMainWindow):
                     "Image Triage",
                     f"Version {current_app_version()}",
                     "",
-                    "A desktop photo triage tool focused on speed, keyboard flow, and AI-assisted review.",
-                    "This UI pass adds a command-driven shell foundation with a real menu bar, toolbar, and theme support.",
+                    "A desktop photo triage tool built for speed, keyboard-driven flow, and AI-assisted review.",
+                    "Sort, rate, and cull large shoots quickly, then hand off or export the keepers.",
                 ]
             ),
         )

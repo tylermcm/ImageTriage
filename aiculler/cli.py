@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import shutil
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -86,7 +87,12 @@ def command_ingest(args) -> int:
             feature_cache_identity=_feature_cache_identity(args),
         )
         phase_started_at = time.perf_counter()
-        include_paths = _load_include_paths(args.include_paths_file) if args.include_paths_file else None
+        try:
+            include_paths = _load_include_paths(args.include_paths_file) if args.include_paths_file else None
+        except FileNotFoundError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            logger.event("ingest_include_paths_missing", {"include_paths_file": str(args.include_paths_file or ""), "error": str(exc)})
+            return 2
         _log_speed_phase(
             logger,
             "load_include_paths",
@@ -571,6 +577,11 @@ def command_assign_categories(args) -> int:
 
 
 def _load_include_paths(path: Path) -> list[Path]:
+    if not path.exists():
+        recovered = _recover_global_adapter_include_paths(path)
+        if recovered is not None:
+            return recovered
+        raise FileNotFoundError(f"Include paths file does not exist: {path}")
     paths: list[Path] = []
     base = path.parent
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -582,6 +593,88 @@ def _load_include_paths(path: Path) -> list[Path]:
             candidate = base / candidate
         paths.append(candidate)
     return paths
+
+
+def _recover_global_adapter_include_paths(path: Path) -> list[Path] | None:
+    if path.name != "global_adapter_include_paths.txt":
+        return None
+    try:
+        ai_training_dir = path.parents[2]
+    except IndexError:
+        return None
+    label_store = ai_training_dir / "global_adapter_labels.sqlite"
+    if not label_store.exists():
+        return None
+    connection = sqlite3.connect(label_store)
+    try:
+        rows = connection.execute(
+            """
+            SELECT source_path
+            FROM adapter_labels
+            ORDER BY updated_at ASC, source_path ASC
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    paths = [Path(str(row[0])) for row in rows if str(row[0] or "").strip()]
+    existing = [candidate for candidate in paths if candidate.exists()]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(str(candidate) for candidate in existing) + ("\n" if existing else ""), encoding="utf-8")
+    if not existing:
+        raise FileNotFoundError(f"Recovered global adapter label store contains no existing source paths: {label_store}")
+    print(f"Recovered {len(existing)} include path(s) from {label_store}.")
+    return existing
+
+
+def _recover_global_adapter_ratings_csv(path: Path) -> Path:
+    if path.exists():
+        return path
+    try:
+        ai_training_dir = path.parents[2]
+    except IndexError:
+        return path
+    label_store = ai_training_dir / "global_adapter_labels.sqlite"
+    if not label_store.exists():
+        return path
+    connection = sqlite3.connect(label_store)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            """
+            SELECT source_path, filename, label, weight, is_dispute
+            FROM adapter_labels
+            ORDER BY updated_at ASC, source_path ASC
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    labels = [row for row in rows if Path(str(row["source_path"] or "")).exists()]
+    if not labels:
+        raise FileNotFoundError(f"Recovered global adapter label store contains no existing source paths: {label_store}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round", "weight"),
+        )
+        writer.writeheader()
+        for row in labels:
+            label = str(row["label"] or "").strip().lower()
+            source_path = str(row["source_path"] or "")
+            writer.writerow(
+                {
+                    "source_path": source_path,
+                    "filename": str(row["filename"] or Path(source_path).name),
+                    "label": label,
+                    "rating": "",
+                    "winner": int(label in {"hero", "portfolio", "keep", "good", "k", "yes", "1"}),
+                    "reject": int(label in {"reject", "bad", "r", "no", "0"}),
+                    "review_round": "adapter_global_dispute" if int(row["is_dispute"] or 0) else "adapter_global_review",
+                    "weight": float(row["weight"] or 1.0),
+                }
+            )
+    print(f"Recovered {len(labels)} global adapter rating row(s) from {label_store}.")
+    return path
 
 
 def command_cluster_categories(args) -> int:
@@ -636,7 +729,13 @@ def command_import_ratings(args) -> int:
     command_started_at = time.perf_counter()
     try:
         phase_started_at = time.perf_counter()
-        records = import_ratings_csv(store, args.ratings, source=args.source, skip_unmatched=args.skip_missing)
+        try:
+            ratings_path = _recover_global_adapter_ratings_csv(args.ratings) if args.source == "image_triage_global" else args.ratings
+            records = import_ratings_csv(store, ratings_path, source=args.source, skip_unmatched=args.skip_missing)
+        except FileNotFoundError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            logger.event("import_ratings_file_missing", {"ratings": str(args.ratings or ""), "error": str(exc)})
+            return 2
         _log_speed_phase(
             logger,
             "import_ratings",
