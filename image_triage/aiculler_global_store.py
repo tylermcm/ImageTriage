@@ -218,12 +218,12 @@ def default_global_adapter_db_path() -> Path:
 
 def _default_user_data_root() -> Path:
     if os.name == "nt":
-        appdata = os.environ.get("APPDATA", "").strip()
-        if appdata:
-            return Path(appdata) / "ImageTriage"
         userprofile = os.environ.get("USERPROFILE", "").strip()
         if userprofile:
             return Path(userprofile) / "AppData" / "Roaming" / "ImageTriage"
+        appdata = os.environ.get("APPDATA", "").strip()
+        if appdata:
+            return Path(appdata) / "ImageTriage"
     try:
         return Path.home() / ".image-triage"
     except RuntimeError:

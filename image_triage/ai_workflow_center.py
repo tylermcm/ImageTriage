@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from PySide6.QtCore import Qt
@@ -118,6 +120,56 @@ def _format_count_pairs(pairs: tuple[tuple[str, int], ...]) -> str:
     return ", ".join(f"{label.replace('_', ' ')}: {count}" for label, count in pairs)
 
 
+def _load_telemetry_health(db_path: str | Path) -> dict[str, object]:
+    path = Path(db_path)
+    if not path.exists():
+        return {
+            "override_count": 0,
+            "final_usable_override_count": 0,
+            "ignored_intermediate_override_count": 0,
+            "latest_override_created_at": "",
+        }
+    connection = sqlite3.connect(path)
+    try:
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'user_overrides'"
+        ).fetchone()
+        if table_exists is None:
+            return {
+                "override_count": 0,
+                "final_usable_override_count": 0,
+                "ignored_intermediate_override_count": 0,
+                "latest_override_created_at": "",
+            }
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS override_count,
+                SUM(CASE WHEN is_final = 1 AND ignored_for_training = 0 THEN 1 ELSE 0 END)
+                  AS final_usable_override_count,
+                SUM(CASE WHEN is_final = 0 OR ignored_for_training = 1 THEN 1 ELSE 0 END)
+                  AS ignored_intermediate_override_count,
+                MAX(created_at) AS latest_override_created_at
+            FROM user_overrides
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return {
+            "override_count": 0,
+            "final_usable_override_count": 0,
+            "ignored_intermediate_override_count": 0,
+            "latest_override_created_at": "",
+        }
+    return {
+        "override_count": int(row[0] or 0),
+        "final_usable_override_count": int(row[1] or 0),
+        "ignored_intermediate_override_count": int(row[2] or 0),
+        "latest_override_created_at": str(row[3] or ""),
+    }
+
+
 def _compact_metric_value(label: str, value: str) -> str:
     text = str(value or "")
     if label not in {"Culler source", "Model root", "Current folder"}:
@@ -153,6 +205,10 @@ class WorkflowSnapshot:
     global_matching_label_count: int
     global_matching_label_values: int
     global_matching_dispute_count: int
+    telemetry_override_count: int
+    telemetry_final_usable_override_count: int
+    telemetry_ignored_intermediate_override_count: int
+    telemetry_latest_override_created_at: str
     adapter_version: str
     adapter_created_at: str
     train_mae: float | None
@@ -358,6 +414,7 @@ class AIWorkflowCenterDialog(QDialog):
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
         self._window = window
+        self._hidden_for_adapter_review = False
         self.setWindowTitle("AI Workflow Center")
         self.setObjectName("aiWorkflowCenter")
         self.setModal(False)
@@ -539,6 +596,22 @@ class AIWorkflowCenterDialog(QDialog):
         self._global_adapter_models: tuple[dict[str, object], ...] = ()
         self._build_pages()
         self.refresh()
+
+    def hide_for_adapter_review(self) -> None:
+        if not self.isVisible():
+            self._hidden_for_adapter_review = False
+            return
+        self._hidden_for_adapter_review = True
+        self.hide()
+
+    def restore_after_adapter_review(self) -> None:
+        if not self._hidden_for_adapter_review:
+            return
+        self._hidden_for_adapter_review = False
+        self.refresh()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _build_adapter_list(self) -> QListWidget:
         adapter_list = QListWidget()
@@ -788,6 +861,10 @@ class AIWorkflowCenterDialog(QDialog):
         global_matching_label_count = 0
         global_matching_label_values = 0
         global_matching_dispute_count = 0
+        telemetry_override_count = 0
+        telemetry_final_usable_override_count = 0
+        telemetry_ignored_intermediate_override_count = 0
+        telemetry_latest_override_created_at = ""
         adapter_version = ""
         adapter_created_at = ""
         train_mae: float | None = None
@@ -834,6 +911,13 @@ class AIWorkflowCenterDialog(QDialog):
                 )
                 scored_count = int(summary.get("scored_count") or 0)
                 adapter_models = tuple(list_adapter_model_summaries(db_path))
+                telemetry_health = _load_telemetry_health(db_path)
+                telemetry_override_count = int(telemetry_health.get("override_count") or 0)
+                telemetry_final_usable_override_count = int(telemetry_health.get("final_usable_override_count") or 0)
+                telemetry_ignored_intermediate_override_count = int(
+                    telemetry_health.get("ignored_intermediate_override_count") or 0
+                )
+                telemetry_latest_override_created_at = str(telemetry_health.get("latest_override_created_at") or "")
             # In-progress labels saved via the per-card adapter combo. These
             # haven't been imported into the DB yet — that happens at train
             # time — but they DO count toward "you can train now".
@@ -914,6 +998,10 @@ class AIWorkflowCenterDialog(QDialog):
             global_matching_label_count=global_matching_label_count,
             global_matching_label_values=global_matching_label_values,
             global_matching_dispute_count=global_matching_dispute_count,
+            telemetry_override_count=telemetry_override_count,
+            telemetry_final_usable_override_count=telemetry_final_usable_override_count,
+            telemetry_ignored_intermediate_override_count=telemetry_ignored_intermediate_override_count,
+            telemetry_latest_override_created_at=telemetry_latest_override_created_at,
             adapter_version=adapter_version,
             adapter_created_at=adapter_created_at,
             train_mae=train_mae,
@@ -1147,6 +1235,10 @@ class AIWorkflowCenterDialog(QDialog):
         label_metrics.append(("Matching global labels", str(snap.global_matching_label_count)))
         if snap.global_matching_dispute_count:
             label_metrics.append(("Matching disputes", str(snap.global_matching_dispute_count)))
+        label_metrics.append(("Telemetry overrides", str(snap.telemetry_override_count)))
+        label_metrics.append(("Final usable overrides", str(snap.telemetry_final_usable_override_count)))
+        label_metrics.append(("Ignored/intermediate", str(snap.telemetry_ignored_intermediate_override_count)))
+        label_metrics.append(("Latest override", snap.telemetry_latest_override_created_at or "N/A"))
         label_metrics.append(("Cluster run", snap.cluster_run_id or "—"))
         steps["label"] = StepSpec(
             key="label",
@@ -1185,6 +1277,10 @@ class AIWorkflowCenterDialog(QDialog):
             train_metrics.append(("Training Labels Available", str(snap.pending_label_count)))
         train_metrics.append(("Trained-on labels", str(snap.label_count)))
         train_metrics.append(("Global labels", str(snap.global_label_count)))
+        train_metrics.append(("Telemetry overrides", str(snap.telemetry_override_count)))
+        train_metrics.append(("Final usable overrides", str(snap.telemetry_final_usable_override_count)))
+        train_metrics.append(("Ignored/intermediate", str(snap.telemetry_ignored_intermediate_override_count)))
+        train_metrics.append(("Latest override", snap.telemetry_latest_override_created_at or "N/A"))
         train_metrics.append(("Local adapter", _display_adapter_version(snap.adapter_version) if snap.adapter_version else "untrained"))
         train_metrics.append(("Global adapter", _display_adapter_version(snap.global_adapter_version) if snap.global_adapter_version else "untrained"))
         if snap.adapter_created_at:

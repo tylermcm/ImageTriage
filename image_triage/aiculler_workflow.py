@@ -14,6 +14,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping, Sequence
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
@@ -56,6 +57,33 @@ CLI_PROGRESS_PATTERN = re.compile(
 )
 CAPTURE_SEQUENCE_PATTERN = re.compile(r"^(?P<prefix>.*?)(?P<number>\d{3,})(?P<suffix>[^0-9]*)$")
 CAPTURE_DIVERSITY_BUCKET_SIZE = 24
+
+
+@dataclass(slots=True, frozen=True)
+class AdapterReviewSelectionDiagnostics:
+    target_count: int
+    raw_row_count: int
+    selected_count: int
+    collapse_group_count: int
+    collapsed_sibling_count: int
+    cap_skip_count: int
+    already_labeled_covered_count: int
+    has_phash_groups: bool
+    has_review_groups: bool
+    has_dino_clusters: bool
+    has_categories: bool
+    grouping_mode: str
+    rolling_windows_represented: int
+    review_groups_represented: int
+    warning: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class AdapterReviewSelectionResult:
+    candidates: list[dict[str, object]]
+    siblings_by_survivor: dict[str, list[str]]
+    force_propagate_survivors: set[str]
+    diagnostics: AdapterReviewSelectionDiagnostics
 
 
 @dataclass(slots=True, frozen=True)
@@ -1712,10 +1740,15 @@ class AICullerGlobalAdapterTask(QRunnable):
             cache_dir = self.paths.hidden_root / "aiculler_cache"
             include_path = self.paths.artifacts_dir / "global_adapter_include_paths.txt"
             ratings_path = self.paths.artifacts_dir / f".adapter_ratings_{self.model_version}.csv"
-            include_path.write_text(
-                "\n".join(label.source_path for label in usable_labels) + "\n",
-                encoding="utf-8",
-            )
+
+            def write_include_file() -> None:
+                include_path.parent.mkdir(parents=True, exist_ok=True)
+                include_path.write_text(
+                    "\n".join(label.source_path for label in usable_labels) + "\n",
+                    encoding="utf-8",
+                )
+
+            write_include_file()
             _write_global_adapter_ratings_csv(ratings_path, usable_labels)
 
             commands = [
@@ -1803,6 +1836,8 @@ class AICullerGlobalAdapterTask(QRunnable):
             self.signals.started.emit(len(commands))
             for index, (message, command) in enumerate(commands, start=1):
                 self.signals.stage.emit(index, len(commands), message)
+                if "--include-paths-file" in command:
+                    write_include_file()
                 self._run_command(command, message)
             write_run_config(
                 self.paths,
@@ -2538,122 +2573,233 @@ def load_adapter_review_candidates(
     top_global_quota: int = 10,
     min_per_category: int = 2,
     already_labeled: set[str] | frozenset[str] | None = None,
-) -> list[dict[str, object]]:
-    """Pick adapter-review candidates with proportional category quotas.
+    phash_group_by_path: Mapping[str, str] | None = None,
+    phash_group_members: Mapping[str, Sequence[str]] | None = None,
+    review_group_by_path: Mapping[str, str] | None = None,
+    review_group_members: Mapping[str, Sequence[str]] | None = None,
+    return_result: bool = False,
+) -> list[dict[str, object]] | AdapterReviewSelectionResult:
+    """Pick adapter-review candidates from collapse groups with spread caps.
 
-    Each populated category gets a slot budget proportional to how many of the
-    folder's images it contains, so a folder with 100 wildlife and 200 landscape
-    images surfaces labels in a 1:2 split. Within each category, picks favor
-    images where the technical/base score and the final ranked score disagree
-    most (the labels that move the model). Paths in ``already_labeled`` are
-    de-prioritized but a small revisit slice still appears so the user can
-    correct earlier ratings.
+    pHash groups are treated as true collapse units: one representative is
+    shown and its label can propagate to visual siblings. Review/burst groups,
+    DINO clusters, and rolling filename/rank windows are spread signals: they
+    cap local repetition without pretending every frame in the sequence is
+    interchangeable. Missing optional maps simply degrade diagnostics and leave
+    the selector using the remaining signals.
     """
 
     if max_rows <= 0:
-        return []
+        empty_diagnostics = AdapterReviewSelectionDiagnostics(
+            target_count=0,
+            raw_row_count=0,
+            selected_count=0,
+            collapse_group_count=0,
+            collapsed_sibling_count=0,
+            cap_skip_count=0,
+            already_labeled_covered_count=0,
+            has_phash_groups=bool(phash_group_by_path),
+            has_review_groups=bool(review_group_by_path),
+            has_dino_clusters=False,
+            has_categories=False,
+            grouping_mode="empty",
+            rolling_windows_represented=0,
+            review_groups_represented=0,
+            warning=None,
+        )
+        result = AdapterReviewSelectionResult([], {}, set(), empty_diagnostics)
+        return result if return_result else []
     labeled = {str(path) for path in (already_labeled or ())}
     run_id = _latest_cluster_run_id(db_path)
     rows = _load_ranked_gui_rows(db_path, run_id)
     if not rows:
         raise ValueError("Run Index & Score in the AI Workflow Center before reviewing adapter labels.")
 
-    selected: dict[str, dict[str, object]] = {}
-    reasons: dict[str, list[str]] = {}
+    phash_lookup = _normalized_mapping(phash_group_by_path)
+    review_lookup = _normalized_mapping(review_group_by_path)
+    phash_members_by_group = _normalized_member_mapping(phash_group_members)
+    labeled_keys = {_review_path_key(path) for path in labeled if path}
+    labeled_stems = {_review_path_stem(path) for path in labeled if _review_path_stem(path)}
 
-    def add_row(row: dict[str, object], reason: str) -> bool:
-        key = str(row.get("file_path") or "")
-        if not key:
-            return False
-        first_time = key not in selected
-        selected.setdefault(key, row)
-        reason_list = reasons.setdefault(key, [])
-        if reason not in reason_list:
-            reason_list.append(reason)
-        if key in labeled and "already_labeled" not in reason_list:
-            reason_list.append("already_labeled")
-        return first_time
+    grouped_rows: dict[str, list[dict[str, object]]] = {}
+    row_meta: dict[str, dict[str, object]] = {}
+    for row in rows:
+        path = str(row.get("file_path") or "")
+        if not path:
+            continue
+        phash_group = _lookup_path_group(phash_lookup, path)
+        collapse_group = f"phash:{phash_group}" if phash_group else f"image:{_review_path_key(path)}"
+        grouped_rows.setdefault(collapse_group, []).append(row)
+        row_meta[path] = {
+            "collapse_group": collapse_group,
+            "phash_group": phash_group or "",
+            "review_group": _lookup_path_group(review_lookup, path) or "",
+            "sequence_group": _capture_sequence_group_id(row),
+            "window_group": _rolling_window_id(row),
+            "cluster_group": str(row.get("semantic_group_id") or row.get("cluster_id") or "").strip(),
+            "category": str(row.get("primary_category") or "uncategorized") or "uncategorized",
+        }
 
-    ranked_rows = sorted(rows, key=lambda row: int(row.get("rank") or 0))
-    global_budget = max(0, min(top_global_quota, max_rows))
-    for row in ranked_rows[:global_budget]:
-        add_row(row, "top_global")
+    selection_units: list[dict[str, object]] = []
+    covered_units: list[dict[str, object]] = []
+    siblings_by_survivor: dict[str, list[str]] = {}
+    force_propagate_survivors: set[str] = set()
+    collapsed_sibling_count = 0
 
-    remaining = max(0, max_rows - len(selected))
-    if remaining > 0:
-        by_category: dict[str, list[dict[str, object]]] = {}
-        for row in rows:
-            category = str(row.get("primary_category") or "uncategorized") or "uncategorized"
-            by_category.setdefault(category, []).append(row)
-        total = sum(len(items) for items in by_category.values()) or 1
-        # Only revisit labeled items that aren't already in the result set; otherwise
-        # the reserved budget gets wasted and fresh categories don't fill it.
-        revisit_pool = sum(1 for path in labeled if path not in selected)
-        revisit_budget = min(remaining // 4, revisit_pool)
-        fresh_budget = remaining - revisit_budget
-        if fresh_budget < 0:
-            fresh_budget = 0
-        category_quotas = _proportional_quotas(
-            counts={cat: len(items) for cat, items in by_category.items()},
-            budget=fresh_budget,
-            total=total,
-            min_per_category=max(0, min_per_category),
-        )
-        for category, items in by_category.items():
-            quota = category_quotas.get(category, 0)
-            if quota <= 0:
+    for collapse_group, group_rows in grouped_rows.items():
+        representative = min(group_rows, key=_adapter_review_representative_sort_key)
+        survivor_path = str(representative.get("file_path") or "")
+        if not survivor_path:
+            continue
+        meta = row_meta.get(survivor_path, {})
+        members = {str(row.get("file_path") or "") for row in group_rows if row.get("file_path")}
+        phash_group = str(meta.get("phash_group") or "")
+        if phash_group:
+            members.update(phash_members_by_group.get(phash_group, ()))
+        survivor_key = _review_path_key(survivor_path)
+        survivor_stem = _review_path_stem(survivor_path)
+        member_by_identity: dict[str, str] = {}
+        for member in members:
+            if not member:
                 continue
-            ranked_for_category = sorted(
-                items,
-                key=lambda row: (
-                    1 if str(row.get("file_path") or "") in labeled else 0,
-                    -_informativeness_score(row),
-                    int(row.get("rank") or 0),
-                ),
-            )
-            picked = 0
-            for row in ranked_for_category:
-                key = str(row.get("file_path") or "")
-                if key in selected or key in labeled:
-                    continue
-                if add_row(row, f"category:{category}"):
-                    if float(row.get("tag_penalty") or 0.0) > 0.0:
-                        reasons.setdefault(key, []).append("penalized")
-                    picked += 1
-                    if picked >= quota:
-                        break
+            member_key = _review_path_key(member)
+            member_stem = _review_path_stem(member)
+            if member_key == survivor_key or (survivor_stem and member_stem == survivor_stem):
+                continue
+            identity = f"stem:{member_stem}" if member_stem else member_key
+            member_by_identity.setdefault(identity, member)
+        member_list = sorted(member_by_identity.values(), key=lambda item: item.casefold())
+        if member_list:
+            siblings_by_survivor[survivor_path] = member_list
+            collapsed_sibling_count += len(member_list)
+        if phash_group:
+            force_propagate_survivors.add(survivor_path)
 
-        if revisit_budget > 0:
-            revisit_rows = [row for row in rows if str(row.get("file_path") or "") in labeled]
-            revisit_rows.sort(key=lambda row: -_informativeness_score(row))
-            revisits_added = 0
-            for row in revisit_rows:
-                key = str(row.get("file_path") or "")
-                if key in selected:
-                    continue
-                if add_row(row, "revisit"):
-                    revisits_added += 1
-                    if revisits_added >= revisit_budget:
-                        break
+        all_paths = {survivor_path, *member_list}
+        is_covered = any(
+            _review_path_key(path) in labeled_keys or _review_path_stem(path) in labeled_stems
+            for path in all_paths
+        )
+        unit = {
+            "row": representative,
+            "path": survivor_path,
+            "members": tuple(member_list),
+            "collapse_group": collapse_group,
+            "phash_group": phash_group,
+            "review_group": str(meta.get("review_group") or ""),
+            "sequence_group": str(meta.get("sequence_group") or ""),
+            "cluster_group": str(meta.get("cluster_group") or ""),
+            "window_group": str(meta.get("window_group") or ""),
+            "category": str(meta.get("category") or "uncategorized"),
+            "covered": is_covered,
+        }
+        if is_covered:
+            covered_units.append(unit)
+        else:
+            selection_units.append(unit)
 
-    ordered = sorted(
-        selected.values(),
-        key=lambda row: (
-            0 if "top_global" in reasons.get(str(row.get("file_path") or ""), []) else 1,
-            str(row.get("primary_category") or "uncategorized").casefold(),
-            int(row.get("rank") or 0),
-            str(row.get("file_name") or "").casefold(),
-        ),
-    )[:max_rows]
+    selected_units: list[dict[str, object]] = []
+    selected_paths: set[str] = set()
+    cap_usage: dict[tuple[str, str], int] = {}
+    cap_skip_count = 0
+
+    def consume_caps(unit: dict[str, object]) -> None:
+        for cap_key, _limit in _adapter_review_cap_keys(unit):
+            cap_usage[cap_key] = cap_usage.get(cap_key, 0) + 1
+
+    # Spread caps are per review batch. Already-labeled pHash groups stay covered,
+    # but they should not permanently exhaust a scene/cluster across reopen cycles.
+    def try_add(unit: dict[str, object], reason: str) -> bool:
+        nonlocal cap_skip_count
+        path = str(unit.get("path") or "")
+        if not path or path in selected_paths or len(selected_units) >= max_rows:
+            return False
+        for cap_key, limit in _adapter_review_cap_keys(unit):
+            if cap_usage.get(cap_key, 0) >= limit:
+                cap_skip_count += 1
+                return False
+        selected_paths.add(path)
+        selected_units.append({**unit, "reason": reason})
+        consume_caps(unit)
+        return True
+
+    ranked_units = sorted(selection_units, key=lambda unit: int(unit["row"].get("rank") or 1_000_000))
+    informative_units = sorted(
+        selection_units,
+        key=lambda unit: (-_informativeness_score(unit["row"]), int(unit["row"].get("rank") or 1_000_000)),
+    )
+    borderline_units = sorted(
+        selection_units,
+        key=lambda unit: (abs(float(unit["row"].get("final_score") or unit["row"].get("score") or 0.0) - 0.5), int(unit["row"].get("rank") or 1_000_000)),
+    )
+    diverse_floor = max(0, min(max_rows, int(round(max_rows * 0.25))))
+    streams: list[tuple[str, list[dict[str, object]], int | None]] = [
+        ("top_global", ranked_units, max(0, min(int(top_global_quota), max_rows))),
+        ("diverse_floor", _chronological_stride(ranked_units, diverse_floor), diverse_floor),
+        ("high_informativeness", informative_units, None),
+        ("borderline", borderline_units, max(0, max_rows // 5)),
+        ("category_rep", _category_representatives(selection_units, min_per_category=max(0, min_per_category)), None),
+        ("diverse_refill", _chronological_stride(ranked_units, len(ranked_units)), None),
+    ]
+    for reason, stream_units, stream_limit in streams:
+        added = 0
+        for unit in stream_units:
+            if len(selected_units) >= max_rows:
+                break
+            if stream_limit is not None and added >= stream_limit:
+                break
+            if try_add(unit, reason):
+                added += 1
+        if len(selected_units) >= max_rows:
+            break
 
     candidates: list[dict[str, object]] = []
-    for row in ordered:
-        key = str(row.get("file_path") or "")
-        candidate = dict(row)
-        candidate["label"] = ""
-        candidate["review_reason"] = ";".join(reasons.get(key, []))
-        candidates.append(candidate)
-    return candidates
+    for unit in selected_units:
+        row = dict(unit["row"])
+        row["label"] = ""
+        row["review_reason"] = str(unit.get("reason") or "")
+        candidates.append(row)
+
+    has_dino_clusters = any(str(row.get("semantic_group_id") or row.get("cluster_id") or "").strip() for row in rows)
+    has_categories = any(str(row.get("primary_category") or "").strip() not in {"", "uncategorized"} for row in rows)
+    has_phash_groups = bool(phash_lookup)
+    has_review_groups = bool(review_lookup)
+    grouping_parts = []
+    if has_phash_groups:
+        grouping_parts.append("phash_collapse")
+    if has_review_groups:
+        grouping_parts.append("review_spread")
+    grouping_parts.append("sequence_spread")
+    if has_dino_clusters:
+        grouping_parts.append("cluster_spread")
+    grouping_parts.append("window_spread")
+    warning = None
+    if not has_phash_groups and not has_review_groups and not has_dino_clusters:
+        warning = "pHash, review groups, and DINO clusters unavailable; selection diversity uses category/window spread only."
+    diagnostics = AdapterReviewSelectionDiagnostics(
+        target_count=max_rows,
+        raw_row_count=len(rows),
+        selected_count=len(candidates),
+        collapse_group_count=len(grouped_rows),
+        collapsed_sibling_count=collapsed_sibling_count,
+        cap_skip_count=cap_skip_count,
+        already_labeled_covered_count=len(covered_units),
+        has_phash_groups=has_phash_groups,
+        has_review_groups=has_review_groups,
+        has_dino_clusters=has_dino_clusters,
+        has_categories=has_categories,
+        grouping_mode="+".join(grouping_parts),
+        rolling_windows_represented=len({str(unit.get("window_group") or "") for unit in selected_units if unit.get("window_group")}),
+        review_groups_represented=len({str(unit.get("review_group") or "") for unit in selected_units if unit.get("review_group")}),
+        warning=warning,
+    )
+    result = AdapterReviewSelectionResult(
+        candidates=candidates,
+        siblings_by_survivor=siblings_by_survivor,
+        force_propagate_survivors=force_propagate_survivors,
+        diagnostics=diagnostics,
+    )
+    return result if return_result else candidates
 
 
 def _informativeness_score(row: dict[str, object]) -> float:
@@ -2663,6 +2809,135 @@ def _informativeness_score(row: dict[str, object]) -> float:
     penalty = float(row.get("tag_penalty") or 0.0)
     ambiguity = 1.0 - abs(final_score - 0.5) * 2.0
     return disagreement * 1.5 + penalty * 1.25 + max(0.0, ambiguity) * 0.5
+
+
+def _adapter_review_representative_sort_key(row: dict[str, object]) -> tuple[float, float, int, str]:
+    final_score = float(row.get("pre_diversity_score") or row.get("final_score") or row.get("score") or 0.0)
+    technical_score = float(row.get("technical_score") or 0.0)
+    rank = int(row.get("rank") or 1_000_000)
+    return (-final_score, -technical_score, rank, str(row.get("file_name") or row.get("file_path") or "").casefold())
+
+
+def _adapter_review_cap_keys(unit: dict[str, object]) -> list[tuple[tuple[str, str], int]]:
+    caps: list[tuple[tuple[str, str], int]] = []
+    review_group = str(unit.get("review_group") or "")
+    if review_group:
+        caps.append((("review", review_group), 1))
+    sequence_group = str(unit.get("sequence_group") or "")
+    if sequence_group:
+        caps.append((("sequence", sequence_group), 1))
+    cluster_group = str(unit.get("cluster_group") or "")
+    if cluster_group:
+        caps.append((("cluster", cluster_group), 3))
+    window_group = str(unit.get("window_group") or "")
+    if window_group:
+        caps.append((("window", window_group), 2))
+    return caps
+
+
+def _capture_sequence_group_id(row: dict[str, object], *, bucket_size: int = 8) -> str:
+    filename = str(row.get("file_name") or Path(str(row.get("file_path") or "")).name)
+    match = CAPTURE_SEQUENCE_PATTERN.match(filename)
+    if not match:
+        return ""
+    prefix = match.group("prefix").casefold()
+    suffix = match.group("suffix").casefold()
+    try:
+        number = int(match.group("number"))
+    except (TypeError, ValueError):
+        return ""
+    bucket = number // max(1, int(bucket_size))
+    return f"{prefix}{suffix}:{bucket:05d}"
+
+
+def _rolling_window_id(row: dict[str, object], *, window_size: int = 40) -> str:
+    try:
+        rank = max(1, int(row.get("rank") or 1))
+    except (TypeError, ValueError):
+        rank = 1
+    bucket = (rank - 1) // max(1, int(window_size))
+    return f"rank_window:{bucket:04d}"
+
+
+def _chronological_stride(units: list[dict[str, object]], target_count: int) -> list[dict[str, object]]:
+    ordered = sorted(units, key=lambda unit: int(unit["row"].get("rank") or 1_000_000))
+    if target_count <= 0 or len(ordered) <= target_count:
+        return ordered
+    indexes: list[int] = []
+    used: set[int] = set()
+    for offset in range(target_count):
+        index = round(offset * (len(ordered) - 1) / max(1, target_count - 1))
+        while index in used and index + 1 < len(ordered):
+            index += 1
+        while index in used and index > 0:
+            index -= 1
+        if index in used:
+            continue
+        used.add(index)
+        indexes.append(index)
+    return [ordered[index] for index in indexes]
+
+
+def _category_representatives(units: list[dict[str, object]], *, min_per_category: int) -> list[dict[str, object]]:
+    by_category: dict[str, list[dict[str, object]]] = {}
+    for unit in units:
+        category = str(unit.get("category") or "uncategorized") or "uncategorized"
+        by_category.setdefault(category, []).append(unit)
+    output: list[dict[str, object]] = []
+    for category in sorted(by_category):
+        ranked = sorted(
+            by_category[category],
+            key=lambda unit: (-_informativeness_score(unit["row"]), int(unit["row"].get("rank") or 1_000_000)),
+        )
+        output.extend(ranked[: max(1, int(min_per_category))])
+    remaining = [unit for category in sorted(by_category) for unit in by_category[category] if unit not in output]
+    remaining.sort(key=lambda unit: (-_informativeness_score(unit["row"]), int(unit["row"].get("rank") or 1_000_000)))
+    output.extend(remaining)
+    return output
+
+
+def _normalized_mapping(mapping: Mapping[str, str] | None) -> dict[str, str]:
+    if not mapping:
+        return {}
+    result: dict[str, str] = {}
+    for path, group_id in mapping.items():
+        text = str(path or "")
+        group_text = str(group_id or "")
+        if not text or not group_text:
+            continue
+        result[_review_path_key(text)] = group_text
+        stem = _review_path_stem(text)
+        if stem:
+            result.setdefault(f"stem:{stem}", group_text)
+    return result
+
+
+def _normalized_member_mapping(mapping: Mapping[str, Sequence[str]] | None) -> dict[str, tuple[str, ...]]:
+    if not mapping:
+        return {}
+    return {
+        str(group_id): tuple(str(path) for path in paths if str(path or ""))
+        for group_id, paths in mapping.items()
+        if str(group_id or "")
+    }
+
+
+def _lookup_path_group(mapping: Mapping[str, str], path: str) -> str:
+    if not mapping or not path:
+        return ""
+    direct = mapping.get(_review_path_key(path))
+    if direct:
+        return direct
+    stem = _review_path_stem(path)
+    return mapping.get(f"stem:{stem}", "") if stem else ""
+
+
+def _review_path_key(path: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(os.fspath(path)))
+
+
+def _review_path_stem(path: str | Path) -> str:
+    return os.path.splitext(os.path.basename(os.fspath(path)).casefold())[0]
 
 
 def _proportional_quotas(
@@ -2716,7 +2991,8 @@ def _proportional_quotas(
 
 
 def _latest_cluster_run_id(db_path: Path) -> str:
-    with sqlite3.connect(db_path) as connection:
+    connection = sqlite3.connect(db_path)
+    try:
         row = connection.execute(
             """
             SELECT run_id
@@ -2725,11 +3001,14 @@ def _latest_cluster_run_id(db_path: Path) -> str:
             LIMIT 1
             """
         ).fetchone()
+    finally:
+        connection.close()
     return str(row[0]) if row else ""
 
 
 def _load_ranked_gui_rows(db_path: Path, run_id: str) -> list[dict[str, object]]:
-    with sqlite3.connect(db_path) as connection:
+    connection = sqlite3.connect(db_path)
+    try:
         connection.row_factory = sqlite3.Row
         image_rows = connection.execute(
             """
@@ -2759,6 +3038,8 @@ def _load_ranked_gui_rows(db_path: Path, run_id: str) -> list[dict[str, object]]
             """,
             (run_id, run_id),
         ).fetchall()
+    finally:
+        connection.close()
 
     return _rows_to_gui_output(image_rows)
 

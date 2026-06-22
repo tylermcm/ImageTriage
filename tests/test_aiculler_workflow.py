@@ -17,6 +17,7 @@ from image_triage.aiculler_workflow import (
     default_aiculler_runtime,
     delete_adapter_model,
     list_adapter_model_summaries,
+    load_adapter_review_candidates,
     _rows_to_gui_output,
 )
 from image_triage.dino_prefilter import DINOPrefilterSettings, build_dino_prefilter_paths, write_dino_prefilter_audit
@@ -24,6 +25,97 @@ from image_triage.models import ImageRecord
 
 
 class AICullerWorkflowTests(unittest.TestCase):
+    def _build_adapter_review_db(self, folder: Path, *, count: int = 200) -> Path:
+        db_path = folder / "aiculler.sqlite"
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE images (
+                    id INTEGER PRIMARY KEY,
+                    source_path TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    technical_score REAL,
+                    tag_base_score REAL,
+                    tag_penalty REAL,
+                    tag_flags TEXT,
+                    final_score REAL
+                );
+                CREATE TABLE image_categories (
+                    image_id INTEGER PRIMARY KEY,
+                    primary_category TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    category_scores_json TEXT NOT NULL,
+                    assigned_by TEXT NOT NULL
+                );
+                CREATE TABLE semantic_clusters (
+                    cluster_id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    primary_category TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    image_count INTEGER NOT NULL,
+                    centroid BLOB NOT NULL,
+                    dim INTEGER NOT NULL,
+                    dtype TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE image_cluster_memberships (
+                    image_id INTEGER NOT NULL,
+                    cluster_id INTEGER NOT NULL,
+                    distance REAL NOT NULL,
+                    rank INTEGER NOT NULL
+                );
+                """
+            )
+            for cluster_id in range(1, 21):
+                connection.execute(
+                    """
+                    INSERT INTO semantic_clusters (
+                        cluster_id, run_id, primary_category, label, image_count,
+                        centroid, dim, dtype, metadata_json
+                    )
+                    VALUES (?, 'run-1', ?, ?, 10, X'00', 1, 'float32', '{}')
+                    """,
+                    (cluster_id, "landscape" if cluster_id % 2 else "portrait", f"cluster-{cluster_id}"),
+                )
+            for index in range(1, count + 1):
+                path = folder / f"_DSC{index:04d}.JPG"
+                technical = 0.95 - (index % 30) * 0.005
+                final = 0.99 - index * 0.002
+                category = "landscape" if index % 2 else "portrait"
+                cluster_id = ((index - 1) // 10) + 1
+                connection.execute(
+                    """
+                    INSERT INTO images (
+                        id, source_path, status, technical_score, tag_base_score,
+                        tag_penalty, tag_flags, final_score
+                    )
+                    VALUES (?, ?, 'ready', ?, ?, 0.0, '', ?)
+                    """,
+                    (index, str(path), technical, technical - 0.1, final),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO image_categories (
+                        image_id, primary_category, confidence, category_scores_json, assigned_by
+                    )
+                    VALUES (?, ?, 1.0, '{}', 'test')
+                    """,
+                    (index, category),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO image_cluster_memberships (image_id, cluster_id, distance, rank)
+                    VALUES (?, ?, 0.0, 1)
+                    """,
+                    (index, cluster_id),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+        return db_path
+
     def test_default_runtime_uses_in_repo_cli_culler_source(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_models_") as temp_dir:
             model_root = Path(temp_dir) / "models"
@@ -643,6 +735,94 @@ class AICullerWorkflowTests(unittest.TestCase):
         self.assertEqual(1, output[1]["rank_in_cluster"])
         self.assertEqual(0.0, output[1]["duplicate_diversity_penalty"])
 
+    def test_adapter_review_selection_collapses_phash_and_refills(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="aiculler_review_select_") as temp_dir:
+            folder = Path(temp_dir)
+            db_path = self._build_adapter_review_db(folder, count=280)
+            phash_group_by_path = {
+                str(folder / f"_DSC{index:04d}.JPG"): "road-burst"
+                for index in range(1, 11)
+            }
+            phash_group_members = {"road-burst": tuple(phash_group_by_path)}
+
+            result = load_adapter_review_candidates(
+                db_path,
+                max_rows=12,
+                top_global_quota=6,
+                phash_group_by_path=phash_group_by_path,
+                phash_group_members=phash_group_members,
+                return_result=True,
+            )
+
+        self.assertEqual(12, len(result.candidates))
+        selected_stems = {Path(str(row["file_path"])).stem for row in result.candidates}
+        self.assertEqual(1, len(selected_stems.intersection({f"_DSC{index:04d}" for index in range(1, 11)})))
+        self.assertIn(str(folder / "_DSC0001.JPG"), result.force_propagate_survivors)
+        self.assertGreaterEqual(result.diagnostics.collapsed_sibling_count, 9)
+        self.assertGreater(result.diagnostics.cap_skip_count, 0)
+
+    def test_adapter_review_selection_treats_labeled_phash_group_as_covered(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="aiculler_review_labeled_") as temp_dir:
+            folder = Path(temp_dir)
+            db_path = self._build_adapter_review_db(folder, count=120)
+            phash_group_by_path = {
+                str(folder / f"_DSC{index:04d}.JPG"): "covered-road"
+                for index in range(1, 8)
+            }
+            phash_group_members = {"covered-road": tuple(phash_group_by_path)}
+
+            result = load_adapter_review_candidates(
+                db_path,
+                max_rows=10,
+                top_global_quota=5,
+                already_labeled={str(folder / "_DSC0003.NEF")},
+                phash_group_by_path=phash_group_by_path,
+                phash_group_members=phash_group_members,
+                return_result=True,
+            )
+
+        selected_stems = {Path(str(row["file_path"])).stem for row in result.candidates}
+        self.assertFalse(selected_stems.intersection({f"_DSC{index:04d}" for index in range(1, 8)}))
+        self.assertGreaterEqual(result.diagnostics.already_labeled_covered_count, 1)
+
+    def test_adapter_review_labeled_units_do_not_spend_next_batch_caps(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="aiculler_review_batch_caps_") as temp_dir:
+            folder = Path(temp_dir)
+            db_path = self._build_adapter_review_db(folder, count=40)
+            first_batch = load_adapter_review_candidates(
+                db_path,
+                max_rows=2,
+                top_global_quota=2,
+                return_result=True,
+            )
+
+            result = load_adapter_review_candidates(
+                db_path,
+                max_rows=2,
+                top_global_quota=2,
+                already_labeled={str(row["file_path"]) for row in first_batch.candidates},
+                return_result=True,
+            )
+
+        self.assertEqual([3, 4], [int(row["rank"]) for row in result.candidates])
+        self.assertEqual(2, result.diagnostics.already_labeled_covered_count)
+
+    def test_adapter_review_caps_nearby_capture_sequence_frames(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="aiculler_review_sequence_caps_") as temp_dir:
+            folder = Path(temp_dir)
+            db_path = self._build_adapter_review_db(folder, count=220)
+
+            result = load_adapter_review_candidates(
+                db_path,
+                max_rows=20,
+                top_global_quota=20,
+                return_result=True,
+            )
+
+        stems = {Path(str(row["file_path"])).stem for row in result.candidates}
+        self.assertFalse({"_DSC0001", "_DSC0002"}.issubset(stems))
+        self.assertFalse({"_DSC0024", "_DSC0025"}.issubset(stems))
+        self.assertIn("sequence_spread", result.diagnostics.grouping_mode)
 
 if __name__ == "__main__":
     unittest.main()
