@@ -283,6 +283,8 @@ def build_main_menu_bar(
     settings_menu.addAction(actions.reset_layout)
 
     help_menu = menu_bar.addMenu("&Help")
+    help_menu.addAction(actions.documentation)
+    help_menu.addSeparator()
     help_menu.addAction(actions.keyboard_help)
     help_menu.addAction(actions.ai_guide)
     help_menu.addAction(actions.ai_review_tag_legend)
