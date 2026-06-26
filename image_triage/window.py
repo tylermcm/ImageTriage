@@ -19757,6 +19757,11 @@ class MainWindow(QMainWindow):
     def _show_paged_help_dialog(self, *, title: str, pages: tuple[object, ...]) -> None:
         show_paged_help(self, title=title, pages=pages)
 
+    def _show_documentation(self) -> None:
+        from .ui.docs import open_documentation
+
+        open_documentation(self)
+
     def _show_library_help(self) -> None:
         self._show_paged_help_dialog(
             title="Library Help",

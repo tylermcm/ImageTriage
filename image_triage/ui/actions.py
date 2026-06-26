@@ -129,6 +129,7 @@ class MainWindowActions:
     save_filter_preset: QAction
     delete_filter_preset: QAction
     clear_filters: QAction
+    documentation: QAction
     keyboard_help: QAction
     ai_guide: QAction
     ai_review_tag_legend: QAction
@@ -602,6 +603,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         save_filter_preset=_create_action(window, "Save Current Search...", slot=window._save_current_filter_preset),
         delete_filter_preset=_create_action(window, "Delete Saved Search", slot=window._delete_current_filter_preset),
         clear_filters=_create_action(window, "Clear Filters", slot=window._clear_record_filters, shortcut="Ctrl+Shift+X"),
+        documentation=_create_action(window, "Documentation", slot=window._show_documentation, shortcut="F1"),
         keyboard_help=_create_action(window, "Quick Help", slot=window._show_help),
         ai_guide=_create_action(window, "AI Guide", slot=window._show_ai_guide),
         ai_review_tag_legend=_create_action(window, "AI Review Tag Legend", slot=window._show_ai_review_tag_legend),
