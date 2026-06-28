@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -53,6 +54,7 @@ class RatingExample:
     primary_category: str
     cluster_id: int | None
     folder_id: str
+    reason_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,7 @@ def import_ratings_csv(
                     "weight": record.weight,
                     "label_origin": record.label_origin,
                     "folder_id": record.folder_id,
+                    "reason_tags": list(record.reason_tags),
                 },
             }
             for record in records
@@ -171,6 +174,7 @@ def load_rating_records(
                 str(record.get("folder_id") or record.get("folder") or "").strip()
                 or str(Path(row["source_path"]).parent)
             )
+            reason_tags = parse_reason_tags(record.get("reason_tags") or record.get("reasons") or "")
             examples.append(
                 RatingExample(
                     image_id=image_id,
@@ -184,6 +188,7 @@ def load_rating_records(
                     primary_category=item_context.get("primary_category") or "uncategorized",
                     cluster_id=item_context.get("cluster_id"),
                     folder_id=folder_id,
+                    reason_tags=reason_tags,
                 )
             )
     return examples
@@ -244,7 +249,10 @@ class AdapterTrainer:
             seed=self.seed,
             validation_mode=self.validation_mode,
         )
-        global_model = fit_preference_model(features, train_examples, index_by_id)
+        global_model_candidates = {
+            "centroid": fit_preference_model(features, train_examples, index_by_id),
+            "regression": fit_regression_model(features, train_examples, index_by_id),
+        }
         category_models = fit_context_models(
             features,
             train_examples,
@@ -259,9 +267,10 @@ class AdapterTrainer:
             key_fn=lambda example: str(example.cluster_id) if example.cluster_id is not None else "",
             min_labels=self.min_cluster_labels,
         )
-
-        raw_global = global_model.score(features)
-        global_scores = normalize_vector(raw_global)
+        global_score_candidates = {
+            key: normalize_vector(model.score(features))
+            for key, model in global_model_candidates.items()
+        }
         raw_category_scores: dict[str, np.ndarray] = {
             key: normalize_vector(model.score(features))
             for key, model in category_models.items()
@@ -271,58 +280,51 @@ class AdapterTrainer:
             for key, model in cluster_models.items()
         }
 
-        records: list[AdapterScoreRecord] = []
-        for row in rows:
-            image_id = int(row["id"])
-            idx = index_by_id[image_id]
-            item_context = context.get(image_id, {})
-            primary_category = item_context.get("primary_category") or "uncategorized"
-            cluster_id = item_context.get("cluster_id")
-            category_score = (
-                float(raw_category_scores[primary_category][idx])
-                if primary_category in raw_category_scores
-                else None
-            )
-            cluster_key = str(cluster_id) if cluster_id is not None else ""
-            cluster_score = (
-                float(raw_cluster_scores[cluster_key][idx])
-                if cluster_key in raw_cluster_scores
-                else None
-            )
-            blend_parts = [(self.global_weight, float(global_scores[idx]))]
-            if category_score is not None:
-                blend_parts.append((self.category_weight, category_score))
-            if cluster_score is not None:
-                blend_parts.append((self.cluster_weight, cluster_score))
-            weight_sum = sum(weight for weight, _ in blend_parts) or 1.0
-            adapter_score = sum(weight * score for weight, score in blend_parts) / weight_sum
-            confidence = min(1.0, weight_sum / (self.global_weight + self.category_weight + self.cluster_weight))
-            base_score = float(row["final_score"] if row["final_score"] is not None else row["technical_score"] or 0.0)
-            final_score = self.base_weight * base_score + self.adapter_weight * adapter_score
-            records.append(
-                AdapterScoreRecord(
-                    image_id=image_id,
-                    filename=Path(row["source_path"]).name,
-                    source_path=row["source_path"],
-                    primary_category=primary_category,
-                    cluster_id=cluster_id,
-                    base_score=base_score,
-                    global_score=float(global_scores[idx]),
-                    category_score=category_score,
-                    cluster_score=cluster_score,
-                    adapter_score=float(adapter_score),
-                    confidence=float(confidence),
-                    final_score=float(final_score),
-                )
-            )
+        selected_global_model_name = "centroid"
+        records = build_adapter_score_records(
+            rows=rows,
+            index_by_id=index_by_id,
+            context=context,
+            global_scores=global_score_candidates[selected_global_model_name],
+            raw_category_scores=raw_category_scores,
+            raw_cluster_scores=raw_cluster_scores,
+            global_weight=self.global_weight,
+            category_weight=self.category_weight,
+            cluster_weight=self.cluster_weight,
+            base_weight=self.base_weight,
+            adapter_weight=self.adapter_weight,
+        )
+        selected_global_model_name, records = select_adapter_blend(
+            rows=rows,
+            index_by_id=index_by_id,
+            context=context,
+            global_score_candidates=global_score_candidates,
+            train_examples=train_examples,
+            holdout_examples=holdout_examples,
+            overrides=[dict(row) for row in self.store.list_user_overrides()],
+            raw_category_scores=raw_category_scores,
+            raw_cluster_scores=raw_cluster_scores,
+            global_weight=self.global_weight,
+            category_weight=self.category_weight,
+            cluster_weight=self.cluster_weight,
+            base_weight=self.base_weight,
+            adapter_weight=self.adapter_weight,
+        )
+        global_model = global_model_candidates[selected_global_model_name]
         output_scores = {record.image_id: adapter_record_to_store_payload(record) for record in records}
 
+        overrides = [dict(row) for row in self.store.list_user_overrides()]
         metrics = evaluate_scores(
             records,
             train_examples=train_examples,
             holdout_examples=holdout_examples,
-            overrides=[dict(row) for row in self.store.list_user_overrides()],
+            overrides=overrides,
         )
+        metrics["model_selection"] = {
+            "selected_global_model": selected_global_model_name,
+            "global_model_candidates": sorted(global_model_candidates),
+        }
+        metrics["validation_health"] = adapter_validation_health(metrics)
         metrics["validation"] = validation_info
         config = {
             "projected_dim": self.projected_dim,
@@ -331,6 +333,9 @@ class AdapterTrainer:
             "global_weight": self.global_weight,
             "category_weight": self.category_weight,
             "cluster_weight": self.cluster_weight,
+            "selected_global_model": selected_global_model_name,
+            "global_model_candidates": sorted(global_model_candidates),
+            "validation_health": metrics["validation_health"],
             "base_weight": self.base_weight,
             "adapter_weight": self.adapter_weight,
             "holdout_fraction": self.holdout_fraction,
@@ -369,6 +374,158 @@ class CentroidPreferenceModel:
 
     def score(self, values: np.ndarray) -> np.ndarray:
         return np.asarray(values, dtype=np.float32) @ self.weights + self.bias
+
+
+def build_adapter_score_records(
+    *,
+    rows: Iterable[dict],
+    index_by_id: dict[int, int],
+    context: dict[int, dict],
+    global_scores: np.ndarray,
+    raw_category_scores: dict[str, np.ndarray],
+    raw_cluster_scores: dict[str, np.ndarray],
+    global_weight: float,
+    category_weight: float,
+    cluster_weight: float,
+    base_weight: float,
+    adapter_weight: float,
+) -> list[AdapterScoreRecord]:
+    records: list[AdapterScoreRecord] = []
+    for row in rows:
+        image_id = int(row["id"])
+        idx = index_by_id[image_id]
+        item_context = context.get(image_id, {})
+        primary_category = item_context.get("primary_category") or "uncategorized"
+        cluster_id = item_context.get("cluster_id")
+        category_score = (
+            float(raw_category_scores[primary_category][idx])
+            if primary_category in raw_category_scores
+            else None
+        )
+        cluster_key = str(cluster_id) if cluster_id is not None else ""
+        cluster_score = (
+            float(raw_cluster_scores[cluster_key][idx])
+            if cluster_key in raw_cluster_scores
+            else None
+        )
+        blend_parts = [(global_weight, float(global_scores[idx]))]
+        if category_score is not None:
+            blend_parts.append((category_weight, category_score))
+        if cluster_score is not None:
+            blend_parts.append((cluster_weight, cluster_score))
+        weight_sum = sum(weight for weight, _ in blend_parts) or 1.0
+        adapter_score = sum(weight * score for weight, score in blend_parts) / weight_sum
+        confidence_denominator = global_weight + category_weight + cluster_weight
+        confidence = min(1.0, weight_sum / (confidence_denominator or 1.0))
+        base_score = float(row["final_score"] if row["final_score"] is not None else row["technical_score"] or 0.0)
+        final_score = base_weight * base_score + adapter_weight * adapter_score
+        records.append(
+            AdapterScoreRecord(
+                image_id=image_id,
+                filename=Path(row["source_path"]).name,
+                source_path=row["source_path"],
+                primary_category=primary_category,
+                cluster_id=cluster_id,
+                base_score=base_score,
+                global_score=float(global_scores[idx]),
+                category_score=category_score,
+                cluster_score=cluster_score,
+                adapter_score=float(adapter_score),
+                confidence=float(confidence),
+                final_score=float(final_score),
+            )
+        )
+    return records
+
+
+def select_adapter_blend(
+    *,
+    rows: Iterable[dict],
+    index_by_id: dict[int, int],
+    context: dict[int, dict],
+    global_score_candidates: dict[str, np.ndarray],
+    train_examples: list[RatingExample],
+    holdout_examples: list[RatingExample],
+    overrides: Iterable[dict],
+    raw_category_scores: dict[str, np.ndarray],
+    raw_cluster_scores: dict[str, np.ndarray],
+    global_weight: float,
+    category_weight: float,
+    cluster_weight: float,
+    base_weight: float,
+    adapter_weight: float,
+) -> tuple[str, list[AdapterScoreRecord]]:
+    row_list = list(rows)
+    override_list = list(overrides)
+    model_names = sorted(global_score_candidates) or ["centroid"]
+    best_model_name = model_names[0]
+    best_records = build_adapter_score_records(
+        rows=row_list,
+        index_by_id=index_by_id,
+        context=context,
+        global_scores=global_score_candidates[best_model_name],
+        raw_category_scores=raw_category_scores,
+        raw_cluster_scores=raw_cluster_scores,
+        global_weight=global_weight,
+        category_weight=category_weight,
+        cluster_weight=cluster_weight,
+        base_weight=base_weight,
+        adapter_weight=adapter_weight,
+    )
+    best_score = adapter_blend_selection_score(
+        evaluate_scores(
+            best_records,
+            train_examples=train_examples,
+            holdout_examples=holdout_examples,
+            overrides=override_list,
+        )
+    )
+    for model_name in model_names:
+        if model_name == best_model_name:
+            continue
+        records = build_adapter_score_records(
+            rows=row_list,
+            index_by_id=index_by_id,
+            context=context,
+            global_scores=global_score_candidates[model_name],
+            raw_category_scores=raw_category_scores,
+            raw_cluster_scores=raw_cluster_scores,
+            global_weight=global_weight,
+            category_weight=category_weight,
+            cluster_weight=cluster_weight,
+            base_weight=base_weight,
+            adapter_weight=adapter_weight,
+        )
+        score = adapter_blend_selection_score(
+            evaluate_scores(
+                records,
+                train_examples=train_examples,
+                holdout_examples=holdout_examples,
+                overrides=override_list,
+            )
+        )
+        if score > best_score:
+            best_model_name = model_name
+            best_records = records
+            best_score = score
+    return best_model_name, best_records
+
+
+def adapter_blend_selection_score(metrics: dict) -> tuple[float, ...]:
+    culling = metrics.get("culling") or {}
+
+    def value(name: str, default: float) -> float:
+        metric = culling.get(name)
+        return float(metric) if metric is not None else default
+
+    return (
+        value("top_30_recall", -1.0),
+        value("top_20_recall", -1.0),
+        value("keeper_recall", -1.0),
+        -value("false_reject_rate", 1.0),
+        value("rank_correlation", -1.0),
+        value("score_fit_percent", -1.0),
+    )
 
 
 def serialize_adapter_model(
@@ -441,6 +598,36 @@ def fit_preference_model(
     low_center = weighted_center(values, low_weights)
     weights = high_center - low_center
     bias = -0.5 * float(np.dot(high_center, high_center) - np.dot(low_center, low_center))
+    return CentroidPreferenceModel(weights, bias)
+
+
+def fit_regression_model(
+    features: np.ndarray,
+    examples: list[RatingExample],
+    index_by_id: dict[int, int],
+    *,
+    l2: float = 2.0,
+) -> CentroidPreferenceModel:
+    usable = [example for example in examples if example.image_id in index_by_id]
+    if not usable:
+        return CentroidPreferenceModel(np.zeros(features.shape[1], dtype=np.float32), 0.0)
+    values = np.vstack([features[index_by_id[example.image_id]] for example in usable]).astype(np.float32)
+    labels = np.asarray([example.numeric_score for example in usable], dtype=np.float32)
+    sample_weights = np.asarray([max(0.05, example.weight) for example in usable], dtype=np.float32)
+    if len(usable) <= 1 or float(labels.max() - labels.min()) <= 1e-8:
+        return CentroidPreferenceModel(np.zeros(features.shape[1], dtype=np.float32), float(labels.mean()))
+
+    design = np.hstack([values, np.ones((values.shape[0], 1), dtype=np.float32)])
+    weighted_design = design * np.sqrt(sample_weights)[:, None]
+    weighted_labels = labels * np.sqrt(sample_weights)
+    penalty = np.eye(design.shape[1], dtype=np.float32) * float(max(0.0, l2))
+    penalty[-1, -1] = 0.0
+    try:
+        coefficients = np.linalg.solve(weighted_design.T @ weighted_design + penalty, weighted_design.T @ weighted_labels)
+    except np.linalg.LinAlgError:
+        coefficients = np.linalg.lstsq(weighted_design.T @ weighted_design + penalty, weighted_design.T @ weighted_labels, rcond=None)[0]
+    weights = np.asarray(coefficients[:-1], dtype=np.float32)
+    bias = float(coefficients[-1])
     return CentroidPreferenceModel(weights, bias)
 
 
@@ -518,6 +705,9 @@ def rating_examples_from_store(store: SQLiteFeatureStore) -> list[RatingExample]
                 primary_category=row["primary_category"] or "uncategorized",
                 cluster_id=int(row["cluster_id"]) if row["cluster_id"] is not None else None,
                 folder_id=str(metadata.get("folder_id") or Path(row["source_path"]).parent),
+                reason_tags=tuple(str(value) for value in metadata.get("reason_tags", ()) if str(value).strip())
+                if isinstance(metadata.get("reason_tags"), list)
+                else (),
             )
         )
     return examples
@@ -625,6 +815,22 @@ def parse_rating_weight(value: object) -> float:
     except (TypeError, ValueError):
         parsed = 1.0
     return float(np.clip(parsed, 0.05, 100.0))
+
+
+def parse_reason_tags(value: object) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple, set)):
+        raw_values = list(value)
+    else:
+        raw_values = re.split(r"[;,|]", str(value or ""))
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        text = str(item or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return tuple(normalized)
 
 
 def normalize_label_origin(value: object) -> str:
@@ -808,6 +1014,52 @@ def evaluate_scores(
     }
 
 
+def adapter_validation_health(metrics: dict) -> dict[str, object]:
+    holdout = metrics.get("holdout") if isinstance(metrics, dict) else {}
+    culling = metrics.get("culling") if isinstance(metrics, dict) else {}
+    holdout_count = int(metrics.get("holdout_count") or 0) if isinstance(metrics, dict) else 0
+    reasons: list[str] = []
+    status = "pass"
+
+    holdout_rank_lift = _metric_float(holdout, "rank_lift")
+    rank_correlation = _metric_float(culling, "rank_correlation")
+    top_30_recall = _metric_float(culling, "top_30_recall")
+    keeper_recall = _metric_float(culling, "keeper_recall")
+
+    if holdout_count <= 0:
+        status = "unknown"
+        reasons.append("No holdout labels were available.")
+    else:
+        if holdout_rank_lift is not None and holdout_rank_lift <= 0.0:
+            status = "failed"
+            reasons.append("Held-out rank lift is not positive.")
+        if rank_correlation is not None and rank_correlation <= 0.0:
+            status = "failed"
+            reasons.append("Held-out rank correlation is not positive.")
+        if top_30_recall is not None and top_30_recall < 0.40:
+            status = "failed" if status == "failed" else "warning"
+            reasons.append("Top-30 keeper recall is below 40%.")
+        if keeper_recall is not None and keeper_recall < 0.40:
+            status = "failed" if status == "failed" else "warning"
+            reasons.append("Keeper recall is below 40%.")
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "holdout_rank_lift": holdout_rank_lift,
+        "rank_correlation": rank_correlation,
+        "top_30_recall": top_30_recall,
+        "keeper_recall": keeper_recall,
+    }
+
+
+def _metric_float(metrics: object, key: str) -> float | None:
+    if not isinstance(metrics, dict):
+        return None
+    value = metrics.get(key)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def evaluate_examples(examples: list[RatingExample], score_by_id: dict[int, float]) -> dict:
     if not examples:
         return {"count": 0, "mae": None, "top_half_mean_label": None, "bottom_half_mean_label": None}
@@ -943,7 +1195,8 @@ def apply_serialized_adapter_model(
             blend_parts.append((cluster_weight, cluster_score))
         weight_sum = sum(weight for weight, _ in blend_parts) or 1.0
         adapter_score = sum(weight * score for weight, score in blend_parts) / weight_sum
-        confidence = min(1.0, weight_sum / (global_weight + category_weight + cluster_weight))
+        confidence_denominator = global_weight + category_weight + cluster_weight
+        confidence = min(1.0, weight_sum / (confidence_denominator or 1.0))
         base_score = float(row["final_score"] if row["final_score"] is not None else row["technical_score"] or 0.0)
         final_score = base_weight * base_score + adapter_weight * adapter_score
         records.append(

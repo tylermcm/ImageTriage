@@ -39,6 +39,22 @@ class GlobalAdapterLabelStoreTests(unittest.TestCase):
 
         self.assertEqual({}, labels)
 
+    def test_reason_tags_round_trip_and_update(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_global_labels_") as temp_dir:
+            db_path = Path(temp_dir) / "labels.sqlite"
+            image_path = Path(temp_dir) / "Shoot" / "IMG_0001.NEF"
+            store = GlobalAdapterLabelStore(db_path)
+            try:
+                store.upsert_label(image_path, "hero", reason_tags=("composition", "light color", "composition"))
+                store.update_reason_tags(image_path, ("subject-expression", "unique_scene"))
+                labels = store.labels_for_paths((str(image_path),))
+                all_labels = store.all_labels()
+            finally:
+                store.close()
+
+        self.assertEqual(("subject_expression", "unique_scene"), labels[str(image_path)].reason_tags)
+        self.assertEqual(("subject_expression", "unique_scene"), all_labels[0].reason_tags)
+
     def test_summary_counts_all_and_matching_labels(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_global_labels_") as temp_dir:
             db_path = Path(temp_dir) / "labels.sqlite"

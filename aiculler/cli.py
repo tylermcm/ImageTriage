@@ -639,9 +639,16 @@ def _recover_global_adapter_ratings_csv(path: Path) -> Path:
     connection = sqlite3.connect(label_store)
     connection.row_factory = sqlite3.Row
     try:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(adapter_labels)").fetchall()
+        }
+        if "reason_tags" not in columns:
+            connection.execute("ALTER TABLE adapter_labels ADD COLUMN reason_tags TEXT NOT NULL DEFAULT '[]'")
+            connection.commit()
         rows = connection.execute(
             """
-            SELECT source_path, filename, label, weight, is_dispute
+            SELECT source_path, filename, label, weight, is_dispute, reason_tags
             FROM adapter_labels
             ORDER BY updated_at ASC, source_path ASC
             """
@@ -655,7 +662,7 @@ def _recover_global_adapter_ratings_csv(path: Path) -> Path:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round", "weight"),
+            fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round", "weight", "reason_tags"),
         )
         writer.writeheader()
         for row in labels:
@@ -671,10 +678,31 @@ def _recover_global_adapter_ratings_csv(path: Path) -> Path:
                     "reject": int(label in {"reject", "bad", "r", "no", "0"}),
                     "review_round": "adapter_global_dispute" if int(row["is_dispute"] or 0) else "adapter_global_review",
                     "weight": float(row["weight"] or 1.0),
+                    "reason_tags": ";".join(_decode_global_adapter_reason_tags(row["reason_tags"])),
                 }
             )
     print(f"Recovered {len(labels)} global adapter rating row(s) from {label_store}.")
     return path
+
+
+def _decode_global_adapter_reason_tags(value: object) -> tuple[str, ...]:
+    if not value:
+        return ()
+    try:
+        loaded = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(loaded, list):
+        return ()
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in loaded:
+        tag = str(item or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+    return tuple(normalized)
 
 
 def command_cluster_categories(args) -> int:
@@ -848,6 +876,24 @@ def command_evaluate_adapter(args) -> int:
         else:
             print("No adapter scores matched stored ratings.")
         print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    finally:
+        store.close()
+        logger.close()
+
+
+def command_diagnose_adapter(args) -> int:
+    from aiculler.diagnostics import adapter_feasibility_report
+
+    logger = _open_logger(args)
+    store = _open_store(args)
+    try:
+        report = adapter_feasibility_report(store, args.model_version, folder_root=args.folder_root)
+        output = json.dumps(report, indent=2, sort_keys=True) + "\n"
+        _write_text(args.out, output)
+        logger.summary({"model_version": args.model_version, "adapter_diagnostics": report})
+        if args.out is not None:
+            print(f"Wrote adapter diagnostics JSON to {args.out}.", file=sys.stderr)
         return 0
     finally:
         store.close()
@@ -1710,6 +1756,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_adapter.add_argument("--model-version", required=True)
     evaluate_adapter.add_argument("--out", type=Path, help="Optional per-rating evaluation CSV output")
     evaluate_adapter.set_defaults(func=command_evaluate_adapter)
+
+    diagnose_adapter = subparsers.add_parser("diagnose-adapter", help="Write adapter feasibility diagnostics JSON")
+    diagnose_adapter.add_argument("--model-version", required=True)
+    diagnose_adapter.add_argument("--out", type=Path, help="Optional diagnostics JSON output")
+    diagnose_adapter.add_argument("--folder-root", type=Path, help="Optional folder root used for pHash artifact lookup")
+    diagnose_adapter.set_defaults(func=command_diagnose_adapter)
 
     override_report = subparsers.add_parser("override-report", help="Summarize user override telemetry")
     override_report.add_argument("--format", choices=("json", "text"), default="json")

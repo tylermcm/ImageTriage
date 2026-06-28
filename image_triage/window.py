@@ -2339,6 +2339,18 @@ class MainWindow(QMainWindow):
     Most feature modules report into this class, so the class docstring is the
     fast way to understand where user actions eventually land.
     """
+    ADAPTER_REASON_TAGS: tuple[tuple[str, str], ...] = (
+        ("composition", "Composition"),
+        ("light_color", "Light / Color"),
+        ("subject_expression", "Subject / Expression"),
+        ("story_emotion", "Story / Emotion"),
+        ("unique_scene", "Unique Scene"),
+        ("technical_failure", "Technical Failure"),
+        ("boring_repetitive", "Boring / Repetitive"),
+        ("duplicate", "Duplicate"),
+    )
+    ADAPTER_REASON_TARGET_LABELS: frozenset[str] = frozenset({"hero", "portfolio", "reject", "bad", "r", "no", "0"})
+
     LAST_FOLDER_KEY = "window/last_folder"
     AI_RESULTS_KEY = "window/ai_results_path"
     AUTO_BRACKET_KEY = "window/auto_bracket_compare"
@@ -2922,6 +2934,8 @@ class MainWindow(QMainWindow):
         self._aiculler_dedupe_siblings: dict[str, list[str]] = {}
         self._aiculler_force_propagate_siblings: set[str] = set()
         self._aiculler_review_burst_snapshot: tuple[bool, bool] | None = None
+        self._adapter_review_reason_phase = False
+        self._adapter_review_rating_paths: tuple[str, ...] = ()
         # Paths the AI Review post-pass has demoted from Keeper/Review to
         # Reject because they're non-best frames in a visually similar burst.
         # Recomputed whenever the bundle OR review_intelligence changes.
@@ -2938,7 +2952,10 @@ class MainWindow(QMainWindow):
         self._aiculler_telemetry_logger: ThreadedTelemetryLogger | None = None
         self._aiculler_telemetry_db_path: Path | None = None
         self._aiculler_pending_telemetry_events: dict[str, tuple[QTimer, TelemetryEvent]] = {}
-        self._aiculler_internal_label_cache: dict[str, tuple[dict[str, str], dict[str, dict[str, object]]]] = {}
+        self._aiculler_internal_label_cache: dict[
+            str,
+            tuple[dict[str, str], dict[str, dict[str, object]], dict[str, tuple[str, ...]]],
+        ] = {}
         self._aiculler_internal_label_cache_folders: dict[str, str] = {}
         self._aiculler_internal_label_dirty_paths: set[str] = set()
         self._aiculler_global_label_pending: dict[str, tuple[str, float, bool]] = {}
@@ -3723,6 +3740,7 @@ class MainWindow(QMainWindow):
         self.grid.winner_requested.connect(self._toggle_winner)
         self.grid.reject_requested.connect(self._toggle_reject)
         self.grid.adapter_label_requested.connect(self._handle_aiculler_adapter_label_requested)
+        self.grid.adapter_reasons_requested.connect(self._handle_aiculler_adapter_reasons_requested)
         self.grid.adapter_review_mode_cleared.connect(self._exit_aiculler_adapter_review_mode)
         self.grid.dispute_label_requested.connect(self._handle_dispute_label_requested)
         self.grid.dispute_chord_started.connect(self._handle_dispute_chord_started)
@@ -12440,7 +12458,17 @@ class MainWindow(QMainWindow):
         with ratings_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(
                 handle,
-                fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round", "weight"),
+                fieldnames=(
+                    "source_path",
+                    "filename",
+                    "label",
+                    "rating",
+                    "winner",
+                    "reject",
+                    "review_round",
+                    "weight",
+                    "reason_tags",
+                ),
             )
             writer.writeheader()
             writer.writerows(rows)
@@ -12469,6 +12497,7 @@ class MainWindow(QMainWindow):
         *,
         weight: float = 1.0,
         is_dispute: bool = False,
+        reason_tags: tuple[str, ...] = (),
     ) -> None:
         pending = getattr(self, "_aiculler_global_label_pending", None)
         if pending is not None:
@@ -12483,6 +12512,7 @@ class MainWindow(QMainWindow):
                         folder=self._current_folder or str(Path(source_path).parent),
                         weight=weight,
                         is_dispute=is_dispute,
+                        reason_tags=reason_tags,
                     )
                 else:
                     store.delete_label(source_path)
@@ -12504,6 +12534,42 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._aiculler_global_label_pending[str(source_path)] = (str(label), float(weight), bool(is_dispute))
         self._aiculler_global_label_save_timer.start()
+
+    def _save_aiculler_global_reason_tags(self, source_path: str, reason_tags: tuple[str, ...]) -> None:
+        try:
+            store = self._aiculler_global_label_store()
+            try:
+                store.update_reason_tags(source_path, reason_tags)
+            finally:
+                store.close()
+        except Exception:
+            return
+
+    def _sync_global_reason_tags_from_internal_label_files(self) -> None:
+        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        root = Path(app_data) if app_data else Path.home() / ".image-triage"
+        labels_dir = root / "ai_training" / "adapter_labels"
+        if not labels_dir.exists():
+            return
+        try:
+            store = self._aiculler_global_label_store()
+            try:
+                for label_path in labels_dir.glob("*.json"):
+                    try:
+                        payload = json.loads(label_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    raw_reason_tags = payload.get("reason_tags") if isinstance(payload, dict) else None
+                    if not isinstance(raw_reason_tags, dict):
+                        continue
+                    for source_path, values in raw_reason_tags.items():
+                        reason_tags = self._normalize_adapter_reason_tags(values)
+                        if reason_tags:
+                            store.update_reason_tags(str(source_path), reason_tags)
+            finally:
+                store.close()
+        except Exception:
+            return
 
     def _flush_aiculler_global_label_queue(self) -> None:
         pending = dict(getattr(self, "_aiculler_global_label_pending", {}))
@@ -12554,27 +12620,29 @@ class MainWindow(QMainWindow):
                     "reject": int(label.label in {"reject", "bad", "r", "no", "0"}),
                     "review_round": "adapter_global_dispute" if label.is_dispute else "adapter_global_review",
                     "weight": label.weight,
+                    "reason_tags": ";".join(label.reason_tags),
                 }
             )
         return rows
 
     def _load_aiculler_internal_labels(self, paths) -> dict[str, str]:
-        labels, _disputes = self._load_aiculler_internal_label_cache(paths)
+        labels, _disputes, _reason_tags = self._load_aiculler_internal_label_cache(paths)
         return dict(labels)
 
-    def _load_aiculler_internal_label_cache(self, paths) -> tuple[dict[str, str], dict[str, dict[str, object]]]:
+    def _load_aiculler_internal_label_cache(self, paths) -> tuple[dict[str, str], dict[str, dict[str, object]], dict[str, tuple[str, ...]]]:
         label_path = self._aiculler_internal_label_store_path(paths)
         cache_key = str(label_path)
         cached = self._aiculler_internal_label_cache.get(cache_key)
         if cached is not None:
-            labels, disputes = cached
-            return labels, disputes
+            labels, disputes, reason_tags = cached
+            return labels, disputes, reason_tags
         if not label_path.exists():
             labels: dict[str, str] = {}
             disputes: dict[str, dict[str, object]] = {}
-            self._aiculler_internal_label_cache[cache_key] = (labels, disputes)
+            reason_tags: dict[str, tuple[str, ...]] = {}
+            self._aiculler_internal_label_cache[cache_key] = (labels, disputes, reason_tags)
             self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
-            return labels, disputes
+            return labels, disputes, reason_tags
         try:
             payload = json.loads(label_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -12599,9 +12667,14 @@ class MainWindow(QMainWindow):
                     "ai_bucket": str(entry.get("ai_bucket") or ""),
                     "timestamp": str(entry.get("timestamp") or ""),
                 }
-        self._aiculler_internal_label_cache[cache_key] = (labels, disputes)
+        raw_reason_tags = payload.get("reason_tags") if isinstance(payload, dict) else None
+        reason_tags: dict[str, tuple[str, ...]] = {}
+        if isinstance(raw_reason_tags, dict):
+            for path, values in raw_reason_tags.items():
+                reason_tags[str(path)] = self._normalize_adapter_reason_tags(values)
+        self._aiculler_internal_label_cache[cache_key] = (labels, disputes, reason_tags)
         self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
-        return labels, disputes
+        return labels, disputes, reason_tags
 
     def _load_aiculler_internal_disputes(self, paths) -> dict[str, dict[str, object]]:
         """Disputes: per-image entries where the user overrode the AI.
@@ -12612,8 +12685,12 @@ class MainWindow(QMainWindow):
         a snapshot of what the AI said at dispute time (for debugging /
         analytics later).
         """
-        _labels, disputes = self._load_aiculler_internal_label_cache(paths)
+        _labels, disputes, _reason_tags = self._load_aiculler_internal_label_cache(paths)
         return {path: dict(entry) for path, entry in disputes.items()}
+
+    def _load_aiculler_internal_reason_tags(self, paths) -> dict[str, tuple[str, ...]]:
+        _labels, _disputes, reason_tags = self._load_aiculler_internal_label_cache(paths)
+        return {path: tuple(values) for path, values in reason_tags.items()}
 
     def _save_aiculler_internal_labels(
         self,
@@ -12621,24 +12698,35 @@ class MainWindow(QMainWindow):
         labels: dict[str, str],
         *,
         disputes: dict[str, dict[str, object]] | None = None,
+        reason_tags: dict[str, tuple[str, ...]] | None = None,
         defer: bool = False,
     ) -> None:
         label_path = self._aiculler_internal_label_store_path(paths)
         # If disputes weren't passed in, preserve whatever is already on disk
         # so saving labels doesn't accidentally drop existing disputes.
         if disputes is None:
-            _cached_labels, cached_disputes = self._load_aiculler_internal_label_cache(paths)
+            _cached_labels, cached_disputes, cached_reason_tags = self._load_aiculler_internal_label_cache(paths)
             disputes = cached_disputes
+            if reason_tags is None:
+                reason_tags = cached_reason_tags
+        elif reason_tags is None:
+            _cached_labels, _cached_disputes, cached_reason_tags = self._load_aiculler_internal_label_cache(paths)
+            reason_tags = cached_reason_tags
         cache_key = str(label_path)
         cached_labels = dict(labels)
         cached_disputes = {str(path): dict(entry) for path, entry in disputes.items()}
-        self._aiculler_internal_label_cache[cache_key] = (cached_labels, cached_disputes)
+        cached_reason_tags = {
+            str(path): self._normalize_adapter_reason_tags(values)
+            for path, values in (reason_tags or {}).items()
+            if self._normalize_adapter_reason_tags(values)
+        }
+        self._aiculler_internal_label_cache[cache_key] = (cached_labels, cached_disputes, cached_reason_tags)
         self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
         if defer:
             self._aiculler_internal_label_dirty_paths.add(cache_key)
             self._aiculler_internal_label_save_timer.start()
             return
-        self._write_aiculler_internal_label_payload(label_path, paths.folder, cached_labels, cached_disputes)
+        self._write_aiculler_internal_label_payload(label_path, paths.folder, cached_labels, cached_disputes, cached_reason_tags)
         self._aiculler_internal_label_dirty_paths.discard(cache_key)
 
     def _write_aiculler_internal_label_payload(
@@ -12647,6 +12735,7 @@ class MainWindow(QMainWindow):
         folder: object,
         labels: dict[str, str],
         disputes: dict[str, dict[str, object]],
+        reason_tags: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         label_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -12654,6 +12743,11 @@ class MainWindow(QMainWindow):
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "labels": dict(sorted(labels.items(), key=lambda item: item[0].casefold())),
             "disputes": dict(sorted(disputes.items(), key=lambda item: item[0].casefold())),
+            "reason_tags": {
+                path: list(values)
+                for path, values in sorted((reason_tags or {}).items(), key=lambda item: item[0].casefold())
+                if values
+            },
         }
         label_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -12668,9 +12762,9 @@ class MainWindow(QMainWindow):
             if cached is None:
                 self._aiculler_internal_label_dirty_paths.discard(cache_key)
                 continue
-            labels, disputes = cached
+            labels, disputes, reason_tags = cached
             folder = self._aiculler_internal_label_cache_folders.get(cache_key, "")
-            self._write_aiculler_internal_label_payload(Path(cache_key), folder, labels, disputes)
+            self._write_aiculler_internal_label_payload(Path(cache_key), folder, labels, disputes, reason_tags)
             self._aiculler_internal_label_dirty_paths.discard(cache_key)
         if logger.enabled:
             logger.duration(
@@ -12684,6 +12778,7 @@ class MainWindow(QMainWindow):
         if not labels:
             return []
         disputes = self._load_aiculler_internal_disputes(paths)
+        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
         # CLI-Culler supports per-row weights in the ratings CSV. Disputes get
         # a louder sample weight so corrections influence the adapter faster.
         dispute_weight = max(1, int(self._ai_dispute_weight_setting))
@@ -12701,6 +12796,7 @@ class MainWindow(QMainWindow):
                 "reject": int(label in {"reject", "bad", "r", "no", "0"}),
                 "review_round": "adapter_internal_review",
                 "weight": dispute_weight if source_path in disputes else 1,
+                "reason_tags": ";".join(reason_tags_by_path.get(source_path, ())),
             }
             is_dispute = source_path in disputes
             if is_dispute:
@@ -12730,6 +12826,30 @@ class MainWindow(QMainWindow):
             return "reject"
         return ""
 
+    @classmethod
+    def _normalize_adapter_reason_tags(cls, values: object) -> tuple[str, ...]:
+        allowed = {key for key, _label in cls.ADAPTER_REASON_TAGS}
+        if isinstance(values, str):
+            raw_values = re.split(r"[;,|]", values)
+        elif isinstance(values, (list, tuple, set)):
+            raw_values = list(values)
+        else:
+            raw_values = []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in raw_values:
+            text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+            if text not in allowed or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return tuple(normalized)
+
+    @classmethod
+    def _is_adapter_reason_target_label(cls, label: object) -> bool:
+        normalized = str(label or "").strip().lower()
+        return normalized in cls.ADAPTER_REASON_TARGET_LABELS
+
     def _export_aiculler_ratings(self) -> None:
         ratings_path = self._write_aiculler_ratings_csv()
         if ratings_path is None:
@@ -12748,6 +12868,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Run Index & Score in the AI Workflow Center before reviewing adapter labels.")
             return
         saved_labels = self._load_aiculler_internal_labels(paths)
+        saved_reason_tags = self._load_aiculler_internal_reason_tags(paths)
         # The CLI-Culler DB stores whatever path the AI run was given (often a
         # UNC path like \\server\share\...), but the grid records use whatever
         # form the user opened the folder with (often a mapped drive like X:).
@@ -12816,6 +12937,50 @@ class MainWindow(QMainWindow):
                     best = candidate
                     best_score = score
             return best
+
+        pending_reason_paths: list[str] = []
+        seen_pending_reason_paths: set[str] = set()
+        for label_path, label in saved_labels.items():
+            if not self._is_adapter_reason_target_label(label) or saved_reason_tags.get(label_path):
+                continue
+            resolved = _resolve_to_grid(label_path)
+            if resolved is None or resolved in seen_pending_reason_paths:
+                continue
+            seen_pending_reason_paths.add(resolved)
+            pending_reason_paths.append(resolved)
+
+        if pending_reason_paths:
+            self._aiculler_dedupe_siblings = {}
+            self._aiculler_force_propagate_siblings = set()
+            burst_snapshot = (self._burst_groups_enabled, self._burst_stacks_enabled)
+            if burst_snapshot != (False, False):
+                self._aiculler_review_burst_snapshot = burst_snapshot
+                self._burst_groups_enabled = False
+                self._burst_stacks_enabled = False
+                self._refresh_burst_group_view()
+                self._update_action_states()
+            else:
+                self._aiculler_review_burst_snapshot = None
+            self._adapter_review_reason_phase = True
+            self._adapter_review_rating_paths = tuple(pending_reason_paths)
+            self._clear_adapter_review_reason_tags()
+            self.grid.set_adapter_review_mode(
+                pending_reason_paths,
+                saved_labels,
+                label_controls_enabled=False,
+                reason_controls_enabled=True,
+                reason_tags_by_path=saved_reason_tags,
+                reason_options=self.ADAPTER_REASON_TAGS,
+            )
+            self.mode_tabs.setCurrentIndex(0)
+            self._refresh_adapter_review_banner()
+            dialog = getattr(self, "_ai_workflow_center_dialog", None)
+            if dialog is not None:
+                dialog.hide_for_adapter_review()
+            self.statusBar().showMessage(
+                f"{len(pending_reason_paths)} winner/reject label(s) need reasons before a new review batch."
+            )
+            return
 
         phash_group_by_path, phash_group_members = self._aiculler_phash_group_maps()
         review_group_by_path, review_group_members = self._aiculler_review_group_maps()
@@ -12899,6 +13064,9 @@ class MainWindow(QMainWindow):
         else:
             self._aiculler_review_burst_snapshot = None
 
+        self._adapter_review_reason_phase = False
+        self._adapter_review_rating_paths = tuple(review_paths)
+        self._clear_adapter_review_reason_tags()
         self.grid.set_adapter_review_mode(review_paths, saved_labels)
         self.mode_tabs.setCurrentIndex(0)
         self._refresh_adapter_review_banner()
@@ -13084,6 +13252,7 @@ class MainWindow(QMainWindow):
 
         labels = self._load_aiculler_internal_labels(paths)
         disputes = self._load_aiculler_internal_disputes(paths)
+        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
         previous_label = labels.get(record.path)
 
         ai_result = self._ai_result_for_record(record)
@@ -13103,6 +13272,7 @@ class MainWindow(QMainWindow):
                 ai_label = ""
 
         labels[record.path] = normalized
+        reason_tags_by_path.pop(record.path, None)
         self._record_aiculler_override_telemetry(
             record,
             user_label=normalized,
@@ -13123,6 +13293,7 @@ class MainWindow(QMainWindow):
                 sibling_record = self._all_records_by_path.get(sibling_path)
                 sibling_previous_label = labels.get(sibling_path)
                 labels[sibling_path] = normalized
+                reason_tags_by_path.pop(sibling_path, None)
                 disputes[sibling_path] = dict(disputes[record.path])
                 if sibling_record is not None:
                     self._record_aiculler_override_telemetry(
@@ -13138,6 +13309,7 @@ class MainWindow(QMainWindow):
                 sibling_previous_label = labels.get(sibling_path)
                 labels.pop(sibling_path, None)
                 disputes.pop(sibling_path, None)
+                reason_tags_by_path.pop(sibling_path, None)
                 if sibling_record is not None and sibling_previous_label:
                     self._record_aiculler_override_telemetry(
                         sibling_record,
@@ -13147,7 +13319,7 @@ class MainWindow(QMainWindow):
                         ignored_for_training=True,
                     )
 
-        self._save_aiculler_internal_labels(paths, labels, disputes=disputes)
+        self._save_aiculler_internal_labels(paths, labels, disputes=disputes, reason_tags=reason_tags_by_path)
         dispute_weight = max(1, int(self._ai_dispute_weight_setting))
         self._save_aiculler_global_label(record.path, normalized, weight=dispute_weight, is_dispute=True)
         for sibling_path in siblings:
@@ -13164,6 +13336,9 @@ class MainWindow(QMainWindow):
         )
 
     def _exit_aiculler_adapter_review_mode(self) -> None:
+        self._adapter_review_reason_phase = False
+        self._adapter_review_rating_paths = ()
+        self._clear_adapter_review_reason_tags()
         self._aiculler_dedupe_siblings = {}
         self._aiculler_force_propagate_siblings = set()
         snapshot = self._aiculler_review_burst_snapshot
@@ -13194,13 +13369,19 @@ class MainWindow(QMainWindow):
             "} "
             "QLabel#adapterReviewBannerTitle { color: #d4e3f6; font-weight: 600; }"
             "QLabel#adapterReviewBannerStatus { color: #a9bbd3; font-size: 11px; }"
-            "QPushButton#adapterReviewBannerExit {"
+            "QPushButton#adapterReviewBannerExit, QPushButton#adapterReviewBannerStep {"
             " background: rgba(255,255,255,0.08); color: #e6ecf4;"
             " border: 1px solid rgba(255,255,255,0.18);"
             " border-radius: 5px; padding: 5px 14px; font-weight: 600;"
             "} "
-            "QPushButton#adapterReviewBannerExit:hover { background: rgba(255,255,255,0.14); } "
-            "QPushButton#adapterReviewBannerExit:pressed { background: rgba(255,255,255,0.04); }"
+            "QPushButton#adapterReviewBannerExit:hover, QPushButton#adapterReviewBannerStep:hover { background: rgba(255,255,255,0.14); } "
+            "QPushButton#adapterReviewBannerExit:pressed, QPushButton#adapterReviewBannerStep:pressed { background: rgba(255,255,255,0.04); }"
+            "QToolButton#adapterReviewReasonButton {"
+            " background: rgba(255,255,255,0.08); color: #e6ecf4;"
+            " border: 1px solid rgba(255,255,255,0.18);"
+            " border-radius: 5px; padding: 5px 12px; font-weight: 600;"
+            "}"
+            "QToolButton#adapterReviewReasonButton:hover { background: rgba(255,255,255,0.14); }"
         )
         layout = QHBoxLayout(banner)
         layout.setContentsMargins(14, 8, 10, 8)
@@ -13210,12 +13391,55 @@ class MainWindow(QMainWindow):
         text_column.setSpacing(2)
         title = QLabel("Adapter Label Review")
         title.setObjectName("adapterReviewBannerTitle")
+        self._adapter_review_banner_title = title
         text_column.addWidget(title)
         self._adapter_review_banner_status = QLabel("")
         self._adapter_review_banner_status.setObjectName("adapterReviewBannerStatus")
         self._adapter_review_banner_status.setWordWrap(False)
         text_column.addWidget(self._adapter_review_banner_status)
         layout.addLayout(text_column, 1)
+        reason_phase_button = QPushButton("Step 2: Reasons")
+        reason_phase_button.setObjectName("adapterReviewBannerStep")
+        reason_phase_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        reason_phase_button.setToolTip("After rating, explain only the rank 1 winners and rank 5 rejects")
+        reason_phase_button.clicked.connect(self._enter_adapter_review_reason_phase)
+        self._adapter_review_reason_phase_button = reason_phase_button
+        layout.addWidget(reason_phase_button, 0)
+        reason_button = QToolButton()
+        reason_button.setObjectName("adapterReviewReasonButton")
+        reason_button.setText("Reasons")
+        reason_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        reason_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        reason_button.setToolTip("Select reasons for the current winner/reject")
+        reason_menu = QMenu(reason_button)
+        self._adapter_review_reason_actions: dict[str, QAction] = {}
+        for key, label in self.ADAPTER_REASON_TAGS:
+            action = QAction(label, reason_menu)
+            action.setCheckable(True)
+            action.toggled.connect(lambda _checked, button=reason_button: self._refresh_adapter_review_reason_button(button))
+            reason_menu.addAction(action)
+            self._adapter_review_reason_actions[key] = action
+        reason_menu.addSeparator()
+        clear_action = QAction("Clear reasons", reason_menu)
+        clear_action.triggered.connect(self._clear_adapter_review_reason_tags)
+        reason_menu.addAction(clear_action)
+        reason_button.setMenu(reason_menu)
+        self._adapter_review_reason_button = reason_button
+        layout.addWidget(reason_button, 0)
+        apply_reason_button = QPushButton("Apply")
+        apply_reason_button.setObjectName("adapterReviewBannerStep")
+        apply_reason_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_reason_button.setToolTip("Apply selected reasons to the current image")
+        apply_reason_button.clicked.connect(self._apply_adapter_review_reasons_to_selection)
+        self._adapter_review_apply_reason_button = apply_reason_button
+        layout.addWidget(apply_reason_button, 0)
+        back_to_ratings_button = QPushButton("Back to Ratings")
+        back_to_ratings_button.setObjectName("adapterReviewBannerStep")
+        back_to_ratings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_to_ratings_button.setToolTip("Return to the rating pass")
+        back_to_ratings_button.clicked.connect(self._exit_adapter_review_reason_phase)
+        self._adapter_review_back_to_ratings_button = back_to_ratings_button
+        layout.addWidget(back_to_ratings_button, 0)
         exit_button = QPushButton("Exit Review")
         exit_button.setObjectName("adapterReviewBannerExit")
         exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -13224,6 +13448,177 @@ class MainWindow(QMainWindow):
         exit_button.clicked.connect(self._handle_adapter_review_exit_clicked)
         layout.addWidget(exit_button, 0)
         return banner
+
+    def _selected_adapter_review_reason_tags(self) -> tuple[str, ...]:
+        actions = getattr(self, "_adapter_review_reason_actions", {})
+        return tuple(key for key, action in actions.items() if action.isChecked())
+
+    def _clear_adapter_review_reason_tags(self) -> None:
+        for action in getattr(self, "_adapter_review_reason_actions", {}).values():
+            with QSignalBlocker(action):
+                action.setChecked(False)
+        button = getattr(self, "_adapter_review_reason_button", None)
+        if button is not None:
+            self._refresh_adapter_review_reason_button(button)
+
+    def _refresh_adapter_review_reason_button(self, button: QToolButton | None = None) -> None:
+        button = button or getattr(self, "_adapter_review_reason_button", None)
+        if button is None:
+            return
+        count = len(self._selected_adapter_review_reason_tags())
+        button.setText(f"Reasons ({count})" if count else "Reasons")
+
+    def _enter_adapter_review_reason_phase(self) -> None:
+        if not self.grid._adapter_review_mode:
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return
+        rating_paths = tuple(self._adapter_review_rating_paths or ())
+        if not rating_paths:
+            rating_paths = tuple(
+                record.path
+                for record in getattr(self.grid, "_items", ())
+                if self.grid._record_in_adapter_review(getattr(self.grid, "_path_to_index", {}).get(record.path, -1))
+            )
+        labels = self._load_aiculler_internal_labels(paths)
+        reason_paths = [
+            path
+            for path in rating_paths
+            if self._is_adapter_reason_target_label(labels.get(path))
+        ]
+        if not reason_paths:
+            message = "No rank 1 winners or rank 5 rejects are labeled yet. Rate candidates first, then run Step 2."
+            self.statusBar().showMessage(message)
+            QMessageBox.information(self, "Adapter Label Reasons", message)
+            return
+        self._adapter_review_reason_phase = True
+        self._clear_adapter_review_reason_tags()
+        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
+        self.grid.set_adapter_review_mode(
+            reason_paths,
+            labels,
+            label_controls_enabled=False,
+            reason_controls_enabled=True,
+            reason_tags_by_path=reason_tags_by_path,
+            reason_options=self.ADAPTER_REASON_TAGS,
+        )
+        self._refresh_adapter_review_banner()
+        self.statusBar().showMessage(
+            f"Step 2: add reasons for {len(reason_paths)} winner/reject label(s). "
+            "Use each image dropdown to select one or more reasons."
+        )
+
+    def _exit_adapter_review_reason_phase(self) -> None:
+        if not self.grid._adapter_review_mode:
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return
+        rating_paths = tuple(self._adapter_review_rating_paths or ())
+        if not rating_paths:
+            return
+        labels = self._load_aiculler_internal_labels(paths)
+        self._adapter_review_reason_phase = False
+        self._clear_adapter_review_reason_tags()
+        self.grid.set_adapter_review_mode(rating_paths, labels, label_controls_enabled=True)
+        self._refresh_adapter_review_banner()
+        self.statusBar().showMessage("Returned to Step 1: rate adapter candidates with 1-5.")
+
+    def _adapter_review_selected_records(self) -> list[ImageRecord]:
+        items = list(getattr(self.grid, "_items", ()) or ())
+        if not items:
+            return []
+        current_index = self.grid.current_index()
+        indexes = self.grid.selected_indexes()
+        if current_index >= 0 and current_index not in indexes:
+            indexes = [current_index]
+        records: list[ImageRecord] = []
+        for index in indexes:
+            if 0 <= index < len(items):
+                record = items[index]
+                if not record.is_folder and self.grid._record_in_adapter_review(index):
+                    records.append(record)
+        return records
+
+    def _apply_adapter_review_reasons_to_selection(self) -> None:
+        if not getattr(self, "_adapter_review_reason_phase", False):
+            return
+        selected_reason_tags = self._selected_adapter_review_reason_tags()
+        if not selected_reason_tags:
+            self.statusBar().showMessage("Select at least one reason tag before applying.")
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return
+        labels = self._load_aiculler_internal_labels(paths)
+        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
+        records = [
+            record
+            for record in self._adapter_review_selected_records()
+            if self._is_adapter_reason_target_label(labels.get(record.path))
+        ]
+        if not records:
+            self.statusBar().showMessage("Select a rank 1 winner or rank 5 reject before applying reasons.")
+            return
+        for record in records:
+            reason_tags_by_path[record.path] = selected_reason_tags
+        self._save_aiculler_internal_labels(paths, labels, reason_tags=reason_tags_by_path)
+        self._refresh_adapter_review_banner()
+        label = ", ".join(dict(self.ADAPTER_REASON_TAGS).get(tag, tag) for tag in selected_reason_tags)
+        suffix = f" to {len(records)} image(s)" if len(records) > 1 else f" to {records[0].name}"
+        self.statusBar().showMessage(f"Applied reasons ({label}){suffix}.")
+        self._advance_adapter_review_reason_phase(reason_tags_by_path)
+
+    def _advance_adapter_review_reason_phase(self, reason_tags_by_path: dict[str, tuple[str, ...]]) -> None:
+        visible_indexes = list(getattr(self.grid, "_visible_item_indexes", ()) or ())
+        if not visible_indexes:
+            return
+        current_index = self.grid.current_index()
+        if current_index in visible_indexes:
+            start_slot = visible_indexes.index(current_index)
+        else:
+            start_slot = -1
+        items = list(getattr(self.grid, "_items", ()) or ())
+        for offset in range(1, len(visible_indexes) + 1):
+            index = visible_indexes[(start_slot + offset) % len(visible_indexes)]
+            if not 0 <= index < len(items):
+                continue
+            record = items[index]
+            if record.path in reason_tags_by_path:
+                continue
+            self.grid.set_current_index(index)
+            try:
+                self.grid._ensure_index_visible(index)
+            except Exception:
+                pass
+            return
+        self.statusBar().showMessage("All visible winner/reject labels have reasons.")
+
+    def _handle_aiculler_adapter_reasons_requested(self, record_path: str, reason_tags: tuple[str, ...]) -> None:
+        if not getattr(self, "_adapter_review_reason_phase", False):
+            return
+        source_path = str(record_path)
+        record = self._all_records_by_path.get(source_path)
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return
+        labels = self._load_aiculler_internal_labels(paths)
+        if not self._is_adapter_reason_target_label(labels.get(source_path)):
+            return
+        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
+        normalized = self._normalize_adapter_reason_tags(reason_tags)
+        if normalized:
+            reason_tags_by_path[source_path] = normalized
+        else:
+            reason_tags_by_path.pop(source_path, None)
+        self._save_aiculler_internal_labels(paths, labels, reason_tags=reason_tags_by_path)
+        self._save_aiculler_global_reason_tags(source_path, normalized)
+        self.grid.update_adapter_review_reason_tags(reason_tags_by_path)
+        self._refresh_adapter_review_banner()
+        status = "Saved reasons" if normalized else "Cleared reasons"
+        display_name = record.name if record is not None else Path(source_path).name
+        self.statusBar().showMessage(f"{status} for {display_name}.")
 
     def _handle_adapter_review_exit_clicked(self) -> None:
         self.grid.clear_adapter_review_mode()
@@ -13235,21 +13630,51 @@ class MainWindow(QMainWindow):
         if not self.grid._adapter_review_mode:
             banner.hide()
             return
+        reason_phase = bool(getattr(self, "_adapter_review_reason_phase", False))
+        title = getattr(self, "_adapter_review_banner_title", None)
+        if title is not None:
+            title.setText("Adapter Label Review - Step 2: Reasons" if reason_phase else "Adapter Label Review - Step 1: Rate")
+        reason_phase_button = getattr(self, "_adapter_review_reason_phase_button", None)
+        if reason_phase_button is not None:
+            reason_phase_button.setVisible(not reason_phase)
+        reason_button = getattr(self, "_adapter_review_reason_button", None)
+        if reason_button is not None:
+            reason_button.setVisible(False)
+            reason_button.setEnabled(False)
+        apply_reason_button = getattr(self, "_adapter_review_apply_reason_button", None)
+        if apply_reason_button is not None:
+            apply_reason_button.setVisible(False)
+        back_to_ratings_button = getattr(self, "_adapter_review_back_to_ratings_button", None)
+        if back_to_ratings_button is not None:
+            back_to_ratings_button.setVisible(reason_phase)
         candidate_count = len(self.grid._adapter_review_paths)
+        known_label_keys = {os.path.normpath(str(path)).casefold() for path in self.grid._adapter_labels_by_path.keys()}
         labeled = sum(
             1
             for path in self.grid._adapter_review_paths
-            if any(
-                str(known).casefold() == str(path).casefold()
-                for known in self.grid._adapter_labels_by_path.keys()
-            )
+            if os.path.normpath(str(path)).casefold() in known_label_keys
         )
         hidden = sum(len(siblings) for siblings in self._aiculler_dedupe_siblings.values())
-        parts = [f"{candidate_count} candidate(s)"]
-        parts.append(f"{labeled} labeled")
-        if hidden:
-            parts.append(f"{hidden} pHash/near-dup(s) hidden; labels propagate")
-        parts.append("Use 1-5 to rate, Esc to exit")
+        parts = [f"{candidate_count} reason target(s)" if reason_phase else f"{candidate_count} candidate(s)"]
+        if reason_phase:
+            paths = self._aiculler_paths_for_current_folder()
+            reasoned = 0
+            if paths is not None:
+                reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
+                known_reason_keys = {os.path.normpath(str(path)).casefold() for path in reason_tags_by_path.keys()}
+                reasoned = sum(
+                    1
+                    for path in self.grid._adapter_review_paths
+                    if os.path.normpath(str(path)).casefold() in known_reason_keys
+                )
+            parts.append(f"{reasoned} reasoned")
+            parts.append("Winners/rejects only")
+            parts.append("Use each image dropdown; changes save immediately")
+        else:
+            parts.append(f"{labeled} labeled")
+            if hidden:
+                parts.append(f"{hidden} pHash/near-dup(s) hidden; labels propagate")
+            parts.append("Use 1-5 to rate, then Step 2 for reasons")
         self._adapter_review_banner_status.setText(" · ".join(parts))
         banner.show()
 
@@ -13295,6 +13720,7 @@ class MainWindow(QMainWindow):
                 )
             return
         labels = self._load_aiculler_internal_labels(paths)
+        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
         log_step("adapter_review.window.load_labels", label_count=len(labels))
         normalized = label.strip().lower()
         siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
@@ -13309,6 +13735,7 @@ class MainWindow(QMainWindow):
         )
         if normalized:
             labels[record.path] = normalized
+            reason_tags_by_path.pop(record.path, None)
             self._record_aiculler_override_telemetry(
                 record,
                 user_label=normalized,
@@ -13321,6 +13748,7 @@ class MainWindow(QMainWindow):
                     sibling_record = self._all_records_by_path.get(sibling_path)
                     sibling_previous_label = labels.get(sibling_path)
                     labels[sibling_path] = normalized
+                    reason_tags_by_path.pop(sibling_path, None)
                     if sibling_record is not None:
                         self._record_aiculler_override_telemetry(
                             sibling_record,
@@ -13334,6 +13762,7 @@ class MainWindow(QMainWindow):
                     sibling_record = self._all_records_by_path.get(sibling_path)
                     sibling_previous_label = labels.get(sibling_path)
                     labels.pop(sibling_path, None)
+                    reason_tags_by_path.pop(sibling_path, None)
                     if sibling_record is not None and sibling_previous_label:
                         self._record_aiculler_override_telemetry(
                             sibling_record,
@@ -13349,6 +13778,7 @@ class MainWindow(QMainWindow):
             )
         else:
             labels.pop(record.path, None)
+            reason_tags_by_path.pop(record.path, None)
             if previous_label:
                 self._record_aiculler_override_telemetry(
                     record,
@@ -13362,6 +13792,7 @@ class MainWindow(QMainWindow):
                 sibling_record = self._all_records_by_path.get(sibling_path)
                 sibling_previous_label = labels.get(sibling_path)
                 labels.pop(sibling_path, None)
+                reason_tags_by_path.pop(sibling_path, None)
                 if sibling_record is not None and sibling_previous_label:
                     self._record_aiculler_override_telemetry(
                         sibling_record,
@@ -13371,7 +13802,7 @@ class MainWindow(QMainWindow):
                         ignored_for_training=True,
                     )
             log_step("adapter_review.window.sibling_updates", siblings=len(siblings), propagated=False)
-        self._save_aiculler_internal_labels(paths, labels, defer=True)
+        self._save_aiculler_internal_labels(paths, labels, reason_tags=reason_tags_by_path, defer=True)
         log_step("adapter_review.window.queue_internal_labels", label_count=len(labels))
         self._queue_aiculler_global_label(record.path, normalized, weight=1.0, is_dispute=False)
         log_step("adapter_review.window.queue_global_primary")
@@ -13521,6 +13952,7 @@ class MainWindow(QMainWindow):
 
     def _train_aiculler_adapter_from_global_labels(self) -> None:
         try:
+            self._sync_global_reason_tags_from_internal_label_files()
             store = self._aiculler_global_label_store()
             try:
                 labels = tuple(store.all_labels())

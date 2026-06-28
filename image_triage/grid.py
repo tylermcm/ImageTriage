@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
-from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal, QSignalBlocker
+from PySide6.QtGui import QAction, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
+from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
 from .cache import ThumbnailKey
@@ -70,6 +70,7 @@ class ThumbnailGridView(QAbstractScrollArea):
     winner_requested = Signal(int)
     reject_requested = Signal(int)
     adapter_label_requested = Signal(str, str)
+    adapter_reasons_requested = Signal(str, tuple)
     adapter_review_mode_cleared = Signal()
     dispute_label_requested = Signal(str, str)  # (record_path, user_corrective_label)
     dispute_chord_started = Signal()  # user pressed D, awaiting 1-5
@@ -133,8 +134,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._disputed_paths: set[str] = set()
         self._adapter_review_mode = False
         self._adapter_review_paths: set[str] = set()
+        self._adapter_review_label_controls_enabled = True
+        self._adapter_review_reason_controls_enabled = False
         self._adapter_labels_by_path: dict[str, str] = {}
+        self._adapter_reason_tags_by_path: dict[str, tuple[str, ...]] = {}
+        self._adapter_reason_options: tuple[tuple[str, str], ...] = ()
         self._adapter_label_combos: dict[int, QComboBox] = {}
+        self._adapter_reason_buttons: dict[int, QToolButton] = {}
         self._columns = 3
         # Zoom can be driven two ways: discrete "column" mode (combo/presets,
         # fills the row width) or continuous "tile" mode (the zoom slider, fixed
@@ -413,10 +419,27 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._annotations = annotations
         self.viewport().update()
 
-    def set_adapter_review_mode(self, paths: list[str] | tuple[str, ...], labels_by_path: dict[str, str] | None = None) -> None:
+    def set_adapter_review_mode(
+        self,
+        paths: list[str] | tuple[str, ...],
+        labels_by_path: dict[str, str] | None = None,
+        *,
+        label_controls_enabled: bool = True,
+        reason_controls_enabled: bool = False,
+        reason_tags_by_path: dict[str, tuple[str, ...]] | None = None,
+        reason_options: tuple[tuple[str, str], ...] | None = None,
+    ) -> None:
         self._adapter_review_mode = True
         self._adapter_review_paths = {_fast_path_key(path) for path in paths if path}
+        self._adapter_review_label_controls_enabled = bool(label_controls_enabled)
+        self._adapter_review_reason_controls_enabled = bool(reason_controls_enabled)
         self._adapter_labels_by_path = dict(labels_by_path or {})
+        self._adapter_reason_tags_by_path = {
+            str(path): tuple(values)
+            for path, values in (reason_tags_by_path or {}).items()
+            if values
+        }
+        self._adapter_reason_options = tuple(reason_options or ())
         self._rebuild_visible_items()
         self._refresh_layout_after_visible_items_changed()
         if self._visible_item_indexes:
@@ -433,8 +456,12 @@ class ThumbnailGridView(QAbstractScrollArea):
             return
         self._adapter_review_mode = False
         self._adapter_review_paths.clear()
+        self._adapter_review_label_controls_enabled = True
+        self._adapter_review_reason_controls_enabled = False
         self._adapter_labels_by_path.clear()
+        self._adapter_reason_tags_by_path.clear()
         self._hide_adapter_label_controls()
+        self._hide_adapter_reason_controls()
         self._rebuild_visible_items()
         self._refresh_layout_after_visible_items_changed()
         self.viewport().update()
@@ -444,6 +471,15 @@ class ThumbnailGridView(QAbstractScrollArea):
     def update_adapter_review_labels(self, labels_by_path: dict[str, str]) -> None:
         self._adapter_labels_by_path = dict(labels_by_path)
         self._sync_adapter_label_controls()
+        self.viewport().update()
+
+    def update_adapter_review_reason_tags(self, reason_tags_by_path: dict[str, tuple[str, ...]]) -> None:
+        self._adapter_reason_tags_by_path = {
+            str(path): tuple(values)
+            for path, values in reason_tags_by_path.items()
+            if values
+        }
+        self._sync_adapter_reason_controls()
         self.viewport().update()
 
     def update_annotations(self, changed_paths: list[str] | tuple[str, ...] | set[str]) -> None:
@@ -1401,6 +1437,8 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self.dispute_label_requested.emit(self._items[index].path, label_map[key])
                 return
             if self._adapter_review_mode and Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
+                if not self._adapter_review_label_controls_enabled:
+                    return
                 self._set_adapter_label_for_index(index, label_map[key], emit=True)
                 return
             self.rate_requested.emit(index, key - Qt.Key.Key_0)
@@ -2553,15 +2591,24 @@ class ThumbnailGridView(QAbstractScrollArea):
         for combo in self._adapter_label_combos.values():
             combo.hide()
 
+    def _hide_adapter_reason_controls(self) -> None:
+        for button in self._adapter_reason_buttons.values():
+            button.hide()
+
     def _delete_adapter_label_controls(self) -> None:
         for combo in self._adapter_label_combos.values():
             combo.deleteLater()
         self._adapter_label_combos.clear()
+        for button in self._adapter_reason_buttons.values():
+            button.deleteLater()
+        self._adapter_reason_buttons.clear()
 
     def _sync_adapter_label_controls(self) -> None:
-        if not self._adapter_review_mode:
+        if not self._adapter_review_mode or not self._adapter_review_label_controls_enabled:
             self._hide_adapter_label_controls()
+            self._sync_adapter_reason_controls()
             return
+        self._hide_adapter_reason_controls()
         visible = set(self._visible_indexes())
         for index, combo in list(self._adapter_label_combos.items()):
             if index not in visible or not self._record_in_adapter_review(index):
@@ -2583,6 +2630,28 @@ class ThumbnailGridView(QAbstractScrollArea):
             combo.setGeometry(self._adapter_label_rect(self._item_rect(index)))
             combo.show()
             combo.raise_()
+
+    def _sync_adapter_reason_controls(self) -> None:
+        if not self._adapter_review_mode or not self._adapter_review_reason_controls_enabled:
+            self._hide_adapter_reason_controls()
+            return
+        visible = set(self._visible_indexes())
+        for index, button in list(self._adapter_reason_buttons.items()):
+            if index not in visible or not self._record_in_adapter_review(index):
+                button.hide()
+        for index in visible:
+            if not self._record_in_adapter_review(index):
+                continue
+            button = self._adapter_reason_buttons.get(index)
+            if button is None:
+                button = self._build_adapter_reason_button(index)
+                self._adapter_reason_buttons[index] = button
+            record = self._items[index]
+            tags = self._adapter_reason_tags_by_path.get(record.path, ())
+            self._set_adapter_reason_button_state(button, tags)
+            button.setGeometry(self._adapter_label_rect(self._item_rect(index)))
+            button.show()
+            button.raise_()
 
     def _build_adapter_label_combo(self, index: int) -> QComboBox:
         combo = QComboBox(self.viewport())
@@ -2610,6 +2679,75 @@ class ThumbnailGridView(QAbstractScrollArea):
             combo.addItem(text, label)
         combo.currentIndexChanged.connect(lambda _row, item_index=index, widget=combo: self._handle_adapter_label_changed(item_index, widget))
         return combo
+
+    def _build_adapter_reason_button(self, index: int) -> QToolButton:
+        button = QToolButton(self.viewport())
+        button.setObjectName("adapterReasonButton")
+        button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setStyleSheet(
+            "QToolButton#adapterReasonButton {"
+            " padding: 1px 8px; margin: 0px; font-size: 11px; min-height: 20px;"
+            " background: #0f1622; color: #f0f6ff;"
+            " border: 1px solid #33445f; border-radius: 5px;"
+            "} "
+            "QToolButton#adapterReasonButton:hover { border-color: #4f7edb; }"
+        )
+        menu = QMenu(button)
+        for key, label in self._adapter_reason_options:
+            action = QAction(label, menu)
+            action.setCheckable(True)
+            action.setProperty("reasonKey", key)
+            action.toggled.connect(
+                lambda checked, item_index=index, reason_key=key: self._handle_adapter_reason_toggled(
+                    item_index,
+                    reason_key,
+                    checked,
+                )
+            )
+            menu.addAction(action)
+        menu.addSeparator()
+        clear_action = QAction("Clear reasons", menu)
+        clear_action.triggered.connect(lambda _checked=False, item_index=index: self._set_adapter_reason_tags_for_index(item_index, (), emit=True))
+        menu.addAction(clear_action)
+        button.setMenu(menu)
+        return button
+
+    def _set_adapter_reason_button_state(self, button: QToolButton, tags: tuple[str, ...]) -> None:
+        selected = set(tags)
+        for action in button.menu().actions() if button.menu() is not None else ():
+            reason_key = action.property("reasonKey")
+            if not reason_key:
+                continue
+            with QSignalBlocker(action):
+                action.setChecked(str(reason_key) in selected)
+        button.setText(f"{len(selected)} reason(s)" if selected else "Reasons...")
+
+    def _handle_adapter_reason_toggled(self, index: int, reason_key: str, checked: bool) -> None:
+        if not 0 <= index < len(self._items):
+            return
+        record = self._items[index]
+        current = list(self._adapter_reason_tags_by_path.get(record.path, ()))
+        if checked and reason_key not in current:
+            current.append(reason_key)
+        elif not checked:
+            current = [tag for tag in current if tag != reason_key]
+        ordered = tuple(key for key, _label in self._adapter_reason_options if key in set(current))
+        self._set_adapter_reason_tags_for_index(index, ordered, emit=True)
+
+    def _set_adapter_reason_tags_for_index(self, index: int, tags: tuple[str, ...], *, emit: bool) -> None:
+        if not 0 <= index < len(self._items):
+            return
+        record = self._items[index]
+        if tags:
+            self._adapter_reason_tags_by_path[record.path] = tags
+        else:
+            self._adapter_reason_tags_by_path.pop(record.path, None)
+        button = self._adapter_reason_buttons.get(index)
+        if button is not None:
+            self._set_adapter_reason_button_state(button, tags)
+        if emit:
+            self.adapter_reasons_requested.emit(record.path, tags)
 
     def _handle_adapter_label_changed(self, index: int, combo: QComboBox) -> None:
         label = str(combo.currentData() or "")

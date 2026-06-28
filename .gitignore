@@ -27,6 +27,21 @@ build_assets/icons/*
 *.egg-info/
 pip-wheel-metadata/
 
+# Linux AppImage / packaging build artifacts
+*.AppImage
+*.AppImage.zsync
+*.AppDir/
+**/*.AppDir/
+squashfs-root/
+appimagetool*.AppImage
+linuxdeploy*.AppImage
+linuxdeploy-plugin-*.AppImage
+*.snap
+*.deb
+*.rpm
+*.msi
+*.exe
+
 # Virtual environments
 .venv/
 .linux_build_venv/
@@ -59,6 +74,8 @@ library.sqlite3-wal
 # Local AI workspace and training artifacts
 .image_triage_ai/
 **/.image_triage_ai/
+.image_triage_global_adapter_handoff/
+**/.image_triage_global_adapter_handoff/
 best_ranker.pt
 last_ranker.pt
 reference_bank.npz
@@ -66,15 +83,24 @@ embeddings.npy
 AICullingPipeline/vit_base_patch14_dinov2.lvd142m/
 AICullingPipeline/outputs/china26_full/ranker_run_mlp_100ep/
 
+# Model weights / caches (downloaded at runtime, never committed)
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+
 # Local smoke-test data and scratch captures
 _ai_smoke_input/
 _ai_smoke_input2/
 ai_smoke_input/
 ai_smoke_input2/
 _tmp_*.png
+*_preview.png
 .codex_*
 
 # Logs and local environment files
+logs/
 *.log
 *.tmp
 .env
