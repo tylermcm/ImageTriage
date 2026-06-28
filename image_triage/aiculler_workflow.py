@@ -1598,6 +1598,8 @@ class AICullerAdapterTask(QRunnable):
                         "0",
                         "--adapter-weight",
                         "1",
+                        "--validation-mode",
+                        "folder_grouped_holdout",
                         "--out",
                         str(self.paths.report_dir / f"adapter_scores_{self.model_version}.csv"),
                     ),
@@ -1613,6 +1615,19 @@ class AICullerAdapterTask(QRunnable):
                         str(self.paths.report_dir / f"adapter_evaluation_{self.model_version}.csv"),
                     ),
                 ),
+                (
+                    "Writing adapter feasibility diagnostics",
+                    self._command(
+                        db_path,
+                        "diagnose-adapter",
+                        "--model-version",
+                        self.model_version,
+                        "--folder-root",
+                        str(self.paths.folder),
+                        "--out",
+                        str(self.paths.report_dir / f"adapter_diagnostics_{self.model_version}.json"),
+                    ),
+                ),
             ]
         if self.mode == "evaluate":
             return [
@@ -1626,7 +1641,20 @@ class AICullerAdapterTask(QRunnable):
                         "--out",
                         str(self.paths.report_dir / f"adapter_evaluation_{self.model_version}.csv"),
                     ),
-                )
+                ),
+                (
+                    "Writing adapter feasibility diagnostics",
+                    self._command(
+                        db_path,
+                        "diagnose-adapter",
+                        "--model-version",
+                        self.model_version,
+                        "--folder-root",
+                        str(self.paths.folder),
+                        "--out",
+                        str(self.paths.report_dir / f"adapter_diagnostics_{self.model_version}.json"),
+                    ),
+                ),
             ]
         if self.mode == "rank":
             commands: list[tuple[str, list[str]]] = []
@@ -1738,8 +1766,15 @@ class AICullerGlobalAdapterTask(QRunnable):
             self.paths.report_dir.mkdir(parents=True, exist_ok=True)
             db_path = aiculler_db_path(self.paths)
             cache_dir = self.paths.hidden_root / "aiculler_cache"
-            include_path = self.paths.artifacts_dir / "global_adapter_include_paths.txt"
-            ratings_path = self.paths.artifacts_dir / f".adapter_ratings_{self.model_version}.csv"
+            # The UI process and the managed AI subprocess can see different
+            # AppData views on Windows Store Python installs. Handoff files
+            # live under the shared runtime root so import-ratings never falls
+            # back to a stale global label store.
+            handoff_key = hashlib.sha1(self.model_version.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+            handoff_dir = self.runtime.root / ".image_triage_global_adapter_handoff" / handoff_key
+            handoff_dir.mkdir(parents=True, exist_ok=True)
+            include_path = handoff_dir / "global_adapter_include_paths.txt"
+            ratings_path = handoff_dir / f"adapter_ratings_{handoff_key}.csv"
 
             def write_include_file() -> None:
                 include_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1817,6 +1852,8 @@ class AICullerGlobalAdapterTask(QRunnable):
                         "0",
                         "--adapter-weight",
                         "1",
+                        "--validation-mode",
+                        "folder_grouped_holdout",
                         "--out",
                         str(self.paths.report_dir / f"adapter_scores_{self.model_version}.csv"),
                     ),
@@ -1830,6 +1867,17 @@ class AICullerGlobalAdapterTask(QRunnable):
                         self.model_version,
                         "--out",
                         str(self.paths.report_dir / f"adapter_evaluation_{self.model_version}.csv"),
+                    ),
+                ),
+                (
+                    "Writing global adapter feasibility diagnostics",
+                    self._command(
+                        db_path,
+                        "diagnose-adapter",
+                        "--model-version",
+                        self.model_version,
+                        "--out",
+                        str(self.paths.report_dir / f"adapter_diagnostics_{self.model_version}.json"),
                     ),
                 ),
             ]
@@ -1916,7 +1964,7 @@ def _write_global_adapter_ratings_csv(path: Path, labels: tuple[GlobalAdapterLab
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round", "weight"),
+            fieldnames=("source_path", "filename", "label", "rating", "winner", "reject", "review_round", "weight", "reason_tags"),
         )
         writer.writeheader()
         for label in labels:
@@ -1930,6 +1978,7 @@ def _write_global_adapter_ratings_csv(path: Path, labels: tuple[GlobalAdapterLab
                     "reject": int(label.label in {"reject", "bad", "r", "no", "0"}),
                     "review_round": "adapter_global_dispute" if label.is_dispute else "adapter_global_review",
                     "weight": label.weight,
+                    "reason_tags": ";".join(label.reason_tags),
                 }
             )
 
@@ -2233,6 +2282,7 @@ def list_adapter_model_summaries(db_path: str | Path) -> list[dict[str, object]]
         failure_rate = holdout_mae if holdout_mae is not None else train_mae
         score_fit_percent = None if failure_rate is None else max(0.0, min(100.0, (1.0 - failure_rate) * 100.0))
         culling = metrics.get("culling") if isinstance(metrics, dict) else None
+        validation_health = metrics.get("validation_health") if isinstance(metrics, dict) else None
         summaries.append(
             {
                 "model_version": str(row[0]),
@@ -2249,6 +2299,7 @@ def list_adapter_model_summaries(db_path: str | Path) -> list[dict[str, object]]
                 "holdout_count": _as_optional_int(holdout.get("count")) if isinstance(holdout, dict) else None,
                 "train_rank_lift": _as_optional_float(train.get("rank_lift")) if isinstance(train, dict) else None,
                 "holdout_rank_lift": _as_optional_float(holdout.get("rank_lift")) if isinstance(holdout, dict) else None,
+                "validation_health": validation_health if isinstance(validation_health, dict) else {},
                 "training_config": summary_config,
                 "label_origin_counts": config.get("label_origin_counts", {}) if isinstance(config, dict) else {},
             }
@@ -2361,6 +2412,7 @@ def load_adapter_status_summary(db_path: str | Path) -> dict[str, object]:
         "keeper_recall": None,
         "false_reject_rate": None,
         "review_reduction_percent": None,
+        "validation_health": {},
     }
     path = Path(db_path)
     if not path.exists():
@@ -2405,6 +2457,9 @@ def load_adapter_status_summary(db_path: str | Path) -> dict[str, object]:
             summary["keeper_recall"] = _as_optional_float(culling.get("keeper_recall"))
             summary["false_reject_rate"] = _as_optional_float(culling.get("false_reject_rate"))
             summary["review_reduction_percent"] = _as_optional_float(culling.get("review_reduction_percent"))
+        validation_health = metrics.get("validation_health") if isinstance(metrics, dict) else None
+        if isinstance(validation_health, dict):
+            summary["validation_health"] = validation_health
         scored_row = connection.execute(
             "SELECT COUNT(*) FROM adapter_scores WHERE model_version = ?",
             (model_version,),

@@ -807,6 +807,14 @@ class AIWorkflowCenterDialog(QDialog):
             f"Train MAE: {train_text}",
             f"Scored images: {int(model.get('scored_count') or 0)}",
         ]
+        validation_health = model.get("validation_health")
+        if isinstance(validation_health, dict) and validation_health:
+            status = str(validation_health.get("status") or "").strip()
+            if status:
+                details.append(f"Validation health: {status.replace('_', ' ').title()}")
+            reasons = validation_health.get("reasons")
+            if isinstance(reasons, list) and reasons:
+                details.append(f"Reason: {'; '.join(str(reason) for reason in reasons if reason)}")
         origin_counts = model.get("label_origin_counts")
         if isinstance(origin_counts, dict) and origin_counts:
             origin_text = ", ".join(f"{key}: {value}" for key, value in sorted(origin_counts.items()))
