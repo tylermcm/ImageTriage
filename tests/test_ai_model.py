@@ -11,13 +11,16 @@ from unittest.mock import patch
 
 from image_triage.ai_model import (
     AICULLER_CLIP_MODEL_REQUIRED_FILENAMES,
+    AICULLER_FACE_MODEL_REQUIRED_FILENAMES,
     AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES,
     SEMANTIC_MODEL_REQUIRED_FILENAMES,
     download_ai_model,
     download_aiculler_clip_model,
+    download_aiculler_face_model,
     download_aiculler_topiq_model,
     download_semantic_model,
     resolve_aiculler_clip_model_installation,
+    resolve_aiculler_face_model_installation,
     resolve_aiculler_topiq_model_installation,
     resolve_ai_model_installation,
     resolve_semantic_model_installation,
@@ -323,6 +326,29 @@ class AIModelTests(unittest.TestCase):
 
             self.assertTrue(installation.is_installed)
             self.assertEqual((installation.install_dir / "topiq_nr.onnx").read_bytes(), b"topiq")
+
+    def test_download_aiculler_face_model_fetches_quality_models_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installation = resolve_aiculler_face_model_installation(
+                install_dir=Path(temp_dir) / "insightface" / "models" / "buffalo_l",
+                repo_id="owner/insightface",
+                revision="main",
+            )
+            payloads = {filename: filename.encode("utf-8") for filename in AICULLER_FACE_MODEL_REQUIRED_FILENAMES}
+            seen: list[str] = []
+
+            def fake_urlopen(request):
+                url = getattr(request, "full_url", str(request))
+                filename = url.split("?", 1)[0].rsplit("/", 1)[-1]
+                seen.append(filename)
+                return _FakeResponse(payloads[filename])
+
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                download_aiculler_face_model(installation)
+
+            self.assertTrue(installation.is_installed)
+            self.assertEqual(tuple(seen), AICULLER_FACE_MODEL_REQUIRED_FILENAMES)
+            self.assertNotIn("w600k_r50.onnx", seen)
 
 
 if __name__ == "__main__":

@@ -168,6 +168,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._thumbnail_request_timer.timeout.connect(self._request_visible_thumbnails)
         self._title_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
         self._meta_font = QFont("Segoe UI", 9)
+        self._review_title_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
+        self._review_capture_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
+        self._review_meta_font = QFont("Segoe UI", 9)
+        self._review_badge_font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
         self._placeholder_font = QFont("Segoe UI", 11)
         self._empty_font = QFont("Segoe UI", 14)
         self._border_active = QColor("#2ed58e")
@@ -198,6 +202,16 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._burst_accent = QColor("#57b1ff")
         self._ai_pick_badge_fill = QColor(180, 138, 26, 220)
         self._ai_pick_badge_text = QColor("#fff6d8")
+        self._review_scrim_top = QColor(0, 0, 0, 0)
+        self._review_scrim_mid = QColor(0, 0, 0, 92)
+        self._review_scrim_bottom = QColor(0, 0, 0, 226)
+        self._review_badge_border = QColor(255, 212, 112, 80)
+        self._review_duplicate_badge_fill = QColor(23, 25, 27, 190)
+        self._review_duplicate_badge_text = QColor("#ead9a8")
+        self._review_ai_badge_fill = QColor(124, 84, 20, 168)
+        self._review_ai_badge_color = QColor("#ffd36c")
+        self._review_keeper_color = QColor("#8ef7a8")
+        self._review_index_text = QColor("#8fc1ff")
         self._ai_score_badge_fill = QColor(14, 19, 29, 210)
         self._ai_score_badge_text = QColor("#dce8ff")
         self._workflow_best_badge_fill = QColor(34, 96, 64, 220)
@@ -740,6 +754,9 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def compact_card_mode(self) -> bool:
         return self._compact_card_mode
+
+    def _use_loupe_card_style(self) -> bool:
+        return not self._compact_card_mode and self._columns == 1
 
     def set_free_smooth_scroll_enabled(self, enabled: bool) -> None:
         normalized = bool(enabled)
@@ -1651,6 +1668,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         burst_info = self._burst_groups_by_path.get(record.path)
         ai_result = self._ai_result_for(record, variant)
         review_insight = self._review_insight_for(record)
+        use_loupe_card = self._use_loupe_card_style()
         painter.save()
         if is_rejected:
             border_color = self._reject_color
@@ -1714,9 +1732,17 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.setFont(self._placeholder_font)
             painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, "Loading...")
 
-        # Rating/meta footer strip under the image (slightly darker than the card).
+        if use_loupe_card:
+            painter.save()
+            painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(image_rect).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+            painter.restore()
+
+        # Rating/meta footer strip under compact cards. The normal review card
+        # now paints metadata over a bottom image scrim instead.
         footer_top = image_rect.bottom() + 1
-        if footer_top < rect.bottom() - 1:
+        if not use_loupe_card and footer_top < rect.bottom() - 1:
             footer_clip = QPainterPath()
             footer_clip.addRoundedRect(QRectF(rect).adjusted(1, 1, -1, -1), 6, 6)
             painter.save()
@@ -1727,7 +1753,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
             painter.restore()
 
-        if annotation and (annotation.rating or annotation.tags):
+        if not use_loupe_card and annotation and (annotation.rating or annotation.tags):
             badge = self._annotation_badge(annotation)
             badge_rect = QRect(image_rect.right() - 160, image_rect.bottom() - 30, 150, 24)
             painter.setPen(Qt.PenStyle.NoPen)
@@ -1737,80 +1763,90 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.setFont(self._meta_font)
             painter.drawText(badge_rect.adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, badge)
 
-        left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode else 0)
-        left_badge_y = image_rect.top() + 10
-        if is_rejected:
-            self._paint_state_badge(
-                painter,
-                QRect(left_badge_x, left_badge_y, 88, 24),
-                "Rejected",
-                self._reject_badge_fill,
-                self._reject_badge_text,
-            )
-            left_badge_y += 30
-        elif is_winner:
-            self._paint_state_badge(
-                painter,
-                QRect(left_badge_x, left_badge_y, 88, 24),
-                "Accepted",
-                self._accepted_badge_fill,
-                self._accepted_badge_text,
-            )
-            left_badge_y += 30
-
         workflow_insight = self._workflow_insight_for(record)
-        if workflow_insight is not None and getattr(workflow_insight, "has_round", False):
-            short_label = review_round_short_label(getattr(workflow_insight, "review_round", ""))
-            if short_label:
+        dino_decision = self._dino_prefilter_decision_for(record)
+
+        if use_loupe_card:
+            self._paint_review_top_badges(
+                painter,
+                image_rect,
+                burst_info=burst_info,
+                ai_result=ai_result,
+                dino_decision=dino_decision,
+            )
+        else:
+            left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode else 0)
+            left_badge_y = image_rect.top() + 10
+            if is_rejected:
                 self._paint_state_badge(
                     painter,
                     QRect(left_badge_x, left_badge_y, 88, 24),
-                    short_label,
-                    self._workflow_round_badge_fill,
-                    self._workflow_round_badge_text,
+                    "Rejected",
+                    self._reject_badge_fill,
+                    self._reject_badge_text,
                 )
                 left_badge_y += 30
-        if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
-            self._paint_state_badge(
-                painter,
-                QRect(left_badge_x, left_badge_y, 94, 24),
-                "Best Frame",
-                self._workflow_best_badge_fill,
-                self._workflow_best_badge_text,
-            )
-            left_badge_y += 30
-        if self._show_ai_annotations and _fast_path_key(record.path) in self._disputed_paths:
-            self._paint_state_badge(
-                painter,
-                QRect(left_badge_x, left_badge_y, 88, 24),
-                "Disputed",
-                QColor(140, 78, 16, 220),
-                QColor("#fff1d6"),
-            )
-            left_badge_y += 30
-        dino_decision = self._dino_prefilter_decision_for(record)
-        if self._show_ai_annotations and dino_decision is not None:
-            dino_badge = self._dino_prefilter_badge(dino_decision)
-            if dino_badge is not None:
-                badge_text, fill, text, badge_width = dino_badge
+            elif is_winner:
                 self._paint_state_badge(
                     painter,
-                    QRect(left_badge_x, left_badge_y, badge_width, 24),
-                    badge_text,
+                    QRect(left_badge_x, left_badge_y, 88, 24),
+                    "Accepted",
+                    self._accepted_badge_fill,
+                    self._accepted_badge_text,
+                )
+                left_badge_y += 30
+
+            if workflow_insight is not None and getattr(workflow_insight, "has_round", False):
+                short_label = review_round_short_label(getattr(workflow_insight, "review_round", ""))
+                if short_label:
+                    self._paint_state_badge(
+                        painter,
+                        QRect(left_badge_x, left_badge_y, 88, 24),
+                        short_label,
+                        self._workflow_round_badge_fill,
+                        self._workflow_round_badge_text,
+                    )
+                    left_badge_y += 30
+            if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
+                self._paint_state_badge(
+                    painter,
+                    QRect(left_badge_x, left_badge_y, 94, 24),
+                    "Best Frame",
+                    self._workflow_best_badge_fill,
+                    self._workflow_best_badge_text,
+                )
+                left_badge_y += 30
+            if self._show_ai_annotations and _fast_path_key(record.path) in self._disputed_paths:
+                self._paint_state_badge(
+                    painter,
+                    QRect(left_badge_x, left_badge_y, 88, 24),
+                    "Disputed",
+                    QColor(140, 78, 16, 220),
+                    QColor("#fff1d6"),
+                )
+                left_badge_y += 30
+            if self._show_ai_annotations and dino_decision is not None:
+                dino_badge = self._dino_prefilter_badge(dino_decision)
+                if dino_badge is not None:
+                    badge_text, fill, text, badge_width = dino_badge
+                    self._paint_state_badge(
+                        painter,
+                        QRect(left_badge_x, left_badge_y, badge_width, 24),
+                        badge_text,
+                        fill,
+                        text,
+                    )
+                    left_badge_y += 30
+            if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
+                fill, text = self._workflow_disagreement_palette(getattr(workflow_insight, "disagreement_level", ""))
+                self._paint_state_badge(
+                    painter,
+                    QRect(left_badge_x, left_badge_y, 88, 24),
+                    getattr(workflow_insight, "disagreement_badge", ""),
                     fill,
                     text,
                 )
                 left_badge_y += 30
-        if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
-            fill, text = self._workflow_disagreement_palette(getattr(workflow_insight, "disagreement_level", ""))
-            self._paint_state_badge(
-                painter,
-                QRect(left_badge_x, left_badge_y, 88, 24),
-                getattr(workflow_insight, "disagreement_badge", ""),
-                fill,
-                text,
-            )
-            left_badge_y += 30
 
         if self._tool_checkbox_mode:
             self._paint_tool_checkbox(
@@ -1821,7 +1857,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
 
         badge_y = image_rect.top() + 10
-        if record.has_edits:
+        if not use_loupe_card and record.has_edits:
             self._paint_state_badge(
                 painter,
                 QRect(image_rect.right() - 94, badge_y, 84, 24),
@@ -1832,7 +1868,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             badge_y += 30
 
         ai_badge = self._primary_ai_badge(ai_result)
-        if ai_badge is not None:
+        if not use_loupe_card and ai_badge is not None:
             badge_text, fill, text, badge_width = ai_badge
             self._paint_state_badge(
                 painter,
@@ -1842,7 +1878,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 text,
             )
 
-        if self._show_ai_annotations and ai_result is not None:
+        if not use_loupe_card and self._show_ai_annotations and ai_result is not None:
             score_badge_rect = QRect(image_rect.right() - 92, image_rect.bottom() - 30, 82, 24)
             self._paint_state_badge(
                 painter,
@@ -1852,69 +1888,81 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._ai_score_badge_text,
             )
 
-        title_rect = self._title_rect(rect)
-        capture_rect = self._capture_rect(rect)
-        meta_rect = self._meta_rect(rect)
-        title_text_rect = QRect(title_rect)
-        title_badge_width = 0
-        if burst_info is not None:
-            title_badge_width = 116
-            badge_fill, badge_text = self._group_badge_palette(burst_info.kind)
-            self._paint_state_badge(
+        if use_loupe_card:
+            self._paint_review_overlay(
                 painter,
-                QRect(title_rect.right() - title_badge_width, title_rect.top(), title_badge_width, 22),
-                f"{burst_info.label} {burst_info.index_in_group}/{burst_info.group_size}",
-                badge_fill,
-                badge_text,
+                index,
+                rect,
+                record,
+                variant,
+                annotation,
+                ai_result,
+                workflow_insight,
             )
-            title_text_rect.setRight(title_text_rect.right() - (title_badge_width + 8))
-        if record.has_variant_stack:
-            title_text_rect.setRight(title_text_rect.right() - 56)
-            self._paint_state_badge(
-                painter,
-                QRect(title_rect.right() - 48, title_rect.top(), 48, 22),
-                f"{self._variant_index(record) + 1}/{record.stack_count}",
-                QColor(18, 27, 40, 220),
-                QColor("#dce5f2"),
-            )
-        if self._adapter_review_mode and self._record_in_adapter_review(index):
-            adapter_rect = self._adapter_label_rect(rect)
-            # Only clip the filename when the combo is actually in the title row
-            # (right-aligned mode). When it falls back to the action row below,
-            # the title row is unaffected.
-            if adapter_rect.top() <= title_rect.bottom():
-                title_text_rect.setRight(min(title_text_rect.right(), adapter_rect.left() - 8))
+        else:
+            title_rect = self._title_rect(rect)
+            capture_rect = self._capture_rect(rect)
+            meta_rect = self._meta_rect(rect)
+            title_text_rect = QRect(title_rect)
+            title_badge_width = 0
+            if burst_info is not None:
+                title_badge_width = 116
+                badge_fill, badge_text = self._group_badge_palette(burst_info.kind)
+                self._paint_state_badge(
+                    painter,
+                    QRect(title_rect.right() - title_badge_width, title_rect.top(), title_badge_width, 22),
+                    f"{burst_info.label} {burst_info.index_in_group}/{burst_info.group_size}",
+                    badge_fill,
+                    badge_text,
+                )
+                title_text_rect.setRight(title_text_rect.right() - (title_badge_width + 8))
+            if record.has_variant_stack:
+                title_text_rect.setRight(title_text_rect.right() - 56)
+                self._paint_state_badge(
+                    painter,
+                    QRect(title_rect.right() - 48, title_rect.top(), 48, 22),
+                    f"{self._variant_index(record) + 1}/{record.stack_count}",
+                    QColor(18, 27, 40, 220),
+                    QColor("#dce5f2"),
+                )
+            if self._adapter_review_mode and self._record_in_adapter_review(index):
+                adapter_rect = self._adapter_label_rect(rect)
+                # Only clip the filename when the combo is actually in the title row
+                # (right-aligned mode). When it falls back to the action row below,
+                # the title row is unaffected.
+                if adapter_rect.top() <= title_rect.bottom():
+                    title_text_rect.setRight(min(title_text_rect.right(), adapter_rect.left() - 8))
 
-        painter.setPen(self._title_color)
-        painter.setFont(self._title_font)
-        title_option = QTextOption(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        title_option.setWrapMode(QTextOption.WrapMode.WordWrap)
-        painter.drawText(QRectF(title_text_rect), variant.name if record.has_variant_stack else record.name, title_option)
+            painter.setPen(self._title_color)
+            painter.setFont(self._title_font)
+            title_option = QTextOption(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            title_option.setWrapMode(QTextOption.WrapMode.WordWrap)
+            painter.drawText(QRectF(title_text_rect), variant.name if record.has_variant_stack else record.name, title_option)
 
-        if not record.is_folder and not self._adapter_review_mode:
-            self._paint_winner_button(
-                painter,
-                self._winner_button_rect(rect),
-                annotation.winner if annotation else False,
-                index == self._hovered_winner_index,
-            )
-            self._paint_reject_button(
-                painter,
-                self._reject_button_rect(rect),
-                annotation.reject if annotation else False,
-                index == self._hovered_reject_index,
-            )
+            if not record.is_folder and not self._adapter_review_mode:
+                self._paint_winner_button(
+                    painter,
+                    self._winner_button_rect(rect),
+                    annotation.winner if annotation else False,
+                    index == self._hovered_winner_index,
+                )
+                self._paint_reject_button(
+                    painter,
+                    self._reject_button_rect(rect),
+                    annotation.reject if annotation else False,
+                    index == self._hovered_reject_index,
+                )
 
-        if not self._compact_card_mode:
-            painter.setPen(self._capture_color)
-            painter.setFont(self._meta_font)
-            capture_text = painter.fontMetrics().elidedText(self._capture_line(record), Qt.TextElideMode.ElideRight, capture_rect.width())
-            painter.drawText(capture_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, capture_text)
+            if not self._compact_card_mode:
+                painter.setPen(self._capture_color)
+                painter.setFont(self._meta_font)
+                capture_text = painter.fontMetrics().elidedText(self._capture_line(record), Qt.TextElideMode.ElideRight, capture_rect.width())
+                painter.drawText(capture_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, capture_text)
 
-            painter.setPen(self._meta_color)
-            painter.setFont(self._meta_font)
-            meta_text = painter.fontMetrics().elidedText(self._meta_line(record), Qt.TextElideMode.ElideRight, meta_rect.width())
-            painter.drawText(meta_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, meta_text)
+                painter.setPen(self._meta_color)
+                painter.setFont(self._meta_font)
+                meta_text = painter.fontMetrics().elidedText(self._meta_line(record), Qt.TextElideMode.ElideRight, meta_rect.width())
+                painter.drawText(meta_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, meta_text)
         if record.has_variant_stack:
             self._paint_variant_arrow(
                 painter,
@@ -2097,6 +2145,278 @@ class ThumbnailGridView(QAbstractScrollArea):
             return self._workflow_miss_badge_fill, self._workflow_miss_badge_text
         return self._workflow_review_badge_fill, self._workflow_review_badge_text
 
+    def _paint_review_top_badges(
+        self,
+        painter: QPainter,
+        image_rect: QRect,
+        *,
+        burst_info: BurstVisualInfo | None,
+        ai_result: AIImageResult | None,
+        dino_decision,
+    ) -> None:
+        scale = self._review_scale(image_rect)
+        margin = self._review_overlay_margin(image_rect)
+        badge_y = image_rect.top() + margin
+        left_text = self._review_group_badge_text(burst_info, dino_decision)
+        if left_text:
+            left_rect = self._review_badge_rect(painter, left_text, image_rect.left() + margin, badge_y, scale)
+            self._paint_review_pill(
+                painter,
+                left_rect,
+                left_text,
+                self._review_duplicate_badge_fill,
+                self._review_duplicate_badge_text,
+                border=self._review_badge_border,
+                scale=scale,
+            )
+
+        right_text = self._review_ai_badge_label(ai_result)
+        if right_text:
+            right_rect = self._review_badge_rect(painter, right_text, 0, badge_y, scale)
+            right_rect.moveRight(image_rect.right() - margin)
+            self._paint_review_pill(
+                painter,
+                right_rect,
+                right_text,
+                self._review_ai_badge_fill,
+                self._review_ai_badge_color,
+                border=self._review_badge_border,
+                scale=scale,
+            )
+
+    def _paint_review_overlay(
+        self,
+        painter: QPainter,
+        index: int,
+        rect: QRect,
+        record: ImageRecord,
+        variant: ImageVariant,
+        annotation: SessionAnnotation | None,
+        ai_result: AIImageResult | None,
+        workflow_insight,
+    ) -> None:
+        image_rect = self._image_rect(rect)
+        scale = self._review_scale(image_rect)
+        overlay_height = self._review_overlay_height(image_rect)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(image_rect), 5, 5)
+
+        painter.save()
+        painter.setClipPath(clip)
+        scrim_top = max(image_rect.top(), image_rect.bottom() - overlay_height)
+        painter.fillRect(
+            QRect(image_rect.left(), scrim_top, image_rect.width(), max(1, image_rect.bottom() - scrim_top + 1)),
+            self._review_scrim_bottom,
+        )
+        painter.fillRect(
+            QRect(image_rect.left(), max(image_rect.top(), scrim_top - overlay_height // 2), image_rect.width(), overlay_height // 2),
+            self._review_scrim_mid,
+        )
+        painter.fillRect(
+            QRect(image_rect.left(), max(image_rect.top(), scrim_top - overlay_height), image_rect.width(), overlay_height // 2),
+            self._review_scrim_top,
+        )
+        painter.restore()
+
+        margin = self._review_overlay_margin(image_rect)
+        button_size = self._review_action_button_size(image_rect)
+        button_gap = self._review_action_button_gap(image_rect)
+        bottom = image_rect.bottom() - margin
+        reject_rect = QRect(0, 0, button_size, button_size)
+        reject_rect.moveRight(image_rect.right() - margin)
+        reject_rect.moveBottom(bottom)
+        winner_rect = QRect(0, 0, button_size, button_size)
+        winner_rect.moveRight(reject_rect.left() - button_gap)
+        winner_rect.moveTop(reject_rect.top())
+
+        title_height = max(24, int(round(17 * scale)))
+        capture_height = max(20, int(round(13 * scale)))
+        meta_height = max(18, int(round(11 * scale)))
+        line_gap = max(5, int(round(7 * scale)))
+        meta_y = reject_rect.center().y() - meta_height // 2
+        capture_y = meta_y - capture_height - line_gap
+        title_y = capture_y - title_height - line_gap
+        right_width = max(96, int(round(64 * scale)))
+        left_width = max(80, winner_rect.left() - margin - image_rect.left() - margin - int(round(18 * scale)))
+
+        title_rect = QRect(image_rect.left() + margin, title_y, left_width, title_height)
+        capture_rect = QRect(title_rect.left(), capture_y, left_width, capture_height)
+        meta_rect = QRect(title_rect.left(), meta_y, left_width, meta_height)
+        right_rect = QRect(image_rect.right() - margin - right_width, title_y, right_width, capture_height + title_height + line_gap)
+
+        painter.save()
+        painter.setPen(QColor("#f4f7fb"))
+        painter.setFont(self._review_font(14, scale, QFont.Weight.DemiBold))
+        title_text = painter.fontMetrics().elidedText(
+            variant.name if record.has_variant_stack else record.name,
+            Qt.TextElideMode.ElideRight,
+            title_rect.width(),
+        )
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title_text)
+
+        painter.setPen(QColor("#d9e5f2"))
+        painter.setFont(self._review_font(10, scale, QFont.Weight.DemiBold))
+        capture_text = self._review_capture_text(record)
+        capture_text = painter.fontMetrics().elidedText(capture_text, Qt.TextElideMode.ElideRight, capture_rect.width())
+        painter.drawText(capture_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, capture_text)
+
+        painter.setPen(self._meta_color)
+        painter.setFont(self._review_font(9, scale))
+        meta_text = self._review_passive_meta_text(record, variant)
+        meta_text = painter.fontMetrics().elidedText(meta_text, Qt.TextElideMode.ElideRight, meta_rect.width())
+        painter.drawText(meta_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, meta_text)
+
+        painter.setPen(self._review_index_text)
+        painter.setFont(self._review_font(9, scale))
+        painter.drawText(
+            QRect(right_rect.left(), title_rect.top(), right_rect.width(), capture_height),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            self._review_position_text(index),
+        )
+
+        keeper_text = self._review_keeper_label(ai_result, workflow_insight)
+        if keeper_text:
+            painter.setPen(self._review_keeper_color)
+            painter.setFont(self._review_font(9, scale))
+            painter.drawText(
+                QRect(right_rect.left(), capture_rect.top(), right_rect.width(), 22),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                keeper_text,
+            )
+        painter.restore()
+
+        if not record.is_folder and not self._adapter_review_mode:
+            self._paint_review_action_button(
+                painter,
+                winner_rect,
+                self.HEART_SYMBOL if annotation and annotation.winner else self.HEART_OUTLINE_SYMBOL,
+                active=bool(annotation and annotation.winner),
+                hovered=index == self._hovered_winner_index,
+                accent=self._winner_color,
+            )
+            self._paint_review_action_button(
+                painter,
+                reject_rect,
+                self.REJECT_SYMBOL,
+                active=bool(annotation and annotation.reject),
+                hovered=index == self._hovered_reject_index,
+                accent=self._reject_color,
+            )
+
+    def _paint_review_action_button(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        symbol: str,
+        *,
+        active: bool,
+        hovered: bool,
+        accent: QColor,
+    ) -> None:
+        if rect.isEmpty():
+            return
+        painter.save()
+        fill = QColor(0, 0, 0, 128 if hovered or active else 88)
+        border = QColor(accent) if active else QColor(255, 255, 255)
+        border.setAlpha(190 if active else (105 if hovered else 72))
+        text = QColor(accent) if active else QColor("#f2f5f8")
+        painter.setPen(QPen(border, 1.1))
+        painter.setBrush(fill)
+        painter.drawEllipse(rect)
+        painter.setPen(text)
+        scale = max(1.0, rect.width() / 32.0)
+        painter.setFont(self._review_font(14, scale, family="Segoe UI Symbol"))
+        painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, symbol)
+        painter.restore()
+
+    def _paint_review_pill(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        text: str,
+        fill: QColor,
+        foreground: QColor,
+        *,
+        border: QColor | None = None,
+        scale: float = 1.0,
+    ) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(border, 1.0) if border is not None else Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(QRectF(rect), rect.height() / 2, rect.height() / 2)
+        painter.setPen(foreground)
+        painter.setFont(self._review_font(9, scale, QFont.Weight.DemiBold))
+        inset = max(10, int(round(10 * scale)))
+        painter.drawText(rect.adjusted(inset, 0, -inset, 0), Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
+
+    def _review_badge_rect(self, painter: QPainter, text: str, x: int, y: int, scale: float = 1.0) -> QRect:
+        painter.save()
+        painter.setFont(self._review_font(9, scale, QFont.Weight.DemiBold))
+        width = max(int(round(82 * scale)), painter.fontMetrics().horizontalAdvance(text) + int(round(22 * scale)))
+        painter.restore()
+        return QRect(x, y, width, max(26, int(round(26 * scale))))
+
+    def _review_group_badge_text(self, burst_info: BurstVisualInfo | None, dino_decision) -> str:
+        if burst_info is not None and burst_info.group_size > 1:
+            label = str(burst_info.label or "Group")
+            if burst_info.kind in {"exact_duplicate", "likely_duplicate"} or "dup" in label.casefold():
+                label = "Near Duplicate"
+            elif burst_info.kind == "burst":
+                label = "Burst"
+            elif burst_info.kind == "similar":
+                label = "Similar"
+            prefix = "\u25a2  " if "Duplicate" in label else ""
+            return f"{prefix}{label} \u00b7 {burst_info.index_in_group}/{burst_info.group_size}"
+        if dino_decision is not None:
+            action = str(getattr(dino_decision, "action", "") or "")
+            reason = str(getattr(dino_decision, "reason", "") or "")
+            if action == "quarantine" and reason == "phash_duplicate_trash":
+                return "Near Duplicate"
+        return ""
+
+    def _review_ai_badge_label(self, ai_result: AIImageResult | None) -> str:
+        if not self._show_ai_annotations or ai_result is None:
+            return ""
+        score = ai_result.display_score_text
+        if ai_result.is_top_pick:
+            return f"\u2726  AI Pick \u00b7 {score}" if score else "\u2726  AI Pick"
+        return f"AI {score}" if score else ai_result.confidence_bucket_short_label
+
+    def _review_keeper_label(self, ai_result: AIImageResult | None, workflow_insight) -> str:
+        if ai_result is not None:
+            if ai_result.is_top_pick:
+                return "Keeper"
+            label = ai_result.confidence_bucket_short_label
+            return "Review" if label in {"Needs Review", "Review"} else label
+        if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
+            return "Keeper"
+        return ""
+
+    def _review_position_text(self, index: int) -> str:
+        slot = self._visible_slot_for_index(index)
+        total = len(self._visible_item_indexes)
+        if slot is None or total <= 0:
+            return ""
+        return f"{slot + 1} / {total}"
+
+    def _review_capture_text(self, record: ImageRecord) -> str:
+        return self._capture_line(record).replace("  |  ", " · ").replace(" | ", " · ")
+
+    def _review_passive_meta_text(self, record: ImageRecord, variant: ImageVariant) -> str:
+        parts: list[str] = []
+        size_bytes = variant.size if record.has_variant_stack else record.size
+        modified_ns = variant.modified_ns if record.has_variant_stack else record.modified_ns
+        if size_bytes > 0:
+            parts.append(f"{size_bytes / (1024 * 1024):.1f} MB")
+        if modified_ns > 0:
+            parts.append(datetime.fromtimestamp(modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M"))
+        folder = Path(variant.path if record.has_variant_stack else record.path).parent.name
+        if folder:
+            parts.append(folder)
+        return " · ".join(parts)
+
     def _ai_result_for(self, record: ImageRecord, variant: ImageVariant | None = None) -> AIImageResult | None:
         if not self._ai_results_by_path:
             return None
@@ -2258,6 +2578,17 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.restore()
 
     def _title_rect(self, tile_rect: QRect) -> QRect:
+        if self._use_loupe_card_style():
+            image_rect = self._image_rect(tile_rect)
+            margin = self._review_overlay_margin(image_rect)
+            overlay_height = self._review_overlay_height(image_rect)
+            right_reserved = max(96, min(140, image_rect.width() // 4))
+            return QRect(
+                image_rect.left() + margin,
+                image_rect.bottom() - overlay_height + max(16, margin),
+                max(40, image_rect.width() - (margin * 2) - right_reserved),
+                24,
+            )
         return QRect(
             tile_rect.x() + 12,
             tile_rect.y() + self._image_padding + self._image_height() + 8,
@@ -2266,6 +2597,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         )
 
     def _image_rect(self, tile_rect: QRect) -> QRect:
+        if self._use_loupe_card_style():
+            padding = max(10, min(18, tile_rect.width() // 90))
+            return QRect(
+                tile_rect.x() + padding,
+                tile_rect.y() + padding,
+                tile_rect.width() - (padding * 2),
+                tile_rect.height() - (padding * 2),
+            )
         return QRect(
             tile_rect.x() + self._image_padding,
             tile_rect.y() + self._image_padding,
@@ -2333,23 +2672,45 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _capture_rect(self, tile_rect: QRect) -> QRect:
         if self._compact_card_mode:
             return QRect()
+        if not self._use_loupe_card_style():
+            title_rect = self._title_rect(tile_rect)
+            return QRect(
+                tile_rect.x() + 12,
+                title_rect.bottom() + 2,
+                tile_rect.width() - 24,
+                self._capture_height,
+            )
         title_rect = self._title_rect(tile_rect)
+        image_rect = self._image_rect(tile_rect)
+        margin = self._review_overlay_margin(image_rect)
+        right_reserved = max(96, min(140, image_rect.width() // 4))
         return QRect(
-            tile_rect.x() + 12,
-            title_rect.bottom() + 2,
-            tile_rect.width() - 24,
-            self._capture_height,
+            image_rect.left() + margin,
+            title_rect.bottom() + 1,
+            max(40, image_rect.width() - (margin * 2) - right_reserved),
+            20,
         )
 
     def _meta_rect(self, tile_rect: QRect) -> QRect:
         if self._compact_card_mode:
             return QRect()
-        capture_rect = self._capture_rect(tile_rect)
+        if not self._use_loupe_card_style():
+            capture_rect = self._capture_rect(tile_rect)
+            return QRect(
+                tile_rect.x() + 12,
+                capture_rect.bottom() + 2,
+                tile_rect.width() - 24,
+                self._meta_height,
+            )
+        action_rect = self._action_rect(tile_rect)
+        winner_rect = self._winner_button_rect(tile_rect)
+        left = action_rect.left()
+        right = winner_rect.left() - 12 if not winner_rect.isEmpty() else action_rect.right()
         return QRect(
-            tile_rect.x() + 12,
-            capture_rect.bottom() + 2,
-            tile_rect.width() - 24,
-            self._meta_height,
+            left,
+            action_rect.top(),
+            max(0, right - left),
+            action_rect.height(),
         )
 
     def _adapter_label_rect(self, tile_rect: QRect) -> QRect:
@@ -2384,20 +2745,37 @@ class ThumbnailGridView(QAbstractScrollArea):
                 tile_rect.width() - 24,
                 self._action_height,
             )
-        meta_rect = self._meta_rect(tile_rect)
+        if not self._use_loupe_card_style():
+            meta_rect = self._meta_rect(tile_rect)
+            return QRect(
+                tile_rect.x() + 12,
+                meta_rect.bottom() + 6,
+                tile_rect.width() - 24,
+                self._action_height,
+            )
+        image_rect = self._image_rect(tile_rect)
+        margin = self._review_overlay_margin(image_rect)
+        button_size = self._review_action_button_size(image_rect)
         return QRect(
-            tile_rect.x() + 12,
-            meta_rect.bottom() + 6,
-            tile_rect.width() - 24,
-            self._action_height,
+            image_rect.left() + margin,
+            image_rect.bottom() - margin - button_size,
+            image_rect.width() - (margin * 2),
+            button_size,
         )
 
     def _winner_button_rect(self, tile_rect: QRect) -> QRect:
         if self._action_mode in {"rejected_only", "recycle_only"}:
             return QRect()
         action_rect = self._action_rect(tile_rect)
-        rect = QRect(0, 0, self._winner_button_size.width(), self._winner_button_size.height())
-        rect.moveLeft(action_rect.left())
+        if self._use_loupe_card_style():
+            image_rect = self._image_rect(tile_rect)
+            size = self._review_action_button_size(image_rect)
+            gap = self._review_action_button_gap(image_rect)
+            rect = QRect(0, 0, size, size)
+            rect.moveRight(action_rect.right() - size - gap)
+        else:
+            rect = QRect(0, 0, self._winner_button_size.width(), self._winner_button_size.height())
+            rect.moveLeft(action_rect.left())
         rect.moveTop(action_rect.top() + max(0, (action_rect.height() - rect.height()) // 2))
         return rect
 
@@ -2405,13 +2783,43 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._action_mode in {"accepted_only", "recycle_only"}:
             return QRect()
         action_rect = self._action_rect(tile_rect)
-        rect = QRect(0, 0, self._winner_button_size.width(), self._winner_button_size.height())
+        if self._use_loupe_card_style():
+            image_rect = self._image_rect(tile_rect)
+            size = self._review_action_button_size(image_rect)
+            rect = QRect(0, 0, size, size)
+        else:
+            rect = QRect(0, 0, self._winner_button_size.width(), self._winner_button_size.height())
         if self._action_mode == "rejected_only":
             rect.moveLeft(action_rect.left())
         else:
             rect.moveRight(action_rect.right())
         rect.moveTop(action_rect.top() + max(0, (action_rect.height() - rect.height()) // 2))
         return rect
+
+    def _review_overlay_margin(self, image_rect: QRect) -> int:
+        return max(18, min(56, int(round(image_rect.width() * 0.035))))
+
+    def _review_overlay_height(self, image_rect: QRect) -> int:
+        return max(170, min(360, int(round(image_rect.height() * 0.34))))
+
+    def _review_scale(self, image_rect: QRect) -> float:
+        return max(1.0, min(2.6, image_rect.width() / 580.0))
+
+    def _review_font(
+        self,
+        point_size: int,
+        scale: float,
+        weight: QFont.Weight = QFont.Weight.Normal,
+        *,
+        family: str = "Segoe UI",
+    ) -> QFont:
+        return QFont(family, max(1, int(round(point_size * scale))), weight)
+
+    def _review_action_button_size(self, image_rect: QRect) -> int:
+        return max(42, min(74, image_rect.width() // 21))
+
+    def _review_action_button_gap(self, image_rect: QRect) -> int:
+        return max(12, min(24, image_rect.width() // 64))
 
     def _left_arrow_rect(self, tile_rect: QRect, record: ImageRecord) -> QRect:
         if not record.has_variant_stack:
@@ -3281,6 +3689,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
         self._columns = columns
         if columns == 1:
+            if not self._compact_card_mode:
+                card_chrome_height = self._image_padding * 2
             self._tile_width_value = inner
             max_tile_height = max(160, self.viewport().height() - (self._margin * 2))
             self._image_height_value = max(64, max_tile_height - card_chrome_height)

@@ -10,12 +10,26 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from aiculler.storage import SQLiteFeatureStore
+from image_triage.quality.face import FaceQualityAnalyzer
+from image_triage.quality.store import upsert_dimensions, upsert_faces
+from image_triage.quality.technical import analyze_technical
+from image_triage.raw_embedded_jpeg import extract_embedded_jpeg
 
 RAW_EXTENSIONS = {".nef", ".arw", ".cr2", ".cr3", ".crw", ".dng", ".gpr", ".raf", ".rw2"}
 IMAGE_EXTENSIONS = RAW_EXTENSIONS | {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
+PREVIEW_CACHE_VERSION = "v2"
+
+
+def _float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class HeadlessFeatureExtractor:
@@ -27,6 +41,7 @@ class HeadlessFeatureExtractor:
         topiq_onnx_path: str | Path | None = None,
         *,
         providers: list[str] | None = None,
+        enable_face_quality: bool = False,
     ):
         try:
             import onnxruntime as ort
@@ -51,6 +66,8 @@ class HeadlessFeatureExtractor:
             self.topiq_input_name = self._select_image_input(self.topiq_session)
             self.topiq_input_size = self._select_spatial_size(self.topiq_session, default=512)
         self.technical_scorer = HeuristicTechnicalScorer()
+        self.face_analyzer = FaceQualityAnalyzer() if enable_face_quality else None
+        self._face_lock = threading.Lock()
 
     @staticmethod
     def _available_providers(ort) -> list[str]:
@@ -101,9 +118,20 @@ class HeadlessFeatureExtractor:
                 return height
         return default
 
-    def extract_features(self, image_path: str | Path) -> dict[str, np.ndarray | float]:
+    def extract_features(self, image_path: str | Path) -> dict[str, object]:
         with Image.open(image_path) as opened:
             img = opened.convert("RGB")
+        bgr = np.asarray(img, dtype=np.uint8)[:, :, ::-1]
+        dimensions = analyze_technical(bgr)
+        faces = []
+        if self.face_analyzer is not None:
+            with self._face_lock:
+                face_result = self.face_analyzer.analyze(bgr)
+            dimensions.face_quality = _float_or_none(face_result.get("face_quality"))
+            dimensions.eye_sharpness = _float_or_none(face_result.get("eye_sharpness"))
+            blink_value = face_result.get("blink")
+            dimensions.blink = bool(blink_value) if blink_value is not None else None
+            faces = list(face_result.get("faces") or [])
         clip_input = self._preprocess_for_clip(img)
         clip_outputs = self.clip_session.run([self.clip_output_name], {self.clip_input_name: clip_input})
         clip_embed = clip_outputs[0]
@@ -116,6 +144,8 @@ class HeadlessFeatureExtractor:
         return {
             "embedding": np.asarray(clip_embed, dtype=np.float32).reshape(-1),
             "technical_score": technical_score,
+            "dimensions": dimensions,
+            "faces": faces,
         }
 
     def _preprocess_for_clip(self, img: Image.Image) -> np.ndarray:
@@ -181,12 +211,19 @@ class PreviewExtractor:
 
     def _normalize_preview(self, source: Path, target: Path) -> tuple[Path, tuple[int, int]]:
         with Image.open(source) as img:
-            rgb = img.convert("RGB")
+            rgb = ImageOps.exif_transpose(img).convert("RGB")
             rgb.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
             rgb.save(target, "JPEG", quality=92, optimize=True)
             return target, rgb.size
 
     def _extract_embedded_jpeg(self, source: Path, target: Path) -> tuple[Path, tuple[int, int]]:
+        embedded = extract_embedded_jpeg(str(source))
+        if embedded is not None:
+            return self._write_embedded_preview(
+                embedded.payload,
+                target,
+                orientation=embedded.orientation,
+            )
         data = source.read_bytes()
         starts = [idx for idx in self._find_jpeg_starts(data)]
         best: tuple[int, int, bytes] | None = None
@@ -203,11 +240,36 @@ class PreviewExtractor:
                     best = (size, start, candidate)
         if best is None:
             raise UnidentifiedImageError(f"No embedded JPEG preview found in {source}")
-        target.write_bytes(best[2])
-        with Image.open(target) as img:
-            img.verify()
-        with Image.open(target) as img:
-            return target, img.size
+        return self._write_embedded_preview(best[2], target, orientation=1)
+
+    def _write_embedded_preview(self, payload: bytes, target: Path, *, orientation: int) -> tuple[Path, tuple[int, int]]:
+        from io import BytesIO
+
+        with Image.open(BytesIO(payload)) as img:
+            if orientation not in (1, 2, 3, 4, 5, 6, 7, 8):
+                orientation = 1
+            if orientation == 1:
+                working = ImageOps.exif_transpose(img)
+            else:
+                working = self._apply_pillow_orientation(img, orientation)
+            rgb = working.convert("RGB")
+            rgb.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            rgb.save(target, "JPEG", quality=92, optimize=True)
+            return target, rgb.size
+
+    @staticmethod
+    def _apply_pillow_orientation(img: Image.Image, orientation: int) -> Image.Image:
+        operations = {
+            2: Image.Transpose.FLIP_LEFT_RIGHT,
+            3: Image.Transpose.ROTATE_180,
+            4: Image.Transpose.FLIP_TOP_BOTTOM,
+            5: Image.Transpose.TRANSPOSE,
+            6: Image.Transpose.ROTATE_270,
+            7: Image.Transpose.TRANSVERSE,
+            8: Image.Transpose.ROTATE_90,
+        }
+        operation = operations.get(orientation)
+        return img.transpose(operation) if operation is not None else img
 
     @staticmethod
     def _find_jpeg_starts(data: bytes) -> Iterable[int]:
@@ -234,7 +296,7 @@ class PreviewExtractor:
     @staticmethod
     def _stable_name(source: Path) -> str:
         digest = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()[:16]
-        return f"{source.stem}-{digest}"
+        return f"{source.stem}-{digest}-{PREVIEW_CACHE_VERSION}"
 
 
 class IngestionEngine:
@@ -433,6 +495,12 @@ class IngestionEngine:
                     "aiculler_feature_cache": self._feature_cache_payload(source_path, preview_path),
                 },
             )
+            dimensions = features.get("dimensions")
+            if dimensions is not None:
+                with self.store.lock:
+                    upsert_dimensions(self.store.connection, image_id, dimensions)
+                    upsert_faces(self.store.connection, image_id, list(features.get("faces") or []))
+                    self.store.connection.commit()
             self._emit(
                 IngestionEvent(
                     image_id,

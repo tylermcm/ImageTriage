@@ -76,6 +76,7 @@ class MainWindowActions:
     ai_mode: QAction
     install_ai_runtime: QAction
     download_ai_model: QAction
+    guided_ai_cull_preferences: QAction
     open_ai_workflow_center: QAction
     run_ai_culling: QAction
     quick_rerank_ai_culling: QAction
@@ -361,6 +362,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Download AI Models...",
             slot=window._download_ai_model,
+        ),
+        guided_ai_cull_preferences=_create_action(
+            window,
+            "Guided AI Cull...",
+            slot=window._open_guided_ai_cull_preferences,
+            icon=QStyle.StandardPixmap.SP_MediaPlay,
         ),
         open_ai_workflow_center=_create_action(
             window,

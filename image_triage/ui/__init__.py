@@ -7,6 +7,7 @@ from .actions import (
     save_shortcut_overrides,
 )
 from .ai_review_progress_dialog import AIReviewProgressDialog
+from .ai_cull_preferences_dialog import GuidedAICullPreferencesDialog, GuidedCullPreferences
 from .ai_training_progress_dialog import AITrainingProgressDialog
 from .ai_training_stats_dialog import AITrainingStatsDialog
 from .batch_rename_dialog import BatchRenameDialog
@@ -56,6 +57,8 @@ __all__ = [
     "ConvertDialog",
     "EvaluationSourceDialog",
     "FileAssociationsDialog",
+    "GuidedAICullPreferencesDialog",
+    "GuidedCullPreferences",
     "HandoffBuilderDialog",
     "HelpMarkdownDialog",
     "HelpPage",
