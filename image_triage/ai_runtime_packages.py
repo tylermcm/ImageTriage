@@ -32,6 +32,9 @@ AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     "scikit-learn>=1.5",
     "tqdm>=4.66",
     "PyYAML>=6.0",
+    # Face-quality pass (detection + landmarks + gender/age via buffalo_l ONNX).
+    # Recognition/face-sort is a separate, opt-in path and not pulled here.
+    "insightface>=0.7",
 )
 AI_RUNTIME_DINO_PIP_REQUIREMENTS = (
     "torch",
@@ -50,6 +53,7 @@ AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "PIL",
     "yaml",
     "tqdm",
+    "insightface",
 )
 AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES = (
     "torch",

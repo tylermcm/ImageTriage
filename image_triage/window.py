@@ -28,7 +28,7 @@ from queue import Empty, SimpleQueue
 from textwrap import dedent
 
 from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSettings, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -71,11 +71,13 @@ from aiculler.telemetry import TelemetryEvent, ThreadedTelemetryLogger, classify
 from .ai_model import (
     AIModelInstallation,
     DEFAULT_AICULLER_CLIP_SIZE_MB,
+    DEFAULT_AICULLER_FACE_SIZE_MB,
     DEFAULT_AICULLER_TOPIQ_SIZE_MB,
     DEFAULT_AI_MODEL_SIZE_MB,
     DEFAULT_SEMANTIC_MODEL_SIZE_MB,
     download_ai_model as download_managed_ai_model,
     resolve_aiculler_clip_model_installation,
+    resolve_aiculler_face_model_installation,
     resolve_aiculler_topiq_model_installation,
     resolve_ai_model_installation,
     resolve_semantic_model_installation,
@@ -171,6 +173,9 @@ from .aiculler_workflow import (
     latest_adapter_model_version,
     load_adapter_review_candidates,
     load_adapter_status_summary,
+    load_face_records_by_path,
+    load_image_categories_by_path,
+    load_latest_winner_scores,
 )
 from .aiculler_global_store import GlobalAdapterLabelStore, default_global_adapter_label_store_path
 from .ai_results import (
@@ -234,7 +239,7 @@ from .job_controller import JobController, JobSpec
 from .keyboard_mapping import ShortcutBinding, normalize_shortcut_text, serialize_shortcut_overrides
 from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoot, LibraryStore, VirtualCollection
 from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
-from .models import DeleteMode, FilterMode, ImageRecord, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
+from .models import DeleteMode, FilterMode, ImageRecord, ImageVariant, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
 from .perceptual_hash import hamming_distance_int
 from .perf import perf_logger, performance_log_dir
 from .preview import FullScreenPreview, PreviewEntry
@@ -313,6 +318,8 @@ from .ui import (
     CommandPaletteDialog,
     ConvertDialog,
     FileAssociationsDialog,
+    GuidedAICullPreferencesDialog,
+    GuidedCullPreferences,
     HandoffBuilderDialog,
     HelpMarkdownDialog,
     InspectorPanel,
@@ -474,6 +481,7 @@ class AISetupSelection:
     include_dino_runtime: bool
     download_aiculler_clip_model: bool
     download_aiculler_topiq_model: bool
+    download_aiculler_face_model: bool
     download_dino_model: bool
     download_semantic_model: bool
 
@@ -482,6 +490,7 @@ class AISetupSelection:
         return (
             self.download_aiculler_clip_model
             or self.download_aiculler_topiq_model
+            or self.download_aiculler_face_model
             or self.download_dino_model
             or self.download_semantic_model
         )
@@ -2481,6 +2490,7 @@ class MainWindow(QMainWindow):
     FILTER_METADATA_EAGER_CACHE_MAX_RECORDS = 400
     PREVIEW_PRELOAD_BATCH_SIZE_DEFAULT = FullScreenPreview.DEFAULT_PRELOAD_BATCH_SIZE
     PREVIEW_PRELOAD_BATCH_SIZE_MAX = FullScreenPreview.MAX_PRELOAD_BATCH_SIZE
+    INSPECTOR_PREVIEW_TARGET_SIZE = QSize(1200, 1200)
     AI_EMBED_BATCH_SIZE_AUTO = 0
     # NOTE: Despite the historical name, this setting now controls the
     # *worker concurrency* of CLI-Culler's ingest pipeline (preview pool +
@@ -2843,6 +2853,7 @@ class MainWindow(QMainWindow):
         self._semantic_model_installation = resolve_semantic_model_installation()
         self._aiculler_clip_model_installation = resolve_aiculler_clip_model_installation()
         self._aiculler_topiq_model_installation = resolve_aiculler_topiq_model_installation()
+        self._aiculler_face_model_installation = resolve_aiculler_face_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
         if self._ai_runtime.model_installation is not None:
             self._ai_model_installation = self._ai_runtime.model_installation
@@ -2930,6 +2941,15 @@ class MainWindow(QMainWindow):
         self._aiculler_global_label_save_timer.setSingleShot(True)
         self._aiculler_global_label_save_timer.setInterval(550)
         self._aiculler_global_label_save_timer.timeout.connect(self._flush_aiculler_global_label_queue)
+        self._winner_scores_by_path: dict[str, dict[str, object]] = {}
+        self._winner_scores_model_version = ""
+        self._winner_scores_label_count = 0
+        self._winner_scores_db_path = ""
+        self._face_records_by_path: dict[str, dict[str, object]] = {}
+        self._face_records_db_path = ""
+        self._face_cycle_index_by_path: dict[str, int] = {}
+        self._image_categories_by_path: dict[str, dict[str, object]] = {}
+        self._image_categories_db_path = ""
         self._active_ai_training_task: object | None = None
         self._aiculler_dedupe_siblings: dict[str, list[str]] = {}
         self._aiculler_force_propagate_siblings: set[str] = set()
@@ -3000,6 +3020,7 @@ class MainWindow(QMainWindow):
         self._ai_model_job_key = "ai:model"
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
+        self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self._current_folder = ""
@@ -3615,6 +3636,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.popout_requested.connect(lambda: self.workspace_docks.pop_out_panel("inspector"))
         self.inspector_panel.swap_side_requested.connect(self.workspace_docks.swap_sides)
         self.inspector_panel.close_requested.connect(lambda: self.workspace_docks.hide_panel("inspector"))
+        self.inspector_panel.face_cycle_requested.connect(self._cycle_inspector_face_preview)
         self._refresh_workspace_preset_menu()
         self._refresh_workflow_recipe_menu()
         self._refresh_collections_menu()
@@ -7210,6 +7232,9 @@ class MainWindow(QMainWindow):
     def _managed_aiculler_topiq_model_installation(self) -> AIModelInstallation:
         return self._aiculler_topiq_model_installation
 
+    def _managed_aiculler_face_model_installation(self) -> AIModelInstallation:
+        return self._aiculler_face_model_installation
+
     def _managed_ai_runtime_status(self) -> AIRuntimeInstallationStatus:
         return load_ai_runtime_installation_status()
 
@@ -7562,6 +7587,9 @@ class MainWindow(QMainWindow):
     def _aiculler_topiq_model_available(self) -> bool:
         return self._managed_aiculler_topiq_model_installation().is_installed
 
+    def _aiculler_face_model_available(self) -> bool:
+        return self._managed_aiculler_face_model_installation().is_installed
+
     def _ai_model_explanation_text(self) -> str:
         installation = self._managed_ai_model_installation()
         installed_size = directory_size_bytes(installation.install_dir)
@@ -7621,6 +7649,20 @@ class MainWindow(QMainWindow):
             f"{installed_line}"
         )
 
+    def _aiculler_face_model_explanation_text(self) -> str:
+        installation = self._managed_aiculler_face_model_installation()
+        installed_size = directory_size_bytes(installation.install_dir)
+        installed_line = ""
+        if installed_size > 0:
+            installed_line = f"\nCurrent face-model cache: {_format_bytes(installed_size)}"
+        return (
+            "CLI-Culler uses these InsightFace models for face quality, eye sharpness, "
+            "and estimated gender/age in the inspector. Face recognition is not included.\n\n"
+            f"Download size: about {DEFAULT_AICULLER_FACE_SIZE_MB} MB\n"
+            f"Install location:\n{installation.install_dir}"
+            f"{installed_line}"
+        )
+
     def _show_ai_setup_dialog(
         self,
         *,
@@ -7633,6 +7675,7 @@ class MainWindow(QMainWindow):
         default_include_dino_runtime: bool,
         default_download_aiculler_clip_model: bool,
         default_download_aiculler_topiq_model: bool,
+        default_download_aiculler_face_model: bool,
         default_download_dino_model: bool,
         default_download_semantic_model: bool,
     ) -> AISetupSelection | None:
@@ -7685,9 +7728,11 @@ class MainWindow(QMainWindow):
         semantic_model_checkbox: QCheckBox | None = None
         aiculler_clip_checkbox: QCheckBox | None = None
         aiculler_topiq_checkbox: QCheckBox | None = None
+        aiculler_face_checkbox: QCheckBox | None = None
         if allow_model:
             clip_status = "Installed" if self._aiculler_clip_model_available() else "Missing"
             topiq_status = "Installed" if self._aiculler_topiq_model_available() else "Missing"
+            face_status = "Installed" if self._aiculler_face_model_available() else "Missing"
             dino_status = "Installed" if self._ai_model_available() else "Missing"
             semantic_status = "Installed" if self._semantic_model_available() else "Missing"
 
@@ -7710,6 +7755,16 @@ class MainWindow(QMainWindow):
             aiculler_topiq_details.setEnabled(default_download_aiculler_topiq_model)
             aiculler_topiq_checkbox.toggled.connect(aiculler_topiq_details.setEnabled)
             layout.addWidget(aiculler_topiq_details)
+
+            aiculler_face_checkbox = QCheckBox(f"InsightFace quality models ({face_status})", dialog)
+            aiculler_face_checkbox.setChecked(default_download_aiculler_face_model)
+            layout.addWidget(aiculler_face_checkbox)
+
+            aiculler_face_details = QLabel(self._aiculler_face_model_explanation_text(), dialog)
+            aiculler_face_details.setWordWrap(True)
+            aiculler_face_details.setEnabled(default_download_aiculler_face_model)
+            aiculler_face_checkbox.toggled.connect(aiculler_face_details.setEnabled)
+            layout.addWidget(aiculler_face_details)
 
             dino_model_checkbox = QCheckBox(f"Optional DINO Prefilter model ({dino_status})", dialog)
             dino_model_checkbox.setChecked(default_download_dino_model)
@@ -7759,6 +7814,7 @@ class MainWindow(QMainWindow):
             include_dino_runtime=bool(dino_runtime_checkbox and dino_runtime_checkbox.isChecked()),
             download_aiculler_clip_model=bool(aiculler_clip_checkbox and aiculler_clip_checkbox.isChecked()),
             download_aiculler_topiq_model=bool(aiculler_topiq_checkbox and aiculler_topiq_checkbox.isChecked()),
+            download_aiculler_face_model=bool(aiculler_face_checkbox and aiculler_face_checkbox.isChecked()),
             download_dino_model=bool(dino_model_checkbox and dino_model_checkbox.isChecked()),
             download_semantic_model=bool(semantic_model_checkbox and semantic_model_checkbox.isChecked()),
         )
@@ -7805,9 +7861,17 @@ class MainWindow(QMainWindow):
         runtime_missing = not self._ai_runtime_available()
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
+        aiculler_face_missing = not self._aiculler_face_model_available()
         dino_model_missing = self._ai_runtime.model_installation is not None and not self._ai_model_available()
         semantic_model_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
-        if not runtime_missing and not aiculler_clip_missing and not aiculler_topiq_missing and not dino_model_missing and not semantic_model_missing:
+        if (
+            not runtime_missing
+            and not aiculler_clip_missing
+            and not aiculler_topiq_missing
+            and not aiculler_face_missing
+            and not dino_model_missing
+            and not semantic_model_missing
+        ):
             return
         if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
             return
@@ -7822,11 +7886,18 @@ class MainWindow(QMainWindow):
                 "Choose which AI components to install now."
             ),
             allow_runtime=runtime_missing,
-            allow_model=aiculler_clip_missing or aiculler_topiq_missing or dino_model_missing or semantic_model_missing,
+            allow_model=(
+                aiculler_clip_missing
+                or aiculler_topiq_missing
+                or aiculler_face_missing
+                or dino_model_missing
+                or semantic_model_missing
+            ),
             default_install_runtime=runtime_missing,
             default_include_dino_runtime=dino_model_missing or self._dino_prefilter_settings.enabled,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
+            default_download_aiculler_face_model=aiculler_face_missing,
             default_download_dino_model=dino_model_missing,
             default_download_semantic_model=semantic_model_missing,
         )
@@ -7840,6 +7911,7 @@ class MainWindow(QMainWindow):
                 include_dino=selection.include_dino_runtime,
                 download_aiculler_clip_after=selection.download_aiculler_clip_model and aiculler_clip_missing,
                 download_aiculler_topiq_after=selection.download_aiculler_topiq_model and aiculler_topiq_missing,
+                download_aiculler_face_after=selection.download_aiculler_face_model and aiculler_face_missing,
                 download_dino_model_after=selection.download_dino_model and dino_model_missing,
                 download_semantic_model_after=selection.download_semantic_model and semantic_model_missing,
             )
@@ -7848,6 +7920,7 @@ class MainWindow(QMainWindow):
             self._start_ai_model_download(
                 download_aiculler_clip=selection.download_aiculler_clip_model and aiculler_clip_missing,
                 download_aiculler_topiq=selection.download_aiculler_topiq_model and aiculler_topiq_missing,
+                download_aiculler_face=selection.download_aiculler_face_model and aiculler_face_missing,
                 download_dino=selection.download_dino_model and dino_model_missing,
                 download_semantic=selection.download_semantic_model and semantic_model_missing,
                 force=False,
@@ -7858,6 +7931,7 @@ class MainWindow(QMainWindow):
     def _prompt_for_ai_model_install(self, *, automatic: bool) -> None:
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
+        aiculler_face_missing = not self._aiculler_face_model_available()
         dino_missing = not self._ai_model_available()
         semantic_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
         selection = self._show_ai_setup_dialog(
@@ -7870,6 +7944,7 @@ class MainWindow(QMainWindow):
             default_include_dino_runtime=False,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
+            default_download_aiculler_face_model=aiculler_face_missing,
             default_download_dino_model=dino_missing,
             default_download_semantic_model=semantic_missing,
         )
@@ -7879,10 +7954,12 @@ class MainWindow(QMainWindow):
         self._start_ai_model_download(
             download_aiculler_clip=selection.download_aiculler_clip_model,
             download_aiculler_topiq=selection.download_aiculler_topiq_model,
+            download_aiculler_face=selection.download_aiculler_face_model,
             download_dino=selection.download_dino_model,
             download_semantic=selection.download_semantic_model,
             force_aiculler_clip=self._managed_aiculler_clip_model_installation().is_installed,
             force_aiculler_topiq=self._managed_aiculler_topiq_model_installation().is_installed,
+            force_aiculler_face=self._managed_aiculler_face_model_installation().is_installed,
             force_dino=self._managed_ai_model_installation().is_installed,
             force_semantic=self._managed_semantic_model_installation().is_installed,
         )
@@ -7901,6 +7978,7 @@ class MainWindow(QMainWindow):
             default_include_dino_runtime=self._dino_prefilter_settings.enabled,
             default_download_aiculler_clip_model=False,
             default_download_aiculler_topiq_model=False,
+            default_download_aiculler_face_model=False,
             default_download_dino_model=False,
             default_download_semantic_model=False,
         )
@@ -7913,6 +7991,7 @@ class MainWindow(QMainWindow):
             include_dino=selection.include_dino_runtime,
             download_aiculler_clip_after=False,
             download_aiculler_topiq_after=False,
+            download_aiculler_face_after=False,
             download_dino_model_after=False,
             download_semantic_model_after=False,
         )
@@ -7925,6 +8004,7 @@ class MainWindow(QMainWindow):
         include_dino: bool = True,
         download_aiculler_clip_after: bool = False,
         download_aiculler_topiq_after: bool = False,
+        download_aiculler_face_after: bool = False,
         download_dino_model_after: bool = False,
         download_semantic_model_after: bool = False,
     ) -> None:
@@ -7961,6 +8041,7 @@ class MainWindow(QMainWindow):
         self._active_ai_runtime_task = task
         self._pending_ai_aiculler_clip_download_after_runtime = bool(download_aiculler_clip_after)
         self._pending_ai_aiculler_topiq_download_after_runtime = bool(download_aiculler_topiq_after)
+        self._pending_ai_aiculler_face_download_after_runtime = bool(download_aiculler_face_after)
         self._pending_ai_dino_model_download_after_runtime = bool(download_dino_model_after)
         self._pending_ai_semantic_model_download_after_runtime = bool(download_semantic_model_after)
         controller = self._show_job_progress_dialog(
@@ -8038,18 +8119,24 @@ class MainWindow(QMainWindow):
             self._pending_ai_aiculler_topiq_download_after_runtime
             and not self._aiculler_topiq_model_available()
         )
+        download_aiculler_face = (
+            self._pending_ai_aiculler_face_download_after_runtime
+            and not self._aiculler_face_model_available()
+        )
         download_dino = self._pending_ai_dino_model_download_after_runtime and not self._ai_model_available()
         download_semantic = (
             self._pending_ai_semantic_model_download_after_runtime and not self._semantic_model_available()
         )
-        if download_aiculler_clip or download_aiculler_topiq or download_dino or download_semantic:
+        if download_aiculler_clip or download_aiculler_topiq or download_aiculler_face or download_dino or download_semantic:
             self._pending_ai_aiculler_clip_download_after_runtime = False
             self._pending_ai_aiculler_topiq_download_after_runtime = False
+            self._pending_ai_aiculler_face_download_after_runtime = False
             self._pending_ai_dino_model_download_after_runtime = False
             self._pending_ai_semantic_model_download_after_runtime = False
             self._start_ai_model_download(
                 download_aiculler_clip=download_aiculler_clip,
                 download_aiculler_topiq=download_aiculler_topiq,
+                download_aiculler_face=download_aiculler_face,
                 download_dino=download_dino,
                 download_semantic=download_semantic,
                 force=False,
@@ -8057,6 +8144,7 @@ class MainWindow(QMainWindow):
             return
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
+        self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         QMessageBox.information(
@@ -8069,6 +8157,7 @@ class MainWindow(QMainWindow):
         self._active_ai_runtime_task = None
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
+        self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self._close_job_progress_dialog(self._ai_runtime_job_key)
@@ -8088,11 +8177,13 @@ class MainWindow(QMainWindow):
         *,
         download_aiculler_clip: bool = False,
         download_aiculler_topiq: bool = False,
+        download_aiculler_face: bool = False,
         download_dino: bool = True,
         download_semantic: bool = False,
         force: bool = False,
         force_aiculler_clip: bool | None = None,
         force_aiculler_topiq: bool | None = None,
+        force_aiculler_face: bool | None = None,
         force_dino: bool | None = None,
         force_semantic: bool | None = None,
     ) -> None:
@@ -8111,6 +8202,14 @@ class MainWindow(QMainWindow):
                     label="TOPIQ",
                     installation=self._managed_aiculler_topiq_model_installation(),
                     force=force if force_aiculler_topiq is None else force_aiculler_topiq,
+                )
+            )
+        if download_aiculler_face:
+            requests.append(
+                AIModelDownloadRequest(
+                    label="InsightFace Quality",
+                    installation=self._managed_aiculler_face_model_installation(),
+                    force=force if force_aiculler_face is None else force_aiculler_face,
                 )
             )
         if download_dino:
@@ -9565,6 +9664,10 @@ class MainWindow(QMainWindow):
             self._update_ai_toolbar_state()
             self._refresh_adapter_status_indicator()
             self._refresh_ai_workflow_center()
+            if scope != "global":
+                self._refresh_winner_scores_for_current_folder()
+                self._refresh_face_records_for_current_folder()
+                self._refresh_image_categories_for_current_folder()
             diagnostics_path = str(Path(report_dir) / "aiculler_diagnostics.json") if report_dir else ""
             prefix = "Global adapter" if scope == "global" else "Adapter"
             status_text = f"{prefix} trained{f' ({model_version})' if model_version else ''}."
@@ -9600,6 +9703,9 @@ class MainWindow(QMainWindow):
             self._update_ai_toolbar_state()
             self._refresh_adapter_status_indicator()
             self._refresh_ai_workflow_center()
+            self._refresh_winner_scores_for_current_folder()
+            self._refresh_face_records_for_current_folder()
+            self._refresh_image_categories_for_current_folder()
             diagnostics_path = str(Path(report_dir) / "aiculler_diagnostics.json") if report_dir else ""
             status_text = f"Ranked current folder with adapter{f' ({model_version})' if model_version else ''}."
             if diagnostics_path:
@@ -9963,6 +10069,8 @@ class MainWindow(QMainWindow):
 
     def _set_sort_mode(self, mode: SortMode) -> None:
         self._sort_mode = mode
+        if mode == SortMode.AI_WOW:
+            self._refresh_winner_scores_for_current_folder()
         self._records_view_cache.mark(ViewInvalidationReason.SORT_CHANGED)
         combo_index = self.sort_combo.findData(mode)
         if combo_index >= 0 and combo_index != self.sort_combo.currentIndex():
@@ -12148,6 +12256,74 @@ class MainWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
 
+    def _open_guided_ai_cull_preferences(self) -> None:
+        dialog = getattr(self, "_guided_ai_cull_preferences_dialog", None)
+        if dialog is not None and dialog.isVisible():
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+
+        try:
+            runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
+            face_quality_available = bool(getattr(runtime, "face_quality_enabled", False))
+        except Exception:
+            face_quality_available = False
+
+        image_count = sum(1 for record in self._all_records if not record.is_folder)
+        dialog = GuidedAICullPreferencesDialog(
+            folder_name=self._scope_display_label(),
+            image_count=image_count,
+            keep_top_percent=self._ai_keep_top_percent_setting,
+            review_band_percent=self._ai_review_band_percent_setting,
+            base_score_weight_percent=self._ai_base_score_weight_percent_setting,
+            dino_prefilter_settings=self._dino_prefilter_settings,
+            phash_prefilter_settings=self._phash_prefilter_settings,
+            face_quality_available=face_quality_available,
+            parent=self,
+        )
+        self._guided_ai_cull_preferences_dialog = dialog
+        dialog.workflow_button.clicked.connect(self._open_ai_workflow_center)
+        dialog.accepted.connect(lambda d=dialog: self._handle_guided_ai_cull_preferences_accepted(d))
+        dialog.finished.connect(lambda _code, d=dialog: self._clear_guided_ai_cull_preferences_dialog(d))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _clear_guided_ai_cull_preferences_dialog(self, dialog: GuidedAICullPreferencesDialog) -> None:
+        if getattr(self, "_guided_ai_cull_preferences_dialog", None) is dialog:
+            self._guided_ai_cull_preferences_dialog = None
+
+    def _handle_guided_ai_cull_preferences_accepted(self, dialog: GuidedAICullPreferencesDialog) -> None:
+        self._apply_guided_ai_cull_preferences(dialog.result_preferences())
+        self._run_ai_pipeline()
+
+    def _apply_guided_ai_cull_preferences(self, preferences: GuidedCullPreferences) -> None:
+        new_keep_top = self._normalize_ai_keep_top_percent(preferences.keep_top_percent)
+        new_review_band = self._normalize_ai_review_band_percent(preferences.review_band_percent)
+        if (
+            new_keep_top != self._ai_keep_top_percent_setting
+            or new_review_band != self._ai_review_band_percent_setting
+        ):
+            self._ai_keep_top_percent_setting = new_keep_top
+            self._ai_review_band_percent_setting = new_review_band
+            self._apply_cull_thresholds_to_classifier()
+
+        new_base_weight = self._normalize_ai_base_score_weight_percent(preferences.base_score_weight_percent)
+        if new_base_weight != self._ai_base_score_weight_percent_setting:
+            self._ai_base_score_weight_percent_setting = new_base_weight
+            self._apply_base_score_blend_to_workflow()
+
+        self._dino_prefilter_settings = preferences.dino_prefilter_settings.normalized()
+        self._phash_prefilter_settings = preferences.phash_prefilter_settings.normalized()
+
+        self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
+        self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
+        self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
+        self._save_dino_prefilter_settings(self._dino_prefilter_settings)
+        self._save_phash_prefilter_settings(self._phash_prefilter_settings)
+        self._update_ai_toolbar_state()
+        self.statusBar().showMessage("Guided AI Cull preferences saved.")
+
     def _refresh_ai_workflow_center(self) -> None:
         dialog = getattr(self, "_ai_workflow_center_dialog", None)
         if dialog is not None and dialog.isVisible():
@@ -12534,6 +12710,14 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._aiculler_global_label_pending[str(source_path)] = (str(label), float(weight), bool(is_dispute))
         self._aiculler_global_label_save_timer.start()
+
+    def _sync_annotation_to_global_adapter_label(
+        self,
+        record: ImageRecord,
+        annotation: SessionAnnotation | None,
+    ) -> None:
+        label = self._aiculler_label_for_annotation(annotation)
+        self._queue_aiculler_global_label(record.path, label, weight=1.0, is_dispute=False)
 
     def _save_aiculler_global_reason_tags(self, source_path: str, reason_tags: tuple[str, ...]) -> None:
         try:
@@ -16495,6 +16679,236 @@ class MainWindow(QMainWindow):
         self.adapter_status_label.setText(text)
         self.adapter_status_label.setToolTip(tooltip)
 
+    def _refresh_winner_scores_for_current_folder(self) -> bool:
+        try:
+            paths = self._aiculler_paths_for_current_folder()
+        except Exception:
+            paths = None
+        if paths is None:
+            self._winner_scores_by_path = {}
+            self._winner_scores_model_version = ""
+            self._winner_scores_label_count = 0
+            self._winner_scores_db_path = ""
+            return False
+        db_path = aiculler_db_path(paths)
+        try:
+            bundle = load_latest_winner_scores(db_path)
+        except Exception:
+            self._winner_scores_by_path = {}
+            self._winner_scores_model_version = ""
+            self._winner_scores_label_count = 0
+            self._winner_scores_db_path = str(db_path)
+            return False
+        self._winner_scores_by_path = dict(bundle.get("scores_by_path") or {})
+        self._winner_scores_model_version = str(bundle.get("model_version") or "")
+        self._winner_scores_label_count = int(bundle.get("label_count") or 0)
+        self._winner_scores_db_path = str(db_path)
+        return bool(self._winner_scores_by_path)
+
+    def _winner_score_for_record(self, record: ImageRecord) -> dict[str, object] | None:
+        if not self._winner_scores_by_path:
+            return None
+        for path in record.stack_paths:
+            key = os.path.normcase(os.path.normpath(str(path)))
+            score = self._winner_scores_by_path.get(key)
+            if score is not None:
+                return score
+        return None
+
+    def _refresh_face_records_for_current_folder(self) -> bool:
+        try:
+            paths = self._aiculler_paths_for_current_folder()
+        except Exception:
+            paths = None
+        if paths is None:
+            self._face_records_by_path = {}
+            self._face_records_db_path = ""
+            return False
+        db_path = aiculler_db_path(paths)
+        try:
+            self._face_records_by_path = load_face_records_by_path(db_path)
+        except Exception:
+            self._face_records_by_path = {}
+        self._face_records_db_path = str(db_path)
+        return bool(self._face_records_by_path)
+
+    def _face_bundle_for_record(self, record: ImageRecord | None) -> dict[str, object]:
+        if record is None:
+            return {}
+        try:
+            paths = self._aiculler_paths_for_current_folder()
+            db_path = str(aiculler_db_path(paths))
+        except Exception:
+            db_path = ""
+        if db_path and db_path != self._face_records_db_path:
+            self._refresh_face_records_for_current_folder()
+        if not self._face_records_by_path:
+            return {}
+        for path in record.stack_paths:
+            key = os.path.normcase(os.path.normpath(str(path)))
+            bundle = self._face_records_by_path.get(key)
+            if bundle:
+                return bundle
+        return {}
+
+    def _face_records_for_record(self, record: ImageRecord | None) -> tuple[object, ...]:
+        bundle = self._face_bundle_for_record(record)
+        return tuple(bundle.get("faces") or ())
+
+    def _cycle_inspector_face_preview(self) -> None:
+        index = self.grid.current_index()
+        record = self._record_at(index)
+        faces = self._face_records_for_record(record)
+        if record is None or len(faces) <= 1:
+            return
+        key = normalized_path_key(record.path)
+        current = int(self._face_cycle_index_by_path.get(key, 0) or 0)
+        self._face_cycle_index_by_path[key] = (current + 1) % len(faces)
+        self._update_inspector_context(index)
+
+    def _refresh_image_categories_for_current_folder(self) -> bool:
+        try:
+            paths = self._aiculler_paths_for_current_folder()
+        except Exception:
+            paths = None
+        if paths is None:
+            self._image_categories_by_path = {}
+            self._image_categories_db_path = ""
+            return False
+        db_path = aiculler_db_path(paths)
+        try:
+            self._image_categories_by_path = load_image_categories_by_path(db_path)
+        except Exception:
+            self._image_categories_by_path = {}
+        self._image_categories_db_path = str(db_path)
+        return bool(self._image_categories_by_path)
+
+    def _category_info_for_record(self, record: ImageRecord | None) -> dict[str, object]:
+        if record is None:
+            return {}
+        try:
+            paths = self._aiculler_paths_for_current_folder()
+            db_path = str(aiculler_db_path(paths))
+        except Exception:
+            db_path = ""
+        if db_path and db_path != self._image_categories_db_path:
+            self._refresh_image_categories_for_current_folder()
+        for path in record.stack_paths:
+            key = os.path.normcase(os.path.normpath(str(path)))
+            info = self._image_categories_by_path.get(key)
+            if info:
+                return info
+        ai_result = self._ai_result_for_record_memory(record, preferred_path=record.path)
+        category = str(getattr(ai_result, "primary_category", "") or "")
+        if category:
+            return {"primary_category": category, "confidence": 0.0}
+        return {}
+
+    @staticmethod
+    def _category_profile(category_info: dict[str, object], face_records: tuple[object, ...]) -> str:
+        if face_records:
+            return "people_portrait"
+        category = str(category_info.get("primary_category") or "uncategorized").strip().lower()
+        return category or "uncategorized"
+
+    @staticmethod
+    def _category_display_label(category: object) -> str:
+        text = str(category or "").strip()
+        labels = {
+            "landscape": "Landscape",
+            "wildlife": "Wildlife",
+            "people_portrait": "Portrait",
+            "travel_built": "Travel/Built",
+            "night_astro": "Night/Astro",
+            "macro_detail": "Macro/Detail",
+            "abstract_texture": "Abstract/Texture",
+            "product_still_life": "Product/Still",
+            "street_documentary": "Street/Documentary",
+            "architecture": "Architecture",
+            "sports_action": "Sports/Action",
+            "event_stage": "Event/Stage",
+            "vehicle_transport": "Vehicle/Transport",
+            "interior_space": "Interior",
+            "aerial_drone": "Aerial/Drone",
+            "water_coastal": "Water/Coastal",
+            "uncategorized": "Uncategorized",
+        }
+        return labels.get(text, text.replace("_", " ").strip().title() or "Uncategorized")
+
+    def _face_preview_for_record(self, record: ImageRecord | None) -> QImage | None:
+        bundle = self._face_bundle_for_record(record)
+        faces = tuple(bundle.get("faces") or ())
+        preview_path = str(bundle.get("preview_path") or "")
+        if not faces or not preview_path:
+            return None
+        image = QImage(preview_path)
+        if image.isNull():
+            return None
+        ordered_faces = sorted(faces, key=lambda item: float(getattr(item, "det_score", 0.0) or 0.0), reverse=True)
+        cycle_key = normalized_path_key(record.path) if record is not None else ""
+        face_index = int(self._face_cycle_index_by_path.get(cycle_key, 0) or 0) % max(1, len(ordered_faces))
+        face = ordered_faces[face_index]
+        try:
+            x1, y1, x2, y2 = (float(value) for value in getattr(face, "bbox"))
+        except (TypeError, ValueError):
+            return None
+        width = max(1.0, x2 - x1)
+        height = max(1.0, y2 - y1)
+        image_width = int(image.width())
+        image_height = int(image.height())
+        if image_width <= 0 or image_height <= 0:
+            return None
+        center_x = (x1 + x2) / 2.0
+        center_y = (y1 + y2) / 2.0
+        side = int(round(max(width, height) * 1.65))
+        side = max(1, min(side, image_width, image_height))
+        left = int(round(center_x - side / 2.0))
+        top = int(round(center_y - side / 2.0))
+        left = max(0, min(left, image_width - side))
+        top = max(0, min(top, image_height - side))
+        crop = image.copy(QRect(left, top, side, side))
+        source_path = str(bundle.get("source_path") or "")
+        if image_width > image_height and source_path:
+            crop = self._rotate_face_crop_to_source_orientation(crop, source_path)
+        return crop
+
+    @staticmethod
+    def _rotate_face_crop_to_source_orientation(crop: QImage, source_path: str) -> QImage:
+        orientation = MainWindow._source_orientation_for_face_preview(source_path)
+        if crop.isNull() or orientation not in (5, 6, 7, 8):
+            return crop
+        transform = QTransform()
+        if orientation == 5:
+            transform.rotate(90)
+            transform.scale(-1.0, 1.0)
+        elif orientation == 6:
+            transform.rotate(90)
+        elif orientation == 7:
+            transform.rotate(-90)
+            transform.scale(-1.0, 1.0)
+        elif orientation == 8:
+            transform.rotate(-90)
+        rotated = crop.transformed(transform, Qt.TransformationMode.SmoothTransformation)
+        return rotated if not rotated.isNull() else crop
+
+    @staticmethod
+    def _source_orientation_for_face_preview(source_path: str) -> int:
+        suffix = suffix_for_path(source_path)
+        try:
+            if suffix in RAW_SUFFIXES:
+                from .raw_embedded_jpeg import extract_embedded_jpeg
+
+                embedded = extract_embedded_jpeg(source_path)
+                return int(embedded.orientation) if embedded is not None else 1
+            if suffix in JPEG_SUFFIXES:
+                from PIL import Image
+
+                with Image.open(source_path) as img:
+                    return int(img.getexif().get(274, 1) or 1)
+        except Exception:
+            return 1
+        return 1
+
     @staticmethod
     def _adapter_status_display(summary: dict[str, object] | None) -> tuple[str, str]:
         if summary is None or not summary.get("db_exists"):
@@ -17707,6 +18121,15 @@ class MainWindow(QMainWindow):
         try:
             runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
             runtime.validate()
+            if self._dino_prefilter_settings.enabled and not self._dino_runtime_available():
+                QMessageBox.information(
+                    self,
+                    "AI Review",
+                    "DINO blur prefiltering needs the optional DINO runtime dependencies. "
+                    "Run AI runtime setup and enable the DINO dependency option, or disable Detect Blurry Photos.",
+                )
+                self._install_ai_runtime()
+                return
             self._refresh_ai_runtime_preferences()
             paths = build_aiculler_workflow_paths(self._current_folder)
             task = AICullerRunTask(
@@ -17714,8 +18137,10 @@ class MainWindow(QMainWindow):
                 runtime=runtime,
                 paths=paths,
                 records=tuple(record for record in self._all_records if not record.is_folder),
+                run_dino_prefilter=self._dino_prefilter_settings.enabled,
                 dino_prefilter_settings=self._dino_prefilter_settings,
                 phash_prefilter_settings=self._phash_prefilter_settings,
+                dino_runtime=self._ai_runtime,
             )
         except Exception as exc:
             if logger.enabled:
@@ -18472,6 +18897,9 @@ class MainWindow(QMainWindow):
         # same_folder branch: kick the bundle load onto a worker so a slow
         # UNC/NAS path can't freeze the UI. The continuation handler runs
         # the tab switch + completion dialog once the bundle arrives.
+        self._refresh_winner_scores_for_current_folder()
+        self._refresh_face_records_for_current_folder()
+        self._refresh_image_categories_for_current_folder()
         self.statusBar().showMessage(
             f"AI review complete. Loading {Path(html_report_path).name}..."
         )
@@ -19270,9 +19698,15 @@ class MainWindow(QMainWindow):
         if ai_result is None:
             return "-"
         parts = [ai_result.confidence_bucket_short_label or ai_result.confidence_bucket_label]
+        category = str(getattr(ai_result, "primary_category", "") or "").strip()
+        if category and category != "uncategorized":
+            parts.append(self._category_display_label(category))
         score = ai_result.display_score_text
         if score:
             parts.append(score)
+        face_count = len(self._face_records_for_record(record))
+        if face_count:
+            parts.append(f"{face_count} face{'s' if face_count != 1 else ''}")
         if ai_result.group_size > 1:
             parts.append(ai_result.rank_text)
         return " | ".join(part for part in parts if part) or "-"
@@ -19843,7 +20277,7 @@ class MainWindow(QMainWindow):
             ai_result = self._ai_result_for_record(current_record, preferred_path=display_path)
             review_insight = self._review_insight_for_record(current_record)
             workflow_insight = self._workflow_insight_for_record(current_record)
-            thumbnail = self.grid.thumbnail_for(index)
+            thumbnail = self._inspector_thumbnail_for(current_record, index, display_path)
             if thumbnail is not None and not thumbnail.isNull() and not current_record.is_folder:
                 inspection_stats = self._cached_inspection_stats_for_thumbnail(current_record, display_path, thumbnail)
                 if inspection_stats is None:
@@ -19855,6 +20289,15 @@ class MainWindow(QMainWindow):
             review_summary = self._review_summary_for_record(current_record)
             workflow_summary = self._workflow_summary_for_record(current_record)
             workflow_details = self._workflow_detail_lines_for_record(current_record)
+            face_records = self._face_records_for_record(current_record)
+            face_preview = self._face_preview_for_record(current_record)
+            category_info = self._category_info_for_record(current_record)
+            category_profile = self._category_profile(category_info, face_records)
+        else:
+            face_records = ()
+            face_preview = None
+            category_info = {}
+            category_profile = "uncategorized"
 
         self.inspector_panel.set_context(
             folder=self._scope_display_label(),
@@ -19872,6 +20315,10 @@ class MainWindow(QMainWindow):
             workflow_summary=workflow_summary,
             workflow_details=workflow_details,
             thumbnail=thumbnail,
+            face_records=face_records,
+            face_preview=face_preview,
+            category_info=category_info,
+            category_profile=category_profile,
         )
         if logger.enabled:
             logger.duration(
@@ -19892,6 +20339,48 @@ class MainWindow(QMainWindow):
             int(record.size or 0),
             int(thumbnail.width()),
             int(thumbnail.height()),
+        )
+
+    def _inspector_thumbnail_for(self, record: ImageRecord, index: int, display_path: str) -> QImage | None:
+        if record.is_folder:
+            return None
+
+        fallback = self.grid.thumbnail_for(index)
+        variant = self._inspector_thumbnail_variant(record, display_path)
+        target = self.INSPECTOR_PREVIEW_TARGET_SIZE
+        image = self.thumbnail_manager.get_cached(variant, target)
+        if image is not None and not image.isNull():
+            return image
+
+        self.thumbnail_manager.request_thumbnail(
+            variant,
+            target,
+            priority=30_000,
+            drop_if_not_wanted=False,
+        )
+        return fallback
+
+    @staticmethod
+    def _inspector_thumbnail_variant(record: ImageRecord, display_path: str) -> ImageRecord | ImageVariant:
+        path = display_path or record.path
+        if normalized_path_key(path) == normalized_path_key(record.path):
+            return record
+        path_key = normalized_path_key(path)
+        for variant in record.display_variants:
+            if normalized_path_key(variant.path) == path_key:
+                return variant
+        try:
+            stat_result = os.stat(path)
+            size = int(stat_result.st_size)
+            modified_ns = int(stat_result.st_mtime_ns)
+        except OSError:
+            size = int(record.size or 0)
+            modified_ns = int(record.modified_ns or 0)
+        return ImageVariant(
+            path=path,
+            name=Path(path).name,
+            size=size,
+            modified_ns=modified_ns,
         )
 
     def _cached_inspection_stats_for_thumbnail(self, record: ImageRecord, display_path: str, thumbnail) -> InspectionStats | None:
@@ -21311,6 +21800,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+        self._sync_annotation_to_global_adapter_label(record, annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="winner_toggle")
         self._apply_review_count_delta(previous_annotation, annotation)
         self._apply_annotation_change_effects([record.path], current_path=next_path, counts_already_updated=True)
@@ -21380,6 +21870,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+        self._sync_annotation_to_global_adapter_label(record, annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="reject_toggle")
         self._apply_review_count_delta(previous_annotation, annotation)
         self._apply_annotation_change_effects([record.path], current_path=next_path, counts_already_updated=True)
@@ -21779,6 +22270,7 @@ class MainWindow(QMainWindow):
                 )
             )
             self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+            self._sync_annotation_to_global_adapter_label(record, annotation)
             self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode=source_mode)
             self._apply_review_count_delta(previous_annotation, annotation)
             changed_paths.append(record.path)
@@ -22392,6 +22884,7 @@ class MainWindow(QMainWindow):
         record = self._all_records_by_path.get(action.primary_path) or self._record_from_path(action.primary_path)
         if record is not None:
             self._queue_annotation_persist(record, session_id=action.session_id or self._session_id)
+            self._sync_annotation_to_global_adapter_label(record, annotation)
         self._set_annotation_views()
         self._apply_records_view(current_path=action.primary_path)
         self.statusBar().showMessage(f"Undid annotation change: {Path(action.primary_path).name}")
@@ -22637,6 +23130,24 @@ class MainWindow(QMainWindow):
             logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=True)
 
     def _sort_records_for_active_context(self, records: list[ImageRecord]) -> list[ImageRecord]:
+        if self._sort_mode == SortMode.AI_WOW:
+            if not self._winner_scores_by_path:
+                self._refresh_winner_scores_for_current_folder()
+
+            def wow_key(record: ImageRecord) -> tuple[object, ...]:
+                if record.is_folder:
+                    return (0, record.name.casefold())
+                score = self._winner_score_for_record(record)
+                if score is None:
+                    return (2, record.name.casefold())
+                return (
+                    1,
+                    -float(score.get("blended_score") or 0.0),
+                    record.name.casefold(),
+                )
+
+            return sorted(records, key=wow_key)
+
         if self._sort_mode != SortMode.AI_RANK or self._ai_bundle is None:
             return sort_records(records, self._sort_mode)
 

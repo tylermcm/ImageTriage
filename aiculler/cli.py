@@ -69,6 +69,7 @@ def command_ingest(args) -> int:
             phase_started_at,
             clip_model=str(args.clip or ""),
             topiq_model=str(args.topiq or ""),
+            face_quality=bool(getattr(args, "face_quality", False)),
             features_enabled=not args.no_features,
         )
 
@@ -1328,7 +1329,11 @@ def _build_extractor(args):
         print("[info] No TOPIQ ONNX supplied; using offline heuristic technical scoring.")
     elif args.topiq.suffix.lower() != ".onnx":
         print(f"[info] {args.topiq.name} is not ONNX; using offline heuristic technical scoring.")
-    return HeadlessFeatureExtractor(args.clip, args.topiq)
+    return HeadlessFeatureExtractor(
+        args.clip,
+        args.topiq,
+        enable_face_quality=bool(getattr(args, "face_quality", False)),
+    )
 
 
 def command_list(args) -> int:
@@ -1489,6 +1494,7 @@ def _feature_cache_identity(args) -> dict[str, object]:
         "schema_version": 1,
         "clip": _file_identity(getattr(args, "clip", None)),
         "topiq": _file_identity(getattr(args, "topiq", None)),
+        "face_quality": bool(getattr(args, "face_quality", False)),
     }
 
 
@@ -1613,6 +1619,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--cache", default=".aiculler_cache", type=Path)
     ingest.add_argument("--clip", type=Path, help="CLIP ONNX model path")
     ingest.add_argument("--topiq", type=Path, help="TOPIQ ONNX model path; non-ONNX files fall back to heuristic scoring")
+    ingest.add_argument("--face-quality", action="store_true", help="Run InsightFace face-quality analysis when models are installed")
     ingest.add_argument("--workers", type=int, default=4)
     ingest.add_argument("--no-recursive", action="store_true")
     ingest.add_argument("--no-features", action="store_true", help="Only extract/cache previews")
@@ -1624,6 +1631,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--cache", default=".aiculler_cache", type=Path)
     benchmark.add_argument("--clip", type=Path, help="CLIP ONNX model path")
     benchmark.add_argument("--topiq", type=Path, help="TOPIQ ONNX model path; non-ONNX files fall back to heuristic scoring")
+    benchmark.add_argument("--face-quality", action="store_true", help="Run InsightFace face-quality analysis when models are installed")
     benchmark.add_argument("--workers", type=int, default=4)
     benchmark.add_argument("--limit", type=int, help="Maximum number of discovered files to benchmark")
     benchmark.add_argument("--out", type=Path, help="Timing CSV path")

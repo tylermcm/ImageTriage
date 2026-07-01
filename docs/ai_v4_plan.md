@@ -39,9 +39,19 @@ per image ──> DimensionScores (≈12 axes, 0–10 each)
 ```
 
 - **Stage A (Reject)** ships immediately — it needs no labels and is transferable. This is most of the grind.
-- **Stage B (Winner)** is the personalization layer. It replaces the embedding adapter. Weights are tiny and per-genre.
+- **Stage B (Winner)** is the personalization layer. See the dual-learner design below.
 - **Evaluation harness** wraps both: random baseline, base baseline, base-vs-new deltas, folder + leave-one-folder-out holdout, winner-focused metrics, confidence-aware health gate.
-- The **old adapter stays advisory** during the transition; we remove it only after Stage B proves out on multiple folders.
+
+### Stage B is a dual learner (decided 2026-06-28)
+
+We learned the winner decision is **"wow factor"** — personal, subjective appeal, *not* literal repetition. It is **not** predictable from any generic dimension (on Canada: classical ~0.25, aesthetic 0.074, uniqueness ≤0.12 — all topped out ~0.29), but the embedding adapter *did* fit ~0.7 **within** a folder. So "wow" is learnable per-folder, not globally. We keep **both** learners, blended:
+
+- **Per-folder learner (primary):** fit on the current folder's labels, ranks that folder. Retrains in-the-loop as you cull. Strong in-folder.
+- **Global learner (alongside):** the existing Global Adapter, fit on all accumulated labels — a cross-folder prior, weak now, improving via the passive-label flywheel.
+- **Blend by confidence:** `winner = w_local·local + (1-w_local)·global`, `w_local = n_local/(n_local+ramp)`. Cold-start leans on the global prior; as you label the folder, per-folder takes over.
+- **Both learners consume the same feature vector:** quality **dimensions** (classical + aesthetic) + existing scores, optionally embeddings. Dimensions are the transferable core; raw embeddings add per-folder capacity but hurt global transfer, so embeddings default to per-folder-only.
+
+The **old adapter is not removed — it *becomes* the global learner.**
 
 ---
 
@@ -77,20 +87,20 @@ per image ──> DimensionScores (≈12 axes, 0–10 each)
 
 ### Phase 0 — Scaffolding & decisions
 - [ ] Audit existing deps; add what's missing (`opencv-python`, `pyiqa`, `insightface`, `onnxruntime`, `imagehash`). Note frozen-app/AppImage bundle-size impact; keep CPU-friendly defaults.
-- [ ] Create `image_triage/quality/` (or `aiculler/dimensions/`) package mirroring FACET's `analyzers/` split.
-- [ ] Define `DimensionScores` dataclass + the storage schema (per-dimension columns or a `image_dimensions` table in the AI SQLite). Decide 0–10 scale + folder-relative z-score/percentile variants.
+- [x] Create `image_triage/quality/` package mirroring FACET's `analyzers/` split.
+- [x] Define `DimensionScores` dataclass (0–10 scale). Storage schema decided (`image_dimensions` table) — build pending. Folder-relative z-score/percentile variants pending.
 - [ ] Decide where dimension computation hooks into the existing Index & Score pipeline.
 - **DoD:** package + data model exist; a stub analyzer runs end-to-end and writes a row.
 
 ### Phase 1 — Classical CV dimensions (no models, no data, day-1 value)
-- [ ] `technical.py`: sharpness, exposure, dynamic range, noise, contrast, color harmony, monochrome — FACET formulas verbatim as spec.
-- [ ] Deterministic unit tests on synthetic images (a blurred image scores lower sharpness than its sharp original, a clipped image flags exposure, etc.).
-- [ ] Compute + store these for a real folder; eyeball the spread.
+- [x] `technical.py`: sharpness, exposure, dynamic range, noise, contrast, color harmony, monochrome — FACET formulas (NumPy-only; cv2 parity deferred to Phase 2).
+- [x] Deterministic unit tests on synthetic images (9 tests, all directional assertions passing).
+- [x] Computed on a real folder (Canada) and eyeballed: sharpness cleanly separates soft (0.4) vs sharp (10.0). Storage table still pending (next increment).
 - **DoD:** 7 classical dimensions computed, tested, stored.
 
 ### Phase 2 — Pretrained specialists
-- [ ] Aesthetic: TOPIQ via `pyiqa` (primary) + CLIP/SigLIP text-projection axis (cheap supplement; expect ~0.4 corr, supplementary only).
-- [ ] Face/eye: InsightFace `buffalo_l` → face quality, eye sharpness, blink (EAR + head-pose gate).
+- [x] Aesthetic: CLIP/SigLIP text-projection axis built (`aesthetic.py`) — validated weak (0.074) on Canada, supplementary only. (TOPIQ already in pipeline as `technical_score`.)
+- [x] Face/eye: InsightFace `buffalo_l` → model download (`ai_model.download_aiculler_face_model`, ~23 MB) + `face.py` analyzer (face quality, eye sharpness via keypoints, gender/age, per-face records for zoom/inspector). Validated on China portraits. **Blink deferred** (needs eye-contour index calibration). Recognition/face-sort excluded (own path). UI/pipeline hooks → handoff §6.
 - [ ] Composition/saliency: OpenCV spectral-residual saliency + rule-of-thirds + leading lines.
 - [ ] Integrate duplicate context from existing pHash groups.
 - [ ] Tests + integration into the pipeline.
@@ -107,12 +117,13 @@ per image ──> DimensionScores (≈12 axes, 0–10 each)
 - [ ] Wire into the UI as a pre-filter (advisory) — shrink the pile before review.
 - **DoD:** reject stage demonstrably beats random/base at clearing obvious trash, on ≥1 folder.
 
-### Phase 5 — Per-category weight learner (the personalization, replaces the adapter)
-- [ ] Content/genre categorization (reuse existing semantic category or add a light classifier).
-- [ ] Learn **per-category weights** over the normalized dimension vector from existing cull labels. Start linear; heavy regularization.
-- [ ] Confidence-aware output: held-out accuracy + coverage badge; **advisory until multi-folder evidence**.
-- [ ] (Later) A/B comparison + live score preview, FACET-style.
-- **DoD:** a learned weighting that beats base ranking on folder holdout, or is honestly gated as advisory/weak.
+### Phase 5 — Dual winner learner (per-folder primary + global prior)
+- [x] Shared learner engine — `learner.py`: ridge preference learner, honest cross-validation, confidence blend.
+- [x] End-to-end per-folder ranking — `winner.py`: fit on a folder's labeled embeddings, score all images, blend with global by confidence, DB loader. Tested + validated on Canada.
+- [x] **Validated:** per-folder learner on embeddings = **0.55 cross-validated** (vs 0.146 existing, 0.29 best generic dim). Embeddings carry "wow"; dims do not (0.36). In-sample sanity on Canada: top-15 ranked mean label 0.83, bottom-15 0.00.
+- [ ] In-the-loop retrain hook (retrain as the folder is labeled) + UI surfacing of the ranking.
+- [ ] Confidence/coverage badge; advisory gating; feed dimensions into the global learner to test cross-folder transfer.
+- **DoD:** per-folder ranking usable while culling; global stays the cold-start prior, improving via the flywheel.
 
 ### Phase 6 — Evaluation harness & gating
 - [ ] Every report shows **random / base / new** deltas (top-k recall, false-reject, rank corr), per-folder + mean/variance.

@@ -207,10 +207,12 @@ def build_main_menu_bar(
         workflow_menu.addMenu(workflow_recipe_menu)
 
     ai_menu = menu_bar.addMenu("&AI")
+    ai_menu.addAction(actions.guided_ai_cull_preferences)
     ai_menu.addAction(actions.open_ai_workflow_center)
     ai_menu.addSeparator()
 
     run_menu = ai_menu.addMenu("Run And Apply")
+    run_menu.addAction(actions.guided_ai_cull_preferences)
     run_menu.addAction(actions.quick_rerank_ai_culling)
     run_menu.addAction(actions.apply_ai_culling)
     run_menu.addAction(actions.sort_ai_semantic_folders)

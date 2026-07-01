@@ -44,6 +44,38 @@ DEFAULT_CATEGORY_PROMPTS: dict[str, list[str]] = {
         "product photography, food photography, still life object arranged indoors or on a table",
         "commercial object, product, food, drink, or still life composition",
     ],
+    "street_documentary": [
+        "street photography, candid documentary scene, people in public spaces, everyday moment",
+        "urban documentary photograph with gesture, street life, crowd, market, or public interaction",
+    ],
+    "architecture": [
+        "architecture photography, building facade, interior or exterior architectural design, geometric structure",
+        "architectural composition with lines, symmetry, windows, towers, bridges, or designed spaces",
+    ],
+    "sports_action": [
+        "sports photography, athlete, action moment, competition, fast movement, game or race",
+        "action photograph with human motion, performance, speed, physical activity, or decisive sports moment",
+    ],
+    "event_stage": [
+        "event photography, concert, stage performance, ceremony, festival, presentation, show lighting",
+        "indoor or outdoor event scene with performers, audience, stage lights, celebration, or gathering",
+    ],
+    "vehicle_transport": [
+        "vehicle photography, cars, trains, boats, aircraft, bicycles, motorcycles, transportation subject",
+        "transport scene featuring vehicle shape, motion, road, railway, airport, harbor, or transit",
+    ],
+    "interior_space": [
+        "interior photography, room, hallway, museum, hotel, restaurant, indoor architectural space",
+        "indoor space with furniture, walls, windows, ceiling, ambient light, or designed interior",
+    ],
+    "aerial_drone": [
+        "aerial photography, drone view, top down landscape, city grid, fields, coastline from above",
+        "high viewpoint photograph with map-like patterns, scale, roads, rooftops, terrain, or overhead geometry",
+    ],
+    "water_coastal": [
+        "water photography, ocean, beach, coast, river, lake, waves, reflections, shoreline",
+        "coastal or water scene with horizon, boats, surf, wet rocks, reflections, or blue water texture",
+    ],
 }
 
 

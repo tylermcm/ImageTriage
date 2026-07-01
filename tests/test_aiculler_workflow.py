@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from image_triage.ai_workflow import AIWorkflowPaths, AIWorkflowRuntime
 from image_triage.aiculler_workflow import (
     AICullerRunTask,
@@ -14,10 +16,12 @@ from image_triage.aiculler_workflow import (
     DINOPrefilterRunTask,
     SOURCE_AICULLER_ROOT,
     coerce_clip_model_variant,
+    compute_and_store_winner_scores,
     default_aiculler_runtime,
     delete_adapter_model,
     list_adapter_model_summaries,
     load_adapter_review_candidates,
+    load_latest_winner_scores,
     _rows_to_gui_output,
 )
 from image_triage.dino_prefilter import DINOPrefilterSettings, build_dino_prefilter_paths, write_dino_prefilter_audit
@@ -645,6 +649,86 @@ class AICullerWorkflowTests(unittest.TestCase):
 
         self.assertEqual(0, model_count)
         self.assertEqual(0, score_count)
+
+    def test_compute_and_load_winner_scores_uses_existing_adapter_prior(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_winner_scores_") as temp_dir:
+            db_path = Path(temp_dir) / "aiculler.sqlite"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE images (
+                        id INTEGER PRIMARY KEY,
+                        source_path TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'ready'
+                    );
+                    CREATE TABLE embeddings (
+                        image_id INTEGER PRIMARY KEY,
+                        embedding BLOB NOT NULL,
+                        dim INTEGER NOT NULL,
+                        dtype TEXT NOT NULL
+                    );
+                    CREATE TABLE ratings (
+                        id INTEGER PRIMARY KEY,
+                        image_id INTEGER NOT NULL,
+                        numeric_score REAL NOT NULL
+                    );
+                    CREATE TABLE adapter_models (
+                        model_version TEXT PRIMARY KEY,
+                        model_type TEXT NOT NULL,
+                        training_config_json TEXT NOT NULL,
+                        metrics_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE TABLE adapter_scores (
+                        model_version TEXT NOT NULL,
+                        image_id INTEGER NOT NULL,
+                        adapter_score REAL NOT NULL
+                    );
+                    """
+                )
+                for image_id, adapter_score in ((1, 0.1), (2, 0.9), (3, 0.4)):
+                    path = Path(temp_dir) / f"img{image_id}.jpg"
+                    vector = np.asarray([float(image_id), 0.0], dtype=np.float32)
+                    connection.execute(
+                        "INSERT INTO images (id, source_path) VALUES (?, ?)",
+                        (image_id, str(path)),
+                    )
+                    connection.execute(
+                        "INSERT INTO embeddings (image_id, embedding, dim, dtype) VALUES (?, ?, ?, ?)",
+                        (image_id, vector.tobytes(), int(vector.size), str(vector.dtype)),
+                    )
+                    connection.execute(
+                        "INSERT INTO adapter_scores (model_version, image_id, adapter_score) VALUES ('adapter-v1', ?, ?)",
+                        (image_id, adapter_score),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO adapter_models (
+                        model_version, model_type, training_config_json, metrics_json, created_at
+                    )
+                    VALUES ('adapter-v1', 'test', '{}', '{}', '2026-06-01T00:00:00')
+                    """
+                )
+                connection.execute("INSERT INTO ratings (image_id, numeric_score) VALUES (1, 0.0)")
+                connection.commit()
+            finally:
+                connection.close()
+
+            summary = compute_and_store_winner_scores(db_path, model_version="adapter-v1")
+            loaded = load_latest_winner_scores(db_path)
+
+        self.assertEqual("adapter-v1", summary["model_version"])
+        self.assertEqual(3, summary["scored_count"])
+        self.assertEqual({"global": 3}, summary["source_counts"])
+        self.assertEqual("adapter-v1", loaded["model_version"])
+        self.assertEqual(3, loaded["scored_count"])
+        ordered = sorted(
+            loaded["scores_by_path"].values(),
+            key=lambda row: float(row["blended_score"]),
+            reverse=True,
+        )
+        self.assertEqual([2, 3, 1], [int(row["image_id"]) for row in ordered])
 
     def test_gui_export_interleaves_groups_and_penalizes_duplicate_frames(self) -> None:
         connection = sqlite3.connect(":memory:")

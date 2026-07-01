@@ -18,6 +18,7 @@ from typing import Mapping, Sequence
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
+from .ai_model import AICULLER_FACE_MODEL_REQUIRED_FILENAMES
 from .ai_runtime_packages import resolve_ai_runtime_site_packages
 from .ai_workflow import AIWorkflowPaths, AIWorkflowRuntime, build_ai_workflow_paths
 from .aiculler_global_store import (
@@ -45,6 +46,8 @@ from .phash_prefilter import (
     load_phash_prefilter_decisions,
     run_phash_prefilter_from_signal_rows,
 )
+from .quality.store import ensure_faces_table
+from .quality.winner import load_winner_inputs, rank_folder_winners
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +60,7 @@ CLI_PROGRESS_PATTERN = re.compile(
 )
 CAPTURE_SEQUENCE_PATTERN = re.compile(r"^(?P<prefix>.*?)(?P<number>\d{3,})(?P<suffix>[^0-9]*)$")
 CAPTURE_DIVERSITY_BUCKET_SIZE = 24
+WINNER_SCORE_FALLBACK_MODEL_VERSION = "__no_adapter__"
 
 
 @dataclass(slots=True, frozen=True)
@@ -172,6 +176,7 @@ class AICullerRuntime:
     tokenizer: Path
     clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     topiq_model: Path | None = None
+    face_quality_enabled: bool = False
     categories_csv: Path | None = None
     tag_penalties_csv: Path | None = None
     avoid_tags: tuple[str, ...] = ("blownout", "harshlight", "outoffocus", "motionblur")
@@ -310,6 +315,7 @@ class AICullerRunTask(QRunnable):
                 clip_model_variant=self.runtime.clip_model_variant,
                 clip_vision_model=self.runtime.clip_vision_model.name,
                 topiq_enabled=self.runtime.topiq_model is not None,
+                face_quality_enabled=self.runtime.face_quality_enabled,
                 workers=self.runtime.workers,
             )
         try:
@@ -387,6 +393,7 @@ class AICullerRunTask(QRunnable):
                         str(max(1, self.runtime.workers)),
                         *self._include_paths_args(include_paths_file),
                         *self._topiq_args(),
+                        *self._face_quality_args(),
                     ),
                 ),
                 "assign-categories": (
@@ -467,6 +474,7 @@ class AICullerRunTask(QRunnable):
             self.signals.stage.emit(folder_text, total, total, "Preparing GUI results")
             export_start = time.perf_counter() if logger.enabled else 0.0
             self._write_gui_exports(db_path)
+            compute_and_store_winner_scores(db_path)
             if logger.enabled:
                 logger.duration(
                     "ai.workflow.stage",
@@ -1202,6 +1210,9 @@ class AICullerRunTask(QRunnable):
             return ()
         return ("--topiq", str(self.runtime.topiq_model))
 
+    def _face_quality_args(self) -> tuple[str, ...]:
+        return ("--face-quality",) if self.runtime.face_quality_enabled else ()
+
     def _category_args(self) -> tuple[str, ...]:
         if self.runtime.categories_csv is None:
             return ()
@@ -1346,6 +1357,8 @@ class AICullerRunTask(QRunnable):
                 "image_cluster_memberships",
                 "ratings",
                 "adapter_scores",
+                "winner_scores",
+                "image_faces",
             ):
                 _delete_rows_by_ids(connection, table, "image_id", stale_ids)
             _delete_rows_by_ids(connection, "images", "id", stale_ids)
@@ -1545,6 +1558,7 @@ class AICullerAdapterTask(QRunnable):
                 self._run_command(command, message)
             if self.mode in {"train", "rank"}:
                 write_gui_exports(db_path, self.paths, model_version=self.model_version)
+                compute_and_store_winner_scores(db_path, model_version=self.model_version)
             write_run_config(
                 self.paths,
                 runtime=self.runtime,
@@ -2003,6 +2017,8 @@ def default_aiculler_runtime(workers: int | None = None, clip_model_variant: str
     default_clip_vision, default_clip_text = _clip_model_paths_for_variant(clip_root, resolved_clip_variant)
     configured_topiq = os.environ.get("IMAGE_TRIAGE_AICULLER_TOPIQ", "").strip()
     topiq_path = Path(configured_topiq or model_root / "TOPIQ" / "topiq_nr.onnx")
+    face_pack_dir = model_root / "insightface" / "models" / "buffalo_l"
+    face_quality_enabled = all((face_pack_dir / filename).exists() for filename in AICULLER_FACE_MODEL_REQUIRED_FILENAMES)
     categories_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_CATEGORIES", "") or _default_aiculler_config_path(root, "categories.csv"))
     tag_penalties_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_TAG_PENALTIES", "") or _default_aiculler_config_path(root, "tag_penalties.csv"))
     avoid_tags = tuple(
@@ -2035,6 +2051,7 @@ def default_aiculler_runtime(workers: int | None = None, clip_model_variant: str
             if configured_topiq or topiq_path.exists()
             else None
         ),
+        face_quality_enabled=face_quality_enabled,
         categories_csv=categories_path.expanduser().resolve() if categories_path.exists() else None,
         tag_penalties_csv=tag_penalties_path.expanduser().resolve() if tag_penalties_path.exists() else None,
         avoid_tags=avoid_tags,
@@ -2191,6 +2208,8 @@ def aiculler_runtime_status(workers: int | None = None) -> AICullerRuntimeStatus
         optional.append("TOPIQ model: not configured; heuristic technical scoring will be used")
     elif not runtime.topiq_model.exists():
         optional.append(f"TOPIQ model: {runtime.topiq_model}")
+    if not runtime.face_quality_enabled:
+        optional.append("InsightFace quality models: not installed; face quality will be skipped")
     return AICullerRuntimeStatus(
         runtime=runtime,
         missing_required=tuple(required),
@@ -2228,16 +2247,283 @@ def latest_adapter_model_version(db_path: str | Path) -> str:
     path = Path(db_path)
     if not path.exists():
         return ""
-    with sqlite3.connect(path) as connection:
-        row = connection.execute(
-            """
-            SELECT model_version
-            FROM adapter_models
-            ORDER BY created_at DESC, model_version DESC
-            LIMIT 1
-            """
-        ).fetchone()
+    try:
+        with sqlite3.connect(path) as connection:
+            row = connection.execute(
+                """
+                SELECT model_version
+                FROM adapter_models
+                ORDER BY created_at DESC, model_version DESC
+                LIMIT 1
+                """
+            ).fetchone()
+    except sqlite3.Error:
+        return ""
     return str(row[0]) if row else ""
+
+
+def ensure_winner_scores_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS winner_scores (
+            model_version TEXT NOT NULL,
+            image_id INTEGER NOT NULL,
+            blended_score REAL NOT NULL,
+            per_folder_score REAL,
+            global_score REAL,
+            source TEXT NOT NULL,
+            label_count INTEGER NOT NULL,
+            computed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(model_version, image_id),
+            FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_winner_scores_blended ON winner_scores(model_version, blended_score DESC)"
+    )
+
+
+def compute_and_store_winner_scores(
+    db_path: str | Path,
+    *,
+    model_version: str = "",
+    alpha: float = 30.0,
+    ramp: int = 20,
+    min_labels: int = 8,
+) -> dict[str, object]:
+    path = Path(db_path)
+    if not path.exists():
+        return {
+            "db_exists": False,
+            "model_version": "",
+            "label_count": 0,
+            "scored_count": 0,
+            "source_counts": {},
+        }
+    resolved_version = str(model_version or latest_adapter_model_version(path) or WINNER_SCORE_FALLBACK_MODEL_VERSION)
+    source_counts: dict[str, int] = {}
+    with sqlite3.connect(path) as connection:
+        ensure_winner_scores_table(connection)
+        try:
+            labeled_emb, labels, all_ids, all_emb, global_scores = load_winner_inputs(
+                connection,
+                model_version=None if resolved_version == WINNER_SCORE_FALLBACK_MODEL_VERSION else resolved_version,
+            )
+        except sqlite3.Error:
+            return {
+                "db_exists": True,
+                "model_version": resolved_version,
+                "label_count": 0,
+                "scored_count": 0,
+                "source_counts": {},
+            }
+        if not all_ids:
+            connection.execute("DELETE FROM winner_scores WHERE model_version = ?", (resolved_version,))
+            connection.commit()
+            return {
+                "db_exists": True,
+                "model_version": resolved_version,
+                "label_count": len(labels),
+                "scored_count": 0,
+                "source_counts": {},
+            }
+        ranked = rank_folder_winners(
+            labeled_emb,
+            labels,
+            all_ids,
+            all_emb,
+            global_scores,
+            alpha=alpha,
+            ramp=ramp,
+            min_labels=min_labels,
+        )
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        rows = []
+        for score in ranked:
+            source_counts[score.source] = source_counts.get(score.source, 0) + 1
+            rows.append(
+                (
+                    resolved_version,
+                    int(score.image_id),
+                    float(score.blended),
+                    score.per_folder,
+                    score.global_score,
+                    score.source,
+                    len(labels),
+                    now,
+                )
+            )
+        connection.execute("DELETE FROM winner_scores WHERE model_version = ?", (resolved_version,))
+        connection.executemany(
+            """
+            INSERT INTO winner_scores (
+                model_version, image_id, blended_score, per_folder_score,
+                global_score, source, label_count, computed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.commit()
+    return {
+        "db_exists": True,
+        "model_version": resolved_version,
+        "label_count": len(labels),
+        "scored_count": len(rows),
+        "source_counts": source_counts,
+    }
+
+
+def load_latest_winner_scores(db_path: str | Path, *, model_version: str = "") -> dict[str, object]:
+    path = Path(db_path)
+    if not path.exists():
+        return {
+            "db_exists": False,
+            "model_version": "",
+            "label_count": 0,
+            "scored_count": 0,
+            "scores_by_path": {},
+        }
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        ensure_winner_scores_table(connection)
+        resolved_version = str(model_version or "")
+        if not resolved_version:
+            row = connection.execute(
+                """
+                SELECT model_version
+                FROM winner_scores
+                GROUP BY model_version
+                ORDER BY MAX(computed_at) DESC, model_version DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            resolved_version = str(row["model_version"]) if row else ""
+        if not resolved_version:
+            return {
+                "db_exists": True,
+                "model_version": "",
+                "label_count": 0,
+                "scored_count": 0,
+                "scores_by_path": {},
+            }
+        rows = connection.execute(
+            """
+            SELECT
+                winner_scores.*,
+                images.source_path
+            FROM winner_scores
+            INNER JOIN images ON images.id = winner_scores.image_id
+            WHERE winner_scores.model_version = ?
+            """,
+            (resolved_version,),
+        ).fetchall()
+    scores_by_path = {
+        os.path.normcase(os.path.normpath(str(row["source_path"]))): {
+            "image_id": int(row["image_id"]),
+            "blended_score": float(row["blended_score"]),
+            "per_folder_score": None if row["per_folder_score"] is None else float(row["per_folder_score"]),
+            "global_score": None if row["global_score"] is None else float(row["global_score"]),
+            "source": str(row["source"]),
+            "label_count": int(row["label_count"] or 0),
+            "computed_at": str(row["computed_at"] or ""),
+        }
+        for row in rows
+    }
+    label_count = max((int(row["label_count"] or 0) for row in rows), default=0)
+    return {
+        "db_exists": True,
+        "model_version": resolved_version,
+        "label_count": label_count,
+        "scored_count": len(rows),
+        "scores_by_path": scores_by_path,
+    }
+
+
+def load_face_records_by_path(db_path: str | Path) -> dict[str, dict[str, object]]:
+    path = Path(db_path)
+    if not path.exists():
+        return {}
+    try:
+        with sqlite3.connect(path) as connection:
+            connection.row_factory = sqlite3.Row
+            ensure_faces_table(connection)
+            rows = connection.execute(
+                """
+                SELECT
+                    images.source_path,
+                    images.preview_path,
+                    image_faces.*
+                FROM image_faces
+                INNER JOIN images ON images.id = image_faces.image_id
+                ORDER BY images.source_path ASC, image_faces.face_index ASC
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    from .quality.face import FaceRecord
+
+    grouped: dict[str, dict[str, object]] = {}
+    for row in rows:
+        key = os.path.normcase(os.path.normpath(str(row["source_path"])))
+        entry = grouped.setdefault(
+            key,
+            {"source_path": str(row["source_path"] or ""), "preview_path": str(row["preview_path"] or ""), "faces": []},
+        )
+        faces = entry["faces"]
+        if isinstance(faces, list):
+            faces.append(
+                FaceRecord(
+                    bbox=(float(row["x1"]), float(row["y1"]), float(row["x2"]), float(row["y2"])),
+                    det_score=float(row["det_score"]),
+                    eye_sharpness=None if row["eye_sharpness"] is None else float(row["eye_sharpness"]),
+                    gender=None if row["gender"] is None else str(row["gender"]),
+                    age=None if row["age"] is None else int(row["age"]),
+                    blink=None if row["blink"] is None else bool(row["blink"]),
+                )
+            )
+    return {
+        key: {
+            "source_path": str(value.get("source_path") or ""),
+            "preview_path": str(value.get("preview_path") or ""),
+            "faces": tuple(value.get("faces") or ()),
+        }
+        for key, value in grouped.items()
+    }
+
+
+def load_image_categories_by_path(db_path: str | Path) -> dict[str, dict[str, object]]:
+    path = Path(db_path)
+    if not path.exists():
+        return {}
+    try:
+        with sqlite3.connect(path) as connection:
+            connection.row_factory = sqlite3.Row
+            table_row = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'image_categories'"
+            ).fetchone()
+            if table_row is None:
+                return {}
+            rows = connection.execute(
+                """
+                SELECT
+                    images.source_path,
+                    image_categories.primary_category,
+                    image_categories.confidence
+                FROM image_categories
+                INNER JOIN images ON images.id = image_categories.image_id
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    return {
+        os.path.normcase(os.path.normpath(str(row["source_path"]))): {
+            "primary_category": str(row["primary_category"] or "uncategorized"),
+            "confidence": float(row["confidence"] or 0.0),
+        }
+        for row in rows
+    }
 
 
 def list_adapter_model_summaries(db_path: str | Path) -> list[dict[str, object]]:
@@ -2315,6 +2601,8 @@ def delete_adapter_model(db_path: str | Path, model_version: str) -> bool:
     connection = sqlite3.connect(path)
     try:
         connection.execute("DELETE FROM adapter_scores WHERE model_version = ?", (version,))
+        if _sqlite_table_exists(connection, "winner_scores"):
+            connection.execute("DELETE FROM winner_scores WHERE model_version = ?", (version,))
         cursor = connection.execute("DELETE FROM adapter_models WHERE model_version = ?", (version,))
         connection.commit()
         return cursor.rowcount > 0
@@ -3332,6 +3620,14 @@ def _delete_rows_by_ids(
             f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
             chunk,
         )
+
+
+def _sqlite_table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    row = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (str(table),),
+    ).fetchone()
+    return row is not None
 
 
 _TQDM_PROGRESS_RE = re.compile(

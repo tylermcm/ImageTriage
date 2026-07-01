@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QImage, QPainter, QPainterPath, QPen, QPixmap
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from ..ai_results import build_ai_explanation_lines
 from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats
 from ..review_workflows import review_round_label
+from ..quality.poi import focus_poi, should_use_smart_focus_crop
 from .theme import ThemePalette, default_theme
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 
 
 TAB_WIDTH = 34
+INSPECTOR_PREVIEW_COLLAPSED_HEIGHT = 40
 
 
 class InspectorHistogram(QWidget):
@@ -1516,6 +1518,7 @@ class InspectorPanel(QWidget):
     swap_side_requested = Signal()
     close_requested = Signal()
     preview_requested = Signal()
+    face_cycle_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1529,10 +1532,8 @@ class InspectorPanel(QWidget):
         scroll.setObjectName("inspectorScrollArea")
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
-        # The trailing File Details section absorbs slack so there is no dead
-        # space when everything fits. The real scrollbar is hidden (takes no
-        # layout width) so the cards stay flush with the panel's right edge
-        # (colinear with the top bar); an overlay scrollbar floats over the
+        # The real scrollbar is hidden (takes no layout width) so the cards stay
+        # flush with the panel's right edge; an overlay scrollbar floats over the
         # content when scrolling is actually needed.
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1554,12 +1555,14 @@ class InspectorPanel(QWidget):
         # overlapping the cards.
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        self._inspector_body_layout = layout
 
         # Preview card: the small header bar (pop-out / swap / close) sits above
         # the selection preview image, replacing the old folder-name header.
         self.preview_card = QWidget(content)
         self.preview_card.setObjectName("inspectorPreviewCard")
         self.preview_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.preview_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         preview_layout = QVBoxLayout(self.preview_card)
         preview_layout.setContentsMargins(8, 8, 8, 10)
         preview_layout.setSpacing(8)
@@ -1575,13 +1578,16 @@ class InspectorPanel(QWidget):
         self.preview_collapse_button.toggled.connect(self._set_preview_expanded)
         self.popout_button = self._make_header_button("⊞", "Pop out inspector", "inspectorHeaderButton")
         self.swap_side_button = self._make_header_button("⌖", "Swap the left and right panel sides", "inspectorHeaderButton")
+        self.face_cycle_button = self._make_header_button("↻", "Next detected face", "inspectorHeaderButton")
         self.close_button = self._make_header_button("✕", "Hide inspector", "inspectorHeaderCloseButton")
         self.popout_button.clicked.connect(lambda _checked=False: self.popout_requested.emit())
         self.swap_side_button.clicked.connect(lambda _checked=False: self.swap_side_requested.emit())
+        self.face_cycle_button.clicked.connect(lambda _checked=False: self.face_cycle_requested.emit())
         self.close_button.clicked.connect(lambda _checked=False: self.close_requested.emit())
         header_layout.addWidget(self.preview_collapse_button, 0)
         header_layout.addWidget(self.popout_button, 0)
         header_layout.addWidget(self.swap_side_button, 0)
+        header_layout.addWidget(self.face_cycle_button, 0)
         header_layout.addStretch(1)
         header_layout.addWidget(self.close_button, 0)
         preview_layout.addWidget(header_bar)
@@ -1589,15 +1595,19 @@ class InspectorPanel(QWidget):
         self.preview_image = QLabel(self.preview_card)
         self.preview_image.setObjectName("inspectorPreviewImage")
         self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_image.setFixedHeight(168)
+        self.preview_image.setMinimumHeight(0)
         # Ignored width + zero minimum so a loaded pixmap never forces the panel
         # wider than its column (which would clip everything on the right when
         # the panel is resized narrow). The pixmap is rescaled on resize instead.
-        self.preview_image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.preview_image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.preview_image.setMinimumWidth(0)
         self.preview_image.setText("No image selected")
+        self.preview_image.setMouseTracking(True)
+        self.preview_image.installEventFilter(self)
         self._preview_source: QImage | None = None
-        preview_layout.addWidget(self.preview_image)
+        self._preview_zoom = 1.0
+        self._preview_focus = (0.5, 0.5)
+        preview_layout.addWidget(self.preview_image, 1)
 
         layout.addWidget(self.preview_card)
 
@@ -1605,6 +1615,7 @@ class InspectorPanel(QWidget):
         self.histogram_widget = InspectorHistogram(self)
         self._make_custom_section(layout, "Histogram", self.histogram_widget)
         self.culling_rows = self._make_section(layout, "Culling", ("Decision", "Rating", "AI Suggestion", "Confidence", "Reason"))
+        self.subject_rows = self._make_section(layout, "Subject", ("Type", "Review Focus", "Signal", "AI Detail"))
         self.quality_rows = self._make_section(layout, "Quality", ("Detail", "Focus", "Motion Blur", "Noise", "Exposure", "Confidence"))
         self.group_rows = self._make_section(
             layout,
@@ -1614,16 +1625,8 @@ class InspectorPanel(QWidget):
         self.edit_rows = self._make_section(layout, "Edit Potential", ("Worth Editing", "Main Issue", "Fixes Needed", "Effort", "Notes"))
         # Quick Actions now live in the left "Review Controls" pane.
         self.quick_action_buttons: dict[str, QPushButton] = {}
-        # File Details is the trailing section: it stretches to fill whatever
-        # vertical space is left so the inspector reaches the bottom with no
-        # dead gap (the other sections stay statically sized).
-        self.file_details_rows = self._make_section(
-            layout,
-            "File Details",
-            ("Path", "Folder", "Modified", "Mode", "Selection", "Stack", "Companions", "Workflow"),
-            stretch=1,
-        )
         scroll.setWidget(content)
+        QTimer.singleShot(0, self._sync_preview_card_aspect)
 
         self.clear()
 
@@ -1769,14 +1772,77 @@ class InspectorPanel(QWidget):
         self.preview_image.setVisible(expanded)
         self.preview_collapse_button.setText("▾" if expanded else "▸")
         self.preview_collapse_button.setToolTip("Minimize preview" if expanded else "Expand preview")
+        self._sync_preview_card_aspect()
 
-    def set_preview(self, image: "QImage | None", *, placeholder: str = "No image selected") -> None:
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.preview_image:
+            event_type = event.type()
+            if event_type == QEvent.Type.Wheel:
+                source = getattr(self, "_preview_source", None)
+                if source is None or source.isNull():
+                    return False
+                self._update_preview_focus_from_event(event)
+                delta = event.angleDelta().y()
+                if delta:
+                    factor = 1.18 if delta > 0 else 1 / 1.18
+                    self._preview_zoom = max(1.0, min(5.0, self._preview_zoom * factor))
+                    self._rescale_preview()
+                    return True
+            if event_type == QEvent.Type.MouseMove and getattr(self, "_preview_zoom", 1.0) > 1.0:
+                self._update_preview_focus_from_event(event)
+                self._rescale_preview()
+        return super().eventFilter(watched, event)
+
+    def _update_preview_focus_from_event(self, event) -> None:
+        try:
+            position = event.position()
+            x = float(position.x())
+            y = float(position.y())
+        except AttributeError:
+            position = event.pos()
+            x = float(position.x())
+            y = float(position.y())
+        width = max(1.0, float(self.preview_image.width()))
+        height = max(1.0, float(self.preview_image.height()))
+        self._preview_focus = (
+            max(0.0, min(1.0, x / width)),
+            max(0.0, min(1.0, y / height)),
+        )
+
+    def _sync_preview_card_aspect(self) -> None:
+        card = getattr(self, "preview_card", None)
+        if card is None:
+            return
+        if not self.preview_image.isVisible():
+            target_height = INSPECTOR_PREVIEW_COLLAPSED_HEIGHT
+        else:
+            target_height = max(80, int(card.width() or self.width() or 0))
+        if card.height() != target_height:
+            card.setFixedHeight(target_height)
+        self._rescale_preview()
+
+    def set_preview(
+        self,
+        image: "QImage | None",
+        *,
+        placeholder: str = "No image selected",
+        fill: bool = True,
+    ) -> None:
+        self._preview_aspect_mode = (
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding
+            if fill
+            else Qt.AspectRatioMode.KeepAspectRatio
+        )
         if image is None or image.isNull():
             self._preview_source = None
+            self._preview_zoom = 1.0
+            self._preview_focus = (0.5, 0.5)
             self.preview_image.setPixmap(QPixmap())
             self.preview_image.setText(placeholder)
             return
         self._preview_source = image
+        self._preview_zoom = 1.0
+        self._preview_focus = (0.5, 0.5)
         self.preview_image.setText("")
         self._rescale_preview()
 
@@ -1784,12 +1850,27 @@ class InspectorPanel(QWidget):
         source = getattr(self, "_preview_source", None)
         if source is None or source.isNull():
             return
+        display_source = source
+        zoom = float(getattr(self, "_preview_zoom", 1.0) or 1.0)
+        if zoom > 1.01:
+            focus_x, focus_y = getattr(self, "_preview_focus", (0.5, 0.5))
+            crop_width = max(1, min(source.width(), int(round(source.width() / zoom))))
+            crop_height = max(1, min(source.height(), int(round(source.height() / zoom))))
+            center_x = int(round(float(focus_x) * source.width()))
+            center_y = int(round(float(focus_y) * source.height()))
+            left = max(0, min(center_x - crop_width // 2, source.width() - crop_width))
+            top = max(0, min(center_y - crop_height // 2, source.height() - crop_height))
+            display_source = source.copy(QRect(left, top, crop_width, crop_height))
         width = max(20, self.preview_image.width())
         height = max(20, self.preview_image.height())
         self.preview_image.setPixmap(
-            QPixmap.fromImage(source).scaled(
+            QPixmap.fromImage(display_source).scaled(
                 QSize(width, height),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                getattr(
+                    self,
+                    "_preview_aspect_mode",
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                ),
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
@@ -1818,22 +1899,28 @@ class InspectorPanel(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._rescale_preview()
+        self._sync_preview_card_aspect()
         self._sync_overlay_scrollbar()
 
     def clear(self) -> None:
         self.set_preview(None)
         for rows in (
             self.culling_rows,
+            self.subject_rows,
             self.quality_rows,
             self.group_rows,
             self.edit_rows,
-            self.file_details_rows,
         ):
             for value in rows.values():
                 value.setText("-")
         self.culling_rows["Decision"].setText("Unreviewed")
         self.culling_rows["AI Suggestion"].setText("No AI result loaded")
+        self.face_cycle_button.setVisible(False)
+        self.face_cycle_button.setEnabled(False)
+        self.subject_rows["Type"].setText("Not analyzed")
+        self.subject_rows["Review Focus"].setText("-")
+        self.subject_rows["Signal"].setText("-")
+        self.subject_rows["AI Detail"].setText("-")
         self.quality_rows["Detail"].setText("Not analyzed")
         self.quality_rows["Focus"].setText("Not analyzed")
         self.quality_rows["Motion Blur"].setText("Not analyzed")
@@ -1863,20 +1950,28 @@ class InspectorPanel(QWidget):
         workflow_summary: str = "",
         workflow_details: tuple[str, ...] = (),
         thumbnail: "QImage | None" = None,
+        face_records: tuple[object, ...] = (),
+        face_preview: "QImage | None" = None,
+        category_info: dict[str, object] | None = None,
+        category_profile: str = "uncategorized",
     ) -> None:
         if current_record is None:
             self.clear()
-            self.file_details_rows["Folder"].setText(self._safe_text(folder, "No folder selected"))
-            self.file_details_rows["Mode"].setText(self._safe_text(mode_label))
-            self.file_details_rows["Selection"].setText(f"{selected_count} selected" if selected_count else "Nothing selected")
             return
 
         if current_record.is_folder:
             self.set_preview(None, placeholder="Folder")
+        elif self._should_use_face_as_main_preview(category_profile, face_records, face_preview):
+            self.set_preview(face_preview, placeholder="Face zoom", fill=False)
         else:
-            self.set_preview(thumbnail, placeholder="Preview loading")
+            self.set_preview(
+                self._smart_focus_preview(thumbnail, category_profile=category_profile),
+                placeholder="Preview loading",
+                fill=False,
+            )
+        self.face_cycle_button.setVisible(len(face_records) > 1)
+        self.face_cycle_button.setEnabled(len(face_records) > 1)
 
-        active_path = display_path or current_record.path
         decision = self._decision_text(annotation)
 
         self.culling_rows["Decision"].setText(decision)
@@ -1891,6 +1986,13 @@ class InspectorPanel(QWidget):
             workflow_summary,
         )
         self.culling_rows["Reason"].setText(reason or "-")
+
+        self._set_subject_context(
+            category_profile=category_profile,
+            category_info=category_info or {},
+            face_records=face_records,
+            ai_result=ai_result,
+        )
 
         stats = inspection_stats or EMPTY_INSPECTION_STATS
         detail_score = stats.detail_score or self._float_attr(review_insight, "detail_score")
@@ -1924,18 +2026,215 @@ class InspectorPanel(QWidget):
 
         self.histogram_widget.set_stats(stats)
 
-        self.file_details_rows["Path"].setText(active_path)
-        self.file_details_rows["Path"].setToolTip(active_path)
-        self.file_details_rows["Folder"].setText(self._safe_text(folder, "-"))
-        self.file_details_rows["Folder"].setToolTip(folder)
-        self.file_details_rows["Modified"].setText(self._format_modified(current_record.modified_ns))
-        self.file_details_rows["Mode"].setText(self._safe_text(mode_label))
-        self.file_details_rows["Selection"].setText(f"{selected_count} selected" if selected_count else "Nothing selected")
-        self.file_details_rows["Stack"].setText(f"{current_record.stack_count} variant(s)" if current_record.has_variant_stack else "Single item")
-        companion_text = self._path_names((*current_record.companion_paths, *current_record.edited_paths))
-        self.file_details_rows["Companions"].setText(companion_text or "-")
-        self.file_details_rows["Workflow"].setText("\n".join(workflow_details) if workflow_details else "-")
         self._set_quick_actions_enabled(not current_record.is_folder, grouped=is_grouped)
+
+    @staticmethod
+    def _should_use_face_as_main_preview(
+        category_profile: str,
+        face_records: tuple[object, ...],
+        face_preview: "QImage | None",
+    ) -> bool:
+        return (
+            str(category_profile or "").strip().lower() == "people_portrait"
+            and bool(face_records)
+            and face_preview is not None
+            and not face_preview.isNull()
+        )
+
+    @staticmethod
+    def _smart_focus_preview(thumbnail: "QImage | None", *, category_profile: str) -> "QImage | None":
+        if thumbnail is None or thumbnail.isNull():
+            return thumbnail
+        try:
+            result = focus_poi(InspectorPanel._qimage_to_bgr_array(thumbnail))
+        except Exception:
+            return thumbnail
+        if not should_use_smart_focus_crop(category_profile, result):
+            return thumbnail
+        crop = InspectorPanel._crop_normalized_bbox(thumbnail, result.bbox, padding=0.18)
+        return crop if crop is not None and not crop.isNull() else thumbnail
+
+    @staticmethod
+    def _qimage_to_bgr_array(image: QImage) -> np.ndarray:
+        converted = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        width = converted.width()
+        height = converted.height()
+        if width <= 0 or height <= 0:
+            return np.empty((0, 0, 3), dtype=np.uint8)
+        buffer = converted.constBits()
+        try:
+            buffer.setsize(converted.sizeInBytes())
+        except AttributeError:
+            pass
+        array = np.frombuffer(buffer, dtype=np.uint8)
+        array = array.reshape((height, converted.bytesPerLine()))
+        rgba = array[:, : width * 4].reshape((height, width, 4))
+        return rgba[:, :, [2, 1, 0]].copy()
+
+    @staticmethod
+    def _crop_normalized_bbox(
+        image: QImage,
+        bbox: tuple[float, float, float, float],
+        *,
+        padding: float,
+    ) -> "QImage | None":
+        width = image.width()
+        height = image.height()
+        if width <= 1 or height <= 1:
+            return None
+        x0, y0, x1, y1 = bbox
+        left = max(0.0, min(1.0, float(x0))) * width
+        top = max(0.0, min(1.0, float(y0))) * height
+        right = max(0.0, min(1.0, float(x1))) * width
+        bottom = max(0.0, min(1.0, float(y1))) * height
+        if right <= left or bottom <= top:
+            return None
+
+        box_width = right - left
+        box_height = bottom - top
+        side = max(box_width, box_height) * (1.0 + max(0.0, padding))
+        side = max(side, min(width, height) * 0.28)
+        side = min(side, min(width, height))
+        crop_side = max(1, min(width, height, int(round(side))))
+        center_x = (left + right) / 2.0
+        center_y = (top + bottom) / 2.0
+        crop_left = int(round(max(0.0, min(center_x - crop_side / 2.0, width - crop_side))))
+        crop_top = int(round(max(0.0, min(center_y - crop_side / 2.0, height - crop_side))))
+        return image.copy(QRect(crop_left, crop_top, crop_side, crop_side))
+
+    def _set_subject_context(
+        self,
+        *,
+        category_profile: str,
+        category_info: dict[str, object],
+        face_records: tuple[object, ...],
+        ai_result: "AIImageResult | None",
+    ) -> None:
+        profile = str(category_profile or "uncategorized").strip().lower()
+        label, focus, signal = self._subject_profile_text(profile)
+        self.subject_rows["Type"].setText(label)
+        self.subject_rows["Review Focus"].setText(focus)
+        if profile == "people_portrait" and face_records:
+            primary = max(face_records, key=lambda item: float(getattr(item, "det_score", 0.0) or 0.0))
+            det = self._float_attr(primary, "det_score")
+            eyes = self._float_attr(primary, "eye_sharpness")
+            pieces = [f"{len(face_records)} face{'s' if len(face_records) != 1 else ''}"]
+            if det is not None:
+                pieces.append(f"{det * 100:.0f}% detect")
+            if eyes is not None:
+                pieces.append(f"eyes {eyes:.1f}/10")
+            signal = " · ".join(pieces)
+        self.subject_rows["Signal"].setText(signal)
+        confidence = category_info.get("confidence")
+        try:
+            confidence_value = float(confidence)
+        except (TypeError, ValueError):
+            confidence_value = 0.0
+        confidence_text = f"category score {confidence_value:.2f}" if confidence_value > 0 else ""
+        ai_bits = []
+        if ai_result is not None:
+            bucket = getattr(ai_result, "confidence_bucket_label", "") or getattr(ai_result, "confidence_bucket_short_label", "")
+            if bucket:
+                ai_bits.append(str(bucket))
+            score = getattr(ai_result, "display_score_text", "")
+            if score:
+                ai_bits.append(str(score))
+        if confidence_text:
+            ai_bits.append(confidence_text)
+        self.subject_rows["AI Detail"].setText(" · ".join(ai_bits) if ai_bits else "-")
+
+    @staticmethod
+    def _subject_profile_text(profile: str) -> tuple[str, str, str]:
+        mapping = {
+            "people_portrait": (
+                "Portrait",
+                "Face sharpness, expression, eye contact",
+                "Use the face zoom first; verify the full frame second.",
+            ),
+            "landscape": (
+                "Landscape",
+                "Composition, exposure, edge detail",
+                "Check horizon, clipped sky, foreground/background balance.",
+            ),
+            "wildlife": (
+                "Wildlife",
+                "Subject sharpness, pose, separation",
+                "Confirm the animal is sharp and not hidden by clutter.",
+            ),
+            "travel_built": (
+                "Travel/Built",
+                "Geometry, context, clutter",
+                "Check leading lines, signs/buildings, and distractions.",
+            ),
+            "night_astro": (
+                "Night/Astro",
+                "Noise, exposure, highlight control",
+                "Check sky detail, star/city-light clipping, and motion.",
+            ),
+            "macro_detail": (
+                "Macro/Detail",
+                "Focus plane, texture, background",
+                "Inspect the intended detail at high magnification.",
+            ),
+            "abstract_texture": (
+                "Abstract/Texture",
+                "Pattern, contrast, color rhythm",
+                "Judge graphic strength before literal subject quality.",
+            ),
+            "product_still_life": (
+                "Product/Still",
+                "Lighting, edges, color accuracy",
+                "Check specular highlights and object separation.",
+            ),
+            "street_documentary": (
+                "Street/Documentary",
+                "Moment, layers, gesture, context",
+                "Look for timing, readable story, and distracting overlaps.",
+            ),
+            "architecture": (
+                "Architecture",
+                "Lines, symmetry, perspective, detail",
+                "Check verticals, edge cleanliness, and compositional balance.",
+            ),
+            "sports_action": (
+                "Sports/Action",
+                "Peak action, focus, motion clarity",
+                "Prioritize decisive moments, subject sharpness, and separation.",
+            ),
+            "event_stage": (
+                "Event/Stage",
+                "Expression, lighting, gesture, atmosphere",
+                "Check stage light clipping, faces, and meaningful interaction.",
+            ),
+            "vehicle_transport": (
+                "Vehicle/Transport",
+                "Subject angle, motion, environment",
+                "Check clean vehicle shape, background clutter, and motion cues.",
+            ),
+            "interior_space": (
+                "Interior",
+                "Geometry, light, mood, clutter",
+                "Check verticals, mixed lighting, and distracting objects.",
+            ),
+            "aerial_drone": (
+                "Aerial/Drone",
+                "Pattern, scale, composition, haze",
+                "Look for strong geometry, readable subject scale, and clean edges.",
+            ),
+            "water_coastal": (
+                "Water/Coastal",
+                "Reflections, horizon, texture, exposure",
+                "Check horizon level, water detail, and highlight control.",
+            ),
+        }
+        return mapping.get(
+            profile,
+            (
+                "General",
+                "Detail, exposure, composition",
+                "No specialized category context available.",
+            ),
+        )
 
     def _set_quick_actions_enabled(self, enabled: bool, *, grouped: bool) -> None:
         for key, button in self.quick_action_buttons.items():
@@ -2098,24 +2397,6 @@ class InspectorPanel(QWidget):
         if ai_result is not None and bool(getattr(ai_result, "is_top_pick", False)):
             return "Yes"
         return "Not analyzed"
-
-    @staticmethod
-    def _format_modified(modified_ns: int) -> str:
-        if modified_ns <= 0:
-            return "-"
-        try:
-            return datetime.fromtimestamp(modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M")
-        except (OSError, OverflowError, ValueError):
-            return "-"
-
-    @staticmethod
-    def _path_names(paths: tuple[str, ...]) -> str:
-        if not paths:
-            return ""
-        names = [Path(path).name for path in paths[:6]]
-        if len(paths) > 6:
-            names.append(f"+{len(paths) - 6} more")
-        return "\n".join(names)
 
 
 def build_workspace_docks(

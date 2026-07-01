@@ -74,6 +74,18 @@ AICULLER_CLIP_MODEL_REQUIRED_FILENAMES = (
     "onnx/text_model_bnb4.onnx",
 )
 AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES = ("topiq_nr.onnx",)
+# Face-quality models (InsightFace buffalo_l): detection + landmarks + gender/age.
+# Recognition (w600k_r50.onnx) is intentionally EXCLUDED here — the face-sort /
+# "who is in this photo" workflow ships on its own separate download path.
+DEFAULT_AICULLER_FACE_REPO_ID = "Skulleton12/insightface"
+DEFAULT_AICULLER_FACE_REVISION = "df17665542088a2ba27cd6e534f7608e98fd9ea0"
+DEFAULT_AICULLER_FACE_SIZE_MB = 23
+DEFAULT_AICULLER_FACE_MODEL_SHA256: dict[str, str] = {}
+AICULLER_FACE_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_DIR"
+AICULLER_FACE_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REPO_ID"
+AICULLER_FACE_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REVISION"
+INSIGHTFACE_PACK_NAME = "buffalo_l"
+AICULLER_FACE_MODEL_REQUIRED_FILENAMES = ("det_10g.onnx", "2d106det.onnx", "genderage.onnx")
 AI_MODEL_USER_AGENT = "ImageTriage/0.1"
 
 AIModelProgressCallback = Callable[[str, int, int], None]
@@ -277,6 +289,31 @@ def default_aiculler_topiq_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_
     return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "CLI-Culler" / "TOPIQ"
 
 
+def default_aiculler_face_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_FACE_REPO_ID) -> Path:
+    # Laid out so InsightFace FaceAnalysis(name="buffalo_l", root=<.../insightface>)
+    # finds the ONNX at <root>/models/buffalo_l/<file>.onnx.
+    return (
+        _default_user_cache_root()
+        / "image_triage_ai_cache"
+        / "models"
+        / "CLI-Culler"
+        / "insightface"
+        / "models"
+        / INSIGHTFACE_PACK_NAME
+    )
+
+
+def aiculler_face_model_root(*, install_dir: str | Path | None = None) -> Path:
+    """Directory to pass to InsightFace ``FaceAnalysis(root=...)`` — the parent of
+    ``models/<pack>/``."""
+    base = (
+        Path(install_dir).expanduser().resolve()
+        if install_dir
+        else default_aiculler_face_model_install_dir()
+    )
+    return base.parent.parent
+
+
 def download_ai_model(
     installation: AIModelInstallation | None = None,
     *,
@@ -344,6 +381,54 @@ def download_aiculler_topiq_model(
 ) -> AIModelInstallation:
     return download_ai_model(
         installation or resolve_aiculler_topiq_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
+
+
+def resolve_aiculler_face_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(AICULLER_FACE_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_AICULLER_FACE_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(AICULLER_FACE_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_AICULLER_FACE_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(AICULLER_FACE_MODEL_DIR_ENV, "") or "").strip()
+        or default_aiculler_face_model_install_dir(repo_id=resolved_repo_id)
+    )
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=Path(resolved_dir_value).expanduser().resolve(),
+        required_filenames=AICULLER_FACE_MODEL_REQUIRED_FILENAMES,
+        expected_sha256=(
+            DEFAULT_AICULLER_FACE_MODEL_SHA256
+            if resolved_repo_id == DEFAULT_AICULLER_FACE_REPO_ID
+            and resolved_revision == DEFAULT_AICULLER_FACE_REVISION
+            else None
+        ),
+    )
+
+
+def download_aiculler_face_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_aiculler_face_model_installation(),
         force=force,
         progress_callback=progress_callback,
     )
