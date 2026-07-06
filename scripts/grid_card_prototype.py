@@ -8,6 +8,7 @@ ThumbnailGridView.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QImageReader, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,11 +30,17 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from image_triage.ui.grid_card_renderer import GridCardData, paint_grid_card, render_grid_card_pixmap
+from image_triage.ui.grid_card_renderer import (
+    COMPACT_COLUMN_THRESHOLD,
+    GridCardData,
+    paint_grid_card,
+    render_grid_card_pixmap,
+)
 
 
 SIZE_PRESETS: dict[str, QSize] = {
@@ -45,13 +52,25 @@ SIZE_PRESETS: dict[str, QSize] = {
     "legacy wide - 560 x 330": QSize(560, 330),
 }
 
+# Grid preview layout constants (mirror ThumbnailGridView spacing).
+GRID_MARGIN = 12
+GRID_SPACING = 12
+# height / width of the 11:8 review card.
+CARD_ASPECT = 407 / 560
+
 
 class CardCanvas(QWidget):
+    metrics_changed = Signal(str)
+
     def __init__(self, source_pixmap: QPixmap | None, *, using_dummy: bool = False) -> None:
         super().__init__()
         self._source_pixmap = source_pixmap
         self._using_dummy = using_dummy
         self._card_size = QSize(560, 407)
+        # 0 = single centered card at the preset size; >= 1 = grid preview
+        # that reflows/scales the cards to fill the canvas width.
+        self._columns = 0
+        self._force_compact = False
         self._selected = True
         self._ai_visible = True
         self._duplicate_visible = True
@@ -60,6 +79,7 @@ class CardCanvas(QWidget):
         self._favorite = False
         self._bright = False
         self._dark = False
+        self._last_metrics = ""
         self.setMouseTracking(True)
         self.setMinimumSize(640, 440)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -68,6 +88,14 @@ class CardCanvas(QWidget):
         self._card_size = QSize(size)
         self.updateGeometry()
         self.update()
+
+    def set_layout_mode(self, columns: int, force_compact: bool) -> None:
+        self._columns = max(0, columns)
+        self._force_compact = force_compact
+        self.update()
+
+    def _is_compact(self, columns: int) -> bool:
+        return self._force_compact or columns > COMPACT_COLUMN_THRESHOLD
 
     def set_state(
         self,
@@ -95,19 +123,69 @@ class CardCanvas(QWidget):
         return self._card_size + QSize(110, 110)
 
     def render_card(self) -> QPixmap:
-        return render_grid_card_pixmap(self._card_size, self._pixmap_for_state(), self._data_for_state())
+        return render_grid_card_pixmap(
+            self._card_size,
+            self._pixmap_for_state(),
+            self._data_for_state(),
+            compact=self._force_compact,
+        )
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(self.rect(), QColor(6, 7, 9))
 
-        rect = QRect(QPoint(0, 0), self._card_size)
-        rect.moveCenter(self.rect().center())
-        paint_grid_card(painter, rect, self._pixmap_for_state(), self._data_for_state())
+        if self._columns <= 0:
+            self._paint_single_card(painter)
+        else:
+            self._paint_grid(painter)
         painter.end()
 
-    def _data_for_state(self) -> GridCardData:
+    def _paint_single_card(self, painter: QPainter) -> None:
+        compact = self._force_compact
+        rect = QRect(QPoint(0, 0), self._card_size)
+        rect.moveCenter(self.rect().center())
+        paint_grid_card(painter, rect, self._pixmap_for_state(), self._data_for_state(), compact=compact)
+        self._emit_metrics(
+            f"Single card · {rect.width()} x {rect.height()} px · {'compact' if compact else 'full'} UI"
+        )
+
+    def _paint_grid(self, painter: QPainter) -> None:
+        columns = self._columns
+        compact = self._is_compact(columns)
+        inner = max(120, self.width() - GRID_MARGIN * 2)
+        card_w = max(90, (inner - (columns - 1) * GRID_SPACING) // columns)
+        card_h = max(66, round(card_w * CARD_ASPECT))
+        rows = max(1, math.ceil((self.height() - GRID_MARGIN) / (card_h + GRID_SPACING)))
+        total = rows * columns
+
+        pixmap = self._pixmap_for_state()
+        index = 0
+        for row in range(rows):
+            for column in range(columns):
+                rect = QRect(
+                    GRID_MARGIN + column * (card_w + GRID_SPACING),
+                    GRID_MARGIN + row * (card_h + GRID_SPACING),
+                    card_w,
+                    card_h,
+                )
+                data = self._data_for_state(
+                    position_text=f"{index + 1} / {total}",
+                    selected=self._selected and index == 0,
+                )
+                paint_grid_card(painter, rect, pixmap, data, compact=compact)
+                index += 1
+
+        self._emit_metrics(
+            f"{columns} columns · card {card_w} x {card_h} px · {'compact' if compact else 'full'} UI"
+        )
+
+    def _emit_metrics(self, text: str) -> None:
+        if text != self._last_metrics:
+            self._last_metrics = text
+            self.metrics_changed.emit(text)
+
+    def _data_for_state(self, *, position_text: str = "1 / 24", selected: bool | None = None) -> GridCardData:
         if self._reject:
             status_text = "Reject"
             status_kind = "reject"
@@ -124,19 +202,25 @@ class CardCanvas(QWidget):
             meta_text="54.4 MB  \u00b7  2025-08-16 11:15  \u00b7  Banff 8-25",
             duplicate_text="Near Duplicate \u00b7 2/3",
             ai_text="AI Pick \u00b7 99",
-            position_text="1 / 24",
+            position_text=position_text,
             status_text=status_text,
             status_kind=status_kind,
             duplicate_visible=self._duplicate_visible,
             ai_visible=self._ai_visible,
-            selected=self._selected,
+            selected=self._selected if selected is None else selected,
             favorite=self._favorite,
             rejected=self._reject,
         )
 
+    _dummy_cache: dict[tuple[bool, bool], QPixmap] = {}
+
     def _pixmap_for_state(self) -> QPixmap:
         if self._source_pixmap is None or self._source_pixmap.isNull() or self._using_dummy:
-            base = make_dummy_landscape(QSize(1800, 1100), bright=self._bright, dark=self._dark)
+            key = (self._bright, self._dark)
+            base = self._dummy_cache.get(key)
+            if base is None:
+                base = make_dummy_landscape(QSize(1800, 1100), bright=self._bright, dark=self._dark)
+                self._dummy_cache[key] = base
         else:
             base = self._source_pixmap
 
@@ -163,9 +247,25 @@ class PrototypeWindow(QMainWindow):
 
         self.canvas = CardCanvas(source_pixmap, using_dummy=using_dummy)
 
+        self.layout_combo = QComboBox()
+        self.layout_combo.addItem("Single card")
+        self.layout_combo.addItem("Grid preview")
+
         self.size_combo = QComboBox()
         for label in SIZE_PRESETS:
             self.size_combo.addItem(label)
+
+        self.columns_spin = QSpinBox()
+        self.columns_spin.setRange(1, 8)
+        self.columns_spin.setValue(4)
+        self.columns_spin.setPrefix("Columns: ")
+        self.columns_spin.setEnabled(False)
+
+        self.compact_check = QCheckBox("Force compact UI")
+
+        self.metrics_label = QLabel("")
+        self.metrics_label.setObjectName("metricsLabel")
+        self.canvas.metrics_changed.connect(self.metrics_label.setText)
 
         self.selected_check = QCheckBox("Selected")
         self.selected_check.setChecked(True)
@@ -198,7 +298,11 @@ class PrototypeWindow(QMainWindow):
         title = QLabel("Card States")
         title.setObjectName("panelTitle")
         controls_layout.addWidget(title)
+        controls_layout.addWidget(self.layout_combo)
         controls_layout.addWidget(self.size_combo)
+        controls_layout.addWidget(self.columns_spin)
+        controls_layout.addWidget(self.compact_check)
+        controls_layout.addWidget(self.metrics_label)
         controls_layout.addSpacing(4)
         for checkbox in (
             self.selected_check,
@@ -230,7 +334,10 @@ class PrototypeWindow(QMainWindow):
         layout.setColumnMinimumWidth(1, 250)
         self.setCentralWidget(root)
 
+        self.layout_combo.currentTextChanged.connect(self._apply_state)
         self.size_combo.currentTextChanged.connect(self._apply_state)
+        self.columns_spin.valueChanged.connect(self._apply_state)
+        self.compact_check.toggled.connect(self._apply_state)
         for checkbox in (
             self.selected_check,
             self.ai_check,
@@ -255,6 +362,12 @@ class PrototypeWindow(QMainWindow):
             self.dark_check.setChecked(False)
         if self.sender() is self.dark_check and self.dark_check.isChecked():
             self.bright_check.setChecked(False)
+
+        grid_mode = self.layout_combo.currentText() == "Grid preview"
+        self.size_combo.setEnabled(not grid_mode)
+        self.columns_spin.setEnabled(grid_mode)
+        columns = self.columns_spin.value() if grid_mode else 0
+        self.canvas.set_layout_mode(columns, self.compact_check.isChecked())
 
         size = SIZE_PRESETS[self.size_combo.currentText()]
         self.canvas.set_card_size(size)
@@ -281,12 +394,17 @@ class PrototypeWindow(QMainWindow):
             return
         if not path.lower().endswith(".png"):
             path += ".png"
-        self.canvas.render_card().save(path, "PNG")
+        self._rendered_output().save(path, "PNG")
         self.status_label.setText(f"Saved {path}")
 
     def _copy_png(self) -> None:
-        QApplication.clipboard().setPixmap(self.canvas.render_card())
+        QApplication.clipboard().setPixmap(self._rendered_output())
         self.status_label.setText("Copied rendered card to the clipboard.")
+
+    def _rendered_output(self) -> QPixmap:
+        if self.layout_combo.currentText() == "Grid preview":
+            return self.canvas.grab()
+        return self.canvas.render_card()
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -310,16 +428,23 @@ class PrototypeWindow(QMainWindow):
             QLabel#statusLabel {
                 color: #8f9bad;
             }
-            QComboBox, QPushButton {
+            QLabel#metricsLabel {
+                color: #7fb2ff;
+            }
+            QComboBox, QPushButton, QSpinBox {
                 background: #1b1e23;
                 color: #f4f7fb;
                 border: 1px solid #2f3540;
                 border-radius: 6px;
                 padding: 7px 9px;
             }
-            QComboBox:hover, QPushButton:hover {
+            QComboBox:hover, QPushButton:hover, QSpinBox:hover {
                 background: #252a31;
                 border-color: #465263;
+            }
+            QComboBox:disabled, QSpinBox:disabled {
+                color: #5c6674;
+                border-color: #23272e;
             }
             QCheckBox {
                 color: #cbd5e1;

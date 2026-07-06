@@ -22,6 +22,7 @@ from .review_workflows import review_round_short_label
 from .scanner import normalized_path_key
 from .thumbnails import ThumbnailManager
 from .ui.grid_card_renderer import (
+    COMPACT_COLUMN_THRESHOLD,
     GridCardData,
     grid_card_action_rects,
     paint_grid_card,
@@ -821,6 +822,13 @@ class ThumbnailGridView(QAbstractScrollArea):
             and self._columns > 1
             and self._action_mode == "normal"
         )
+
+    def _use_compact_grid_card(self) -> bool:
+        """Past the column threshold the shared card trims its chrome
+        (icon-only badges, filename + status footer). Applies to both the
+        discrete column zoom and the continuous tile zoom, which also
+        reflows into ``self._columns``."""
+        return self._columns > COMPACT_COLUMN_THRESHOLD
 
     def set_loupe_card_style(self, style: str) -> None:
         """Select the single-column review card layout.
@@ -1791,6 +1799,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 rect,
                 pixmap if pixmap is not None and not pixmap.isNull() else None,
                 card_data,
+                compact=self._use_compact_grid_card(),
             )
             if variant.path in self._failed_paths:
                 painter.setPen(self._failed_text_color)
@@ -2999,7 +3008,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._action_mode in {"rejected_only", "recycle_only"}:
             return QRect()
         if self._use_new_grid_card():
-            return grid_card_action_rects(tile_rect).favorite
+            return grid_card_action_rects(tile_rect, compact=self._use_compact_grid_card()).favorite
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
             image_rect = self._image_rect(tile_rect)
@@ -3017,7 +3026,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._action_mode in {"accepted_only", "recycle_only"}:
             return QRect()
         if self._use_new_grid_card():
-            return grid_card_action_rects(tile_rect).reject
+            return grid_card_action_rects(tile_rect, compact=self._use_compact_grid_card()).reject
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
             image_rect = self._image_rect(tile_rect)
@@ -3978,6 +3987,14 @@ class ThumbnailGridView(QAbstractScrollArea):
             used = columns * target + ((columns - 1) * self._spacing)
             self._row_x_offset = max(0, (inner - used) // 2)
         self._tile_height_value = card_chrome_height + self._image_height_value
+        if self._use_new_grid_card():
+            # The shared review card is tuned as an 11:8 tile: the photo spans
+            # the content width at a 3:2 crop and the footer overlays its
+            # bottom edge, so the tile height follows the width instead of the
+            # legacy chrome stack (which stacks caption/action/meta rows below
+            # the image and makes the card far too tall).
+            self._image_height_value = max(64, round((target - self._image_padding * 2) * 2 / 3))
+            self._tile_height_value = max(96, round(target * 407 / 560))
         self._row_height_value = self._tile_height_value + self._spacing
         self._thumbnail_target_size_value = QSize(
             max(64, self._tile_width_value - (self._image_padding * 2)),
