@@ -2467,6 +2467,7 @@ class MainWindow(QMainWindow):
     VIEW_COLUMNS_KEY = "view/columns"
     VIEW_ZOOM_WIDTH_KEY = "view/zoom_width"
     COMPACT_CARDS_KEY = "view/compact_cards"
+    LOUPE_CARD_STYLE_KEY = "view/loupe_card_style"
     FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
     BROWSER_VIEW_MODE_KEY = "view/browser_mode"
@@ -3124,6 +3125,9 @@ class MainWindow(QMainWindow):
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
         self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, True, bool)
+        self._loupe_card_style = self._normalize_loupe_card_style(
+            self._settings.value(self.LOUPE_CARD_STYLE_KEY, "immersive", str)
+        )
         self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
         self._preview_preload_batch_size = self._normalize_preview_preload_batch_size(
             self._settings.value(
@@ -3189,6 +3193,7 @@ class MainWindow(QMainWindow):
         self._watched_folder_path = ""
         self._folder_watch_refresh_pending = False
         self.grid.set_compact_card_mode(self._compact_cards_enabled)
+        self.grid.set_loupe_card_style(self._loupe_card_style)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         self._refresh_ai_runtime_preferences()
         self._session_id = self._decision_store.ensure_session(
@@ -4402,6 +4407,11 @@ class MainWindow(QMainWindow):
     def _normalize_toolbar_style(value: object) -> str:
         normalized = str(value or "text").strip().casefold().replace("-", "_").replace(" ", "_")
         return normalized if normalized in {"text", "icons", "large_icons", "icon_text"} else "text"
+
+    @staticmethod
+    def _normalize_loupe_card_style(value: object) -> str:
+        normalized = str(value or "immersive").strip().casefold().replace("-", "_").replace(" ", "_")
+        return normalized if normalized in {"photo_fit", "immersive"} else "immersive"
 
     def _fluent_filled_icon(self, primary: str, color: QColor) -> QIcon:
         """Render a Fluent glyph as a solid filled silhouette (the enclosed
@@ -21105,6 +21115,7 @@ class MainWindow(QMainWindow):
             delete_mode=self._delete_mode,
             toolbar_style=self._toolbar_style,
             compact_cards_enabled=self._compact_cards_enabled,
+            loupe_card_style=self._loupe_card_style,
             free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
             preview_preload_batch_size=self._preview_preload_batch_size,
             show_hidden_folders=self._show_hidden_folders,
@@ -21170,6 +21181,7 @@ class MainWindow(QMainWindow):
         self._delete_mode = result.delete_mode
         self._toolbar_style = self._normalize_toolbar_style(result.toolbar_style)
         self._compact_cards_enabled = result.compact_cards_enabled
+        self._loupe_card_style = self._normalize_loupe_card_style(result.loupe_card_style)
         self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
         self._preview_preload_batch_size = new_preview_preload_batch_size
         self._show_hidden_folders = result.show_hidden_folders
@@ -21206,6 +21218,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.DELETE_MODE_KEY, self._delete_mode.value)
         self._settings.setValue(self.TOOLBAR_STYLE_KEY, self._toolbar_style)
         self._settings.setValue(self.COMPACT_CARDS_KEY, self._compact_cards_enabled)
+        self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, self._loupe_card_style)
         self._settings.setValue(self.FREE_SMOOTH_SCROLL_KEY, self._free_smooth_scroll_enabled)
         self._settings.setValue(self.PREVIEW_PRELOAD_BATCH_SIZE_KEY, self._preview_preload_batch_size)
         self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
@@ -21230,6 +21243,7 @@ class MainWindow(QMainWindow):
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
         self.preview.set_preload_batch_size(self._preview_preload_batch_size)
         self.grid.set_compact_card_mode(self._compact_cards_enabled)
+        self.grid.set_loupe_card_style(self._loupe_card_style)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         if toolbar_style_changed:
             self._workspace_toolbar_item_widgets = {

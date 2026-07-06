@@ -1,0 +1,456 @@
+"""Standalone prototype for one main-viewport grid card.
+
+This is intentionally outside the live grid. It lets the card painter be tuned
+with realistic sizes and states before the renderer is wired into
+ThumbnailGridView.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QBrush, QImageReader, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from image_triage.ui.grid_card_renderer import GridCardData, paint_grid_card, render_grid_card_pixmap
+
+
+SIZE_PRESETS: dict[str, QSize] = {
+    "11:8 review card - 560 x 407": QSize(560, 407),
+    "11:8 compact - 480 x 349": QSize(480, 349),
+    "11:8 large - 720 x 524": QSize(720, 524),
+    "11:8 tuning - 900 x 655": QSize(900, 655),
+    "2:3 portrait - 400 x 600": QSize(400, 600),
+    "legacy wide - 560 x 330": QSize(560, 330),
+}
+
+
+class CardCanvas(QWidget):
+    def __init__(self, source_pixmap: QPixmap | None, *, using_dummy: bool = False) -> None:
+        super().__init__()
+        self._source_pixmap = source_pixmap
+        self._using_dummy = using_dummy
+        self._card_size = QSize(560, 407)
+        self._selected = True
+        self._ai_visible = True
+        self._duplicate_visible = True
+        self._winner = True
+        self._reject = False
+        self._favorite = False
+        self._bright = False
+        self._dark = False
+        self.setMouseTracking(True)
+        self.setMinimumSize(640, 440)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_card_size(self, size: QSize) -> None:
+        self._card_size = QSize(size)
+        self.updateGeometry()
+        self.update()
+
+    def set_state(
+        self,
+        *,
+        selected: bool,
+        ai_visible: bool,
+        duplicate_visible: bool,
+        winner: bool,
+        reject: bool,
+        favorite: bool,
+        bright: bool,
+        dark: bool,
+    ) -> None:
+        self._selected = selected
+        self._ai_visible = ai_visible
+        self._duplicate_visible = duplicate_visible
+        self._winner = winner
+        self._reject = reject
+        self._favorite = favorite
+        self._bright = bright
+        self._dark = dark
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return self._card_size + QSize(110, 110)
+
+    def render_card(self) -> QPixmap:
+        return render_grid_card_pixmap(self._card_size, self._pixmap_for_state(), self._data_for_state())
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor(6, 7, 9))
+
+        rect = QRect(QPoint(0, 0), self._card_size)
+        rect.moveCenter(self.rect().center())
+        paint_grid_card(painter, rect, self._pixmap_for_state(), self._data_for_state())
+        painter.end()
+
+    def _data_for_state(self) -> GridCardData:
+        if self._reject:
+            status_text = "Reject"
+            status_kind = "reject"
+        elif self._winner:
+            status_text = "Keeper"
+            status_kind = "keeper"
+        else:
+            status_text = "Review"
+            status_kind = "review"
+
+        return GridCardData(
+            filename="DSC_7149.NEF",
+            exif_text="1/250s  \u00b7  f/5  \u00b7  ISO 200  \u00b7  35mm",
+            meta_text="54.4 MB  \u00b7  2025-08-16 11:15  \u00b7  Banff 8-25",
+            duplicate_text="Near Duplicate \u00b7 2/3",
+            ai_text="AI Pick \u00b7 99",
+            position_text="1 / 24",
+            status_text=status_text,
+            status_kind=status_kind,
+            duplicate_visible=self._duplicate_visible,
+            ai_visible=self._ai_visible,
+            selected=self._selected,
+            favorite=self._favorite,
+            rejected=self._reject,
+        )
+
+    def _pixmap_for_state(self) -> QPixmap:
+        if self._source_pixmap is None or self._source_pixmap.isNull() or self._using_dummy:
+            base = make_dummy_landscape(QSize(1800, 1100), bright=self._bright, dark=self._dark)
+        else:
+            base = self._source_pixmap
+
+        if not self._bright and not self._dark:
+            return base
+
+        adjusted = QPixmap(base.size())
+        adjusted.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(adjusted)
+        painter.drawPixmap(0, 0, base)
+        if self._bright:
+            painter.fillRect(adjusted.rect(), QColor(255, 255, 255, 44))
+        if self._dark:
+            painter.fillRect(adjusted.rect(), QColor(0, 0, 0, 76))
+        painter.end()
+        return adjusted
+
+
+class PrototypeWindow(QMainWindow):
+    def __init__(self, source_pixmap: QPixmap | None, load_message: str, *, using_dummy: bool) -> None:
+        super().__init__()
+        self.setWindowTitle("Grid Card Prototype")
+        self.resize(980, 620)
+
+        self.canvas = CardCanvas(source_pixmap, using_dummy=using_dummy)
+
+        self.size_combo = QComboBox()
+        for label in SIZE_PRESETS:
+            self.size_combo.addItem(label)
+
+        self.selected_check = QCheckBox("Selected")
+        self.selected_check.setChecked(True)
+        self.ai_check = QCheckBox("AI badge")
+        self.ai_check.setChecked(True)
+        self.duplicate_check = QCheckBox("Duplicate badge")
+        self.duplicate_check.setChecked(True)
+        self.winner_check = QCheckBox("Winner / keeper")
+        self.winner_check.setChecked(True)
+        self.reject_check = QCheckBox("Reject")
+        self.favorite_check = QCheckBox("Heart active")
+        self.bright_check = QCheckBox("Bright image")
+        self.dark_check = QCheckBox("Dark image")
+
+        save_button = QPushButton("Save PNG")
+        copy_button = QPushButton("Copy PNG")
+        save_button.clicked.connect(self._save_png)
+        copy_button.clicked.connect(self._copy_png)
+
+        self.status_label = QLabel(load_message)
+        self.status_label.setWordWrap(True)
+        self.status_label.setObjectName("statusLabel")
+
+        controls = QFrame()
+        controls.setObjectName("controls")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(14, 14, 14, 14)
+        controls_layout.setSpacing(10)
+
+        title = QLabel("Card States")
+        title.setObjectName("panelTitle")
+        controls_layout.addWidget(title)
+        controls_layout.addWidget(self.size_combo)
+        controls_layout.addSpacing(4)
+        for checkbox in (
+            self.selected_check,
+            self.ai_check,
+            self.duplicate_check,
+            self.winner_check,
+            self.reject_check,
+            self.favorite_check,
+            self.bright_check,
+            self.dark_check,
+        ):
+            controls_layout.addWidget(checkbox)
+        controls_layout.addSpacing(8)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(save_button)
+        button_row.addWidget(copy_button)
+        controls_layout.addLayout(button_row)
+        controls_layout.addStretch(1)
+        controls_layout.addWidget(self.status_label)
+
+        root = QWidget()
+        layout = QGridLayout(root)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setHorizontalSpacing(12)
+        layout.addWidget(self.canvas, 0, 0)
+        layout.addWidget(controls, 0, 1)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnMinimumWidth(1, 250)
+        self.setCentralWidget(root)
+
+        self.size_combo.currentTextChanged.connect(self._apply_state)
+        for checkbox in (
+            self.selected_check,
+            self.ai_check,
+            self.duplicate_check,
+            self.winner_check,
+            self.reject_check,
+            self.favorite_check,
+            self.bright_check,
+            self.dark_check,
+        ):
+            checkbox.toggled.connect(self._apply_state)
+
+        self._apply_state()
+        self._apply_style()
+
+    def _apply_state(self) -> None:
+        if self.sender() is self.reject_check and self.reject_check.isChecked():
+            self.winner_check.setChecked(False)
+        if self.sender() is self.winner_check and self.winner_check.isChecked():
+            self.reject_check.setChecked(False)
+        if self.sender() is self.bright_check and self.bright_check.isChecked():
+            self.dark_check.setChecked(False)
+        if self.sender() is self.dark_check and self.dark_check.isChecked():
+            self.bright_check.setChecked(False)
+
+        size = SIZE_PRESETS[self.size_combo.currentText()]
+        self.canvas.set_card_size(size)
+        self.canvas.set_state(
+            selected=self.selected_check.isChecked(),
+            ai_visible=self.ai_check.isChecked(),
+            duplicate_visible=self.duplicate_check.isChecked(),
+            winner=self.winner_check.isChecked(),
+            reject=self.reject_check.isChecked(),
+            favorite=self.favorite_check.isChecked(),
+            bright=self.bright_check.isChecked(),
+            dark=self.dark_check.isChecked(),
+        )
+
+    def _save_png(self) -> None:
+        default = str(ROOT / "grid-card-prototype.png")
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save prototype card",
+            default,
+            "PNG Images (*.png)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        self.canvas.render_card().save(path, "PNG")
+        self.status_label.setText(f"Saved {path}")
+
+    def _copy_png(self) -> None:
+        QApplication.clipboard().setPixmap(self.canvas.render_card())
+        self.status_label.setText("Copied rendered card to the clipboard.")
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget {
+                background: #07080a;
+                color: #dbe4ef;
+                font-family: Segoe UI;
+                font-size: 12px;
+            }
+            QFrame#controls {
+                background: #111316;
+                border: 1px solid #282c31;
+                border-radius: 8px;
+            }
+            QLabel#panelTitle {
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: 700;
+            }
+            QLabel#statusLabel {
+                color: #8f9bad;
+            }
+            QComboBox, QPushButton {
+                background: #1b1e23;
+                color: #f4f7fb;
+                border: 1px solid #2f3540;
+                border-radius: 6px;
+                padding: 7px 9px;
+            }
+            QComboBox:hover, QPushButton:hover {
+                background: #252a31;
+                border-color: #465263;
+            }
+            QCheckBox {
+                color: #cbd5e1;
+                spacing: 8px;
+                padding: 2px 0;
+            }
+            QCheckBox::indicator {
+                width: 15px;
+                height: 15px;
+                border-radius: 4px;
+                border: 1px solid #44505f;
+                background: #11161c;
+            }
+            QCheckBox::indicator:checked {
+                background: #3d7cff;
+                border-color: #68a2ff;
+            }
+            """
+        )
+
+
+def load_source_pixmap(path: str | None) -> tuple[QPixmap | None, str, bool]:
+    if not path:
+        return None, "Using generated landscape sample. Pass --image to test a real file.", True
+
+    image_path = Path(path)
+    if not image_path.exists():
+        return None, f"Image not found: {image_path}. Using generated sample.", True
+
+    reader = QImageReader(str(image_path))
+    reader.setAutoTransform(True)
+    image = reader.read()
+    if image.isNull():
+        try:
+            from image_triage.imaging import load_image_for_display
+
+            image, error = load_image_for_display(
+                str(image_path),
+                QSize(1800, 1400),
+                prefer_embedded=True,
+            )
+            if image.isNull():
+                return None, f"Could not load image ({error or reader.errorString()}). Using generated sample.", True
+        except Exception as exc:  # pragma: no cover - depends on optional RAW stack
+            return None, f"Could not load image ({exc}). Using generated sample.", True
+
+    pixmap = QPixmap.fromImage(image)
+    return pixmap, f"Loaded {image_path}", False
+
+
+def make_dummy_landscape(size: QSize, *, bright: bool = False, dark: bool = False) -> QPixmap:
+    pixmap = QPixmap(size)
+    pixmap.fill(QColor(10, 14, 17))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    sky = QLinearGradient(0, 0, 0, size.height())
+    if bright:
+        sky.setColorAt(0.0, QColor(160, 191, 219))
+        sky.setColorAt(0.55, QColor(118, 144, 154))
+        sky.setColorAt(1.0, QColor(22, 37, 40))
+    elif dark:
+        sky.setColorAt(0.0, QColor(35, 48, 58))
+        sky.setColorAt(0.55, QColor(22, 33, 38))
+        sky.setColorAt(1.0, QColor(5, 9, 10))
+    else:
+        sky.setColorAt(0.0, QColor(90, 120, 145))
+        sky.setColorAt(0.55, QColor(52, 71, 78))
+        sky.setColorAt(1.0, QColor(8, 15, 16))
+    painter.fillRect(pixmap.rect(), QBrush(sky))
+
+    w = size.width()
+    h = size.height()
+    for offset, alpha in ((0, 220), (round(w * 0.12), 190), (-round(w * 0.16), 205)):
+        path = QPainterPath()
+        path.moveTo(-round(w * 0.05) + offset, h)
+        path.lineTo(round(w * 0.14) + offset, round(h * 0.42))
+        path.lineTo(round(w * 0.25) + offset, round(h * 0.55))
+        path.lineTo(round(w * 0.40) + offset, round(h * 0.34))
+        path.lineTo(round(w * 0.56) + offset, round(h * 0.50))
+        path.lineTo(round(w * 0.74) + offset, round(h * 0.31))
+        path.lineTo(round(w * 1.06) + offset, h)
+        path.closeSubpath()
+        painter.fillPath(path, QColor(9, 18, 22, alpha))
+
+    tree_pen = QPen(QColor(3, 20, 16, 185), max(2, w // 360))
+    painter.setPen(tree_pen)
+    for x in range(round(w * 0.08), round(w * 0.96), max(18, w // 48)):
+        top = round(h * (0.48 + (x % 67) / 420))
+        painter.drawLine(x, top, x, round(h * 0.76))
+        painter.drawLine(x, top + 16, x - 11, top + 58)
+        painter.drawLine(x, top + 16, x + 11, top + 58)
+
+    lake = QRect(0, round(h * 0.66), w, round(h * 0.35))
+    painter.fillRect(lake, QColor(16, 91, 95, 130))
+    painter.setPen(QPen(QColor(132, 199, 202, 38), max(1, h // 360)))
+    for y in range(lake.top() + 12, lake.bottom(), max(15, h // 48)):
+        painter.drawLine(round(w * 0.12), y, round(w * 0.88), y + (y % 11) - 5)
+
+    painter.end()
+    return pixmap
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Prototype one main-viewport grid card.")
+    parser.add_argument("--image", help="Optional image path to draw inside the card.")
+    parser.add_argument("--save", help="Render once to this PNG path and exit.")
+    parser.add_argument("--width", type=int, default=560, help="PNG render width when --save is used.")
+    parser.add_argument("--height", type=int, default=407, help="PNG render height when --save is used.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    app = QApplication(sys.argv[:1])
+    source_pixmap, load_message, using_dummy = load_source_pixmap(args.image)
+
+    if args.save:
+        data = GridCardData(selected=True)
+        source = source_pixmap if not using_dummy else make_dummy_landscape(QSize(1800, 1100))
+        output = render_grid_card_pixmap(QSize(args.width, args.height), source, data)
+        if not output.save(args.save, "PNG"):
+            print(f"Failed to save {args.save}", file=sys.stderr)
+            return 2
+        print(f"Saved {args.save}")
+        return 0
+
+    window = PrototypeWindow(source_pixmap, load_message, using_dummy=using_dummy)
+    window.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

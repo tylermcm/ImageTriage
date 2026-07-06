@@ -6,10 +6,11 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal, QSignalBlocker
-from PySide6.QtGui import QAction, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
+from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
@@ -20,11 +21,63 @@ from .perf import perf_logger
 from .review_workflows import review_round_short_label
 from .scanner import normalized_path_key
 from .thumbnails import ThumbnailManager
+from .ui.grid_card_renderer import (
+    GridCardData,
+    grid_card_action_rects,
+    paint_grid_card,
+    _paint_duplicate_icon,
+    _paint_heart_icon,
+    _paint_reject_icon,
+    _paint_spark_icon,
+)
 from .ui.prototype_style import folder_icon_pixmap
 from .ui.theme import ThemePalette, default_theme
 
 
 _AI_RESULT_MISSING = object()
+
+_LOUPE_BUTTON_ICON_FILES: dict[str, Path] = {
+    "heart": Path(__file__).resolve().parent / "ui" / "assets" / "loupe_heart.png",
+    "reject": Path(__file__).resolve().parent / "ui" / "assets" / "loupe_reject.png",
+}
+
+
+@lru_cache(maxsize=8)
+def _loupe_button_icon(name: str, rgb: tuple[int, int, int]) -> QImage | None:
+    """Loupe action-button artwork recolored for overlay use.
+
+    The source assets are black artwork on a light background with no alpha
+    channel, so the alpha is built from luminance (black -> opaque, light ->
+    transparent) and the visible pixels are filled with the requested color.
+    Faint values are squashed to zero because the reject asset has a
+    checkerboard pattern baked into its background; the remap keeps stroke
+    edges antialiased. Only the central glyph is drawn by the caller — the
+    thick baked-in ring stays outside the sampled crop.
+    """
+    path = _LOUPE_BUTTON_ICON_FILES.get(name)
+    if path is None or not path.exists():
+        return None
+    source = QImage(str(path))
+    if source.isNull():
+        return None
+    gray = source.convertToFormat(QImage.Format.Format_Grayscale8)
+    gray.invertPixels()
+    floor = 64
+    remap = bytes(
+        0 if value < floor else min(255, round((value - floor) * 255 / (255 - floor))) for value in range(256)
+    )
+    mapped = bytes(gray.constBits()).translate(remap)
+    alpha = QImage(
+        mapped, gray.width(), gray.height(), gray.bytesPerLine(), QImage.Format.Format_Alpha8
+    ).copy()
+    icon = QImage(source.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    icon.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(icon)
+    painter.fillRect(icon.rect(), QColor(*rgb))
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+    painter.drawImage(0, 0, alpha)
+    painter.end()
+    return icon
 
 
 def _fast_path_key(path: str) -> str:
@@ -166,6 +219,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._thumbnail_request_timer.setSingleShot(True)
         self._thumbnail_request_timer.setInterval(20)
         self._thumbnail_request_timer.timeout.connect(self._request_visible_thumbnails)
+        self._loupe_card_style = "immersive"
         self._title_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
         self._meta_font = QFont("Segoe UI", 9)
         self._review_title_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
@@ -202,10 +256,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._burst_accent = QColor("#57b1ff")
         self._ai_pick_badge_fill = QColor(180, 138, 26, 220)
         self._ai_pick_badge_text = QColor("#fff6d8")
-        self._review_scrim_top = QColor(0, 0, 0, 0)
-        self._review_scrim_mid = QColor(0, 0, 0, 92)
-        self._review_scrim_bottom = QColor(0, 0, 0, 226)
         self._review_badge_border = QColor(255, 212, 112, 80)
+        self._review_scrim_color = QColor("#07090d")
         self._review_duplicate_badge_fill = QColor(23, 25, 27, 190)
         self._review_duplicate_badge_text = QColor("#ead9a8")
         self._review_ai_badge_fill = QColor(124, 84, 20, 168)
@@ -757,6 +809,35 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _use_loupe_card_style(self) -> bool:
         return not self._compact_card_mode and self._columns == 1
+
+    def _use_new_grid_card(self) -> bool:
+        """Multi-column tiles use the shared grid_card_renderer design.
+
+        Non-"normal" action modes keep the legacy card because its buttons
+        carry the undo affordances those filtered views rely on.
+        """
+        return (
+            not self._compact_card_mode
+            and self._columns > 1
+            and self._action_mode == "normal"
+        )
+
+    def set_loupe_card_style(self, style: str) -> None:
+        """Select the single-column review card layout.
+
+        "photo_fit": the photo is fitted above the metadata strip so the
+        overlay never covers it; the scrim stays solid.
+        "immersive": the photo fills the pane and the metadata paints over its
+        bottom edge on a lighter (65% alpha) scrim.
+        """
+        normalized = "photo_fit" if str(style).strip().casefold() == "photo_fit" else "immersive"
+        if self._loupe_card_style == normalized:
+            return
+        self._loupe_card_style = normalized
+        self.viewport().update()
+
+    def loupe_card_style(self) -> str:
+        return self._loupe_card_style
 
     def set_free_smooth_scroll_enabled(self, enabled: bool) -> None:
         normalized = bool(enabled)
@@ -1669,80 +1750,132 @@ class ThumbnailGridView(QAbstractScrollArea):
         ai_result = self._ai_result_for(record, variant)
         review_insight = self._review_insight_for(record)
         use_loupe_card = self._use_loupe_card_style()
+        # Zoomed tiles fall back to the legacy painter, which owns the
+        # zoom-crop drawing path.
+        use_new_grid_card = (
+            self._use_new_grid_card()
+            and not record.is_folder
+            and not self._adapter_review_mode
+            and not (index == self._zoom_index and self._zoom_factor > 1.0)
+        )
         painter.save()
-        if is_rejected:
-            border_color = self._reject_color
-            background_color = QColor("#171113")
-        elif is_winner:
-            border_color = self._accepted_color
-            background_color = QColor("#111c16")
-        else:
-            if is_current:
-                border_color = self._border_active
-                background_color = self._background_active
-            elif is_selected:
-                border_color = self._border_selected
-                background_color = self._background_selected
-            else:
-                border_color = self._border_idle
-                background_color = self._background_idle
-        painter.setPen(QPen(border_color, 1.4 if is_current or is_selected else 1.0))
-        painter.setBrush(background_color)
-        painter.drawRoundedRect(QRectF(rect), 7, 7)
-
         image_rect = self._image_rect(rect)
-        if burst_info is not None:
-            if self._burst_stack_mode:
+        photo_bottom: int | None = None
+        if use_new_grid_card:
+            if burst_info is not None and self._burst_stack_mode:
                 self._paint_burst_stack_layers(painter, image_rect, highlighted=is_current or is_selected)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self._placeholder_color)
-        painter.drawRoundedRect(QRectF(image_rect), 5, 5)
-
-        if pixmap is not None and not pixmap.isNull():
-            draw_rect = self._image_draw_rect(image_rect, pixmap)
-            zoom_pixmap = self._zoom_pixmap_for_tile(index, record, variant, image_rect)
-            clip_path = QPainterPath()
-            clip_path.addRoundedRect(QRectF(image_rect), 5, 5)
-            painter.save()
-            painter.setClipPath(clip_path)
-            if index == self._zoom_index and self._zoom_factor > 1.0:
-                zoom_source = zoom_pixmap if zoom_pixmap is not None and not zoom_pixmap.isNull() else pixmap
-                source_rect = self._zoom_source_rect(zoom_source, self._zoom_factor, self._zoom_focus)
-                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-                painter.drawPixmap(draw_rect, zoom_source, source_rect)
-            else:
-                painter.drawPixmap(draw_rect, pixmap)
-            painter.restore()
-        elif record.is_folder:
-            self._paint_folder_thumbnail(painter, image_rect)
-        elif variant.path in self._failed_paths:
-            painter.setPen(self._failed_text_color)
-            painter.setFont(self._placeholder_font)
-            failed_message = self._failed_messages.get(variant.path, "").strip()
-            failure_text = "Failed"
-            if failed_message:
-                failure_text = f"Failed\n{failed_message}"
-            painter.drawText(
-                image_rect.adjusted(12, 12, -12, -12),
-                Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
-                failure_text,
+            status_text = self._review_keeper_label(ai_result, self._workflow_insight_for(record))
+            duplicate_text = self._review_group_badge_text(
+                burst_info, self._dino_prefilter_decision_for(record)
             )
+            ai_text = self._review_ai_badge_label(ai_result)
+            card_data = GridCardData(
+                filename=variant.name if record.has_variant_stack else record.name,
+                exif_text=self._review_capture_text(record),
+                meta_text=self._review_passive_meta_text(record, variant),
+                duplicate_text=duplicate_text,
+                ai_text=ai_text,
+                position_text=self._review_position_text(index),
+                status_text=status_text,
+                status_kind=status_text.casefold(),
+                duplicate_visible=bool(duplicate_text),
+                ai_visible=bool(ai_text),
+                selected=is_current or is_selected,
+                favorite=is_winner,
+                rejected=is_rejected,
+                hover_favorite=index == self._hovered_winner_index,
+                hover_reject=index == self._hovered_reject_index,
+            )
+            paint_grid_card(
+                painter,
+                rect,
+                pixmap if pixmap is not None and not pixmap.isNull() else None,
+                card_data,
+            )
+            if variant.path in self._failed_paths:
+                painter.setPen(self._failed_text_color)
+                painter.setFont(self._placeholder_font)
+                failed_message = self._failed_messages.get(variant.path, "").strip()
+                failure_text = f"Failed\n{failed_message}" if failed_message else "Failed"
+                painter.drawText(
+                    image_rect.adjusted(12, 12, -12, -12),
+                    Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                    failure_text,
+                )
         else:
-            painter.setPen(self._placeholder_text_color)
-            painter.setFont(self._placeholder_font)
-            painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, "Loading...")
+            if is_rejected:
+                border_color = self._reject_color
+                background_color = QColor("#171113")
+            elif is_winner:
+                border_color = self._accepted_color
+                background_color = QColor("#111c16")
+            else:
+                if is_current:
+                    border_color = self._border_active
+                    background_color = self._background_active
+                elif is_selected:
+                    border_color = self._border_selected
+                    background_color = self._background_selected
+                else:
+                    border_color = self._border_idle
+                    background_color = self._background_idle
+            painter.setPen(QPen(border_color, 1.4 if is_current or is_selected else 1.0))
+            painter.setBrush(background_color)
+            painter.drawRoundedRect(QRectF(rect), 7, 7)
 
-        if use_loupe_card:
-            painter.save()
-            painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(QRectF(image_rect).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
-            painter.restore()
+            if burst_info is not None:
+                if self._burst_stack_mode:
+                    self._paint_burst_stack_layers(painter, image_rect, highlighted=is_current or is_selected)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self._placeholder_color)
+            painter.drawRoundedRect(QRectF(image_rect), 5, 5)
+
+            if pixmap is not None and not pixmap.isNull():
+                draw_rect = self._image_draw_rect(image_rect, pixmap)
+                photo_bottom = draw_rect.bottom()
+                zoom_pixmap = self._zoom_pixmap_for_tile(index, record, variant, image_rect)
+                clip_path = QPainterPath()
+                clip_path.addRoundedRect(QRectF(image_rect), 5, 5)
+                painter.save()
+                painter.setClipPath(clip_path)
+                if index == self._zoom_index and self._zoom_factor > 1.0:
+                    zoom_source = zoom_pixmap if zoom_pixmap is not None and not zoom_pixmap.isNull() else pixmap
+                    source_rect = self._zoom_source_rect(zoom_source, self._zoom_factor, self._zoom_focus)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                    painter.drawPixmap(draw_rect, zoom_source, source_rect)
+                else:
+                    painter.drawPixmap(draw_rect, pixmap)
+                painter.restore()
+            elif record.is_folder:
+                self._paint_folder_thumbnail(painter, image_rect)
+            elif variant.path in self._failed_paths:
+                painter.setPen(self._failed_text_color)
+                painter.setFont(self._placeholder_font)
+                failed_message = self._failed_messages.get(variant.path, "").strip()
+                failure_text = "Failed"
+                if failed_message:
+                    failure_text = f"Failed\n{failed_message}"
+                painter.drawText(
+                    image_rect.adjusted(12, 12, -12, -12),
+                    Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                    failure_text,
+                )
+            else:
+                painter.setPen(self._placeholder_text_color)
+                painter.setFont(self._placeholder_font)
+                painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, "Loading...")
+
+            if use_loupe_card:
+                painter.save()
+                painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(QRectF(image_rect).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+                painter.restore()
 
         # Rating/meta footer strip under compact cards. The normal review card
         # now paints metadata over a bottom image scrim instead.
         footer_top = image_rect.bottom() + 1
-        if not use_loupe_card and footer_top < rect.bottom() - 1:
+        if not use_loupe_card and not use_new_grid_card and footer_top < rect.bottom() - 1:
             footer_clip = QPainterPath()
             footer_clip.addRoundedRect(QRectF(rect).adjusted(1, 1, -1, -1), 6, 6)
             painter.save()
@@ -1753,7 +1886,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
             painter.restore()
 
-        if not use_loupe_card and annotation and (annotation.rating or annotation.tags):
+        if not use_loupe_card and not use_new_grid_card and annotation and (annotation.rating or annotation.tags):
             badge = self._annotation_badge(annotation)
             badge_rect = QRect(image_rect.right() - 160, image_rect.bottom() - 30, 150, 24)
             painter.setPen(Qt.PenStyle.NoPen)
@@ -1777,6 +1910,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         else:
             left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode else 0)
             left_badge_y = image_rect.top() + 10
+            if use_new_grid_card and self._review_group_badge_text(burst_info, dino_decision):
+                # The renderer's duplicate badge owns the top-left corner;
+                # start the state badges below it.
+                left_badge_y += max(24, int(round(rect.height() * 0.069))) + 6
             if is_rejected:
                 self._paint_state_badge(
                     painter,
@@ -1857,6 +1994,10 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
 
         badge_y = image_rect.top() + 10
+        if use_new_grid_card and self._review_ai_badge_label(ai_result):
+            # The renderer's AI badge owns the top-right corner; start the
+            # Edited badge below it.
+            badge_y += max(24, int(round(rect.height() * 0.069))) + 6
         if not use_loupe_card and record.has_edits:
             self._paint_state_badge(
                 painter,
@@ -1868,7 +2009,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             badge_y += 30
 
         ai_badge = self._primary_ai_badge(ai_result)
-        if not use_loupe_card and ai_badge is not None:
+        if not use_loupe_card and not use_new_grid_card and ai_badge is not None:
             badge_text, fill, text, badge_width = ai_badge
             self._paint_state_badge(
                 painter,
@@ -1878,7 +2019,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 text,
             )
 
-        if not use_loupe_card and self._show_ai_annotations and ai_result is not None:
+        if not use_loupe_card and not use_new_grid_card and self._show_ai_annotations and ai_result is not None:
             score_badge_rect = QRect(image_rect.right() - 92, image_rect.bottom() - 30, 82, 24)
             self._paint_state_badge(
                 painter,
@@ -1898,8 +2039,9 @@ class ThumbnailGridView(QAbstractScrollArea):
                 annotation,
                 ai_result,
                 workflow_insight,
+                photo_bottom=photo_bottom,
             )
-        else:
+        elif not use_new_grid_card:
             title_rect = self._title_rect(rect)
             capture_rect = self._capture_rect(rect)
             meta_rect = self._meta_rect(rect)
@@ -2159,7 +2301,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         badge_y = image_rect.top() + margin
         left_text = self._review_group_badge_text(burst_info, dino_decision)
         if left_text:
-            left_rect = self._review_badge_rect(painter, left_text, image_rect.left() + margin, badge_y, scale)
+            left_rect = self._review_badge_rect(
+                painter, left_text, image_rect.left() + margin, badge_y, scale, icon="duplicate"
+            )
             self._paint_review_pill(
                 painter,
                 left_rect,
@@ -2168,11 +2312,12 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._review_duplicate_badge_text,
                 border=self._review_badge_border,
                 scale=scale,
+                icon="duplicate",
             )
 
         right_text = self._review_ai_badge_label(ai_result)
         if right_text:
-            right_rect = self._review_badge_rect(painter, right_text, 0, badge_y, scale)
+            right_rect = self._review_badge_rect(painter, right_text, 0, badge_y, scale, icon="spark")
             right_rect.moveRight(image_rect.right() - margin)
             self._paint_review_pill(
                 painter,
@@ -2182,6 +2327,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._review_ai_badge_color,
                 border=self._review_badge_border,
                 scale=scale,
+                icon="spark",
             )
 
     def _paint_review_overlay(
@@ -2194,48 +2340,72 @@ class ThumbnailGridView(QAbstractScrollArea):
         annotation: SessionAnnotation | None,
         ai_result: AIImageResult | None,
         workflow_insight,
+        photo_bottom: int | None = None,
     ) -> None:
         image_rect = self._image_rect(rect)
         scale = self._review_scale(image_rect)
-        overlay_height = self._review_overlay_height(image_rect)
+        margin = self._review_overlay_margin(image_rect)
+        button_size = self._review_action_button_size(image_rect)
+        button_gap = self._review_action_button_gap(image_rect)
+        title_height, capture_height, meta_height, line_gap = self._review_text_metrics(image_rect)
+
+        # Text rows anchor to the classic button position (button centered on
+        # the meta row); the buttons themselves may drop below that anchor so
+        # they never clip the status text (see _review_button_top).
+        anchor_center_y = image_rect.bottom() - margin - button_size // 2
+        meta_y = anchor_center_y - meta_height // 2
+        capture_y = meta_y - capture_height - line_gap
+        title_y = capture_y - title_height - line_gap
+
+        reject_rect = QRect(0, 0, button_size, button_size)
+        reject_rect.moveRight(image_rect.right() - margin)
+        reject_rect.moveTop(self._review_button_top(image_rect))
+        winner_rect = QRect(0, 0, button_size, button_size)
+        winner_rect.moveRight(reject_rect.left() - button_gap)
+        winner_rect.moveTop(reject_rect.top())
+
         clip = QPainterPath()
         clip.addRoundedRect(QRectF(image_rect), 5, 5)
 
         painter.save()
         painter.setClipPath(clip)
-        scrim_top = max(image_rect.top(), image_rect.bottom() - overlay_height)
-        painter.fillRect(
-            QRect(image_rect.left(), scrim_top, image_rect.width(), max(1, image_rect.bottom() - scrim_top + 1)),
-            self._review_scrim_bottom,
+        # Scrim anchored to the pane bottom. Its job is to hide the dead space
+        # between the photo's bottom edge and the pane, so it stays fully
+        # opaque up to the photo's bottom edge (or the top of the text block,
+        # whichever is higher) and feathers out shortly above that. The
+        # immersive style lightens every stop to 65% so the photo reads
+        # through the metadata strip.
+        text_top = title_y - line_gap
+        photo_edge = image_rect.bottom() if photo_bottom is None else min(photo_bottom, image_rect.bottom())
+        overlap = max(6, int(round(8 * scale)))
+        solid_top = min(text_top, photo_edge - overlap)
+        solid_h = max(1, image_rect.bottom() - solid_top + 1)
+        feather_h = max(20, int(round(30 * scale)))
+        total = max(1, min(solid_h + feather_h, image_rect.height()))
+        scrim_top = image_rect.bottom() - total + 1
+        feather_frac = feather_h / float(solid_h + feather_h)
+        scrim_rect = QRect(
+            image_rect.left(),
+            scrim_top,
+            image_rect.width(),
+            image_rect.bottom() - scrim_top + 1,
         )
-        painter.fillRect(
-            QRect(image_rect.left(), max(image_rect.top(), scrim_top - overlay_height // 2), image_rect.width(), overlay_height // 2),
-            self._review_scrim_mid,
-        )
-        painter.fillRect(
-            QRect(image_rect.left(), max(image_rect.top(), scrim_top - overlay_height), image_rect.width(), overlay_height // 2),
-            self._review_scrim_top,
-        )
+        alpha_scale = 0.65 if self._loupe_card_style == "immersive" else 1.0
+
+        def scrim_stop(alpha: int) -> QColor:
+            color = QColor(self._review_scrim_color)
+            color.setAlpha(round(alpha * alpha_scale))
+            return color
+
+        gradient = QLinearGradient(scrim_rect.topLeft(), scrim_rect.bottomLeft())
+        gradient.setColorAt(0.0, scrim_stop(0))
+        gradient.setColorAt(feather_frac * 0.50, scrim_stop(40))
+        gradient.setColorAt(feather_frac * 0.80, scrim_stop(125))
+        gradient.setColorAt(feather_frac, scrim_stop(235))
+        gradient.setColorAt(min(1.0, feather_frac + (1.0 - feather_frac) * 0.12), scrim_stop(255))
+        gradient.setColorAt(1.0, scrim_stop(255))
+        painter.fillRect(scrim_rect, QBrush(gradient))
         painter.restore()
-
-        margin = self._review_overlay_margin(image_rect)
-        button_size = self._review_action_button_size(image_rect)
-        button_gap = self._review_action_button_gap(image_rect)
-        bottom = image_rect.bottom() - margin
-        reject_rect = QRect(0, 0, button_size, button_size)
-        reject_rect.moveRight(image_rect.right() - margin)
-        reject_rect.moveBottom(bottom)
-        winner_rect = QRect(0, 0, button_size, button_size)
-        winner_rect.moveRight(reject_rect.left() - button_gap)
-        winner_rect.moveTop(reject_rect.top())
-
-        title_height = max(24, int(round(17 * scale)))
-        capture_height = max(20, int(round(13 * scale)))
-        meta_height = max(18, int(round(11 * scale)))
-        line_gap = max(5, int(round(7 * scale)))
-        meta_y = reject_rect.center().y() - meta_height // 2
-        capture_y = meta_y - capture_height - line_gap
-        title_y = capture_y - title_height - line_gap
         right_width = max(96, int(round(64 * scale)))
         left_width = max(80, winner_rect.left() - margin - image_rect.left() - margin - int(round(18 * scale)))
 
@@ -2266,21 +2436,27 @@ class ThumbnailGridView(QAbstractScrollArea):
         meta_text = painter.fontMetrics().elidedText(meta_text, Qt.TextElideMode.ElideRight, meta_rect.width())
         painter.drawText(meta_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, meta_text)
 
+        # Image count: same row as the filename (top), right-aligned.
         painter.setPen(self._review_index_text)
-        painter.setFont(self._review_font(9, scale))
+        painter.setFont(self._review_font(10, scale, QFont.Weight.Bold))
         painter.drawText(
-            QRect(right_rect.left(), title_rect.top(), right_rect.width(), capture_height),
+            QRect(right_rect.left(), title_rect.top(), right_rect.width(), title_height),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
             self._review_position_text(index),
         )
 
         keeper_text = self._review_keeper_label(ai_result, workflow_insight)
         if keeper_text:
+            # Status just under the count row, right-aligned. The rect is sized
+            # to the real font height plus TextDontClip so descenders never get
+            # cut off, and the dropped buttons below leave it clear air.
+            keeper_y = title_rect.bottom() + max(2, int(round(2 * scale)))
             painter.setPen(self._review_keeper_color)
-            painter.setFont(self._review_font(9, scale))
+            painter.setFont(self._review_font(10, scale, QFont.Weight.DemiBold))
+            keeper_height = max(capture_height, painter.fontMetrics().height())
             painter.drawText(
-                QRect(right_rect.left(), capture_rect.top(), right_rect.width(), 22),
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                QRect(right_rect.left(), keeper_y, right_rect.width(), keeper_height),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextDontClip,
                 keeper_text,
             )
         painter.restore()
@@ -2289,7 +2465,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._paint_review_action_button(
                 painter,
                 winner_rect,
-                self.HEART_SYMBOL if annotation and annotation.winner else self.HEART_OUTLINE_SYMBOL,
+                "heart",
                 active=bool(annotation and annotation.winner),
                 hovered=index == self._hovered_winner_index,
                 accent=self._winner_color,
@@ -2297,7 +2473,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._paint_review_action_button(
                 painter,
                 reject_rect,
-                self.REJECT_SYMBOL,
+                "reject",
                 active=bool(annotation and annotation.reject),
                 hovered=index == self._hovered_reject_index,
                 accent=self._reject_color,
@@ -2307,7 +2483,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self,
         painter: QPainter,
         rect: QRect,
-        symbol: str,
+        icon: str,
         *,
         active: bool,
         hovered: bool,
@@ -2316,18 +2492,45 @@ class ThumbnailGridView(QAbstractScrollArea):
         if rect.isEmpty():
             return
         painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         fill = QColor(0, 0, 0, 128 if hovered or active else 88)
         border = QColor(accent) if active else QColor(255, 255, 255)
         border.setAlpha(190 if active else (105 if hovered else 72))
-        text = QColor(accent) if active else QColor("#f2f5f8")
+        # Muted idle white so the buttons sit quietly on the scrim; hover
+        # brightens back up and active takes the accent.
+        color = QColor(accent) if active else (QColor("#e9eef3") if hovered else QColor("#c3ccd6"))
         painter.setPen(QPen(border, 1.1))
         painter.setBrush(fill)
         painter.drawEllipse(rect)
-        painter.setPen(text)
-        scale = max(1.0, rect.width() / 32.0)
-        painter.setFont(self._review_font(14, scale, family="Segoe UI Symbol"))
-        painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, symbol)
+
+        image = _loupe_button_icon(icon, (color.red(), color.green(), color.blue()))
+        if image is not None:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            # Draw only the central glyph of the artwork; the asset's own
+            # thick ring stays outside this crop and the thin ellipse above
+            # replaces it.
+            crop_frac = 0.62
+            source_inset_x = image.width() * (1 - crop_frac) / 2
+            source_inset_y = image.height() * (1 - crop_frac) / 2
+            source = QRectF(image.rect()).adjusted(
+                source_inset_x, source_inset_y, -source_inset_x, -source_inset_y
+            )
+            target_inset_x = rect.width() * (1 - crop_frac) / 2
+            target_inset_y = rect.height() * (1 - crop_frac) / 2
+            target = QRectF(rect).adjusted(target_inset_x, target_inset_y, -target_inset_x, -target_inset_y)
+            painter.drawImage(target, image, source)
+        elif icon == "heart":
+            # Fallback: vector icons when the PNG assets are missing.
+            _paint_heart_icon(painter, rect, color, filled=active)
+        else:
+            _paint_reject_icon(painter, rect, color)
         painter.restore()
+
+    @staticmethod
+    def _review_badge_icon_metrics(scale: float) -> tuple[int, int]:
+        icon_width = max(10, int(round(13 * scale)))
+        icon_gap = max(6, int(round(7 * scale)))
+        return icon_width, icon_gap
 
     def _paint_review_pill(
         self,
@@ -2339,23 +2542,46 @@ class ThumbnailGridView(QAbstractScrollArea):
         *,
         border: QColor | None = None,
         scale: float = 1.0,
+        icon: str = "",
     ) -> None:
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(QPen(border, 1.0) if border is not None else Qt.PenStyle.NoPen)
         painter.setBrush(fill)
-        painter.drawRoundedRect(QRectF(rect), rect.height() / 2, rect.height() / 2)
+        radius = min(rect.height() / 2, max(6.0, 6.0 * scale))
+        painter.drawRoundedRect(QRectF(rect), radius, radius)
+
+        inset = max(10, int(round(10 * scale)))
+        text_rect = rect.adjusted(inset, 0, -inset, 0)
+        if icon:
+            icon_width, icon_gap = self._review_badge_icon_metrics(scale)
+            icon_rect = QRect(
+                rect.left() + inset,
+                rect.top() + (rect.height() - icon_width) // 2,
+                icon_width,
+                icon_width,
+            )
+            if icon == "duplicate":
+                _paint_duplicate_icon(painter, icon_rect, foreground, scale)
+            elif icon == "spark":
+                _paint_spark_icon(painter, icon_rect, foreground)
+            text_rect = rect.adjusted(inset + icon_width + icon_gap, 0, -inset, 0)
+
         painter.setPen(foreground)
         painter.setFont(self._review_font(9, scale, QFont.Weight.DemiBold))
-        inset = max(10, int(round(10 * scale)))
-        painter.drawText(rect.adjusted(inset, 0, -inset, 0), Qt.AlignmentFlag.AlignCenter, text)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
         painter.restore()
 
-    def _review_badge_rect(self, painter: QPainter, text: str, x: int, y: int, scale: float = 1.0) -> QRect:
+    def _review_badge_rect(
+        self, painter: QPainter, text: str, x: int, y: int, scale: float = 1.0, *, icon: str = ""
+    ) -> QRect:
         painter.save()
         painter.setFont(self._review_font(9, scale, QFont.Weight.DemiBold))
         width = max(int(round(82 * scale)), painter.fontMetrics().horizontalAdvance(text) + int(round(22 * scale)))
         painter.restore()
+        if icon:
+            icon_width, icon_gap = self._review_badge_icon_metrics(scale)
+            width += icon_width + icon_gap
         return QRect(x, y, width, max(26, int(round(26 * scale))))
 
     def _review_group_badge_text(self, burst_info: BurstVisualInfo | None, dino_decision) -> str:
@@ -2367,8 +2593,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 label = "Burst"
             elif burst_info.kind == "similar":
                 label = "Similar"
-            prefix = "\u25a2  " if "Duplicate" in label else ""
-            return f"{prefix}{label} \u00b7 {burst_info.index_in_group}/{burst_info.group_size}"
+            return f"{label} \u00b7 {burst_info.index_in_group}/{burst_info.group_size}"
         if dino_decision is not None:
             action = str(getattr(dino_decision, "action", "") or "")
             reason = str(getattr(dino_decision, "reason", "") or "")
@@ -2381,7 +2606,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             return ""
         score = ai_result.display_score_text
         if ai_result.is_top_pick:
-            return f"\u2726  AI Pick \u00b7 {score}" if score else "\u2726  AI Pick"
+            return f"AI Pick \u00b7 {score}" if score else "AI Pick"
         return f"AI {score}" if score else ai_result.confidence_bucket_short_label
 
     def _review_keeper_label(self, ai_result: AIImageResult | None, workflow_insight) -> str:
@@ -2615,8 +2840,15 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _image_draw_rect(self, image_rect: QRect, pixmap: QPixmap) -> QRect:
         draw_size = pixmap.size()
         if self._columns == 1 or pixmap.height() > pixmap.width():
-            if draw_size.width() > image_rect.width() or draw_size.height() > image_rect.height():
-                draw_size.scale(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            fit_rect = image_rect
+            if self._use_loupe_card_style() and self._loupe_card_style == "photo_fit":
+                # Photo-fit loupe: reserve the overlay footer below the photo
+                # so the metadata strip never covers it.
+                available = image_rect.height() - self._review_text_block_height(image_rect)
+                if available >= 96:
+                    fit_rect = QRect(image_rect.x(), image_rect.y(), image_rect.width(), available)
+            if draw_size.width() > fit_rect.width() or draw_size.height() > fit_rect.height():
+                draw_size.scale(fit_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
             draw_rect = QRect(QPoint(0, 0), draw_size)
             if self._columns == 1:
                 draw_rect.moveTop(image_rect.top())
@@ -2758,7 +2990,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         button_size = self._review_action_button_size(image_rect)
         return QRect(
             image_rect.left() + margin,
-            image_rect.bottom() - margin - button_size,
+            self._review_button_top(image_rect),
             image_rect.width() - (margin * 2),
             button_size,
         )
@@ -2766,6 +2998,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _winner_button_rect(self, tile_rect: QRect) -> QRect:
         if self._action_mode in {"rejected_only", "recycle_only"}:
             return QRect()
+        if self._use_new_grid_card():
+            return grid_card_action_rects(tile_rect).favorite
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
             image_rect = self._image_rect(tile_rect)
@@ -2782,6 +3016,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _reject_button_rect(self, tile_rect: QRect) -> QRect:
         if self._action_mode in {"accepted_only", "recycle_only"}:
             return QRect()
+        if self._use_new_grid_card():
+            return grid_card_action_rects(tile_rect).reject
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
             image_rect = self._image_rect(tile_rect)
@@ -2816,10 +3052,51 @@ class ThumbnailGridView(QAbstractScrollArea):
         return QFont(family, max(1, int(round(point_size * scale))), weight)
 
     def _review_action_button_size(self, image_rect: QRect) -> int:
-        return max(42, min(74, image_rect.width() // 21))
+        return max(46, min(80, image_rect.width() // 19))
 
     def _review_action_button_gap(self, image_rect: QRect) -> int:
         return max(12, min(24, image_rect.width() // 64))
+
+    def _review_text_metrics(self, image_rect: QRect) -> tuple[int, int, int, int]:
+        """(title_height, capture_height, meta_height, line_gap) for the overlay."""
+        scale = self._review_scale(image_rect)
+        title_height = max(24, int(round(17 * scale)))
+        capture_height = max(20, int(round(13 * scale)))
+        meta_height = max(18, int(round(11 * scale)))
+        line_gap = max(5, int(round(7 * scale)))
+        return title_height, capture_height, meta_height, line_gap
+
+    def _review_button_top(self, image_rect: QRect) -> int:
+        """Top edge of the action buttons: anchored so the buttons center on
+        the meta row, then dropped just far enough that they clear the status
+        text on the capture row (keeps Keeper/Review from clipping)."""
+        scale = self._review_scale(image_rect)
+        margin = self._review_overlay_margin(image_rect)
+        button_size = self._review_action_button_size(image_rect)
+        _title_height, capture_height, meta_height, line_gap = self._review_text_metrics(image_rect)
+        anchor_center_y = image_rect.bottom() - margin - button_size // 2
+        meta_y = anchor_center_y - meta_height // 2
+        capture_y = meta_y - capture_height - line_gap
+        button_top = anchor_center_y - button_size // 2
+        min_button_top = capture_y + capture_height + max(4, int(round(4 * scale)))
+        return max(button_top, min_button_top)
+
+    def _review_text_block_height(self, image_rect: QRect) -> int:
+        """Footer height from the title row down to the pane bottom; the
+        photo-fit style reserves this strip below the photo."""
+        margin = self._review_overlay_margin(image_rect)
+        button_size = self._review_action_button_size(image_rect)
+        title_height, capture_height, meta_height, line_gap = self._review_text_metrics(image_rect)
+        return (
+            margin
+            + button_size // 2
+            + meta_height // 2
+            + line_gap
+            + capture_height
+            + line_gap
+            + title_height
+            + line_gap
+        )
 
     def _left_arrow_rect(self, tile_rect: QRect, record: ImageRecord) -> QRect:
         if not record.has_variant_stack:

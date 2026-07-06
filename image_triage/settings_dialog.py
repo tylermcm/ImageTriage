@@ -69,6 +69,7 @@ class WorkflowSettingsResult:
     delete_mode: DeleteMode
     toolbar_style: str = "icons"
     compact_cards_enabled: bool = True
+    loupe_card_style: str = "immersive"
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
@@ -137,6 +138,7 @@ class WorkflowSettingsDialog(QDialog):
         delete_mode: DeleteMode,
         toolbar_style: str = "icons",
         compact_cards_enabled: bool = True,
+        loupe_card_style: str = "immersive",
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
@@ -294,6 +296,18 @@ class WorkflowSettingsDialog(QDialog):
             "Shows more images on screen by reducing card spacing and metadata height."
         ))
 
+        self.loupe_card_style_combo = QComboBox()
+        self.loupe_card_style_combo.setMinimumWidth(180)
+        self.loupe_card_style_combo.addItem("Photo fit", "photo_fit")
+        self.loupe_card_style_combo.addItem("Immersive", "immersive")
+        loupe_style_index = self.loupe_card_style_combo.findData(loupe_card_style)
+        self.loupe_card_style_combo.setCurrentIndex(max(0, loupe_style_index))
+        self.loupe_card_style_combo.setToolTip(_settings_tooltip(
+            "Layout of the single-image review card. Photo fit keeps the metadata strip below "
+            "the photo on a solid backdrop. Immersive lets the photo fill the pane and paints "
+            "the metadata over its bottom edge on a lighter scrim."
+        ))
+
         self.free_smooth_scroll_checkbox = QCheckBox("Use free smooth scrolling")
         self.free_smooth_scroll_checkbox.setChecked(free_smooth_scroll_enabled)
         self.free_smooth_scroll_checkbox.setToolTip(_settings_tooltip(
@@ -338,6 +352,7 @@ class WorkflowSettingsDialog(QDialog):
         interface_page, interface_layout = self._build_settings_page("Interface")
         self._add_form_row(interface_layout, "Toolbar", self.toolbar_style_combo)
         self._add_checkbox_row(interface_layout, "Grid", self.compact_cards_checkbox)
+        self._add_form_row(interface_layout, "Review card", self.loupe_card_style_combo)
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
         self._add_form_row(interface_layout, "Preview preload", self.preview_preload_batch_spin)
         self._add_checkbox_row(interface_layout, "Folders", self.show_hidden_folders_checkbox)
@@ -1105,6 +1120,7 @@ class WorkflowSettingsDialog(QDialog):
             delete_mode=delete_mode,
             toolbar_style=str(self.toolbar_style_combo.currentData() or "text"),
             compact_cards_enabled=self.compact_cards_checkbox.isChecked(),
+            loupe_card_style=str(self.loupe_card_style_combo.currentData() or "immersive"),
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
