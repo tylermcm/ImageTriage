@@ -23,6 +23,11 @@ from PySide6.QtGui import (
 )
 
 
+# Past this many grid columns the cards should switch to the trimmed compact
+# layout (icon-only badges, filename + status footer).
+COMPACT_COLUMN_THRESHOLD = 4
+
+
 @dataclass(frozen=True, slots=True)
 class GridCardData:
     filename: str = "DSC_7149.NEF"
@@ -52,6 +57,8 @@ def render_grid_card_pixmap(
     size: QSize,
     source_pixmap: QPixmap | None,
     data: GridCardData,
+    *,
+    compact: bool = False,
 ) -> QPixmap:
     """Render a single card into a transparent pixmap."""
 
@@ -60,7 +67,7 @@ def render_grid_card_pixmap(
     painter = QPainter(output)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-    paint_grid_card(painter, QRect(QPoint(0, 0), size), source_pixmap, data)
+    paint_grid_card(painter, QRect(QPoint(0, 0), size), source_pixmap, data, compact=compact)
     painter.end()
     return output
 
@@ -70,8 +77,15 @@ def paint_grid_card(
     rect: QRect,
     source_pixmap: QPixmap | None,
     data: GridCardData,
+    *,
+    compact: bool = False,
 ) -> GridCardHitRects:
-    """Paint one main viewport card and return action hit rectangles."""
+    """Paint one main viewport card and return action hit rectangles.
+
+    ``compact`` selects the trimmed layout used past four grid columns:
+    icon-only badges, a two-line footer (filename + status), and a lower
+    scale floor so the chrome keeps shrinking with the card.
+    """
 
     if rect.width() <= 8 or rect.height() <= 8:
         return GridCardHitRects(QRect(), QRect())
@@ -80,8 +94,8 @@ def paint_grid_card(
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-    scale = _scale_for(rect)
-    radius = max(7.0, 8.0 * scale)
+    scale = _scale_for(rect, compact)
+    radius = max(6.0 if compact else 7.0, 8.0 * scale)
     outer = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
 
     selected_color = QColor(80, 140, 255)
@@ -93,45 +107,61 @@ def paint_grid_card(
     painter.setBrush(Qt.BrushStyle.NoBrush)
     painter.drawRoundedRect(outer, radius, radius)
 
-    pad = max(6, round(7 * scale))
+    pad = _content_pad(scale, compact)
     content_rect = QRect(
         rect.left() + pad,
         rect.top() + pad,
         max(1, rect.width() - pad * 2),
         max(1, rect.height() - pad * 2),
     )
-    image_radius = max(5.0, 6.0 * scale)
+    image_radius = max(4.0 if compact else 5.0, 6.0 * scale)
 
     _paint_image(painter, content_rect, image_radius, source_pixmap)
-    _paint_scrim(painter, rect, content_rect, image_radius, scale)
+    _paint_scrim(painter, rect, content_rect, image_radius, scale, compact)
 
-    _paint_badges(painter, rect, content_rect, data, scale)
-    favorite_rect, reject_rect = _paint_bottom_overlay(painter, rect, content_rect, data, scale)
+    if compact:
+        _paint_compact_badges(painter, rect, content_rect, data, scale)
+        favorite_rect, reject_rect = _paint_compact_overlay(painter, rect, content_rect, data, scale)
+    else:
+        _paint_badges(painter, rect, content_rect, data, scale)
+        favorite_rect, reject_rect = _paint_bottom_overlay(painter, rect, content_rect, data, scale)
 
     painter.restore()
     return GridCardHitRects(favorite_rect, reject_rect)
 
 
-def _scale_for(rect: QRect) -> float:
+def _scale_for(rect: QRect, compact: bool = False) -> float:
+    if compact:
+        return max(0.55, min(1.0, rect.width() / 560.0))
     return max(0.72, min(1.25, rect.width() / 560.0))
 
 
-def grid_card_action_rects(rect: QRect) -> GridCardHitRects:
+def _content_pad(scale: float, compact: bool) -> int:
+    if compact:
+        return max(4, round(5 * scale))
+    return max(6, round(7 * scale))
+
+
+def grid_card_action_rects(rect: QRect, *, compact: bool = False) -> GridCardHitRects:
     """Favorite/reject hit rectangles for a card painted by paint_grid_card.
 
-    Kept in sync with _paint_bottom_overlay (which uses the same internal
-    helper) so grid hit-testing can ask for the rectangles without painting.
+    Kept in sync with _paint_bottom_overlay / _paint_compact_overlay (which
+    use the same internal helpers) so grid hit-testing can ask for the
+    rectangles without painting. ``compact`` must match the flag given to
+    ``paint_grid_card``.
     """
     if rect.width() <= 8 or rect.height() <= 8:
         return GridCardHitRects(QRect(), QRect())
-    scale = _scale_for(rect)
-    pad = max(6, round(7 * scale))
+    scale = _scale_for(rect, compact)
+    pad = _content_pad(scale, compact)
     content_rect = QRect(
         rect.left() + pad,
         rect.top() + pad,
         max(1, rect.width() - pad * 2),
         max(1, rect.height() - pad * 2),
     )
+    if compact:
+        return _compact_action_button_rects(rect, content_rect, scale)
     return _action_button_rects(rect, content_rect, scale)
 
 
@@ -158,6 +188,23 @@ def _action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> G
     action_top = (status_top + status_height - 1) + right_text_gap + 1 + round(card_rect.height() * 0.008)
     reject_rect.moveTop(action_top)
     favorite_rect.moveTop(action_top)
+    return GridCardHitRects(favorite_rect, reject_rect)
+
+
+def _compact_action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> GridCardHitRects:
+    """Compact-mode button geometry: both buttons centered on the two-line
+    footer block at the right edge."""
+    margin = max(8, round(10 * scale))
+    button = max(20, round(card_rect.height() * 0.118))
+    gap = max(5, round(6 * scale))
+    name_font, status_font = _compact_footer_fonts(scale)
+    line_gap = max(2, round(3 * scale))
+    block_height = QFontMetrics(name_font).height() + line_gap + QFontMetrics(status_font).height()
+    footer_bottom = card_rect.bottom() - max(6, round(card_rect.height() * 0.045))
+    block_top = footer_bottom - block_height + 1
+    action_top = block_top + round((block_height - button) / 2)
+    reject_rect = QRect(image_rect.right() - margin - button, action_top, button, button)
+    favorite_rect = QRect(reject_rect.left() - gap - button, action_top, button, button)
     return GridCardHitRects(favorite_rect, reject_rect)
 
 
@@ -282,19 +329,43 @@ def _metadata_text_top(card_rect: QRect, scale: float) -> int:
     return text_block_bottom - text_block_height + 1
 
 
+def _compact_footer_fonts(scale: float) -> tuple[QFont, QFont]:
+    name_font = QFont("Segoe UI", max(9, round(11 * scale)), QFont.Weight.DemiBold)
+    status_font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
+    return name_font, status_font
+
+
+def _compact_text_top(card_rect: QRect, scale: float) -> int:
+    """Top of the compact footer block (filename line). Mirrors the layout in
+    ``_paint_compact_overlay`` so the scrim anchors to the actual text."""
+    name_font, status_font = _compact_footer_fonts(scale)
+    line_gap = max(2, round(3 * scale))
+    block_height = QFontMetrics(name_font).height() + line_gap + QFontMetrics(status_font).height()
+    footer_bottom = card_rect.bottom() - max(6, round(card_rect.height() * 0.045))
+    return footer_bottom - block_height + 1
+
+
 def _paint_scrim(
     painter: QPainter,
     card_rect: QRect,
     image_rect: QRect,
     radius: float,
     scale: float,
+    compact: bool = False,
 ) -> None:
     # Anchor the fade to the text block so the gradient reaches uniformly up to
     # the top of the filename line, then ramps to a solid base under the text.
     h = card_rect.height()
-    text_top = _metadata_text_top(card_rect, scale)
-    fade_top = max(image_rect.top(), text_top - round(0.03 * h))  # fully clear just above the text
-    solid_top = text_top + round(0.14 * h)  # fully opaque by the meta line
+    if compact:
+        # Compact footer: solid by the top of the filename, with a taller
+        # fade-out above it so the photo edge never shows through the text.
+        text_top = _compact_text_top(card_rect, scale)
+        fade_top = max(image_rect.top(), text_top - round(0.24 * h))
+        solid_top = text_top
+    else:
+        text_top = _metadata_text_top(card_rect, scale)
+        fade_top = max(image_rect.top(), text_top - round(0.03 * h))  # fully clear just above the text
+        solid_top = text_top + round(0.14 * h)  # fully opaque by the meta line
     span = max(1, card_rect.bottom() - fade_top)
     ramp = max(1, solid_top - fade_top)
 
@@ -422,6 +493,46 @@ def _paint_badge(
     )
     painter.restore()
     return rect
+
+
+def _paint_compact_badges(
+    painter: QPainter, card_rect: QRect, image_rect: QRect, data: GridCardData, scale: float
+) -> None:
+    """Icon-only badge chips for the compact (>4 column) card."""
+    inset = max(8, round(10 * scale))
+    chip = max(18, round(card_rect.height() * 0.082))
+    top = image_rect.top() + inset
+    radius = max(4.0, round(5 * scale))
+    icon_size = max(9, round(chip * 0.56))
+
+    def _chip(rect: QRect, fill: QColor, border: QColor) -> QRect:
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(QRectF(rect), radius, radius)
+        return QRect(
+            rect.left() + round((rect.width() - icon_size) / 2),
+            rect.top() + round((rect.height() - icon_size) / 2),
+            icon_size,
+            icon_size,
+        )
+
+    painter.save()
+    if data.duplicate_visible and data.duplicate_text:
+        icon_rect = _chip(
+            QRect(image_rect.left() + inset, top, chip, chip),
+            QColor(31, 36, 41, 226),
+            QColor(255, 255, 255, 72),
+        )
+        _paint_duplicate_icon(painter, icon_rect, QColor(255, 197, 73), scale)
+
+    if data.ai_visible and data.ai_text:
+        icon_rect = _chip(
+            QRect(image_rect.right() - inset - chip, top, chip, chip),
+            QColor(124, 88, 23, 222),
+            QColor(255, 178, 37, 214),
+        )
+        _paint_spark_icon(painter, icon_rect, QColor(255, 218, 92))
+    painter.restore()
 
 
 def _paint_duplicate_icon(painter: QPainter, rect: QRect, color: QColor, scale: float) -> None:
@@ -587,6 +698,68 @@ def _paint_bottom_overlay(
     return favorite_rect, reject_rect
 
 
+def _paint_compact_overlay(
+    painter: QPainter,
+    card_rect: QRect,
+    image_rect: QRect,
+    data: GridCardData,
+    scale: float,
+) -> tuple[QRect, QRect]:
+    """Trimmed footer for the compact card: filename over status on the left,
+    favorite/reject buttons on the right. EXIF, meta, and position are
+    dropped entirely."""
+    margin = max(8, round(10 * scale))
+
+    hit_rects = _compact_action_button_rects(card_rect, image_rect, scale)
+    favorite_rect = QRect(hit_rects.favorite)
+    reject_rect = QRect(hit_rects.reject)
+
+    name_font, status_font = _compact_footer_fonts(scale)
+    name_metrics = QFontMetrics(name_font)
+    status_metrics = QFontMetrics(status_font)
+    line_gap = max(2, round(3 * scale))
+    block_height = name_metrics.height() + line_gap + status_metrics.height()
+    footer_bottom = card_rect.bottom() - max(6, round(card_rect.height() * 0.045))
+    block_top = footer_bottom - block_height + 1
+
+    body_left = image_rect.left() + margin
+    body_right = favorite_rect.left() - max(8, round(10 * scale))
+    body_width = max(32, body_right - body_left)
+
+    name_rect = QRect(body_left, block_top, body_width, name_metrics.height())
+    status_rect = QRect(body_left, name_rect.bottom() + line_gap, body_width, status_metrics.height())
+
+    painter.save()
+    _draw_elided_text(painter, name_rect, data.filename, name_font, QColor(255, 255, 255))
+    if data.status_text:
+        _draw_elided_text(
+            painter,
+            status_rect,
+            data.status_text,
+            status_font,
+            _status_color(data.status_kind),
+        )
+
+    _paint_action_button(
+        painter,
+        favorite_rect,
+        "heart",
+        active=data.favorite,
+        hover=data.hover_favorite,
+        active_color=QColor(245, 95, 118),
+    )
+    _paint_action_button(
+        painter,
+        reject_rect,
+        "reject",
+        active=data.rejected,
+        hover=data.hover_reject,
+        active_color=QColor(255, 107, 107),
+    )
+    painter.restore()
+    return favorite_rect, reject_rect
+
+
 def _draw_elided_text(
     painter: QPainter,
     rect: QRect,
@@ -703,6 +876,7 @@ def _paint_heart_icon(painter: QPainter, rect: QRect, color: QColor, *, filled: 
 
 
 __all__ = [
+    "COMPACT_COLUMN_THRESHOLD",
     "GridCardData",
     "GridCardHitRects",
     "grid_card_action_rects",
