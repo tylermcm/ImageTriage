@@ -38,7 +38,7 @@ class GridCardRendererTests(unittest.TestCase):
         card = render_grid_card_pixmap(
             QSize(560, 330),
             source,
-            GridCardData(duplicate_visible=False, ai_visible=False),
+            GridCardData(duplicate_visible=False, ai_visible=False, immersive=True),
         ).toImage()
 
         image_top = 7
@@ -52,7 +52,7 @@ class GridCardRendererTests(unittest.TestCase):
 
         self.assertGreater(upper, 205)
         self.assertGreater(mid, lower)
-        self.assertLess(lower, 50)
+        self.assertLess(lower, 60)
 
     def test_compact_card_renders_at_small_sizes(self) -> None:
         source = QPixmap(QSize(1200, 800))

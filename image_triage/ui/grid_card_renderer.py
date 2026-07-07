@@ -8,6 +8,8 @@ the eventual grid integration should share this renderer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
@@ -15,6 +17,7 @@ from PySide6.QtGui import (
     QBrush,
     QFont,
     QFontMetrics,
+    QImage,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -23,9 +26,71 @@ from PySide6.QtGui import (
 )
 
 
+_ACTION_ICON_FILES: dict[str, Path] = {
+    "heart": Path(__file__).resolve().parent / "assets" / "loupe_heart.png",
+    "reject": Path(__file__).resolve().parent / "assets" / "loupe_reject.png",
+}
+
+
+@lru_cache(maxsize=16)
+def load_action_icon(name: str, rgb: tuple[int, int, int]) -> QImage | None:
+    """User-supplied action-button artwork recolored for overlay use.
+
+    The source assets are black artwork on a light background with no alpha
+    channel, so the alpha is built from luminance (black -> opaque, light ->
+    transparent) and the visible pixels are filled with the requested color.
+    Faint values are squashed to zero because the reject asset has a
+    checkerboard pattern baked into its background; the remap keeps stroke
+    edges antialiased. Callers draw only the central glyph — the thick
+    baked-in ring stays outside the sampled crop.
+    """
+    path = _ACTION_ICON_FILES.get(name)
+    if path is None or not path.exists():
+        return None
+    source = QImage(str(path))
+    if source.isNull():
+        return None
+    gray = source.convertToFormat(QImage.Format.Format_Grayscale8)
+    gray.invertPixels()
+    floor = 64
+    remap = bytes(
+        0 if value < floor else min(255, round((value - floor) * 255 / (255 - floor))) for value in range(256)
+    )
+    mapped = bytes(gray.constBits()).translate(remap)
+    alpha = QImage(
+        mapped, gray.width(), gray.height(), gray.bytesPerLine(), QImage.Format.Format_Alpha8
+    ).copy()
+    icon = QImage(source.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    icon.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(icon)
+    painter.fillRect(icon.rect(), QColor(*rgb))
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+    painter.drawImage(0, 0, alpha)
+    painter.end()
+    return icon
+
+
+def _paint_action_icon_image(painter: QPainter, rect: QRect, image: QImage) -> None:
+    """Draw the central glyph of the artwork; the asset's own thick ring stays
+    outside this crop so the painted ellipse defines the circle."""
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    crop_frac = 0.62
+    source_inset_x = image.width() * (1 - crop_frac) / 2
+    source_inset_y = image.height() * (1 - crop_frac) / 2
+    source = QRectF(image.rect()).adjusted(source_inset_x, source_inset_y, -source_inset_x, -source_inset_y)
+    target_inset_x = rect.width() * (1 - crop_frac) / 2
+    target_inset_y = rect.height() * (1 - crop_frac) / 2
+    target = QRectF(rect).adjusted(target_inset_x, target_inset_y, -target_inset_x, -target_inset_y)
+    painter.drawImage(target, image, source)
+
+
 # Past this many grid columns the cards should switch to the trimmed compact
 # layout (icon-only badges, filename + status footer).
 COMPACT_COLUMN_THRESHOLD = 4
+
+# Fixed corner rounding for the photo at every card size. Scaling it with the
+# card width made the corners look sharp past three or four columns.
+IMAGE_CORNER_RADIUS = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +110,10 @@ class GridCardData:
     rejected: bool = False
     hover_favorite: bool = False
     hover_reject: bool = False
+    # Immersive review style: the photo fills the whole cell (no footer strip
+    # below it) and the scrim alphas scale to 65% so the photo stays readable
+    # underneath the overlay. Photo-fit keeps the text strip under the photo.
+    immersive: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,18 +164,10 @@ def paint_grid_card(
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
     scale = _scale_for(rect, compact)
-    radius = max(6.0 if compact else 7.0, 8.0 * scale)
     outer = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
 
-    selected_color = QColor(80, 140, 255)
-    border_color = selected_color if data.selected else QColor(44, 47, 52)
-    border_width = 1.35 if data.selected else 1.0
-
-    _fill_round_rect(painter, outer, radius, QColor(16, 17, 19))
-    painter.setPen(QPen(border_color, border_width))
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawRoundedRect(outer, radius, radius)
-
+    # Frameless: no card background or border — the content sits directly on
+    # the viewport, matching the single-column loupe.
     pad = _content_pad(scale, compact)
     content_rect = QRect(
         rect.left() + pad,
@@ -114,10 +175,22 @@ def paint_grid_card(
         max(1, rect.width() - pad * 2),
         max(1, rect.height() - pad * 2),
     )
-    image_radius = max(4.0 if compact else 5.0, 6.0 * scale)
+    image_radius = IMAGE_CORNER_RADIUS
 
-    _paint_image(painter, content_rect, image_radius, source_pixmap)
-    _paint_scrim(painter, rect, content_rect, image_radius, scale, compact)
+    if data.immersive:
+        photo_rect = QRect(content_rect)
+    else:
+        # Photo-fit uses a full-width 3:2 photo pane. The footer/scrim is
+        # responsible for hiding the lower transition rather than shortening
+        # the photo and breaking the expected image ratio.
+        photo_height = min(round(content_rect.width() * 2 / 3), content_rect.height())
+        photo_rect = QRect(content_rect.left(), content_rect.top(), content_rect.width(), photo_height)
+
+    _paint_image(painter, content_rect, image_radius, source_pixmap, photo_rect=photo_rect)
+    if data.immersive:
+        # Only the immersive style paints over the photo; photo-fit text sits
+        # on the solid content fill below it.
+        _paint_scrim(painter, rect, content_rect, image_radius, scale, compact, light=True)
 
     if compact:
         _paint_compact_badges(painter, rect, content_rect, data, scale)
@@ -125,6 +198,17 @@ def paint_grid_card(
     else:
         _paint_badges(painter, rect, content_rect, data, scale)
         favorite_rect, reject_rect = _paint_bottom_overlay(painter, rect, content_rect, data, scale)
+
+    if data.selected:
+        # Selection ring on the content itself (no card frame to carry it);
+        # a thin dark contrast line inside the accent keeps it readable over
+        # bright photo edges — same treatment as the single-column loupe.
+        ring_radius = max(3.0, image_radius - 1.0)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(0, 0, 0, 140), 1.0))
+        painter.drawRoundedRect(QRectF(rect).adjusted(2.0, 2.0, -2.0, -2.0), ring_radius, ring_radius)
+        painter.setPen(QPen(QColor(80, 140, 255), 1.6))
+        painter.drawRoundedRect(outer, image_radius, image_radius)
 
     painter.restore()
     return GridCardHitRects(favorite_rect, reject_rect)
@@ -137,9 +221,9 @@ def _scale_for(rect: QRect, compact: bool = False) -> float:
 
 
 def _content_pad(scale: float, compact: bool) -> int:
-    if compact:
-        return max(4, round(5 * scale))
-    return max(6, round(7 * scale))
+    # Frameless cards: the photo owns the whole cell, so there is no inset.
+    # Kept as a function so paint and hit-testing stay on one definition.
+    return 0
 
 
 def grid_card_action_rects(rect: QRect, *, compact: bool = False) -> GridCardHitRects:
@@ -200,7 +284,7 @@ def _compact_action_button_rects(card_rect: QRect, image_rect: QRect, scale: flo
     name_font, status_font = _compact_footer_fonts(scale)
     line_gap = max(2, round(3 * scale))
     block_height = QFontMetrics(name_font).height() + line_gap + QFontMetrics(status_font).height()
-    footer_bottom = card_rect.bottom() - max(6, round(card_rect.height() * 0.045))
+    footer_bottom = _compact_footer_bottom(card_rect)
     block_top = footer_bottom - block_height + 1
     action_top = block_top + round((block_height - button) / 2)
     reject_rect = QRect(image_rect.right() - margin - button, action_top, button, button)
@@ -231,9 +315,12 @@ def _paint_image(
     content_rect: QRect,
     radius: float,
     source_pixmap: QPixmap | None,
+    *,
+    photo_rect: QRect | None = None,
 ) -> None:
     path = _rounded_path(QRectF(content_rect), radius)
-    photo_rect = _photo_rect_for(content_rect)
+    if photo_rect is None:
+        photo_rect = _photo_rect_for(content_rect)
     painter.save()
     painter.setClipPath(path)
 
@@ -335,13 +422,19 @@ def _compact_footer_fonts(scale: float) -> tuple[QFont, QFont]:
     return name_font, status_font
 
 
+def _compact_footer_bottom(card_rect: QRect) -> int:
+    """Bottom edge of the compact footer block. Shared by the overlay, the
+    scrim anchor, and the button rects so they always move together."""
+    return card_rect.bottom() - max(8, round(card_rect.height() * 0.06))
+
+
 def _compact_text_top(card_rect: QRect, scale: float) -> int:
     """Top of the compact footer block (filename line). Mirrors the layout in
     ``_paint_compact_overlay`` so the scrim anchors to the actual text."""
     name_font, status_font = _compact_footer_fonts(scale)
     line_gap = max(2, round(3 * scale))
     block_height = QFontMetrics(name_font).height() + line_gap + QFontMetrics(status_font).height()
-    footer_bottom = card_rect.bottom() - max(6, round(card_rect.height() * 0.045))
+    footer_bottom = _compact_footer_bottom(card_rect)
     return footer_bottom - block_height + 1
 
 
@@ -352,6 +445,8 @@ def _paint_scrim(
     radius: float,
     scale: float,
     compact: bool = False,
+    *,
+    light: bool = False,
 ) -> None:
     # Anchor the fade to the text block so the gradient reaches uniformly up to
     # the top of the filename line, then ramps to a solid base under the text.
@@ -380,7 +475,14 @@ def _paint_scrim(
         t = i / steps
         x = min(1.0, (t * span) / ramp)
         ease = x * x * (3.0 - 2.0 * x)  # smoothstep: zero slope at both ends
-        grad.setColorAt(t, QColor(6, 9, 12, round(255 * ease)))
+        if light:
+            # Immersive: the fade stays translucent (65%) so the photo reads
+            # through, but the solid band behind the text ramps to 80% so the
+            # labels keep a legibility floor on bright content.
+            alpha_scale = 0.65 + 0.15 * ease
+        else:
+            alpha_scale = 1.0
+        grad.setColorAt(t, QColor(6, 9, 12, round(255 * ease * alpha_scale)))
 
     painter.save()
     painter.setClipPath(_rounded_path(QRectF(image_rect), radius))
@@ -718,16 +820,20 @@ def _paint_compact_overlay(
     name_metrics = QFontMetrics(name_font)
     status_metrics = QFontMetrics(status_font)
     line_gap = max(2, round(3 * scale))
-    block_height = name_metrics.height() + line_gap + status_metrics.height()
-    footer_bottom = card_rect.bottom() - max(6, round(card_rect.height() * 0.045))
-    block_top = footer_bottom - block_height + 1
+    footer_bottom = _compact_footer_bottom(card_rect)
 
     body_left = image_rect.left() + margin
     body_right = favorite_rect.left() - max(8, round(10 * scale))
     body_width = max(32, body_right - body_left)
 
-    name_rect = QRect(body_left, block_top, body_width, name_metrics.height())
-    status_rect = QRect(body_left, name_rect.bottom() + line_gap, body_width, status_metrics.height())
+    # Filename anchored to the bottom, status (Keeper/Review) above it.
+    name_rect = QRect(body_left, footer_bottom - name_metrics.height() + 1, body_width, name_metrics.height())
+    status_rect = QRect(
+        body_left,
+        name_rect.top() - line_gap - status_metrics.height(),
+        body_width,
+        status_metrics.height(),
+    )
 
     painter.save()
     _draw_elided_text(painter, name_rect, data.filename, name_font, QColor(255, 255, 255))
@@ -816,7 +922,14 @@ def _paint_action_button(
     painter.setBrush(fill)
     painter.drawEllipse(QRectF(rect))
 
-    if icon == "heart":
+    image = load_action_icon(
+        "heart" if icon == "heart" else "reject",
+        (text_color.red(), text_color.green(), text_color.blue()),
+    )
+    if image is not None:
+        _paint_action_icon_image(painter, rect, image)
+    elif icon == "heart":
+        # Fallback: vector icons when the PNG assets are missing.
         _paint_heart_icon(painter, rect, text_color, filled=active)
     else:
         _paint_reject_icon(painter, rect, text_color)
@@ -877,9 +990,11 @@ def _paint_heart_icon(painter: QPainter, rect: QRect, color: QColor, *, filled: 
 
 __all__ = [
     "COMPACT_COLUMN_THRESHOLD",
+    "IMAGE_CORNER_RADIUS",
     "GridCardData",
     "GridCardHitRects",
     "grid_card_action_rects",
+    "load_action_icon",
     "paint_grid_card",
     "render_grid_card_pixmap",
 ]
