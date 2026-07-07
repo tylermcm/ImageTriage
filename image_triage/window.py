@@ -333,8 +333,10 @@ from .ui import (
     EvaluationSourceDialog,
     TrainingSourcesDialog,
     WorkspaceDocks,
+    apply_gamma,
     apply_shortcut_overrides,
     load_shortcut_overrides,
+    normalize_ui_gamma,
     save_shortcut_overrides,
     build_app_palette,
     build_app_stylesheet,
@@ -2364,6 +2366,7 @@ class MainWindow(QMainWindow):
     AI_RESULTS_KEY = "window/ai_results_path"
     AUTO_BRACKET_KEY = "window/auto_bracket_compare"
     APPEARANCE_KEY = "window/appearance"
+    UI_GAMMA_KEY = "view/ui_gamma"
     GEOMETRY_KEY = "window/geometry"
     STATE_KEY = "window/state"
     SESSION_KEY = "workflow/session"
@@ -2821,6 +2824,7 @@ class MainWindow(QMainWindow):
         self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
         self._workspace_toolbar_overflow_update_pending: set[str] = set()
         self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.DARK.value, str))
+        self._ui_gamma = normalize_ui_gamma(self._settings.value(self.UI_GAMMA_KEY, 1.0, float))
         self._theme = None
         self._child_sync_state_path = self._prepare_child_sync_state_path()
         self._child_processes: dict[int, ChildAppProcess] = {}
@@ -7025,7 +7029,7 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is None:
             return
-        self._theme = resolve_theme(self._appearance_mode, app)
+        self._theme = apply_gamma(resolve_theme(self._appearance_mode, app), self._ui_gamma)
         app.setPalette(build_app_palette(self._theme))
         app.setStyleSheet(build_app_stylesheet(self._theme))
         self._write_child_sync_state()
@@ -21120,6 +21124,7 @@ class MainWindow(QMainWindow):
             toolbar_style=self._toolbar_style,
             compact_cards_enabled=self._compact_cards_enabled,
             loupe_card_style=self._loupe_card_style,
+            ui_gamma=self._ui_gamma,
             free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
             preview_preload_batch_size=self._preview_preload_batch_size,
             show_hidden_folders=self._show_hidden_folders,
@@ -21164,6 +21169,8 @@ class MainWindow(QMainWindow):
         delete_changed = result.delete_mode != self._delete_mode
         toolbar_style_changed = self._normalize_toolbar_style(result.toolbar_style) != self._toolbar_style
         compact_changed = result.compact_cards_enabled != self._compact_cards_enabled
+        new_ui_gamma = normalize_ui_gamma(result.ui_gamma)
+        ui_gamma_changed = abs(new_ui_gamma - self._ui_gamma) > 1e-3
         free_scroll_changed = result.free_smooth_scroll_enabled != self._free_smooth_scroll_enabled
         new_preview_preload_batch_size = self._normalize_preview_preload_batch_size(result.preview_preload_batch_size)
         preview_preload_changed = new_preview_preload_batch_size != self._preview_preload_batch_size
@@ -21186,6 +21193,7 @@ class MainWindow(QMainWindow):
         self._toolbar_style = self._normalize_toolbar_style(result.toolbar_style)
         self._compact_cards_enabled = result.compact_cards_enabled
         self._loupe_card_style = self._normalize_loupe_card_style(result.loupe_card_style)
+        self._ui_gamma = new_ui_gamma
         self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
         self._preview_preload_batch_size = new_preview_preload_batch_size
         self._show_hidden_folders = result.show_hidden_folders
@@ -21223,6 +21231,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.TOOLBAR_STYLE_KEY, self._toolbar_style)
         self._settings.setValue(self.COMPACT_CARDS_KEY, self._compact_cards_enabled)
         self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, self._loupe_card_style)
+        self._settings.setValue(self.UI_GAMMA_KEY, self._ui_gamma)
         self._settings.setValue(self.FREE_SMOOTH_SCROLL_KEY, self._free_smooth_scroll_enabled)
         self._settings.setValue(self.PREVIEW_PRELOAD_BATCH_SIZE_KEY, self._preview_preload_batch_size)
         self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
@@ -21249,6 +21258,8 @@ class MainWindow(QMainWindow):
         self.grid.set_compact_card_mode(self._compact_cards_enabled)
         self.grid.set_loupe_card_style(self._loupe_card_style)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
+        if ui_gamma_changed:
+            self._apply_appearance()
         if toolbar_style_changed:
             self._workspace_toolbar_item_widgets = {
                 "manual": self._build_workspace_toolbar_widgets("manual"),

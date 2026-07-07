@@ -88,6 +88,8 @@ def _paint_action_icon_image(painter: QPainter, rect: QRect, image: QImage) -> N
 # layout: a 3:2 photo with icon-only badge chips in the top corners and the
 # heart/reject buttons in the bottom corners.
 COMPACT_COLUMN_THRESHOLD = 4
+# Past this many columns even the compact overlay goes away — plain photo.
+PLAIN_PHOTO_COLUMN_THRESHOLD = 5
 
 # Fixed corner rounding for the photo at every card size. Scaling it with the
 # card width made the corners look sharp past three or four columns.
@@ -136,6 +138,7 @@ def render_grid_card_pixmap(
     compact_actions: str = "corners",
     compact_filename: bool = False,
     compact_badge_text: bool = False,
+    compact_overlay: bool = True,
 ) -> QPixmap:
     """Render a single card into a transparent pixmap."""
 
@@ -153,6 +156,7 @@ def render_grid_card_pixmap(
         compact_actions=compact_actions,
         compact_filename=compact_filename,
         compact_badge_text=compact_badge_text,
+        compact_overlay=compact_overlay,
     )
     painter.end()
     return output
@@ -168,8 +172,14 @@ def paint_grid_card(
     compact_actions: str = "corners",
     compact_filename: bool = False,
     compact_badge_text: bool = False,
+    compact_overlay: bool = True,
 ) -> GridCardHitRects:
     """Paint one main viewport card and return action hit rectangles.
+
+    ``compact_overlay=False`` strips the compact card down to the plain
+    photo (plus the selection ring) — no badges, tags, filename, or action
+    buttons. Used past the column threshold, where the chrome is too small
+    to be useful. Hit rects come back empty in that mode.
 
     ``compact`` selects the barebones layout used past four grid columns:
     the photo fills the card at 3:2, with badge chips in the top corners and
@@ -221,7 +231,10 @@ def paint_grid_card(
         # variant. Barebones has no text and needs no scrim.
         _paint_scrim(painter, rect, content_rect, image_radius, scale, light=data.immersive)
 
-    if compact:
+    if compact and not compact_overlay:
+        favorite_rect = QRect()
+        reject_rect = QRect()
+    elif compact:
         _paint_compact_badges(painter, rect, content_rect, data, scale, show_text=compact_badge_text)
         favorite_rect, reject_rect = _paint_compact_overlay(
             painter,
@@ -256,8 +269,10 @@ def _scale_for(rect: QRect, compact: bool = False) -> float:
     if compact:
         # Sub-linear (square-root) response: the chrome keeps shrinking as
         # columns increase so it never dominates the card, but slower than
-        # 1:1 so text and icons stay readable at high column counts.
-        return max(0.42, min(1.0, (rect.width() / 560.0) ** 0.5))
+        # 1:1 so text and icons stay readable at high column counts. The cap
+        # lets the chrome keep growing on very wide cards (1-2 columns, the
+        # immersive loupe) without ballooning.
+        return max(0.42, min(1.75, (rect.width() / 560.0) ** 0.5))
     return max(0.72, min(1.25, rect.width() / 560.0))
 
 
@@ -279,16 +294,18 @@ def grid_card_height_for_width(width: int, *, compact: bool = False) -> int:
 
 
 def grid_card_action_rects(
-    rect: QRect, *, compact: bool = False, compact_actions: str = "corners"
+    rect: QRect, *, compact: bool = False, compact_actions: str = "corners", compact_overlay: bool = True
 ) -> GridCardHitRects:
     """Favorite/reject hit rectangles for a card painted by paint_grid_card.
 
     Kept in sync with _paint_bottom_overlay / _paint_compact_overlay (which
     use the same internal helpers) so grid hit-testing can ask for the
-    rectangles without painting. ``compact`` and ``compact_actions`` must
-    match the flags given to ``paint_grid_card``.
+    rectangles without painting. The compact flags must match the ones given
+    to ``paint_grid_card``.
     """
     if rect.width() <= 8 or rect.height() <= 8:
+        return GridCardHitRects(QRect(), QRect())
+    if compact and not compact_overlay:
         return GridCardHitRects(QRect(), QRect())
     scale = _scale_for(rect, compact)
     pad = _content_pad(scale, compact)
@@ -1274,6 +1291,7 @@ def _paint_heart_icon(painter: QPainter, rect: QRect, color: QColor, *, filled: 
 
 __all__ = [
     "COMPACT_COLUMN_THRESHOLD",
+    "PLAIN_PHOTO_COLUMN_THRESHOLD",
     "IMAGE_CORNER_RADIUS",
     "GridCardData",
     "GridCardHitRects",

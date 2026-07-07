@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import Enum
 
 from PySide6.QtCore import Qt
@@ -212,6 +212,44 @@ def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
 
 def default_theme() -> ThemePalette:
     return _dark_theme()
+
+
+UI_GAMMA_MIN = 0.60
+UI_GAMMA_MAX = 1.60
+
+
+def normalize_ui_gamma(value: object) -> float:
+    """Clamp a stored/user gamma value to the supported range (1.0 = off)."""
+    try:
+        gamma = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1.0
+    if gamma != gamma:  # NaN
+        return 1.0
+    return round(max(UI_GAMMA_MIN, min(UI_GAMMA_MAX, gamma)), 2)
+
+
+def apply_gamma(theme: ThemePalette, gamma: float) -> ThemePalette:
+    """Gamma-correct every palette color so the UI can be brightened or
+    darkened uniformly to compensate for monitor differences.
+
+    Values above 1.0 lift the dark tones (brighter UI), below 1.0 deepen
+    them. 1.0 returns the theme untouched. Alpha is preserved.
+    """
+    gamma = normalize_ui_gamma(gamma)
+    if abs(gamma - 1.0) < 1e-3:
+        return theme
+    exponent = 1.0 / gamma
+    lut = [round(255.0 * ((i / 255.0) ** exponent)) for i in range(256)]
+
+    def _map(token: ColorToken) -> ColorToken:
+        return ColorToken(lut[token.red], lut[token.green], lut[token.blue], token.alpha)
+
+    values = {}
+    for field in fields(ThemePalette):
+        current = getattr(theme, field.name)
+        values[field.name] = _map(current) if isinstance(current, ColorToken) else current
+    return ThemePalette(**values)
 
 
 def build_app_palette(theme: ThemePalette) -> QPalette:

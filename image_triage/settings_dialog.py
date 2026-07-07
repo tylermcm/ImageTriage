@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -70,6 +71,7 @@ class WorkflowSettingsResult:
     toolbar_style: str = "icons"
     compact_cards_enabled: bool = False
     loupe_card_style: str = "detailed"
+    ui_gamma: float = 1.0
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
@@ -139,6 +141,7 @@ class WorkflowSettingsDialog(QDialog):
         toolbar_style: str = "icons",
         compact_cards_enabled: bool = False,
         loupe_card_style: str = "detailed",
+        ui_gamma: float = 1.0,
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
@@ -310,6 +313,32 @@ class WorkflowSettingsDialog(QDialog):
             "uses the minimal photo-first card and paints metadata over the photo's edge."
         ))
 
+        self.ui_gamma_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ui_gamma_slider.setRange(60, 160)
+        self.ui_gamma_slider.setSingleStep(5)
+        self.ui_gamma_slider.setPageStep(10)
+        self.ui_gamma_slider.setValue(round(max(0.60, min(1.60, float(ui_gamma))) * 100))
+        self.ui_gamma_slider.setMinimumWidth(160)
+        self.ui_gamma_slider.setToolTip(_settings_tooltip(
+            "Brightens or darkens the whole interface to compensate for monitor "
+            "differences. Values above 1.00 lift the dark tones; 1.00 is the "
+            "designed appearance. Applies when you save."
+        ))
+        self.ui_gamma_value_label = QLabel(f"{self.ui_gamma_slider.value() / 100:.2f}")
+        self.ui_gamma_value_label.setMinimumWidth(34)
+        reset_gamma_button = QPushButton("Reset")
+        reset_gamma_button.clicked.connect(lambda: self.ui_gamma_slider.setValue(100))
+        self.ui_gamma_slider.valueChanged.connect(
+            lambda value: self.ui_gamma_value_label.setText(f"{value / 100:.2f}")
+        )
+        self.ui_gamma_row = QWidget()
+        ui_gamma_layout = QHBoxLayout(self.ui_gamma_row)
+        ui_gamma_layout.setContentsMargins(0, 0, 0, 0)
+        ui_gamma_layout.setSpacing(8)
+        ui_gamma_layout.addWidget(self.ui_gamma_slider, 1)
+        ui_gamma_layout.addWidget(self.ui_gamma_value_label)
+        ui_gamma_layout.addWidget(reset_gamma_button)
+
         self.free_smooth_scroll_checkbox = QCheckBox("Use free smooth scrolling")
         self.free_smooth_scroll_checkbox.setChecked(free_smooth_scroll_enabled)
         self.free_smooth_scroll_checkbox.setToolTip(_settings_tooltip(
@@ -355,6 +384,7 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(interface_layout, "Toolbar", self.toolbar_style_combo)
         self._add_checkbox_row(interface_layout, "Grid", self.compact_cards_checkbox)
         self._add_form_row(interface_layout, "Card style", self.loupe_card_style_combo)
+        self._add_form_row(interface_layout, "UI gamma", self.ui_gamma_row)
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
         self._add_form_row(interface_layout, "Preview preload", self.preview_preload_batch_spin)
         self._add_checkbox_row(interface_layout, "Folders", self.show_hidden_folders_checkbox)
@@ -1123,6 +1153,7 @@ class WorkflowSettingsDialog(QDialog):
             toolbar_style=str(self.toolbar_style_combo.currentData() or "text"),
             compact_cards_enabled=self.compact_cards_checkbox.isChecked(),
             loupe_card_style=str(self.loupe_card_style_combo.currentData() or "detailed"),
+            ui_gamma=self.ui_gamma_slider.value() / 100.0,
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
