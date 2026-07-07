@@ -25,6 +25,7 @@ from .ui.grid_card_renderer import (
     IMAGE_CORNER_RADIUS,
     GridCardData,
     grid_card_action_rects,
+    grid_card_height_for_width,
     load_action_icon,
     paint_grid_card,
     _paint_duplicate_icon,
@@ -178,7 +179,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._thumbnail_request_timer.setSingleShot(True)
         self._thumbnail_request_timer.setInterval(20)
         self._thumbnail_request_timer.timeout.connect(self._request_visible_thumbnails)
-        self._loupe_card_style = "photo_fit"
+        self._loupe_card_style = "detailed"
         self._title_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
         self._meta_font = QFont("Segoe UI", 9)
         self._review_title_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
@@ -782,28 +783,41 @@ class ThumbnailGridView(QAbstractScrollArea):
         )
 
     def _use_compact_grid_card(self) -> bool:
-        """Past the column threshold the shared card trims its chrome
-        (icon-only badges, filename + status footer). Applies to both the
-        discrete column zoom and the continuous tile zoom, which also
-        reflows into ``self._columns``."""
-        return self._columns > COMPACT_COLUMN_THRESHOLD
+        """Whether multi-column tiles use the barebones compact card (3:2
+        photo, paired heart/reject buttons bottom-right, filename bottom-left,
+        badge chips in the top corners).
+
+        Detailed style keeps the full review card up to the column threshold
+        and collapses past it; immersive style is always barebones."""
+        if self._loupe_card_style == "detailed":
+            return self._columns > COMPACT_COLUMN_THRESHOLD
+        return True
+
+    def _grid_card_badge_text(self) -> bool:
+        """Badges show icon + text up to the column threshold; past it they
+        collapse to icon-only chips (the renderer also falls back on its own
+        whenever the text pills would not fit the card)."""
+        return self._columns <= COMPACT_COLUMN_THRESHOLD
 
     def set_loupe_card_style(self, style: str) -> None:
-        """Select the single-column review card layout.
+        """Select the card style.
 
-        "photo_fit": the photo is fitted above the metadata strip so the
-        overlay never covers it; the scrim stays solid.
-        "immersive": the photo fills the pane and the metadata paints over its
-        bottom edge on a lighter (65% alpha) scrim.
+        "detailed": the full review card (filename, EXIF, meta, position,
+        status) up to the column threshold; past it the card collapses to the
+        barebones compact layout. In the single-column loupe the photo is
+        fitted above the metadata strip so the overlay never covers it.
+        "immersive": the photo fills the cell at every size — the grid always
+        uses the barebones card, and the loupe paints its metadata over the
+        photo's bottom edge on a lighter (65% alpha) scrim.
         """
-        normalized = "immersive" if str(style).strip().casefold() == "immersive" else "photo_fit"
+        normalized = "immersive" if str(style).strip().casefold() == "immersive" else "detailed"
         if self._loupe_card_style == normalized:
             return
         self._loupe_card_style = normalized
-        if self._use_loupe_card_style():
-            # The two styles reserve different heights around the photo.
-            self._refresh_layout_after_visible_items_changed()
-            self._schedule_visible_thumbnail_requests(immediate=True)
+        # The styles change tile metrics in the grid too (full cards at low
+        # column counts in detailed mode), so always reflow.
+        self._refresh_layout_after_visible_items_changed()
+        self._schedule_visible_thumbnail_requests(immediate=True)
         self.viewport().update()
 
     def loupe_card_style(self) -> str:
@@ -1745,6 +1759,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
             ai_text = self._review_ai_badge_label(ai_result)
             card_data = GridCardData(
+                tags=self._review_workflow_tags(record),
                 filename=variant.name if record.has_variant_stack else record.name,
                 exif_text=self._review_capture_text(record),
                 meta_text=self._review_passive_meta_text(record, variant),
@@ -1768,6 +1783,9 @@ class ThumbnailGridView(QAbstractScrollArea):
                 pixmap if pixmap is not None and not pixmap.isNull() else None,
                 card_data,
                 compact=self._use_compact_grid_card(),
+                compact_actions="right",
+                compact_filename=True,
+                compact_badge_text=self._grid_card_badge_text(),
             )
             if variant.path in self._failed_paths:
                 painter.setPen(self._failed_text_color)
@@ -1920,13 +1938,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                 ai_result=ai_result,
                 dino_decision=dino_decision,
             )
-        else:
+        elif not use_new_grid_card:
+            # Legacy card only: the shared renderer draws these as its own
+            # tag rail (GridCardData.tags), uniform with the card design.
             left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode else 0)
             left_badge_y = image_rect.top() + 10
-            if use_new_grid_card and self._review_group_badge_text(burst_info, dino_decision):
-                # The renderer's duplicate badge owns the top-left corner;
-                # start the state badges below it.
-                left_badge_y += max(24, int(round(rect.height() * 0.069))) + 6
             if is_rejected:
                 self._paint_state_badge(
                     painter,
@@ -2007,11 +2023,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
 
         badge_y = image_rect.top() + 10
-        if use_new_grid_card and self._review_ai_badge_label(ai_result):
-            # The renderer's AI badge owns the top-right corner; start the
-            # Edited badge below it.
-            badge_y += max(24, int(round(rect.height() * 0.069))) + 6
-        if not use_loupe_card and record.has_edits:
+        if not use_loupe_card and not use_new_grid_card and record.has_edits:
             self._paint_state_badge(
                 painter,
                 QRect(image_rect.right() - 94, badge_y, 84, 24),
@@ -2654,6 +2666,56 @@ class ThumbnailGridView(QAbstractScrollArea):
             return "Keeper"
         return ""
 
+    def _review_workflow_tags(self, record: ImageRecord) -> tuple[tuple[str, str], ...]:
+        """AI workflow tags for the shared card's tag rail.
+
+        Mirrors the conditions the legacy card uses for its stacked state
+        badges; the renderer draws them as accent pills (or dots past the
+        column threshold) so they stay uniform with the card design.
+        Accepted/Rejected are omitted — the card's heart/reject buttons
+        already carry that state.
+        """
+        tags: list[tuple[str, str]] = []
+        workflow_insight = self._workflow_insight_for(record)
+        if workflow_insight is not None and getattr(workflow_insight, "has_round", False):
+            short_label = review_round_short_label(getattr(workflow_insight, "review_round", ""))
+            if short_label:
+                tags.append((short_label, "round"))
+        if self._show_ai_annotations:
+            if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
+                tags.append(("Best Frame", "best_frame"))
+            if _fast_path_key(record.path) in self._disputed_paths:
+                tags.append(("Disputed", "disputed"))
+            dino_tag = self._dino_prefilter_tag(self._dino_prefilter_decision_for(record))
+            if dino_tag is not None:
+                tags.append(dino_tag)
+            if workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
+                level = getattr(workflow_insight, "disagreement_level", "")
+                tags.append(
+                    (
+                        getattr(workflow_insight, "disagreement_badge", ""),
+                        "ai_miss" if level == "strong" else "needs_review",
+                    )
+                )
+        if record.has_edits:
+            tags.append(("Edited", "edited"))
+        return tuple(tags)
+
+    def _dino_prefilter_tag(self, decision) -> tuple[str, str] | None:
+        """(text, tag kind) form of _dino_prefilter_badge for the card rail."""
+        if decision is None:
+            return None
+        action = str(getattr(decision, "action", "") or "")
+        reason = str(getattr(decision, "reason", "") or "")
+        prefix = "pHash" if reason == "phash_duplicate_trash" else "DINO"
+        if action == "quarantine":
+            return ("pHash Duplicate" if prefix == "pHash" else "DINO Quarantine", "needs_review")
+        if action == "remove_from_pool":
+            return (f"{prefix} Removed", "ai_miss")
+        if action == "rescued":
+            return (f"{prefix} Rescued", "best_frame")
+        return None
+
     def _review_position_text(self, index: int) -> str:
         slot = self._visible_slot_for_index(index)
         total = len(self._visible_item_indexes)
@@ -2861,6 +2923,12 @@ class ThumbnailGridView(QAbstractScrollArea):
             # The loupe photo sits directly on the viewport — no parent card
             # box around it, so the image owns the whole tile.
             return QRect(tile_rect)
+        if self._use_new_grid_card():
+            if self._use_compact_grid_card():
+                # Barebones compact card: the 3:2 photo owns the whole tile.
+                return QRect(tile_rect)
+            # Detailed card: the full-width 3:2 photo pane at the top.
+            return QRect(tile_rect.x(), tile_rect.y(), tile_rect.width(), self._image_height())
         return QRect(
             tile_rect.x() + self._image_padding,
             tile_rect.y() + self._image_padding,
@@ -2873,8 +2941,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._columns == 1 or pixmap.height() > pixmap.width():
             fit_rect = image_rect
             force_scale = False
-            if self._use_loupe_card_style() and self._loupe_card_style == "photo_fit":
-                # Photo-fit loupe: the photo pane is full-width 3:2 above the
+            if self._use_loupe_card_style() and self._loupe_card_style == "detailed":
+                # Detailed loupe: the photo pane is full-width 3:2 above the
                 # metadata strip. Let the tile grow vertically when needed
                 # instead of height-limiting the photo and narrowing it.
                 photo_height = int(round(image_rect.width() * 2 / 3))
@@ -3033,7 +3101,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._action_mode in {"rejected_only", "recycle_only"}:
             return QRect()
         if self._use_new_grid_card():
-            return grid_card_action_rects(tile_rect, compact=self._use_compact_grid_card()).favorite
+            return grid_card_action_rects(
+                tile_rect, compact=self._use_compact_grid_card(), compact_actions="right"
+            ).favorite
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
             image_rect = self._image_rect(tile_rect)
@@ -3051,7 +3121,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._action_mode in {"accepted_only", "recycle_only"}:
             return QRect()
         if self._use_new_grid_card():
-            return grid_card_action_rects(tile_rect, compact=self._use_compact_grid_card()).reject
+            return grid_card_action_rects(
+                tile_rect, compact=self._use_compact_grid_card(), compact_actions="right"
+            ).reject
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
             image_rect = self._image_rect(tile_rect)
@@ -3669,7 +3741,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             return max_tile_height
         if tile_width <= 0:
             return max_tile_height
-        if self._loupe_card_style == "photo_fit":
+        if self._loupe_card_style == "detailed":
             footer_height = self._review_text_block_height(QRect(0, 0, tile_width, max(1, max_tile_height)))
             if aspect >= 1.0:
                 needed = int(round(tile_width * 2 / 3)) + footer_height
@@ -4090,14 +4162,21 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._row_x_offset = max(0, (inner - used) // 2)
         self._tile_height_value = card_chrome_height + self._image_height_value
         if self._use_new_grid_card():
-            # The shared photo-fit card is width-owned: the photo pane is
-            # always full-width 3:2, with enough tile height reserved for the
-            # lower metadata/action surface instead of squeezing the photo.
-            self._image_height_value = max(64, round((target - self._image_padding * 2) * 2 / 3))
-            self._tile_height_value = max(96, round(target * 0.865))
+            compact_tiles = self._use_compact_grid_card()
+            if compact_tiles:
+                # Barebones compact card: the tile is the bare 3:2 photo with
+                # the chrome overlaid, so the photo owns the full cell.
+                self._tile_height_value = max(80, grid_card_height_for_width(target, compact=True))
+                self._image_height_value = self._tile_height_value
+            else:
+                # Detailed card at low column counts: the tuned 11:8 review
+                # tile with a full-width 3:2 photo pane and the text footer
+                # over its lower edge.
+                self._tile_height_value = max(96, grid_card_height_for_width(target, compact=False))
+                self._image_height_value = max(64, round(target * 2 / 3))
         self._row_height_value = self._tile_height_value + self._spacing
         thumbnail_width = self._tile_width_value
-        if not (columns == 1 and not self._compact_card_mode):
+        if not (columns == 1 and not self._compact_card_mode) and not self._use_new_grid_card():
             thumbnail_width -= self._image_padding * 2
         self._thumbnail_target_size_value = QSize(
             max(64, thumbnail_width),

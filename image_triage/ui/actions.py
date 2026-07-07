@@ -281,7 +281,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         compact_cards=_create_action(
             window,
-            "Compact Cards",
+            "Legacy Cards",
             slot=window._handle_compact_cards_toggled,
             checkable=True,
         ),

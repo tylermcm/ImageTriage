@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from image_triage.ui.grid_card_renderer import (
     COMPACT_COLUMN_THRESHOLD,
     GridCardData,
+    grid_card_height_for_width,
     paint_grid_card,
     render_grid_card_pixmap,
 )
@@ -55,8 +56,6 @@ SIZE_PRESETS: dict[str, QSize] = {
 # Grid preview layout constants (mirror ThumbnailGridView spacing).
 GRID_MARGIN = 12
 GRID_SPACING = 12
-# height / width of the 11:8 review card.
-CARD_ASPECT = 407 / 560
 
 
 class CardCanvas(QWidget):
@@ -71,6 +70,10 @@ class CardCanvas(QWidget):
         # that reflows/scales the cards to fill the canvas width.
         self._columns = 0
         self._force_compact = False
+        # "corners" = heart bottom-left / X bottom-right; "right" = paired.
+        self._compact_actions = "corners"
+        self._compact_filename = False
+        self._compact_badge_text = False
         self._selected = True
         self._ai_visible = True
         self._duplicate_visible = True
@@ -79,6 +82,7 @@ class CardCanvas(QWidget):
         self._favorite = False
         self._bright = False
         self._dark = False
+        self._workflow_tags = False
         self._last_metrics = ""
         self.setMouseTracking(True)
         self.setMinimumSize(640, 440)
@@ -89,9 +93,19 @@ class CardCanvas(QWidget):
         self.updateGeometry()
         self.update()
 
-    def set_layout_mode(self, columns: int, force_compact: bool) -> None:
+    def set_layout_mode(
+        self,
+        columns: int,
+        force_compact: bool,
+        compact_actions: str = "corners",
+        compact_filename: bool = False,
+        compact_badge_text: bool = False,
+    ) -> None:
         self._columns = max(0, columns)
         self._force_compact = force_compact
+        self._compact_actions = compact_actions
+        self._compact_filename = compact_filename
+        self._compact_badge_text = compact_badge_text
         self.update()
 
     def _is_compact(self, columns: int) -> bool:
@@ -108,6 +122,7 @@ class CardCanvas(QWidget):
         favorite: bool,
         bright: bool,
         dark: bool,
+        workflow_tags: bool,
     ) -> None:
         self._selected = selected
         self._ai_visible = ai_visible
@@ -117,17 +132,24 @@ class CardCanvas(QWidget):
         self._favorite = favorite
         self._bright = bright
         self._dark = dark
+        self._workflow_tags = workflow_tags
         self.update()
 
     def sizeHint(self) -> QSize:
         return self._card_size + QSize(110, 110)
 
     def render_card(self) -> QPixmap:
+        size = QSize(self._card_size)
+        if self._force_compact:
+            size.setHeight(grid_card_height_for_width(size.width(), compact=True))
         return render_grid_card_pixmap(
-            self._card_size,
+            size,
             self._pixmap_for_state(),
             self._data_for_state(),
             compact=self._force_compact,
+            compact_actions=self._compact_actions,
+            compact_filename=self._compact_filename,
+            compact_badge_text=self._compact_badge_text,
         )
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
@@ -143,9 +165,23 @@ class CardCanvas(QWidget):
 
     def _paint_single_card(self, painter: QPainter) -> None:
         compact = self._force_compact
-        rect = QRect(QPoint(0, 0), self._card_size)
+        size = QSize(self._card_size)
+        if compact:
+            # Barebones cards are the bare 3:2 photo; derive the height from
+            # the preset's width so the preview matches the grid cell shape.
+            size.setHeight(grid_card_height_for_width(size.width(), compact=True))
+        rect = QRect(QPoint(0, 0), size)
         rect.moveCenter(self.rect().center())
-        paint_grid_card(painter, rect, self._pixmap_for_state(), self._data_for_state(), compact=compact)
+        paint_grid_card(
+            painter,
+            rect,
+            self._pixmap_for_state(),
+            self._data_for_state(),
+            compact=compact,
+            compact_actions=self._compact_actions,
+            compact_filename=self._compact_filename,
+            compact_badge_text=self._compact_badge_text,
+        )
         self._emit_metrics(
             f"Single card · {rect.width()} x {rect.height()} px · {'compact' if compact else 'full'} UI"
         )
@@ -155,7 +191,7 @@ class CardCanvas(QWidget):
         compact = self._is_compact(columns)
         inner = max(120, self.width() - GRID_MARGIN * 2)
         card_w = max(90, (inner - (columns - 1) * GRID_SPACING) // columns)
-        card_h = max(66, round(card_w * CARD_ASPECT))
+        card_h = max(66, grid_card_height_for_width(card_w, compact=compact))
         rows = max(1, math.ceil((self.height() - GRID_MARGIN) / (card_h + GRID_SPACING)))
         total = rows * columns
 
@@ -173,7 +209,16 @@ class CardCanvas(QWidget):
                     position_text=f"{index + 1} / {total}",
                     selected=self._selected and index == 0,
                 )
-                paint_grid_card(painter, rect, pixmap, data, compact=compact)
+                paint_grid_card(
+                    painter,
+                    rect,
+                    pixmap,
+                    data,
+                    compact=compact,
+                    compact_actions=self._compact_actions,
+                    compact_filename=self._compact_filename,
+                    compact_badge_text=self._compact_badge_text,
+                )
                 index += 1
 
         self._emit_metrics(
@@ -196,7 +241,17 @@ class CardCanvas(QWidget):
             status_text = "Review"
             status_kind = "review"
 
+        tags: tuple[tuple[str, str], ...] = ()
+        if self._workflow_tags:
+            tags = (
+                ("Best Frame", "best_frame"),
+                ("R2", "round"),
+                ("DINO Rescued", "best_frame"),
+                ("Edited", "edited"),
+            )
+
         return GridCardData(
+            tags=tags,
             filename="DSC_7149.NEF",
             exif_text="1/250s  \u00b7  f/5  \u00b7  ISO 200  \u00b7  35mm",
             meta_text="54.4 MB  \u00b7  2025-08-16 11:15  \u00b7  Banff 8-25",
@@ -239,6 +294,15 @@ class CardCanvas(QWidget):
         return adjusted
 
 
+def _indented(widget: QWidget) -> QHBoxLayout:
+    """Sub-option row: indent the widget under its parent checkbox."""
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addSpacing(22)
+    row.addWidget(widget)
+    return row
+
+
 class PrototypeWindow(QMainWindow):
     def __init__(self, source_pixmap: QPixmap | None, load_message: str, *, using_dummy: bool) -> None:
         super().__init__()
@@ -262,6 +326,9 @@ class PrototypeWindow(QMainWindow):
         self.columns_spin.setEnabled(False)
 
         self.compact_check = QCheckBox("Force compact UI")
+        self.badge_text_check = QCheckBox("Badge text (not icon-only)")
+        self.paired_buttons_check = QCheckBox("Paired buttons (bottom right)")
+        self.filename_check = QCheckBox("Filename bottom-left")
 
         self.metrics_label = QLabel("")
         self.metrics_label.setObjectName("metricsLabel")
@@ -277,6 +344,7 @@ class PrototypeWindow(QMainWindow):
         self.winner_check.setChecked(True)
         self.reject_check = QCheckBox("Reject")
         self.favorite_check = QCheckBox("Heart active")
+        self.workflow_tags_check = QCheckBox("AI workflow tags")
         self.bright_check = QCheckBox("Bright image")
         self.dark_check = QCheckBox("Dark image")
 
@@ -302,6 +370,9 @@ class PrototypeWindow(QMainWindow):
         controls_layout.addWidget(self.size_combo)
         controls_layout.addWidget(self.columns_spin)
         controls_layout.addWidget(self.compact_check)
+        controls_layout.addLayout(_indented(self.badge_text_check))
+        controls_layout.addWidget(self.paired_buttons_check)
+        controls_layout.addLayout(_indented(self.filename_check))
         controls_layout.addWidget(self.metrics_label)
         controls_layout.addSpacing(4)
         for checkbox in (
@@ -311,6 +382,7 @@ class PrototypeWindow(QMainWindow):
             self.winner_check,
             self.reject_check,
             self.favorite_check,
+            self.workflow_tags_check,
             self.bright_check,
             self.dark_check,
         ):
@@ -338,6 +410,9 @@ class PrototypeWindow(QMainWindow):
         self.size_combo.currentTextChanged.connect(self._apply_state)
         self.columns_spin.valueChanged.connect(self._apply_state)
         self.compact_check.toggled.connect(self._apply_state)
+        self.badge_text_check.toggled.connect(self._apply_state)
+        self.paired_buttons_check.toggled.connect(self._apply_state)
+        self.filename_check.toggled.connect(self._apply_state)
         for checkbox in (
             self.selected_check,
             self.ai_check,
@@ -345,6 +420,7 @@ class PrototypeWindow(QMainWindow):
             self.winner_check,
             self.reject_check,
             self.favorite_check,
+            self.workflow_tags_check,
             self.bright_check,
             self.dark_check,
         ):
@@ -367,7 +443,25 @@ class PrototypeWindow(QMainWindow):
         self.size_combo.setEnabled(not grid_mode)
         self.columns_spin.setEnabled(grid_mode)
         columns = self.columns_spin.value() if grid_mode else 0
-        self.canvas.set_layout_mode(columns, self.compact_check.isChecked())
+
+        # Child options: badge text needs a compact card on screen; the
+        # bottom-left filename only exists in the paired-buttons layout.
+        compact_active = self.compact_check.isChecked() or (
+            grid_mode and columns > COMPACT_COLUMN_THRESHOLD
+        )
+        # Past the column threshold the badges always collapse to icon-only
+        # chips — text pills are only for forced-compact cards at wider sizes.
+        badge_text_allowed = compact_active and not (grid_mode and columns > COMPACT_COLUMN_THRESHOLD)
+        self.badge_text_check.setEnabled(badge_text_allowed)
+        self.filename_check.setEnabled(compact_active and self.paired_buttons_check.isChecked())
+
+        self.canvas.set_layout_mode(
+            columns,
+            self.compact_check.isChecked(),
+            "right" if self.paired_buttons_check.isChecked() else "corners",
+            compact_filename=self.filename_check.isChecked() and self.paired_buttons_check.isChecked(),
+            compact_badge_text=self.badge_text_check.isChecked() and badge_text_allowed,
+        )
 
         size = SIZE_PRESETS[self.size_combo.currentText()]
         self.canvas.set_card_size(size)
@@ -380,6 +474,7 @@ class PrototypeWindow(QMainWindow):
             favorite=self.favorite_check.isChecked(),
             bright=self.bright_check.isChecked(),
             dark=self.dark_check.isChecked(),
+            workflow_tags=self.workflow_tags_check.isChecked(),
         )
 
     def _save_png(self) -> None:
