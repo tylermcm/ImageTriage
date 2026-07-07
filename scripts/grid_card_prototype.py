@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from image_triage.ui.grid_card_renderer import (
     COMPACT_COLUMN_THRESHOLD,
+    PLAIN_PHOTO_COLUMN_THRESHOLD,
     GridCardData,
     grid_card_height_for_width,
     paint_grid_card,
@@ -218,12 +219,19 @@ class CardCanvas(QWidget):
                     compact_actions=self._compact_actions,
                     compact_filename=self._compact_filename,
                     compact_badge_text=self._compact_badge_text,
+                    # Past the threshold the compact card drops the overlay
+                    # entirely — plain photo, matching the app.
+                    compact_overlay=columns <= PLAIN_PHOTO_COLUMN_THRESHOLD,
                 )
                 index += 1
 
-        self._emit_metrics(
-            f"{columns} columns · card {card_w} x {card_h} px · {'compact' if compact else 'full'} UI"
-        )
+        if not compact:
+            mode = "full UI"
+        elif columns <= PLAIN_PHOTO_COLUMN_THRESHOLD:
+            mode = "compact UI"
+        else:
+            mode = "plain photo"
+        self._emit_metrics(f"{columns} columns · card {card_w} x {card_h} px · {mode}")
 
     def _emit_metrics(self, text: str) -> None:
         if text != self._last_metrics:

@@ -23,11 +23,13 @@ from .thumbnails import ThumbnailManager
 from .ui.grid_card_renderer import (
     COMPACT_COLUMN_THRESHOLD,
     IMAGE_CORNER_RADIUS,
+    PLAIN_PHOTO_COLUMN_THRESHOLD,
     GridCardData,
     grid_card_action_rects,
     grid_card_height_for_width,
     load_action_icon,
     paint_grid_card,
+    _paint_action_button,
     _paint_duplicate_icon,
     _paint_heart_icon,
     _paint_reject_icon,
@@ -242,6 +244,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._reject_badge_text = QColor("#ffe8ea")
         self._winner_button_size = QSize(34, 22)
         self._winner_button_font = QFont("Segoe UI Symbol", 12)
+        self._legacy_button_scale_value = 1.0
         self._checkbox_size = QSize(22, 22)
         self._hovered_winner_index = -1
         self._hovered_reject_index = -1
@@ -768,19 +771,23 @@ class ThumbnailGridView(QAbstractScrollArea):
         return self._compact_card_mode
 
     def _use_loupe_card_style(self) -> bool:
-        return not self._compact_card_mode and self._columns == 1
+        if self._compact_card_mode or self._columns != 1:
+            return False
+        # Immersive single-column uses the shared barebones card instead of
+        # the legacy loupe layout (kept for non-normal action modes, whose
+        # undo affordances live in the legacy painter).
+        return not (self._loupe_card_style == "immersive" and self._action_mode == "normal")
 
     def _use_new_grid_card(self) -> bool:
-        """Multi-column tiles use the shared grid_card_renderer design.
+        """Tiles that use the shared grid_card_renderer design.
 
-        Non-"normal" action modes keep the legacy card because its buttons
-        carry the undo affordances those filtered views rely on.
+        All multi-column tiles, plus the single-column view in immersive
+        style. Non-"normal" action modes keep the legacy card because its
+        buttons carry the undo affordances those filtered views rely on.
         """
-        return (
-            not self._compact_card_mode
-            and self._columns > 1
-            and self._action_mode == "normal"
-        )
+        if self._compact_card_mode or self._action_mode != "normal":
+            return False
+        return self._columns > 1 or self._loupe_card_style == "immersive"
 
     def _use_compact_grid_card(self) -> bool:
         """Whether multi-column tiles use the barebones compact card (3:2
@@ -798,6 +805,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         collapse to icon-only chips (the renderer also falls back on its own
         whenever the text pills would not fit the card)."""
         return self._columns <= COMPACT_COLUMN_THRESHOLD
+
+    def _grid_card_overlay(self) -> bool:
+        """Past the plain-photo threshold the compact card drops its overlay
+        entirely — the chrome is too small to be useful at 6+ columns."""
+        return self._columns <= PLAIN_PHOTO_COLUMN_THRESHOLD
 
     def set_loupe_card_style(self, style: str) -> None:
         """Select the card style.
@@ -1786,6 +1798,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 compact_actions="right",
                 compact_filename=True,
                 compact_badge_text=self._grid_card_badge_text(),
+                compact_overlay=self._grid_card_overlay(),
             )
             if variant.path in self._failed_paths:
                 painter.setPen(self._failed_text_color)
@@ -2811,36 +2824,59 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, symbol)
         painter.restore()
 
+    def _legacy_action_button_size(self) -> QSize:
+        # Circular buttons: diameter matches the (scaled) action row height so
+        # they fill the row exactly, growing 30% from 8 columns to 1.
+        diameter = round(24 * self._legacy_button_scale_value)
+        return QSize(diameter, diameter)
+
+    def _legacy_button_font(self) -> QFont:
+        font = QFont(self._winner_button_font)
+        font.setPointSize(max(9, round(12 * self._legacy_button_scale_value)))
+        return font
+
+    def _paint_legacy_undo_button(self, painter: QPainter, rect: QRect, border: QColor, fill: QColor, color: QColor) -> None:
+        painter.setPen(QPen(border, 1.2))
+        painter.setBrush(fill)
+        painter.drawEllipse(QRectF(rect))
+        painter.setPen(color)
+        painter.setFont(self._legacy_button_font())
+        painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, self.UNDO_SYMBOL)
+
     def _paint_winner_button(self, painter: QPainter, rect: QRect, active: bool, hovered: bool) -> None:
         painter.save()
-        undo_mode = self._action_mode in {"accepted_only", "recycle_only"}
-        background = self._winner_button_fill if active or undo_mode else QColor(255, 255, 255, 0)
-        border = self._accepted_color if undo_mode else (self._winner_color if active else (self._winner_button_hover if hovered else self._winner_button_border))
-        symbol = self.UNDO_SYMBOL if undo_mode else (self.HEART_SYMBOL if active else self.HEART_OUTLINE_SYMBOL)
-        text_color = self._accepted_color if undo_mode else (self._winner_color if active else QColor("#f2f5f8"))
-
-        painter.setPen(QPen(border, 1.2))
-        painter.setBrush(background)
-        painter.drawRoundedRect(QRectF(rect), 8, 8)
-        painter.setPen(text_color)
-        painter.setFont(self._winner_button_font)
-        painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, symbol)
+        if self._action_mode in {"accepted_only", "recycle_only"}:
+            self._paint_legacy_undo_button(
+                painter, rect, self._accepted_color, self._winner_button_fill, self._accepted_color
+            )
+        else:
+            # Same encircled heart as the overlay card design.
+            _paint_action_button(
+                painter,
+                rect,
+                "heart",
+                active=active,
+                hover=hovered,
+                active_color=QColor(245, 95, 118),
+            )
         painter.restore()
 
     def _paint_reject_button(self, painter: QPainter, rect: QRect, active: bool, hovered: bool) -> None:
         painter.save()
-        undo_mode = self._action_mode == "rejected_only"
-        background = self._reject_button_fill if active or undo_mode else QColor(255, 255, 255, 0)
-        border = self._reject_color if active or undo_mode else (self._reject_button_hover if hovered else self._reject_button_border)
-        text_color = self._reject_color if active or undo_mode else QColor("#f2f5f8")
-        symbol = self.UNDO_SYMBOL if undo_mode else self.REJECT_SYMBOL
-
-        painter.setPen(QPen(border, 1.2))
-        painter.setBrush(background)
-        painter.drawRoundedRect(QRectF(rect), 8, 8)
-        painter.setPen(text_color)
-        painter.setFont(self._winner_button_font)
-        painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, symbol)
+        if self._action_mode == "rejected_only":
+            self._paint_legacy_undo_button(
+                painter, rect, self._reject_color, self._reject_button_fill, self._reject_color
+            )
+        else:
+            # Same encircled X as the overlay card design.
+            _paint_action_button(
+                painter,
+                rect,
+                "reject",
+                active=active,
+                hover=hovered,
+                active_color=QColor(255, 107, 107),
+            )
         painter.restore()
 
     def _paint_state_badge(
@@ -3102,7 +3138,10 @@ class ThumbnailGridView(QAbstractScrollArea):
             return QRect()
         if self._use_new_grid_card():
             return grid_card_action_rects(
-                tile_rect, compact=self._use_compact_grid_card(), compact_actions="right"
+                tile_rect,
+                compact=self._use_compact_grid_card(),
+                compact_actions="right",
+                compact_overlay=self._grid_card_overlay(),
             ).favorite
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
@@ -3112,7 +3151,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             rect = QRect(0, 0, size, size)
             rect.moveRight(action_rect.right() - size - gap)
         else:
-            rect = QRect(0, 0, self._winner_button_size.width(), self._winner_button_size.height())
+            size = self._legacy_action_button_size()
+            rect = QRect(0, 0, size.width(), size.height())
             rect.moveLeft(action_rect.left())
         rect.moveTop(action_rect.top() + max(0, (action_rect.height() - rect.height()) // 2))
         return rect
@@ -3122,7 +3162,10 @@ class ThumbnailGridView(QAbstractScrollArea):
             return QRect()
         if self._use_new_grid_card():
             return grid_card_action_rects(
-                tile_rect, compact=self._use_compact_grid_card(), compact_actions="right"
+                tile_rect,
+                compact=self._use_compact_grid_card(),
+                compact_actions="right",
+                compact_overlay=self._grid_card_overlay(),
             ).reject
         action_rect = self._action_rect(tile_rect)
         if self._use_loupe_card_style():
@@ -3130,7 +3173,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             size = self._review_action_button_size(image_rect)
             rect = QRect(0, 0, size, size)
         else:
-            rect = QRect(0, 0, self._winner_button_size.width(), self._winner_button_size.height())
+            size = self._legacy_action_button_size()
+            rect = QRect(0, 0, size.width(), size.height())
         if self._action_mode == "rejected_only":
             rect.moveLeft(action_rect.left())
         else:
@@ -4123,14 +4167,6 @@ class ThumbnailGridView(QAbstractScrollArea):
         minimum_image_height = 72 if self._compact_card_mode else 88
         image_ratio = 0.62 if self._compact_card_mode else 0.68
         footer_height = 10 if self._compact_card_mode else 16
-        card_chrome_height = (
-            self._image_padding * 2
-            + self._caption_height
-            + self._action_height
-            + self._capture_height
-            + self._meta_height
-            + footer_height
-        )
         inner = max(320, self.viewport().width() - (self._margin * 2))
         if self._zoom_mode == "tile":
             # Continuous zoom: tiles are a fixed target width; derive how many
@@ -4145,6 +4181,19 @@ class ThumbnailGridView(QAbstractScrollArea):
                 (inner - ((columns - 1) * self._spacing)) // columns,
             )
         self._columns = columns
+        # Legacy-card action buttons scale with the column count: the size at
+        # 8 columns is the baseline, growing linearly to +30% at 1 column.
+        # The action row grows with them so the buttons never clip.
+        self._legacy_button_scale_value = 1.0 + 0.3 * (8 - max(1, min(8, columns))) / 7.0
+        self._action_height = round(24 * self._legacy_button_scale_value)
+        card_chrome_height = (
+            self._image_padding * 2
+            + self._caption_height
+            + self._action_height
+            + self._capture_height
+            + self._meta_height
+            + footer_height
+        )
         if columns == 1:
             if not self._compact_card_mode:
                 # Frameless loupe: the photo owns the whole tile.
@@ -4161,7 +4210,10 @@ class ThumbnailGridView(QAbstractScrollArea):
             used = columns * target + ((columns - 1) * self._spacing)
             self._row_x_offset = max(0, (inner - used) // 2)
         self._tile_height_value = card_chrome_height + self._image_height_value
-        if self._use_new_grid_card():
+        if self._use_new_grid_card() and columns > 1:
+            # Single-column keeps the loupe-fitted tile computed above (the
+            # photo hugs the viewport/aspect); only multi-column tiles take
+            # the width-derived card aspects.
             compact_tiles = self._use_compact_grid_card()
             if compact_tiles:
                 # Barebones compact card: the tile is the bare 3:2 photo with
