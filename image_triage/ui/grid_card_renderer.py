@@ -84,8 +84,9 @@ def _paint_action_icon_image(painter: QPainter, rect: QRect, image: QImage) -> N
     painter.drawImage(target, image, source)
 
 
-# Past this many grid columns the cards should switch to the trimmed compact
-# layout (icon-only badges, filename + status footer).
+# Past this many grid columns the cards should switch to the barebones compact
+# layout: a 3:2 photo with icon-only badge chips in the top corners and the
+# heart/reject buttons in the bottom corners.
 COMPACT_COLUMN_THRESHOLD = 4
 
 # Fixed corner rounding for the photo at every card size. Scaling it with the
@@ -105,6 +106,10 @@ class GridCardData:
     status_kind: str = "keeper"
     duplicate_visible: bool = True
     ai_visible: bool = True
+    # AI workflow tags rendered as a rail under the top-left badge:
+    # (text, kind) pairs where kind picks the accent color (e.g. "best_frame",
+    # "round", "disputed", "needs_review", "ai_miss", "edited").
+    tags: tuple[tuple[str, str], ...] = ()
     selected: bool = False
     favorite: bool = False
     rejected: bool = False
@@ -128,6 +133,9 @@ def render_grid_card_pixmap(
     data: GridCardData,
     *,
     compact: bool = False,
+    compact_actions: str = "corners",
+    compact_filename: bool = False,
+    compact_badge_text: bool = False,
 ) -> QPixmap:
     """Render a single card into a transparent pixmap."""
 
@@ -136,7 +144,16 @@ def render_grid_card_pixmap(
     painter = QPainter(output)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-    paint_grid_card(painter, QRect(QPoint(0, 0), size), source_pixmap, data, compact=compact)
+    paint_grid_card(
+        painter,
+        QRect(QPoint(0, 0), size),
+        source_pixmap,
+        data,
+        compact=compact,
+        compact_actions=compact_actions,
+        compact_filename=compact_filename,
+        compact_badge_text=compact_badge_text,
+    )
     painter.end()
     return output
 
@@ -148,12 +165,20 @@ def paint_grid_card(
     data: GridCardData,
     *,
     compact: bool = False,
+    compact_actions: str = "corners",
+    compact_filename: bool = False,
+    compact_badge_text: bool = False,
 ) -> GridCardHitRects:
     """Paint one main viewport card and return action hit rectangles.
 
-    ``compact`` selects the trimmed layout used past four grid columns:
-    icon-only badges, a two-line footer (filename + status), and a lower
-    scale floor so the chrome keeps shrinking with the card.
+    ``compact`` selects the barebones layout used past four grid columns:
+    the photo fills the card at 3:2, with badge chips in the top corners and
+    the heart/reject buttons along the bottom, all sharing the same inset.
+    No status, position, or scrim. ``compact_actions`` places the buttons in
+    opposite bottom corners ("corners") or side by side in the bottom-right
+    ("right"). With the "right" layout, ``compact_filename`` draws the
+    filename left-aligned on the button row. ``compact_badge_text`` renders
+    the duplicate/AI badges with their text instead of icon-only chips.
     """
 
     if rect.width() <= 8 or rect.height() <= 8:
@@ -177,7 +202,9 @@ def paint_grid_card(
     )
     image_radius = IMAGE_CORNER_RADIUS
 
-    if data.immersive:
+    if compact or data.immersive:
+        # Barebones/immersive: the photo owns the whole cell (the compact
+        # cell itself is sized 3:2 by the caller).
         photo_rect = QRect(content_rect)
     else:
         # Photo-fit uses a full-width 3:2 photo pane. The footer/scrim is
@@ -187,14 +214,25 @@ def paint_grid_card(
         photo_rect = QRect(content_rect.left(), content_rect.top(), content_rect.width(), photo_height)
 
     _paint_image(painter, content_rect, image_radius, source_pixmap, photo_rect=photo_rect)
-    if data.immersive:
-        # Only the immersive style paints over the photo; photo-fit text sits
-        # on the solid content fill below it.
-        _paint_scrim(painter, rect, content_rect, image_radius, scale, compact, light=True)
+    if not compact:
+        # The footer text block overlaps the photo's lower edge on grid
+        # tiles, so both full styles scrim it for guaranteed contrast:
+        # detailed with the solid fade, immersive with the lighter (65%)
+        # variant. Barebones has no text and needs no scrim.
+        _paint_scrim(painter, rect, content_rect, image_radius, scale, light=data.immersive)
 
     if compact:
-        _paint_compact_badges(painter, rect, content_rect, data, scale)
-        favorite_rect, reject_rect = _paint_compact_overlay(painter, rect, content_rect, data, scale)
+        _paint_compact_badges(painter, rect, content_rect, data, scale, show_text=compact_badge_text)
+        favorite_rect, reject_rect = _paint_compact_overlay(
+            painter,
+            rect,
+            content_rect,
+            data,
+            scale,
+            compact_actions,
+            show_filename=compact_filename,
+            source_pixmap=source_pixmap,
+        )
     else:
         _paint_badges(painter, rect, content_rect, data, scale)
         favorite_rect, reject_rect = _paint_bottom_overlay(painter, rect, content_rect, data, scale)
@@ -216,7 +254,10 @@ def paint_grid_card(
 
 def _scale_for(rect: QRect, compact: bool = False) -> float:
     if compact:
-        return max(0.55, min(1.0, rect.width() / 560.0))
+        # Sub-linear (square-root) response: the chrome keeps shrinking as
+        # columns increase so it never dominates the card, but slower than
+        # 1:1 so text and icons stay readable at high column counts.
+        return max(0.42, min(1.0, (rect.width() / 560.0) ** 0.5))
     return max(0.72, min(1.25, rect.width() / 560.0))
 
 
@@ -226,13 +267,26 @@ def _content_pad(scale: float, compact: bool) -> int:
     return 0
 
 
-def grid_card_action_rects(rect: QRect, *, compact: bool = False) -> GridCardHitRects:
+def grid_card_height_for_width(width: int, *, compact: bool = False) -> int:
+    """Cell height the card is designed for at a given width.
+
+    Full cards are the tuned 11:8 review tile; barebones compact cards are
+    the 3:2 photo and nothing else.
+    """
+    if compact:
+        return max(1, round(width * 2 / 3))
+    return max(1, round(width * 407 / 560))
+
+
+def grid_card_action_rects(
+    rect: QRect, *, compact: bool = False, compact_actions: str = "corners"
+) -> GridCardHitRects:
     """Favorite/reject hit rectangles for a card painted by paint_grid_card.
 
     Kept in sync with _paint_bottom_overlay / _paint_compact_overlay (which
     use the same internal helpers) so grid hit-testing can ask for the
-    rectangles without painting. ``compact`` must match the flag given to
-    ``paint_grid_card``.
+    rectangles without painting. ``compact`` and ``compact_actions`` must
+    match the flags given to ``paint_grid_card``.
     """
     if rect.width() <= 8 or rect.height() <= 8:
         return GridCardHitRects(QRect(), QRect())
@@ -245,7 +299,7 @@ def grid_card_action_rects(rect: QRect, *, compact: bool = False) -> GridCardHit
         max(1, rect.height() - pad * 2),
     )
     if compact:
-        return _compact_action_button_rects(rect, content_rect, scale)
+        return _compact_action_button_rects(rect, content_rect, scale, compact_actions)
     return _action_button_rects(rect, content_rect, scale)
 
 
@@ -275,20 +329,31 @@ def _action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> G
     return GridCardHitRects(favorite_rect, reject_rect)
 
 
-def _compact_action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> GridCardHitRects:
-    """Compact-mode button geometry: both buttons centered on the two-line
-    footer block at the right edge."""
-    margin = max(8, round(10 * scale))
-    button = max(20, round(card_rect.height() * 0.118))
-    gap = max(5, round(6 * scale))
-    name_font, status_font = _compact_footer_fonts(scale)
-    line_gap = max(2, round(3 * scale))
-    block_height = QFontMetrics(name_font).height() + line_gap + QFontMetrics(status_font).height()
-    footer_bottom = _compact_footer_bottom(card_rect)
-    block_top = footer_bottom - block_height + 1
-    action_top = block_top + round((block_height - button) / 2)
-    reject_rect = QRect(image_rect.right() - margin - button, action_top, button, button)
-    favorite_rect = QRect(reject_rect.left() - gap - button, action_top, button, button)
+def _compact_corner_inset(scale: float) -> int:
+    """One inset shared by all four barebones corner elements (badge chips on
+    top, action buttons on the bottom) so the padding reads identical in x
+    and y around the card."""
+    return max(5, round(10 * scale))
+
+
+def _compact_action_button_rects(
+    card_rect: QRect, image_rect: QRect, scale: float, layout: str = "corners"
+) -> GridCardHitRects:
+    """Barebones button geometry, inset by the badge chips' corner padding.
+
+    ``layout="corners"`` pins the heart to the bottom-left corner and reject
+    to the bottom-right; ``layout="right"`` pairs both buttons side by side
+    in the bottom-right corner.
+    """
+    inset = _compact_corner_inset(scale)
+    button = max(14, round(30 * scale))
+    top = image_rect.bottom() - inset - button + 1
+    reject_rect = QRect(image_rect.right() - inset - button + 1, top, button, button)
+    if layout == "right":
+        gap = max(5, round(6 * scale))
+        favorite_rect = QRect(reject_rect.left() - gap - button, top, button, button)
+    else:
+        favorite_rect = QRect(image_rect.left() + inset, top, button, button)
     return GridCardHitRects(favorite_rect, reject_rect)
 
 
@@ -416,51 +481,24 @@ def _metadata_text_top(card_rect: QRect, scale: float) -> int:
     return text_block_bottom - text_block_height + 1
 
 
-def _compact_footer_fonts(scale: float) -> tuple[QFont, QFont]:
-    name_font = QFont("Segoe UI", max(9, round(11 * scale)), QFont.Weight.DemiBold)
-    status_font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
-    return name_font, status_font
-
-
-def _compact_footer_bottom(card_rect: QRect) -> int:
-    """Bottom edge of the compact footer block. Shared by the overlay, the
-    scrim anchor, and the button rects so they always move together."""
-    return card_rect.bottom() - max(8, round(card_rect.height() * 0.06))
-
-
-def _compact_text_top(card_rect: QRect, scale: float) -> int:
-    """Top of the compact footer block (filename line). Mirrors the layout in
-    ``_paint_compact_overlay`` so the scrim anchors to the actual text."""
-    name_font, status_font = _compact_footer_fonts(scale)
-    line_gap = max(2, round(3 * scale))
-    block_height = QFontMetrics(name_font).height() + line_gap + QFontMetrics(status_font).height()
-    footer_bottom = _compact_footer_bottom(card_rect)
-    return footer_bottom - block_height + 1
-
-
 def _paint_scrim(
     painter: QPainter,
     card_rect: QRect,
     image_rect: QRect,
     radius: float,
     scale: float,
-    compact: bool = False,
     *,
     light: bool = False,
 ) -> None:
     # Anchor the fade to the text block so the gradient reaches uniformly up to
     # the top of the filename line, then ramps to a solid base under the text.
     h = card_rect.height()
-    if compact:
-        # Compact footer: solid by the top of the filename, with a taller
-        # fade-out above it so the photo edge never shows through the text.
-        text_top = _compact_text_top(card_rect, scale)
-        fade_top = max(image_rect.top(), text_top - round(0.24 * h))
-        solid_top = text_top
-    else:
-        text_top = _metadata_text_top(card_rect, scale)
-        fade_top = max(image_rect.top(), text_top - round(0.03 * h))  # fully clear just above the text
-        solid_top = text_top + round(0.14 * h)  # fully opaque by the meta line
+    text_top = _metadata_text_top(card_rect, scale)
+    # Fully opaque by the first text line (position/filename) so every line
+    # keeps contrast even over white photos; the fade-in starts higher to
+    # keep the blend soft.
+    fade_top = max(image_rect.top(), text_top - round(0.12 * h))
+    solid_top = text_top + round(0.02 * h)
     span = max(1, card_rect.bottom() - fade_top)
     ramp = max(1, solid_top - fade_top)
 
@@ -538,6 +576,107 @@ def _paint_badges(painter: QPainter, card_rect: QRect, image_rect: QRect, data: 
             fixed_size=QSize(ai_width, badge_height),
         )
 
+    if data.tags:
+        tag_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
+        tag_gap = max(5, round(6 * scale))
+        rail_y = top
+        if data.duplicate_visible and data.duplicate_text:
+            rail_y += badge_height + tag_gap
+        # Stop above the metadata text block so the rail can never collide
+        # with the footer; remaining tags are dropped rather than clipped.
+        rail_bottom = _metadata_text_top(card_rect, scale) - tag_gap
+        pill_height = _tag_pill_height(tag_font, scale)
+        for text, kind in data.tags:
+            if not text or rail_y + pill_height > rail_bottom:
+                break
+            _paint_tag_pill(painter, image_rect.left() + edge_inset, rail_y, text, tag_font, _tag_accent(kind), scale)
+            rail_y += pill_height + tag_gap
+
+
+# Accent colors for AI workflow tags, keyed by GridCardData.tags kind.
+# Status kinds reuse the card's status text colors; workflow kinds follow the
+# AI activity tag palette so the grid and the AI settings stay in step.
+_TAG_ACCENTS: dict[str, tuple[int, int, int]] = {
+    "ai_pick": (215, 164, 58),
+    "keeper": (95, 230, 132),
+    "winner": (95, 230, 132),
+    "accepted": (95, 230, 132),
+    "reject": (255, 105, 105),
+    "rejected": (255, 105, 105),
+    "review": (112, 210, 255),
+    "maybe": (112, 210, 255),
+    "needs_review": (210, 135, 53),
+    "best_frame": (70, 189, 120),
+    "ai_review": (217, 120, 53),
+    "ai_miss": (215, 84, 122),
+    "round": (87, 177, 255),
+    "disputed": (255, 196, 110),
+    "edited": (120, 170, 255),
+}
+
+
+def _tag_accent(kind: str) -> QColor:
+    return QColor(*_TAG_ACCENTS.get(kind.strip().casefold(), (198, 208, 222)))
+
+
+def _tag_pill_height(font: QFont, scale: float) -> int:
+    return QFontMetrics(font).height() + max(3, round(5 * scale))
+
+
+def _paint_tag_pill(
+    painter: QPainter, x: int, y: int, text: str, font: QFont, accent: QColor, scale: float
+) -> QRect:
+    """One workflow tag as a pill in the card badge style: dark translucent
+    fill, accent text, subtle accent border."""
+    metrics = QFontMetrics(font)
+    h_pad = max(6, round(8 * scale))
+    rect = QRect(x, y, metrics.horizontalAdvance(text) + h_pad * 2, _tag_pill_height(font, scale))
+    radius = max(4.0, round(5 * scale))
+    border = QColor(accent)
+    border.setAlpha(120)
+    painter.save()
+    painter.setPen(QPen(border, 1))
+    painter.setBrush(QColor(20, 23, 28, 218))
+    painter.drawRoundedRect(QRectF(rect), radius, radius)
+    painter.setPen(QColor(accent).lighter(112))
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+    painter.restore()
+    return rect
+
+
+def _paint_tag_dot(painter: QPainter, x: int, y: int, chip: int, accent: QColor) -> QRect:
+    """Icon-only form of a workflow tag: a chip-sized square holding a filled
+    dot in the tag's accent color. Used past the column threshold, matching
+    the icon-only duplicate/AI chips."""
+    rect = QRect(x, y, chip, chip)
+    radius = max(4.0, chip * 0.3)
+    border = QColor(accent)
+    border.setAlpha(130)
+    painter.save()
+    painter.setPen(QPen(border, 1))
+    painter.setBrush(QColor(31, 36, 41, 226))
+    painter.drawRoundedRect(QRectF(rect), radius, radius)
+    diameter = max(4.0, chip * 0.38)
+    dot = QRectF(0, 0, diameter, diameter)
+    dot.moveCenter(QRectF(rect).center())
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(accent))
+    painter.drawEllipse(dot)
+    painter.restore()
+    return rect
+
+
+def _badge_natural_width(text: str, font: QFont, scale: float) -> int:
+    """Width _paint_badge produces for a text badge without a fixed size.
+    Kept in sync with its padding/icon math so overflow checks agree with
+    what actually gets painted."""
+    metrics = QFontMetrics(font)
+    h_pad = max(8, round(11 * scale))
+    icon_width = max(10, round(13 * scale))
+    icon_gap = max(6, round(7 * scale))
+    return metrics.horizontalAdvance(text) + h_pad * 2 + icon_width + icon_gap
+
 
 def _paint_badge(
     painter: QPainter,
@@ -598,12 +737,97 @@ def _paint_badge(
 
 
 def _paint_compact_badges(
-    painter: QPainter, card_rect: QRect, image_rect: QRect, data: GridCardData, scale: float
+    painter: QPainter,
+    card_rect: QRect,
+    image_rect: QRect,
+    data: GridCardData,
+    scale: float,
+    *,
+    show_text: bool = False,
 ) -> None:
-    """Icon-only badge chips for the compact (>4 column) card."""
-    inset = max(8, round(10 * scale))
-    chip = max(18, round(card_rect.height() * 0.082))
+    """Badge chips pinned to the top corners of the barebones card, sharing
+    the action buttons' corner inset. Icon-only by default; ``show_text``
+    renders them as small icon + text pills instead. AI workflow tags (led by
+    the AI bucket, since the compact card has no status text) stack below the
+    top-left badge as pills or, in icon-only mode, accent dots."""
+    inset = _compact_corner_inset(scale)
+    chip = max(11, round(22 * scale))
     top = image_rect.top() + inset
+
+    if show_text:
+        # Text pills only when both fit between the insets without touching;
+        # otherwise fall back to the icon-only chips so nothing ever clips.
+        font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
+        needed = 0
+        if data.duplicate_visible and data.duplicate_text:
+            needed += _badge_natural_width(data.duplicate_text, font, scale)
+        if data.ai_visible and data.ai_text:
+            if needed:
+                needed += max(8, round(10 * scale))
+            needed += _badge_natural_width(data.ai_text, font, scale)
+        if needed > image_rect.width() - inset * 2:
+            show_text = False
+
+    tag_entries: list[tuple[str, str]] = []
+    if data.status_text:
+        tag_entries.append((data.status_text, data.status_kind))
+    tag_entries.extend(data.tags)
+
+    def _paint_tag_rail(rail_y: int) -> None:
+        if not tag_entries:
+            return
+        tag_gap = max(4, round(5 * scale))
+        rail_y += tag_gap
+        rail_x = image_rect.left() + inset
+        hit_rects = _compact_action_button_rects(card_rect, image_rect, scale)
+        rail_bottom = hit_rects.favorite.top() - tag_gap
+        tag_font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
+        pill_height = _tag_pill_height(tag_font, scale)
+        entry_height = pill_height if show_text else chip
+        for text, kind in tag_entries:
+            if not text or rail_y + entry_height > rail_bottom:
+                break
+            if show_text:
+                _paint_tag_pill(painter, rail_x, rail_y, text, tag_font, _tag_accent(kind), scale)
+            else:
+                _paint_tag_dot(painter, rail_x, rail_y, chip, _tag_accent(kind))
+            rail_y += entry_height + tag_gap
+
+    if show_text:
+        font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
+        badge_height = max(round(24 * scale), QFontMetrics(font).height() + max(7, round(8 * scale)))
+        if data.duplicate_visible and data.duplicate_text:
+            _paint_badge(
+                painter,
+                QPoint(image_rect.left() + inset, top),
+                data.duplicate_text,
+                font,
+                QColor(31, 36, 41, 226),
+                QColor(255, 197, 73),
+                QColor(255, 255, 255, 72),
+                icon="duplicate",
+                align_right=False,
+                scale=scale,
+            )
+        if data.ai_visible and data.ai_text:
+            _paint_badge(
+                painter,
+                QPoint(image_rect.right() - inset + 1, top),
+                data.ai_text,
+                font,
+                QColor(124, 88, 23, 222),
+                QColor(255, 218, 92),
+                QColor(255, 178, 37, 214),
+                icon="spark",
+                align_right=True,
+                scale=scale,
+            )
+        rail_top = top
+        if data.duplicate_visible and data.duplicate_text:
+            rail_top += badge_height
+        _paint_tag_rail(rail_top)
+        return
+
     radius = max(4.0, round(5 * scale))
     icon_size = max(9, round(chip * 0.56))
 
@@ -629,12 +853,17 @@ def _paint_compact_badges(
 
     if data.ai_visible and data.ai_text:
         icon_rect = _chip(
-            QRect(image_rect.right() - inset - chip, top, chip, chip),
+            QRect(image_rect.right() - inset - chip + 1, top, chip, chip),
             QColor(124, 88, 23, 222),
             QColor(255, 178, 37, 214),
         )
         _paint_spark_icon(painter, icon_rect, QColor(255, 218, 92))
     painter.restore()
+
+    rail_top = top
+    if data.duplicate_visible and data.duplicate_text:
+        rail_top += chip
+    _paint_tag_rail(rail_top)
 
 
 def _paint_duplicate_icon(painter: QPainter, rect: QRect, color: QColor, scale: float) -> None:
@@ -722,28 +951,14 @@ def _paint_bottom_overlay(
     exif_rect = QRect(body_left, name_rect.bottom() + line_gap, body_width, exif_metrics.height())
     meta_rect = QRect(body_left, exif_rect.bottom() + line_gap, body_width, meta_metrics.height())
 
+    # The detailed footer sits on the card's anchored scrim, which guarantees
+    # a dark backdrop under every line regardless of the photo, so the text
+    # colors stay fixed (unlike the scrimless compact card, which samples the
+    # photo and flips its filename color).
     painter.save()
-    _draw_elided_text(
-        painter,
-        name_rect,
-        data.filename,
-        name_font,
-        QColor(255, 255, 255),
-    )
-    _draw_elided_text(
-        painter,
-        exif_rect,
-        data.exif_text,
-        exif_font,
-        QColor(204, 214, 226),
-    )
-    _draw_elided_text(
-        painter,
-        meta_rect,
-        data.meta_text,
-        meta_font,
-        QColor(132, 147, 168),
-    )
+    _draw_elided_text(painter, name_rect, data.filename, name_font, QColor(255, 255, 255))
+    _draw_elided_text(painter, exif_rect, data.exif_text, exif_font, QColor(204, 214, 226))
+    _draw_elided_text(painter, meta_rect, data.meta_text, meta_font, QColor(132, 147, 168))
 
     right_stack_height = round(card_rect.height() * 0.172)
     side_top = initial_button_bottom - right_stack_height + 1
@@ -764,7 +979,6 @@ def _paint_bottom_overlay(
         )
 
     if data.status_text:
-        status_color = _status_color(data.status_kind)
         status_rect = QRect(
             side_left,
             side_top + position_height + max(2, round(3 * scale)) - round(card_rect.height() * 0.0114),
@@ -776,7 +990,7 @@ def _paint_bottom_overlay(
             status_rect,
             data.status_text,
             status_font,
-            status_color,
+            _status_color(data.status_kind),
             align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
 
@@ -800,51 +1014,121 @@ def _paint_bottom_overlay(
     return favorite_rect, reject_rect
 
 
+_LUMINANCE_CACHE: dict[tuple, float | None] = {}
+_LUMINANCE_CACHE_LIMIT = 1024
+
+
+def _photo_region_luminance(source_pixmap: QPixmap, photo_rect: QRect, region: QRect) -> float | None:
+    """Average luminance (0-255) of the photo pixels shown under ``region``,
+    memoized per pixmap/geometry since paints repeat during scrolling."""
+    key = (
+        source_pixmap.cacheKey(),
+        photo_rect.width(),
+        photo_rect.height(),
+        region.left() - photo_rect.left(),
+        region.top() - photo_rect.top(),
+        region.width(),
+        region.height(),
+    )
+    if key in _LUMINANCE_CACHE:
+        return _LUMINANCE_CACHE[key]
+    if len(_LUMINANCE_CACHE) >= _LUMINANCE_CACHE_LIMIT:
+        _LUMINANCE_CACHE.clear()
+    value = _compute_photo_region_luminance(source_pixmap, photo_rect, region)
+    _LUMINANCE_CACHE[key] = value
+    return value
+
+
+def _compute_photo_region_luminance(source_pixmap: QPixmap, photo_rect: QRect, region: QRect) -> float | None:
+    """Mirrors the crop/center math in ``_paint_image`` so the sampled source
+    area matches what is actually painted. Returns None when the region
+    falls outside the drawn photo (letterboxing) or cannot be sampled.
+    """
+    if source_pixmap.isNull() or photo_rect.width() <= 0 or photo_rect.height() <= 0:
+        return None
+    scaled_size = source_pixmap.size()
+    aspect_mode = Qt.AspectRatioMode.KeepAspectRatioByExpanding
+    if source_pixmap.height() > source_pixmap.width() * 1.16:
+        aspect_mode = Qt.AspectRatioMode.KeepAspectRatio
+    scaled_size.scale(photo_rect.size(), aspect_mode)
+    if scaled_size.width() <= 0 or scaled_size.height() <= 0:
+        return None
+    draw_rect = QRect(QPoint(0, 0), scaled_size)
+    draw_rect.moveCenter(photo_rect.center())
+
+    sx = source_pixmap.width() / scaled_size.width()
+    sy = source_pixmap.height() / scaled_size.height()
+    source_region = QRect(
+        round((region.left() - draw_rect.left()) * sx),
+        round((region.top() - draw_rect.top()) * sy),
+        max(1, round(region.width() * sx)),
+        max(1, round(region.height() * sy)),
+    ).intersected(source_pixmap.rect())
+    if source_region.isEmpty():
+        return None
+
+    sample = (
+        source_pixmap.copy(source_region)
+        .scaled(8, 4, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        .toImage()
+    )
+    if sample.isNull():
+        return None
+    total = 0.0
+    count = 0
+    for y in range(sample.height()):
+        for x in range(sample.width()):
+            color = sample.pixelColor(x, y)
+            total += 0.2126 * color.red() + 0.7152 * color.green() + 0.0722 * color.blue()
+            count += 1
+    if count == 0:
+        return None
+    return total / count
+
+
 def _paint_compact_overlay(
     painter: QPainter,
     card_rect: QRect,
     image_rect: QRect,
     data: GridCardData,
     scale: float,
+    layout: str = "corners",
+    *,
+    show_filename: bool = False,
+    source_pixmap: QPixmap | None = None,
 ) -> tuple[QRect, QRect]:
-    """Trimmed footer for the compact card: filename over status on the left,
-    favorite/reject buttons on the right. EXIF, meta, and position are
-    dropped entirely."""
-    margin = max(8, round(10 * scale))
-
-    hit_rects = _compact_action_button_rects(card_rect, image_rect, scale)
+    """Barebones overlay: the heart and reject buttons along the bottom edge
+    (opposite corners or paired bottom-right, per ``layout``). With the
+    paired layout, ``show_filename`` draws the filename left-aligned on the
+    button row at the shared corner inset, picking light or dark text from
+    the photo's luminance under it. No status or position text."""
+    hit_rects = _compact_action_button_rects(card_rect, image_rect, scale, layout)
     favorite_rect = QRect(hit_rects.favorite)
     reject_rect = QRect(hit_rects.reject)
 
-    name_font, status_font = _compact_footer_fonts(scale)
-    name_metrics = QFontMetrics(name_font)
-    status_metrics = QFontMetrics(status_font)
-    line_gap = max(2, round(3 * scale))
-    footer_bottom = _compact_footer_bottom(card_rect)
-
-    body_left = image_rect.left() + margin
-    body_right = favorite_rect.left() - max(8, round(10 * scale))
-    body_width = max(32, body_right - body_left)
-
-    # Filename anchored to the bottom, status (Keeper/Review) above it.
-    name_rect = QRect(body_left, footer_bottom - name_metrics.height() + 1, body_width, name_metrics.height())
-    status_rect = QRect(
-        body_left,
-        name_rect.top() - line_gap - status_metrics.height(),
-        body_width,
-        status_metrics.height(),
-    )
-
     painter.save()
-    _draw_elided_text(painter, name_rect, data.filename, name_font, QColor(255, 255, 255))
-    if data.status_text:
-        _draw_elided_text(
-            painter,
-            status_rect,
-            data.status_text,
-            status_font,
-            _status_color(data.status_kind),
-        )
+    if show_filename and layout == "right" and data.filename:
+        inset = _compact_corner_inset(scale)
+        name_font = QFont("Segoe UI", max(9, round(13 * scale)), QFont.Weight.DemiBold)
+        name_left = image_rect.left() + inset
+        name_width = favorite_rect.left() - max(6, round(8 * scale)) - name_left
+        # Skip the filename entirely once the row is too tight for even a few
+        # characters — an ellipsis crashing into the buttons reads as clipping.
+        if name_width >= round(QFontMetrics(name_font).averageCharWidth() * 4.5):
+            name_rect = QRect(name_left, favorite_rect.top(), name_width, favorite_rect.height())
+            name_color = QColor(255, 255, 255)
+            halo = QColor(10, 13, 18, 160)
+            if source_pixmap is not None:
+                luminance = _photo_region_luminance(source_pixmap, image_rect, name_rect)
+                if luminance is not None and luminance > 148:
+                    name_color = QColor(26, 30, 36)
+                    halo = QColor(255, 255, 255, 140)
+            # Soft opposing halo keeps the text readable on busy midtones,
+            # where average luminance alone can't guarantee contrast.
+            _draw_elided_text(
+                painter, name_rect.translated(1, 1), data.filename, name_font, halo
+            )
+            _draw_elided_text(painter, name_rect, data.filename, name_font, name_color)
 
     _paint_action_button(
         painter,
@@ -994,6 +1278,7 @@ __all__ = [
     "GridCardData",
     "GridCardHitRects",
     "grid_card_action_rects",
+    "grid_card_height_for_width",
     "load_action_icon",
     "paint_grid_card",
     "render_grid_card_pixmap",

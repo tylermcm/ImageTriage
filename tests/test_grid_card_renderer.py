@@ -81,6 +81,18 @@ class GridCardRendererTests(unittest.TestCase):
             grid_card_action_rects(QRect(0, 0, 300, 218), compact=True).reject.left(),
         )
 
+    def test_compact_buttons_pin_to_bottom_corners_with_equal_padding(self) -> None:
+        for width in (180, 300, 420):
+            rect = QRect(0, 0, width, round(width * 2 / 3))
+            hits = grid_card_action_rects(rect, compact=True)
+            left_pad = hits.favorite.left() - rect.left()
+            right_pad = rect.right() - hits.reject.right()
+            bottom_pad = rect.bottom() - hits.favorite.bottom()
+            with self.subTest(width=width):
+                self.assertLessEqual(abs(left_pad - right_pad), 1)
+                self.assertLessEqual(abs(left_pad - bottom_pad), 1)
+                self.assertEqual(hits.favorite.top(), hits.reject.top())
+
 
 if __name__ == "__main__":
     unittest.main()

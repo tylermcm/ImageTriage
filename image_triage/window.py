@@ -871,7 +871,7 @@ class ToolbarCustomizerDialog(QDialog):
             "auto_advance": "Auto",
             "burst_groups": "Groups",
             "burst_stacks": "Stacks",
-            "compact_cards": "Compact",
+            "compact_cards": "Legacy",
             "show_hidden_folders": "Hidden",
             "selection_count": "3 selected",
             "accept_selection": "Accept",
@@ -2466,7 +2466,10 @@ class MainWindow(QMainWindow):
     AUTO_ADVANCE_KEY = "view/auto_advance"
     VIEW_COLUMNS_KEY = "view/columns"
     VIEW_ZOOM_WIDTH_KEY = "view/zoom_width"
-    COMPACT_CARDS_KEY = "view/compact_cards"
+    # "Legacy cards" (the classic boxed grid card). The key was renamed from
+    # view/compact_cards when the overlay card became the default so stale
+    # stored values don't keep forcing the legacy layout.
+    COMPACT_CARDS_KEY = "view/legacy_cards"
     LOUPE_CARD_STYLE_KEY = "view/loupe_card_style"
     FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
@@ -2706,7 +2709,7 @@ class MainWindow(QMainWindow):
         "auto_advance": "Auto-Advance",
         "burst_groups": "Smart Groups",
         "burst_stacks": "Smart Stacks",
-        "compact_cards": "Compact Cards",
+        "compact_cards": "Legacy Cards",
         "show_hidden_folders": "Show Hidden Folders",
         "selection_count": "Selected Count",
         "accept_selection": "Accept",
@@ -3124,9 +3127,9 @@ class MainWindow(QMainWindow):
         self._auto_bracket_enabled = self._settings.value(self.AUTO_BRACKET_KEY, True, bool)
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
-        self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, True, bool)
+        self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, False, bool)
         self._loupe_card_style = self._normalize_loupe_card_style(
-            self._settings.value(self.LOUPE_CARD_STYLE_KEY, "photo_fit", str)
+            self._settings.value(self.LOUPE_CARD_STYLE_KEY, "detailed", str)
         )
         self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
         self._preview_preload_batch_size = self._normalize_preview_preload_batch_size(
@@ -4410,8 +4413,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _normalize_loupe_card_style(value: object) -> str:
-        normalized = str(value or "photo_fit").strip().casefold().replace("-", "_").replace(" ", "_")
-        return normalized if normalized in {"photo_fit", "immersive"} else "photo_fit"
+        normalized = str(value or "detailed").strip().casefold().replace("-", "_").replace(" ", "_")
+        # "photo_fit" was renamed to "detailed"; migrate stored values.
+        return "immersive" if normalized == "immersive" else "detailed"
 
     def _fluent_filled_icon(self, primary: str, color: QColor) -> QIcon:
         """Render a Fluent glyph as a solid filled silhouette (the enclosed
@@ -5278,7 +5282,7 @@ class MainWindow(QMainWindow):
             "auto_advance": (self.actions.auto_advance, "Auto"),
             "burst_groups": (self.actions.burst_groups, "Groups"),
             "burst_stacks": (self.actions.burst_stacks, "Stacks"),
-            "compact_cards": (self.actions.compact_cards, "Compact"),
+            "compact_cards": (self.actions.compact_cards, "Legacy"),
             "show_hidden_folders": (self.actions.show_hidden_folders, "Hidden"),
             "accept_selection": (self.actions.accept_selection, "Accept"),
             "reject_selection": (self.actions.reject_selection, "Reject"),
@@ -21289,7 +21293,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Toolbar style set to {label}")
         elif compact_changed:
             state = "enabled" if self._compact_cards_enabled else "disabled"
-            self.statusBar().showMessage(f"Compact cards {state}")
+            self.statusBar().showMessage(f"Legacy cards {state}")
         elif free_scroll_changed:
             state = "enabled" if self._free_smooth_scroll_enabled else "disabled"
             self.statusBar().showMessage(f"Free smooth scrolling {state}")
