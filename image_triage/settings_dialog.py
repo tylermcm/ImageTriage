@@ -69,7 +69,7 @@ class WorkflowSettingsResult:
     delete_mode: DeleteMode
     toolbar_style: str = "icons"
     compact_cards_enabled: bool = True
-    loupe_card_style: str = "immersive"
+    loupe_card_style: str = "photo_fit"
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
@@ -138,7 +138,7 @@ class WorkflowSettingsDialog(QDialog):
         delete_mode: DeleteMode,
         toolbar_style: str = "icons",
         compact_cards_enabled: bool = True,
-        loupe_card_style: str = "immersive",
+        loupe_card_style: str = "photo_fit",
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
@@ -1120,7 +1120,7 @@ class WorkflowSettingsDialog(QDialog):
             delete_mode=delete_mode,
             toolbar_style=str(self.toolbar_style_combo.currentData() or "text"),
             compact_cards_enabled=self.compact_cards_checkbox.isChecked(),
-            loupe_card_style=str(self.loupe_card_style_combo.currentData() or "immersive"),
+            loupe_card_style=str(self.loupe_card_style_combo.currentData() or "photo_fit"),
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),

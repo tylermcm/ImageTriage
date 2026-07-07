@@ -149,8 +149,31 @@ class GridFailureTests(unittest.TestCase):
         draw_rect = grid._image_draw_rect(image_rect, pixmap)
 
         self.assertEqual(draw_rect.top(), image_rect.top())
-        self.assertGreaterEqual(draw_rect.left(), image_rect.left())
-        self.assertLessEqual(draw_rect.right(), image_rect.right())
+        self.assertEqual(draw_rect.left(), image_rect.left())
+        self.assertEqual(draw_rect.width(), image_rect.width())
+        self.assertEqual(draw_rect.height(), round(image_rect.width() * 2 / 3))
+        grid.deleteLater()
+
+    def test_single_column_landscape_photo_fit_uses_full_width_three_by_two_frame(self) -> None:
+        grid = ThumbnailGridView(ThumbnailManager())
+        grid.resize(1600, 900)
+        grid.show()
+        record = ImageRecord(path="C:/temp/landscape.jpg", name="landscape.jpg", size=1, modified_ns=1)
+        grid.metadata_manager._cache[grid.metadata_manager.make_key(record)] = CaptureMetadata(
+            path=record.path,
+            width=6000,
+            height=4000,
+        )
+        grid.set_column_count(1)
+        grid.set_items([record])
+        QApplication.processEvents()
+
+        expected = round(grid._tile_width() * 2 / 3) + grid._review_text_block_height(
+            QRect(0, 0, grid._tile_width(), max(1, grid.viewport().height() - grid._margin * 2))
+        )
+
+        self.assertEqual(grid._tile_height(), expected)
+        self.assertGreater(grid._tile_height(), grid.viewport().height() - (grid._margin * 2))
         grid.deleteLater()
 
     def test_primary_ai_badge_shows_needs_review_label(self) -> None:

@@ -3126,7 +3126,7 @@ class MainWindow(QMainWindow):
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
         self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, True, bool)
         self._loupe_card_style = self._normalize_loupe_card_style(
-            self._settings.value(self.LOUPE_CARD_STYLE_KEY, "immersive", str)
+            self._settings.value(self.LOUPE_CARD_STYLE_KEY, "photo_fit", str)
         )
         self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
         self._preview_preload_batch_size = self._normalize_preview_preload_batch_size(
@@ -4410,8 +4410,8 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _normalize_loupe_card_style(value: object) -> str:
-        normalized = str(value or "immersive").strip().casefold().replace("-", "_").replace(" ", "_")
-        return normalized if normalized in {"photo_fit", "immersive"} else "immersive"
+        normalized = str(value or "photo_fit").strip().casefold().replace("-", "_").replace(" ", "_")
+        return normalized if normalized in {"photo_fit", "immersive"} else "photo_fit"
 
     def _fluent_filled_icon(self, primary: str, color: QColor) -> QIcon:
         """Render a Fluent glyph as a solid filled silhouette (the enclosed

@@ -6,7 +6,6 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal, QSignalBlocker
@@ -23,8 +22,10 @@ from .scanner import normalized_path_key
 from .thumbnails import ThumbnailManager
 from .ui.grid_card_renderer import (
     COMPACT_COLUMN_THRESHOLD,
+    IMAGE_CORNER_RADIUS,
     GridCardData,
     grid_card_action_rects,
+    load_action_icon,
     paint_grid_card,
     _paint_duplicate_icon,
     _paint_heart_icon,
@@ -36,49 +37,6 @@ from .ui.theme import ThemePalette, default_theme
 
 
 _AI_RESULT_MISSING = object()
-
-_LOUPE_BUTTON_ICON_FILES: dict[str, Path] = {
-    "heart": Path(__file__).resolve().parent / "ui" / "assets" / "loupe_heart.png",
-    "reject": Path(__file__).resolve().parent / "ui" / "assets" / "loupe_reject.png",
-}
-
-
-@lru_cache(maxsize=8)
-def _loupe_button_icon(name: str, rgb: tuple[int, int, int]) -> QImage | None:
-    """Loupe action-button artwork recolored for overlay use.
-
-    The source assets are black artwork on a light background with no alpha
-    channel, so the alpha is built from luminance (black -> opaque, light ->
-    transparent) and the visible pixels are filled with the requested color.
-    Faint values are squashed to zero because the reject asset has a
-    checkerboard pattern baked into its background; the remap keeps stroke
-    edges antialiased. Only the central glyph is drawn by the caller — the
-    thick baked-in ring stays outside the sampled crop.
-    """
-    path = _LOUPE_BUTTON_ICON_FILES.get(name)
-    if path is None or not path.exists():
-        return None
-    source = QImage(str(path))
-    if source.isNull():
-        return None
-    gray = source.convertToFormat(QImage.Format.Format_Grayscale8)
-    gray.invertPixels()
-    floor = 64
-    remap = bytes(
-        0 if value < floor else min(255, round((value - floor) * 255 / (255 - floor))) for value in range(256)
-    )
-    mapped = bytes(gray.constBits()).translate(remap)
-    alpha = QImage(
-        mapped, gray.width(), gray.height(), gray.bytesPerLine(), QImage.Format.Format_Alpha8
-    ).copy()
-    icon = QImage(source.size(), QImage.Format.Format_ARGB32_Premultiplied)
-    icon.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(icon)
-    painter.fillRect(icon.rect(), QColor(*rgb))
-    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-    painter.drawImage(0, 0, alpha)
-    painter.end()
-    return icon
 
 
 def _fast_path_key(path: str) -> str:
@@ -220,7 +178,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._thumbnail_request_timer.setSingleShot(True)
         self._thumbnail_request_timer.setInterval(20)
         self._thumbnail_request_timer.timeout.connect(self._request_visible_thumbnails)
-        self._loupe_card_style = "immersive"
+        self._loupe_card_style = "photo_fit"
         self._title_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
         self._meta_font = QFont("Segoe UI", 9)
         self._review_title_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
@@ -838,10 +796,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         "immersive": the photo fills the pane and the metadata paints over its
         bottom edge on a lighter (65% alpha) scrim.
         """
-        normalized = "photo_fit" if str(style).strip().casefold() == "photo_fit" else "immersive"
+        normalized = "immersive" if str(style).strip().casefold() == "immersive" else "photo_fit"
         if self._loupe_card_style == normalized:
             return
         self._loupe_card_style = normalized
+        if self._use_loupe_card_style():
+            # The two styles reserve different heights around the photo.
+            self._refresh_layout_after_visible_items_changed()
+            self._schedule_visible_thumbnail_requests(immediate=True)
         self.viewport().update()
 
     def loupe_card_style(self) -> str:
@@ -1710,7 +1672,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             return
 
         rect = self._item_rect(index)
-        if self._should_fit_single_visible_tile() and self._single_visible_item_matches_path(key.path):
+        if (
+            self._should_fit_single_visible_tile() and self._single_visible_item_matches_path(key.path)
+        ) or (self._current_item_matches_path(key.path) and self._loupe_tile_height_stale()):
             self._refresh_layout_after_visible_items_changed()
             self._schedule_visible_thumbnail_requests(immediate=True)
             rect = self._item_rect(index)
@@ -1735,7 +1699,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._capture_cache[key.path] = self._format_capture_line(metadata)
         if metadata.width > 0 and metadata.height > 0:
             self._display_aspect_ratio_by_path[key.path] = metadata.width / metadata.height
-        if self._should_fit_single_visible_tile() and self._single_visible_item_matches_path(key.path):
+        if (
+            self._should_fit_single_visible_tile() and self._single_visible_item_matches_path(key.path)
+        ) or (self._current_item_matches_path(key.path) and self._loupe_tile_height_stale()):
             self._refresh_layout_after_visible_items_changed()
             self._schedule_visible_thumbnail_requests(immediate=True)
         rect = self._item_rect(index)
@@ -1769,6 +1735,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.save()
         image_rect = self._image_rect(rect)
         photo_bottom: int | None = None
+        loupe_photo_rect: QRect | None = None
         if use_new_grid_card:
             if burst_info is not None and self._burst_stack_mode:
                 self._paint_burst_stack_layers(painter, image_rect, highlighted=is_current or is_selected)
@@ -1793,6 +1760,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 rejected=is_rejected,
                 hover_favorite=index == self._hovered_winner_index,
                 hover_reject=index == self._hovered_reject_index,
+                immersive=self._loupe_card_style == "immersive",
             )
             paint_grid_card(
                 painter,
@@ -1812,39 +1780,56 @@ class ThumbnailGridView(QAbstractScrollArea):
                     failure_text,
                 )
         else:
-            if is_rejected:
-                border_color = self._reject_color
-                background_color = QColor("#171113")
-            elif is_winner:
-                border_color = self._accepted_color
-                background_color = QColor("#111c16")
-            else:
-                if is_current:
-                    border_color = self._border_active
-                    background_color = self._background_active
-                elif is_selected:
-                    border_color = self._border_selected
-                    background_color = self._background_selected
+            if not use_loupe_card:
+                # Boxed cards paint a frame; the loupe photo sits directly on
+                # the viewport.
+                if is_rejected:
+                    border_color = self._reject_color
+                    background_color = QColor("#171113")
+                elif is_winner:
+                    border_color = self._accepted_color
+                    background_color = QColor("#111c16")
                 else:
-                    border_color = self._border_idle
-                    background_color = self._background_idle
-            painter.setPen(QPen(border_color, 1.4 if is_current or is_selected else 1.0))
-            painter.setBrush(background_color)
-            painter.drawRoundedRect(QRectF(rect), 7, 7)
+                    if is_current:
+                        border_color = self._border_active
+                        background_color = self._background_active
+                    elif is_selected:
+                        border_color = self._border_selected
+                        background_color = self._background_selected
+                    else:
+                        border_color = self._border_idle
+                        background_color = self._background_idle
+                painter.setPen(QPen(border_color, 1.4 if is_current or is_selected else 1.0))
+                painter.setBrush(background_color)
+                painter.drawRoundedRect(QRectF(rect), 7, 7)
 
             if burst_info is not None:
                 if self._burst_stack_mode:
                     self._paint_burst_stack_layers(painter, image_rect, highlighted=is_current or is_selected)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(self._placeholder_color)
-            painter.drawRoundedRect(QRectF(image_rect), 5, 5)
+            if not (use_loupe_card and pixmap is not None and not pixmap.isNull()):
+                # Frameless loupe photos sit directly on the viewport, so the
+                # placeholder backdrop only paints while there is no photo yet
+                # (otherwise it shows as a gray pane in the dead area around
+                # the photo).
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(self._placeholder_color)
+                painter.drawRoundedRect(QRectF(image_rect), 5, 5)
 
+            corner_radius = IMAGE_CORNER_RADIUS if use_loupe_card else 5.0
             if pixmap is not None and not pixmap.isNull():
                 draw_rect = self._image_draw_rect(image_rect, pixmap)
                 photo_bottom = draw_rect.bottom()
+                loupe_photo_rect = QRect(draw_rect)
+                if use_loupe_card:
+                    # Learn the aspect ratio from the pixmap itself so the
+                    # height-fitted tile settles even when no metadata or
+                    # thumbnail-ready event supplied the dimensions.
+                    self._display_aspect_ratio_by_path.setdefault(
+                        variant.path, pixmap.width() / max(1, pixmap.height())
+                    )
                 zoom_pixmap = self._zoom_pixmap_for_tile(index, record, variant, image_rect)
                 clip_path = QPainterPath()
-                clip_path.addRoundedRect(QRectF(image_rect), 5, 5)
+                clip_path.addRoundedRect(QRectF(draw_rect if use_loupe_card else image_rect), corner_radius, corner_radius)
                 painter.save()
                 painter.setClipPath(clip_path)
                 if index == self._zoom_index and self._zoom_factor > 1.0:
@@ -1875,10 +1860,29 @@ class ThumbnailGridView(QAbstractScrollArea):
                 painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, "Loading...")
 
             if use_loupe_card:
+                # Selection ring on the photo itself (there is no card frame).
+                # Current uses the accent blue with a thin dark contrast line
+                # inside it so the ring stays visible over bright photo edges;
+                # other selected tiles get the lighter blue; idle keeps the
+                # subtle hairline.
+                ring_rect = QRectF(loupe_photo_rect if loupe_photo_rect is not None else image_rect)
                 painter.save()
-                painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRoundedRect(QRectF(image_rect).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+                if is_current or is_selected:
+                    accent = QColor(self._border_active if is_current else self._border_selected)
+                    painter.setPen(QPen(QColor(0, 0, 0, 140), 1.0))
+                    painter.drawRoundedRect(
+                        ring_rect.adjusted(2.0, 2.0, -2.0, -2.0), IMAGE_CORNER_RADIUS - 1, IMAGE_CORNER_RADIUS - 1
+                    )
+                    painter.setPen(QPen(accent, 2.0 if is_current else 1.4))
+                    painter.drawRoundedRect(
+                        ring_rect.adjusted(0.5, 0.5, -0.5, -0.5), IMAGE_CORNER_RADIUS, IMAGE_CORNER_RADIUS
+                    )
+                else:
+                    painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+                    painter.drawRoundedRect(
+                        ring_rect.adjusted(0.5, 0.5, -0.5, -0.5), IMAGE_CORNER_RADIUS, IMAGE_CORNER_RADIUS
+                    )
                 painter.restore()
 
         # Rating/meta footer strip under compact cards. The normal review card
@@ -2358,23 +2362,29 @@ class ThumbnailGridView(QAbstractScrollArea):
         button_gap = self._review_action_button_gap(image_rect)
         title_height, capture_height, meta_height, line_gap = self._review_text_metrics(image_rect)
 
+        # Anchor the overlay to the photo's bottom edge in immersive mode (the
+        # photo-fit strip anchors to the tile bottom by design). This keeps
+        # the controls on the photo even when the tile is taller than the
+        # frame — e.g. before the aspect ratio is learned.
+        photo_edge = image_rect.bottom() if photo_bottom is None else min(photo_bottom, image_rect.bottom())
+        anchor_base = photo_edge if self._loupe_card_style == "immersive" else image_rect.bottom()
         # Text rows anchor to the classic button position (button centered on
         # the meta row); the buttons themselves may drop below that anchor so
         # they never clip the status text (see _review_button_top).
-        anchor_center_y = image_rect.bottom() - margin - button_size // 2
+        anchor_center_y = anchor_base - self._review_overlay_bottom_margin(image_rect) - button_size // 2
         meta_y = anchor_center_y - meta_height // 2
         capture_y = meta_y - capture_height - line_gap
         title_y = capture_y - title_height - line_gap
 
         reject_rect = QRect(0, 0, button_size, button_size)
         reject_rect.moveRight(image_rect.right() - margin)
-        reject_rect.moveTop(self._review_button_top(image_rect))
+        reject_rect.moveTop(self._review_button_top(image_rect, photo_bottom=anchor_base))
         winner_rect = QRect(0, 0, button_size, button_size)
         winner_rect.moveRight(reject_rect.left() - button_gap)
         winner_rect.moveTop(reject_rect.top())
 
         clip = QPainterPath()
-        clip.addRoundedRect(QRectF(image_rect), 5, 5)
+        clip.addRoundedRect(QRectF(image_rect), IMAGE_CORNER_RADIUS, IMAGE_CORNER_RADIUS)
 
         painter.save()
         painter.setClipPath(clip)
@@ -2384,36 +2394,52 @@ class ThumbnailGridView(QAbstractScrollArea):
         # whichever is higher) and feathers out shortly above that. The
         # immersive style lightens every stop to 65% so the photo reads
         # through the metadata strip.
-        text_top = title_y - line_gap
-        photo_edge = image_rect.bottom() if photo_bottom is None else min(photo_bottom, image_rect.bottom())
-        overlap = max(6, int(round(8 * scale)))
-        solid_top = min(text_top, photo_edge - overlap)
-        solid_h = max(1, image_rect.bottom() - solid_top + 1)
-        feather_h = max(20, int(round(30 * scale)))
-        total = max(1, min(solid_h + feather_h, image_rect.height()))
-        scrim_top = image_rect.bottom() - total + 1
-        feather_frac = feather_h / float(solid_h + feather_h)
-        scrim_rect = QRect(
-            image_rect.left(),
-            scrim_top,
-            image_rect.width(),
-            image_rect.bottom() - scrim_top + 1,
-        )
-        alpha_scale = 0.65 if self._loupe_card_style == "immersive" else 1.0
+        if self._loupe_card_style == "immersive":
+            text_top = title_y - line_gap
+            overlap = max(6, int(round(8 * scale)))
+            solid_top = min(text_top, photo_edge - overlap)
+            solid_h = max(1, anchor_base - solid_top + 1)
+            feather_h = max(20, int(round(30 * scale)))
+            total = max(1, min(solid_h + feather_h, image_rect.height()))
+            scrim_top = anchor_base - total + 1
+            feather_frac = feather_h / float(solid_h + feather_h)
+            scrim_rect = QRect(
+                image_rect.left(),
+                scrim_top,
+                image_rect.width(),
+                anchor_base - scrim_top + 1,
+            )
 
-        def scrim_stop(alpha: int) -> QColor:
-            color = QColor(self._review_scrim_color)
-            color.setAlpha(round(alpha * alpha_scale))
-            return color
+            def scrim_stop(alpha: int) -> QColor:
+                color = QColor(self._review_scrim_color)
+                # The fade stays translucent (65%) so the photo reads through,
+                # but the solid band behind the text ramps to 80% so the
+                # labels keep a legibility floor (matches the shared grid
+                # card renderer).
+                color.setAlpha(round(alpha * (0.65 + 0.15 * (alpha / 255.0))))
+                return color
 
-        gradient = QLinearGradient(scrim_rect.topLeft(), scrim_rect.bottomLeft())
-        gradient.setColorAt(0.0, scrim_stop(0))
-        gradient.setColorAt(feather_frac * 0.50, scrim_stop(40))
-        gradient.setColorAt(feather_frac * 0.80, scrim_stop(125))
-        gradient.setColorAt(feather_frac, scrim_stop(235))
-        gradient.setColorAt(min(1.0, feather_frac + (1.0 - feather_frac) * 0.12), scrim_stop(255))
-        gradient.setColorAt(1.0, scrim_stop(255))
-        painter.fillRect(scrim_rect, QBrush(gradient))
+            gradient = QLinearGradient(scrim_rect.topLeft(), scrim_rect.bottomLeft())
+            gradient.setColorAt(0.0, scrim_stop(0))
+            gradient.setColorAt(feather_frac * 0.50, scrim_stop(40))
+            gradient.setColorAt(feather_frac * 0.80, scrim_stop(125))
+            gradient.setColorAt(feather_frac, scrim_stop(235))
+            gradient.setColorAt(min(1.0, feather_frac + (1.0 - feather_frac) * 0.12), scrim_stop(255))
+            gradient.setColorAt(1.0, scrim_stop(255))
+            painter.fillRect(scrim_rect, QBrush(gradient))
+        elif photo_edge < image_rect.bottom():
+            # Photo-fit: nothing draws over the image — the metadata strip
+            # below the photo gets a solid backdrop instead of a feathered
+            # scrim.
+            painter.fillRect(
+                QRect(
+                    image_rect.left(),
+                    photo_edge + 1,
+                    image_rect.width(),
+                    image_rect.bottom() - photo_edge,
+                ),
+                self._review_scrim_color,
+            )
         painter.restore()
         right_width = max(96, int(round(64 * scale)))
         left_width = max(80, winner_rect.left() - margin - image_rect.left() - margin - int(round(18 * scale)))
@@ -2512,7 +2538,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.setBrush(fill)
         painter.drawEllipse(rect)
 
-        image = _loupe_button_icon(icon, (color.red(), color.green(), color.blue()))
+        image = load_action_icon(icon, (color.red(), color.green(), color.blue()))
         if image is not None:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             # Draw only the central glyph of the artwork; the asset's own
@@ -2832,13 +2858,9 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _image_rect(self, tile_rect: QRect) -> QRect:
         if self._use_loupe_card_style():
-            padding = max(10, min(18, tile_rect.width() // 90))
-            return QRect(
-                tile_rect.x() + padding,
-                tile_rect.y() + padding,
-                tile_rect.width() - (padding * 2),
-                tile_rect.height() - (padding * 2),
-            )
+            # The loupe photo sits directly on the viewport — no parent card
+            # box around it, so the image owns the whole tile.
+            return QRect(tile_rect)
         return QRect(
             tile_rect.x() + self._image_padding,
             tile_rect.y() + self._image_padding,
@@ -2850,13 +2872,16 @@ class ThumbnailGridView(QAbstractScrollArea):
         draw_size = pixmap.size()
         if self._columns == 1 or pixmap.height() > pixmap.width():
             fit_rect = image_rect
+            force_scale = False
             if self._use_loupe_card_style() and self._loupe_card_style == "photo_fit":
-                # Photo-fit loupe: reserve the overlay footer below the photo
-                # so the metadata strip never covers it.
-                available = image_rect.height() - self._review_text_block_height(image_rect)
-                if available >= 96:
-                    fit_rect = QRect(image_rect.x(), image_rect.y(), image_rect.width(), available)
-            if draw_size.width() > fit_rect.width() or draw_size.height() > fit_rect.height():
+                # Photo-fit loupe: the photo pane is full-width 3:2 above the
+                # metadata strip. Let the tile grow vertically when needed
+                # instead of height-limiting the photo and narrowing it.
+                photo_height = int(round(image_rect.width() * 2 / 3))
+                if photo_height >= 96:
+                    fit_rect = QRect(image_rect.x(), image_rect.y(), image_rect.width(), photo_height)
+                    force_scale = True
+            if force_scale or draw_size.width() > fit_rect.width() or draw_size.height() > fit_rect.height():
                 draw_size.scale(fit_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
             draw_rect = QRect(QPoint(0, 0), draw_size)
             if self._columns == 1:
@@ -3044,6 +3069,13 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _review_overlay_margin(self, image_rect: QRect) -> int:
         return max(18, min(56, int(round(image_rect.width() * 0.035))))
 
+    def _review_overlay_bottom_margin(self, image_rect: QRect) -> int:
+        """Vertical inset of the overlay's bottom anchor. Strictly proportional
+        (no upper clamp) so the strip under the metadata reads the same at any
+        window size — the side margin's 56px cap made it balloon relative to
+        the card in smaller windows."""
+        return max(12, int(round(image_rect.width() * 0.022)))
+
     def _review_overlay_height(self, image_rect: QRect) -> int:
         return max(170, min(360, int(round(image_rect.height() * 0.34))))
 
@@ -3075,15 +3107,33 @@ class ThumbnailGridView(QAbstractScrollArea):
         line_gap = max(5, int(round(7 * scale)))
         return title_height, capture_height, meta_height, line_gap
 
-    def _review_button_top(self, image_rect: QRect) -> int:
+    def _loupe_photo_bottom(self, image_rect: QRect) -> int:
+        """Bottom edge of the current photo inside the loupe tile. The
+        immersive overlay anchors here rather than at the tile bottom, so the
+        controls stay on the photo even when the tile is taller than the
+        frame (aspect ratio not learned yet, portrait clamp, etc.)."""
+        if self._loupe_card_style != "immersive":
+            return image_rect.bottom()
+        aspect = self._current_loupe_aspect_ratio()
+        if not aspect or aspect <= 0:
+            return image_rect.bottom()
+        photo_height = int(round(image_rect.width() / aspect))
+        if photo_height >= image_rect.height():
+            return image_rect.bottom()
+        return image_rect.top() + photo_height - 1
+
+    def _review_button_top(self, image_rect: QRect, photo_bottom: int | None = None) -> int:
         """Top edge of the action buttons: anchored so the buttons center on
         the meta row, then dropped just far enough that they clear the status
         text on the capture row (keeps Keeper/Review from clipping)."""
         scale = self._review_scale(image_rect)
-        margin = self._review_overlay_margin(image_rect)
+        bottom_margin = self._review_overlay_bottom_margin(image_rect)
         button_size = self._review_action_button_size(image_rect)
         _title_height, capture_height, meta_height, line_gap = self._review_text_metrics(image_rect)
-        anchor_center_y = image_rect.bottom() - margin - button_size // 2
+        if photo_bottom is None:
+            photo_bottom = self._loupe_photo_bottom(image_rect)
+        anchor_base = min(photo_bottom, image_rect.bottom())
+        anchor_center_y = anchor_base - bottom_margin - button_size // 2
         meta_y = anchor_center_y - meta_height // 2
         capture_y = meta_y - capture_height - line_gap
         button_top = anchor_center_y - button_size // 2
@@ -3093,11 +3143,11 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _review_text_block_height(self, image_rect: QRect) -> int:
         """Footer height from the title row down to the pane bottom; the
         photo-fit style reserves this strip below the photo."""
-        margin = self._review_overlay_margin(image_rect)
+        bottom_margin = self._review_overlay_bottom_margin(image_rect)
         button_size = self._review_action_button_size(image_rect)
         title_height, capture_height, meta_height, line_gap = self._review_text_metrics(image_rect)
         return (
-            margin
+            bottom_margin
             + button_size // 2
             + meta_height // 2
             + line_gap
@@ -3587,6 +3637,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         if single_item is None:
             return None
         _, record, variant = single_item
+        return self._record_aspect_ratio(record, variant)
+
+    def _record_aspect_ratio(self, record: ImageRecord, variant: ImageVariant) -> float | None:
         for candidate in (variant.path, record.path):
             aspect_ratio = self._display_aspect_ratio_by_path.get(candidate)
             if aspect_ratio is not None and aspect_ratio > 0:
@@ -3597,6 +3650,47 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._display_aspect_ratio_by_path[candidate] = aspect_ratio
                 return aspect_ratio
         return None
+
+    def _current_loupe_aspect_ratio(self) -> float | None:
+        if not 0 <= self._current_index < len(self._items):
+            return None
+        record = self._items[self._current_index]
+        if record.is_folder:
+            return None
+        return self._record_aspect_ratio(record, self._current_variant(record))
+
+    def _loupe_fitted_tile_height(self, tile_width: int, max_tile_height: int) -> int:
+        """Trim the single-column card so it hugs the current photo instead of
+        leaving a dead band under it (the pane is usually taller than a 3:2
+        landscape frame). Falls back to the full pane height when the aspect
+        ratio is unknown or the photo is height-limited (portrait)."""
+        aspect = self._current_loupe_aspect_ratio()
+        if not aspect or aspect <= 0:
+            return max_tile_height
+        if tile_width <= 0:
+            return max_tile_height
+        if self._loupe_card_style == "photo_fit":
+            footer_height = self._review_text_block_height(QRect(0, 0, tile_width, max(1, max_tile_height)))
+            if aspect >= 1.0:
+                needed = int(round(tile_width * 2 / 3)) + footer_height
+                return max(160, needed)
+            needed = int(round(tile_width / aspect)) + footer_height
+            return max(160, min(max_tile_height, needed))
+        needed = int(round(tile_width / aspect))
+        return max(160, min(max_tile_height, needed))
+
+    def _loupe_tile_height_stale(self) -> bool:
+        if not self._use_loupe_card_style():
+            return False
+        max_tile_height = max(160, self.viewport().height() - (self._margin * 2))
+        return self._loupe_fitted_tile_height(self._tile_width_value, max_tile_height) != self._tile_height_value
+
+    def _current_item_matches_path(self, path: str) -> bool:
+        if not 0 <= self._current_index < len(self._items):
+            return False
+        record = self._items[self._current_index]
+        variant = self._current_variant(record)
+        return path == variant.path or path == record.path
 
     def _current_visible_slot(self) -> int:
         if not self._visible_item_indexes:
@@ -3751,6 +3845,11 @@ class ThumbnailGridView(QAbstractScrollArea):
             return
         previous = self._current_index
         self._current_index = index
+        if self._loupe_tile_height_stale():
+            # The loupe card hugs the current photo, so navigating between
+            # different aspect ratios changes the row height.
+            self._refresh_layout_after_visible_items_changed()
+            self._schedule_visible_thumbnail_requests(immediate=True)
         self._ensure_visible(index)
         if previous >= 0:
             self.viewport().update(self._item_rect(previous))
@@ -3976,9 +4075,12 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._columns = columns
         if columns == 1:
             if not self._compact_card_mode:
-                card_chrome_height = self._image_padding * 2
+                # Frameless loupe: the photo owns the whole tile.
+                card_chrome_height = 0
             self._tile_width_value = inner
             max_tile_height = max(160, self.viewport().height() - (self._margin * 2))
+            if not self._compact_card_mode:
+                max_tile_height = self._loupe_fitted_tile_height(inner, max_tile_height)
             self._image_height_value = max(64, max_tile_height - card_chrome_height)
             self._row_x_offset = 0
         else:
@@ -3988,16 +4090,17 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._row_x_offset = max(0, (inner - used) // 2)
         self._tile_height_value = card_chrome_height + self._image_height_value
         if self._use_new_grid_card():
-            # The shared review card is tuned as an 11:8 tile: the photo spans
-            # the content width at a 3:2 crop and the footer overlays its
-            # bottom edge, so the tile height follows the width instead of the
-            # legacy chrome stack (which stacks caption/action/meta rows below
-            # the image and makes the card far too tall).
+            # The shared photo-fit card is width-owned: the photo pane is
+            # always full-width 3:2, with enough tile height reserved for the
+            # lower metadata/action surface instead of squeezing the photo.
             self._image_height_value = max(64, round((target - self._image_padding * 2) * 2 / 3))
-            self._tile_height_value = max(96, round(target * 407 / 560))
+            self._tile_height_value = max(96, round(target * 0.865))
         self._row_height_value = self._tile_height_value + self._spacing
+        thumbnail_width = self._tile_width_value
+        if not (columns == 1 and not self._compact_card_mode):
+            thumbnail_width -= self._image_padding * 2
         self._thumbnail_target_size_value = QSize(
-            max(64, self._tile_width_value - (self._image_padding * 2)),
+            max(64, thumbnail_width),
             max(64, self._image_height_value),
         )
         self._clear_pixmap_cache()
