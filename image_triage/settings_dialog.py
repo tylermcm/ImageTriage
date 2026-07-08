@@ -69,7 +69,6 @@ class WorkflowSettingsResult:
     winner_mode: WinnerMode
     delete_mode: DeleteMode
     toolbar_style: str = "icons"
-    compact_cards_enabled: bool = False
     loupe_card_style: str = "detailed"
     ui_gamma: float = 1.0
     free_smooth_scroll_enabled: bool = False
@@ -139,7 +138,6 @@ class WorkflowSettingsDialog(QDialog):
         winner_mode: WinnerMode,
         delete_mode: DeleteMode,
         toolbar_style: str = "icons",
-        compact_cards_enabled: bool = False,
         loupe_card_style: str = "detailed",
         ui_gamma: float = 1.0,
         free_smooth_scroll_enabled: bool = False,
@@ -293,24 +291,21 @@ class WorkflowSettingsDialog(QDialog):
         general_layout.addStretch(1)
         self._add_settings_page("General", general_page)
 
-        self.compact_cards_checkbox = QCheckBox("Use legacy cards")
-        self.compact_cards_checkbox.setChecked(compact_cards_enabled)
-        self.compact_cards_checkbox.setToolTip(_settings_tooltip(
-            "Switches the grid back to the classic boxed cards with the caption "
-            "and metadata rows below the photo, instead of the default overlay cards."
-        ))
-
         self.loupe_card_style_combo = QComboBox()
         self.loupe_card_style_combo.setMinimumWidth(180)
         self.loupe_card_style_combo.addItem("Detailed", "detailed")
         self.loupe_card_style_combo.addItem("Immersive", "immersive")
+        self.loupe_card_style_combo.addItem("Zen", "zen")
+        self.loupe_card_style_combo.addItem("Classic", "classic")
         loupe_style_index = self.loupe_card_style_combo.findData(loupe_card_style)
         self.loupe_card_style_combo.setCurrentIndex(max(0, loupe_style_index))
         self.loupe_card_style_combo.setToolTip(_settings_tooltip(
             "Card style. Detailed shows the full review card (filename, EXIF, status) up to "
             "4 columns, then collapses to the minimal card at higher column counts; the "
             "single-image view keeps the metadata strip below the photo. Immersive always "
-            "uses the minimal photo-first card and paints metadata over the photo's edge."
+            "uses the minimal photo-first card and paints metadata over the photo's edge. "
+            "Zen strips everything away: just the photos and the selection ring. Classic is "
+            "the original boxed card with the caption and metadata rows below the photo."
         ))
 
         self.ui_gamma_slider = QSlider(Qt.Orientation.Horizontal)
@@ -382,7 +377,6 @@ class WorkflowSettingsDialog(QDialog):
 
         interface_page, interface_layout = self._build_settings_page("Interface")
         self._add_form_row(interface_layout, "Toolbar", self.toolbar_style_combo)
-        self._add_checkbox_row(interface_layout, "Grid", self.compact_cards_checkbox)
         self._add_form_row(interface_layout, "Card style", self.loupe_card_style_combo)
         self._add_form_row(interface_layout, "UI gamma", self.ui_gamma_row)
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
@@ -1151,7 +1145,6 @@ class WorkflowSettingsDialog(QDialog):
             winner_mode=winner_mode,
             delete_mode=delete_mode,
             toolbar_style=str(self.toolbar_style_combo.currentData() or "text"),
-            compact_cards_enabled=self.compact_cards_checkbox.isChecked(),
             loupe_card_style=str(self.loupe_card_style_combo.currentData() or "detailed"),
             ui_gamma=self.ui_gamma_slider.value() / 100.0,
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
