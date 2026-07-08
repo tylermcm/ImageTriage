@@ -873,7 +873,6 @@ class ToolbarCustomizerDialog(QDialog):
             "auto_advance": "Auto",
             "burst_groups": "Groups",
             "burst_stacks": "Stacks",
-            "compact_cards": "Legacy",
             "show_hidden_folders": "Hidden",
             "selection_count": "3 selected",
             "accept_selection": "Accept",
@@ -2469,9 +2468,8 @@ class MainWindow(QMainWindow):
     AUTO_ADVANCE_KEY = "view/auto_advance"
     VIEW_COLUMNS_KEY = "view/columns"
     VIEW_ZOOM_WIDTH_KEY = "view/zoom_width"
-    # "Legacy cards" (the classic boxed grid card). The key was renamed from
-    # view/compact_cards when the overlay card became the default so stale
-    # stored values don't keep forcing the legacy layout.
+    # Retired "Legacy cards" toggle: kept only to migrate stored values into
+    # the "classic" card style, then the key is removed.
     COMPACT_CARDS_KEY = "view/legacy_cards"
     LOUPE_CARD_STYLE_KEY = "view/loupe_card_style"
     FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
@@ -2603,7 +2601,6 @@ class MainWindow(QMainWindow):
             "auto_advance",
             "burst_groups",
             "burst_stacks",
-            "compact_cards",
             "show_hidden_folders",
             "selection_count",
             "open_folder",
@@ -2646,7 +2643,6 @@ class MainWindow(QMainWindow):
             "auto_advance",
             "burst_groups",
             "burst_stacks",
-            "compact_cards",
             "show_hidden_folders",
             "selection_count",
             "next_ai_pick",
@@ -2712,7 +2708,6 @@ class MainWindow(QMainWindow):
         "auto_advance": "Auto-Advance",
         "burst_groups": "Smart Groups",
         "burst_stacks": "Smart Stacks",
-        "compact_cards": "Legacy Cards",
         "show_hidden_folders": "Show Hidden Folders",
         "selection_count": "Selected Count",
         "accept_selection": "Accept",
@@ -2768,7 +2763,6 @@ class MainWindow(QMainWindow):
         "auto_advance": ("E72A", "EDB5"),
         "burst_groups": ("E902", None),
         "burst_stacks": ("E7AA", None),
-        "compact_cards": ("F232", None),
         "show_hidden_folders": ("F78D", "E8B7"),
         "selection_count": ("E762", None),
         "accept_selection": ("E8FB", None),
@@ -3131,10 +3125,15 @@ class MainWindow(QMainWindow):
         self._auto_bracket_enabled = self._settings.value(self.AUTO_BRACKET_KEY, True, bool)
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
-        self._compact_cards_enabled = self._settings.value(self.COMPACT_CARDS_KEY, False, bool)
         self._loupe_card_style = self._normalize_loupe_card_style(
             self._settings.value(self.LOUPE_CARD_STYLE_KEY, "detailed", str)
         )
+        if self._settings.value(self.COMPACT_CARDS_KEY, False, bool):
+            # One-time migration: the removed "Legacy cards" toggle overrode
+            # the card style, so carry it into the style enum as "classic".
+            self._loupe_card_style = "classic"
+            self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, "classic")
+        self._settings.remove(self.COMPACT_CARDS_KEY)
         self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
         self._preview_preload_batch_size = self._normalize_preview_preload_batch_size(
             self._settings.value(
@@ -3199,7 +3198,6 @@ class MainWindow(QMainWindow):
         self._review_scoring_cache_detail = "Ready"
         self._watched_folder_path = ""
         self._folder_watch_refresh_pending = False
-        self.grid.set_compact_card_mode(self._compact_cards_enabled)
         self.grid.set_loupe_card_style(self._loupe_card_style)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         self._refresh_ai_runtime_preferences()
@@ -3942,7 +3940,6 @@ class MainWindow(QMainWindow):
             columns_menu.addAction(self.actions.column_actions[count])
 
         menu.addSeparator()
-        menu.addAction(self.actions.compact_cards)
         menu.addAction(self.actions.show_hidden_folders)
 
         return menu
@@ -4418,8 +4415,12 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _normalize_loupe_card_style(value: object) -> str:
         normalized = str(value or "detailed").strip().casefold().replace("-", "_").replace(" ", "_")
+        if normalized in {"immersive", "zen", "classic"}:
+            return normalized
+        if normalized in {"legacy", "legacy_cards", "compact"}:
+            return "classic"
         # "photo_fit" was renamed to "detailed"; migrate stored values.
-        return "immersive" if normalized == "immersive" else "detailed"
+        return "detailed"
 
     def _fluent_filled_icon(self, primary: str, color: QColor) -> QIcon:
         """Render a Fluent glyph as a solid filled silhouette (the enclosed
@@ -5286,7 +5287,6 @@ class MainWindow(QMainWindow):
             "auto_advance": (self.actions.auto_advance, "Auto"),
             "burst_groups": (self.actions.burst_groups, "Groups"),
             "burst_stacks": (self.actions.burst_stacks, "Stacks"),
-            "compact_cards": (self.actions.compact_cards, "Legacy"),
             "show_hidden_folders": (self.actions.show_hidden_folders, "Hidden"),
             "accept_selection": (self.actions.accept_selection, "Accept"),
             "reject_selection": (self.actions.reject_selection, "Reject"),
@@ -10834,8 +10834,6 @@ class MainWindow(QMainWindow):
             self.actions.burst_groups.setChecked(self._burst_groups_enabled)
         with QSignalBlocker(self.actions.burst_stacks):
             self.actions.burst_stacks.setChecked(self._burst_stacks_enabled)
-        with QSignalBlocker(self.actions.compact_cards):
-            self.actions.compact_cards.setChecked(self._compact_cards_enabled)
         with QSignalBlocker(self.actions.show_hidden_folders):
             self.actions.show_hidden_folders.setChecked(self._show_hidden_folders)
         with QSignalBlocker(self.actions.grid_view):
@@ -10880,7 +10878,6 @@ class MainWindow(QMainWindow):
         self.actions.winner_ladder_mode.setEnabled(can_open_winner_ladder)
         self.actions.burst_groups.setEnabled(bool(self._current_folder and self._all_records))
         self.actions.burst_stacks.setEnabled(bool(self._current_folder and self._all_records))
-        self.actions.compact_cards.setEnabled(True)
         self.actions.show_hidden_folders.setEnabled(True)
         self.actions.grid_view.setEnabled(True)
         self.actions.details_view.setEnabled(True)
@@ -15197,15 +15194,6 @@ class MainWindow(QMainWindow):
             return
         mode = "on" if checked else "off"
         self.statusBar().showMessage(f"Smart stacks {mode}")
-
-    def _handle_compact_cards_toggled(self, checked: bool) -> None:
-        self._compact_cards_enabled = bool(checked)
-        self._settings.setValue(self.COMPACT_CARDS_KEY, self._compact_cards_enabled)
-        self.grid.set_compact_card_mode(self._compact_cards_enabled)
-        self._remember_current_folder_view_state()
-        self._update_action_states()
-        mode = "on" if checked else "off"
-        self.statusBar().showMessage(f"Compact cards {mode}")
 
     def _handle_compare_toggled(self, checked: bool) -> None:
         if not checked and self._winner_ladder_state is not None:
@@ -21122,7 +21110,6 @@ class MainWindow(QMainWindow):
             winner_mode=self._winner_mode,
             delete_mode=self._delete_mode,
             toolbar_style=self._toolbar_style,
-            compact_cards_enabled=self._compact_cards_enabled,
             loupe_card_style=self._loupe_card_style,
             ui_gamma=self._ui_gamma,
             free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
@@ -21168,7 +21155,7 @@ class MainWindow(QMainWindow):
         winner_changed = result.winner_mode != self._winner_mode
         delete_changed = result.delete_mode != self._delete_mode
         toolbar_style_changed = self._normalize_toolbar_style(result.toolbar_style) != self._toolbar_style
-        compact_changed = result.compact_cards_enabled != self._compact_cards_enabled
+        card_style_changed = self._normalize_loupe_card_style(result.loupe_card_style) != self._loupe_card_style
         new_ui_gamma = normalize_ui_gamma(result.ui_gamma)
         ui_gamma_changed = abs(new_ui_gamma - self._ui_gamma) > 1e-3
         free_scroll_changed = result.free_smooth_scroll_enabled != self._free_smooth_scroll_enabled
@@ -21191,7 +21178,6 @@ class MainWindow(QMainWindow):
         self._winner_mode = result.winner_mode
         self._delete_mode = result.delete_mode
         self._toolbar_style = self._normalize_toolbar_style(result.toolbar_style)
-        self._compact_cards_enabled = result.compact_cards_enabled
         self._loupe_card_style = self._normalize_loupe_card_style(result.loupe_card_style)
         self._ui_gamma = new_ui_gamma
         self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
@@ -21229,7 +21215,6 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.WINNER_MODE_KEY, self._winner_mode.value)
         self._settings.setValue(self.DELETE_MODE_KEY, self._delete_mode.value)
         self._settings.setValue(self.TOOLBAR_STYLE_KEY, self._toolbar_style)
-        self._settings.setValue(self.COMPACT_CARDS_KEY, self._compact_cards_enabled)
         self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, self._loupe_card_style)
         self._settings.setValue(self.UI_GAMMA_KEY, self._ui_gamma)
         self._settings.setValue(self.FREE_SMOOTH_SCROLL_KEY, self._free_smooth_scroll_enabled)
@@ -21255,7 +21240,6 @@ class MainWindow(QMainWindow):
         self.summary_session.setText(f"Session: {self._session_id}")
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
         self.preview.set_preload_batch_size(self._preview_preload_batch_size)
-        self.grid.set_compact_card_mode(self._compact_cards_enabled)
         self.grid.set_loupe_card_style(self._loupe_card_style)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         if ui_gamma_changed:
@@ -21278,7 +21262,7 @@ class MainWindow(QMainWindow):
             self._folder_records = scan_child_folders(self._current_folder, include_hidden=self._show_hidden_folders)
             self._refresh_directory_navigation_buttons()
             self._apply_records_view(current_path=current_path)
-        if compact_changed:
+        if card_style_changed:
             self._remember_current_folder_view_state()
         if burst_groups_changed or burst_stacks_changed:
             self._refresh_burst_group_view()
@@ -21302,9 +21286,14 @@ class MainWindow(QMainWindow):
         elif toolbar_style_changed:
             label = {"text": "text", "icons": "icons", "large_icons": "large icons", "icon_text": "icons & labels"}.get(self._toolbar_style, "text")
             self.statusBar().showMessage(f"Toolbar style set to {label}")
-        elif compact_changed:
-            state = "enabled" if self._compact_cards_enabled else "disabled"
-            self.statusBar().showMessage(f"Legacy cards {state}")
+        elif card_style_changed:
+            label = {
+                "detailed": "Detailed",
+                "immersive": "Immersive",
+                "zen": "Zen",
+                "classic": "Classic",
+            }.get(self._loupe_card_style, self._loupe_card_style)
+            self.statusBar().showMessage(f"Card style set to {label}")
         elif free_scroll_changed:
             state = "enabled" if self._free_smooth_scroll_enabled else "disabled"
             self.statusBar().showMessage(f"Free smooth scrolling {state}")

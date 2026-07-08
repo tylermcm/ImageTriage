@@ -285,12 +285,26 @@ def _content_pad(scale: float, compact: bool) -> int:
 def grid_card_height_for_width(width: int, *, compact: bool = False) -> int:
     """Cell height the card is designed for at a given width.
 
-    Full cards are the tuned 11:8 review tile; barebones compact cards are
-    the 3:2 photo and nothing else.
+    Full cards are a 5:4 review tile: the 3:2 photo pane on top plus enough
+    footer room that the bottom overlay only grazes the photo's lower edge
+    (~10%) instead of riding a quarter of the way up it. Barebones compact
+    cards are the 3:2 photo and nothing else.
     """
     if compact:
         return max(1, round(width * 2 / 3))
-    return max(1, round(width * 407 / 560))
+    return max(1, round(width * 448 / 560))
+
+
+def _full_card_basis(card_rect: QRect) -> int:
+    """Height basis for the full card's footer/badge geometry.
+
+    The chrome was designed against the original 11:8 (407/560) tile. The
+    cell is now taller (see grid_card_height_for_width) so the footer clears
+    more of the photo, but the chrome itself must not grow with the cell —
+    so every former ``card_rect.height()`` fraction measures against this
+    width-derived basis instead.
+    """
+    return max(1, round(card_rect.width() * 407 / 560))
 
 
 def grid_card_action_rects(
@@ -324,8 +338,9 @@ def _action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> G
     """Button geometry for the bottom overlay: anchored under the right-side
     position/status stack. Independent of card data so hit-testing and
     painting always agree."""
+    basis = _full_card_basis(card_rect)
     margin = max(12, round(14 * scale))
-    button = max(1, round(card_rect.height() * 0.092))
+    button = max(1, round(basis * 0.092))
     gap = max(8, round(10 * scale))
     reject_rect = QRect(image_rect.right() - margin - button, 0, button, button)
     favorite_rect = QRect(reject_rect.left() - gap - button, 0, button, button)
@@ -334,13 +349,13 @@ def _action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> G
     status_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
     position_height = QFontMetrics(meta_font).height()
     status_height = QFontMetrics(status_font).height()
-    initial_button_bottom = card_rect.bottom() - round(card_rect.height() * 0.0475)
-    right_stack_height = round(card_rect.height() * 0.172)
+    initial_button_bottom = card_rect.bottom() - round(basis * 0.0475)
+    right_stack_height = round(basis * 0.172)
     side_top = initial_button_bottom - right_stack_height + 1
-    side_rect_top = side_top - round(card_rect.height() * 0.009)
-    status_top = side_top + position_height + max(2, round(3 * scale)) - round(card_rect.height() * 0.0114)
+    side_rect_top = side_top - round(basis * 0.009)
+    status_top = side_top + position_height + max(2, round(3 * scale)) - round(basis * 0.0114)
     right_text_gap = max(0, status_top - (side_rect_top + position_height - 1))
-    action_top = (status_top + status_height - 1) + right_text_gap + 1 + round(card_rect.height() * 0.008)
+    action_top = (status_top + status_height - 1) + right_text_gap + 1 + round(basis * 0.008)
     reject_rect.moveTop(action_top)
     favorite_rect.moveTop(action_top)
     return GridCardHitRects(favorite_rect, reject_rect)
@@ -491,9 +506,10 @@ def _metadata_text_top(card_rect: QRect, scale: float) -> int:
     exif_h = QFontMetrics(exif_font).height()
     meta_h = QFontMetrics(meta_font).height()
 
+    basis = _full_card_basis(card_rect)
     text_stack_height = name_h + exif_h + meta_h
-    text_block_height = max(text_stack_height, round(card_rect.height() * 0.1475))
-    text_block_bottom = card_rect.bottom() - round(card_rect.height() * 0.08)
+    text_block_height = max(text_stack_height, round(basis * 0.1475))
+    text_block_bottom = card_rect.bottom() - round(basis * 0.08)
     # name_rect top == position_top in the overlay layout.
     return text_block_bottom - text_block_height + 1
 
@@ -509,7 +525,7 @@ def _paint_scrim(
 ) -> None:
     # Anchor the fade to the text block so the gradient reaches uniformly up to
     # the top of the filename line, then ramps to a solid base under the text.
-    h = card_rect.height()
+    h = _full_card_basis(card_rect)
     text_top = _metadata_text_top(card_rect, scale)
     # Fully opaque by the first text line (position/filename) so every line
     # keeps contrast even over white photos; the fade-in starts higher to
@@ -554,13 +570,14 @@ def _paint_scrim(
 
 
 def _paint_badges(painter: QPainter, card_rect: QRect, image_rect: QRect, data: GridCardData, scale: float) -> None:
+    basis = _full_card_basis(card_rect)
     edge_inset = max(12, round(14 * scale))
     font_size = max(8, round(9 * scale))
     font = QFont("Segoe UI", font_size, QFont.Weight.DemiBold)
-    badge_height = max(1, round(card_rect.height() * 0.069))
+    badge_height = max(1, round(basis * 0.069))
     duplicate_width = max(1, round(card_rect.width() * 0.261))
     ai_width = max(1, round(card_rect.width() * 0.161))
-    vertical_shift = round(card_rect.height() * 0.0219)
+    vertical_shift = round(basis * 0.0219)
     top = image_rect.top() + max(1, max(13, round(16 * scale)) - vertical_shift)
 
     if data.duplicate_visible and data.duplicate_text:
@@ -923,12 +940,13 @@ def _paint_bottom_overlay(
     data: GridCardData,
     scale: float,
 ) -> tuple[QRect, QRect]:
+    basis = _full_card_basis(card_rect)
     margin = max(12, round(14 * scale))
 
     hit_rects = _action_button_rects(card_rect, image_rect, scale)
     favorite_rect = QRect(hit_rects.favorite)
     reject_rect = QRect(hit_rects.reject)
-    initial_button_bottom = card_rect.bottom() - round(card_rect.height() * 0.0475)
+    initial_button_bottom = card_rect.bottom() - round(basis * 0.0475)
 
     body_left = image_rect.left() + margin
 
@@ -957,9 +975,9 @@ def _paint_bottom_overlay(
     position_height = meta_metrics.height()
     text_block_height = max(
         name_metrics.height() + exif_metrics.height() + meta_metrics.height(),
-        round(card_rect.height() * 0.1475),
+        round(basis * 0.1475),
     )
-    text_block_bottom = card_rect.bottom() - round(card_rect.height() * 0.08)
+    text_block_bottom = card_rect.bottom() - round(basis * 0.08)
     position_top = text_block_bottom - text_block_height + 1
 
     text_stack_height = name_metrics.height() + exif_metrics.height() + meta_metrics.height()
@@ -977,11 +995,11 @@ def _paint_bottom_overlay(
     _draw_elided_text(painter, exif_rect, data.exif_text, exif_font, QColor(204, 214, 226))
     _draw_elided_text(painter, meta_rect, data.meta_text, meta_font, QColor(132, 147, 168))
 
-    right_stack_height = round(card_rect.height() * 0.172)
+    right_stack_height = round(basis * 0.172)
     side_top = initial_button_bottom - right_stack_height + 1
     side_rect = QRect(
         side_left,
-        side_top - round(card_rect.height() * 0.009),
+        side_top - round(basis * 0.009),
         side_width,
         position_height,
     )
@@ -998,7 +1016,7 @@ def _paint_bottom_overlay(
     if data.status_text:
         status_rect = QRect(
             side_left,
-            side_top + position_height + max(2, round(3 * scale)) - round(card_rect.height() * 0.0114),
+            side_top + position_height + max(2, round(3 * scale)) - round(basis * 0.0114),
             side_width,
             status_height,
         )

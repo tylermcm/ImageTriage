@@ -60,7 +60,6 @@ class MainWindowActions:
     auto_advance: QAction
     burst_groups: QAction
     burst_stacks: QAction
-    compact_cards: QAction
     show_hidden_folders: QAction
     grid_view: QAction
     details_view: QAction
@@ -277,12 +276,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Smart Stacks",
             slot=window._handle_burst_stacks_toggled,
-            checkable=True,
-        ),
-        compact_cards=_create_action(
-            window,
-            "Legacy Cards",
-            slot=window._handle_compact_cards_toggled,
             checkable=True,
         ),
         show_hidden_folders=_create_action(

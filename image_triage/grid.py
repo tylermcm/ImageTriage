@@ -757,37 +757,24 @@ class ThumbnailGridView(QAbstractScrollArea):
     def zoom_mode(self) -> str:
         return self._zoom_mode
 
-    def set_compact_card_mode(self, enabled: bool) -> None:
-        normalized = bool(enabled)
-        if self._compact_card_mode == normalized:
-            return
-        self._compact_card_mode = normalized
-        self._recalculate_metrics()
-        self._update_scrollbar()
-        self.viewport().update()
-        self._schedule_visible_thumbnail_requests(immediate=True)
-
-    def compact_card_mode(self) -> bool:
-        return self._compact_card_mode
-
     def _use_loupe_card_style(self) -> bool:
         if self._compact_card_mode or self._columns != 1:
             return False
-        # Immersive single-column uses the shared barebones card instead of
-        # the legacy loupe layout (kept for non-normal action modes, whose
+        # Immersive/zen single-column uses the shared barebones card instead
+        # of the legacy loupe layout (kept for non-normal action modes, whose
         # undo affordances live in the legacy painter).
-        return not (self._loupe_card_style == "immersive" and self._action_mode == "normal")
+        return not (self._loupe_card_style in ("immersive", "zen") and self._action_mode == "normal")
 
     def _use_new_grid_card(self) -> bool:
         """Tiles that use the shared grid_card_renderer design.
 
-        All multi-column tiles, plus the single-column view in immersive
-        style. Non-"normal" action modes keep the legacy card because its
-        buttons carry the undo affordances those filtered views rely on.
+        All multi-column tiles, plus the single-column view in immersive and
+        zen styles. Non-"normal" action modes keep the legacy card because
+        its buttons carry the undo affordances those filtered views rely on.
         """
         if self._compact_card_mode or self._action_mode != "normal":
             return False
-        return self._columns > 1 or self._loupe_card_style == "immersive"
+        return self._columns > 1 or self._loupe_card_style in ("immersive", "zen")
 
     def _use_compact_grid_card(self) -> bool:
         """Whether multi-column tiles use the barebones compact card (3:2
@@ -795,7 +782,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         badge chips in the top corners).
 
         Detailed style keeps the full review card up to the column threshold
-        and collapses past it; immersive style is always barebones."""
+        and collapses past it; immersive and zen styles are always barebones."""
         if self._loupe_card_style == "detailed":
             return self._columns > COMPACT_COLUMN_THRESHOLD
         return True
@@ -808,7 +795,11 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _grid_card_overlay(self) -> bool:
         """Past the plain-photo threshold the compact card drops its overlay
-        entirely — the chrome is too small to be useful at 6+ columns."""
+        entirely — the chrome is too small to be useful at 6+ columns. Zen
+        style never shows the overlay: just the photo and the selection
+        ring, at every column count."""
+        if self._loupe_card_style == "zen":
+            return False
         return self._columns <= PLAIN_PHOTO_COLUMN_THRESHOLD
 
     def set_loupe_card_style(self, style: str) -> None:
@@ -821,11 +812,18 @@ class ThumbnailGridView(QAbstractScrollArea):
         "immersive": the photo fills the cell at every size — the grid always
         uses the barebones card, and the loupe paints its metadata over the
         photo's bottom edge on a lighter (65% alpha) scrim.
+        "zen": no chrome at all — just the photo and the selection ring, at
+        every column count.
+        "classic": the original boxed card with the caption and metadata rows
+        below the photo (the old "legacy cards" toggle).
         """
-        normalized = "immersive" if str(style).strip().casefold() == "immersive" else "detailed"
+        normalized = str(style).strip().casefold()
+        if normalized not in {"detailed", "immersive", "zen", "classic"}:
+            normalized = "detailed"
         if self._loupe_card_style == normalized:
             return
         self._loupe_card_style = normalized
+        self._compact_card_mode = normalized == "classic"
         # The styles change tile metrics in the grid too (full cards at low
         # column counts in detailed mode), so always reflow.
         self._refresh_layout_after_visible_items_changed()
@@ -4221,9 +4219,9 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._tile_height_value = max(80, grid_card_height_for_width(target, compact=True))
                 self._image_height_value = self._tile_height_value
             else:
-                # Detailed card at low column counts: the tuned 11:8 review
-                # tile with a full-width 3:2 photo pane and the text footer
-                # over its lower edge.
+                # Detailed card at low column counts: the tuned 5:4 review
+                # tile with a full-width 3:2 photo pane on top and the text
+                # footer strip just grazing its lower edge.
                 self._tile_height_value = max(96, grid_card_height_for_width(target, compact=False))
                 self._image_height_value = max(64, round(target * 2 / 3))
         self._row_height_value = self._tile_height_value + self._spacing

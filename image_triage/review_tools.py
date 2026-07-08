@@ -45,6 +45,43 @@ EMPTY_INSPECTION_STATS = InspectionStats(
 )
 
 
+def histogram_synopsis(stats: InspectionStats | None) -> str:
+    if stats is None or stats.width <= 0 or stats.height <= 0:
+        return "Not analyzed"
+
+    histogram = tuple(max(0, int(value)) for value in stats.histogram_luma)
+    total = sum(histogram)
+    if total <= 0:
+        return "Not analyzed"
+
+    left_pct = _histogram_bucket_pct(histogram, 0, 86, total)
+    mid_pct = _histogram_bucket_pct(histogram, 86, 171, total)
+    right_pct = _histogram_bucket_pct(histogram, 171, 256, total)
+    shadow_edge_pct = _histogram_bucket_pct(histogram, 0, 8, total)
+    highlight_edge_pct = _histogram_bucket_pct(histogram, 248, 256, total)
+
+    if stats.highlight_clip_pct >= 2.0 or highlight_edge_pct >= 7.0:
+        return "Overexposed: data is pressed against the right edge; bright detail may be clipped."
+    if stats.shadow_clip_pct >= 4.0 or shadow_edge_pct >= 10.0:
+        return "Underexposed: data is pressed against the left edge; shadow detail may be clipped."
+
+    side_average = (left_pct + right_pct) / 2.0
+    if left_pct >= 24.0 and right_pct >= 24.0 and mid_pct <= side_average * 0.75:
+        return "Extreme contrast: strong shadow and highlight peaks with a thinner midtone center."
+    if left_pct >= 48.0 and left_pct >= right_pct + 16.0:
+        return "Exposed left: tones lean into shadows while highlights stay protected."
+    if right_pct >= 48.0 and right_pct >= left_pct + 16.0:
+        return "Exposed right: tones lean into highlights without hard right-edge clipping."
+    return "Neutral: tones are centered or evenly distributed, with no obvious clipping."
+
+
+def _histogram_bucket_pct(histogram: tuple[int, ...], start: int, end: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    bucket = histogram[max(0, start) : min(len(histogram), end)]
+    return (sum(bucket) / total) * 100.0
+
+
 @dataclass(slots=True, frozen=True)
 class _TileDetailStats:
     score: float

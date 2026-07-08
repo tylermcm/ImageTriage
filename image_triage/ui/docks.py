@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..ai_results import build_ai_explanation_lines
-from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats
+from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats, histogram_synopsis
 from ..review_workflows import review_round_label
 from ..quality.poi import focus_poi, should_use_smart_focus_crop
 from .theme import ThemePalette, default_theme
@@ -1613,7 +1613,17 @@ class InspectorPanel(QWidget):
 
         # Histogram sits directly below the preview.
         self.histogram_widget = InspectorHistogram(self)
-        self._make_custom_section(layout, "Histogram", self.histogram_widget)
+        self.histogram_summary = QLabel("Not analyzed", self)
+        self.histogram_summary.setObjectName("inspectorHint")
+        self.histogram_summary.setWordWrap(True)
+        self.histogram_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        histogram_body = QWidget(self)
+        histogram_layout = QVBoxLayout(histogram_body)
+        histogram_layout.setContentsMargins(0, 0, 0, 0)
+        histogram_layout.setSpacing(6)
+        histogram_layout.addWidget(self.histogram_widget)
+        histogram_layout.addWidget(self.histogram_summary)
+        self._make_custom_section(layout, "Histogram", histogram_body)
         self.culling_rows = self._make_section(layout, "Culling", ("Decision", "Rating", "AI Suggestion", "Confidence", "Reason"))
         self.subject_rows = self._make_section(layout, "Subject", ("Type", "Review Focus", "Signal", "AI Detail"))
         self.quality_rows = self._make_section(layout, "Quality", ("Detail", "Focus", "Motion Blur", "Noise", "Exposure", "Confidence"))
@@ -1930,6 +1940,7 @@ class InspectorPanel(QWidget):
         self.group_rows["Group Size"].setText("Single image / No similar group")
         self.edit_rows["Worth Editing"].setText("Not analyzed")
         self.histogram_widget.set_stats(None)
+        self.histogram_summary.setText("Not analyzed")
         self._set_quick_actions_enabled(False, grouped=False)
 
     def set_context(
@@ -2025,6 +2036,7 @@ class InspectorPanel(QWidget):
         self.edit_rows["Notes"].setText(self._first_text(workflow_summary, review_summary) or "-")
 
         self.histogram_widget.set_stats(stats)
+        self.histogram_summary.setText(histogram_synopsis(stats))
 
         self._set_quick_actions_enabled(not current_record.is_folder, grouped=is_grouped)
 

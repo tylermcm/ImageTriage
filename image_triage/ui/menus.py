@@ -115,7 +115,6 @@ def build_main_menu_bar(
     columns_menu = layout_menu.addMenu("Columns")
     for count in range(1, 9):
         columns_menu.addAction(actions.column_actions[count])
-    layout_menu.addAction(actions.compact_cards)
     layout_menu.addAction(actions.show_hidden_folders)
     layout_menu.addSeparator()
     layout_menu.addAction(actions.grid_view)
