@@ -39,6 +39,7 @@ from image_triage.ui.grid_card_renderer import (
     COMPACT_COLUMN_THRESHOLD,
     PLAIN_PHOTO_COLUMN_THRESHOLD,
     GridCardData,
+    grid_card_corner_radius,
     grid_card_height_for_width,
     paint_grid_card,
     render_grid_card_pixmap,
@@ -93,6 +94,15 @@ class CardCanvas(QWidget):
         self._card_size = QSize(size)
         self.updateGeometry()
         self.update()
+
+    def _corner_radius_for(self, columns: int) -> float:
+        """Photo corner radius the app would use at this column count.
+
+        Single-card mode (columns <= 0) previews the widest, one-column case.
+        Mirrors ThumbnailGridView, which derives the radius from its live
+        column count via the same shared helper.
+        """
+        return grid_card_corner_radius(max(1, columns))
 
     def set_layout_mode(
         self,
@@ -151,6 +161,7 @@ class CardCanvas(QWidget):
             compact_actions=self._compact_actions,
             compact_filename=self._compact_filename,
             compact_badge_text=self._compact_badge_text,
+            corner_radius=self._corner_radius_for(self._columns),
         )
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
@@ -173,6 +184,7 @@ class CardCanvas(QWidget):
             size.setHeight(grid_card_height_for_width(size.width(), compact=True))
         rect = QRect(QPoint(0, 0), size)
         rect.moveCenter(self.rect().center())
+        radius = self._corner_radius_for(self._columns)
         paint_grid_card(
             painter,
             rect,
@@ -182,14 +194,17 @@ class CardCanvas(QWidget):
             compact_actions=self._compact_actions,
             compact_filename=self._compact_filename,
             compact_badge_text=self._compact_badge_text,
+            corner_radius=radius,
         )
         self._emit_metrics(
-            f"Single card · {rect.width()} x {rect.height()} px · {'compact' if compact else 'full'} UI"
+            f"Single card · {rect.width()} x {rect.height()} px · "
+            f"{'compact' if compact else 'full'} UI · corner {radius:.1f}px (1 col)"
         )
 
     def _paint_grid(self, painter: QPainter) -> None:
         columns = self._columns
         compact = self._is_compact(columns)
+        radius = self._corner_radius_for(columns)
         inner = max(120, self.width() - GRID_MARGIN * 2)
         card_w = max(90, (inner - (columns - 1) * GRID_SPACING) // columns)
         card_h = max(66, grid_card_height_for_width(card_w, compact=compact))
@@ -222,6 +237,7 @@ class CardCanvas(QWidget):
                     # Past the threshold the compact card drops the overlay
                     # entirely — plain photo, matching the app.
                     compact_overlay=columns <= PLAIN_PHOTO_COLUMN_THRESHOLD,
+                    corner_radius=radius,
                 )
                 index += 1
 
@@ -231,7 +247,9 @@ class CardCanvas(QWidget):
             mode = "compact UI"
         else:
             mode = "plain photo"
-        self._emit_metrics(f"{columns} columns · card {card_w} x {card_h} px · {mode}")
+        self._emit_metrics(
+            f"{columns} columns · card {card_w} x {card_h} px · {mode} · corner {radius:.1f}px"
+        )
 
     def _emit_metrics(self, text: str) -> None:
         if text != self._last_metrics:
