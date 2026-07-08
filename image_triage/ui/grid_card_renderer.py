@@ -95,6 +95,29 @@ PLAIN_PHOTO_COLUMN_THRESHOLD = 5
 # card width made the corners look sharp past three or four columns.
 IMAGE_CORNER_RADIUS = 8.0
 
+# Photo corner rounding scales with the grid column count: wide single-column
+# cards get the most rounding, dense eight-column cards the least, linearly
+# between. Endpoints are the design values; the per-column step is
+# (12 - 6) / (8 - 1) = 6/7 ≈ 0.857.
+GRID_CORNER_RADIUS_AT_MIN_COLUMNS = 12.0  # radius at 1 column
+GRID_CORNER_RADIUS_AT_MAX_COLUMNS = 6.0   # radius at 8 columns
+GRID_CORNER_RADIUS_MIN_COLUMNS = 1
+GRID_CORNER_RADIUS_MAX_COLUMNS = 8
+
+
+def grid_card_corner_radius(columns: int) -> float:
+    """Photo corner radius for a card shown at ``columns`` grid columns.
+
+    Linear from 12px at 1 column down to 6px at 8 columns, clamped to that
+    range outside 1..8 columns.
+    """
+    clamped = max(GRID_CORNER_RADIUS_MIN_COLUMNS, min(GRID_CORNER_RADIUS_MAX_COLUMNS, int(columns)))
+    span = GRID_CORNER_RADIUS_MAX_COLUMNS - GRID_CORNER_RADIUS_MIN_COLUMNS
+    t = (clamped - GRID_CORNER_RADIUS_MIN_COLUMNS) / span
+    return GRID_CORNER_RADIUS_AT_MIN_COLUMNS + t * (
+        GRID_CORNER_RADIUS_AT_MAX_COLUMNS - GRID_CORNER_RADIUS_AT_MIN_COLUMNS
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class GridCardData:
@@ -139,6 +162,7 @@ def render_grid_card_pixmap(
     compact_filename: bool = False,
     compact_badge_text: bool = False,
     compact_overlay: bool = True,
+    corner_radius: float | None = None,
 ) -> QPixmap:
     """Render a single card into a transparent pixmap."""
 
@@ -157,6 +181,7 @@ def render_grid_card_pixmap(
         compact_filename=compact_filename,
         compact_badge_text=compact_badge_text,
         compact_overlay=compact_overlay,
+        corner_radius=corner_radius,
     )
     painter.end()
     return output
@@ -173,8 +198,12 @@ def paint_grid_card(
     compact_filename: bool = False,
     compact_badge_text: bool = False,
     compact_overlay: bool = True,
+    corner_radius: float | None = None,
 ) -> GridCardHitRects:
     """Paint one main viewport card and return action hit rectangles.
+
+    ``corner_radius`` overrides IMAGE_CORNER_RADIUS for the photo clip and
+    the matching selection ring; None keeps the module default.
 
     ``compact_overlay=False`` strips the compact card down to the plain
     photo (plus the selection ring) — no badges, tags, filename, or action
@@ -210,7 +239,10 @@ def paint_grid_card(
         max(1, rect.width() - pad * 2),
         max(1, rect.height() - pad * 2),
     )
-    image_radius = IMAGE_CORNER_RADIUS
+    image_radius = IMAGE_CORNER_RADIUS if corner_radius is None else max(0.0, float(corner_radius))
+    # Only round the photo pixels when a radius is explicitly requested (the
+    # prototype). With no override the app keeps its existing behavior exactly.
+    round_photo = corner_radius is not None
 
     if compact or data.immersive:
         # Barebones/immersive: the photo owns the whole cell (the compact
@@ -223,7 +255,7 @@ def paint_grid_card(
         photo_height = min(round(content_rect.width() * 2 / 3), content_rect.height())
         photo_rect = QRect(content_rect.left(), content_rect.top(), content_rect.width(), photo_height)
 
-    _paint_image(painter, content_rect, image_radius, source_pixmap, photo_rect=photo_rect)
+    _paint_image(painter, content_rect, image_radius, source_pixmap, photo_rect=photo_rect, round_photo=round_photo)
     if not compact:
         # The footer text block overlaps the photo's lower edge on grid
         # tiles, so both full styles scrim it for guaranteed contrast:
@@ -414,6 +446,7 @@ def _paint_image(
     source_pixmap: QPixmap | None,
     *,
     photo_rect: QRect | None = None,
+    round_photo: bool = False,
 ) -> None:
     path = _rounded_path(QRectF(content_rect), radius)
     if photo_rect is None:
@@ -437,7 +470,14 @@ def _paint_image(
 
         painter.fillRect(photo_rect, QColor(17, 18, 20))
         painter.save()
-        painter.setClipRect(photo_rect)
+        if round_photo:
+            # Intersect (not replace) so the photo keeps the rounded corners
+            # of the outer content clip; a plain setClipRect would replace the
+            # rounded path and square the photo off (the ring would round but
+            # the image would not).
+            painter.setClipRect(photo_rect, Qt.ClipOperation.IntersectClip)
+        else:
+            painter.setClipRect(photo_rect)
         painter.drawPixmap(draw_rect, source_pixmap)
         painter.restore()
 
@@ -1311,6 +1351,7 @@ __all__ = [
     "COMPACT_COLUMN_THRESHOLD",
     "PLAIN_PHOTO_COLUMN_THRESHOLD",
     "IMAGE_CORNER_RADIUS",
+    "grid_card_corner_radius",
     "GridCardData",
     "GridCardHitRects",
     "grid_card_action_rects",

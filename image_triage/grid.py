@@ -22,10 +22,10 @@ from .scanner import normalized_path_key
 from .thumbnails import ThumbnailManager
 from .ui.grid_card_renderer import (
     COMPACT_COLUMN_THRESHOLD,
-    IMAGE_CORNER_RADIUS,
     PLAIN_PHOTO_COLUMN_THRESHOLD,
     GridCardData,
     grid_card_action_rects,
+    grid_card_corner_radius,
     grid_card_height_for_width,
     load_action_icon,
     paint_grid_card,
@@ -1748,6 +1748,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         ai_result = self._ai_result_for(record, variant)
         review_insight = self._review_insight_for(record)
         use_loupe_card = self._use_loupe_card_style()
+        # Photo corner rounding scales with the column count (12px at 1 column
+        # down to 6px at 8): denser grids get tighter corners. Shared with the
+        # card renderer and the standalone prototype.
+        card_corner_radius = grid_card_corner_radius(self._columns)
         # Zoomed tiles fall back to the legacy painter, which owns the
         # zoom-crop drawing path.
         use_new_grid_card = (
@@ -1797,6 +1801,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 compact_filename=True,
                 compact_badge_text=self._grid_card_badge_text(),
                 compact_overlay=self._grid_card_overlay(),
+                corner_radius=card_corner_radius,
             )
             if variant.path in self._failed_paths:
                 painter.setPen(self._failed_text_color)
@@ -1844,7 +1849,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 painter.setBrush(self._placeholder_color)
                 painter.drawRoundedRect(QRectF(image_rect), 5, 5)
 
-            corner_radius = IMAGE_CORNER_RADIUS if use_loupe_card else 5.0
+            corner_radius = card_corner_radius if use_loupe_card else 5.0
             if pixmap is not None and not pixmap.isNull():
                 draw_rect = self._image_draw_rect(image_rect, pixmap)
                 photo_bottom = draw_rect.bottom()
@@ -1901,16 +1906,18 @@ class ThumbnailGridView(QAbstractScrollArea):
                     accent = QColor(self._border_active if is_current else self._border_selected)
                     painter.setPen(QPen(QColor(0, 0, 0, 140), 1.0))
                     painter.drawRoundedRect(
-                        ring_rect.adjusted(2.0, 2.0, -2.0, -2.0), IMAGE_CORNER_RADIUS - 1, IMAGE_CORNER_RADIUS - 1
+                        ring_rect.adjusted(2.0, 2.0, -2.0, -2.0),
+                        max(0.0, card_corner_radius - 1),
+                        max(0.0, card_corner_radius - 1),
                     )
                     painter.setPen(QPen(accent, 2.0 if is_current else 1.4))
                     painter.drawRoundedRect(
-                        ring_rect.adjusted(0.5, 0.5, -0.5, -0.5), IMAGE_CORNER_RADIUS, IMAGE_CORNER_RADIUS
+                        ring_rect.adjusted(0.5, 0.5, -0.5, -0.5), card_corner_radius, card_corner_radius
                     )
                 else:
                     painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
                     painter.drawRoundedRect(
-                        ring_rect.adjusted(0.5, 0.5, -0.5, -0.5), IMAGE_CORNER_RADIUS, IMAGE_CORNER_RADIUS
+                        ring_rect.adjusted(0.5, 0.5, -0.5, -0.5), card_corner_radius, card_corner_radius
                     )
                 painter.restore()
 
@@ -2406,8 +2413,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         winner_rect.moveRight(reject_rect.left() - button_gap)
         winner_rect.moveTop(reject_rect.top())
 
+        scrim_radius = grid_card_corner_radius(self._columns)
         clip = QPainterPath()
-        clip.addRoundedRect(QRectF(image_rect), IMAGE_CORNER_RADIUS, IMAGE_CORNER_RADIUS)
+        clip.addRoundedRect(QRectF(image_rect), scrim_radius, scrim_radius)
 
         painter.save()
         painter.setClipPath(clip)
