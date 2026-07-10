@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -47,6 +47,7 @@ from .review_tools import (
     focus_assist_strength_by_id,
 )
 from .scanner import discover_edited_paths
+from .ui import preview_studio as studio
 from .ui.theme import ThemePalette, default_theme
 
 COMPARE_COUNTS = (2, 3, 5, 7, 9)
@@ -175,6 +176,7 @@ class PreviewPane(QWidget):
         super().__init__(parent)
         self._active = False
         self._frame_visible = True
+        self._studio = False
         self.setObjectName("previewPane")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._theme = default_theme()
@@ -336,9 +338,27 @@ class PreviewPane(QWidget):
         self._apply_style()
 
     def set_minimal(self, minimal: bool) -> None:
-        self.footer.setVisible(not minimal)
+        # Studio has no footer at all, regardless of the caller's request.
+        self.footer.setVisible(not minimal and not self._studio)
+
+    def set_studio(self, on: bool) -> None:
+        """Studio look: no footer, transparent pane on the ground, rounded
+        photo backdrop with an accent ring when focused."""
+        self._studio = on
+        self.footer.setVisible(not on)
+        self._apply_style()
 
     def _apply_style(self) -> None:
+        if self._studio:
+            # The rounded corners and selection ring are painted onto the photo
+            # pixmap itself (_studio_rounded_photo); the pane and scroll area
+            # are invisible carriers so the photo floats on the ground.
+            self.setStyleSheet("QWidget#previewPane { background-color: transparent; border: none; }")
+            self.scroll_area.setStyleSheet(
+                f"QScrollArea {{ background-color: {studio.GROUND}; border: none; }}"
+            )
+            self.image_label.setStyleSheet(f"background-color: {studio.GROUND}; color: {studio.TEXT_MUTE};")
+            return
         if not self._frame_visible:
             self.setStyleSheet(
                 """
@@ -415,11 +435,16 @@ class HistogramWidget(QWidget):
         super().__init__(parent)
         self._theme = default_theme()
         self._stats = EMPTY_INSPECTION_STATS
+        self._studio = False
         self.setMinimumHeight(148)
         self.setMaximumHeight(168)
 
     def apply_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
+        self.update()
+
+    def set_studio(self, on: bool) -> None:
+        self._studio = on
         self.update()
 
     def set_stats(self, stats: InspectionStats) -> None:
@@ -430,6 +455,41 @@ class HistogramWidget(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self._studio:
+            # Studio: no panel of its own (it sits on an inspector card) —
+            # faint horizontal gridlines, soft blue luma fill with the accent
+            # stroke, and dimmed RGB channel lines. Real data, prototype look.
+            plot_rect = self.rect().adjusted(2, 6, -2, -8)
+            if self._stats.width <= 0 or plot_rect.width() <= 0 or plot_rect.height() <= 0:
+                painter.setPen(QColor(studio.TEXT_MUTE))
+                painter.drawText(plot_rect, Qt.AlignmentFlag.AlignCenter, "Load an image to inspect")
+                return
+            painter.setPen(QPen(QColor(28, 30, 34), 1))
+            painter.drawLine(plot_rect.left(), plot_rect.center().y(), plot_rect.right(), plot_rect.center().y())
+            painter.setPen(QPen(QColor(24, 26, 30), 1))
+            for frac in (0.25, 0.75):
+                y = plot_rect.top() + round(plot_rect.height() * frac)
+                painter.drawLine(plot_rect.left(), y, plot_rect.right(), y)
+
+            max_value = max(
+                max(self._stats.histogram_luma),
+                max(self._stats.histogram_red),
+                max(self._stats.histogram_green),
+                max(self._stats.histogram_blue),
+                1,
+            )
+            luma_fill = _histogram_path(self._stats.histogram_luma, plot_rect, max_value, closed=True)
+            painter.fillPath(luma_fill, QColor(120, 160, 250, 52))
+            painter.setPen(QPen(QColor(255, 96, 96, 110), 1.2))
+            painter.drawPath(_histogram_path(self._stats.histogram_red, plot_rect, max_value))
+            painter.setPen(QPen(QColor(103, 211, 137, 110), 1.2))
+            painter.drawPath(_histogram_path(self._stats.histogram_green, plot_rect, max_value))
+            painter.setPen(QPen(QColor(97, 177, 255, 116), 1.2))
+            painter.drawPath(_histogram_path(self._stats.histogram_blue, plot_rect, max_value))
+            painter.setPen(QPen(QColor(studio.ACCENT_BRIGHT), 1.6))
+            painter.drawPath(_histogram_path(self._stats.histogram_luma, plot_rect, max_value))
+            return
+
         panel_rect = self.rect().adjusted(2, 2, -2, -2)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._theme.image_bg.qcolor())
@@ -952,6 +1012,322 @@ class FullScreenPreview(QDialog):
         self._sync_preview_controls()
         self.apply_theme(self._theme)
 
+        # Studio redesign: reshape the just-built widgets into the new layout
+        # (build-then-restructure). Every control keeps its signals — only its
+        # parent/placement/style changes. See image_triage/ui/preview_studio.py.
+        self._studio_layout_active = False
+        self._apply_studio_layout()
+
+    # --- Studio layout (redesigned popout) ---------------------------------
+    # Unique dialog id: every Studio rule is scoped under it so the redesign
+    # out-specifies the main window's app stylesheet, which cascades into this
+    # child dialog (its plain-type rules like `QComboBox {…}` would otherwise
+    # tie with, and override, the Studio ones).
+    STUDIO_SCOPE = "QDialog#studioPreviewDialog"
+
+    def _studio_stylesheet_full(self) -> str:
+        scope = self.STUDIO_SCOPE
+        extra = f"""
+            QToolButton#studioToolButton {{
+                background: {studio.SURFACE_3}; border: 1px solid {studio.LINE}; color: {studio.TEXT};
+                padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 500;
+                min-height: 0px;
+            }}
+            QToolButton#studioToolButton:hover {{ background: {studio.SURFACE_HOVER}; border-color: {studio.LINE_STRONG}; }}
+            QToolButton#studioToolButton:checked {{ background: {studio.ACCENT}; color: #ffffff; border-color: {studio.ACCENT}; }}
+            QToolButton#studioToolButton:disabled {{ color: {studio.TEXT_MUTE}; border-color: {studio.LINE}; }}
+            QComboBox:disabled {{ color: {studio.TEXT_MUTE}; border-color: {studio.LINE}; background: {studio.SURFACE_2}; }}
+            QFrame#previewControlsCard {{ background: {studio.SURFACE_2}; border: 1px solid {studio.LINE}; border-radius: {studio.CARD_RADIUS}px; }}
+            QLabel#previewControlsTitle {{ color: {studio.TEXT}; font-size: 13px; font-weight: 600; }}
+            QLabel#previewControlsSummary {{ color: {studio.TEXT_MUTE}; font-size: 11px; }}
+            QLabel#previewControlLabel {{ color: {studio.TEXT_DIM}; font-size: 12px; font-weight: 500; }}
+            QLabel#previewAnalysisValue {{ color: {studio.TEXT}; font-size: 12px; }}
+            QLabel#previewAnalysisHint {{ color: {studio.TEXT_MUTE}; font-size: 11px; }}
+        """
+        return (
+            f"{scope} {{ background-color: {studio.GROUND}; color: {studio.TEXT}; }}\n"
+            f"{scope} QWidget {{ font-family: 'Segoe UI'; font-size: 12px; }}\n"
+            + studio.studio_stylesheet(scope=scope)
+            + studio.scope_stylesheet(extra, scope)
+        )
+
+    def _studio_toggle_style(self) -> str:
+        return f"""
+            QPushButton {{
+                background: {studio.SURFACE_3}; border: 1px solid {studio.LINE};
+                color: {studio.TEXT_DIM}; padding: 5px 12px; border-radius: 6px; font-size: 11px;
+            }}
+            QPushButton:hover {{ background: {studio.SURFACE_HOVER}; color: {studio.TEXT}; }}
+            QPushButton:checked {{ background: {studio.ACCENT}; border-color: {studio.ACCENT}; color: #ffffff; }}
+            QPushButton:disabled {{ background: {studio.SURFACE_2}; border-color: {studio.LINE}; color: {studio.TEXT_MUTE}; }}
+            QPushButton:checked:disabled {{ background: {studio.SURFACE_3}; border-color: {studio.LINE_STRONG}; color: {studio.TEXT_MUTE}; }}
+        """
+
+    def _studio_card_style(self, name: str) -> str:
+        return (
+            f"QFrame#{name} {{ background: {studio.SURFACE_2}; border: 1px solid {studio.LINE};"
+            f" border-radius: {studio.CARD_RADIUS}px; }}"
+        )
+
+    def _studio_combo_style(self, *, narrow: bool = False) -> str:
+        return (
+            f"QComboBox {{ background: {studio.SURFACE_3}; border: 1px solid {studio.LINE}; color: {studio.TEXT};"
+            f" padding: 5px 9px; border-radius: 6px; font-size: 11px; min-height: 0px;"
+            f" min-width: {'0' if narrow else '96'}px; }}"
+            f" QComboBox:hover {{ border-color: {studio.LINE_STRONG}; }}"
+            f" QComboBox:disabled {{ background: {studio.SURFACE_2}; color: {studio.TEXT_MUTE}; border-color: {studio.LINE}; }}"
+            f" QComboBox::drop-down {{ border: none; width: 18px; }}"
+            f" QComboBox QAbstractItemView {{ background: {studio.SURFACE_2}; border: 1px solid {studio.LINE_STRONG};"
+            f" color: {studio.TEXT}; selection-background-color: {studio.ACCENT}; }}"
+        )
+
+    def _apply_studio_theme(self) -> None:
+        """Studio-mode styling. Replaces the old per-widget analysis styling so
+        theme changes keep the redesigned look."""
+        self.setStyleSheet(self._studio_stylesheet_full())
+        # Cards and combos are styled directly on the widget: the main window's
+        # app stylesheet cascades into this child dialog and its plain-type
+        # rules override dialog-level selectors, but never a widget's own sheet.
+        for card in getattr(self, "_studio_cards", []):
+            card.setStyleSheet(self._studio_card_style(card.objectName() or "card"))
+        self.compare_count_combo.setStyleSheet(self._studio_combo_style())
+        self.focus_assist_color_combo.setStyleSheet(self._studio_combo_style(narrow=True))
+        self.focus_assist_strength_combo.setStyleSheet(self._studio_combo_style())
+        self.fits_stf_combo.setStyleSheet(self._studio_combo_style())
+        # Toggle-style controls (Studio look, immune to the cascade for the
+        # same reason — direct per-widget stylesheets).
+        self.focus_assist_button.setStyleSheet(self._studio_toggle_style())
+        self.focus_assist_background_button.setStyleSheet(self._studio_toggle_style())
+        self.fits_reset_button.setStyleSheet(self._studio_toggle_style())
+        self.histogram_widget.set_studio(True)
+        self.histogram_widget.setMinimumHeight(84)
+        self.histogram_widget.setMaximumHeight(96)
+        self.histogram_widget.apply_theme(self._theme)
+        for pane in self._panes:
+            pane.set_studio(True)
+            pane.apply_theme(self._theme)
+
+    def _studio_group_label(self, text: str) -> QLabel:
+        label = QLabel(text.upper())
+        label.setObjectName("groupLabel")
+        return label
+
+    def _studio_divider(self) -> QFrame:
+        line = QFrame()
+        line.setObjectName("vline")
+        line.setFixedWidth(1)
+        return line
+
+    def _build_studio_nav_pill(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("navPill")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(2)
+        prev = QPushButton("‹")
+        prev.setObjectName("navArrow")
+        prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        prev.setCursor(Qt.CursorShape.PointingHandCursor)
+        prev.clicked.connect(lambda: self.navigation_requested.emit(-1))
+        self._studio_nav_count = QLabel("—")
+        self._studio_nav_count.setObjectName("navCount")
+        self._studio_nav_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        nxt = QPushButton("›")
+        nxt.setObjectName("navArrow")
+        nxt.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        nxt.setCursor(Qt.CursorShape.PointingHandCursor)
+        nxt.clicked.connect(lambda: self.navigation_requested.emit(1))
+        layout.addWidget(prev)
+        layout.addWidget(self._studio_nav_count)
+        layout.addWidget(nxt)
+        return frame
+
+    def _toggle_studio_inspector(self, shown: bool) -> None:
+        rail = getattr(self, "_studio_rail", None)
+        if rail is not None:
+            rail.setVisible(shown)
+
+    def _build_studio_toolbar(self) -> QFrame:
+        toolbar = QFrame()
+        toolbar.setObjectName("toolbar")
+        layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(9, 6, 9, 6)
+        layout.setSpacing(9)
+
+        # Rename the re-parented header buttons so the main window's app-level
+        # stylesheet (which cascades into child dialogs and pins
+        # workspacePresetsButton to min-height 28px) no longer matches them.
+        for button in (
+            self.command_palette_button,
+            self.compare_toggle_button,
+            self.auto_bracket_button,
+            self.before_after_button,
+            self.photoshop_button,
+            self.next_edit_button,
+        ):
+            button.setObjectName("studioToolButton")
+
+        layout.addWidget(self._studio_group_label("Review"))
+        layout.addWidget(self.compare_toggle_button)
+        layout.addWidget(self.auto_bracket_button)
+        layout.addWidget(self.before_after_button)
+        layout.addWidget(self.compare_count_combo)
+        layout.addWidget(self._studio_divider())
+        layout.addWidget(self._studio_group_label("Edit"))
+        layout.addWidget(self.next_edit_button)
+        layout.addWidget(self.photoshop_button)
+        layout.addWidget(self.command_palette_button)
+        layout.addStretch(1)
+
+        self.inspector_toggle = QPushButton("Inspector")
+        self.inspector_toggle.setObjectName("toolBtn")
+        self.inspector_toggle.setCheckable(True)
+        self.inspector_toggle.setChecked(True)
+        self.inspector_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.inspector_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.inspector_toggle.toggled.connect(self._toggle_studio_inspector)
+        layout.addWidget(self.inspector_toggle)
+        layout.addWidget(self._build_studio_nav_pill())
+
+        close_btn = QPushButton("✕")
+        close_btn.setObjectName("ghostBtn")
+        close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+        return toolbar
+
+    def _build_studio_rail(self) -> QFrame:
+        rail = QFrame()
+        rail.setObjectName("rail")
+        rail.setFixedWidth(312)
+        layout = QVBoxLayout(rail)
+        # No inset — the surrounding content layout provides the uniform 12px
+        # gap to the toolbar / window edge / filmstrip; cards are 12px apart.
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        # Wrap the loose histogram + inspection stats into a Studio card.
+        hist_card, hist_layout = studio.card("Histogram", "RGB · Luma")
+        hist_layout.addWidget(self.histogram_widget)
+        hist_layout.addWidget(self.inspection_dimensions_label)
+        hist_layout.addWidget(self.inspection_exposure_label)
+        hist_layout.addWidget(self.inspection_clipping_label)
+        hist_layout.addWidget(self.inspection_detail_label)
+        layout.addWidget(hist_card)
+
+        # The focus / FITS / AI cards are already QFrames — re-parent as-is.
+        layout.addWidget(self.focus_controls_card)
+        layout.addWidget(self.fits_controls_card)
+        layout.addWidget(self.ai_explanation_card)
+        layout.addStretch(1)
+        # Styled directly per-card in _apply_studio_theme (bulletproof against
+        # the app stylesheet cascading in from the main window).
+        self._studio_cards = [hist_card, self.focus_controls_card, self.fits_controls_card, self.ai_explanation_card]
+        return rail
+
+    def _apply_studio_layout(self) -> None:
+        self._studio_layout_active = True
+        self.setObjectName("studioPreviewDialog")
+
+        toolbar = self._build_studio_toolbar()
+        self._studio_toolbar = toolbar
+
+        rail = self._build_studio_rail()
+        self._studio_rail = rail
+        # Uniform 12px gutter around the body and between the image and rail.
+        self._content_layout.setContentsMargins(12, 12, 12, 12)
+        self._content_layout.setSpacing(12)
+        self._content_layout.replaceWidget(self.analysis_panel, rail)
+        self.analysis_panel.hide()
+        for widget in (self.analysis_title_label, self.analysis_subtitle_label, self.inspection_hint_label):
+            widget.hide()
+
+        layout = self.layout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.replaceWidget(self.header_widget, toolbar)
+        self.header_widget.hide()
+        self.info_label.hide()
+
+        self._filmstrip_current = 0
+        self._filmstrip = studio.Filmstrip(focus="second")
+        self._filmstrip.frame_selected.connect(self._handle_studio_filmstrip_selected)
+        layout.insertWidget(2, self._filmstrip)
+        # Debounce for async thumbnail arrivals so a burst of thumbnail_ready
+        # signals repopulates the strip once, not once per thumb.
+        self._filmstrip_refresh_timer = QTimer(self)
+        self._filmstrip_refresh_timer.setSingleShot(True)
+        self._filmstrip_refresh_timer.setInterval(120)
+        self._filmstrip_refresh_timer.timeout.connect(self._filmstrip.refresh)
+
+        self._apply_studio_theme()
+
+    def set_browse_context(
+        self,
+        total: int,
+        current: int,
+        thumb_provider=None,
+        tag_provider=None,
+    ) -> None:
+        """Give the filmstrip and nav pill their place in the full image list.
+
+        Called by the owner whenever the popout opens or navigates. ``current``
+        is the 0-based index into the owner's ordered records; providers map an
+        index to a thumbnail pixmap / status tag color.
+        """
+        self._filmstrip_current = max(0, int(current))
+        if not getattr(self, "_studio_layout_active", False):
+            return
+        self._filmstrip.set_source(total, current, thumb_provider, tag_provider)
+        self._studio_nav_count.setText(f"{current + 1} / {total}" if total > 0 else "—")
+
+    def refresh_filmstrip(self) -> None:
+        """Repopulate filmstrip thumbs soon (debounced); used by the owner when
+        async thumbnails finish loading."""
+        if getattr(self, "_studio_layout_active", False) and self.isVisible():
+            self._filmstrip_refresh_timer.start()
+
+    def _handle_studio_filmstrip_selected(self, index: int) -> None:
+        delta = index - getattr(self, "_filmstrip_current", 0)
+        if delta:
+            self.navigation_requested.emit(delta)
+
+    def _studio_pane_active(self, slot: int) -> bool:
+        # Single image: it is the focused photo. Compare: only the focused pane.
+        return len(self._entries) <= 1 or slot == self._focused_slot
+
+    def _studio_rounded_photo(self, pixmap: QPixmap, *, active: bool) -> QPixmap:
+        """Round the photo's corners and paint the selection ring directly on
+        it — the Studio look where the ring hugs the image itself (stylesheet
+        border-radius cannot clip a child pixmap)."""
+        radius = float(studio.PHOTO_RADIUS)
+        out = QPixmap(pixmap.size())
+        out.setDevicePixelRatio(pixmap.devicePixelRatio())
+        out.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        dpr = pixmap.devicePixelRatio() or 1.0
+        rect = QRect(0, 0, round(pixmap.width() / dpr), round(pixmap.height() / dpr))
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(rect), radius, radius)
+        painter.setClipPath(clip)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.setClipping(False)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Thin dark contrast line inside the ring (grid-card treatment), then
+        # the accent for the focused photo or a subtle hairline otherwise.
+        painter.setPen(QPen(QColor(0, 0, 0, 150), 1.0))
+        painter.drawRoundedRect(QRectF(rect).adjusted(2.0, 2.0, -2.0, -2.0), radius - 1, radius - 1)
+        if active:
+            painter.setPen(QPen(QColor(studio.ACCENT_BRIGHT), 2.0))
+        else:
+            painter.setPen(QPen(QColor(255, 255, 255, 40), 1.0))
+        painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        painter.end()
+        return out
+
     def _build_header_tool_button(self, text: str) -> QToolButton:
         button = QToolButton()
         button.setObjectName("workspacePresetsButton")
@@ -1053,6 +1429,10 @@ class FullScreenPreview(QDialog):
         return max(widget.minimumWidth(), widget.minimumSizeHint().width(), widget.sizeHint().width())
 
     def _apply_header_overflow(self) -> None:
+        if getattr(self, "_studio_layout_active", False):
+            # The Studio toolbar owns its own layout; the old responsive
+            # overflow machinery is retired under the redesign.
+            return
         available_width = self.header_widget.width()
         if available_width <= 0:
             return
@@ -1196,9 +1576,19 @@ class FullScreenPreview(QDialog):
         self.focus_assist_button.setText("On" if self._focus_assist_enabled else "Off")
         self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
         advanced_focus_visible = self._focus_assist_enabled
-        self.focus_color_row.setVisible(advanced_focus_visible)
-        self.focus_strength_row.setVisible(advanced_focus_visible)
-        self.focus_background_row.setVisible(advanced_focus_visible)
+        if getattr(self, "_studio_layout_active", False):
+            # Studio: the rows stay in place; the controls gray out when
+            # focus peaking is off instead of vanishing.
+            self.focus_color_row.setVisible(True)
+            self.focus_strength_row.setVisible(True)
+            self.focus_background_row.setVisible(True)
+            self.focus_assist_color_combo.setEnabled(self._focus_assist_enabled)
+            self.focus_assist_strength_combo.setEnabled(self._focus_assist_enabled)
+            self.focus_assist_background_button.setEnabled(self._focus_assist_enabled)
+        else:
+            self.focus_color_row.setVisible(advanced_focus_visible)
+            self.focus_strength_row.setVisible(advanced_focus_visible)
+            self.focus_background_row.setVisible(advanced_focus_visible)
 
         if not self._focus_assist_enabled:
             summary = "Off"
@@ -1217,8 +1607,12 @@ class FullScreenPreview(QDialog):
             if fits_preset_index >= 0:
                 self.fits_stf_combo.setCurrentIndex(fits_preset_index)
         self.fits_reset_button.setEnabled(self._fits_display_settings.preset.id != FitsDisplaySettings().preset.id)
-        self.header_widget.setVisible(True)
-        self.analysis_panel.setVisible(True)
+        if not getattr(self, "_studio_layout_active", False):
+            # Legacy layout only — under Studio these are detached husks whose
+            # contents were re-parented into the toolbar/rail; re-showing them
+            # would float them over the dialog as orphans.
+            self.header_widget.setVisible(True)
+            self.analysis_panel.setVisible(True)
         hint_text = "Histogram follows the focused pane. Focus Peaking settings live in the inspection card."
         if fits_controls_visible:
             hint_text = "Histogram follows the focused pane. FITS display stretch changes the preview only."
@@ -1233,6 +1627,9 @@ class FullScreenPreview(QDialog):
 
     def apply_theme(self, theme: ThemePalette) -> None:
         self._theme = theme
+        if getattr(self, "_studio_layout_active", False):
+            self._apply_studio_theme()
+            return
         self.setStyleSheet(f"background-color: {theme.image_bg.css}; color: {theme.text_primary.css};")
         self.content_widget.setStyleSheet("background-color: transparent;")
         self.info_label.setStyleSheet(f"font-size: 14px; color: {theme.text_secondary.css};")
@@ -1385,12 +1782,16 @@ class FullScreenPreview(QDialog):
         fullscreen_reapplied = False
         window_activated = False
         if not was_visible:
-            self.showFullScreen()
+            # Open as a normal maximized window: fills the available desktop
+            # but respects the taskbar, so nothing clips off-screen. (True
+            # fullscreen fought the Windows taskbar and clipped the edges;
+            # revisit as an explicit toggle later.)
+            self.showMaximized()
             self.raise_()
             self.activateWindow()
             window_activated = True
-        elif not self.isFullScreen():
-            self.showFullScreen()
+        elif self.isMinimized():
+            self.showMaximized()
             fullscreen_reapplied = True
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._refresh_timer.start()
@@ -1742,6 +2143,8 @@ class FullScreenPreview(QDialog):
     def _ensure_panes(self, count: int) -> None:
         while len(self._panes) < count:
             pane = PreviewPane()
+            if getattr(self, "_studio_layout_active", False):
+                pane.set_studio(True)
             pane.apply_theme(self._theme)
             pane.image_label.installEventFilter(self)
             pane.scroll_area.viewport().installEventFilter(self)
@@ -2355,7 +2758,14 @@ class FullScreenPreview(QDialog):
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pane.image_label.setScaledContents(False)
             target = self._fit_target_size(pane)
-            display_key = (*self._display_render_key(slot, display_image), "fit", target.width(), target.height())
+            studio_active = getattr(self, "_studio_layout_active", False) and self._studio_pane_active(slot)
+            display_key = (
+                *self._display_render_key(slot, display_image),
+                "fit",
+                target.width(),
+                target.height(),
+                studio_active,
+            )
             if (
                 slot < len(self._rendered_display_keys)
                 and self._rendered_display_keys[slot] == display_key
@@ -2375,6 +2785,8 @@ class FullScreenPreview(QDialog):
                         transform_mode,
                     )
                 )
+            if getattr(self, "_studio_layout_active", False):
+                pixmap = self._studio_rounded_photo(pixmap, active=studio_active)
             pane.image_label.setText("")
             pane.image_label.setPixmap(pixmap)
             pane.image_label.resize(pixmap.size())
@@ -2936,6 +3348,11 @@ class FullScreenPreview(QDialog):
             return
         self._focused_slot = slot
         self._update_focus_styles()
+        if getattr(self, "_studio_layout_active", False):
+            # The Studio ring is painted on the photo pixmap, so moving focus
+            # needs a re-render; the display keys carry the active flag, so
+            # only the two affected panes actually redraw.
+            self._render_all()
         self._schedule_analysis_panel_update()
         self._update_info_label()
 

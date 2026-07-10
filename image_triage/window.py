@@ -243,6 +243,7 @@ from .models import DeleteMode, FilterMode, ImageRecord, ImageVariant, JPEG_SUFF
 from .perceptual_hash import hamming_distance_int
 from .perf import perf_logger, performance_log_dir
 from .preview import FullScreenPreview, PreviewEntry
+from .ui import preview_studio
 from .workflows import (
     BEST_OF_BALANCED,
     BEST_OF_TOP_N,
@@ -3457,6 +3458,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel = InspectorPanel()
         self.inspector_panel.setMinimumWidth(0)
         self.thumbnail_manager.thumbnail_ready.connect(self._handle_inspector_thumbnail_ready)
+        self.thumbnail_manager.thumbnail_ready.connect(self._handle_preview_filmstrip_thumbnail_ready)
         self.workspace_preset_menu = QMenu(self)
         self.workflow_recipe_menu = QMenu("Run Recipe", self)
         self.collections_menu = QMenu("Collections", self)
@@ -21936,6 +21938,7 @@ class MainWindow(QMainWindow):
                 compare=self._compare_enabled,
             )
         self.preview.show_entries(entries)
+        self._sync_preview_browse_context(anchor_index if anchor_index >= 0 else index)
         self._schedule_preview_preload(anchor_index if anchor_index >= 0 else index)
         if logger.enabled:
             logger.duration(
@@ -21958,6 +21961,54 @@ class MainWindow(QMainWindow):
         next_index = max(0, min(len(self._records) - 1, current + delta))
         self.grid.set_current_index(next_index)
         self._open_preview(next_index)
+
+    PREVIEW_FILMSTRIP_THUMB_SIZE = QSize(192, 128)
+
+    def _sync_preview_browse_context(self, current_index: int) -> None:
+        """Feed the popout's filmstrip/nav pill its position in the record list."""
+        self.preview.set_browse_context(
+            len(self._records),
+            current_index,
+            self._preview_filmstrip_thumb,
+            self._preview_filmstrip_tag,
+        )
+
+    def _preview_filmstrip_thumb(self, index: int) -> QPixmap | None:
+        record = self._record_at(index)
+        if record is None or record.is_folder:
+            return None
+        image = self.thumbnail_manager.get_cached(record, self.PREVIEW_FILMSTRIP_THUMB_SIZE)
+        if image is not None and not image.isNull():
+            return QPixmap.fromImage(image)
+        # Kick off an async load and refresh the strip when it lands; fall
+        # back to the grid's thumbnail so the strip is rarely empty meanwhile.
+        self.thumbnail_manager.request_thumbnail(
+            record,
+            self.PREVIEW_FILMSTRIP_THUMB_SIZE,
+            priority=25_000,
+            drop_if_not_wanted=False,
+        )
+        fallback = self.grid.thumbnail_for(index)
+        if fallback is not None and not fallback.isNull():
+            return QPixmap.fromImage(fallback)
+        return None
+
+    def _preview_filmstrip_tag(self, index: int) -> str | None:
+        record = self._record_at(index)
+        if record is None:
+            return None
+        annotation = self._annotations.get(record.path)
+        if annotation is None:
+            return None
+        if annotation.reject:
+            return preview_studio.REJECT
+        if annotation.winner:
+            return preview_studio.KEEPER
+        return None
+
+    def _handle_preview_filmstrip_thumbnail_ready(self, *_args) -> None:
+        if self.preview.isVisible():
+            self.preview.refresh_filmstrip()
 
     def _preview_source_path(self, record: ImageRecord) -> str:
         for path in record.companion_paths:
