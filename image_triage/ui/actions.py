@@ -99,11 +99,6 @@ class MainWindowActions:
     dispute_current_ai_result: QAction
     review_ai_disagreements: QAction
     winner_ladder_mode: QAction
-    assign_review_round_first_pass: QAction
-    assign_review_round_second_pass: QAction
-    assign_review_round_third_pass: QAction
-    assign_review_round_hero: QAction
-    clear_review_round: QAction
     create_virtual_collection: QAction
     add_selection_to_collection: QAction
     remove_selection_from_collection: QAction
@@ -234,7 +229,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             shortcut="Ctrl+Shift+C",
         ),
         extract_archive=_create_action(window, "Extract Archive...", slot=window._extract_archive_prompt),
-        accept_selection=_create_action(window, "Accept Selection", slot=window._accept_selected_records),
+        accept_selection=_create_action(window, "Mark Winner", slot=window._accept_selected_records),
         reject_selection=_create_action(window, "Reject Selection", slot=window._reject_selected_records),
         keep_selection=_create_action(window, "Move Selection To _keep", slot=window._keep_selected_records),
         move_selection=_create_action(window, "Move Selection...", slot=window._move_selected_records),
@@ -407,7 +402,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         open_ai_data_selection=_create_action(
             window,
-            "Prepare Rating CSV",
+            "Prepare Training Labels",
             slot=window._export_aiculler_ratings,
             shortcut="Ctrl+Shift+L",
         ),
@@ -456,36 +451,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Winner Ladder",
             slot=window._open_winner_ladder,
             shortcut="Ctrl+Alt+W",
-        ),
-        assign_review_round_first_pass=_create_action(
-            window,
-            "Mark As First-Pass Reject",
-            slot=lambda _checked=False: window._assign_review_round_to_selection("first_pass_rejects"),
-            shortcut="Alt+1",
-        ),
-        assign_review_round_second_pass=_create_action(
-            window,
-            "Mark As Keeper Candidate",
-            slot=lambda _checked=False: window._assign_review_round_to_selection("second_pass_keepers"),
-            shortcut="Alt+2",
-        ),
-        assign_review_round_third_pass=_create_action(
-            window,
-            "Mark As Finalist",
-            slot=lambda _checked=False: window._assign_review_round_to_selection("third_pass_finalists"),
-            shortcut="Alt+3",
-        ),
-        assign_review_round_hero=_create_action(
-            window,
-            "Mark As Hero Select",
-            slot=lambda _checked=False: window._assign_review_round_to_selection("final_hero_selects"),
-            shortcut="Alt+4",
-        ),
-        clear_review_round=_create_action(
-            window,
-            "Clear Review Stage",
-            slot=lambda _checked=False: window._assign_review_round_to_selection(""),
-            shortcut="Alt+0",
         ),
         create_virtual_collection=_create_action(
             window,

@@ -51,7 +51,7 @@ ARTICLES = [
 
         ## The image grid
 
-        The grid is your workspace. It shows thumbnails for the current folder, with a rating strip under each image. Select images here, then act on them with the keyboard, the right-click menu, or the toolbar.
+        The grid is your workspace. It shows thumbnails for the current folder with heart/X culling controls. Select images here, then act on them with the keyboard, the right-click menu, or the toolbar.
 
         ## Preview
 
@@ -65,7 +65,7 @@ ARTICLES = [
 
         - **File** — open folders and manage the session.
         - **View** — appearance, layout, sorting, filters, and burst views.
-        - **Review** — review stages and tools.
+        - **Review** — culling, preview, and selection tools.
         - **Library / Workflow** — collections, the catalog, and export recipes.
         - **AI** — the AI Workflow Center, adapter training, and result filters.
         - **Tools** — batch rename, resize, convert, and archive.
@@ -89,7 +89,7 @@ ARTICLES = [
 
         1. **Open a folder** — `File > Open Folder...`.
         2. **Select images** — click, `Ctrl`-click, `Shift`-click, or drag to marquee-select. See [Selecting images](doc:selecting).
-        3. **Sort quickly** — `W` accept, `X` reject, `K` move to `_keep`, `M` move, `Delete` trash.
+        3. **Cull quickly** — `W` marks winners, `X` rejects, `K` moves to `_keep`, `M` moves, `Delete` trashes.
         4. **Preview when unsure** — `Space` or `Enter` opens the full view.
         5. **Run batch actions** — right-click or the **Tools** menu for rename, resize, convert, and archive.
         6. **Organize by drag and drop** — drop onto folders or favorites; hold `Ctrl` to copy instead of move.
@@ -116,9 +116,9 @@ ARTICLES = [
 
         ## The core verbs
 
-        - `W` accepts, `X` rejects.
+        - `W` marks winners, `X` rejects.
         - `K` moves to `_keep`; `M` moves to a chosen folder.
-        - `0`–`5` rates; `T` tags.
+        - `T` tags.
         - `Delete` trashes; `Ctrl+Z` undoes.
 
         ## Look closer without slowing down

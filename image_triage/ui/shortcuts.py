@@ -39,17 +39,12 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     # Review
     ("compare_mode", "Review", "C", "Compare"),
     ("winner_ladder_mode", "Review", "Ctrl+Alt+W", "Winner Ladder"),
-    ("assign_review_round_first_pass", "Review", "Alt+1", "Mark As First-Pass Reject"),
-    ("assign_review_round_second_pass", "Review", "Alt+2", "Mark As Keeper Candidate"),
-    ("assign_review_round_third_pass", "Review", "Alt+3", "Mark As Finalist"),
-    ("assign_review_round_hero", "Review", "Alt+4", "Mark As Hero Select"),
-    ("clear_review_round", "Review", "Alt+0", "Clear Review Stage"),
     # AI
     # Note: "D" then 1-5 (the dispute chord) is handled directly in the grid's
     # keyPressEvent rather than via QAction so it doesn't show up here — the
     # registry only carries QAction-backed bindings.
     ("open_ai_workflow_center", "AI", "Ctrl+Shift+W", "AI Workflow Center..."),
-    ("open_ai_data_selection", "AI", "Ctrl+Shift+L", "Prepare Rating CSV"),
+    ("open_ai_data_selection", "AI", "Ctrl+Shift+L", "Prepare Training Labels"),
     ("quick_rerank_ai_culling", "AI", "Ctrl+Shift+Y", "Quick Rerank"),
     ("next_ai_pick", "AI", "Ctrl+Alt+P", "Next AI Top Pick"),
     ("compare_ai_group", "AI", "Ctrl+Alt+G", "Compare Current AI Group"),

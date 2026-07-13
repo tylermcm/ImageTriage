@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -342,17 +342,20 @@ class PreviewPane(QWidget):
         self.footer.setVisible(not minimal and not self._studio)
 
     def set_studio(self, on: bool) -> None:
-        """Studio look: no footer, transparent pane on the ground, rounded
-        photo backdrop with an accent ring when focused."""
+        """Studio look: no footer, transparent pane on the ground — the photo
+        sits flat with no frame, ring, or rounding. The pane drops its own
+        margins so the stage's 12px inset is the only padding around the
+        photo (matching the rail's card inset)."""
         self._studio = on
         self.footer.setVisible(not on)
+        margin = 0 if on else 10
+        self.layout().setContentsMargins(margin, margin, margin, margin)
         self._apply_style()
 
     def _apply_style(self) -> None:
         if self._studio:
-            # The rounded corners and selection ring are painted onto the photo
-            # pixmap itself (_studio_rounded_photo); the pane and scroll area
-            # are invisible carriers so the photo floats on the ground.
+            # The pane and scroll area are invisible carriers so the photo
+            # floats on the ground.
             self.setStyleSheet("QWidget#previewPane { background-color: transparent; border: none; }")
             self.scroll_area.setStyleSheet(
                 f"QScrollArea {{ background-color: {studio.GROUND}; border: none; }}"
@@ -537,7 +540,11 @@ class FullScreenPreview(QDialog):
     FOCUS_ASSIST_COLOR_KEY = "preview/focus_assist_color"
     FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
     FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
+    FOCUS_ASSIST_ENABLED_KEY = "preview/focus_assist_enabled"
     FITS_STF_PRESET_KEY = "preview/fits_stf_preset"
+    INSPECTOR_VISIBLE_KEY = "preview/inspector_visible"
+    FILMSTRIP_THUMB_HEIGHT_KEY = "preview/filmstrip_thumb_height"
+    FILMSTRIP_COLLAPSED_KEY = "preview/filmstrip_collapsed"
     navigation_requested = Signal(int)
     compare_mode_changed = Signal(bool)
     auto_bracket_mode_changed = Signal(bool)
@@ -549,7 +556,6 @@ class FullScreenPreview(QDialog):
     keep_requested = Signal(str)
     delete_requested = Signal(str)
     move_requested = Signal(str)
-    rate_requested = Signal(str, int)
     tag_requested = Signal(str)
     winner_ladder_choice_requested = Signal(str)
     winner_ladder_skip_requested = Signal()
@@ -575,7 +581,7 @@ class FullScreenPreview(QDialog):
         self._settings = QSettings()
         self._manual_zoom = False
         self._zoom_scale = 1.0
-        self._focus_assist_enabled = False
+        self._focus_assist_enabled = self._settings.value(self.FOCUS_ASSIST_ENABLED_KEY, False, bool)
         self._focus_assist_color = focus_assist_color_by_id(
             self._settings.value(self.FOCUS_ASSIST_COLOR_KEY, DEFAULT_FOCUS_ASSIST_COLOR_ID, str)
         )
@@ -706,8 +712,10 @@ class FullScreenPreview(QDialog):
         self.before_after_button.setCheckable(True)
         self.before_after_button.toggled.connect(self._handle_before_after_button_toggled)
 
-        self.focus_assist_button = QPushButton("Off")
+        self.focus_assist_button = QPushButton("On" if self._focus_assist_enabled else "Off")
         self.focus_assist_button.setCheckable(True)
+        # Restore the persisted state before connecting so no toggle fires.
+        self.focus_assist_button.setChecked(self._focus_assist_enabled)
         self.focus_assist_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.focus_assist_button.setMinimumWidth(68)
         self.focus_assist_button.toggled.connect(self._handle_focus_assist_button_toggled)
@@ -1069,6 +1077,20 @@ class FullScreenPreview(QDialog):
             f" border-radius: {studio.CARD_RADIUS}px; }}"
         )
 
+    def _studio_segmented_style(self) -> str:
+        return f"""
+            QFrame#segmented {{ background: {studio.SURFACE_3}; border: 1px solid {studio.LINE}; border-radius: 9px; }}
+            QFrame#segmented QPushButton {{
+                background: transparent; border: none; color: {studio.TEXT_DIM};
+                padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+                min-height: 0px; min-width: 0px;
+            }}
+            QFrame#segmented QPushButton:hover {{ background: {studio.SURFACE_HOVER}; color: {studio.TEXT}; }}
+            QFrame#segmented QPushButton:checked {{ background: {studio.ACCENT}; color: #ffffff; }}
+            QFrame#segmented QPushButton:disabled {{ color: {studio.TEXT_MUTE}; }}
+            QFrame#segmented QPushButton:checked:disabled {{ background: {studio.SURFACE_HOVER}; color: {studio.TEXT_MUTE}; }}
+        """
+
     def _studio_combo_style(self, *, narrow: bool = False) -> str:
         return (
             f"QComboBox {{ background: {studio.SURFACE_3}; border: 1px solid {studio.LINE}; color: {studio.TEXT};"
@@ -1090,6 +1112,14 @@ class FullScreenPreview(QDialog):
         # rules override dialog-level selectors, but never a widget's own sheet.
         for card in getattr(self, "_studio_cards", []):
             card.setStyleSheet(self._studio_card_style(card.objectName() or "card"))
+        for segment in getattr(self, "_studio_segments", []):
+            segment.setStyleSheet(self._studio_segmented_style())
+        rail = getattr(self, "_studio_rail", None)
+        if rail is not None:
+            rail.setStyleSheet(
+                f"QFrame#rail {{ background: {studio.SURFACE_1};"
+                f" border: 1px solid {studio.LINE}; border-radius: {studio.CARD_RADIUS}px; }}"
+            )
         self.compare_count_combo.setStyleSheet(self._studio_combo_style())
         self.focus_assist_color_combo.setStyleSheet(self._studio_combo_style(narrow=True))
         self.focus_assist_strength_combo.setStyleSheet(self._studio_combo_style())
@@ -1146,6 +1176,7 @@ class FullScreenPreview(QDialog):
         rail = getattr(self, "_studio_rail", None)
         if rail is not None:
             rail.setVisible(shown)
+        self._settings.setValue(self.INSPECTOR_VISIBLE_KEY, shown)
 
     def _build_studio_toolbar(self) -> QFrame:
         toolbar = QFrame()
@@ -1182,7 +1213,9 @@ class FullScreenPreview(QDialog):
         self.inspector_toggle = QPushButton("Inspector")
         self.inspector_toggle.setObjectName("toolBtn")
         self.inspector_toggle.setCheckable(True)
-        self.inspector_toggle.setChecked(True)
+        # Restore the persisted state before connecting so no toggle fires;
+        # _apply_studio_layout applies it to the rail once the rail exists.
+        self.inspector_toggle.setChecked(self._settings.value(self.INSPECTOR_VISIBLE_KEY, True, bool))
         self.inspector_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.inspector_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.inspector_toggle.toggled.connect(self._toggle_studio_inspector)
@@ -1198,32 +1231,101 @@ class FullScreenPreview(QDialog):
         return toolbar
 
     def _build_studio_rail(self) -> QFrame:
+        """Prototype-exact inspector cards. The legacy analysis-panel widgets
+        stay alive (hidden) as the state carriers every shortcut and handler
+        is wired to; the Studio controls built here mirror them — clicks
+        proxy into the legacy widgets, and ``_sync_preview_controls``
+        reflects state back into these controls."""
         rail = QFrame()
         rail.setObjectName("rail")
-        rail.setFixedWidth(312)
+        rail.setFixedWidth(336)
         layout = QVBoxLayout(rail)
-        # No inset — the surrounding content layout provides the uniform 12px
-        # gap to the toolbar / window edge / filmstrip; cards are 12px apart.
-        layout.setContentsMargins(0, 0, 0, 0)
+        # The rail is a solid panel spanning the full window height, so it
+        # carries its own 12px inset; cards are 12px apart inside it.
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
-        # Wrap the loose histogram + inspection stats into a Studio card.
+        # Histogram: real data plus key/value stat rows. The inspection label
+        # attributes are re-pointed at the row value labels so the analysis
+        # update path feeds the new rows directly (texts become value-only).
         hist_card, hist_layout = studio.card("Histogram", "RGB · Luma")
         hist_layout.addWidget(self.histogram_widget)
-        hist_layout.addWidget(self.inspection_dimensions_label)
-        hist_layout.addWidget(self.inspection_exposure_label)
-        hist_layout.addWidget(self.inspection_clipping_label)
-        hist_layout.addWidget(self.inspection_detail_label)
+        row, self.inspection_exposure_label = studio.stat_row("Exposure", "--")
+        hist_layout.addWidget(row)
+        row, self.inspection_clipping_label = studio.stat_row("Clipping", "--", warn=True)
+        hist_layout.addWidget(row)
+        row, self.inspection_dimensions_label = studio.stat_row("Size", "--")
+        hist_layout.addWidget(row)
+        row, self.inspection_detail_label = studio.stat_row("Detail", "--")
+        hist_layout.addWidget(row)
         layout.addWidget(hist_card)
 
-        # The focus / FITS / AI cards are already QFrames — re-parent as-is.
-        layout.addWidget(self.focus_controls_card)
-        layout.addWidget(self.fits_controls_card)
-        layout.addWidget(self.ai_explanation_card)
+        focus_card, focus_layout = studio.card("Focus Peaking", "Off")
+        self.focus_controls_summary_label = focus_card.summary_label
+        self._studio_focus_enable = studio.Segmented(
+            ["Off", "On"], 1 if self._focus_assist_enabled else 0
+        )
+        self._studio_focus_enable.selected.connect(
+            lambda index: self.focus_assist_button.setChecked(bool(index))
+        )
+        focus_layout.addWidget(studio.control_row("Enabled", self._studio_focus_enable))
+        self.focus_assist_color_combo.setObjectName("colorCombo")
+        focus_layout.addWidget(studio.control_row("Color", self.focus_assist_color_combo))
+        strength_labels = [
+            "Med" if strength.label == "Medium" else strength.label
+            for strength in FOCUS_ASSIST_STRENGTHS
+        ]
+        self._studio_focus_strength = studio.Segmented(
+            strength_labels, max(0, self.focus_assist_strength_combo.currentIndex())
+        )
+        self._studio_focus_strength.selected.connect(self.focus_assist_strength_combo.setCurrentIndex)
+        focus_layout.addWidget(studio.control_row("Sensitivity", self._studio_focus_strength))
+        self._studio_focus_background = studio.Segmented(
+            ["Dimmed", "Original"], 0 if self._focus_assist_dim_background else 1
+        )
+        self._studio_focus_background.selected.connect(
+            lambda index: self.focus_assist_background_button.setChecked(index == 0)
+        )
+        focus_layout.addWidget(studio.control_row("Background", self._studio_focus_background))
+        layout.addWidget(focus_card)
+
+        fits_card, fits_layout = studio.card("FITS Display", self._fits_display_settings.preset.label)
+        self.fits_controls_summary_label = fits_card.summary_label
+        fits_layout.addWidget(studio.control_row("Stretch", self.fits_stf_combo))
+        fits_layout.addWidget(self.fits_reset_button, 0, Qt.AlignmentFlag.AlignRight)
+        # Sync toggles the card's visibility through this attribute.
+        self.fits_controls_card = fits_card
+        layout.addWidget(fits_card)
+
+        ai_card, ai_layout = studio.card("Why AI picked this")
+        confidence_row = QWidget()
+        confidence_layout = QHBoxLayout(confidence_row)
+        confidence_layout.setContentsMargins(0, 0, 0, 0)
+        confidence_layout.setSpacing(10)
+        self._studio_confidence_bar = studio.ConfidenceBar(0)
+        confidence_layout.addWidget(self._studio_confidence_bar, 1)
+        self._studio_confidence_pct = QLabel("--")
+        self._studio_confidence_pct.setObjectName("confPct")
+        confidence_layout.addWidget(self._studio_confidence_pct)
+        ai_layout.addWidget(confidence_row)
+        self.ai_confidence_label = QLabel("Confidence: --")
+        self.ai_confidence_label.setObjectName("reason")
+        ai_layout.addWidget(self.ai_confidence_label)
+        self.ai_explanation_label = QLabel()
+        self.ai_explanation_label.setObjectName("reason")
+        self.ai_explanation_label.setWordWrap(True)
+        ai_layout.addWidget(self.ai_explanation_label)
+        layout.addWidget(ai_card)
+
         layout.addStretch(1)
         # Styled directly per-card in _apply_studio_theme (bulletproof against
         # the app stylesheet cascading in from the main window).
-        self._studio_cards = [hist_card, self.focus_controls_card, self.fits_controls_card, self.ai_explanation_card]
+        self._studio_cards = [hist_card, focus_card, fits_card, ai_card]
+        self._studio_segments = [
+            self._studio_focus_enable,
+            self._studio_focus_strength,
+            self._studio_focus_background,
+        ]
         return rail
 
     def _apply_studio_layout(self) -> None:
@@ -1235,25 +1337,37 @@ class FullScreenPreview(QDialog):
 
         rail = self._build_studio_rail()
         self._studio_rail = rail
-        # Uniform 12px gutter around the body and between the image and rail.
-        self._content_layout.setContentsMargins(12, 12, 12, 12)
-        self._content_layout.setSpacing(12)
+        # Every studio surface (toolbar, image stage, rail, filmstrip) floats as
+        # a rounded panel on a uniform 8px gutter (matching the main window's
+        # central container inset): the outer dialog layout owns the window inset
+        # and the gaps between the chrome bands, so the body only keeps the 8px
+        # gap between the image stage and the rail.
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(8)
+        self.panes_layout.setContentsMargins(0, 0, 0, 0)
         self._content_layout.replaceWidget(self.analysis_panel, rail)
         self.analysis_panel.hide()
         for widget in (self.analysis_title_label, self.analysis_subtitle_label, self.inspection_hint_label):
             widget.hide()
 
         layout = self.layout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         layout.replaceWidget(self.header_widget, toolbar)
         self.header_widget.hide()
         self.info_label.hide()
 
         self._filmstrip_current = 0
         self._filmstrip = studio.Filmstrip(focus="second")
+        self._filmstrip.restore_layout(
+            self._settings.value(self.FILMSTRIP_THUMB_HEIGHT_KEY, studio.Filmstrip.DEFAULT_THUMB_H, int),
+            self._settings.value(self.FILMSTRIP_COLLAPSED_KEY, False, bool),
+        )
+        self._filmstrip.layout_changed.connect(self._save_filmstrip_layout)
         self._filmstrip.frame_selected.connect(self._handle_studio_filmstrip_selected)
         layout.insertWidget(2, self._filmstrip)
+        # Apply the persisted Inspector visibility now that the rail exists.
+        rail.setVisible(self.inspector_toggle.isChecked())
         # Debounce for async thumbnail arrivals so a burst of thumbnail_ready
         # signals repopulates the strip once, not once per thumb.
         self._filmstrip_refresh_timer = QTimer(self)
@@ -1262,6 +1376,9 @@ class FullScreenPreview(QDialog):
         self._filmstrip_refresh_timer.timeout.connect(self._filmstrip.refresh)
 
         self._apply_studio_theme()
+        # Reflect initial state into the freshly-built Studio controls
+        # (gray-outs, segmented selections, card summaries).
+        self._sync_preview_controls()
 
     def set_browse_context(
         self,
@@ -1288,45 +1405,14 @@ class FullScreenPreview(QDialog):
         if getattr(self, "_studio_layout_active", False) and self.isVisible():
             self._filmstrip_refresh_timer.start()
 
+    def _save_filmstrip_layout(self) -> None:
+        self._settings.setValue(self.FILMSTRIP_THUMB_HEIGHT_KEY, self._filmstrip.thumb_height())
+        self._settings.setValue(self.FILMSTRIP_COLLAPSED_KEY, self._filmstrip.is_collapsed())
+
     def _handle_studio_filmstrip_selected(self, index: int) -> None:
         delta = index - getattr(self, "_filmstrip_current", 0)
         if delta:
             self.navigation_requested.emit(delta)
-
-    def _studio_pane_active(self, slot: int) -> bool:
-        # Single image: it is the focused photo. Compare: only the focused pane.
-        return len(self._entries) <= 1 or slot == self._focused_slot
-
-    def _studio_rounded_photo(self, pixmap: QPixmap, *, active: bool) -> QPixmap:
-        """Round the photo's corners and paint the selection ring directly on
-        it — the Studio look where the ring hugs the image itself (stylesheet
-        border-radius cannot clip a child pixmap)."""
-        radius = float(studio.PHOTO_RADIUS)
-        out = QPixmap(pixmap.size())
-        out.setDevicePixelRatio(pixmap.devicePixelRatio())
-        out.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(out)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        dpr = pixmap.devicePixelRatio() or 1.0
-        rect = QRect(0, 0, round(pixmap.width() / dpr), round(pixmap.height() / dpr))
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(rect), radius, radius)
-        painter.setClipPath(clip)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.setClipping(False)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        # Thin dark contrast line inside the ring (grid-card treatment), then
-        # the accent for the focused photo or a subtle hairline otherwise.
-        painter.setPen(QPen(QColor(0, 0, 0, 150), 1.0))
-        painter.drawRoundedRect(QRectF(rect).adjusted(2.0, 2.0, -2.0, -2.0), radius - 1, radius - 1)
-        if active:
-            painter.setPen(QPen(QColor(studio.ACCENT_BRIGHT), 2.0))
-        else:
-            painter.setPen(QPen(QColor(255, 255, 255, 40), 1.0))
-        painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
-        painter.end()
-        return out
 
     def _build_header_tool_button(self, text: str) -> QToolButton:
         button = QToolButton()
@@ -1577,36 +1663,37 @@ class FullScreenPreview(QDialog):
         self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
         advanced_focus_visible = self._focus_assist_enabled
         if getattr(self, "_studio_layout_active", False):
-            # Studio: the rows stay in place; the controls gray out when
-            # focus peaking is off instead of vanishing.
-            self.focus_color_row.setVisible(True)
-            self.focus_strength_row.setVisible(True)
-            self.focus_background_row.setVisible(True)
+            # Studio: the segmented controls mirror the hidden legacy widgets
+            # that carry the state; everything except the Enabled toggle grays
+            # out when focus peaking is off instead of vanishing.
+            self._studio_focus_enable.set_current(1 if self._focus_assist_enabled else 0)
+            self._studio_focus_strength.set_current(max(0, self.focus_assist_strength_combo.currentIndex()))
+            self._studio_focus_background.set_current(0 if self._focus_assist_dim_background else 1)
             self.focus_assist_color_combo.setEnabled(self._focus_assist_enabled)
-            self.focus_assist_strength_combo.setEnabled(self._focus_assist_enabled)
-            self.focus_assist_background_button.setEnabled(self._focus_assist_enabled)
+            self._studio_focus_strength.setEnabled(self._focus_assist_enabled)
+            self._studio_focus_background.setEnabled(self._focus_assist_enabled)
         else:
             self.focus_color_row.setVisible(advanced_focus_visible)
             self.focus_strength_row.setVisible(advanced_focus_visible)
             self.focus_background_row.setVisible(advanced_focus_visible)
 
-        if not self._focus_assist_enabled:
-            summary = "Off"
-        else:
-            summary = (
-                f"{self._focus_assist_color.label} | "
-                f"{self._focus_assist_strength.label} | "
-                f"{'Dimmed' if self._focus_assist_dim_background else 'Original'} background"
-            )
-        self.focus_controls_summary_label.setText(summary)
+        self.focus_controls_summary_label.setText("On" if self._focus_assist_enabled else "Off")
         fits_controls_visible = self._focused_entry_supports_fits_stf()
-        self.fits_controls_card.setVisible(fits_controls_visible)
+        fits_reset_enabled = self._fits_display_settings.preset.id != FitsDisplaySettings().preset.id
+        if getattr(self, "_studio_layout_active", False):
+            # Studio: the FITS card keeps its place in the rail (prototype
+            # layout); its controls gray out for non-FITS images.
+            self.fits_controls_card.setVisible(True)
+            self.fits_stf_combo.setEnabled(fits_controls_visible)
+            self.fits_reset_button.setEnabled(fits_controls_visible and fits_reset_enabled)
+        else:
+            self.fits_controls_card.setVisible(fits_controls_visible)
+            self.fits_reset_button.setEnabled(fits_reset_enabled)
         self.fits_controls_summary_label.setText(self._fits_display_settings.preset.label)
         with QSignalBlocker(self.fits_stf_combo):
             fits_preset_index = self.fits_stf_combo.findData(self._fits_display_settings.preset.id)
             if fits_preset_index >= 0:
                 self.fits_stf_combo.setCurrentIndex(fits_preset_index)
-        self.fits_reset_button.setEnabled(self._fits_display_settings.preset.id != FitsDisplaySettings().preset.id)
         if not getattr(self, "_studio_layout_active", False):
             # Legacy layout only — under Studio these are detached husks whose
             # contents were re-parented into the toolbar/rail; re-showing them
@@ -2003,14 +2090,6 @@ class FullScreenPreview(QDialog):
                 self.move_requested.emit(path)
                 event.accept()
                 return
-        if Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
-            path = self._focused_path()
-            if path:
-                self.rate_requested.emit(path, key - Qt.Key.Key_0)
-                if self._should_auto_advance_after_review():
-                    self.navigation_requested.emit(1)
-                event.accept()
-                return
         if key == Qt.Key.Key_T and review_shortcut_allowed:
             path = self._focused_path()
             if path:
@@ -2065,6 +2144,7 @@ class FullScreenPreview(QDialog):
 
     def _handle_focus_assist_button_toggled(self, checked: bool) -> None:
         self._focus_assist_enabled = checked
+        self._settings.setValue(self.FOCUS_ASSIST_ENABLED_KEY, checked)
         self._hide_all_loupes()
         self._sync_preview_controls()
         self._render_all()
@@ -2758,13 +2838,11 @@ class FullScreenPreview(QDialog):
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pane.image_label.setScaledContents(False)
             target = self._fit_target_size(pane)
-            studio_active = getattr(self, "_studio_layout_active", False) and self._studio_pane_active(slot)
             display_key = (
                 *self._display_render_key(slot, display_image),
                 "fit",
                 target.width(),
                 target.height(),
-                studio_active,
             )
             if (
                 slot < len(self._rendered_display_keys)
@@ -2785,8 +2863,6 @@ class FullScreenPreview(QDialog):
                         transform_mode,
                     )
                 )
-            if getattr(self, "_studio_layout_active", False):
-                pixmap = self._studio_rounded_photo(pixmap, active=studio_active)
             pane.image_label.setText("")
             pane.image_label.setPixmap(pixmap)
             pane.image_label.resize(pixmap.size())
@@ -2882,16 +2958,37 @@ class FullScreenPreview(QDialog):
     def _schedule_analysis_panel_update(self, delay_ms: int = 120) -> None:
         self._analysis_update_timer.start(max(0, delay_ms))
 
+    def _set_ai_reasons(self, lines, fallback: str = "") -> None:
+        """Prototype look: each rationale line rendered as '›  reason'."""
+        if isinstance(lines, str):
+            lines = [lines]
+        items = [line for line in lines if line]
+        if not items and fallback:
+            items = [fallback]
+        self.ai_explanation_label.setText("\n".join(f"›  {line}" for line in items))
+
+    def _update_studio_confidence(self, result) -> None:
+        """Feed the gold confidence bar + number from the AI result's folder
+        percentile (the same metric the grid badge shows)."""
+        if result is None:
+            self._studio_confidence_bar.set_pct(0)
+            self._studio_confidence_pct.setText("--")
+            return
+        value = result.folder_percentile if result.folder_percentile is not None else result.normalized_score
+        self._studio_confidence_bar.set_pct(int(round(value)) if value is not None else 0)
+        self._studio_confidence_pct.setText(result.display_score_text or "--")
+
     def _update_analysis_panel(self) -> None:
         if not self._entries or not 0 <= self._focused_slot < len(self._entries):
             self.analysis_subtitle_label.setText("Focused image analysis")
             self.histogram_widget.set_stats(EMPTY_INSPECTION_STATS)
-            self.inspection_dimensions_label.setText("Size: --")
-            self.inspection_exposure_label.setText("Exposure: --")
-            self.inspection_clipping_label.setText("Clipping: --")
-            self.inspection_detail_label.setText("Detail: --")
+            self.inspection_dimensions_label.setText("--")
+            self.inspection_exposure_label.setText("--")
+            self.inspection_clipping_label.setText("--")
+            self.inspection_detail_label.setText("--")
             self.ai_confidence_label.setText("Confidence: --")
-            self.ai_explanation_label.setText("Load an AI-scored image to see ranking rationale.")
+            self._update_studio_confidence(None)
+            self._set_ai_reasons([], fallback="Load an AI-scored image to see ranking rationale.")
             return
 
         entry = self._entries[self._focused_slot]
@@ -2903,33 +3000,36 @@ class FullScreenPreview(QDialog):
         self.histogram_widget.set_stats(stats)
 
         if stats.width <= 0 or stats.height <= 0:
-            self.inspection_dimensions_label.setText("Size: Loading...")
-            self.inspection_exposure_label.setText("Exposure: Loading...")
-            self.inspection_clipping_label.setText("Clipping: Loading...")
-            self.inspection_detail_label.setText("Detail: Loading...")
+            self.inspection_dimensions_label.setText("Loading...")
+            self.inspection_exposure_label.setText("Loading...")
+            self.inspection_clipping_label.setText("Loading...")
+            self.inspection_detail_label.setText("Loading...")
             self.ai_confidence_label.setText(
                 f"Confidence: {entry.ai_result.confidence_bucket_label}" if entry.ai_result is not None else "Confidence: --"
             )
+            self._update_studio_confidence(entry.ai_result)
             explanation_lines = list(build_ai_explanation_lines(entry.ai_result, review_summary=entry.review_summary))
             explanation_lines.extend(entry.workflow_details[:3])
-            self.ai_explanation_label.setText("\n".join(explanation_lines) or "Load an AI-scored image to see ranking rationale.")
+            self._set_ai_reasons(explanation_lines, fallback="Load an AI-scored image to see ranking rationale.")
             return
 
-        self.inspection_dimensions_label.setText(f"Size: {stats.width:,} x {stats.height:,}")
+        self.inspection_dimensions_label.setText(f"{stats.width:,} x {stats.height:,}")
         self.inspection_exposure_label.setText(
-            f"Exposure: mean {stats.mean_luminance:.0f} | median {stats.median_luminance:.0f}"
+            f"mean {stats.mean_luminance:.0f} · median {stats.median_luminance:.0f}"
         )
         self.inspection_clipping_label.setText(
-            f"Clipping: {stats.shadow_clip_pct:.1f}% shadows | {stats.highlight_clip_pct:.1f}% highlights"
+            f"{stats.highlight_clip_pct:.1f}% hi · {stats.shadow_clip_pct:.1f}% lo"
         )
         self.inspection_detail_label.setText(
-            f"Detail: {stats.detail_score:.0f}/100 | {_detail_label(stats.detail_score)}"
+            f"{stats.detail_score:.0f}/100 · {_detail_label(stats.detail_score)}"
         )
         if entry.ai_result is None:
             self.ai_confidence_label.setText("Confidence: --")
-            self.ai_explanation_label.setText("\n".join(entry.workflow_details) or "AI is not loaded for this image.")
+            self._update_studio_confidence(None)
+            self._set_ai_reasons(list(entry.workflow_details), fallback="AI is not loaded for this image.")
             return
         self.ai_confidence_label.setText(f"Confidence: {entry.ai_result.confidence_bucket_label}")
+        self._update_studio_confidence(entry.ai_result)
         explanation = build_ai_explanation_lines(
             entry.ai_result,
             review_summary=entry.review_summary,
@@ -2937,8 +3037,9 @@ class FullScreenPreview(QDialog):
         )
         explanation_lines = list(explanation)
         explanation_lines.extend(entry.workflow_details[:3])
-        self.ai_explanation_label.setText(
-            "\n".join(explanation_lines) if explanation_lines else "AI scoring is loaded, but no explanation signals are available."
+        self._set_ai_reasons(
+            explanation_lines,
+            fallback="AI scoring is loaded, but no explanation signals are available.",
         )
 
     def _show_failed(self, slot: int, message: str) -> None:
@@ -2956,8 +3057,12 @@ class FullScreenPreview(QDialog):
 
     def _fit_target_size(self, pane: PreviewPane) -> QSize:
         viewport = pane.scroll_area.viewport().size()
-        width = max(1, viewport.width() - 8)
-        height = max(1, viewport.height() - 8)
+        # Studio panes are flush with the stage's 12px inset, so the photo
+        # fits edge-to-edge; the legacy frame keeps a little slack so the
+        # centered image never touches its border.
+        slack = 0 if getattr(self, "_studio_layout_active", False) else 8
+        width = max(1, viewport.width() - slack)
+        height = max(1, viewport.height() - slack)
         return QSize(width, height)
 
     def _decode_target_size(self, slot: int) -> QSize:

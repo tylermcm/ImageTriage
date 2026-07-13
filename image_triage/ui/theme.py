@@ -679,9 +679,75 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border: none;
             padding: 8px;
         }}
-        QFrame#leftRatingPanel, QFrame#leftQuickActionsPanel {{
+        QFrame#leftQuickActionsPanel, QFrame#reviewWorkflowPanel {{
             background-color: transparent;
             border: none;
+        }}
+        QLabel#reviewSectionTitle {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 750;
+        }}
+        QLabel#reviewSelectionCount, QLabel#reviewGroupSummary {{
+            color: {theme.text_muted.css};
+            font-size: 10px;
+            font-weight: 650;
+        }}
+        QLabel#reviewDecisionLabel {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#reviewDecisionMeta {{
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QFrame#reviewDecisionMarker {{
+            background-color: {theme.text_disabled.css};
+            border: none;
+            border-radius: 4px;
+        }}
+        QFrame#reviewDecisionMarker[decisionState="keeper"] {{
+            background-color: {theme.success.css};
+        }}
+        QFrame#reviewDecisionMarker[decisionState="rejected"] {{
+            background-color: {theme.danger.css};
+        }}
+        QFrame#reviewDecisionMarker[decisionState="mixed"] {{
+            background-color: {theme.warning.css};
+        }}
+        QFrame#reviewDecisionMarker[decisionState="unreviewed"] {{
+            background-color: {theme.text_muted.css};
+        }}
+        QFrame#reviewSectionDivider {{
+            background-color: {theme.border_muted.css};
+            border: none;
+            min-height: 1px;
+            max-height: 1px;
+        }}
+        QPushButton#reviewCommandButton, QPushButton#reviewPrimaryDecisionButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 6px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            font-weight: 650;
+            min-height: 26px;
+            padding: 0px 7px;
+        }}
+        QPushButton#reviewPrimaryDecisionButton {{
+            min-height: 30px;
+            color: {theme.text_primary.css};
+        }}
+        QPushButton#reviewCommandButton:hover, QPushButton#reviewPrimaryDecisionButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QPushButton#reviewCommandButton:disabled, QPushButton#reviewPrimaryDecisionButton:disabled {{
+            background-color: {theme.panel_alt_bg.css};
+            border-color: {theme.border_muted.css};
+            color: {theme.text_disabled.css};
         }}
         QToolButton#leftQuickActionIcon {{
             background-color: {theme.raised_bg.css};
@@ -730,44 +796,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 12px;
             font-weight: 750;
         }}
-        QToolButton#leftRatingClearButton {{
-            background-color: {theme.input_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 6px;
-            color: {theme.text_secondary.css};
-            min-width: 24px;
-            min-height: 22px;
-            padding: 0px;
-        }}
-        QToolButton#leftRatingClearButton:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
-            color: {theme.text_primary.css};
-        }}
-        QToolButton#leftRatingStar {{
-            background-color: transparent;
-            border: none;
-            color: {theme.text_disabled.css};
-            font-family: "Segoe UI Symbol", "Segoe UI";
-            font-size: 23px;
-            min-height: 28px;
-            padding: 0px;
-        }}
-        QToolButton#leftRatingStar:hover {{
-            color: {theme.warning.css};
-            background-color: transparent;
-            border: none;
-        }}
-        QToolButton#leftRatingStar:checked {{
-            color: {theme.warning.css};
-            background-color: transparent;
-            border: none;
-        }}
-        QLabel#leftFilterLabel, QLabel#leftColorLabel {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 650;
-        }}
         QToolButton#leftAiActivityTextButton {{
             background-color: transparent;
             border: none;
@@ -787,40 +815,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_primary.css};
             background-color: transparent;
             border: none;
-        }}
-        QLabel#leftFilterMarker_accepted {{
-            color: {theme.success.css};
-        }}
-        QLabel#leftFilterMarker_rejected {{
-            color: {theme.danger.css};
-        }}
-        QLabel#leftFilterMarker_unreviewed {{
-            color: {theme.text_muted.css};
-        }}
-        QToolButton#leftColorSwatch_red {{
-            background-color: rgb(239, 78, 78);
-        }}
-        QToolButton#leftColorSwatch_amber {{
-            background-color: rgb(238, 167, 38);
-        }}
-        QToolButton#leftColorSwatch_lime {{
-            background-color: rgb(157, 220, 48);
-        }}
-        QToolButton#leftColorSwatch_green {{
-            background-color: rgb(35, 210, 122);
-        }}
-        QToolButton#leftColorSwatch_blue {{
-            background-color: rgb(82, 125, 255);
-        }}
-        QToolButton#leftColorSwatch_purple {{
-            background-color: rgb(163, 80, 232);
-        }}
-        QToolButton#leftColorSwatch_red, QToolButton#leftColorSwatch_amber,
-        QToolButton#leftColorSwatch_lime, QToolButton#leftColorSwatch_green,
-        QToolButton#leftColorSwatch_blue, QToolButton#leftColorSwatch_purple {{
-            border: 1px solid {theme.border.css};
-            border-radius: 3px;
-            padding: 0px;
         }}
         QScrollArea#inspectorScrollArea, QWidget#inspectorBody {{
             background-color: transparent;

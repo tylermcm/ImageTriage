@@ -24,12 +24,11 @@ ARTICLES = [
 
         | Key | Action |
         | --- | --- |
-        | `W` | Accept |
+        | `W` | Mark winner |
         | `X` | Reject |
         | `K` | Move to `_keep` |
         | `M` | Move to a folder |
         | `Delete` | Trash |
-        | `0`–`5` | Rate |
         | `T` | Tag |
         | `Ctrl+Z` | Undo last change |
 

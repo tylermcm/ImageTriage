@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
     QFileSystemModel,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
@@ -273,10 +274,6 @@ from .records_view_cache import RecordsViewCache, ViewInvalidationReason
 from .review_intelligence import BuildReviewIntelligenceTask, ReviewIntelligenceBundle
 from .review_workflows import (
     AI_DISAGREEMENT_SOURCE_MODE,
-    REVIEW_ROUND_FIRST_PASS,
-    REVIEW_ROUND_HERO,
-    REVIEW_ROUND_SECOND_PASS,
-    REVIEW_ROUND_THIRD_PASS,
     BurstRecommendation,
     RecordWorkflowInsight,
     TasteProfile,
@@ -289,9 +286,7 @@ from .review_workflows import (
     current_timestamp,
     ai_disagreement_group_leader_path,
     disagreement_level_for,
-    normalize_review_round,
     review_scoring_provider_id,
-    review_round_label,
 )
 from .scanner import FolderScanTask, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
@@ -328,6 +323,8 @@ from .ui import (
     MainWindowActions,
     PaletteCommand,
     PrepareTrainingSourcesDialog,
+    ReviewControlsContext,
+    ReviewControlsPanel,
     ResizeDialog,
     TasteCalibrationDialog,
     TrainRankerDialog,
@@ -876,7 +873,7 @@ class ToolbarCustomizerDialog(QDialog):
             "burst_stacks": "Stacks",
             "show_hidden_folders": "Hidden",
             "selection_count": "3 selected",
-            "accept_selection": "Accept",
+            "accept_selection": "Winner",
             "reject_selection": "Reject",
             "keep_selection": "Keep",
             "move_selection": "Move",
@@ -2583,6 +2580,15 @@ class MainWindow(QMainWindow):
     # Fixed height for every top-bar action button (matches the nav glyph
     # buttons) so the bar never resizes when the toolbar style changes.
     TOPBAR_BUTTON_HEIGHT = 34
+    # The action cluster is a fixed grid of evenly-spaced slots: buttons snap to
+    # a cell and empty cells stay blank, so groups can spread across the whole
+    # bar. Buttons are normalised to one width so every cell reads the same.
+    TOPBAR_SLOT_COUNT = 35
+    TOPBAR_SLOT_CELL_MIN = 36
+    TOPBAR_SLOT_BUTTON_WIDTH = 34
+    # Items that may appear more than once and are exempt from de-duplication
+    # (a visual divider is inert and you can drop as many as you like).
+    TOPBAR_REPEATABLE_ITEMS = frozenset({"divider"})
     # Filled chrome glyphs that should render as a clean solid silhouette
     # (no stroke carve-out) because their key feature is an open appendage:
     # E721 = Search (magnifier handle), E9D2 = AI/Activity (picture).
@@ -2682,6 +2688,7 @@ class MainWindow(QMainWindow):
         "refresh_folder": "Refresh",
         "undo": "Undo",
         "separator": "Separator",
+        "divider": "Divider",
         "run_ai_culling": "AI Workflow",
         "apply_ai_culling": "Apply AI Decisions",
         "sort_ai_semantic_folders": "Semantic Sort",
@@ -2711,7 +2718,7 @@ class MainWindow(QMainWindow):
         "burst_stacks": "Smart Stacks",
         "show_hidden_folders": "Show Hidden Folders",
         "selection_count": "Selected Count",
-        "accept_selection": "Accept",
+        "accept_selection": "Winner",
         "reject_selection": "Reject",
         "keep_selection": "Keep",
         "move_selection": "Move",
@@ -2801,6 +2808,11 @@ class MainWindow(QMainWindow):
         self._startup_window_state_fixup_applied = False
         self._left_rail_items = list(self.RAIL_TOOL_DEFAULTS)
         self._workspace_toolbar_layouts = self._load_workspace_toolbar_layouts()
+        # Slot grid backing the top-bar cluster: per mode, a fixed-length list
+        # where each entry is an item id or None (a blank cell). Source of truth
+        # for the cluster's spatial layout; the flat _workspace_toolbar_layouts
+        # list stays derived from it for the rest of the toolbar plumbing.
+        self._topbar_slots: dict[str, list[str | None]] = self._load_topbar_slots()
         # Prototype migration: the workspace bar is retired in favour of the
         # top bar (nav/search/path) and the left mode tabs, so it starts hidden.
         # The View > Show Workspace Toolbar toggle still restores it per session.
@@ -2813,6 +2825,26 @@ class MainWindow(QMainWindow):
         self._toolbar_edit_mode = False
         self._toolbar_edit_target_mode = "manual"
         self._toolbar_edit_overlay: QFrame | None = None
+        # In-place ("jiggle mode") toolbar editing state. Items are lifted out of
+        # the live layout, frozen at their current positions, and animated; exit
+        # simply rebuilds the toolbar so the layout is restored from scratch.
+        self._toolbar_edit_active_mode: str | None = None
+        # (item_id, widget, frozen base position, remove badge, slot index)
+        self._toolbar_edit_items: list[tuple[str, QWidget, QPoint, QWidget, int]] = []
+        self._toolbar_edit_hud: QFrame | None = None
+        self._toolbar_edit_shortcut: QShortcut | None = None
+        self._toolbar_item_picker_dialog: CommandPaletteDialog | None = None
+        self._toolbar_item_picker_slot: int | None = None
+        self._toolbar_edit_cell_frames: list[QWidget] = []
+        self._toolbar_edit_add_button: QToolButton | None = None
+        self._toolbar_edit_drop_highlight: QFrame | None = None
+        self._toolbar_edit_cell_width = 0.0
+        self._toolbar_edit_target_slot = -1
+        self._toolbar_edit_drag_slot = -1
+        self._toolbar_edit_drag_widget: QWidget | None = None
+        self._toolbar_edit_drag_start: QPoint | None = None
+        self._toolbar_edit_drag_origin = QPoint()
+        self._toolbar_edit_dragging = False
         self._workspace_toolbar_item_widgets: dict[str, dict[str, QWidget]] = {}
         self._workspace_toolbar_overflow_buttons: dict[str, QToolButton] = {}
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
@@ -3323,14 +3355,7 @@ class MainWindow(QMainWindow):
         library_help_button.clicked.connect(self._show_library_help)
         library_header_layout.addWidget(library_help_button, 0)
 
-        # The selection preview now lives in the right-hand Inspector pane.
-        self.left_rating_buttons: list[QToolButton] = []
-        self._left_rating_hover_value = 0
-        self._left_rating_current_value = 0
-        self._left_rating_buttons_enabled = False
-        self.left_color_buttons: list[QToolButton] = []
         self.left_ai_activity_buttons: dict[str, tuple[QToolButton, QToolButton]] = {}
-        self.left_rating_panel = self._build_generated_rating_panel()
         self.left_ai_activity_panel = self._build_generated_ai_activity_panel()
         self.left_ai_activity_panel.hide()
         self.left_settings_bar = self._build_generated_left_settings_bar()
@@ -3371,7 +3396,6 @@ class MainWindow(QMainWindow):
         self._review_controls_layout.setContentsMargins(0, 0, 0, 0)
         self._review_controls_layout.setSpacing(8)
         self._review_controls_layout.addWidget(self.left_mode_tabs)
-        self._review_controls_layout.addWidget(self.left_rating_panel)
         self._review_controls_layout.addWidget(self.left_ai_activity_panel)
         # Quick Actions are appended once self.actions exists (see below).
         self.left_body_splitter.addWidget(self.review_controls_pane)
@@ -3451,6 +3475,10 @@ class MainWindow(QMainWindow):
         self._apply_shortcut_overrides()
         self._build_record_filter_actions()
         self._rebuild_left_rail()
+        self.review_workflow_panel = ReviewControlsPanel(self.actions)
+        self.review_workflow_panel.next_unreviewed_requested.connect(self._jump_to_next_unreviewed)
+        self.review_workflow_panel.next_disagreement_requested.connect(self._jump_to_next_ai_disagreement)
+        self._review_controls_layout.insertWidget(1, self.review_workflow_panel)
         # Quick Actions live in the left Review Controls pane (needs self.actions).
         self.left_quick_actions_panel = self._build_generated_quick_actions_panel()
         self._review_controls_layout.addWidget(self.left_quick_actions_panel)
@@ -3694,7 +3722,7 @@ class MainWindow(QMainWindow):
         summary_layout.setSpacing(6)
         self.summary_total = QLabel("Total: 0")
         self.summary_selected = QLabel("Selected: 0")
-        self.summary_accepted = QLabel("Accepted: 0")
+        self.summary_accepted = QLabel("Winners: 0")
         self.summary_rejected = QLabel("Rejected: 0")
         self.summary_unreviewed = QLabel("Unreviewed: 0")
         self.summary_ai = QLabel("AI: Off")
@@ -3769,7 +3797,6 @@ class MainWindow(QMainWindow):
         self.grid.delete_requested.connect(self._delete_record)
         self.grid.keep_requested.connect(self._keep_record)
         self.grid.move_requested.connect(self._move_record_prompt)
-        self.grid.rate_requested.connect(self._rate_record)
         self.grid.tag_requested.connect(self._tag_record)
         self.grid.winner_requested.connect(self._toggle_winner)
         self.grid.reject_requested.connect(self._toggle_reject)
@@ -3789,7 +3816,6 @@ class MainWindow(QMainWindow):
         self.details_view.delete_requested.connect(self._delete_record)
         self.details_view.keep_requested.connect(self._keep_record)
         self.details_view.move_requested.connect(self._move_record_prompt)
-        self.details_view.rate_requested.connect(self._rate_record)
         self.details_view.tag_requested.connect(self._tag_record)
         self.details_view.winner_requested.connect(self._toggle_winner)
         self.details_view.reject_requested.connect(self._toggle_reject)
@@ -3804,7 +3830,6 @@ class MainWindow(QMainWindow):
         self.preview.keep_requested.connect(self._handle_preview_keep_requested)
         self.preview.delete_requested.connect(self._handle_preview_delete_requested)
         self.preview.move_requested.connect(self._handle_preview_move_requested)
-        self.preview.rate_requested.connect(self._handle_preview_rate_requested)
         self.preview.tag_requested.connect(self._handle_preview_tag_requested)
         self.preview.winner_ladder_choice_requested.connect(self._handle_preview_winner_ladder_choice)
         self.preview.winner_ladder_skip_requested.connect(self._handle_preview_winner_ladder_skip)
@@ -4140,6 +4165,8 @@ class MainWindow(QMainWindow):
         # grid column count: left = more/smaller, right = fewer/larger).
         zoom_cluster = QWidget(bar)
         zoom_cluster.setObjectName("topbarZoomCluster")
+        # The toolbar-edit HUD anchors itself just left of this cluster.
+        self.topbar_zoom_cluster = zoom_cluster
         zoom_layout = QHBoxLayout(zoom_cluster)
         zoom_layout.setContentsMargins(0, 0, 0, 0)
         zoom_layout.setSpacing(7)
@@ -4202,15 +4229,22 @@ class MainWindow(QMainWindow):
         stack = QStackedWidget()
         stack.setObjectName("topbarActionStack")
         stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._topbar_action_layouts: dict[str, QHBoxLayout] = {}
+        self._topbar_action_layouts: dict[str, QGridLayout] = {}
         self._topbar_action_items: dict[str, list[tuple[str, QWidget]]] = {}
+        self._topbar_slot_widgets: dict[str, list[QWidget | None]] = {}
         self._topbar_more_buttons: dict[str, QToolButton] = {}
         for mode in ("manual", "ai"):
             page = QWidget()
-            row = QHBoxLayout(page)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            self._topbar_action_layouts[mode] = row
+            grid = QGridLayout(page)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(4)
+            grid.setVerticalSpacing(0)
+            # Fixed grid of evenly-weighted cells: buttons snap to a cell and
+            # blank cells hold their share of the width.
+            for col in range(self.TOPBAR_SLOT_COUNT):
+                grid.setColumnStretch(col, 1)
+                grid.setColumnMinimumWidth(col, self.TOPBAR_SLOT_CELL_MIN)
+            self._topbar_action_layouts[mode] = grid
             stack.addWidget(page)
         # Assign early so the overflow pass can find the stack during the build.
         self.topbar_action_stack = stack
@@ -4239,6 +4273,8 @@ class MainWindow(QMainWindow):
         """
         if item_id in self.TOPBAR_CHROME_ITEMS:
             return None
+        if item_id == "divider":
+            return self._build_topbar_divider()
         icon = self._workspace_toolbar_icon(item_id)
         popup_specs = self._topbar_popup_specs()
         if item_id in popup_specs:
@@ -4254,12 +4290,71 @@ class MainWindow(QMainWindow):
             button.setText(text)
             button.setToolTip(action.toolTip() or text)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.clicked.connect(lambda _checked=False, src=action: src.trigger())
-            action.changed.connect(lambda b=button, src=action: self._sync_topbar_action_button(b, src))
-            self._sync_topbar_action_button(button, action)
+            button.clicked.connect(
+                lambda _checked=False, iid=item_id, src=action: self._activate_topbar_action(iid, src)
+            )
+            action.changed.connect(
+                lambda b=button, src=action, iid=item_id: self._sync_topbar_action_button_for(b, src, iid)
+            )
+            self._sync_topbar_action_button_for(button, action, item_id)
         self._apply_topbar_button_style(button, icon)
         button.setProperty("topbarItemId", item_id)
         return button
+
+    def _build_topbar_divider(self) -> QWidget:
+        """An inert thin vertical pipe used purely as a visual group divider.
+        No action, no click behaviour — it just occupies a cell."""
+        holder = QWidget()
+        holder.setObjectName("topbarDividerCell")
+        holder.setFixedSize(self.TOPBAR_SLOT_BUTTON_WIDTH, self.TOPBAR_BUTTON_HEIGHT)
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(0, 7, 0, 7)
+        layout.setSpacing(0)
+        line = QFrame(holder)
+        line.setObjectName("topbarDividerLine")
+        line.setFixedWidth(2)
+        line.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        line.setStyleSheet("QFrame#topbarDividerLine { background: #3a3f47; border-radius: 1px; }")
+        layout.addWidget(line, 0, Qt.AlignmentFlag.AlignHCenter)
+        holder.setProperty("topbarItemId", "divider")
+        return holder
+
+    def _item_target_mode_for_action(self, item_id: str) -> str | None:
+        """The review mode an item needs, or None if it works in the current one.
+        Lets an AI button placed on the Manual bar flip the app to AI when used."""
+        current = "ai" if getattr(self, "_ui_mode", "manual") == "ai" else "manual"
+        if item_id in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(current, ()):
+            return None
+        for mode in ("ai", "manual"):
+            if item_id in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(mode, ()):
+                return mode
+        return None
+
+    def _switch_review_mode_to(self, mode: str) -> None:
+        if not hasattr(self, "mode_tabs"):
+            return
+        index = 1 if mode == "ai" else 0
+        if self.mode_tabs.currentIndex() != index:
+            self.mode_tabs.setCurrentIndex(index)
+
+    def _activate_topbar_action(self, item_id: str, action: QAction) -> None:
+        target = self._item_target_mode_for_action(item_id)
+        if target is not None:
+            self._switch_review_mode_to(target)
+        action.trigger()
+
+    def _sync_topbar_action_button_for(self, button: QToolButton, action: QAction, item_id: str) -> None:
+        # A button living on the "wrong" bar (an AI button on the Manual bar)
+        # stays clickable even when its action is disabled in the current mode,
+        # so clicking it can flip the app to the mode where it works.
+        cross = self._item_target_mode_for_action(item_id) is not None
+        try:
+            button.setEnabled(True if cross else action.isEnabled())
+            button.setCheckable(action.isCheckable())
+            if action.isCheckable():
+                button.setChecked(action.isChecked())
+        except RuntimeError:
+            pass
 
     def _apply_topbar_button_style(self, button: QToolButton, icon: QIcon) -> None:
         """Apply the user's toolbar-style preference (text / icons / large icons)
@@ -4332,25 +4427,38 @@ class MainWindow(QMainWindow):
         layouts = getattr(self, "_topbar_action_layouts", None)
         if not layouts:
             return
-        modes = ("manual", "ai") if mode is None else (("ai",) if mode == "ai" else ("manual",))
+        # Unified bar: both mode pages render the same shared slots, so always
+        # rebuild both regardless of the requested mode.
+        modes = ("manual", "ai")
+        n = self.TOPBAR_SLOT_COUNT
         for target in modes:
-            row = layouts.get(target)
-            if row is None:
+            grid = layouts.get(target)
+            if grid is None:
                 continue
-            self._clear_layout_items(row, delete_widgets=True)
+            self._clear_layout_items(grid, delete_widgets=True)
+            slots = list(getattr(self, "_topbar_slots", {}).get(target) or [])
+            slots += [None] * (n - len(slots))
             items: list[tuple[str, QWidget]] = []
-            for item_id in self._workspace_toolbar_layouts.get(target, ()):
+            slot_widgets: list[QWidget | None] = [None] * n
+            for slot_index in range(n):
+                item_id = slots[slot_index]
+                if not item_id:
+                    continue
                 widget = self._build_topbar_action_item(item_id)
-                if widget is not None:
-                    row.addWidget(widget, 0)
-                    items.append((item_id, widget))
+                if widget is None:
+                    continue
+                self._normalize_topbar_slot_button(widget)
+                grid.addWidget(widget, 0, slot_index, Qt.AlignmentFlag.AlignCenter)
+                items.append((item_id, widget))
+                slot_widgets[slot_index] = widget
             self._topbar_action_items[target] = items
-            more = self._build_topbar_more_button()
-            self._topbar_more_buttons[target] = more
-            row.addWidget(more, 0)
-            more.hide()
-            row.addStretch(1)
-            self._update_topbar_overflow(target)
+            self._topbar_slot_widgets[target] = slot_widgets
+
+    def _normalize_topbar_slot_button(self, widget: QWidget) -> None:
+        # One uniform width so every cell reads the same regardless of whether
+        # the button shows an icon or text (text elides at this width).
+        if isinstance(widget, QToolButton):
+            widget.setFixedWidth(self.TOPBAR_SLOT_BUTTON_WIDTH)
 
     def _add_topbar_overflow_entry(self, menu: QMenu, item_id: str) -> None:
         popup_specs = self._topbar_popup_specs()
@@ -4366,38 +4474,9 @@ class MainWindow(QMainWindow):
             menu.addAction(spec[0])
 
     def _update_topbar_overflow(self, mode: str) -> None:
-        items = getattr(self, "_topbar_action_items", {}).get(mode, [])
-        more = getattr(self, "_topbar_more_buttons", {}).get(mode)
-        row = getattr(self, "_topbar_action_layouts", {}).get(mode)
-        stack = getattr(self, "topbar_action_stack", None)
-        if not items or more is None or row is None or stack is None:
-            return
-        available = stack.width()
-        if available <= 1:
-            return
-        spacing = row.spacing()
-        for _item_id, widget in items:
-            widget.setVisible(True)
-        widths = [widget.sizeHint().width() for _item_id, widget in items]
-        total = sum(widths) + spacing * max(0, len(items) - 1)
-        overflow_ids: list[str] = []
-        if total > available:
-            more_width = more.sizeHint().width() + spacing
-            used = 0
-            shown = 0
-            for index, (item_id, widget) in enumerate(items):
-                needed = widths[index] + (spacing if shown else 0)
-                if used + needed + more_width <= available:
-                    used += needed
-                    shown += 1
-                else:
-                    widget.setVisible(False)
-                    overflow_ids.append(item_id)
-        menu = more.menu()
-        menu.clear()
-        for item_id in overflow_ids:
-            self._add_topbar_overflow_entry(menu, item_id)
-        more.setVisible(bool(overflow_ids))
+        # The cluster is a fixed slot grid now; cells resize with the bar and
+        # there is nothing to collapse into an overflow menu.
+        return
 
     def _build_advanced_filter_button(self) -> QToolButton:
         button = QToolButton()
@@ -4884,76 +4963,6 @@ class MainWindow(QMainWindow):
         add_button("E713", "Settings", self._show_settings)
         return bar
 
-    def _build_generated_rating_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("leftRatingPanel")
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-
-        title = QLabel("Rating")
-        title.setObjectName("leftPreviewTitle")
-        layout.addWidget(title)
-
-        # Stars span the full panel width and are sized up (see leftRatingStar QSS).
-        # Clicking the current rating's star again clears it back to 0.
-        star_row = QHBoxLayout()
-        star_row.setContentsMargins(0, 0, 0, 0)
-        star_row.setSpacing(4)
-        for rating in range(1, 6):
-            button = QToolButton(panel)
-            button.setObjectName("leftRatingStar")
-            button.setProperty("ratingValue", rating)
-            button.setProperty("ratingPreview", False)
-            button.setText("\u2606")
-            button.setToolTip(f"Rate {rating} star{'s' if rating != 1 else ''} (click again to clear)")
-            button.setCheckable(True)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            button.installEventFilter(self)
-            button.clicked.connect(lambda _checked=False, value=rating: self._handle_left_star_clicked(value))
-            self.left_rating_buttons.append(button)
-            star_row.addWidget(button, 1)
-        layout.addLayout(star_row)
-
-        # Color labels are a vertical list with the description to the right.
-        color_grid = QGridLayout()
-        color_grid.setContentsMargins(0, 4, 0, 0)
-        color_grid.setHorizontalSpacing(10)
-        color_grid.setVerticalSpacing(6)
-        color_labels = {
-            "red": "Red", "amber": "Amber", "lime": "Lime",
-            "green": "Green", "blue": "Blue", "purple": "Purple",
-        }
-        for row_idx, name in enumerate(("red", "amber", "lime", "green", "blue", "purple")):
-            swatch = QToolButton(panel)
-            swatch.setObjectName(f"leftColorSwatch_{name}")
-            swatch.setToolTip(f"{color_labels[name]} label")
-            swatch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            swatch.setFixedSize(16, 16)
-            self.left_color_buttons.append(swatch)
-            label = QLabel(color_labels[name])
-            label.setObjectName("leftColorLabel")
-            color_grid.addWidget(swatch, row_idx, 0)
-            color_grid.addWidget(label, row_idx, 1)
-        color_grid.setColumnStretch(1, 1)
-        layout.addLayout(color_grid)
-
-        filter_rows = QGridLayout()
-        filter_rows.setContentsMargins(0, 4, 0, 0)
-        filter_rows.setHorizontalSpacing(8)
-        filter_rows.setVerticalSpacing(5)
-        for row, (label, glyph) in enumerate((("Accepted", "\u25a0"), ("Rejected", "\u25a0"), ("Unreviewed", "\u25a1"))):
-            marker = QLabel(glyph)
-            marker.setObjectName(f"leftFilterMarker_{label.casefold()}")
-            text = QLabel(label)
-            text.setObjectName("leftFilterLabel")
-            filter_rows.addWidget(marker, row, 0)
-            filter_rows.addWidget(text, row, 1)
-        filter_rows.setColumnStretch(1, 1)
-        layout.addLayout(filter_rows)
-        return panel
-
     def _build_generated_ai_activity_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("leftAiActivityPanel")
@@ -5081,12 +5090,12 @@ class MainWindow(QMainWindow):
 
         self.left_quick_action_buttons: dict[str, QWidget] = {}
 
-        # Compact icon row: Accept / Reject / Move / Delete.
+        # Compact icon row: Winner / Reject / Move / Delete.
         icon_row = QHBoxLayout()
         icon_row.setContentsMargins(0, 0, 0, 0)
         icon_row.setSpacing(6)
         compact_specs = (
-            ("accept", "E8FB", "Accept", self.actions.accept_selection),
+            ("accept", "E8FB", "Winner", self.actions.accept_selection),
             ("reject", "E711", "Reject", self.actions.reject_selection),
             ("move", "E8DE", "Move", self.actions.move_selection),
             ("delete", "E74D", "Delete", self.actions.delete_selection),
@@ -5132,74 +5141,107 @@ class MainWindow(QMainWindow):
         layout.addLayout(text_row)
         return panel
 
-    def _rate_current_from_left_panel(self, rating: int) -> None:
-        index = self.grid.current_index()
-        if index < 0:
-            return
-        self._rate_record(index, max(0, min(5, int(rating))))
-        self._refresh_generated_left_context(index)
-
-    def _handle_left_star_clicked(self, value: int) -> None:
-        """Set the rating; clicking the star that already matches the current
-        rating clears it back to 0 (re-rating to a different star does not)."""
-        index = self.grid.current_index()
-        if index < 0:
-            return
-        record = self._record_at(index)
-        if record is None:
-            return
-        current = self._annotations.get(record.path, SessionAnnotation()).rating
-        self._rate_current_from_left_panel(0 if current == value else value)
-
     def _refresh_generated_left_context(self, index: int | None = None) -> None:
-        if not hasattr(self, "left_rating_buttons"):
+        panel = getattr(self, "review_workflow_panel", None)
+        if panel is None:
             return
         if index is None:
             index = self.grid.current_index()
         record = self._record_at(index)
-        if record is None:
-            self._sync_left_rating_buttons(0, enabled=False)
+        records_available = any(not candidate.is_folder for candidate in self._records)
+        if record is None or record.is_folder:
+            panel.set_context(ReviewControlsContext(records_available=records_available))
             return
-        annotation = self._annotations.get(record.path, SessionAnnotation())
-        self._sync_left_rating_buttons(annotation.rating, enabled=not record.is_folder)
 
-    def _sync_left_rating_buttons(self, rating: int, *, enabled: bool) -> None:
-        self._left_rating_current_value = max(0, min(5, int(rating or 0)))
-        self._left_rating_buttons_enabled = bool(enabled)
-        if not enabled:
-            self._left_rating_hover_value = 0
-        self._refresh_left_rating_button_visuals()
+        selected_records = [
+            candidate
+            for candidate in self._selected_records_for_context(index)
+            if not candidate.is_folder
+        ]
+        if not selected_records:
+            selected_records = [record]
 
-    def _refresh_left_rating_button_visuals(self) -> None:
-        enabled = bool(getattr(self, "_left_rating_buttons_enabled", False))
-        saved_rating = max(0, min(5, int(getattr(self, "_left_rating_current_value", 0) or 0)))
-        hover_rating = max(0, min(5, int(getattr(self, "_left_rating_hover_value", 0) or 0))) if enabled else 0
-        display_rating = hover_rating or saved_rating
-        for index, button in enumerate(getattr(self, "left_rating_buttons", ()), start=1):
-            button.setEnabled(enabled)
-            filled = enabled and index <= display_rating
-            preview = bool(hover_rating and index <= hover_rating)
-            if button.property("ratingPreview") != preview:
-                button.setProperty("ratingPreview", preview)
-                button.style().unpolish(button)
-                button.style().polish(button)
-            button.setChecked(filled)
-            # Outline glyph when unset, solid glyph when the rating is set.
-            button.setText("★" if filled else "☆")
+        def decision_for(candidate: ImageRecord) -> tuple[str, str]:
+            candidate_annotation = self._annotations.get(candidate.path, SessionAnnotation())
+            if candidate_annotation.reject:
+                return "Rejected", "rejected"
+            if candidate_annotation.winner:
+                return "Winner", "keeper"
+            return "Unreviewed", "unreviewed"
 
-    def _set_left_rating_hover_preview(self, rating: int) -> None:
-        value = max(0, min(5, int(rating or 0)))
-        if self._left_rating_hover_value == value:
+        decision_states = {decision_for(candidate) for candidate in selected_records}
+        if len(decision_states) == 1:
+            decision_label, decision_state = next(iter(decision_states))
+        else:
+            decision_label, decision_state = "Mixed decisions", "mixed"
+
+        display_path = self.grid.displayed_variant_path(index) or record.path
+        ai_result = self._ai_result_for_record(record, preferred_path=display_path)
+        workflow = self._workflow_insight_for_record(record)
+        decision_meta_parts: list[str] = []
+        if ai_result is not None:
+            ai_label = ai_review_badge_label(ai_result)
+            score = ai_result.display_score_with_scale_text
+            decision_meta_parts.append(f"{ai_label} {score}".strip())
+        if workflow is not None and workflow.disagreement_badge:
+            decision_meta_parts.append(workflow.disagreement_badge)
+
+        review_insight = self._review_insight_for_record(record)
+        group_summary = ""
+        if review_insight is not None and review_insight.has_group:
+            group_summary = review_insight.summary_text
+        elif ai_result is not None and ai_result.group_size > 1:
+            group_summary = f"AI Group {ai_result.rank_text}"
+
+        panel.set_context(
+            ReviewControlsContext(
+                selection_count=len(selected_records),
+                records_available=records_available,
+                decision_label=decision_label,
+                decision_state=decision_state,
+                decision_meta=" / ".join(decision_meta_parts),
+                group_summary=group_summary,
+            )
+        )
+    def _jump_to_next_unreviewed(self) -> None:
+        if not self._records:
             return
-        self._left_rating_hover_value = value
-        self._refresh_left_rating_button_visuals()
-
-    def _clear_left_rating_hover_preview_if_outside(self) -> None:
-        buttons = tuple(getattr(self, "left_rating_buttons", ()))
-        hovered = QApplication.widgetAt(QCursor.pos())
-        if hovered in buttons:
+        start_index = self.grid.current_index()
+        total = len(self._records)
+        for offset in range(1, total + 1):
+            index = (start_index + offset) % total
+            record = self._record_at(index)
+            if record is None or record.is_folder or not self._is_unreviewed_record(record):
+                continue
+            self.grid.set_current_index(index)
+            self.statusBar().showMessage(f"Jumped to unreviewed image: {record.name}")
             return
-        self._set_left_rating_hover_preview(0)
+        self.statusBar().showMessage("No unreviewed image found in the current view")
+
+    def _jump_to_next_ai_disagreement(self) -> None:
+        if self._ai_bundle is None:
+            self.statusBar().showMessage("Load AI results first to review disagreements")
+            return
+        if not self._records:
+            self.statusBar().showMessage("No AI disagreement found in the current view")
+            return
+
+        start_index = self.grid.current_index()
+        total = len(self._records)
+        for offset in range(1, total + 1):
+            index = (start_index + offset) % total
+            record = self._record_at(index)
+            if record is None or record.is_folder:
+                continue
+            workflow = self._workflow_insight_for_record(record)
+            has_disagreement = bool(workflow and workflow.has_disagreement)
+            if not has_disagreement and not self._is_record_disputed(record):
+                continue
+            self.grid.set_current_index(index)
+            self.statusBar().showMessage(f"Jumped to AI disagreement: {record.name}")
+            return
+
+        self.statusBar().showMessage("No AI disagreement found in the current view")
 
     def _build_workspace_toolbar_overflow_button(self, mode: str) -> QToolButton:
         menu = QMenu(self)
@@ -5290,7 +5332,7 @@ class MainWindow(QMainWindow):
             "burst_groups": (self.actions.burst_groups, "Groups"),
             "burst_stacks": (self.actions.burst_stacks, "Stacks"),
             "show_hidden_folders": (self.actions.show_hidden_folders, "Hidden"),
-            "accept_selection": (self.actions.accept_selection, "Accept"),
+            "accept_selection": (self.actions.accept_selection, "Winner"),
             "reject_selection": (self.actions.reject_selection, "Reject"),
             "keep_selection": (self.actions.keep_selection, "Keep"),
             "move_selection": (self.actions.move_selection, "Move"),
@@ -5464,11 +5506,147 @@ class MainWindow(QMainWindow):
     def _save_workspace_toolbar_layouts(self) -> None:
         toolbars = {mode: list(items) for mode, items in self._workspace_toolbar_layouts.items()}
         toolbars[self.RAIL_TOOL_LAYOUT_KEY] = self._normalize_rail_tool_items(self._left_rail_items)
+        slots = {
+            mode: list(getattr(self, "_topbar_slots", {}).get(mode, ()))
+            for mode in self.WORKSPACE_TOOLBAR_DEFAULTS
+        }
         payload = {
             "version": self.WORKSPACE_TOOLBAR_LAYOUT_VERSION,
             "toolbars": toolbars,
+            "slots": slots,
         }
         self._settings.setValue(self.WORKSPACE_TOOLBAR_LAYOUT_KEY, json.dumps(payload))
+
+    # -- Top-bar slot model ------------------------------------------------
+    def _is_cluster_item(self, item_id: object) -> bool:
+        # Items that render in the top-bar cluster (everything the cluster can
+        # show). Kept structural — no dependency on self.actions — so it is safe
+        # to call at load time before the UI is built.
+        return isinstance(item_id, str) and bool(item_id) and item_id not in self.TOPBAR_CHROME_ITEMS
+
+    def _unified_allowed_items(self) -> set[str]:
+        # Buttons can live on either bar ("cross-contamination"), so a slot may
+        # hold any cluster item allowed in *either* mode. Structural (no actions).
+        result: set[str] = set(self.TOPBAR_REPEATABLE_ITEMS)
+        for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            result |= set(self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(mode, ()))
+        return result
+
+    def _items_to_slots(self, items) -> list[str | None]:
+        n = self.TOPBAR_SLOT_COUNT
+        usable = n - 1  # last cell is reserved for the fixed "+"
+        result: list[str | None] = [None] * n
+        seen: set[str] = set()
+        idx = 0
+        for item in items:
+            if idx >= usable:
+                break
+            if not self._is_cluster_item(item):
+                continue
+            if item not in self.TOPBAR_REPEATABLE_ITEMS:
+                if item in seen:
+                    continue
+                seen.add(item)
+            result[idx] = item
+            idx += 1
+        return result
+
+    def _slots_to_items(self, slots) -> list[str]:
+        return [value for value in slots if value]
+
+    def _normalize_slots(self, mode: str, raw) -> list[str | None]:
+        n = self.TOPBAR_SLOT_COUNT
+        usable = n - 1  # last cell is reserved for the fixed "+"
+        allowed = self._unified_allowed_items()
+        result: list[str | None] = [None] * n
+        seen: set[str] = set()
+        for idx, value in enumerate(list(raw)[:usable]):
+            if not self._is_cluster_item(value) or value not in allowed:
+                continue
+            if value not in self.TOPBAR_REPEATABLE_ITEMS:
+                if value in seen:
+                    continue
+                seen.add(value)
+            result[idx] = value
+        return result
+
+    def _load_topbar_slots(self) -> dict[str, list[str | None]]:
+        payload: dict = {}
+        raw_state = self._settings.value(self.WORKSPACE_TOOLBAR_LAYOUT_KEY, "", str)
+        if isinstance(raw_state, str) and raw_state:
+            try:
+                loaded = json.loads(raw_state)
+                if isinstance(loaded, dict):
+                    payload = loaded
+            except (TypeError, ValueError):
+                payload = {}
+        raw_slots = payload.get("slots") if isinstance(payload, dict) else None
+        per_mode: dict[str, list[str | None]] = {}
+        for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            mode_slots: list[str | None] | None = None
+            if isinstance(raw_slots, dict) and isinstance(raw_slots.get(mode), list):
+                mode_slots = self._normalize_slots(mode, raw_slots[mode])
+            if mode_slots is None:
+                mode_slots = self._items_to_slots(self._workspace_toolbar_layouts.get(mode, ()))
+            per_mode[mode] = mode_slots
+        # Unified bar: both review modes share one arrangement. Merge whatever the
+        # two mode bars held into a single shared layout so nothing is lost.
+        shared = self._merge_slots_shared(per_mode)
+        slots: dict[str, list[str | None]] = {}
+        for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            slots[mode] = list(shared)
+            self._sync_items_from_slots(mode, slots_override=shared)
+        return slots
+
+    def _merge_slots_shared(self, per_mode: dict[str, list[str | None]]) -> list[str | None]:
+        """Fold per-mode slot layouts into one shared layout: items keep their
+        cell when it's free (manual wins ties), and anything displaced falls into
+        the next open cell."""
+        n = self.TOPBAR_SLOT_COUNT
+        usable = n - 1  # last cell reserved for the "+"
+        shared: list[str | None] = [None] * n
+        seen: set[str] = set()
+
+        def mark(item: str) -> None:
+            if item not in self.TOPBAR_REPEATABLE_ITEMS:
+                seen.add(item)
+
+        for mode in ("manual", "ai"):
+            for idx, item in enumerate(per_mode.get(mode, [])):
+                if not item or item in seen or idx >= usable or shared[idx] is not None:
+                    continue
+                shared[idx] = item
+                mark(item)
+        for mode in ("manual", "ai"):
+            for item in per_mode.get(mode, []):
+                if not item or item in seen:
+                    continue
+                target = next((i for i in range(usable) if shared[i] is None), None)
+                if target is None:
+                    break
+                shared[target] = item
+                mark(item)
+        return shared
+
+    def _apply_cluster_order(self, mode: str, cluster_order: list[str]) -> None:
+        """Write a new ordering of cluster items back into the flat layout list,
+        leaving chrome items (search/path/etc.) in their existing relative
+        positions. Cluster items beyond the new order are dropped; extras are
+        appended (the flat list only drives the hidden legacy bar)."""
+        queue = list(cluster_order)
+        merged: list[str] = []
+        for item in self._workspace_toolbar_layouts.get(mode, ()):
+            if self._is_cluster_item(item):
+                if queue:
+                    merged.append(queue.pop(0))
+            else:
+                merged.append(item)
+        merged.extend(queue)
+        self._workspace_toolbar_layouts[mode] = merged
+
+    def _sync_items_from_slots(self, mode: str, slots_override: list[str | None] | None = None) -> None:
+        slots = slots_override if slots_override is not None else getattr(self, "_topbar_slots", {}).get(mode, [])
+        self._apply_cluster_order(mode, self._slots_to_items(slots))
 
     def _clear_layout_items(self, layout, *, delete_widgets: bool = False) -> None:
         while layout.count():
@@ -5594,6 +5772,11 @@ class MainWindow(QMainWindow):
     def _apply_workspace_toolbar_overflow(self, mode: str) -> None:
         normalized = mode if mode == "ai" else "manual"
         self._workspace_toolbar_overflow_update_pending.discard(normalized)
+        # While a toolbar is in in-place edit mode its items are lifted out of the
+        # live layout and pinned by hand; leave visibility alone so overflow does
+        # not fight the freeze (it is re-applied when editing ends).
+        if self._toolbar_edit_mode and self._toolbar_edit_active_mode == normalized:
+            return
         toolbar = self.ai_toolbar if normalized == "ai" else self.manual_toolbar
         layout = self.ai_toolbar_layout if normalized == "ai" else self.manual_toolbar_layout
         available_width = toolbar.width()
@@ -5769,7 +5952,581 @@ class MainWindow(QMainWindow):
             self._schedule_workspace_toolbar_overflow_update("ai")
 
     def _enter_toolbar_edit_mode(self) -> None:
-        self._show_workspace_toolbar_editor(self._ui_mode)
+        self._begin_inplace_toolbar_edit(self._ui_mode)
+
+    # -- In-place ("jiggle mode") toolbar editing --------------------------
+    def _inplace_edit_toolbar_widgets(self, mode: str) -> tuple[QWidget | None, QGridLayout | None]:
+        # Edit mode operates on the visible top-bar action cluster (the
+        # workspace_bar is hidden by default), so return that mode's stack page
+        # and its slot grid.
+        normalized = "ai" if mode == "ai" else "manual"
+        index = 1 if normalized == "ai" else 0
+        page = self.topbar_action_stack.widget(index) if hasattr(self, "topbar_action_stack") else None
+        grid = getattr(self, "_topbar_action_layouts", {}).get(normalized)
+        return page, grid
+
+    def _begin_inplace_toolbar_edit(self, mode: str | None = None) -> None:
+        """Flip the top-bar cluster into slot-grid edit mode: occupied cells lift
+        with a drop shadow and a "−" removal badge and can be dragged to any
+        cell; empty cells show a "+" that adds a button there. Widgets are pinned
+        by hand; exiting rebuilds the cluster from the slot model."""
+        normalized = mode if mode in ("manual", "ai") else ("ai" if self._ui_mode == "ai" else "manual")
+        if self._toolbar_edit_mode:
+            if self._toolbar_edit_active_mode == normalized:
+                return
+            self._end_inplace_toolbar_edit()
+        page, grid = self._inplace_edit_toolbar_widgets(normalized)
+        if page is None or grid is None:
+            return
+        index = 1 if normalized == "ai" else 0
+        if self.topbar_action_stack.currentIndex() != index:
+            self.topbar_action_stack.setCurrentIndex(index)
+        if hasattr(self, "mode_tabs") and self.mode_tabs.currentIndex() != index:
+            self.mode_tabs.setCurrentIndex(index)
+        self._toolbar_edit_mode = True
+        self._toolbar_edit_active_mode = normalized
+
+        n = self.TOPBAR_SLOT_COUNT
+        slot_widgets = list(self._topbar_slot_widgets.get(normalized) or [])
+        slots = list(self._topbar_slots.get(normalized) or [])
+        slot_widgets += [None] * (n - len(slot_widgets))
+        slots += [None] * (n - len(slots))
+        # Detach occupied widgets from the grid so they can float freely.
+        for widget in slot_widgets:
+            if widget is not None:
+                grid.removeWidget(widget)
+        page_w = max(1, page.width())
+        page_h = max(1, page.height())
+        cell_w = page_w / n
+        self._toolbar_edit_cell_width = cell_w
+
+        frozen: list[tuple[str, QWidget, QPoint, QWidget, int]] = []
+        cells: list[QWidget] = []
+        # The last cell is reserved for the fixed "+", so bounding boxes stop
+        # one short of it.
+        for slot_index in range(n - 1):
+            cells.append(self._create_toolbar_edit_cell(page, slot_index, cell_w, page_h))
+            widget = slot_widgets[slot_index]
+            if widget is None:
+                continue
+            item_id = slots[slot_index] or ""
+            w = widget.width()
+            h = widget.height()
+            x = round(slot_index * cell_w + (cell_w - w) / 2)
+            y = max(0, (page_h - h) // 2)
+            widget.move(x, y)
+            widget.show()
+            widget.raise_()
+            self._apply_toolbar_edit_decoration(widget)
+            widget.installEventFilter(self)
+            badge = self._create_toolbar_edit_badge(item_id, widget, slot_index)
+            frozen.append((item_id, widget, QPoint(x, y), badge, slot_index))
+        self._toolbar_edit_items = frozen
+        self._toolbar_edit_cell_frames = cells
+        # Badges sit above every lifted item, whatever the freeze order was.
+        for _item_id, _widget, _base, badge, _slot in frozen:
+            badge.raise_()
+        self._create_toolbar_edit_add_button(page, normalized, cell_w, page_h)
+
+        self._show_toolbar_edit_hud(normalized)
+        if self._toolbar_edit_shortcut is None:
+            self._toolbar_edit_shortcut = QShortcut(QKeySequence("Esc"), self.topbar_action_stack)
+            self._toolbar_edit_shortcut.activated.connect(self._end_inplace_toolbar_edit)
+        if self.actions is not None:
+            self.actions.customize_workspace_toolbar.setEnabled(False)
+        self.statusBar().showMessage(
+            "Editing toolbar — drag buttons between cells, − removes, + adds. Done or Esc to finish."
+        )
+
+    def _apply_toolbar_edit_decoration(self, widget: QWidget) -> None:
+        effect = QGraphicsDropShadowEffect(widget)
+        effect.setBlurRadius(22)
+        effect.setColor(QColor(0, 0, 0, 165))
+        effect.setOffset(0, 6)
+        widget.setGraphicsEffect(effect)
+
+    _TOOLBAR_EDIT_BADGE_ICON = Path(__file__).resolve().parent / "ui" / "assets" / "minus_sign.png"
+
+    def _create_toolbar_edit_badge(self, item_id: str, widget: QWidget, slot_index: int) -> QToolButton:
+        """The iOS-style "−" removal badge centred on an item's top-left corner.
+        Parented to the central container (not the cluster page, which clips its
+        children) so the badge can overhang the bar without being cut off."""
+        badge = QToolButton(self.central_container)
+        badge.setObjectName("toolbarEditRemoveBadge")
+        label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
+        badge.setToolTip(f"Remove {label}")
+        badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        badge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        badge.setFixedSize(12, 12)
+        icon = QIcon(str(self._TOOLBAR_EDIT_BADGE_ICON))
+        if icon.isNull():
+            # Fallback if the asset goes missing: the old styled text badge.
+            badge.setText("−")
+            badge.setStyleSheet(
+                "QToolButton#toolbarEditRemoveBadge { background: #d64545; color: #ffffff;"
+                " border: 1px solid #1b1c1e; border-radius: 6px; padding: 0px;"
+                " font-size: 10px; font-weight: 700; }"
+            )
+        else:
+            badge.setIcon(icon)
+            badge.setIconSize(QSize(12, 12))
+            badge.setStyleSheet(
+                "QToolButton#toolbarEditRemoveBadge { background: transparent; border: none; padding: 0px; }"
+            )
+        badge.clicked.connect(lambda _checked=False, s=slot_index: self._remove_toolbar_slot_inplace(s))
+        self._position_toolbar_edit_badge(badge, widget)
+        badge.show()
+        return badge
+
+    @staticmethod
+    def _position_toolbar_edit_badge(badge: QWidget, widget: QWidget) -> None:
+        # Centred on the item's top-left corner so the badge circle and the
+        # button corner stay concentric wherever the item slides.
+        host = badge.parentWidget()
+        if host is None:
+            return
+        corner = widget.mapTo(host, QPoint(0, 0))
+        badge.move(corner.x() - badge.width() // 2, corner.y() - badge.height() // 2)
+
+    def _toolbar_edit_badge_for(self, widget: QWidget) -> QWidget | None:
+        for entry in self._toolbar_edit_items:
+            if entry[1] is widget:
+                return entry[3]
+        return None
+
+    def _is_toolbar_edit_widget(self, watched: object) -> bool:
+        return any(entry[1] is watched for entry in self._toolbar_edit_items)
+
+    def _toolbar_edit_cell_rect(self, slot_index: int, cell_w: float, page_h: int) -> QRect:
+        inset = 3
+        return QRect(
+            round(slot_index * cell_w) + inset,
+            inset,
+            max(1, round(cell_w) - inset * 2),
+            max(1, page_h - inset * 2),
+        )
+
+    def _create_toolbar_edit_cell(self, page: QWidget, slot_index: int, cell_w: float, page_h: int) -> QWidget:
+        """A plain dashed bounding box marking one grid cell (empty or occupied)."""
+        frame = QFrame(page)
+        frame.setObjectName("toolbarEditCell")
+        frame.setStyleSheet(
+            "QFrame#toolbarEditCell { background: transparent;"
+            " border: 1px dashed #333842; border-radius: 8px; }"
+        )
+        frame.setGeometry(self._toolbar_edit_cell_rect(slot_index, cell_w, page_h))
+        frame.lower()
+        frame.show()
+        return frame
+
+    def _create_toolbar_edit_add_button(self, page: QWidget, mode: str, cell_w: float, page_h: int) -> None:
+        """The single "+" glyph occupying the last cell (just left of the zoom
+        slider) — styled like the left rail's add button (a clean plus icon, no
+        bounding box). Clicking it adds the picked button to the next open cell,
+        which the user can then drag wherever they want."""
+        last = self.TOPBAR_SLOT_COUNT - 1
+        button = QToolButton(page)
+        button.setObjectName("toolbarEditAddButton")
+        button.setToolTip("Add a button — drops into the next open cell, then drag it where you want")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setIcon(self._fluent_toolbar_icon("E710", color=QColor("#8a909a")))
+        button.setIconSize(QSize(20, 20))
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setAutoRaise(True)
+        button.setStyleSheet(
+            "QToolButton#toolbarEditAddButton { background: transparent; border: 1px solid transparent;"
+            " border-radius: 7px; padding: 0px; }"
+            " QToolButton#toolbarEditAddButton:hover { background: #24262b; }"
+        )
+        button.setGeometry(self._toolbar_edit_cell_rect(last, cell_w, page_h))
+        button.clicked.connect(lambda _checked=False, m=mode: self._open_toolbar_item_picker(m))
+        button.show()
+        button.raise_()
+        self._toolbar_edit_add_button = button
+
+    def _available_topbar_items_for_mode(self, mode: str) -> list[str]:
+        # Every cluster button from *either* mode (buttons can cross bars), minus
+        # what's already on this bar. Manual items first, then AI-only items.
+        popup = set(self._topbar_popup_specs())
+        actions = set(self._workspace_toolbar_action_specs())
+        placed = set(self._slots_to_items(self._topbar_slots.get(mode, [])))
+        # Repeatable items (the divider) are always offered, however many are down.
+        ordered: list[str] = list(self.TOPBAR_REPEATABLE_ITEMS)
+        seen: set[str] = set(ordered)
+        for source in ("manual", "ai"):
+            for item_id in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(source, ()):
+                if item_id in seen or item_id in placed:
+                    continue
+                if item_id in self.TOPBAR_CHROME_ITEMS or not (item_id in popup or item_id in actions):
+                    continue
+                seen.add(item_id)
+                ordered.append(item_id)
+        return ordered
+
+    def _add_toolbar_item_inplace(self, item_id: str) -> None:
+        mode = "ai" if (self._toolbar_edit_active_mode or self._ui_mode) == "ai" else "manual"
+        # Any cluster button may land on any bar; using the button later handles
+        # the mode swap if it belongs to the other review mode.
+        if item_id not in self._unified_allowed_items():
+            return
+        n = self.TOPBAR_SLOT_COUNT
+        usable = n - 1  # last cell is reserved for the fixed "+"
+        slots = list(self._topbar_slots.get(mode) or [None] * n)
+        slots += [None] * (n - len(slots))
+        if item_id not in self.TOPBAR_REPEATABLE_ITEMS and item_id in slots:
+            return
+        target = self._toolbar_item_picker_slot
+        self._toolbar_item_picker_slot = None
+        if target is None or not (0 <= target < usable) or slots[target] is not None:
+            target = next((i for i in range(usable) if slots[i] is None), None)
+        if target is None:
+            self.statusBar().showMessage("The toolbar is full — remove a button first.")
+            return
+        slots[target] = item_id
+        self._commit_slots_and_refresh(mode, slots)
+
+    def _build_toolbar_item_picker_commands(self, mode: str) -> list[PaletteCommand]:
+        commands: list[PaletteCommand] = []
+        specs = self._workspace_toolbar_action_specs()
+        popup = self._topbar_popup_specs()
+        current = "ai" if mode == "ai" else "manual"
+        current_allowed = set(self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(current, ()))
+        for item_id in self._available_topbar_items_for_mode(mode):
+            label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
+            keyword_parts = [item_id.replace("_", " "), label]
+            spec = specs.get(item_id)
+            if spec is not None:
+                action = spec[0]
+                keyword_parts.extend([action.text().replace("&", ""), action.toolTip()])
+            elif item_id in popup:
+                keyword_parts.append(popup[item_id][0])
+            if item_id in self.TOPBAR_REPEATABLE_ITEMS:
+                subtitle = "Visual divider · add as many as you like"
+                keyword_parts.append("separator pipe")
+            else:
+                # Items not valid in this mode are AI-only (AI is a superset of
+                # manual) and will flip the app to AI review when used.
+                cross_mode = item_id not in current_allowed
+                if cross_mode:
+                    keyword_parts.append("ai")
+                subtitle = "AI button · auto-switches to AI review" if cross_mode else "Toolbar button"
+            commands.append(
+                PaletteCommand(
+                    id=f"toolbar.add.{item_id}",
+                    title=label,
+                    subtitle=subtitle,
+                    section="Toolbar",
+                    keywords=tuple(part for part in keyword_parts if part),
+                    callback=lambda selected=item_id: self._add_toolbar_item_inplace(selected),
+                )
+            )
+        return commands
+
+    def _ensure_toolbar_item_picker_dialog(self) -> CommandPaletteDialog:
+        dialog = self._toolbar_item_picker_dialog
+        if isinstance(dialog, CommandPaletteDialog):
+            return dialog
+        dialog = CommandPaletteDialog(
+            [],
+            recent_command_ids=(),
+            title="Add Toolbar Button",
+            placeholder="Search buttons",
+            hint="Enter adds the selected button.",
+            card_size=QSize(520, 420),
+            parent=self,
+        )
+        dialog.finished.connect(self._handle_toolbar_item_picker_finished)
+        self._toolbar_item_picker_dialog = dialog
+        return dialog
+
+    def _open_toolbar_item_picker(self, mode: str | None = None, slot: int | None = None) -> None:
+        if self._active_command_palette is not None and self._active_command_palette.isVisible():
+            return
+        normalized = "ai" if (mode == "ai" or (mode not in ("manual", "ai") and self._ui_mode == "ai")) else "manual"
+        self._toolbar_item_picker_slot = slot if isinstance(slot, int) else None
+        commands = self._build_toolbar_item_picker_commands(normalized)
+        dialog = self._ensure_toolbar_item_picker_dialog()
+        dialog.configure(
+            commands,
+            title="Add Toolbar Button",
+            placeholder="Search buttons",
+            hint="Enter adds the selected button." if commands else "Every button is already on the bar.",
+            card_size=QSize(520, 420),
+        )
+        dialog.set_prominent(False)
+        self._command_palette_open = True
+        self._active_command_palette = dialog
+        self._set_command_palette_shortcuts_enabled(False)
+        dialog.present()
+
+    def _handle_toolbar_item_picker_finished(self, result: int) -> None:
+        dialog = self.sender()
+        self._command_palette_open = False
+        self._active_command_palette = None
+        self._set_command_palette_shortcuts_enabled(True)
+        if not isinstance(dialog, CommandPaletteDialog):
+            return
+        if result != dialog.DialogCode.Accepted:
+            return
+        command = dialog.selected_command
+        if command is not None:
+            command.callback()
+
+    def _remove_toolbar_slot_inplace(self, slot_index: int) -> None:
+        # Remove the item in a specific cell (not by id) so removing one of
+        # several identical dividers clears the right one.
+        mode = self._toolbar_edit_active_mode or "manual"
+        slots = list(self._topbar_slots.get(mode) or [])
+        if not (0 <= slot_index < len(slots)) or slots[slot_index] is None:
+            return
+        slots[slot_index] = None
+        self._commit_slots_and_refresh(mode, slots)
+
+    def _handle_toolbar_edit_drag(self, widget: QWidget, event) -> bool:
+        """Slot-grid drag: grab a button, slide it, and it snaps to the nearest
+        cell on release (swapping with whatever is already there). Returns True
+        when the event was consumed."""
+        event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._toolbar_edit_drag_widget = widget
+            self._toolbar_edit_drag_start = event.globalPosition().toPoint()
+            self._toolbar_edit_drag_origin = QPoint(widget.pos())
+            self._toolbar_edit_dragging = False
+            self._toolbar_edit_drag_slot = next(
+                (entry[4] for entry in self._toolbar_edit_items if entry[1] is widget), -1
+            )
+            self._toolbar_edit_target_slot = self._toolbar_edit_drag_slot
+            widget.raise_()
+            badge = self._toolbar_edit_badge_for(widget)
+            if badge is not None:
+                badge.raise_()
+            return True
+        if (
+            event_type == QEvent.Type.MouseMove
+            and self._toolbar_edit_drag_widget is widget
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            if self._toolbar_edit_drag_start is None:
+                return True
+            delta = event.globalPosition().toPoint() - self._toolbar_edit_drag_start
+            if not self._toolbar_edit_dragging and delta.manhattanLength() < QApplication.startDragDistance():
+                return True
+            self._toolbar_edit_dragging = True
+            parent = widget.parentWidget()
+            new_x = self._toolbar_edit_drag_origin.x() + delta.x()
+            if parent is not None:
+                new_x = max(0, min(parent.width() - widget.width(), new_x))
+            widget.move(new_x, self._toolbar_edit_drag_origin.y())
+            badge = self._toolbar_edit_badge_for(widget)
+            if badge is not None:
+                self._position_toolbar_edit_badge(badge, widget)
+            self._update_toolbar_edit_drop_target(widget)
+            return True
+        if event_type == QEvent.Type.MouseButtonRelease and self._toolbar_edit_drag_widget is widget:
+            was_dragging = self._toolbar_edit_dragging
+            source = self._toolbar_edit_drag_slot
+            target = self._toolbar_edit_target_slot
+            self._toolbar_edit_drag_widget = None
+            self._toolbar_edit_drag_start = None
+            self._toolbar_edit_dragging = False
+            if was_dragging:
+                self._commit_toolbar_edit_drag(source, target)
+            return True
+        return False
+
+    def _slot_at_x(self, center_x: float) -> int:
+        cell_w = self._toolbar_edit_cell_width or 1.0
+        # The last cell is reserved for the fixed "+", so buttons stop one short.
+        return max(0, min(self.TOPBAR_SLOT_COUNT - 2, int(center_x // cell_w)))
+
+    def _update_toolbar_edit_drop_target(self, widget: QWidget) -> None:
+        page = widget.parentWidget()
+        if page is None:
+            return
+        center_x = widget.x() + widget.width() / 2
+        target = self._slot_at_x(center_x)
+        self._toolbar_edit_target_slot = target
+        cell_w = self._toolbar_edit_cell_width or 1.0
+        inset = 3
+        rect = QRect(
+            round(target * cell_w) + inset,
+            inset,
+            max(1, round(cell_w) - inset * 2),
+            max(1, page.height() - inset * 2),
+        )
+        highlight = self._toolbar_edit_drop_highlight
+        if highlight is None:
+            highlight = QFrame(page)
+            highlight.setObjectName("toolbarEditDropTarget")
+            highlight.setStyleSheet(
+                "QFrame#toolbarEditDropTarget { background: rgba(61,124,255,45);"
+                " border: 1px solid #3d7cff; border-radius: 8px; }"
+            )
+            self._toolbar_edit_drop_highlight = highlight
+        elif highlight.parentWidget() is not page:
+            highlight.setParent(page)
+        highlight.setGeometry(rect)
+        highlight.show()
+        # Keep the dragged button (and its badge) above the highlight.
+        widget.raise_()
+        badge = self._toolbar_edit_badge_for(widget)
+        if badge is not None:
+            badge.raise_()
+
+    def _commit_toolbar_edit_drag(self, source: int, target: int) -> None:
+        mode = self._toolbar_edit_active_mode or "manual"
+        n = self.TOPBAR_SLOT_COUNT
+        slots = list(self._topbar_slots.get(mode) or [None] * n)
+        slots += [None] * (n - len(slots))
+        if 0 <= source < n and 0 <= target < n and source != target:
+            slots[source], slots[target] = slots[target], slots[source]
+        # Even a no-op drop refreshes so the button snaps back to its cell.
+        self._commit_slots_and_refresh(mode, slots)
+
+    def _commit_slots_and_refresh(self, mode: str, slots: list[str | None]) -> None:
+        self._end_inplace_toolbar_edit()
+        normalized = self._normalize_slots(mode, slots)
+        # Unified bar: write the shared arrangement to both review modes.
+        for target in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            self._topbar_slots[target] = list(normalized)
+            self._sync_items_from_slots(target)
+        self._save_workspace_toolbar_layouts()
+        self._rebuild_workspace_toolbar(mode)  # cascades to _rebuild_topbar_action_stack (both pages)
+        self._update_ai_toolbar_state()
+        self._begin_inplace_toolbar_edit(mode)
+
+    def _show_toolbar_edit_hud(self, mode: str) -> None:
+        parent = self.central_container
+        hud = self._toolbar_edit_hud
+        if hud is None:
+            hud = QFrame(parent)
+            hud.setObjectName("toolbarEditHud")
+            hud.setStyleSheet(
+                "QFrame#toolbarEditHud { background: rgba(20,21,24,235); border: 1px solid #333842;"
+                " border-radius: 9px; }"
+                " QLabel#toolbarEditHudHint { color: #99a3b1; font-size: 11px; font-weight: 600; }"
+                " QPushButton { border: none; border-radius: 6px; padding: 4px 12px; font-size: 12px;"
+                " font-weight: 600; }"
+                " QPushButton#toolbarEditHudReset { background: #24262b; color: #f2f5f8; }"
+                " QPushButton#toolbarEditHudReset:hover { background: #2f323a; }"
+                " QPushButton#toolbarEditHudDone { background: #3d7cff; color: #ffffff; }"
+                " QPushButton#toolbarEditHudDone:hover { background: #4d88ff; }"
+            )
+            hud_layout = QHBoxLayout(hud)
+            hud_layout.setContentsMargins(8, 4, 8, 4)
+            hud_layout.setSpacing(6)
+            hint = QLabel("Editing toolbar", hud)
+            hint.setObjectName("toolbarEditHudHint")
+            reset_btn = QPushButton("Reset", hud)
+            reset_btn.setObjectName("toolbarEditHudReset")
+            reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            reset_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            reset_btn.clicked.connect(self._reset_inplace_toolbar_edit)
+            done_btn = QPushButton("Done", hud)
+            done_btn.setObjectName("toolbarEditHudDone")
+            done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            done_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            done_btn.clicked.connect(self._end_inplace_toolbar_edit)
+            hud_layout.addWidget(hint)
+            hud_layout.addWidget(reset_btn)
+            hud_layout.addWidget(done_btn)
+            self._toolbar_edit_hud = hud
+        elif hud.parentWidget() is not parent:
+            hud.setParent(parent)
+        hud.show()
+        hud.raise_()
+        self._position_toolbar_edit_hud()
+
+    def _position_toolbar_edit_hud(self) -> None:
+        hud = self._toolbar_edit_hud
+        if hud is None or not self._toolbar_edit_mode:
+            return
+        parent = hud.parentWidget()
+        if parent is None:
+            return
+        hud.adjustSize()
+        # Float just below the top bar, right-aligned, so it never sits over the
+        # editable cells (which now span the whole bar).
+        top = 8
+        bar = getattr(self, "app_top_bar", None)
+        if bar is not None and bar.parentWidget() is parent:
+            top = bar.geometry().bottom() + 8
+        x = parent.width() - hud.width() - 14
+        hud.move(max(8, x), max(8, top))
+        hud.raise_()
+
+    def _reset_inplace_toolbar_edit(self) -> None:
+        mode = self._toolbar_edit_active_mode or "manual"
+        self._end_inplace_toolbar_edit()
+        per_mode = {
+            target: self._items_to_slots(self.WORKSPACE_TOOLBAR_DEFAULTS.get(target, ()))
+            for target in self.WORKSPACE_TOOLBAR_DEFAULTS
+        }
+        shared = self._merge_slots_shared(per_mode)
+        for target in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            self._workspace_toolbar_layouts[target] = list(self.WORKSPACE_TOOLBAR_DEFAULTS.get(target, ()))
+            self._topbar_slots[target] = list(shared)
+            self._sync_items_from_slots(target)
+        self._save_workspace_toolbar_layouts()
+        self._rebuild_workspace_toolbar(mode)
+        self._update_ai_toolbar_state()
+        self._begin_inplace_toolbar_edit(mode)
+
+    def _end_inplace_toolbar_edit(self) -> None:
+        if not self._toolbar_edit_mode:
+            return
+        mode = self._toolbar_edit_active_mode or "manual"
+        self._toolbar_edit_drag_widget = None
+        self._toolbar_edit_drag_start = None
+        self._toolbar_edit_dragging = False
+        self._toolbar_edit_target_slot = -1
+        self._toolbar_edit_drag_slot = -1
+        if self._toolbar_edit_add_button is not None:
+            self._toolbar_edit_add_button.hide()
+            self._toolbar_edit_add_button.setParent(None)
+            self._toolbar_edit_add_button.deleteLater()
+            self._toolbar_edit_add_button = None
+        if self._toolbar_edit_drop_highlight is not None:
+            self._toolbar_edit_drop_highlight.hide()
+            self._toolbar_edit_drop_highlight.setParent(None)
+            self._toolbar_edit_drop_highlight.deleteLater()
+            self._toolbar_edit_drop_highlight = None
+        for cell in self._toolbar_edit_cell_frames:
+            cell.hide()
+            cell.setParent(None)
+            cell.deleteLater()
+        self._toolbar_edit_cell_frames = []
+        for _item_id, widget, _base, badge, _slot in self._toolbar_edit_items:
+            if badge is not None:
+                badge.hide()
+                badge.setParent(None)
+                badge.deleteLater()
+            if widget is None:
+                continue
+            widget.removeEventFilter(self)
+            widget.setGraphicsEffect(None)
+            # The cluster is rebuilt with fresh widgets below, so discard the
+            # lifted originals rather than leaving them floating over the rebuild.
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
+        self._toolbar_edit_items = []
+        if self._toolbar_edit_hud is not None:
+            self._toolbar_edit_hud.hide()
+        if self._toolbar_edit_shortcut is not None:
+            self._toolbar_edit_shortcut.activated.disconnect()
+            self._toolbar_edit_shortcut.setParent(None)
+            self._toolbar_edit_shortcut.deleteLater()
+            self._toolbar_edit_shortcut = None
+        self._toolbar_edit_mode = False
+        self._toolbar_edit_active_mode = None
+        # Rebuild the cluster from scratch (fresh widgets from the slot model).
+        self._rebuild_topbar_action_stack(mode)
+        self._update_ai_toolbar_state()
+        if self.actions is not None:
+            self.actions.customize_workspace_toolbar.setEnabled(True)
+        self.statusBar().showMessage("Toolbar layout updated.")
 
     def _open_ui_prototype(self, _checked: bool = False) -> None:
         from .ui.generated_prototype import open_generated_ui_prototype
@@ -6116,7 +6873,7 @@ class MainWindow(QMainWindow):
         register_action("edit.undo", self.actions.undo, label="Undo", section="Edit")
         register_action("review.open_preview", self.actions.open_preview, label="Open Preview", section="Review")
         register_action("review.compare_mode", self.actions.compare_mode, label="Compare Mode", section="Review")
-        register_action("review.accept_selection", self.actions.accept_selection, label="Accept Selection", section="Review")
+        register_action("review.accept_selection", self.actions.accept_selection, label="Mark Winner", section="Review")
         register_action("review.reject_selection", self.actions.reject_selection, label="Reject Selection", section="Review")
         register_action("review.keep_selection", self.actions.keep_selection, label="Move Selection To _keep", section="Review")
         register_action("review.move_selection", self.actions.move_selection, label="Move Selection", section="Review")
@@ -6505,7 +7262,7 @@ class MainWindow(QMainWindow):
             add_action_command("ai.clear_results", self.actions.clear_ai_results, section="AI", keywords=("remove ai results",))
             add_action_command("ai.open_report", self.actions.open_ai_report, section="AI", keywords=("html report",))
             add_action_command("ai.tag_legend", self.actions.ai_review_tag_legend, section="AI", keywords=("ai tags", "tag legend", "ai badges", "what do the ai tags mean"))
-            add_action_command("ai.export_adapter_ratings", self.actions.open_ai_data_selection, section="Adapter", keywords=("prepare ratings", "adapter labels", "training labels", "bucket labels"))
+            add_action_command("ai.export_adapter_ratings", self.actions.open_ai_data_selection, section="Adapter", keywords=("prepare labels", "adapter labels", "training labels", "bucket labels"))
             add_action_command("ai.review_adapter_labels", self.actions.review_ai_adapter_labels, section="Adapter", keywords=("review labels", "adapter review", "label adapter"))
             add_action_command("ai.train_adapter", self.actions.train_ai_ranker, section="Adapter", keywords=("train adapter", "train model", "personal model", "preference model"))
             add_action_command("ai.evaluate_adapter", self.actions.evaluate_ai_ranker, section="Adapter", keywords=("evaluate adapter", "holdout", "metrics", "adapter metrics", "validation"))
@@ -6830,8 +7587,8 @@ class MainWindow(QMainWindow):
                         ),
                         PaletteCommand(
                             id="preview.accept",
-                            title="Accept Focused Image",
-                            subtitle="Mark the focused preview image as accepted",
+                            title="Mark Focused Image As Winner",
+                            subtitle="Mark the focused preview image as a winner",
                             section="Preview",
                             shortcut="W",
                             keywords=("accept", "winner", "approve"),
@@ -6942,7 +7699,6 @@ class MainWindow(QMainWindow):
             ai_state=query.ai_state,
             ai_cull_bucket=query.ai_cull_bucket,
             ai_workflow_tag=query.ai_workflow_tag,
-            review_round=query.review_round,
             camera_text=query.camera_text,
             lens_text=query.lens_text,
             tag_text=query.tag_text,
@@ -8593,7 +9349,7 @@ class MainWindow(QMainWindow):
         customize_action = menu.addAction(self._menu_text_with_action_shortcut(f"Customize {toolbar_label}...", action))
         chosen = menu.exec(global_pos)
         if chosen == customize_action:
-            self._show_workspace_toolbar_editor(target_mode)
+            self._begin_inplace_toolbar_edit(target_mode)
 
     def _handle_tree_selection(self, index) -> None:
         folder = self.folder_model.filePath(index)
@@ -8607,31 +9363,46 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         try:
-            if watched in getattr(self, "left_rating_buttons", ()):
-                if event.type() == QEvent.Type.Enter:
-                    self._set_left_rating_hover_preview(int(watched.property("ratingValue") or 0))
-                    return False
-                if event.type() == QEvent.Type.Leave:
-                    QTimer.singleShot(0, self._clear_left_rating_hover_preview_if_outside)
-                    return False
+            # In-place edit mode: mouse presses/moves on lifted items drive the
+            # drag-to-reorder; everything else that would trigger the item's
+            # normal action is swallowed while the user is arranging the bar.
+            if self._toolbar_edit_mode and self._is_toolbar_edit_widget(watched):
+                if isinstance(watched, QWidget) and self._handle_toolbar_edit_drag(watched, event):
+                    return True
+                if event.type() in (
+                    QEvent.Type.MouseButtonPress,
+                    QEvent.Type.MouseButtonRelease,
+                    QEvent.Type.MouseButtonDblClick,
+                    QEvent.Type.ContextMenu,
+                    QEvent.Type.Wheel,
+                    QEvent.Type.FocusIn,
+                ):
+                    return True
             toolbar_mode = self._toolbar_context_mode_for(watched)
             if toolbar_mode and self._handle_toolbar_context_event(toolbar_mode, event):
                 return True
             if hasattr(self, "central_container") and watched is self.central_container:
                 if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
                     self._position_workspace_toolbar_editor()
+                    self._position_toolbar_edit_hud()
                 if event.type() == QEvent.Type.Resize and hasattr(self, "zen_hint_overlay"):
                     self._position_zen_hint_overlay()
             if hasattr(self, "topbar_action_stack") and watched is self.topbar_action_stack:
                 if event.type() == QEvent.Type.Resize:
                     self._update_topbar_overflow(self._ui_mode)
+                    if self._toolbar_edit_mode:
+                        self._position_toolbar_edit_hud()
+                if event.type() == QEvent.Type.MouseButtonDblClick:
+                    self._begin_inplace_toolbar_edit(self._ui_mode)
+                    return True
             if hasattr(self, "workspace_bar") and watched is self.workspace_bar:
                 if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
                     self._position_workspace_toolbar_editor()
+                    self._position_toolbar_edit_hud()
                 if self._handle_workspace_bar_drag_event(event):
                     return True
                 if event.type() == QEvent.Type.MouseButtonDblClick:
-                    self._show_workspace_toolbar_editor(self._ui_mode)
+                    self._begin_inplace_toolbar_edit(self._ui_mode)
                     return True
             if hasattr(self, "workspace_bar_drag_handle") and watched is self.workspace_bar_drag_handle:
                 if self._handle_workspace_bar_drag_event(event):
@@ -8648,13 +9419,13 @@ class MainWindow(QMainWindow):
                 elif watched is self.ai_toolbar:
                     self._schedule_workspace_toolbar_overflow_update("ai")
             if hasattr(self, "toolbar_stack") and watched is self.toolbar_stack and event.type() == QEvent.Type.MouseButtonDblClick:
-                self._show_workspace_toolbar_editor(self._ui_mode)
+                self._begin_inplace_toolbar_edit(self._ui_mode)
                 return True
             if hasattr(self, "manual_toolbar") and watched is self.manual_toolbar and event.type() == QEvent.Type.MouseButtonDblClick:
-                self._show_workspace_toolbar_editor("manual")
+                self._begin_inplace_toolbar_edit("manual")
                 return True
             if hasattr(self, "ai_toolbar") and watched is self.ai_toolbar and event.type() == QEvent.Type.MouseButtonDblClick:
-                self._show_workspace_toolbar_editor("ai")
+                self._begin_inplace_toolbar_edit("ai")
                 return True
             folder_viewport = self.folder_tree.viewport() if hasattr(self, "folder_tree") else None
             if watched is folder_viewport:
@@ -10140,9 +10911,9 @@ class MainWindow(QMainWindow):
         if left_tabs is not None and left_tabs.currentIndex() != index:
             with QSignalBlocker(left_tabs):
                 left_tabs.setCurrentIndex(index)
-        left_rating_panel = getattr(self, "left_rating_panel", None)
-        if left_rating_panel is not None:
-            left_rating_panel.setVisible(target_mode != "ai")
+        review_panel = getattr(self, "review_workflow_panel", None)
+        if review_panel is not None:
+            review_panel.setVisible(target_mode != "ai")
         left_ai_activity_panel = getattr(self, "left_ai_activity_panel", None)
         if left_ai_activity_panel is not None:
             left_ai_activity_panel.setVisible(target_mode == "ai")
@@ -10941,11 +11712,6 @@ class MainWindow(QMainWindow):
         )
         self.actions.dispute_current_ai_result.setEnabled(can_dispute_current_ai)
         self.actions.review_ai_disagreements.setEnabled(self._ai_bundle is not None)
-        self.actions.assign_review_round_first_pass.setEnabled(has_selection)
-        self.actions.assign_review_round_second_pass.setEnabled(has_selection)
-        self.actions.assign_review_round_third_pass.setEnabled(has_selection)
-        self.actions.assign_review_round_hero.setEnabled(has_selection)
-        self.actions.clear_review_round.setEnabled(has_selection and bool(current_workflow and current_workflow.has_round))
         self.actions.create_virtual_collection.setEnabled(current_record is not None)
         self.actions.add_selection_to_collection.setEnabled(current_record is not None and bool(collections))
         self.actions.remove_selection_from_collection.setEnabled(current_record is not None and bool(collections))
@@ -11097,49 +11863,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Saved {recorded} calibration preference(s) for this folder.")
             return
         self.statusBar().showMessage("Calibration finished with no recorded picks.")
-
-    def _assign_review_round_to_selection(self, review_round: str) -> None:
-        records = self._selected_records_for_actions()
-        if not records:
-            return
-        normalized_round = normalize_review_round(review_round)
-        current_path = self._current_visible_record_path() or records[0].path
-        changed_paths: list[str] = []
-        undo_actions: list[UndoAction] = []
-        for record in records:
-            annotation = self._annotations.setdefault(record.path, SessionAnnotation())
-            previous_annotation = self._annotation_snapshot(annotation)
-            if normalize_review_round(annotation.review_round) == normalized_round:
-                continue
-            undo_actions.append(
-                UndoAction(
-                    kind="annotation",
-                    primary_path=record.path,
-                    original_winner=annotation.winner,
-                    original_reject=annotation.reject,
-                    original_photoshop=annotation.photoshop,
-                    rating=annotation.rating,
-                    tags=annotation.tags,
-                    original_review_round=annotation.review_round,
-                    folder=self._current_folder,
-                    source_paths=self._record_paths(record),
-                    session_id=self._session_id,
-                    winner_mode=self._winner_mode.value,
-                )
-            )
-            annotation.review_round = normalized_round
-            self._queue_annotation_persist(record, previous_annotation=previous_annotation)
-            self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="review_round")
-            changed_paths.append(record.path)
-        if not changed_paths:
-            return
-        self._push_undo_actions(undo_actions)
-        self._apply_annotation_change_effects(changed_paths, current_path=current_path)
-        label = review_round_label(normalized_round)
-        if label:
-            self.statusBar().showMessage(f"Assigned {label} to {len(changed_paths)} image(s).")
-        else:
-            self.statusBar().showMessage(f"Cleared review round on {len(changed_paths)} image(s).")
 
     def _selected_records_for_workflow(self) -> list[ImageRecord]:
         records = self._selected_records_for_actions()
@@ -11501,8 +12224,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("The proposed best-of picks are no longer visible in the current view.")
             return
         self.grid.set_selected_indexes(selected_indexes, current_index=selected_indexes[0])
-        if result.review_round:
-            self._assign_review_round_to_selection(result.review_round)
         summary = plan.summary_lines[0] if plan.summary_lines else f"Selected {len(selected_indexes)} best-of pick(s)."
         self.statusBar().showMessage(summary)
 
@@ -12583,7 +13304,7 @@ class MainWindow(QMainWindow):
     def _write_aiculler_ratings_csv(self, *, global_only: bool = False) -> Path | None:
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
-            self.statusBar().showMessage("Choose a folder before exporting adapter ratings.")
+            self.statusBar().showMessage("Choose a folder before exporting adapter labels.")
             return None
         self._flush_aiculler_internal_label_cache()
         self._flush_aiculler_global_label_queue()
@@ -12633,16 +13354,16 @@ class MainWindow(QMainWindow):
             message = (
                 "Global adapter training needs at least two matching global labels in this folder."
                 if global_only
-                else "Mark at least two images before exporting adapter ratings."
+                else "Mark at least two images before exporting adapter labels."
             )
             self.statusBar().showMessage(message)
             return None
         labels = {str(row["label"]) for row in rows}
         if len(labels) < 2:
             message = (
-                "Global adapter training needs at least two different matching rating labels."
+                "Global adapter training needs at least two different matching labels."
                 if global_only
-                else "Adapter training needs at least two different rating labels."
+                else "Adapter training needs at least two different labels."
             )
             self.statusBar().showMessage(message)
             return None
@@ -13014,17 +13735,7 @@ class MainWindow(QMainWindow):
         if annotation.reject:
             return "reject"
         if annotation.winner:
-            return "hero"
-        if annotation.rating >= 5:
-            return "hero"
-        if annotation.rating == 4:
-            return "strong"
-        if annotation.rating == 3:
-            return "maybe"
-        if annotation.rating == 2:
-            return "weak"
-        if annotation.rating == 1:
-            return "reject"
+            return "keep"
         return ""
 
     @classmethod
@@ -13057,7 +13768,7 @@ class MainWindow(QMainWindow):
             return
         message = f"Prepared {ratings_path.name} for adapter training."
         self.statusBar().showMessage(message)
-        QMessageBox.information(self, "Prepare Rating CSV", message)
+        QMessageBox.information(self, "Prepare Training Labels", message)
 
     def _review_aiculler_adapter_labels(self) -> None:
         paths = self._aiculler_paths_for_current_folder()
@@ -13602,7 +14313,7 @@ class MainWindow(QMainWindow):
         reason_phase_button = QPushButton("Step 2: Reasons")
         reason_phase_button.setObjectName("adapterReviewBannerStep")
         reason_phase_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        reason_phase_button.setToolTip("After rating, explain only the rank 1 winners and rank 5 rejects")
+        reason_phase_button.setToolTip("After labeling, explain only the rank 1 winners and rank 5 rejects")
         reason_phase_button.clicked.connect(self._enter_adapter_review_reason_phase)
         self._adapter_review_reason_phase_button = reason_phase_button
         layout.addWidget(reason_phase_button, 0)
@@ -13634,10 +14345,10 @@ class MainWindow(QMainWindow):
         apply_reason_button.clicked.connect(self._apply_adapter_review_reasons_to_selection)
         self._adapter_review_apply_reason_button = apply_reason_button
         layout.addWidget(apply_reason_button, 0)
-        back_to_ratings_button = QPushButton("Back to Ratings")
+        back_to_ratings_button = QPushButton("Back to Labels")
         back_to_ratings_button.setObjectName("adapterReviewBannerStep")
         back_to_ratings_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_to_ratings_button.setToolTip("Return to the rating pass")
+        back_to_ratings_button.setToolTip("Return to the labeling pass")
         back_to_ratings_button.clicked.connect(self._exit_adapter_review_reason_phase)
         self._adapter_review_back_to_ratings_button = back_to_ratings_button
         layout.addWidget(back_to_ratings_button, 0)
@@ -14132,7 +14843,7 @@ class MainWindow(QMainWindow):
         try:
             ratings_csv_text = ratings_path.read_text(encoding="utf-8")
         except OSError as exc:
-            QMessageBox.warning(self, "Train Adapter", f"Could not prepare adapter ratings.\n\n{exc}")
+            QMessageBox.warning(self, "Train Adapter", f"Could not prepare adapter labels.\n\n{exc}")
             return
         model_version = self._new_aiculler_adapter_model_version(global_labels=True)
         task = AICullerAdapterTask(
@@ -14149,7 +14860,7 @@ class MainWindow(QMainWindow):
             title="Train Adapter",
             run_label=model_version,
         ):
-            self.statusBar().showMessage("Training adapter from current ratings...")
+            self.statusBar().showMessage("Training adapter from current labels...")
 
     def _train_aiculler_adapter_from_global_labels(self) -> None:
         try:
@@ -14160,7 +14871,7 @@ class MainWindow(QMainWindow):
             finally:
                 store.close()
         except OSError as exc:
-            QMessageBox.warning(self, "Train Global Adapter", f"Could not prepare global adapter ratings.\n\n{exc}")
+            QMessageBox.warning(self, "Train Global Adapter", f"Could not prepare global adapter labels.\n\n{exc}")
             return
         except Exception as exc:
             QMessageBox.warning(self, "Train Global Adapter", f"Could not load global adapter labels.\n\n{exc}")
@@ -14169,7 +14880,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Global adapter training needs at least two global labels.")
             return
         if len({label.label for label in labels}) < 2:
-            self.statusBar().showMessage("Global adapter training needs at least two different rating labels.")
+            self.statusBar().showMessage("Global adapter training needs at least two different labels.")
             return
         model_version = self._new_aiculler_adapter_model_version(global_labels=True)
         task = AICullerGlobalAdapterTask(
@@ -14206,7 +14917,7 @@ class MainWindow(QMainWindow):
             title="Evaluate Adapter",
             run_label=f"Adapter {model_version}",
         ):
-            self.statusBar().showMessage("Evaluating adapter against stored ratings...")
+            self.statusBar().showMessage("Evaluating adapter against stored labels...")
 
     def _rank_aiculler_adapter(self, checked: bool = False, *, scope: str = "local") -> None:
         del checked
@@ -15289,13 +16000,6 @@ class MainWindow(QMainWindow):
 
     def _handle_preview_move_requested(self, path: str) -> None:
         self._dispatch_preview_action(path, self._move_record_prompt)
-
-    def _handle_preview_rate_requested(self, path: str, rating: int) -> None:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return
-        self._rate_record(index, rating)
-        self.grid.set_current_index(index)
 
     def _handle_preview_tag_requested(self, path: str) -> None:
         self._dispatch_preview_action(path, self._tag_record, preserve_anchor=True)
@@ -16532,9 +17236,8 @@ class MainWindow(QMainWindow):
         )
         needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
         needs_workflow = (
-            self._filter_query.quick_filter in {FilterMode.AI_DISAGREEMENTS, FilterMode.REVIEW_ROUNDS}
+            self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
             or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
-            or bool(normalize_review_round(self._filter_query.review_round))
         )
         ai_result = self._ai_result_for_record(record) if needs_ai else None
         review_insight = self._review_insight_for_record(record) if needs_review else None
@@ -19410,11 +20113,9 @@ class MainWindow(QMainWindow):
         count += int(self._filter_query.ai_state != AIStateFilter.ALL)
         count += int(self._filter_query.ai_cull_bucket is not None)
         count += int(bool(self._filter_query.ai_workflow_tag.strip()))
-        count += int(bool(normalize_review_round(self._filter_query.review_round)))
         count += int(bool(self._filter_query.camera_text.strip()))
         count += int(bool(self._filter_query.lens_text.strip()))
         count += int(bool(self._filter_query.tag_text.strip()))
-        count += int(self._filter_query.min_rating > 0)
         count += int(self._filter_query.orientation != OrientationFilter.ALL)
         count += int(self._filter_query.captured_after is not None)
         count += int(self._filter_query.captured_before is not None)
@@ -19437,7 +20138,7 @@ class MainWindow(QMainWindow):
         refined = refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
         return self._apply_burst_dedup_to_ai_result(refined, record)
 
-    # Map adapter labels (1-5 ratings) to confidence buckets. Used by the
+    # Map adapter 1-5 labels to confidence buckets. Used by the
     # user-label override so a disputed/labeled card flips bucket immediately
     # without waiting for the next training pass.
     _USER_LABEL_TO_BUCKET = {
@@ -19943,8 +20644,7 @@ class MainWindow(QMainWindow):
     def _annotation_prefers_frame(self, annotation: SessionAnnotation | None) -> bool:
         if annotation is None:
             return False
-        round_value = normalize_review_round(annotation.review_round)
-        return annotation.winner or annotation.rating >= 4 or round_value in {REVIEW_ROUND_THIRD_PASS, REVIEW_ROUND_HERO}
+        return annotation.winner
 
     def _comparison_target_for_preference(self, record: ImageRecord, ai_result, burst_recommendation) -> str:
         if burst_recommendation is not None and burst_recommendation.recommended_path:
@@ -20098,7 +20798,6 @@ class MainWindow(QMainWindow):
             or previous_annotation.rating != annotation.rating
             or previous_annotation.winner != annotation.winner
             or previous_annotation.reject != annotation.reject
-            or normalize_review_round(previous_annotation.review_round) != normalize_review_round(annotation.review_round)
         ):
             payload = {
                 "timestamp": current_timestamp(),
@@ -20605,7 +21304,7 @@ class MainWindow(QMainWindow):
             selected_count = self.grid.selected_count() if loaded else 0
             self.summary_total.setText(f"Total: Loading {loaded} / {total}")
             self.summary_selected.setText(f"Selected: {selected_count}")
-            self.summary_accepted.setText(f"Accepted: {self._accepted_count}")
+            self.summary_accepted.setText(f"Winners: {self._accepted_count}")
             self.summary_rejected.setText(f"Rejected: {self._rejected_count}")
             self.summary_unreviewed.setText(f"Unreviewed: {self._unreviewed_count}")
             self._update_ai_summary()
@@ -20615,7 +21314,7 @@ class MainWindow(QMainWindow):
         if self._scan_in_progress and not self._all_records and not self._records:
             self.summary_total.setText("Total: scanning...")
             self.summary_selected.setText("Selected: 0")
-            self.summary_accepted.setText("Accepted: 0")
+            self.summary_accepted.setText("Winners: 0")
             self.summary_rejected.setText("Rejected: 0")
             self.summary_unreviewed.setText("Unreviewed: ...")
             self._update_ai_summary()
@@ -20630,7 +21329,7 @@ class MainWindow(QMainWindow):
 
         self.summary_total.setText(f"Total: {count}")
         self.summary_selected.setText(f"Selected: {selected_count}")
-        self.summary_accepted.setText(f"Accepted: {accepted}")
+        self.summary_accepted.setText(f"Winners: {accepted}")
         self.summary_rejected.setText(f"Rejected: {rejected}")
         self.summary_unreviewed.setText(f"Unreviewed: {remaining}")
         self._update_ai_summary()
@@ -20805,10 +21504,10 @@ class MainWindow(QMainWindow):
 
                 1. Open the folder you want to train from.
                 2. Open **`AI > AI Workflow Center...`** and run **Index & Score** so the folder has a CLI-Culler database.
-                3. Rate, Accept, or Reject images in the grid, or choose **`AI > Adapter Training > Review Adapter Labels...`** to work through suggested candidates.
-                4. Choose **`AI > Adapter Training > Prepare Rating CSV`** to materialize the current labels.
+                3. Mark winners or rejects in the grid, or choose **`AI > Adapter Training > Review Adapter Labels...`** to work through suggested candidates.
+                4. Choose **`AI > Adapter Training > Prepare Training Labels`** to materialize the current labels.
                 5. Choose **`AI > Adapter Training > Train Adapter...`**.
-                6. Choose **`AI > Adapter Training > Evaluate Adapter`** to check the latest adapter against stored ratings.
+                6. Choose **`AI > Adapter Training > Evaluate Adapter`** to check the latest adapter against stored labels.
                 7. Choose **`AI > Adapter Training > Rank Folder With Local Adapter`** to refresh the ranking.
                 8. Review the refreshed result in **AI Review**.
 
@@ -21280,7 +21979,7 @@ class MainWindow(QMainWindow):
             self._start_scope_enrichment_task()
 
         if winner_changed:
-            self.statusBar().showMessage(f"Accepted handling set to {self._winner_mode.value}")
+            self.statusBar().showMessage(f"Winner handling set to {self._winner_mode.value}")
         elif delete_changed:
             self.statusBar().showMessage(f"Delete behavior set to {self._delete_mode.value}")
         elif session_changed:
@@ -21415,7 +22114,7 @@ class MainWindow(QMainWindow):
         message.setWindowTitle("Workflow Tip")
         message.setText(
             "Workflow is set to copy winners.\n\n"
-            "For quicker rating with RAW or large files, consider changing Accepted handling to "
+            "For quicker winner marking with RAW or large files, consider changing Winner handling to "
             "'Link To _winners'.\n\n"
             "Open Settings to change it."
         )
@@ -21600,42 +22299,6 @@ class MainWindow(QMainWindow):
         self._remove_record(index)
         self.statusBar().showMessage(f"Moved {record.name} to {destination_dir}")
 
-    def _rate_record(self, index: int, rating: int) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        record = self._record_at(index)
-        if record is None:
-            return
-
-        annotation = self._annotations.setdefault(record.path, SessionAnnotation())
-        previous_annotation = self._annotation_snapshot(annotation)
-        if previous_annotation.rating == rating:
-            return
-        self._push_undo(
-            UndoAction(
-                kind="annotation",
-                primary_path=record.path,
-                original_winner=annotation.winner,
-                original_reject=annotation.reject,
-                original_photoshop=annotation.photoshop,
-                rating=annotation.rating,
-                tags=annotation.tags,
-                original_review_round=annotation.review_round,
-                folder=self._current_folder,
-                source_paths=self._record_paths(record),
-                session_id=self._session_id,
-                winner_mode=self._winner_mode.value,
-            )
-        )
-        annotation.rating = rating
-        self._queue_annotation_persist(record, previous_annotation=previous_annotation)
-        self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="rating")
-        self._apply_annotation_change_effects([record.path], current_path=record.path)
-        self._refresh_generated_left_context(index)
-        self.statusBar().showMessage(f"Rated {record.name}: {rating}/5")
-        if logger.enabled:
-            logger.duration("annotation.rating", (time.perf_counter() - start) * 1000.0, path=record.path, rating=rating)
-
     def _tag_record(self, index: int) -> None:
         record = self._record_at(index)
         if record is None:
@@ -21711,12 +22374,9 @@ class MainWindow(QMainWindow):
             FilterMode.REJECTS,
             FilterMode.UNREVIEWED,
             FilterMode.AI_DISAGREEMENTS,
-            FilterMode.REVIEW_ROUNDS,
         }:
             return True
         if self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS:
-            return True
-        if bool(normalize_review_round(self._filter_query.review_round)):
             return True
         return False
 
@@ -21994,16 +22654,20 @@ class MainWindow(QMainWindow):
         return None
 
     def _preview_filmstrip_tag(self, index: int) -> str | None:
+        """Status dot for a filmstrip thumb: manual review tags first
+        (reject red, winner green), then blue for an untouched AI top pick."""
         record = self._record_at(index)
         if record is None:
             return None
         annotation = self._annotations.get(record.path)
-        if annotation is None:
-            return None
-        if annotation.reject:
-            return preview_studio.REJECT
-        if annotation.winner:
-            return preview_studio.KEEPER
+        if annotation is not None:
+            if annotation.reject:
+                return preview_studio.REJECT
+            if annotation.winner:
+                return preview_studio.KEEPER
+        result = self._ai_result_for_record(record)
+        if result is not None and result.is_top_pick:
+            return preview_studio.INFO
         return None
 
     def _handle_preview_filmstrip_thumbnail_ready(self, *_args) -> None:
@@ -22267,9 +22931,9 @@ class MainWindow(QMainWindow):
             return
         changed, failures = self._batch_apply_annotation_state(records, winner=True, reject=False, source_mode="winner_toggle")
         if failures:
-            self.statusBar().showMessage(f"Accepted {changed} image(s); {failures} failed to sync winner artifacts")
+            self.statusBar().showMessage(f"Marked {changed} winner image(s); {failures} failed to sync winner artifacts")
             return
-        self.statusBar().showMessage(f"Accepted {changed} image(s)")
+        self.statusBar().showMessage(f"Marked {changed} winner image(s)")
 
     def _batch_set_reject(self, records: list[ImageRecord]) -> None:
         if not records:
@@ -22705,7 +23369,7 @@ class MainWindow(QMainWindow):
                 restore_action = menu.addAction(f"Restore {len(records)} Images")
                 menu.addSeparator()
             else:
-                accept_action = menu.addAction(f"Accept {len(records)} Images")
+                accept_action = menu.addAction(f"Mark {len(records)} Images As Winners")
                 reject_action = menu.addAction(f"Reject {len(records)} Images")
                 keep_action = menu.addAction(f"Move {len(records)} Images To _keep")
                 menu.addSeparator()
@@ -23276,9 +23940,8 @@ class MainWindow(QMainWindow):
             FilterMode.DINO_RESCUED,
         }
         needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
-        needs_workflow = self._filter_query.quick_filter in {FilterMode.AI_DISAGREEMENTS, FilterMode.REVIEW_ROUNDS}
+        needs_workflow = self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
         needs_workflow = needs_workflow or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
-        needs_workflow = needs_workflow or bool(normalize_review_round(self._filter_query.review_round))
         needs_workflow = needs_workflow or bool(self._filter_query.ai_workflow_tag.strip())
         needs_metadata = self._filter_query.requires_metadata
         if needs_dino:

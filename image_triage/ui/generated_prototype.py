@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractButton,
-    QButtonGroup,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -30,8 +28,6 @@ if TYPE_CHECKING:
     from ..window import MainWindow
 
 
-STAR_ON = "\u2605"
-STAR_OFF = "\u2606"
 DOTS = "\u2022\u2022\u2022"
 CHECK = "\u2713"
 
@@ -39,7 +35,6 @@ CHECK = "\u2713"
 @dataclass(frozen=True, slots=True)
 class PrototypeItem:
     name: str
-    rating: int
     selected: bool
     accepted: bool
     rejected: bool
@@ -93,7 +88,6 @@ class PrototypeMetrics:
     card_checkbox: int
     card_radius: int
     card_font_size: int
-    card_star_size: int
 
 
 NORMAL_METRICS = PrototypeMetrics(
@@ -141,7 +135,6 @@ NORMAL_METRICS = PrototypeMetrics(
     card_checkbox=16,
     card_radius=8,
     card_font_size=10,
-    card_star_size=11,
 )
 
 
@@ -190,7 +183,6 @@ LARGE_METRICS = PrototypeMetrics(
     card_checkbox=17,
     card_radius=9,
     card_font_size=10,
-    card_star_size=12,
 )
 
 
@@ -247,7 +239,6 @@ def _scaled_metrics(base: PrototypeMetrics, scale: float) -> PrototypeMetrics:
         card_checkbox=_scale_value(base.card_checkbox, scale, 12),
         card_radius=_scale_value(base.card_radius, scale, 6),
         card_font_size=_scale_value(base.card_font_size, scale, 9),
-        card_star_size=_scale_value(base.card_star_size, scale, 9),
     )
 
 
@@ -265,7 +256,6 @@ class PrototypeThumbnailWall(QWidget):
         self._checkbox_size = NORMAL_METRICS.card_checkbox
         self._card_radius = NORMAL_METRICS.card_radius
         self._font = QFont("Segoe UI", NORMAL_METRICS.card_font_size)
-        self._star_font = QFont("Segoe UI Symbol", NORMAL_METRICS.card_star_size)
         self.setObjectName("prototypeThumbnailWall")
         self.setMinimumWidth(420)
         self.setMinimumHeight(640)
@@ -291,7 +281,6 @@ class PrototypeThumbnailWall(QWidget):
         self._checkbox_size = metrics.card_checkbox
         self._card_radius = metrics.card_radius
         self._font = QFont("Segoe UI", metrics.card_font_size)
-        self._star_font = QFont("Segoe UI Symbol", metrics.card_star_size)
         self.setMinimumWidth(max(300, self._margin * 2 + 2 * self._card_width + self._gap))
         self._sync_minimum_height()
         if changed:
@@ -402,9 +391,9 @@ class PrototypeThumbnailWall(QWidget):
         gradient.setColorAt(1.0, QColor("#141313"))
         painter.fillRect(footer, gradient)
         painter.setPen(QColor("#d5d8dc"))
-        painter.setFont(self._star_font)
-        stars = STAR_ON * max(0, min(5, item.rating)) + STAR_OFF * max(0, 5 - max(0, min(5, item.rating)))
-        painter.drawText(footer.adjusted(5, 3, -42, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, stars)
+        painter.setFont(self._font)
+        decision = "Winner" if item.accepted else ("Reject" if item.rejected else "Unreviewed")
+        painter.drawText(footer.adjusted(5, 2, -42, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, decision)
         painter.setPen(QColor("#858a90"))
         painter.setFont(self._font)
         painter.drawText(footer.adjusted(0, 2, -6, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, DOTS)
@@ -510,7 +499,7 @@ class UIPrototypeWindow(QMainWindow):
             toolbar_left_padding,
         )
         for box in self._top_bar.findChildren(QFrame):
-            if box.objectName() in {"prototypeRatingStripBox", "prototypeColorStripBox"}:
+            if box.objectName() == "prototypeColorStripBox":
                 box.setFixedHeight(metrics.toolbar_button)
         self._top_bar_layout.setSpacing(metrics.toolbar_group_gap)
         if hasattr(self, "_zoom_line"):
@@ -569,13 +558,6 @@ class UIPrototypeWindow(QMainWindow):
             )
         else:
             self._preview_image.setPixmap(_large_placeholder_pixmap(metrics.preview_size))
-        self._right_rating_layout.setContentsMargins(
-            metrics.inspector_padding,
-            metrics.inspector_padding,
-            metrics.inspector_padding,
-            metrics.inspector_padding,
-        )
-        self._right_rating_layout.setSpacing(max(6, metrics.inspector_spacing - 4))
         self._right_action_layout.setContentsMargins(
             max(6, metrics.inspector_padding - 3),
             max(5, metrics.inspector_padding - 5),
@@ -623,8 +605,6 @@ class UIPrototypeWindow(QMainWindow):
                 _apply(button, max(30, min(metrics.rail_button, metrics.review_button)), 0.58)
             elif name == "prototypeFlatIcon":
                 _apply(button, metrics.review_button, 0.60)
-            elif name == "prototypeStarButton":
-                _apply(button, metrics.toolbar_button, 0.64)
             elif name == "prototypeBottomBarButton":
                 _apply(button, max(28, metrics.rail_button - 3), 0.66)
             elif name == "prototypeSwatch":
@@ -793,13 +773,12 @@ class UIPrototypeWindow(QMainWindow):
         self._review_layout = QVBoxLayout(panel)
         self._review_layout.setContentsMargins(8, 8, 8, 8)
         self._review_layout.setSpacing(9)
-        self._review_layout.addWidget(self._rating_strip(compact=False))
         self._review_layout.addWidget(self._color_strip(full_width=True))
         self._review_layout.addWidget(self._filter_rows())
         self._review_layout.addStretch(1)
         command_row = QHBoxLayout()
         command_row.setSpacing(6)
-        for text, tip in (("✓", "Accept"), ("×", "Reject"), ("↗", "Move"), ("⌫", "Delete")):
+        for text, tip in (("✓", "Winner"), ("×", "Reject"), ("↗", "Move"), ("⌫", "Delete")):
             command_row.addWidget(self._tool_button(text, tip, "prototypeActionButton"))
         self._review_command_row = command_row
         self._review_layout.addLayout(command_row)
@@ -860,7 +839,6 @@ class UIPrototypeWindow(QMainWindow):
             self._right_card(
                 (
                     self._preview_panel(),
-                    self._right_rating_panel(),
                     self._right_action_panel(),
                     self._metadata_block(),
                 )
@@ -920,16 +898,6 @@ class UIPrototypeWindow(QMainWindow):
         layout.addWidget(self._preview_image)
         return panel
 
-    def _right_rating_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("prototypeRightRatings")
-        self._right_rating_layout = QVBoxLayout(panel)
-        self._right_rating_layout.setContentsMargins(10, 7, 10, 7)
-        self._right_rating_layout.setSpacing(6)
-        self._right_rating_layout.addWidget(self._rating_strip(compact=False))
-        self._right_rating_layout.addWidget(self._color_strip(full_width=True))
-        return panel
-
     def _right_action_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("prototypeRightActions")
@@ -952,8 +920,7 @@ class UIPrototypeWindow(QMainWindow):
         layout.setVerticalSpacing(6)
         rows = (
             ("File", self._items[0].name if self._items else "sample_001.nef"),
-            ("Rating", f"{self._items[0].rating}/5" if self._items else "4/5"),
-            ("Decision", "Selected"),
+            ("Decision", "Winner" if self._items and self._items[0].accepted else "Unreviewed"),
             ("AI Pick", "Review"),
             ("Confidence", "86%"),
         )
@@ -996,7 +963,7 @@ class UIPrototypeWindow(QMainWindow):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(7)
         for label, color, checked in (
-            ("Accepted", "#35d078", True),
+            ("Winner", "#35d078", True),
             ("Rejected", "#ff544d", False),
             ("Needs Review", "#f4b13e", True),
             ("AI Top Pick", "#69e34f", False),
@@ -1024,45 +991,24 @@ class UIPrototypeWindow(QMainWindow):
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(6)
         rows = (
-            ("Accepted", "#35d078", STAR_ON * 5),
-            ("Rejected", "#ff544d", STAR_OFF * 5),
-            ("Unreviewed", "#9da3aa", STAR_ON + STAR_OFF * 4),
-            ("AI Picks", "#f4b13e", STAR_ON * 4 + STAR_OFF),
-            ("Edited", "#4c7dff", STAR_ON * 3 + STAR_OFF * 2),
+            ("Winners", "#35d078", "Manual"),
+            ("Rejected", "#ff544d", "Manual"),
+            ("Unreviewed", "#9da3aa", "Queue"),
+            ("AI Picks", "#f4b13e", "AI"),
+            ("Edited", "#4c7dff", "File"),
         )
-        for row, (name, color, stars) in enumerate(rows):
+        for row, (name, color, value) in enumerate(rows):
             marker = QLabel("■")
             marker.setStyleSheet(f"color: {color};")
             text = QLabel(name)
             text.setObjectName("prototypeMetaValue")
-            rating = QLabel(stars)
-            rating.setObjectName("prototypeTinyStars")
+            value_label = QLabel(value)
+            value_label.setObjectName("prototypeMetaKey")
             layout.addWidget(marker, row, 0)
             layout.addWidget(text, row, 1)
-            layout.addWidget(rating, row, 2)
+            layout.addWidget(value_label, row, 2)
         layout.setColumnStretch(1, 1)
         return panel
-
-    def _rating_strip(self, *, compact: bool) -> QWidget:
-        strip = QFrame() if compact else QWidget()
-        strip.setObjectName("prototypeRatingStripBox" if compact else "prototypeRatingStrip")
-        layout = QHBoxLayout(strip)
-        layout.setContentsMargins(10 if compact else 0, 0, 10 if compact else 0, 0)
-        layout.setSpacing(10 if compact else 4)
-        group = QButtonGroup(strip)
-        group.setExclusive(False)
-        for index in range(1, 6):
-            is_set = index <= 4
-            button = self._tool_button(STAR_ON if is_set else STAR_OFF, f"Visual rating {index}", "prototypeStarButton")
-            button.setCheckable(True)
-            button.setChecked(is_set)
-            # Outline glyph when unset, solid glyph when the rating is set.
-            button.toggled.connect(lambda on, b=button: b.setText(STAR_ON if on else STAR_OFF))
-            group.addButton(button)
-            layout.addWidget(button)
-        if not compact:
-            layout.addStretch(1)
-        return strip
 
     def _color_strip(self, *, full_width: bool = False) -> QWidget:
         strip = QFrame() if not full_width else QWidget()
@@ -1190,7 +1136,6 @@ def collect_prototype_items(owner: object | None, *, limit: int = 42) -> list[Pr
     items: list[PrototypeItem] = []
     for index, record in enumerate(records):
         annotation = annotations.get(record.path)
-        rating = int(getattr(annotation, "rating", 0) or 0)
         pixmap = None
         if grid is not None:
             try:
@@ -1202,7 +1147,6 @@ def collect_prototype_items(owner: object | None, *, limit: int = 42) -> list[Pr
         items.append(
             PrototypeItem(
                 name=getattr(record, "name", Path(getattr(record, "path", f"image_{index + 1:03d}.jpg")).name),
-                rating=rating or ((index % 5) + 1),
                 selected=index in selected_indexes or index == 0,
                 accepted=bool(getattr(annotation, "winner", False)),
                 rejected=bool(getattr(annotation, "reject", False)),
@@ -1219,7 +1163,6 @@ def _placeholder_items(limit: int) -> list[PrototypeItem]:
     return [
         PrototypeItem(
             name=f"landscape_{index + 1:03d}.jpg",
-            rating=(index % 5) + 1,
             selected=index in {0, 1, 5},
             accepted=index % 7 in {0, 1},
             rejected=index % 11 == 3,
@@ -1327,7 +1270,7 @@ def _prototype_stylesheet() -> str:
             border: 1px solid #2d2f32;
             border-radius: 7px;
         }
-        QFrame#prototypeRatingStripBox, QFrame#prototypeColorStripBox {
+        QFrame#prototypeColorStripBox {
             background: transparent;
             border: none;
             border-radius: 7px;
@@ -1353,7 +1296,7 @@ def _prototype_stylesheet() -> str:
             border-radius: 5px;
             color: #bfc4ca;
         }
-        QToolButton#prototypeStarButton, QToolButton#prototypeFlatIcon {
+        QToolButton#prototypeFlatIcon {
             background: #20201f;
             border: 1px solid #2b2d30;
             border-radius: 7px;
@@ -1393,14 +1336,6 @@ def _prototype_stylesheet() -> str:
         }
         QWidget#prototypeLooseButtonGroup QToolButton#prototypeTopButton:pressed {
             background: #2c3035;
-        }
-        QToolButton#prototypeStarButton {
-            border-color: transparent;
-            background: transparent;
-            color: #6b7077;
-        }
-        QToolButton#prototypeStarButton:checked {
-            color: #d7a94a;
         }
         QToolButton#prototypeFlatIcon {
             background: transparent;
@@ -1530,14 +1465,12 @@ def _prototype_stylesheet() -> str:
             border-radius: 5px;
         }
         QFrame#prototypeInspectorBlock,
-        QFrame#prototypeRightRatings,
         QFrame#prototypeRightActions,
         QFrame#prototypePreviewPanel {
             background: transparent;
             border: none;
             border-radius: 0px;
         }
-        QFrame#prototypeRightRatings,
         QFrame#prototypeRightActions,
         QFrame#prototypeInspectorBlock[divided="true"] {
             border-top: 1px solid #1f1f20;
@@ -1545,10 +1478,6 @@ def _prototype_stylesheet() -> str:
         QLabel#prototypeSecondaryText {
             color: #838991;
             font: 11px "Segoe UI";
-        }
-        QLabel#prototypeTinyStars {
-            color: #9ca1a7;
-            font: 12px "Segoe UI Symbol";
         }
         QScrollArea#prototypeGridScroll, QWidget#prototypeThumbnailWall {
             background: #070707;

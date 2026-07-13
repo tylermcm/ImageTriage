@@ -27,7 +27,7 @@ ARTICLES = [
         ## The adapter workflow
 
         1. **Score the folder** with [Index & Score](doc:index-score) so it has an AI database.
-        2. **Label examples** — rate, accept, or reject images, or work through suggested candidates in [Reviewing & labeling](doc:review-labels).
+        2. **Label examples** — mark winners or rejects, or work through suggested candidates in [Reviewing & labeling](doc:review-labels).
         3. **Train** the adapter from those labels — see [Training an adapter](doc:training).
         4. **Evaluate** it before relying on it — see [Evaluating an adapter](doc:evaluating).
         5. **Rank** the folder with the adapter and review the refreshed result.
@@ -52,14 +52,14 @@ ARTICLES = [
 
         ## Two ways to label
 
-        - **As you cull** — every rating, accept, and reject you make is available as a training signal.
+        - **As you cull** — every winner and reject you mark is available as a training signal.
         - **Guided review** — choose **`AI > Adapter Training > Review Adapter Labels...`** to work through a curated set of suggested candidates.
 
         ## Why guided review helps
 
         Guided review surfaces a *diverse, informative* set of images to label rather than a wall of near-identical frames. It collapses tight duplicates, spreads picks across different scenes, and prioritizes the images that will teach the model the most. That means fewer labels for a better result.
 
-        > **Tip:** A clean batch of varied labels beats a huge batch of repetitive ones. Aim for spread across scenes *and* across the rating scale — include clear keeps, clear rejects, and a few borderline calls.
+        > **Tip:** A clean batch of varied labels beats a huge batch of repetitive ones. Aim for spread across scenes and include clear winners and clear rejects.
 
         Once you have a solid batch, move on to [Training an adapter](doc:training).
         """,
@@ -81,7 +81,7 @@ ARTICLES = [
 
         - Click **Dispute AI** in the AI Review toolbar.
         - Right-click the image and choose **Dispute AI Decision**.
-        - Press `D`, then a rating key from `1` to `5`:
+        - Press `D`, then a label key from `1` to `5`:
 
         1. Best
         2. Strong
@@ -108,7 +108,7 @@ ARTICLES = [
         When you have a solid batch of labels, train the adapter.
 
         1. Open the folder you trained from, with its AI database from [Index & Score](doc:index-score).
-        2. Choose **`AI > Adapter Training > Prepare Rating CSV`** to materialize the current labels.
+        2. Choose **`AI > Adapter Training > Prepare Training Labels`** to materialize the current labels.
         3. Choose **`AI > Adapter Training > Train Adapter...`**.
         4. When training finishes, the new adapter appears in the AI Workflow Center with its Score Fit result.
 
@@ -136,7 +136,7 @@ ARTICLES = [
 
         ## Run an evaluation
 
-        Choose **`AI > Adapter Training > Evaluate Adapter`** to check the latest adapter against your stored ratings.
+        Choose **`AI > Adapter Training > Evaluate Adapter`** to check the latest adapter against your stored labels.
 
         ## Reading Score Fit
 

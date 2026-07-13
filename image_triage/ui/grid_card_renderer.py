@@ -25,6 +25,8 @@ from PySide6.QtGui import (
     QPixmap,
 )
 
+from .prototype_style import folder_icon_pixmap
+
 
 _ACTION_ICON_FILES: dict[str, Path] = {
     "heart": Path(__file__).resolve().parent / "assets" / "loupe_heart.png",
@@ -144,6 +146,10 @@ class GridCardData:
     # below it) and the scrim alphas scale to 65% so the photo stays readable
     # underneath the overlay. Photo-fit keeps the text strip under the photo.
     immersive: bool = False
+    # Folder tiles: paint the flat folder glyph in the photo pane and hide the
+    # heart/reject actions (folders cannot be culled).
+    is_folder: bool = False
+    show_actions: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,7 +261,15 @@ def paint_grid_card(
         photo_height = min(round(content_rect.width() * 2 / 3), content_rect.height())
         photo_rect = QRect(content_rect.left(), content_rect.top(), content_rect.width(), photo_height)
 
-    _paint_image(painter, content_rect, image_radius, source_pixmap, photo_rect=photo_rect, round_photo=round_photo)
+    _paint_image(
+        painter,
+        content_rect,
+        image_radius,
+        source_pixmap,
+        photo_rect=photo_rect,
+        round_photo=round_photo,
+        folder=data.is_folder,
+    )
     if not compact:
         # The footer text block overlaps the photo's lower edge on grid
         # tiles, so both full styles scrim it for guaranteed contrast:
@@ -447,6 +461,7 @@ def _paint_image(
     *,
     photo_rect: QRect | None = None,
     round_photo: bool = False,
+    folder: bool = False,
 ) -> None:
     path = _rounded_path(QRectF(content_rect), radius)
     if photo_rect is None:
@@ -456,7 +471,10 @@ def _paint_image(
 
     painter.fillRect(content_rect, QColor(8, 9, 11))
     if source_pixmap is None or source_pixmap.isNull():
-        _paint_empty_image(painter, photo_rect)
+        if folder:
+            _paint_folder_image(painter, photo_rect)
+        else:
+            _paint_empty_image(painter, photo_rect)
     else:
         target_size = photo_rect.size()
         scaled_size = source_pixmap.size()
@@ -486,6 +504,17 @@ def _paint_image(
     painter.setPen(QPen(QColor(255, 255, 255, 18), 1))
     painter.setBrush(Qt.BrushStyle.NoBrush)
     painter.drawRoundedRect(QRectF(content_rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+
+
+def _paint_folder_image(painter: QPainter, image_rect: QRect) -> None:
+    """Folder tile: the flat folder glyph centered on the dark photo pane."""
+    painter.fillRect(image_rect, QColor(17, 18, 20))
+    icon_size = max(24, round(min(image_rect.width(), image_rect.height()) * 0.55))
+    icon = folder_icon_pixmap(icon_size)
+    target = QRect(0, 0, icon_size, icon_size)
+    target.moveCenter(image_rect.center())
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    painter.drawPixmap(target, icon, icon.rect())
 
 
 def _paint_empty_image(painter: QPainter, image_rect: QRect) -> None:
@@ -1069,22 +1098,26 @@ def _paint_bottom_overlay(
             align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
 
-    _paint_action_button(
-        painter,
-        favorite_rect,
-        "heart",
-        active=data.favorite,
-        hover=data.hover_favorite,
-        active_color=QColor(245, 95, 118),
-    )
-    _paint_action_button(
-        painter,
-        reject_rect,
-        "reject",
-        active=data.rejected,
-        hover=data.hover_reject,
-        active_color=QColor(255, 107, 107),
-    )
+    if data.show_actions:
+        _paint_action_button(
+            painter,
+            favorite_rect,
+            "heart",
+            active=data.favorite,
+            hover=data.hover_favorite,
+            active_color=QColor(245, 95, 118),
+        )
+        _paint_action_button(
+            painter,
+            reject_rect,
+            "reject",
+            active=data.rejected,
+            hover=data.hover_reject,
+            active_color=QColor(255, 107, 107),
+        )
+    else:
+        favorite_rect = QRect()
+        reject_rect = QRect()
     painter.restore()
     return favorite_rect, reject_rect
 
@@ -1205,22 +1238,26 @@ def _paint_compact_overlay(
             )
             _draw_elided_text(painter, name_rect, data.filename, name_font, name_color)
 
-    _paint_action_button(
-        painter,
-        favorite_rect,
-        "heart",
-        active=data.favorite,
-        hover=data.hover_favorite,
-        active_color=QColor(245, 95, 118),
-    )
-    _paint_action_button(
-        painter,
-        reject_rect,
-        "reject",
-        active=data.rejected,
-        hover=data.hover_reject,
-        active_color=QColor(255, 107, 107),
-    )
+    if data.show_actions:
+        _paint_action_button(
+            painter,
+            favorite_rect,
+            "heart",
+            active=data.favorite,
+            hover=data.hover_favorite,
+            active_color=QColor(245, 95, 118),
+        )
+        _paint_action_button(
+            painter,
+            reject_rect,
+            "reject",
+            active=data.rejected,
+            hover=data.hover_reject,
+            active_color=QColor(255, 107, 107),
+        )
+    else:
+        favorite_rect = QRect()
+        reject_rect = QRect()
     painter.restore()
     return favorite_rect, reject_rect
 
