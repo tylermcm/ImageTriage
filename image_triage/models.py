@@ -110,7 +110,6 @@ class SessionAnnotation:
             and not self.photoshop
             and self.rating == 0
             and not self.tags
-            and not self.review_round
         )
 
 
@@ -138,7 +137,6 @@ class FilterMode(str, Enum):
     DINO_QUARANTINE = "DINO Quarantine"
     DINO_REMOVED = "DINO Removed"
     DINO_RESCUED = "DINO Rescued"
-    REVIEW_ROUNDS = "Review Stage"
 
 
 class WinnerMode(str, Enum):

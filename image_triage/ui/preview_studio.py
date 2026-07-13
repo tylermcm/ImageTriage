@@ -228,7 +228,7 @@ class ConfidenceBar(QWidget):
 
 # --- Filmstrip --------------------------------------------------------------
 class ArrowButton(QPushButton):
-    """A bare chevron scroll control (no enclosing circle), resting at 25%
+    """A bare chevron scroll control (no enclosing circle), resting at 60%
     opacity and drawn with a soft halo so it stays legible over any
     thumbnail. The owner hides it when there is nothing more to scroll."""
 
@@ -255,7 +255,7 @@ class ArrowButton(QPushButton):
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setOpacity(1.0 if self._hover else 0.25)
+        painter.setOpacity(1.0 if self._hover else 0.6)
         cx, cy = self.rect().center().x(), self.rect().center().y()
         reach = 7.5
         chevron = QPainterPath()
@@ -341,7 +341,16 @@ class FilmstripThumb(QWidget):
         painter.setClipPath(path)
         if self._pixmap is not None and not self._pixmap.isNull():
             scaled = self._pixmap.size()
-            scaled.scale(rect.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+            # Landscape fills the tile (cover crop); portrait fits inside it
+            # (pillarboxed) — covering would blow a portrait up to the tile's
+            # width, center-cropping a sliver and wrecking the resolution.
+            portrait = self._pixmap.height() > self._pixmap.width()
+            mode = (
+                Qt.AspectRatioMode.KeepAspectRatio
+                if portrait
+                else Qt.AspectRatioMode.KeepAspectRatioByExpanding
+            )
+            scaled.scale(rect.size(), mode)
             draw = QRect(QPoint(0, 0), scaled)
             draw.moveCenter(rect.center())
             painter.fillRect(rect, QColor(17, 18, 20))
@@ -473,6 +482,9 @@ class Filmstrip(QFrame):
     """
 
     frame_selected = Signal(int)
+    # User changed the strip's thumb height or collapsed it (drag handle);
+    # owners persist the new layout from here.
+    layout_changed = Signal()
 
     THUMB_W = 116       # target width at the default height; scales with height
     GAP = 6
@@ -544,7 +556,9 @@ class Filmstrip(QFrame):
             if not self._collapsed:
                 self._collapsed = True
                 self._apply_strip_height()
+                self.layout_changed.emit()
             return
+        previous = (self._collapsed, self._thumb_h)
         self._collapsed = False
         self._thumb_h = max(self.MIN_THUMB_H, min(self.MAX_THUMB_H, int(target_thumb_h)))
         self._apply_strip_height()
@@ -552,9 +566,20 @@ class Filmstrip(QFrame):
         # thumbs are wider, so fewer fit (arrows appear); shorter fit more.
         self._recenter_pending = False
         self._reflow(force=True)
+        if previous != (self._collapsed, self._thumb_h):
+            self.layout_changed.emit()
 
     def toggle_collapsed(self) -> None:
         self._collapsed = not self._collapsed
+        self._apply_strip_height()
+        if not self._collapsed:
+            self._reflow(force=True)
+        self.layout_changed.emit()
+
+    def restore_layout(self, thumb_h: int, collapsed: bool) -> None:
+        """Apply a persisted strip layout without emitting ``layout_changed``."""
+        self._thumb_h = max(self.MIN_THUMB_H, min(self.MAX_THUMB_H, int(thumb_h)))
+        self._collapsed = bool(collapsed)
         self._apply_strip_height()
         if not self._collapsed:
             self._reflow(force=True)
@@ -708,9 +733,9 @@ def studio_stylesheet(scope: str = "") -> str:
     css = f"""
     QWidget#studioRoot {{ background: {GROUND}; }}
 
-    QFrame#toolbar {{ background: {SURFACE_1}; border: none; border-bottom: 1px solid {LINE}; }}
-    QFrame#filmstrip {{ background: {SURFACE_1}; border: none; border-top: 1px solid {LINE}; }}
-    QFrame#rail {{ background: transparent; border: none; }}
+    QFrame#toolbar {{ background: {SURFACE_1}; border: 1px solid {LINE}; border-radius: {CARD_RADIUS}px; }}
+    QFrame#filmstrip {{ background: {SURFACE_1}; border: 1px solid {LINE}; border-radius: {CARD_RADIUS}px; }}
+    QFrame#rail {{ background: {SURFACE_1}; border: 1px solid {LINE}; border-radius: {CARD_RADIUS}px; }}
     QFrame#vline {{ background: {LINE}; border: none; }}
 
     QLabel#groupLabel {{ color: {TEXT_MUTE}; font-size: 10px; font-weight: 600; letter-spacing: 1px; }}
@@ -723,6 +748,8 @@ def studio_stylesheet(scope: str = "") -> str:
     }}
     QFrame#segmented QPushButton:hover {{ background: {SURFACE_HOVER}; color: {TEXT}; }}
     QFrame#segmented QPushButton:checked {{ background: {ACCENT}; color: #ffffff; }}
+    QFrame#segmented QPushButton:disabled {{ color: {TEXT_MUTE}; }}
+    QFrame#segmented QPushButton:checked:disabled {{ background: {SURFACE_HOVER}; color: {TEXT_MUTE}; }}
 
     QPushButton#toolBtn {{
         background: {SURFACE_3}; border: 1px solid {LINE}; color: {TEXT};

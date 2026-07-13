@@ -65,12 +65,6 @@ def _decision_text(annotation: SessionAnnotation | None) -> str:
     return "Unreviewed"
 
 
-def _rating_text(annotation: SessionAnnotation | None) -> str:
-    if annotation is None or annotation.rating <= 0:
-        return "-"
-    return str(annotation.rating)
-
-
 def _natural_name_key(value: str) -> tuple[tuple[int, object], ...]:
     parts = re.split(r"(\d+)", value.casefold())
     key: list[tuple[int, object]] = []
@@ -82,7 +76,7 @@ def _natural_name_key(value: str) -> tuple[tuple[int, object], ...]:
 
 
 class DetailsTableModel(QAbstractTableModel):
-    COLUMNS = ("Name", "Decision", "Rating", "AI", "Date modified", "Type", "Size")
+    COLUMNS = ("Name", "Decision", "AI", "Date modified", "Type", "Size")
 
     def __init__(self, *, ai_text_provider: Callable[[ImageRecord], str], parent=None) -> None:
         super().__init__(parent)
@@ -127,7 +121,7 @@ class DetailsTableModel(QAbstractTableModel):
 
     def set_annotations(self, annotations: dict[str, SessionAnnotation]) -> None:
         self._annotations = annotations
-        if self._sort_column in {1, 2}:
+        if self._sort_column == 1:
             self.layoutAboutToBeChanged.emit()
             self._sort_rows()
             self._rebuild_row_positions()
@@ -170,7 +164,7 @@ class DetailsTableModel(QAbstractTableModel):
         annotation = self._annotations.get(record.path)
         column = index.column()
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            if column in {2, 6}:
+            if column == 5:
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         if role != Qt.ItemDataRole.DisplayRole:
@@ -180,14 +174,12 @@ class DetailsTableModel(QAbstractTableModel):
         if column == 1:
             return _decision_text(annotation)
         if column == 2:
-            return _rating_text(annotation)
-        if column == 3:
             return "-" if record.is_folder else self._ai_text(record)
-        if column == 4:
+        if column == 3:
             return self._static_display_cache[source_row][0]
-        if column == 5:
+        if column == 4:
             return self._static_display_cache[source_row][1]
-        if column == 6:
+        if column == 5:
             return self._static_display_cache[source_row][2]
         return None
 
@@ -239,14 +231,12 @@ class DetailsTableModel(QAbstractTableModel):
             if self._sort_column == 1:
                 return _decision_text(annotation).casefold()
             if self._sort_column == 2:
-                return annotation.rating if annotation is not None else 0
-            if self._sort_column == 3:
                 return "" if record.is_folder else self._ai_text(record).casefold()
-            if self._sort_column == 4:
+            if self._sort_column == 3:
                 return record.modified_ns
-            if self._sort_column == 5:
+            if self._sort_column == 4:
                 return self._static_display_cache[source_row][1].casefold()
-            if self._sort_column == 6:
+            if self._sort_column == 5:
                 return record.size
             return _natural_name_key(record.name)
 
@@ -275,7 +265,6 @@ class DetailsTableView(QTableView):
     delete_requested = Signal(int)
     keep_requested = Signal(int)
     move_requested = Signal(int)
-    rate_requested = Signal(int, int)
     tag_requested = Signal(int)
     winner_requested = Signal(int)
     reject_requested = Signal(int)
@@ -317,9 +306,6 @@ class DetailsTableView(QTableView):
             return
         if key == Qt.Key.Key_M and review_allowed:
             self.move_requested.emit(row)
-            return
-        if Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and review_allowed:
-            self.rate_requested.emit(row, key - Qt.Key.Key_0)
             return
         if key == Qt.Key.Key_T and review_allowed:
             self.tag_requested.emit(row)
@@ -546,7 +532,6 @@ class PhotoDetailsView(QWidget):
     delete_requested = Signal(int)
     keep_requested = Signal(int)
     move_requested = Signal(int)
-    rate_requested = Signal(int, int)
     tag_requested = Signal(int)
     winner_requested = Signal(int)
     reject_requested = Signal(int)
@@ -591,11 +576,10 @@ class PhotoDetailsView(QWidget):
             header.setResizeContentsPrecision(64)
         column_widths = {
             1: 112,
-            2: 58,
-            3: 76,
-            4: 142,
-            5: 96,
-            6: 88,
+            2: 76,
+            3: 142,
+            4: 96,
+            5: 88,
         }
         for column, width in column_widths.items():
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
@@ -616,7 +600,6 @@ class PhotoDetailsView(QWidget):
         self.table.delete_requested.connect(lambda row: self._emit_row_signal(self.delete_requested, row))
         self.table.keep_requested.connect(lambda row: self._emit_row_signal(self.keep_requested, row))
         self.table.move_requested.connect(lambda row: self._emit_row_signal(self.move_requested, row))
-        self.table.rate_requested.connect(lambda row, rating: self._emit_rate_signal(row, rating))
         self.table.tag_requested.connect(lambda row: self._emit_row_signal(self.tag_requested, row))
         self.table.winner_requested.connect(lambda row: self._emit_row_signal(self.winner_requested, row))
         self.table.reject_requested.connect(lambda row: self._emit_row_signal(self.reject_requested, row))
@@ -718,11 +701,6 @@ class PhotoDetailsView(QWidget):
         source_row = self._model.source_index_at(row)
         if source_row is not None:
             signal.emit(source_row)
-
-    def _emit_rate_signal(self, row: int, rating: int) -> None:
-        source_row = self._model.source_index_at(row)
-        if source_row is not None:
-            self.rate_requested.emit(source_row, rating)
 
     def set_current_index(self, index: int) -> None:
         logger = perf_logger()

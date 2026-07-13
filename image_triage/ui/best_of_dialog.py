@@ -14,18 +14,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..workflows import BEST_OF_BALANCED, BEST_OF_TOP_N, BEST_OF_TOP_PER_GROUP
-from ..review_workflows import (
-    REVIEW_ROUND_HERO,
-    REVIEW_ROUND_THIRD_PASS,
-    review_round_label,
-)
 
 
 @dataclass(slots=True, frozen=True)
 class BestOfDialogResult:
     strategy: str
     limit: int
-    review_round: str = ""
 
 
 class BestOfSetDialog(QDialog):
@@ -60,12 +54,6 @@ class BestOfSetDialog(QDialog):
         self.limit_spin.setValue(min(max(6, min(visible_count, 12)), max(1, visible_count)))
         form.addRow("Proposal Size", self.limit_spin)
 
-        self.round_combo = QComboBox()
-        self.round_combo.addItem("Just Select Them", "")
-        self.round_combo.addItem(review_round_label(REVIEW_ROUND_THIRD_PASS), REVIEW_ROUND_THIRD_PASS)
-        self.round_combo.addItem(review_round_label(REVIEW_ROUND_HERO), REVIEW_ROUND_HERO)
-        form.addRow("Optional Mark", self.round_combo)
-
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -75,5 +63,4 @@ class BestOfSetDialog(QDialog):
         return BestOfDialogResult(
             strategy=str(self.strategy_combo.currentData() or BEST_OF_BALANCED),
             limit=self.limit_spin.value(),
-            review_round=str(self.round_combo.currentData() or ""),
         )

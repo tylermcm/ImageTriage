@@ -32,8 +32,8 @@ class _FakeOwner(QWidget):
             for index in range(3)
         ]
         self._annotations = {
-            self._records[0].path: SessionAnnotation(winner=True, rating=5),
-            self._records[1].path: SessionAnnotation(reject=True, rating=1),
+            self._records[0].path: SessionAnnotation(winner=True),
+            self._records[1].path: SessionAnnotation(reject=True),
         }
         self._ai_results_by_path = {"sentinel": object()}
         self.grid = _FakeGrid()
@@ -48,7 +48,7 @@ class UIPrototypeTests(unittest.TestCase):
 
         self.assertEqual(len(items), 6)
         self.assertTrue(items[0].selected)
-        self.assertGreaterEqual(items[0].rating, 1)
+        self.assertTrue(items[0].accepted)
 
     def test_collect_prototype_items_reads_owner_state_without_mutating(self) -> None:
         owner = _FakeOwner()

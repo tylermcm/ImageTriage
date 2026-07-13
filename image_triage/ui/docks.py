@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
 
 from ..ai_results import build_ai_explanation_lines
 from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats, histogram_synopsis
-from ..review_workflows import review_round_label
 from ..quality.poi import focus_poi, should_use_smart_focus_crop
 from .theme import ThemePalette, default_theme
 
@@ -1624,7 +1623,7 @@ class InspectorPanel(QWidget):
         histogram_layout.addWidget(self.histogram_widget)
         histogram_layout.addWidget(self.histogram_summary)
         self._make_custom_section(layout, "Histogram", histogram_body)
-        self.culling_rows = self._make_section(layout, "Culling", ("Decision", "Rating", "AI Suggestion", "Confidence", "Reason"))
+        self.culling_rows = self._make_section(layout, "Culling", ("Decision", "AI Suggestion", "Confidence", "Reason"))
         self.subject_rows = self._make_section(layout, "Subject", ("Type", "Review Focus", "Signal", "AI Detail"))
         self.quality_rows = self._make_section(layout, "Quality", ("Detail", "Focus", "Motion Blur", "Noise", "Exposure", "Confidence"))
         self.group_rows = self._make_section(
@@ -1986,7 +1985,6 @@ class InspectorPanel(QWidget):
         decision = self._decision_text(annotation)
 
         self.culling_rows["Decision"].setText(decision)
-        self.culling_rows["Rating"].setText(self._rating_text(annotation))
         self.culling_rows["AI Suggestion"].setText(self._ai_suggestion_text(ai_result))
         self.culling_rows["Confidence"].setText(self._ai_confidence_text(ai_result))
         explanation = build_ai_explanation_lines(ai_result, review_summary=review_summary)
@@ -2286,15 +2284,7 @@ class InspectorPanel(QWidget):
             return "Keep"
         if annotation.reject:
             return "Reject"
-        if annotation.rating and annotation.rating >= 3:
-            return "Maybe"
         return "Unreviewed"
-
-    @staticmethod
-    def _rating_text(annotation: "SessionAnnotation | None") -> str:
-        if annotation is None or not annotation.rating:
-            return "-"
-        return f"{annotation.rating}/5"
 
     @staticmethod
     def _ai_suggestion_text(ai_result: "AIImageResult | None") -> str:
@@ -2400,7 +2390,7 @@ class InspectorPanel(QWidget):
         workflow_insight: object | None,
     ) -> str:
         if annotation is not None:
-            if annotation.winner or annotation.rating >= 4:
+            if annotation.winner:
                 return "Yes"
             if annotation.reject:
                 return "No"

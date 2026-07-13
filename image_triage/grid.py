@@ -17,7 +17,6 @@ from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
 from .models import ImageRecord, ImageVariant, SessionAnnotation
 from .perf import perf_logger
-from .review_workflows import review_round_short_label
 from .scanner import normalized_path_key
 from .thumbnails import ThumbnailManager
 from .ui.grid_card_renderer import (
@@ -80,7 +79,6 @@ class ThumbnailGridView(QAbstractScrollArea):
     delete_requested = Signal(int)
     move_requested = Signal(int)
     keep_requested = Signal(int)
-    rate_requested = Signal(int, int)
     tag_requested = Signal(int)
     winner_requested = Signal(int)
     reject_requested = Signal(int)
@@ -291,7 +289,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._background_selected = theme.panel_bg.qcolor()
         self._background_idle = theme.panel_alt_bg.qcolor()
         self._viewport_bg = theme.image_bg.qcolor()           # #070707 viewport
-        self._footer_bg = theme.panel_alt_bg.qcolor().darker(110)  # rating strip under each image
+        self._footer_bg = theme.panel_alt_bg.qcolor().darker(110)  # metadata strip under each image
         self._title_color = theme.text_primary.qcolor()
         self._capture_color = theme.text_secondary.qcolor()
         self._meta_color = theme.text_muted.qcolor()
@@ -1506,7 +1504,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 return
             self.move_requested.emit(index)
             return
-        if Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
+        if Qt.Key.Key_1 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
             if self._items[index].is_folder:
                 return
             label_map = {
@@ -1517,8 +1515,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 Qt.Key.Key_5: "reject",
             }
             # Dispute chord: D was pressed within the last 2s and we're in AI
-            # Review mode. Consume the 1-5 as a dispute label rather than a
-            # regular rating.
+            # Review mode. Consume the 1-5 as an AI dispute label.
             if (
                 self._show_ai_annotations
                 and Qt.Key.Key_1 <= key <= Qt.Key.Key_5
@@ -1533,8 +1530,6 @@ class ThumbnailGridView(QAbstractScrollArea):
                     return
                 self._set_adapter_label_for_index(index, label_map[key], emit=True)
                 return
-            self.rate_requested.emit(index, key - Qt.Key.Key_0)
-            return
         if key == Qt.Key.Key_D and self._show_ai_annotations and review_shortcut_allowed:
             # Start the dispute chord. The next 1-5 key within 2s will be
             # treated as a dispute label for the current card.
@@ -1756,7 +1751,6 @@ class ThumbnailGridView(QAbstractScrollArea):
         # zoom-crop drawing path.
         use_new_grid_card = (
             self._use_new_grid_card()
-            and not record.is_folder
             and not self._adapter_review_mode
             and not (index == self._zoom_index and self._zoom_factor > 1.0)
         )
@@ -1767,30 +1761,59 @@ class ThumbnailGridView(QAbstractScrollArea):
         if use_new_grid_card:
             if burst_info is not None and self._burst_stack_mode:
                 self._paint_burst_stack_layers(painter, image_rect, highlighted=is_current or is_selected)
-            status_text = self._review_keeper_label(ai_result, self._workflow_insight_for(record))
-            duplicate_text = self._review_group_badge_text(
-                burst_info, self._dino_prefilter_decision_for(record)
-            )
-            ai_text = self._review_ai_badge_label(ai_result)
-            card_data = GridCardData(
-                tags=self._review_workflow_tags(record),
-                filename=variant.name if record.has_variant_stack else record.name,
-                exif_text=self._review_capture_text(record),
-                meta_text=self._review_passive_meta_text(record, variant),
-                duplicate_text=duplicate_text,
-                ai_text=ai_text,
-                position_text=self._review_position_text(index),
-                status_text=status_text,
-                status_kind=status_text.casefold(),
-                duplicate_visible=bool(duplicate_text),
-                ai_visible=bool(ai_text),
-                selected=is_current or is_selected,
-                favorite=is_winner,
-                rejected=is_rejected,
-                hover_favorite=index == self._hovered_winner_index,
-                hover_reject=index == self._hovered_reject_index,
-                immersive=self._loupe_card_style == "immersive",
-            )
+            if record.is_folder:
+                # Folder tile in the shared card design: folder glyph in the
+                # photo pane, no cull actions or AI chrome — just the name,
+                # the type, and the modified time.
+                folder_date = ""
+                if record.modified_ns > 0:
+                    folder_date = datetime.fromtimestamp(record.modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M")
+                card_data = GridCardData(
+                    tags=(),
+                    filename=record.name,
+                    exif_text="Folder",
+                    meta_text=folder_date,
+                    duplicate_text="",
+                    ai_text="",
+                    position_text="",
+                    status_text="",
+                    status_kind="",
+                    duplicate_visible=False,
+                    ai_visible=False,
+                    selected=is_current or is_selected,
+                    favorite=False,
+                    rejected=False,
+                    hover_favorite=False,
+                    hover_reject=False,
+                    immersive=self._loupe_card_style == "immersive",
+                    is_folder=True,
+                    show_actions=False,
+                )
+            else:
+                status_text = self._review_keeper_label(ai_result, self._workflow_insight_for(record))
+                duplicate_text = self._review_group_badge_text(
+                    burst_info, self._dino_prefilter_decision_for(record)
+                )
+                ai_text = self._review_ai_badge_label(ai_result)
+                card_data = GridCardData(
+                    tags=self._review_workflow_tags(record),
+                    filename=variant.name if record.has_variant_stack else record.name,
+                    exif_text=self._review_capture_text(record),
+                    meta_text=self._review_passive_meta_text(record, variant),
+                    duplicate_text=duplicate_text,
+                    ai_text=ai_text,
+                    position_text=self._review_position_text(index),
+                    status_text=status_text,
+                    status_kind=status_text.casefold(),
+                    duplicate_visible=bool(duplicate_text),
+                    ai_visible=bool(ai_text),
+                    selected=is_current or is_selected,
+                    favorite=is_winner,
+                    rejected=is_rejected,
+                    hover_favorite=index == self._hovered_winner_index,
+                    hover_reject=index == self._hovered_reject_index,
+                    immersive=self._loupe_card_style == "immersive",
+                )
             paint_grid_card(
                 painter,
                 rect,
@@ -1921,7 +1944,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                     )
                 painter.restore()
 
-        # Rating/meta footer strip under compact cards. The normal review card
+        # Metadata footer strip under compact cards. The normal review card
         # now paints metadata over a bottom image scrim instead.
         footer_top = image_rect.bottom() + 1
         if not use_loupe_card and not use_new_grid_card and footer_top < rect.bottom() - 1:
@@ -1935,7 +1958,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
             painter.restore()
 
-        if not use_loupe_card and not use_new_grid_card and annotation and (annotation.rating or annotation.tags):
+        if not use_loupe_card and not use_new_grid_card and annotation and annotation.tags:
             badge = self._annotation_badge(annotation)
             badge_rect = QRect(image_rect.right() - 160, image_rect.bottom() - 30, 150, 24)
             painter.setPen(Qt.PenStyle.NoPen)
@@ -1980,17 +2003,6 @@ class ThumbnailGridView(QAbstractScrollArea):
                 )
                 left_badge_y += 30
 
-            if workflow_insight is not None and getattr(workflow_insight, "has_round", False):
-                short_label = review_round_short_label(getattr(workflow_insight, "review_round", ""))
-                if short_label:
-                    self._paint_state_badge(
-                        painter,
-                        QRect(left_badge_x, left_badge_y, 88, 24),
-                        short_label,
-                        self._workflow_round_badge_fill,
-                        self._workflow_round_badge_text,
-                    )
-                    left_badge_y += 30
             if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
                 self._paint_state_badge(
                     painter,
@@ -2178,9 +2190,6 @@ class ThumbnailGridView(QAbstractScrollArea):
 
     def _annotation_badge(self, annotation: SessionAnnotation) -> str:
         parts: list[str] = []
-        if annotation.rating:
-            rating = max(0, min(5, int(annotation.rating)))
-            parts.append("\u2605" * rating + "\u2606" * (5 - rating))
         if annotation.tags:
             parts.append(", ".join(annotation.tags[:2]))
         return " | ".join(parts)
@@ -2696,10 +2705,6 @@ class ThumbnailGridView(QAbstractScrollArea):
         """
         tags: list[tuple[str, str]] = []
         workflow_insight = self._workflow_insight_for(record)
-        if workflow_insight is not None and getattr(workflow_insight, "has_round", False):
-            short_label = review_round_short_label(getattr(workflow_insight, "review_round", ""))
-            if short_label:
-                tags.append((short_label, "round"))
         if self._show_ai_annotations:
             if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
                 tags.append(("Best Frame", "best_frame"))

@@ -9,12 +9,8 @@ from typing import TYPE_CHECKING
 from ..ai_results import AIBundle, AIConfidenceBucket, find_ai_result_for_record
 from ..models import ImageRecord, SessionAnnotation
 from ..review_workflows import (
-    REVIEW_ROUND_HERO,
-    REVIEW_ROUND_THIRD_PASS,
     BurstRecommendation,
     ai_strength,
-    normalize_review_round,
-    review_round_label,
 )
 from ..scanner import normalized_path_key
 
@@ -88,10 +84,6 @@ def build_best_of_set_plan(
         if review_insight is not None and getattr(review_insight, "is_duplicate", False):
             score -= 5.0
             reasons.append("Duplicate penalty")
-        round_value = normalize_review_round(annotation.review_round)
-        if round_value in {REVIEW_ROUND_THIRD_PASS, REVIEW_ROUND_HERO}:
-            score += 4.0
-            reasons.append(review_round_label(round_value))
         if annotation.winner:
             score += 5.0
             reasons.append("Already accepted")

@@ -8,8 +8,6 @@ from image_triage.ai_results import AIBundle, AIConfidenceBucket, AIImageResult
 from image_triage.models import ImageRecord, SessionAnnotation
 from image_triage.review_intelligence import ReviewGroup, ReviewInsight, ReviewIntelligenceBundle
 from image_triage.review_workflows import (
-    REVIEW_ROUND_HERO,
-    REVIEW_ROUND_SECOND_PASS,
     BurstRecommendation,
     CalibrationPair,
     TasteProfile,
@@ -82,7 +80,7 @@ def _review_bundle(
 
 class ReviewWorkflowTests(unittest.TestCase):
     def test_disagreement_level_flags_user_keep_against_ai_reject(self) -> None:
-        annotation = SessionAnnotation(winner=True, rating=5)
+        annotation = SessionAnnotation(winner=True)
         ai_result = _ai_result(
             "C:/shots/keep.jpg",
             group_id="ai-1",
@@ -163,7 +161,7 @@ class ReviewWorkflowTests(unittest.TestCase):
                 "Detail retention is stronger than the nearby frames.",
             ),
         )
-        annotation = SessionAnnotation(winner=True, review_round=REVIEW_ROUND_HERO)
+        annotation = SessionAnnotation(winner=True, review_round="final_hero_selects")
         ai_result = _ai_result(
             "C:/shots/hero.jpg",
             group_id="ai-1",
@@ -181,11 +179,11 @@ class ReviewWorkflowTests(unittest.TestCase):
             taste_profile=TasteProfile(summary_lines=("Recent picks lean toward crisper detail.",)),
         )
 
-        self.assertEqual(insight.review_round_label, "Hero Select")
+        self.assertEqual(insight.review_round_label, "")
         self.assertTrue(insight.best_in_group)
         self.assertEqual(insight.disagreement_level, "strong")
         self.assertEqual(insight.disagreement_badge, "AI Miss")
-        self.assertIn("Hero", insight.summary_text)
+        self.assertNotIn("Hero", insight.summary_text)
         self.assertIn("Best Frame", insight.summary_text)
         self.assertIn("AI Disagreement", insight.summary_text)
         self.assertTrue(any("Burst specialist pick" in line for line in insight.detail_lines))

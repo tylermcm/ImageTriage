@@ -39,33 +39,25 @@ ARTICLES = [
     ),
     DocArticle(
         id="rating-sorting",
-        title="Rating, accepting & rejecting",
+        title="Binary culling & tags",
         category="reviewing",
-        summary="Star ratings, accept/reject flags, and tags.",
-        keywords=("rate", "rating", "stars", "accept", "reject", "flag", "tag"),
+        summary="Heart/X culling and tags.",
+        keywords=("winner", "reject", "flag", "tag"),
         markdown="""
-        # Rating, accepting & rejecting
+        # Binary culling & tags
 
-        Image Triage gives you several ways to mark an image. Use whichever fits how you think about your work.
+        Image Triage is built around a fast binary cull: find the winners, reject the rest.
 
-        ## Accept and reject
+        ## Winners and rejects
 
-        - `W` **accepts** the selected images.
+        - `W` marks selected images as **winners**.
         - `X` **rejects** them.
 
-        Accept/reject is the fastest first pass: a binary in-or-out decision you can refine later.
-
-        ## Star ratings
-
-        Press `0`–`5` to rate. Ratings are ideal for ranking keepers against each other once the obvious rejects are gone.
+        A winner is an image that survives the cull. A reject does not make the cut.
 
         ## Tags
 
         Press `T` to tag the selection. Tags are freeform labels for grouping images by theme, subject, or any workflow you like.
-
-        > **Note:** Ratings, accept/reject, and tags are independent. An image can be accepted *and* rated *and* tagged at the same time.
-
-        Ratings also feed AI training when you build an adapter — see [What adapters are](doc:what-adapters-are).
         """,
     ),
     DocArticle(

@@ -60,12 +60,6 @@ class AdvancedFilterDialog(QDialog):
         self.tag_field.setPlaceholderText("portrait, product, wedding...")
         form_layout.addRow("Tags", self.tag_field)
 
-        self.rating_combo = QComboBox()
-        self.rating_combo.addItem("Any Rating", 0)
-        for rating in range(1, 6):
-            self.rating_combo.addItem(f"{rating}+ Stars", rating)
-        form_layout.addRow("Min Rating", self.rating_combo)
-
         self.orientation_combo = QComboBox()
         for mode in OrientationFilter:
             self.orientation_combo.addItem(mode.value, mode)
@@ -131,11 +125,10 @@ class AdvancedFilterDialog(QDialog):
             ai_state=self._source_query.ai_state,
             ai_cull_bucket=self._source_query.ai_cull_bucket,
             ai_workflow_tag=self._source_query.ai_workflow_tag,
-            review_round=self._source_query.review_round,
             camera_text=self.camera_field.text().strip(),
             lens_text=self.lens_field.text().strip(),
             tag_text=self.tag_field.text().strip(),
-            min_rating=int(self.rating_combo.currentData() or 0),
+            min_rating=0,
             orientation=self._selected_orientation(),
             captured_after=self._date_from_edit(self.after_date),
             captured_before=self._date_from_edit(self.before_date),
@@ -149,10 +142,6 @@ class AdvancedFilterDialog(QDialog):
         self.camera_field.setText(query.camera_text)
         self.lens_field.setText(query.lens_text)
         self.tag_field.setText(query.tag_text)
-
-        rating_index = self.rating_combo.findData(query.min_rating)
-        if rating_index >= 0:
-            self.rating_combo.setCurrentIndex(rating_index)
 
         orientation_index = self.orientation_combo.findData(query.orientation)
         if orientation_index >= 0:
@@ -169,7 +158,6 @@ class AdvancedFilterDialog(QDialog):
         self.camera_field.clear()
         self.lens_field.clear()
         self.tag_field.clear()
-        self.rating_combo.setCurrentIndex(0)
         self.orientation_combo.setCurrentIndex(0)
         self._set_date_edit(self.after_date, None)
         self._set_date_edit(self.before_date, None)

@@ -18,21 +18,8 @@ if TYPE_CHECKING:
     from .review_intelligence import ReviewInsight, ReviewIntelligenceBundle
 
 
-REVIEW_ROUND_FIRST_PASS = "first_pass_rejects"
-REVIEW_ROUND_SECOND_PASS = "second_pass_keepers"
-REVIEW_ROUND_THIRD_PASS = "third_pass_finalists"
-REVIEW_ROUND_HERO = "final_hero_selects"
 AI_DISAGREEMENT_SOURCE_MODE = "ai_disagreement"
 
-REVIEW_ROUND_PRESETS: tuple[tuple[str, str, str], ...] = (
-    (REVIEW_ROUND_FIRST_PASS, "First-Pass Reject", "Reject"),
-    (REVIEW_ROUND_SECOND_PASS, "Keeper Candidate", "Candidate"),
-    (REVIEW_ROUND_THIRD_PASS, "Finalist", "Finalist"),
-    (REVIEW_ROUND_HERO, "Hero Select", "Hero"),
-)
-
-_ROUND_LABELS = {identifier: label for identifier, label, _short in REVIEW_ROUND_PRESETS}
-_ROUND_SHORT_LABELS = {identifier: short for identifier, _label, short in REVIEW_ROUND_PRESETS}
 _AI_BUCKET_RANK = {
     AIConfidenceBucket.LIKELY_REJECT: 0.0,
     AIConfidenceBucket.NEEDS_REVIEW: 0.45,
@@ -227,35 +214,6 @@ def build_review_scoring_cache_key(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return sha1(encoded.encode("utf-8")).hexdigest()
-
-
-def normalize_review_round(value: str | None) -> str:
-    text = (value or "").strip()
-    if not text:
-        return ""
-    normalized = text.casefold().replace("-", "_").replace(" ", "_")
-    for identifier, label, short_label in REVIEW_ROUND_PRESETS:
-        if normalized in {
-            identifier,
-            label.casefold().replace(" ", "_"),
-            short_label.casefold().replace(" ", "_"),
-        }:
-            return identifier
-    return text
-
-
-def review_round_label(value: str | None) -> str:
-    normalized = normalize_review_round(value)
-    if not normalized:
-        return ""
-    return _ROUND_LABELS.get(normalized, normalized)
-
-
-def review_round_short_label(value: str | None) -> str:
-    normalized = normalize_review_round(value)
-    if not normalized:
-        return ""
-    return _ROUND_SHORT_LABELS.get(normalized, normalized)
 
 
 def build_taste_profile(correction_events: Iterable[dict[str, object]]) -> TasteProfile:
@@ -453,8 +411,6 @@ def build_record_workflow_insight(
     taste_profile: TasteProfile | None = None,
 ) -> RecordWorkflowInsight:
     resolved_annotation = annotation or SessionAnnotation()
-    round_value = normalize_review_round(resolved_annotation.review_round)
-    round_label = review_round_label(round_value)
     disagreement_level = disagreement_level_for(resolved_annotation, ai_result)
     disagreement_summary = disagreement_summary_for(resolved_annotation, ai_result, disagreement_level)
 
@@ -462,10 +418,6 @@ def build_record_workflow_insight(
     detail_lines: list[str] = []
     supporting_lines: list[str] = []
     taste_line = ""
-
-    if round_label:
-        summary_parts.append(review_round_short_label(round_value))
-        detail_lines.append(f"Review round: {round_label}.")
 
     if burst_recommendation is not None and burst_recommendation.group_size > 1:
         if burst_recommendation.is_recommended:
@@ -501,8 +453,8 @@ def build_record_workflow_insight(
         detail_lines.append(taste_line)
 
     return RecordWorkflowInsight(
-        review_round=round_value,
-        review_round_label=round_label,
+        review_round="",
+        review_round_label="",
         best_in_group=bool(burst_recommendation and burst_recommendation.is_recommended),
         burst_group_label=burst_recommendation.group_label if burst_recommendation is not None else "",
         disagreement_level=disagreement_level,
@@ -516,10 +468,8 @@ def disagreement_level_for(annotation: SessionAnnotation | None, ai_result: AIIm
     if annotation is None or ai_result is None:
         return ""
 
-    round_value = normalize_review_round(annotation.review_round)
-    high_user_pick = annotation.winner or annotation.rating >= 4 or round_value == REVIEW_ROUND_HERO
-    high_user_reject = annotation.reject or round_value == REVIEW_ROUND_FIRST_PASS
-    medium_user_pick = annotation.rating >= 3 or round_value in {REVIEW_ROUND_SECOND_PASS, REVIEW_ROUND_THIRD_PASS}
+    high_user_pick = annotation.winner
+    high_user_reject = annotation.reject
 
     if high_user_pick and ai_result.confidence_bucket == AIConfidenceBucket.LIKELY_REJECT:
         return "strong"
@@ -528,14 +478,6 @@ def disagreement_level_for(annotation: SessionAnnotation | None, ai_result: AIIm
         AIConfidenceBucket.LIKELY_KEEPER,
     }:
         return "strong"
-    if medium_user_pick and ai_result.confidence_bucket == AIConfidenceBucket.LIKELY_REJECT:
-        return "moderate"
-    if round_value == REVIEW_ROUND_THIRD_PASS and ai_result.confidence_bucket == AIConfidenceBucket.NEEDS_REVIEW:
-        return "moderate"
-    if round_value == REVIEW_ROUND_HERO and ai_result.confidence_bucket == AIConfidenceBucket.NEEDS_REVIEW:
-        return "moderate"
-    if annotation.rating <= 1 and ai_result.confidence_bucket == AIConfidenceBucket.OBVIOUS_WINNER:
-        return "moderate"
     return ""
 
 
@@ -577,14 +519,6 @@ def disagreement_summary_for(
         return f"You kept a frame AI bucketed as {ai_result.confidence_bucket_label.lower()}."
     if annotation.reject:
         return f"You rejected a frame AI bucketed as {ai_result.confidence_bucket_label.lower()}."
-    round_value = normalize_review_round(annotation.review_round)
-    round_label = review_round_label(round_value)
-    if round_label:
-        return f"You moved this image into {round_label.lower()} while AI remained {ai_result.confidence_bucket_label.lower()}."
-    if annotation.rating >= 4:
-        return f"You rated this highly even though AI marked it as {ai_result.confidence_bucket_label.lower()}."
-    if annotation.rating <= 1:
-        return f"You rated this poorly even though AI marked it as {ai_result.confidence_bucket_label.lower()}."
     return f"Your review state diverges from the AI's {ai_result.confidence_bucket_label.lower()} call."
 
 

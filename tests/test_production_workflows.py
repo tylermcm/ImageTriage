@@ -27,7 +27,7 @@ from image_triage.workflows import (
     workflow_record_folder_name,
 )
 from image_triage.review_intelligence import ReviewInsight, ReviewIntelligenceBundle
-from image_triage.review_workflows import REVIEW_ROUND_HERO, BurstRecommendation
+from image_triage.review_workflows import BurstRecommendation
 from image_triage.scanner import normalized_path_key
 
 
@@ -241,7 +241,7 @@ class ProductionWorkflowTests(unittest.TestCase):
             ),
         }
         annotations = {
-            records[2].path: SessionAnnotation(winner=True, review_round=REVIEW_ROUND_HERO),
+            records[2].path: SessionAnnotation(winner=True),
         }
 
         plan = build_best_of_set_plan(

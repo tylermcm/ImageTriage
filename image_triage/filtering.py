@@ -9,14 +9,6 @@ from typing import TYPE_CHECKING
 from .ai_results import AICullBucket, AIConfidenceBucket, ai_cull_bucket_for_result
 from .formats import FITS_SUFFIXES, JPEG_SUFFIXES, MODEL_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .models import FilterMode, ImageRecord, SessionAnnotation
-from .review_workflows import (
-    REVIEW_ROUND_FIRST_PASS,
-    REVIEW_ROUND_HERO,
-    REVIEW_ROUND_SECOND_PASS,
-    REVIEW_ROUND_THIRD_PASS,
-    normalize_review_round,
-    review_round_label,
-)
 
 if TYPE_CHECKING:
     from .ai_results import AIImageResult
@@ -76,7 +68,6 @@ class RecordFilterQuery:
     ai_state: AIStateFilter = AIStateFilter.ALL
     ai_cull_bucket: AICullBucket | None = None
     ai_workflow_tag: str = ""
-    review_round: str = ""
     camera_text: str = ""
     lens_text: str = ""
     tag_text: str = ""
@@ -137,17 +128,12 @@ def active_filter_labels(query: RecordFilterQuery) -> list[str]:
     workflow_label = ai_workflow_tag_label(query.ai_workflow_tag)
     if workflow_label:
         labels.append(workflow_label if workflow_label.startswith("AI ") else f"AI {workflow_label}")
-    round_label = review_round_label(query.review_round)
-    if round_label:
-        labels.append(round_label)
     if query.camera_text.strip():
         labels.append(f'Camera "{query.camera_text.strip()}"')
     if query.lens_text.strip():
         labels.append(f'Lens "{query.lens_text.strip()}"')
     if query.tag_text.strip():
         labels.append(f'Tag "{query.tag_text.strip()}"')
-    if query.min_rating > 0:
-        labels.append(f"Rating {query.min_rating}+")
     if query.orientation != OrientationFilter.ALL:
         labels.append(query.orientation.value)
     if query.captured_after is not None:
@@ -193,8 +179,6 @@ def matches_record_query(
         and _matches_ai_state(query.ai_state, resolved_annotation, ai_result, workflow_insight)
         and _matches_ai_cull_bucket(query.ai_cull_bucket, ai_result)
         and _matches_ai_workflow_tag(query.ai_workflow_tag, workflow_insight)
-        and _matches_review_round(query.review_round, resolved_annotation)
-        and _matches_rating(query.min_rating, resolved_annotation)
         and _matches_tags(query.tag_text, resolved_annotation)
         and _matches_metadata_filters(query, metadata)
     )
@@ -245,8 +229,6 @@ def _matches_quick_filter(
         return dino_decision is not None and dino_decision.action == "remove_from_pool"
     if quick_filter == FilterMode.DINO_RESCUED:
         return dino_decision is not None and dino_decision.action == "rescued"
-    if quick_filter == FilterMode.REVIEW_ROUNDS:
-        return workflow_insight is not None and workflow_insight.has_round
     return True
 
 
@@ -390,19 +372,6 @@ def _matches_ai_workflow_tag(tag: str, workflow_insight: "RecordWorkflowInsight 
     return True
 
 
-def _matches_review_round(review_round: str, annotation: SessionAnnotation) -> bool:
-    normalized = normalize_review_round(review_round)
-    if not normalized:
-        return True
-    return normalize_review_round(annotation.review_round) == normalized
-
-
-def _matches_rating(min_rating: int, annotation: SessionAnnotation) -> bool:
-    if min_rating <= 0:
-        return True
-    return annotation.rating >= min_rating
-
-
 def _matches_tags(tag_text: str, annotation: SessionAnnotation) -> bool:
     needle = tag_text.strip().casefold()
     if not needle:
@@ -475,7 +444,6 @@ def serialize_filter_query(query: RecordFilterQuery) -> dict[str, object]:
         "ai_state": query.ai_state.value,
         "ai_cull_bucket": query.ai_cull_bucket.value if query.ai_cull_bucket is not None else "",
         "ai_workflow_tag": query.ai_workflow_tag,
-        "review_round": query.review_round,
         "camera_text": query.camera_text,
         "lens_text": query.lens_text,
         "tag_text": query.tag_text,
@@ -501,7 +469,6 @@ def deserialize_filter_query(payload: dict[str, object] | None) -> RecordFilterQ
         ai_state=_enum_from_value(AIStateFilter, payload.get("ai_state"), AIStateFilter.ALL),
         ai_cull_bucket=_enum_from_value(AICullBucket, payload.get("ai_cull_bucket"), None),
         ai_workflow_tag=_string_value(payload.get("ai_workflow_tag")),
-        review_round=normalize_review_round(_string_value(payload.get("review_round"))),
         camera_text=_string_value(payload.get("camera_text")),
         lens_text=_string_value(payload.get("lens_text")),
         tag_text=_string_value(payload.get("tag_text")),
@@ -612,34 +579,6 @@ def builtin_filter_presets() -> tuple[SavedFilterPreset, ...]:
             name="DINO Rescued",
             query=RecordFilterQuery(
                 quick_filter=FilterMode.DINO_RESCUED,
-            ),
-        ),
-        SavedFilterPreset(
-            name="First-Pass Rejects",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.REVIEW_ROUNDS,
-                review_round=REVIEW_ROUND_FIRST_PASS,
-            ),
-        ),
-        SavedFilterPreset(
-            name="Keeper Candidates",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.REVIEW_ROUNDS,
-                review_round=REVIEW_ROUND_SECOND_PASS,
-            ),
-        ),
-        SavedFilterPreset(
-            name="Finalists",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.REVIEW_ROUNDS,
-                review_round=REVIEW_ROUND_THIRD_PASS,
-            ),
-        ),
-        SavedFilterPreset(
-            name="Hero Selects",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.REVIEW_ROUNDS,
-                review_round=REVIEW_ROUND_HERO,
             ),
         ),
         SavedFilterPreset(

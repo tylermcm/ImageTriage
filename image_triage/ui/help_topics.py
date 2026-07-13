@@ -103,9 +103,9 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 
             - Click **Dispute AI** in the AI Review toolbar.
             - Right-click the image and choose **Dispute AI Decision**.
-            - Press `D`, then a rating key from `1` to `5`.
+            - Press `D`, then a label key from `1` to `5`.
 
-            The rating keys mean:
+            The label keys mean:
 
             1. Best
             2. Strong
