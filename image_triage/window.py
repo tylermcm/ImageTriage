@@ -6377,11 +6377,36 @@ class MainWindow(QMainWindow):
     def _commit_toolbar_edit_drag(self, source: int, target: int) -> None:
         mode = self._toolbar_edit_active_mode or "manual"
         n = self.TOPBAR_SLOT_COUNT
+        usable = n - 1  # last cell reserved for the "+"
         slots = list(self._topbar_slots.get(mode) or [None] * n)
         slots += [None] * (n - len(slots))
-        if 0 <= source < n and 0 <= target < n and source != target:
-            slots[source], slots[target] = slots[target], slots[source]
-        # Even a no-op drop refreshes so the button snaps back to its cell.
+        item = slots[source] if 0 <= source < usable else None
+        if item is None or source == target or not (0 <= target < usable):
+            # Nothing to do; refresh so the dragged item snaps back to its cell.
+            self._commit_slots_and_refresh(mode, slots)
+            return
+        # Lift the item out, then insert it at the target, shifting the run of
+        # occupied cells toward the nearest gap so buttons "make room" instead of
+        # swapping. The gap absorbs the shift, so groups past it stay put.
+        slots[source] = None
+        if slots[target] is None:
+            slots[target] = item
+        else:
+            hole_right = next((i for i in range(target, usable) if slots[i] is None), None)
+            if hole_right is not None:
+                for i in range(hole_right, target, -1):
+                    slots[i] = slots[i - 1]
+                slots[target] = item
+            else:
+                hole_left = next((i for i in range(target - 1, -1, -1) if slots[i] is None), None)
+                if hole_left is not None:
+                    for i in range(hole_left, target - 1):
+                        slots[i] = slots[i + 1]
+                    slots[target - 1] = item
+                else:
+                    # No gaps anywhere (bar full) — fall back to a straight swap.
+                    slots[source] = slots[target]
+                    slots[target] = item
         self._commit_slots_and_refresh(mode, slots)
 
     def _commit_slots_and_refresh(self, mode: str, slots: list[str | None]) -> None:
