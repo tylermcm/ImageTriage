@@ -2482,6 +2482,11 @@ class MainWindow(QMainWindow):
     DETAILS_SORT_ORDER_KEY = "view/details_sort_order"
     PREVIEW_PRELOAD_BATCH_SIZE_KEY = "preview/preload_batch_size"
     PERFORMANCE_LOGGING_KEY = "diagnostics/performance_logging"
+    # Perf logging is focused on toolbar button-movement events only; the rest of
+    # the app-wide instrumentation stays muted so the log isn't flooded. Add
+    # prefixes here (e.g. "ai_toolbar_state.") to profile a specific area, or set
+    # to () to record everything again.
+    PERF_FOCUS_PREFIXES = ("toolbar.", "perf.")
     CHECK_UPDATES_ON_STARTUP_KEY = "updates/check_on_startup"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
     TOOLBAR_STYLE_KEY = "view/toolbar_style"
@@ -2845,6 +2850,8 @@ class MainWindow(QMainWindow):
         self._toolbar_edit_drag_start: QPoint | None = None
         self._toolbar_edit_drag_origin = QPoint()
         self._toolbar_edit_dragging = False
+        self._toolbar_edit_drag_t0 = 0.0
+        self._toolbar_edit_drag_moves = 0
         self._workspace_toolbar_item_widgets: dict[str, dict[str, QWidget]] = {}
         self._workspace_toolbar_overflow_buttons: dict[str, QToolButton] = {}
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
@@ -3123,6 +3130,11 @@ class MainWindow(QMainWindow):
         )
         self._performance_logging_enabled = self._settings.value(self.PERFORMANCE_LOGGING_KEY, False, bool)
         self._check_updates_on_startup = self._settings.value(self.CHECK_UPDATES_ON_STARTUP_KEY, True, bool)
+        # Focus perf logging on the toolbar button-movement events only, muting
+        # the ~160 app-wide instrumentation points (kept in place, just silenced)
+        # so the log isn't flooded. To profile the whole app again, set this to
+        # an empty tuple: perf_logger().set_focus(()).
+        perf_logger().set_focus(self.PERF_FOCUS_PREFIXES)
         perf_logger().set_enabled(self._performance_logging_enabled, reason="startup")
         self._syncing_browser_selection = False
         self._zen_mode_enabled = False
@@ -4431,6 +4443,9 @@ class MainWindow(QMainWindow):
         # rebuild both regardless of the requested mode.
         modes = ("manual", "ai")
         n = self.TOPBAR_SLOT_COUNT
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        built = 0
         for target in modes:
             grid = layouts.get(target)
             if grid is None:
@@ -4451,8 +4466,11 @@ class MainWindow(QMainWindow):
                 grid.addWidget(widget, 0, slot_index, Qt.AlignmentFlag.AlignCenter)
                 items.append((item_id, widget))
                 slot_widgets[slot_index] = widget
+                built += 1
             self._topbar_action_items[target] = items
             self._topbar_slot_widgets[target] = slot_widgets
+        if logger.enabled:
+            logger.duration("toolbar.rebuild_stack", (time.perf_counter() - start) * 1000.0, widgets=built)
 
     def _normalize_topbar_slot_button(self, widget: QWidget) -> None:
         # One uniform width so every cell reads the same regardless of whether
@@ -5985,6 +6003,8 @@ class MainWindow(QMainWindow):
             self.mode_tabs.setCurrentIndex(index)
         self._toolbar_edit_mode = True
         self._toolbar_edit_active_mode = normalized
+        logger = perf_logger()
+        begin_start = time.perf_counter() if logger.enabled else 0.0
 
         n = self.TOPBAR_SLOT_COUNT
         slot_widgets = list(self._topbar_slot_widgets.get(normalized) or [])
@@ -6037,6 +6057,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Editing toolbar — drag buttons between cells, − removes, + adds. Done or Esc to finish."
         )
+        if logger.enabled:
+            logger.duration(
+                "toolbar.begin_edit",
+                (time.perf_counter() - begin_start) * 1000.0,
+                mode=normalized,
+                items=len(frozen),
+                cells=len(cells),
+            )
 
     def _apply_toolbar_edit_decoration(self, widget: QWidget) -> None:
         effect = QGraphicsDropShadowEffect(widget)
@@ -6184,6 +6212,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("The toolbar is full — remove a button first.")
             return
         slots[target] = item_id
+        perf_logger().log("toolbar.add", item=item_id, slot=target, mode=mode)
         self._commit_slots_and_refresh(mode, slots)
 
     def _build_toolbar_item_picker_commands(self, mode: str) -> list[PaletteCommand]:
@@ -6280,19 +6309,22 @@ class MainWindow(QMainWindow):
         slots = list(self._topbar_slots.get(mode) or [])
         if not (0 <= slot_index < len(slots)) or slots[slot_index] is None:
             return
+        perf_logger().log("toolbar.remove", item=slots[slot_index], slot=slot_index, mode=mode)
         slots[slot_index] = None
         self._commit_slots_and_refresh(mode, slots)
 
     def _handle_toolbar_edit_drag(self, widget: QWidget, event) -> bool:
-        """Slot-grid drag: grab a button, slide it, and it snaps to the nearest
-        cell on release (swapping with whatever is already there). Returns True
-        when the event was consumed."""
+        """Slot-grid drag: grab a button, slide it, and on release it inserts at
+        the nearest cell (shifting neighbours toward the nearest gap). Returns
+        True when the event was consumed."""
         event_type = event.type()
         if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._toolbar_edit_drag_widget = widget
             self._toolbar_edit_drag_start = event.globalPosition().toPoint()
             self._toolbar_edit_drag_origin = QPoint(widget.pos())
             self._toolbar_edit_dragging = False
+            self._toolbar_edit_drag_t0 = time.perf_counter()
+            self._toolbar_edit_drag_moves = 0
             self._toolbar_edit_drag_slot = next(
                 (entry[4] for entry in self._toolbar_edit_items if entry[1] is widget), -1
             )
@@ -6313,6 +6345,7 @@ class MainWindow(QMainWindow):
             if not self._toolbar_edit_dragging and delta.manhattanLength() < QApplication.startDragDistance():
                 return True
             self._toolbar_edit_dragging = True
+            self._toolbar_edit_drag_moves += 1
             parent = widget.parentWidget()
             new_x = self._toolbar_edit_drag_origin.x() + delta.x()
             if parent is not None:
@@ -6331,6 +6364,15 @@ class MainWindow(QMainWindow):
             self._toolbar_edit_drag_start = None
             self._toolbar_edit_dragging = False
             if was_dragging:
+                logger = perf_logger()
+                if logger.enabled:
+                    logger.duration(
+                        "toolbar.drag",
+                        (time.perf_counter() - getattr(self, "_toolbar_edit_drag_t0", time.perf_counter())) * 1000.0,
+                        moves=getattr(self, "_toolbar_edit_drag_moves", 0),
+                        source=source,
+                        target=target,
+                    )
                 self._commit_toolbar_edit_drag(source, target)
             return True
         return False
@@ -6375,51 +6417,95 @@ class MainWindow(QMainWindow):
             badge.raise_()
 
     def _commit_toolbar_edit_drag(self, source: int, target: int) -> None:
-        mode = self._toolbar_edit_active_mode or "manual"
+        # Reorder the LIVE edit widgets in place — the dashed cells and "+" are at
+        # fixed positions, so a drop only needs to move the button widgets to
+        # their new cells. This avoids the full teardown+rebuild+re-freeze (and
+        # its Qt layout/paint pass) that made the drop feel laggy.
         n = self.TOPBAR_SLOT_COUNT
         usable = n - 1  # last cell reserved for the "+"
-        slots = list(self._topbar_slots.get(mode) or [None] * n)
-        slots += [None] * (n - len(slots))
-        item = slots[source] if 0 <= source < usable else None
-        if item is None or source == target or not (0 <= target < usable):
-            # Nothing to do; refresh so the dragged item snaps back to its cell.
-            self._commit_slots_and_refresh(mode, slots)
-            return
-        # Lift the item out, then insert it at the target, shifting the run of
-        # occupied cells toward the nearest gap so buttons "make room" instead of
-        # swapping. The gap absorbs the shift, so groups past it stay put.
-        slots[source] = None
-        if slots[target] is None:
-            slots[target] = item
-        else:
-            hole_right = next((i for i in range(target, usable) if slots[i] is None), None)
-            if hole_right is not None:
-                for i in range(hole_right, target, -1):
-                    slots[i] = slots[i - 1]
-                slots[target] = item
+        entries: list = [None] * n
+        for entry in self._toolbar_edit_items:
+            slot = entry[4]
+            if 0 <= slot < n:
+                entries[slot] = entry
+        moved = entries[source] if 0 <= source < usable else None
+        if moved is not None and source != target and 0 <= target < usable:
+            # Lift out and insert at target, shifting the occupied run toward the
+            # nearest gap (which absorbs the shift, so groups past it stay put).
+            entries[source] = None
+            if entries[target] is None:
+                entries[target] = moved
             else:
-                hole_left = next((i for i in range(target - 1, -1, -1) if slots[i] is None), None)
-                if hole_left is not None:
-                    for i in range(hole_left, target - 1):
-                        slots[i] = slots[i + 1]
-                    slots[target - 1] = item
+                hole_right = next((i for i in range(target, usable) if entries[i] is None), None)
+                if hole_right is not None:
+                    for i in range(hole_right, target, -1):
+                        entries[i] = entries[i - 1]
+                    entries[target] = moved
                 else:
-                    # No gaps anywhere (bar full) — fall back to a straight swap.
-                    slots[source] = slots[target]
-                    slots[target] = item
-        self._commit_slots_and_refresh(mode, slots)
+                    hole_left = next((i for i in range(target - 1, -1, -1) if entries[i] is None), None)
+                    if hole_left is not None:
+                        for i in range(hole_left, target - 1):
+                            entries[i] = entries[i + 1]
+                        entries[target - 1] = moved
+                    else:
+                        entries[source], entries[target] = entries[target], moved
+        logger = perf_logger()
+        t0 = time.perf_counter() if logger.enabled else 0.0
+        self._relayout_toolbar_edit_entries(entries)
+        if logger.enabled:
+            logger.duration("toolbar.drop", (time.perf_counter() - t0) * 1000.0, source=source, target=target)
+
+    def _relayout_toolbar_edit_entries(self, entries: list) -> None:
+        """Snap the live edit widgets (and their badges) to the cells implied by
+        ``entries`` (slot -> edit item), then persist the new arrangement. No
+        widgets are created or destroyed."""
+        cell_w = self._toolbar_edit_cell_width or 1.0
+        frozen: list[tuple[str, QWidget, QPoint, QWidget, int]] = []
+        for slot_index, entry in enumerate(entries):
+            if entry is None:
+                continue
+            item_id, widget, _base, badge, _old_slot = entry
+            parent = widget.parentWidget()
+            page_h = parent.height() if parent is not None else widget.height()
+            x = round(slot_index * cell_w + (cell_w - widget.width()) / 2)
+            y = max(0, (page_h - widget.height()) // 2)
+            widget.move(x, y)
+            widget.raise_()
+            if badge is not None:
+                self._position_toolbar_edit_badge(badge, widget)
+                badge.raise_()
+            frozen.append((item_id, widget, QPoint(x, y), badge, slot_index))
+        self._toolbar_edit_items = frozen
+        if self._toolbar_edit_drop_highlight is not None:
+            self._toolbar_edit_drop_highlight.hide()
+        # Persist the shared arrangement without rebuilding the toolbar.
+        slots = [entry[0] if entry is not None else None for entry in entries]
+        for target_mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            self._topbar_slots[target_mode] = self._normalize_slots(target_mode, slots)
+            self._sync_items_from_slots(target_mode)
+        self._save_workspace_toolbar_layouts()
 
     def _commit_slots_and_refresh(self, mode: str, slots: list[str | None]) -> None:
-        self._end_inplace_toolbar_edit()
-        normalized = self._normalize_slots(mode, slots)
-        # Unified bar: write the shared arrangement to both review modes.
-        for target in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            self._topbar_slots[target] = list(normalized)
-            self._sync_items_from_slots(target)
-        self._save_workspace_toolbar_layouts()
-        self._rebuild_workspace_toolbar(mode)  # cascades to _rebuild_topbar_action_stack (both pages)
-        self._update_ai_toolbar_state()
-        self._begin_inplace_toolbar_edit(mode)
+        logger = perf_logger()
+        # end_edit and begin_edit self-time (toolbar.end_edit / toolbar.begin_edit).
+        with logger.span("toolbar.commit", mode=mode):
+            self._end_inplace_toolbar_edit()
+            normalized = self._normalize_slots(mode, slots)
+            # Unified bar: write the shared arrangement to both review modes.
+            with logger.span("toolbar.commit.sync"):
+                for target in self.WORKSPACE_TOOLBAR_DEFAULTS:
+                    self._topbar_slots[target] = list(normalized)
+                    self._sync_items_from_slots(target)
+            with logger.span("toolbar.commit.save"):
+                self._save_workspace_toolbar_layouts()
+            with logger.span("toolbar.commit.rebuild"):
+                # cascades to _rebuild_topbar_action_stack (both pages)
+                self._rebuild_workspace_toolbar(mode)
+            # _update_ai_toolbar_state() is intentionally NOT called here: it costs
+            # ~340ms (AI DB + filesystem readiness probes) and nothing about AI
+            # state changes while rearranging the toolbar. Rebuilt buttons sync
+            # their enabled/checked state straight from the actions.
+            self._begin_inplace_toolbar_edit(mode)
 
     def _show_toolbar_edit_hud(self, mode: str) -> None:
         parent = self.central_container
@@ -6495,12 +6581,15 @@ class MainWindow(QMainWindow):
             self._sync_items_from_slots(target)
         self._save_workspace_toolbar_layouts()
         self._rebuild_workspace_toolbar(mode)
-        self._update_ai_toolbar_state()
+        # _update_ai_toolbar_state() intentionally skipped (see _commit_slots_and_refresh).
         self._begin_inplace_toolbar_edit(mode)
 
     def _end_inplace_toolbar_edit(self) -> None:
         if not self._toolbar_edit_mode:
             return
+        logger = perf_logger()
+        end_start = time.perf_counter() if logger.enabled else 0.0
+        item_count = len(self._toolbar_edit_items)
         mode = self._toolbar_edit_active_mode or "manual"
         self._toolbar_edit_drag_widget = None
         self._toolbar_edit_drag_start = None
@@ -6548,10 +6637,15 @@ class MainWindow(QMainWindow):
         self._toolbar_edit_active_mode = None
         # Rebuild the cluster from scratch (fresh widgets from the slot model).
         self._rebuild_topbar_action_stack(mode)
-        self._update_ai_toolbar_state()
+        # _update_ai_toolbar_state() intentionally skipped — see the note in
+        # _commit_slots_and_refresh (~340ms of AI probes, irrelevant to editing).
         if self.actions is not None:
             self.actions.customize_workspace_toolbar.setEnabled(True)
         self.statusBar().showMessage("Toolbar layout updated.")
+        if logger.enabled:
+            logger.duration(
+                "toolbar.end_edit", (time.perf_counter() - end_start) * 1000.0, items=item_count
+            )
 
     def _open_ui_prototype(self, _checked: bool = False) -> None:
         from .ui.generated_prototype import open_generated_ui_prototype
@@ -8036,8 +8130,26 @@ class MainWindow(QMainWindow):
     def _managed_aiculler_face_model_installation(self) -> AIModelInstallation:
         return self._aiculler_face_model_installation
 
+    # The runtime install status is a filesystem scan (~120ms) that only changes
+    # when the user installs the runtime or downloads a model. It was previously
+    # re-scanned on every call — and _update_ai_toolbar_state calls it twice —
+    # so cache it with a short TTL and invalidate on install/download.
+    _AI_RUNTIME_STATUS_TTL_S = 60.0
+
     def _managed_ai_runtime_status(self) -> AIRuntimeInstallationStatus:
-        return load_ai_runtime_installation_status()
+        now = time.perf_counter()
+        cached = getattr(self, "_ai_runtime_status_cache", None)
+        cached_at = getattr(self, "_ai_runtime_status_cache_at", 0.0)
+        if cached is not None and (now - cached_at) < self._AI_RUNTIME_STATUS_TTL_S:
+            return cached
+        status = load_ai_runtime_installation_status()
+        self._ai_runtime_status_cache = status
+        self._ai_runtime_status_cache_at = now
+        return status
+
+    def _invalidate_ai_runtime_status_cache(self) -> None:
+        self._ai_runtime_status_cache = None
+        self._ai_runtime_status_cache_at = 0.0
 
     @classmethod
     def _normalize_preview_preload_batch_size(cls, value: object) -> int:
@@ -8907,6 +9019,7 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_runtime_install_finished(self, install_root: str, variant_choice: str) -> None:
         self._active_ai_runtime_task = None
+        self._invalidate_ai_runtime_status_cache()
         self._close_job_progress_dialog(self._ai_runtime_job_key)
         self._refresh_ai_runtime_preferences()
         self._update_action_states()
@@ -9099,6 +9212,7 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_model_download_finished(self, install_dir: str) -> None:
         self._active_ai_model_task = None
+        self._invalidate_ai_runtime_status_cache()
         self._close_job_progress_dialog(self._ai_model_job_key)
         self._refresh_ai_runtime_preferences()
         self._update_action_states()
@@ -10460,6 +10574,7 @@ class MainWindow(QMainWindow):
         if self._ai_training_stats_dialog is not None:
             self._ai_training_stats_dialog.mark_complete("Done")
         self._active_ai_training_task = None
+        self._invalidate_ai_folder_probe_cache()
         self._ai_training_context = None
         self._close_ai_training_progress_dialog()
 
@@ -18450,6 +18565,7 @@ class MainWindow(QMainWindow):
             self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
             self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
             self._apply_records_view(current_path=self._current_visible_record_path())
+        self._invalidate_ai_folder_probe_cache()
         self._update_ai_toolbar_state()
         self._refresh_ai_workflow_center()
         suffix = ", ".join(reset_parts) if reset_parts else "selected artifacts"
@@ -18584,6 +18700,49 @@ class MainWindow(QMainWindow):
                 results=len(ai_results),
             )
 
+    # Per-folder AI-data probes (SQLite opens + artifact existence checks) are
+    # stable while navigating within a folder, so cache them keyed by folder.
+    # Invalidated on folder change (key mismatch), on AI operations that mutate a
+    # folder's hidden cache (_invalidate_ai_folder_probe_cache), and by TTL.
+    _AI_FOLDER_PROBE_TTL_S = 60.0
+
+    def _ai_folder_probe(self, ai_paths) -> dict:
+        folder = self._current_folder or ""
+        now = time.perf_counter()
+        cache = getattr(self, "_ai_folder_probe_cache", None)
+        if (
+            cache is not None
+            and cache.get("folder") == folder
+            and (now - cache.get("at", 0.0)) < self._AI_FOLDER_PROBE_TTL_S
+        ):
+            return cache
+        db_path = aiculler_db_path(ai_paths) if ai_paths is not None else None
+        probe: dict = {"folder": folder, "at": now}
+        probe["ranked_export_exists"] = bool(ai_paths is not None and ai_paths.ranked_export_path.exists())
+        probe["semantic_ready"] = bool(ai_paths is not None and ai_semantic_artifacts_ready(ai_paths))
+        probe["report_ready"] = bool(ai_paths is not None and ai_report_artifacts_ready(ai_paths))
+        probe["adapter_version"] = latest_adapter_model_version(db_path) if db_path is not None else ""
+        probe["rerank_ready"] = bool(db_path is not None and aiculler_rerank_readiness(db_path).get("can_rerank"))
+        probe["adapter_db_exists"] = bool(db_path is not None and db_path.exists())
+        try:
+            probe["aiculler_available"] = bool(folder and aiculler_db_path(build_aiculler_workflow_paths(folder)).exists())
+        except Exception:
+            probe["aiculler_available"] = False
+        try:
+            probe["dino_available"] = bool(folder and build_dino_prefilter_paths(folder).rows_path.exists())
+        except Exception:
+            probe["dino_available"] = False
+        try:
+            probe["phash_available"] = bool(folder and build_phash_prefilter_paths(folder).rows_path.exists())
+        except Exception:
+            probe["phash_available"] = False
+        probe["active_checkpoint"] = self._current_trained_checkpoint_path()
+        self._ai_folder_probe_cache = probe
+        return probe
+
+    def _invalidate_ai_folder_probe_cache(self) -> None:
+        self._ai_folder_probe_cache = None
+
     def _update_ai_toolbar_state(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
@@ -18618,10 +18777,9 @@ class MainWindow(QMainWindow):
             semantic_ready=semantic_model_ready,
         )
         ai_paths = self._hidden_ai_paths_for_current_folder()
-        saved_exists = False
-        if self._ui_mode == "ai":
-            # Hidden-cache existence checks can hit slow shares; only probe them in AI mode.
-            saved_exists = bool(ai_paths and ai_paths.ranked_export_path.exists())
+        ai_probe = self._ai_folder_probe(ai_paths)
+        # Existence of the saved ranked export is still only surfaced in AI mode.
+        saved_exists = bool(ai_probe["ranked_export_exists"]) if self._ui_mode == "ai" else False
         step_start = log_step("ai_toolbar_state.saved_probe", step_start, saved_exists=saved_exists, has_paths=ai_paths is not None)
         current_index = self.grid.current_index()
         current_record = self._record_at(current_index)
@@ -18656,19 +18814,12 @@ class MainWindow(QMainWindow):
                 and self._active_ai_model_task is None
                 and not self._is_winners_folder()
                 and not self._is_recycle_folder()
-                and bool(
-                    ai_paths
-                    and (
-                        ai_semantic_artifacts_ready(ai_paths)
-                        or ai_report_artifacts_ready(ai_paths)
-                    )
-                )
+                and bool(ai_probe["semantic_ready"] or ai_probe["report_ready"])
             )
-            adapter_version = latest_adapter_model_version(aiculler_db_path(ai_paths)) if ai_paths is not None else ""
-            rerank_ready = bool(
-                ai_paths
-                and aiculler_rerank_readiness(aiculler_db_path(ai_paths)).get("can_rerank")
-            )
+            step_start = log_step("ai_toolbar_state.can_flags", step_start)
+            adapter_version = ai_probe["adapter_version"]
+            rerank_ready = bool(ai_probe["rerank_ready"])
+            step_start = log_step("ai_toolbar_state.db_probe", step_start)
             self.actions.install_ai_runtime.setEnabled(True)
             self.actions.download_ai_model.setEnabled(True)
             self.actions.run_ai_culling.setEnabled(can_use_ai_tools)
@@ -18695,7 +18846,7 @@ class MainWindow(QMainWindow):
                 and not self._is_recycle_folder()
             )
             self.actions.open_ai_data_selection.setEnabled(can_open_training_commands)
-            self.actions.review_ai_adapter_labels.setEnabled(can_open_training_commands and bool(ai_paths and aiculler_db_path(ai_paths).exists()))
+            self.actions.review_ai_adapter_labels.setEnabled(can_open_training_commands and bool(ai_probe["adapter_db_exists"]))
             self.actions.train_ai_ranker.setEnabled(can_open_training_commands)
             self.actions.evaluate_ai_ranker.setEnabled(can_open_training_commands and bool(adapter_version))
             self.actions.score_ai_with_trained_ranker.setEnabled(can_open_training_commands and bool(adapter_version))
@@ -18717,20 +18868,11 @@ class MainWindow(QMainWindow):
                 self.actions.filter_actions[FilterMode.AI_TOP_PICKS].setEnabled(ai_loaded)
             if FilterMode.AI_DISAGREEMENTS in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_DISAGREEMENTS].setEnabled(ai_loaded)
-            try:
-                aiculler_available = bool(current_folder and aiculler_db_path(build_aiculler_workflow_paths(self._current_folder)).exists())
-            except Exception:
-                aiculler_available = False
+            aiculler_available = bool(ai_probe["aiculler_available"])
             if FilterMode.AI_INGESTED in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_INGESTED].setEnabled(aiculler_available)
-            try:
-                dino_available = bool(current_folder and build_dino_prefilter_paths(self._current_folder).rows_path.exists())
-            except Exception:
-                dino_available = False
-            try:
-                phash_available = bool(current_folder and build_phash_prefilter_paths(self._current_folder).rows_path.exists())
-            except Exception:
-                phash_available = False
+            dino_available = bool(ai_probe["dino_available"])
+            phash_available = bool(ai_probe["phash_available"])
             prefilter_available = dino_available or phash_available
             if FilterMode.AI_PREFILTER_DUMPED in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_PREFILTER_DUMPED].setEnabled(prefilter_available)
@@ -18768,7 +18910,7 @@ class MainWindow(QMainWindow):
             self.ai_status_label.setText("No AI cache for this folder yet")
         step_start = log_step("ai_toolbar_state.status_label", step_start)
 
-        active_checkpoint = self._current_trained_checkpoint_path()
+        active_checkpoint = ai_probe["active_checkpoint"]
         step_start = log_step("ai_toolbar_state.active_checkpoint", step_start, has_checkpoint=active_checkpoint is not None)
         runtime_lines = [
             f"Python: {self._ai_runtime.python_executable}",
@@ -19574,6 +19716,7 @@ class MainWindow(QMainWindow):
                 phase="worker_finished_signal",
             )
         self._active_ai_task = None
+        self._invalidate_ai_folder_probe_cache()
         embedding_cache_key = self._active_ai_embedding_cache_key
         cluster_cache_key = self._active_ai_cluster_cache_key
         report_cache_key = self._active_ai_report_cache_key
@@ -19666,6 +19809,7 @@ class MainWindow(QMainWindow):
             perf_logger().log("ai.run_signal_ignored", signal="dino_finished", folder=folder, artifact_dir=artifact_dir)
             return
         self._active_ai_task = None
+        self._invalidate_ai_folder_probe_cache()
         self._ai_stage_index = self._ai_stage_total
         self._ai_stage_message = "DINO Prefilter complete"
         if self._ai_progress_total <= 0:
@@ -19871,6 +20015,7 @@ class MainWindow(QMainWindow):
             )
         logger.log("ai.run_failed", folder=folder, message=message)
         self._active_ai_task = None
+        self._invalidate_ai_folder_probe_cache()
         self._active_ai_run_start_perf = 0.0
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
@@ -19901,6 +20046,7 @@ class MainWindow(QMainWindow):
             )
         logger.log("ai.run_cancelled", folder=folder, message=message)
         self._active_ai_task = None
+        self._invalidate_ai_folder_probe_cache()
         self._active_ai_run_start_perf = 0.0
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""

@@ -20,6 +20,18 @@ class PerformanceLogger:
         self._lock = threading.Lock()
         self._session_started = time.perf_counter()
         self._write_count = 0
+        self._focus_prefixes: tuple[str, ...] = ()
+
+    def set_focus(self, prefixes: "tuple[str, ...] | list[str] | None") -> None:
+        """Restrict logging to events whose name starts with one of ``prefixes``
+        (empty restores logging everything). This mutes the app-wide
+        instrumentation without touching it, so we can record only what we're
+        actively profiling and keep the log file small."""
+        self._focus_prefixes = tuple(p for p in (prefixes or ()) if p)
+
+    @property
+    def focus_prefixes(self) -> tuple[str, ...]:
+        return self._focus_prefixes
 
     @property
     def enabled(self) -> bool:
@@ -52,6 +64,8 @@ class PerformanceLogger:
 
     def log(self, event: str, **fields: object) -> None:
         if not self._enabled:
+            return
+        if self._focus_prefixes and not event.startswith(self._focus_prefixes):
             return
         payload = {
             "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"),
