@@ -180,6 +180,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._thumbnail_request_timer.setInterval(20)
         self._thumbnail_request_timer.timeout.connect(self._request_visible_thumbnails)
         self._loupe_card_style = "detailed"
+        # Per-instance so the resolution policy can move the detailed->barebones
+        # collapse earlier on smaller displays (e.g. 1080p) without changing the
+        # module defaults.
+        self._compact_column_threshold = COMPACT_COLUMN_THRESHOLD
+        self._plain_photo_column_threshold = PLAIN_PHOTO_COLUMN_THRESHOLD
         self._title_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
         self._meta_font = QFont("Segoe UI", 9)
         self._review_title_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
@@ -782,14 +787,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         Detailed style keeps the full review card up to the column threshold
         and collapses past it; immersive and zen styles are always barebones."""
         if self._loupe_card_style == "detailed":
-            return self._columns > COMPACT_COLUMN_THRESHOLD
+            return self._columns > self._compact_column_threshold
         return True
 
     def _grid_card_badge_text(self) -> bool:
         """Badges show icon + text up to the column threshold; past it they
         collapse to icon-only chips (the renderer also falls back on its own
         whenever the text pills would not fit the card)."""
-        return self._columns <= COMPACT_COLUMN_THRESHOLD
+        return self._columns <= self._compact_column_threshold
 
     def _grid_card_overlay(self) -> bool:
         """Past the plain-photo threshold the compact card drops its overlay
@@ -798,7 +803,21 @@ class ThumbnailGridView(QAbstractScrollArea):
         ring, at every column count."""
         if self._loupe_card_style == "zen":
             return False
-        return self._columns <= PLAIN_PHOTO_COLUMN_THRESHOLD
+        return self._columns <= self._plain_photo_column_threshold
+
+    def set_column_style_thresholds(self, compact: int, plain: int) -> None:
+        """Resolution policy hook: move the detailed->barebones (compact) and
+        overlay-drop (plain) column thresholds. Smaller displays collapse to the
+        photo-first card at fewer columns."""
+        compact = max(1, int(compact))
+        plain = max(compact, int(plain))
+        if compact == self._compact_column_threshold and plain == self._plain_photo_column_threshold:
+            return
+        self._compact_column_threshold = compact
+        self._plain_photo_column_threshold = plain
+        self._refresh_layout_after_visible_items_changed()
+        self._schedule_visible_thumbnail_requests(immediate=True)
+        self.viewport().update()
 
     def set_loupe_card_style(self, style: str) -> None:
         """Select the card style.
@@ -2795,9 +2814,12 @@ class ThumbnailGridView(QAbstractScrollArea):
         background = QColor(18, 27, 40, 210 if hovered else 170)
         painter.setPen(QPen(border, 1.0))
         painter.setBrush(background)
-        painter.drawRoundedRect(QRectF(rect), 10, 10)
+        radius = max(4, round(min(rect.width(), rect.height()) * 0.28))
+        painter.drawRoundedRect(QRectF(rect), radius, radius)
         painter.setPen(QColor("#f2f5f8"))
-        painter.setFont(self._winner_button_font)
+        arrow_font = QFont(self._winner_button_font)
+        arrow_font.setPixelSize(max(9, round(rect.height() * 0.52)))
+        painter.setFont(arrow_font)
         painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, symbol)
         painter.restore()
 
@@ -2831,7 +2853,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.setBrush(background)
         painter.drawEllipse(rect)
         painter.setPen(QColor("#f5f9ff"))
-        painter.setFont(self._winner_button_font)
+        arrow_font = QFont(self._winner_button_font)
+        arrow_font.setPixelSize(max(9, round(rect.height() * 0.52)))
+        painter.setFont(arrow_font)
         painter.drawText(rect.adjusted(0, -1, 0, 0), Qt.AlignmentFlag.AlignCenter, symbol)
         painter.restore()
 
@@ -3284,12 +3308,21 @@ class ThumbnailGridView(QAbstractScrollArea):
             + line_gap
         )
 
+    def _stack_arrow_metrics(self, image_rect: QRect) -> tuple[int, int]:
+        # Nav arrows scale with the card so they never dominate small cells
+        # (they were hardcoded 34px — huge at low res / many columns). Tuned so a
+        # normal card reads ~34px, clamped for readability + click targets.
+        diameter = max(16, min(44, round(image_rect.width() / 13.0)))
+        inset = max(5, round(diameter * 0.35))
+        return diameter, inset
+
     def _left_arrow_rect(self, tile_rect: QRect, record: ImageRecord) -> QRect:
         if not record.has_variant_stack:
             return QRect()
         image_rect = self._image_rect(tile_rect)
-        rect = QRect(0, 0, 30, 42)
-        rect.moveLeft(image_rect.left() + 10)
+        diameter, inset = self._stack_arrow_metrics(image_rect)
+        rect = QRect(0, 0, max(1, round(diameter * 30 / 34)), max(1, round(diameter * 42 / 34)))
+        rect.moveLeft(image_rect.left() + inset)
         rect.moveTop(image_rect.center().y() - rect.height() // 2)
         return rect
 
@@ -3304,8 +3337,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         if not record.has_variant_stack:
             return QRect()
         image_rect = self._image_rect(tile_rect)
-        rect = QRect(0, 0, 30, 42)
-        rect.moveRight(image_rect.right() - 10)
+        diameter, inset = self._stack_arrow_metrics(image_rect)
+        rect = QRect(0, 0, max(1, round(diameter * 30 / 34)), max(1, round(diameter * 42 / 34)))
+        rect.moveRight(image_rect.right() - inset)
         rect.moveTop(image_rect.center().y() - rect.height() // 2)
         return rect
 
@@ -3313,8 +3347,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         if not self._burst_stack_mode or not self._can_cycle_burst(index):
             return QRect()
         image_rect = self._image_rect(tile_rect)
-        rect = QRect(0, 0, 34, 34)
-        rect.moveLeft(image_rect.left() + 12)
+        diameter, inset = self._stack_arrow_metrics(image_rect)
+        rect = QRect(0, 0, diameter, diameter)
+        rect.moveLeft(image_rect.left() + inset)
         rect.moveTop(image_rect.center().y() - rect.height() // 2)
         return rect
 
@@ -3322,8 +3357,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         if not self._burst_stack_mode or not self._can_cycle_burst(index):
             return QRect()
         image_rect = self._image_rect(tile_rect)
-        rect = QRect(0, 0, 34, 34)
-        rect.moveRight(image_rect.right() - 12)
+        diameter, inset = self._stack_arrow_metrics(image_rect)
+        rect = QRect(0, 0, diameter, diameter)
+        rect.moveRight(image_rect.right() - inset)
         rect.moveTop(image_rect.center().y() - rect.height() // 2)
         return rect
 

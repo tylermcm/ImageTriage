@@ -6,7 +6,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QPushButton, QToolButton
+from PySide6.QtWidgets import QApplication, QMenu, QPushButton, QToolButton
 
 from image_triage.ui.review_controls import ReviewControlsContext, ReviewControlsPanel
 
@@ -144,3 +144,43 @@ def test_disagreement_navigation_does_not_change_filters_when_none_exist() -> No
     assert grid.selected_index is None
     assert window._filter_query is filter_sentinel
     assert status.message == "No AI disagreement found in the current view"
+
+
+def test_topbar_slot_count_is_derived_from_available_width() -> None:
+    from image_triage.window import MainWindow
+
+    assert MainWindow._topbar_visible_slot_count_for_width(0) == MainWindow.TOPBAR_INITIAL_VISIBLE_SLOTS
+    assert MainWindow._topbar_visible_slot_count_for_width(36) == 1
+    assert MainWindow._topbar_visible_slot_count_for_width(76) == 2
+    assert MainWindow._topbar_visible_slot_count_for_width(276) == 7
+    assert MainWindow._topbar_visible_slot_count_for_width(9999) == MainWindow.TOPBAR_SLOT_COUNT
+
+
+def test_topbar_overflow_flattens_popup_menu_entries() -> None:
+    _ensure_app()
+    from image_triage.window import MainWindow
+
+    def popup_factory() -> QMenu:
+        popup = QMenu("AI Results")
+        submenu = QMenu("Pick / Review / Reject", popup)
+        submenu.addAction(QAction("Winner", submenu))
+        popup.addMenu(submenu)
+        popup.addAction(QAction("Open AI Report", popup))
+        return popup
+
+    overflow = QMenu()
+    target = SimpleNamespace(
+        _keep_topbar_overflow_menu_source=MainWindow._keep_topbar_overflow_menu_source,
+    )
+
+    MainWindow._add_topbar_overflow_popup_entries(target, overflow, "AI Results", popup_factory)
+
+    actions = overflow.actions()
+    assert [action.text() for action in actions] == [
+        "AI Results",
+        "Pick / Review / Reject",
+        "Open AI Report",
+    ]
+    assert actions[0].menu() is None
+    assert actions[1].menu() is not None
+    assert actions[2].menu() is None

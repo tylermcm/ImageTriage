@@ -139,6 +139,7 @@ class WorkflowSettingsDialog(QDialog):
         delete_mode: DeleteMode,
         toolbar_style: str = "icons",
         loupe_card_style: str = "detailed",
+        allowed_card_styles: "tuple[str, ...] | None" = None,
         ui_gamma: float = 1.0,
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
@@ -293,10 +294,18 @@ class WorkflowSettingsDialog(QDialog):
 
         self.loupe_card_style_combo = QComboBox()
         self.loupe_card_style_combo.setMinimumWidth(180)
-        self.loupe_card_style_combo.addItem("Detailed", "detailed")
-        self.loupe_card_style_combo.addItem("Immersive", "immersive")
-        self.loupe_card_style_combo.addItem("Zen", "zen")
-        self.loupe_card_style_combo.addItem("Classic", "classic")
+        # The host restricts the selectable styles on small displays (720p keeps
+        # only Immersive/Zen), so honor the allowed list when given.
+        _card_style_options = (
+            ("Detailed", "detailed"),
+            ("Immersive", "immersive"),
+            ("Zen", "zen"),
+            ("Classic", "classic"),
+        )
+        _allowed = set(allowed_card_styles) if allowed_card_styles else {key for _label, key in _card_style_options}
+        for _label, _key in _card_style_options:
+            if _key in _allowed:
+                self.loupe_card_style_combo.addItem(_label, _key)
         loupe_style_index = self.loupe_card_style_combo.findData(loupe_card_style)
         self.loupe_card_style_combo.setCurrentIndex(max(0, loupe_style_index))
         self.loupe_card_style_combo.setToolTip(_settings_tooltip(

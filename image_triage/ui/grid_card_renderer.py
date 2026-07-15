@@ -319,7 +319,10 @@ def _scale_for(rect: QRect, compact: bool = False) -> float:
         # lets the chrome keep growing on very wide cards (1-2 columns, the
         # immersive loupe) without ballooning.
         return max(0.42, min(1.75, (rect.width() / 560.0) ** 0.5))
-    return max(0.72, min(1.25, rect.width() / 560.0))
+    # Floor lowered from 0.72 so full cards keep shrinking their chrome on small
+    # cells (low res / many columns) instead of clipping. Wide cards are
+    # unchanged (they sit well above the floor).
+    return max(0.5, min(1.25, rect.width() / 560.0))
 
 
 def _content_pad(scale: float, compact: bool) -> int:
@@ -809,6 +812,13 @@ def _paint_badge(
         h_pad = min(h_pad, max(4, round(width * 0.055)))
         icon_width = min(icon_width, max(9, round(height * 0.42)))
         icon_gap = min(icon_gap, max(4, round(width * 0.04)))
+    # When a fixed badge is too narrow for legible text, collapse to a clean
+    # square icon-only chip instead of hard-clipping the label (which is what
+    # produced "Near Duplicate" -> "NP" on small cards).
+    text_available = width - (h_pad * 2 + icon_width + icon_gap)
+    icon_only = fixed_size is not None and text_available < metrics.averageCharWidth() * 4
+    if icon_only:
+        width = height
     left = anchor.x() - width if align_right else anchor.x()
     rect = QRect(left, anchor.y(), width, height)
     radius = max(5.0, round(6 * scale))
@@ -817,24 +827,35 @@ def _paint_badge(
     painter.setBrush(fill)
     painter.drawRoundedRect(QRectF(rect), radius, radius)
 
-    icon_rect = QRect(
-        rect.left() + h_pad,
-        rect.top() + round((rect.height() - icon_width) / 2),
-        icon_width,
-        icon_width,
-    )
+    if icon_only:
+        icon_dim = min(icon_width, max(9, round(height * 0.5)))
+        icon_rect = QRect(
+            rect.center().x() - icon_dim // 2 + 1,
+            rect.center().y() - icon_dim // 2,
+            icon_dim,
+            icon_dim,
+        )
+    else:
+        icon_rect = QRect(
+            rect.left() + h_pad,
+            rect.top() + round((rect.height() - icon_width) / 2),
+            icon_width,
+            icon_width,
+        )
     if icon == "duplicate":
         _paint_duplicate_icon(painter, icon_rect, text_color, scale)
     elif icon == "spark":
         _paint_spark_icon(painter, icon_rect, text_color)
 
-    text_rect = rect.adjusted(h_pad + icon_width + icon_gap, 0, -h_pad, 0)
-    painter.setPen(text_color)
-    painter.drawText(
-        text_rect,
-        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        text,
-    )
+    if not icon_only:
+        text_rect = rect.adjusted(h_pad + icon_width + icon_gap, 0, -h_pad, 0)
+        painter.setPen(text_color)
+        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, max(0, text_rect.width()))
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            elided,
+        )
     painter.restore()
     return rect
 

@@ -2470,6 +2470,16 @@ class MainWindow(QMainWindow):
     # the "classic" card style, then the key is removed.
     COMPACT_CARDS_KEY = "view/legacy_cards"
     LOUPE_CARD_STYLE_KEY = "view/loupe_card_style"
+    SMALL_DISPLAY_WARNED_KEY = "view/small_display_warned"
+    # Resolution-aware card-style policy. Keyed by display class (from the
+    # logical height the app actually gets, so a scaled 1080p screen counts as
+    # 720p-class). Smaller displays restrict the selectable styles, pick a
+    # photo-first default, and collapse detailed->barebones at fewer columns.
+    _DISPLAY_STYLE_POLICY = {
+        "low": {"styles": ("zen",), "default": "zen", "compact_threshold": 4, "plain_threshold": 5},
+        "medium": {"styles": ("detailed", "immersive", "zen", "classic"), "default": "detailed", "compact_threshold": 3, "plain_threshold": 4},
+        "high": {"styles": ("detailed", "immersive", "zen", "classic"), "default": "detailed", "compact_threshold": 4, "plain_threshold": 5},
+    }
     FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
     BROWSER_VIEW_MODE_KEY = "view/browser_mode"
@@ -2585,12 +2595,13 @@ class MainWindow(QMainWindow):
     # Fixed height for every top-bar action button (matches the nav glyph
     # buttons) so the bar never resizes when the toolbar style changes.
     TOPBAR_BUTTON_HEIGHT = 34
-    # The action cluster is a fixed grid of evenly-spaced slots: buttons snap to
-    # a cell and empty cells stay blank, so groups can spread across the whole
-    # bar. Buttons are normalised to one width so every cell reads the same.
+    # Maximum saved logical slots. The rendered slot count is recalculated from
+    # the live top-bar width; anything beyond that count goes into More.
     TOPBAR_SLOT_COUNT = 35
     TOPBAR_SLOT_CELL_MIN = 36
     TOPBAR_SLOT_BUTTON_WIDTH = 34
+    TOPBAR_SLOT_SPACING = 4
+    TOPBAR_INITIAL_VISIBLE_SLOTS = 8
     # Items that may appear more than once and are exempt from de-duplication
     # (a visual divider is inert and you can drop as many as you like).
     TOPBAR_REPEATABLE_ITEMS = frozenset({"divider"})
@@ -3243,7 +3254,12 @@ class MainWindow(QMainWindow):
         self._review_scoring_cache_detail = "Ready"
         self._watched_folder_path = ""
         self._folder_watch_refresh_pending = False
-        self.grid.set_loupe_card_style(self._loupe_card_style)
+        # Resolution-aware: coerce the effective style + thresholds to what the
+        # display can show (warning is deferred until the window is up).
+        self._display_class_value = "high"
+        self._effective_loupe_card_style = self._loupe_card_style
+        self._apply_display_style_policy(show_warning=False)
+        QTimer.singleShot(0, self._post_show_display_setup)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         self._refresh_ai_runtime_preferences()
         self._session_id = self._decision_store.ensure_session(
@@ -4249,13 +4265,14 @@ class MainWindow(QMainWindow):
             page = QWidget()
             grid = QGridLayout(page)
             grid.setContentsMargins(0, 0, 0, 0)
-            grid.setHorizontalSpacing(4)
+            grid.setHorizontalSpacing(self.TOPBAR_SLOT_SPACING)
             grid.setVerticalSpacing(0)
-            # Fixed grid of evenly-weighted cells: buttons snap to a cell and
-            # blank cells hold their share of the width.
+            # Columns are configured during rebuild from the measured stack
+            # width. Keeping all 35 columns active here creates a minimum width
+            # wider than 1080p layouts can spare.
             for col in range(self.TOPBAR_SLOT_COUNT):
-                grid.setColumnStretch(col, 1)
-                grid.setColumnMinimumWidth(col, self.TOPBAR_SLOT_CELL_MIN)
+                grid.setColumnStretch(col, 0)
+                grid.setColumnMinimumWidth(col, 0)
             self._topbar_action_layouts[mode] = grid
             stack.addWidget(page)
         # Assign early so the overflow pass can find the stack during the build.
@@ -4435,6 +4452,27 @@ class MainWindow(QMainWindow):
         self._apply_topbar_button_style(button, self._workspace_toolbar_icon("more"))
         return button
 
+    @classmethod
+    def _topbar_visible_slot_count_for_width(cls, width: int | float) -> int:
+        available = int(width or 0)
+        if available <= 0:
+            return max(1, min(cls.TOPBAR_INITIAL_VISIBLE_SLOTS, cls.TOPBAR_SLOT_COUNT))
+        cell = max(cls.TOPBAR_SLOT_CELL_MIN, cls.TOPBAR_SLOT_BUTTON_WIDTH)
+        spacing = max(0, int(cls.TOPBAR_SLOT_SPACING))
+        count = (available + spacing) // (cell + spacing)
+        return max(1, min(cls.TOPBAR_SLOT_COUNT, int(count)))
+
+    def _topbar_visible_slot_count(self) -> int:
+        stack = getattr(self, "topbar_action_stack", None)
+        width = stack.width() if isinstance(stack, QWidget) else 0
+        return self._topbar_visible_slot_count_for_width(width)
+
+    def _configure_topbar_grid_columns(self, grid: QGridLayout, visible_slots: int) -> None:
+        for col in range(self.TOPBAR_SLOT_COUNT):
+            active = col < visible_slots
+            grid.setColumnStretch(col, 1 if active else 0)
+            grid.setColumnMinimumWidth(col, self.TOPBAR_SLOT_CELL_MIN if active else 0)
+
     def _rebuild_topbar_action_stack(self, mode: str | None = None) -> None:
         layouts = getattr(self, "_topbar_action_layouts", None)
         if not layouts:
@@ -4443,6 +4481,8 @@ class MainWindow(QMainWindow):
         # rebuild both regardless of the requested mode.
         modes = ("manual", "ai")
         n = self.TOPBAR_SLOT_COUNT
+        visible_slots = self._topbar_visible_slot_count()
+        self._topbar_rendered_slot_count = visible_slots
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         built = 0
@@ -4451,11 +4491,15 @@ class MainWindow(QMainWindow):
             if grid is None:
                 continue
             self._clear_layout_items(grid, delete_widgets=True)
+            self._configure_topbar_grid_columns(grid, visible_slots)
             slots = list(getattr(self, "_topbar_slots", {}).get(target) or [])
             slots += [None] * (n - len(slots))
+            hidden_start = visible_slots
+            if any(item_id for item_id in slots[visible_slots:]):
+                hidden_start = max(0, visible_slots - 1)
             items: list[tuple[str, QWidget]] = []
             slot_widgets: list[QWidget | None] = [None] * n
-            for slot_index in range(n):
+            for slot_index in range(hidden_start):
                 item_id = slots[slot_index]
                 if not item_id:
                     continue
@@ -4467,6 +4511,22 @@ class MainWindow(QMainWindow):
                 items.append((item_id, widget))
                 slot_widgets[slot_index] = widget
                 built += 1
+            hidden_items = [item_id for item_id in slots[hidden_start:] if item_id]
+            if hidden_items and visible_slots > 0:
+                button = self._build_topbar_more_button()
+                menu = QMenu(button)
+                for item_id in hidden_items:
+                    self._add_topbar_overflow_entry(menu, item_id)
+                button.setMenu(menu)
+                self._normalize_topbar_slot_button(button)
+                more_slot = visible_slots - 1
+                grid.addWidget(button, 0, more_slot, Qt.AlignmentFlag.AlignCenter)
+                items.append(("more", button))
+                slot_widgets[more_slot] = button
+                self._topbar_more_buttons[target] = button
+                built += 1
+            else:
+                self._topbar_more_buttons.pop(target, None)
             self._topbar_action_items[target] = items
             self._topbar_slot_widgets[target] = slot_widgets
         if logger.enabled:
@@ -4482,19 +4542,48 @@ class MainWindow(QMainWindow):
         popup_specs = self._topbar_popup_specs()
         if item_id in popup_specs:
             label, factory = popup_specs[item_id]
-            submenu = factory()
-            submenu.setParent(menu)
-            submenu.setTitle(label)
-            menu.addMenu(submenu)
+            self._add_topbar_overflow_popup_entries(menu, label, factory)
             return
         spec = self._workspace_toolbar_action_specs().get(item_id)
         if spec is not None:
             menu.addAction(spec[0])
 
+    def _add_topbar_overflow_popup_entries(self, menu: QMenu, label: str, factory: "Callable[[], QMenu]") -> None:
+        source_menu = factory()
+        actions = list(source_menu.actions())
+        if not actions:
+            source_menu.deleteLater()
+            return
+        if menu.actions():
+            menu.addSeparator()
+        menu.addSection(label)
+        for action in actions:
+            submenu = action.menu()
+            if submenu is not None:
+                submenu.setParent(menu)
+                menu.addMenu(submenu)
+            elif action.isSeparator():
+                menu.addSeparator()
+            else:
+                menu.addAction(action)
+        self._keep_topbar_overflow_menu_source(menu, source_menu)
+
+    @staticmethod
+    def _keep_topbar_overflow_menu_source(menu: QMenu, source_menu: QMenu) -> None:
+        source_menu.setParent(menu)
+        sources = getattr(menu, "_topbar_flattened_source_menus", None)
+        if sources is None:
+            sources = []
+            setattr(menu, "_topbar_flattened_source_menus", sources)
+        sources.append(source_menu)
+
     def _update_topbar_overflow(self, mode: str) -> None:
-        # The cluster is a fixed slot grid now; cells resize with the bar and
-        # there is nothing to collapse into an overflow menu.
-        return
+        visible_slots = self._topbar_visible_slot_count()
+        if visible_slots == getattr(self, "_topbar_rendered_slot_count", None):
+            return
+        if self._toolbar_edit_mode:
+            return
+        self._rebuild_topbar_action_stack(mode)
 
     def _build_advanced_filter_button(self) -> QToolButton:
         button = QToolButton()
@@ -4520,6 +4609,80 @@ class MainWindow(QMainWindow):
             return "classic"
         # "photo_fit" was renamed to "detailed"; migrate stored values.
         return "detailed"
+
+    # -- Resolution-aware card-style policy --------------------------------
+    def _display_class(self) -> str:
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return "high"
+        height = screen.availableGeometry().height()
+        if height <= 800:
+            return "low"
+        if height <= 1200:
+            return "medium"
+        return "high"
+
+    def _allowed_card_styles(self, display_class: str | None = None) -> tuple[str, ...]:
+        cls = display_class or self._display_class()
+        return tuple(self._DISPLAY_STYLE_POLICY[cls]["styles"])
+
+    def _effective_card_style(self, saved: str, display_class: str) -> str:
+        policy = self._DISPLAY_STYLE_POLICY[display_class]
+        return saved if saved in policy["styles"] else policy["default"]
+
+    def _apply_display_style_policy(self, *, show_warning: bool) -> None:
+        """Coerce the effective card style + column thresholds to what the
+        current display can show. The user's saved preference is left untouched,
+        so it comes back when they move to a larger display."""
+        display_class = self._display_class()
+        policy = self._DISPLAY_STYLE_POLICY[display_class]
+        effective = self._effective_card_style(self._loupe_card_style, display_class)
+        self._display_class_value = display_class
+        self._effective_loupe_card_style = effective
+        if getattr(self, "grid", None) is not None:
+            self.grid.set_loupe_card_style(effective)
+            self.grid.set_column_style_thresholds(policy["compact_threshold"], policy["plain_threshold"])
+        if show_warning and display_class == "low":
+            self._maybe_warn_small_display()
+
+    def _post_show_display_setup(self) -> None:
+        # Runs once the window is up: warn if on a small display, and re-apply the
+        # policy live when moved to another screen or the resolution changes.
+        self._apply_display_style_policy(show_warning=True)
+        handle = self.windowHandle()
+        if handle is not None:
+            handle.screenChanged.connect(self._handle_display_change)
+        self._connect_screen_geometry_signal()
+
+    def _connect_screen_geometry_signal(self) -> None:
+        screen = self.screen()
+        if screen is None:
+            return
+        try:
+            screen.geometryChanged.connect(
+                self._handle_display_change, Qt.ConnectionType.UniqueConnection
+            )
+        except (TypeError, RuntimeError):
+            pass
+
+    def _handle_display_change(self, _arg=None) -> None:
+        self._connect_screen_geometry_signal()
+        self._apply_display_style_policy(show_warning=True)
+
+    def _maybe_warn_small_display(self) -> None:
+        if self._settings.value(self.SMALL_DISPLAY_WARNED_KEY, False, bool):
+            return
+        self._settings.setValue(self.SMALL_DISPLAY_WARNED_KEY, True)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        size = screen.size() if screen is not None else None
+        dims = f"{size.width()}×{size.height()}" if size is not None else "small"
+        QMessageBox.information(
+            self,
+            "Small display detected",
+            f"Your screen ({dims}) is small, so the card style is locked to Zen "
+            "(photo-only) to keep the layout usable. Other card styles become "
+            "available again on a larger display.",
+        )
 
     def _fluent_filled_icon(self, primary: str, color: QColor) -> QIcon:
         """Render a Fluent glyph as a solid filled silhouette (the enclosed
@@ -5607,9 +5770,17 @@ class MainWindow(QMainWindow):
             if mode_slots is None:
                 mode_slots = self._items_to_slots(self._workspace_toolbar_layouts.get(mode, ()))
             per_mode[mode] = mode_slots
-        # Unified bar: both review modes share one arrangement. Merge whatever the
-        # two mode bars held into a single shared layout so nothing is lost.
-        shared = self._merge_slots_shared(per_mode)
+        # Unified bar: both review modes share one arrangement. Only MERGE when the
+        # persisted arrays actually differ (a one-time migration from the old
+        # separate bars). When they're already identical — the normal case — reuse
+        # one directly: re-merging identical arrays would multiply repeatable items
+        # (dividers) on every launch (1 -> 3 -> 9 ...).
+        mode_keys = list(self.WORKSPACE_TOOLBAR_DEFAULTS)
+        first = per_mode.get(mode_keys[0]) if mode_keys else None
+        if first is not None and all(per_mode.get(m) == first for m in mode_keys):
+            shared = list(first)
+        else:
+            shared = self._merge_slots_shared(per_mode)
         slots: dict[str, list[str | None]] = {}
         for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
             slots[mode] = list(shared)
@@ -6006,11 +6177,16 @@ class MainWindow(QMainWindow):
         logger = perf_logger()
         begin_start = time.perf_counter() if logger.enabled else 0.0
 
-        n = self.TOPBAR_SLOT_COUNT
+        n = self._topbar_visible_slot_count()
         slot_widgets = list(self._topbar_slot_widgets.get(normalized) or [])
         slots = list(self._topbar_slots.get(normalized) or [])
         slot_widgets += [None] * (n - len(slot_widgets))
         slots += [None] * (n - len(slots))
+        # Force a layout pass first: right after a rebuild (e.g. adding a button)
+        # the fresh widgets haven't been laid out, so width()/height() report 0
+        # and their badges would land off the button — making it unclickable
+        # until the editor is reopened.
+        grid.activate()
         # Detach occupied widgets from the grid so they can float freely.
         for widget in slot_widgets:
             if widget is not None:
@@ -6030,8 +6206,11 @@ class MainWindow(QMainWindow):
             if widget is None:
                 continue
             item_id = slots[slot_index] or ""
-            w = widget.width()
-            h = widget.height()
+            # Fall back to the size hint if the widget hasn't been sized yet, and
+            # pin that size so the button renders and its badge lands correctly.
+            w = widget.width() or widget.sizeHint().width()
+            h = widget.height() or widget.sizeHint().height()
+            widget.resize(w, h)
             x = round(slot_index * cell_w + (cell_w - w) / 2)
             y = max(0, (page_h - h) // 2)
             widget.move(x, y)
@@ -6152,7 +6331,7 @@ class MainWindow(QMainWindow):
         slider) — styled like the left rail's add button (a clean plus icon, no
         bounding box). Clicking it adds the picked button to the next open cell,
         which the user can then drag wherever they want."""
-        last = self.TOPBAR_SLOT_COUNT - 1
+        last = max(0, self._topbar_visible_slot_count() - 1)
         button = QToolButton(page)
         button.setObjectName("toolbarEditAddButton")
         button.setToolTip("Add a button — drops into the next open cell, then drag it where you want")
@@ -6198,10 +6377,10 @@ class MainWindow(QMainWindow):
         # the mode swap if it belongs to the other review mode.
         if item_id not in self._unified_allowed_items():
             return
-        n = self.TOPBAR_SLOT_COUNT
-        usable = n - 1  # last cell is reserved for the fixed "+"
-        slots = list(self._topbar_slots.get(mode) or [None] * n)
-        slots += [None] * (n - len(slots))
+        visible_slots = self._topbar_visible_slot_count()
+        usable = max(0, visible_slots - 1)  # last visible cell is reserved for the fixed "+"
+        slots = list(self._topbar_slots.get(mode) or [None] * self.TOPBAR_SLOT_COUNT)
+        slots += [None] * (self.TOPBAR_SLOT_COUNT - len(slots))
         if item_id not in self.TOPBAR_REPEATABLE_ITEMS and item_id in slots:
             return
         target = self._toolbar_item_picker_slot
@@ -6209,7 +6388,7 @@ class MainWindow(QMainWindow):
         if target is None or not (0 <= target < usable) or slots[target] is not None:
             target = next((i for i in range(usable) if slots[i] is None), None)
         if target is None:
-            self.statusBar().showMessage("The toolbar is full — remove a button first.")
+            self.statusBar().showMessage("The visible toolbar is full — remove a button first.")
             return
         slots[target] = item_id
         perf_logger().log("toolbar.add", item=item_id, slot=target, mode=mode)
@@ -6304,14 +6483,43 @@ class MainWindow(QMainWindow):
 
     def _remove_toolbar_slot_inplace(self, slot_index: int) -> None:
         # Remove the item in a specific cell (not by id) so removing one of
-        # several identical dividers clears the right one.
+        # several identical dividers clears the right one. Done in place — destroy
+        # just that button + its badge and leave the cell empty (its dashed box
+        # stays) — instead of tearing down and rebuilding the whole toolbar.
         mode = self._toolbar_edit_active_mode or "manual"
-        slots = list(self._topbar_slots.get(mode) or [])
-        if not (0 <= slot_index < len(slots)) or slots[slot_index] is None:
+        target_entry = next((e for e in self._toolbar_edit_items if e[4] == slot_index), None)
+        if target_entry is None:
             return
-        perf_logger().log("toolbar.remove", item=slots[slot_index], slot=slot_index, mode=mode)
-        slots[slot_index] = None
-        self._commit_slots_and_refresh(mode, slots)
+        logger = perf_logger()
+        t0 = time.perf_counter() if logger.enabled else 0.0
+        logger.log("toolbar.remove", item=target_entry[0], slot=slot_index, mode=mode)
+        _item_id, widget, _base, badge, _slot = target_entry
+        if badge is not None:
+            badge.hide()
+            badge.setParent(None)
+            badge.deleteLater()
+        if widget is not None:
+            widget.removeEventFilter(self)
+            widget.setGraphicsEffect(None)
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
+        self._toolbar_edit_items = [e for e in self._toolbar_edit_items if e is not target_entry]
+        # Persist the new arrangement from the remaining lifted widgets.
+        n = self.TOPBAR_SLOT_COUNT
+        slots = list(self._topbar_slots.get(mode) or [None] * n)
+        slots += [None] * (n - len(slots))
+        if 0 <= slot_index < n:
+            slots[slot_index] = None
+        for entry in self._toolbar_edit_items:
+            if 0 <= entry[4] < n:
+                slots[entry[4]] = entry[0]
+        for target_mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
+            self._topbar_slots[target_mode] = self._normalize_slots(target_mode, slots)
+            self._sync_items_from_slots(target_mode)
+        self._save_workspace_toolbar_layouts()
+        if logger.enabled:
+            logger.duration("toolbar.delete", (time.perf_counter() - t0) * 1000.0, slot=slot_index)
 
     def _handle_toolbar_edit_drag(self, widget: QWidget, event) -> bool:
         """Slot-grid drag: grab a button, slide it, and on release it inserts at
@@ -6380,7 +6588,7 @@ class MainWindow(QMainWindow):
     def _slot_at_x(self, center_x: float) -> int:
         cell_w = self._toolbar_edit_cell_width or 1.0
         # The last cell is reserved for the fixed "+", so buttons stop one short.
-        return max(0, min(self.TOPBAR_SLOT_COUNT - 2, int(center_x // cell_w)))
+        return max(0, min(self._topbar_visible_slot_count() - 2, int(center_x // cell_w)))
 
     def _update_toolbar_edit_drop_target(self, widget: QWidget) -> None:
         page = widget.parentWidget()
@@ -6421,8 +6629,9 @@ class MainWindow(QMainWindow):
         # fixed positions, so a drop only needs to move the button widgets to
         # their new cells. This avoids the full teardown+rebuild+re-freeze (and
         # its Qt layout/paint pass) that made the drop feel laggy.
-        n = self.TOPBAR_SLOT_COUNT
-        usable = n - 1  # last cell reserved for the "+"
+        visible_slots = self._topbar_visible_slot_count()
+        n = visible_slots
+        usable = max(0, n - 1)  # last visible cell reserved for the "+"
         entries: list = [None] * n
         for entry in self._toolbar_edit_items:
             slot = entry[4]
@@ -6478,8 +6687,13 @@ class MainWindow(QMainWindow):
         self._toolbar_edit_items = frozen
         if self._toolbar_edit_drop_highlight is not None:
             self._toolbar_edit_drop_highlight.hide()
-        # Persist the shared arrangement without rebuilding the toolbar.
-        slots = [entry[0] if entry is not None else None for entry in entries]
+        # Persist the visible arrangement without losing saved slots that only
+        # fit on wider monitors.
+        visible_slots = len(entries)
+        slots = list(self._topbar_slots.get(self._toolbar_edit_active_mode or "manual") or [None] * self.TOPBAR_SLOT_COUNT)
+        slots += [None] * (self.TOPBAR_SLOT_COUNT - len(slots))
+        for index in range(max(0, min(visible_slots, self.TOPBAR_SLOT_COUNT))):
+            slots[index] = entries[index][0] if entries[index] is not None else None
         for target_mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
             self._topbar_slots[target_mode] = self._normalize_slots(target_mode, slots)
             self._sync_items_from_slots(target_mode)
@@ -21982,7 +22196,8 @@ class MainWindow(QMainWindow):
             winner_mode=self._winner_mode,
             delete_mode=self._delete_mode,
             toolbar_style=self._toolbar_style,
-            loupe_card_style=self._loupe_card_style,
+            loupe_card_style=self._effective_loupe_card_style,
+            allowed_card_styles=self._allowed_card_styles(),
             ui_gamma=self._ui_gamma,
             free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
             preview_preload_batch_size=self._preview_preload_batch_size,
@@ -22027,7 +22242,11 @@ class MainWindow(QMainWindow):
         winner_changed = result.winner_mode != self._winner_mode
         delete_changed = result.delete_mode != self._delete_mode
         toolbar_style_changed = self._normalize_toolbar_style(result.toolbar_style) != self._toolbar_style
-        card_style_changed = self._normalize_loupe_card_style(result.loupe_card_style) != self._loupe_card_style
+        # Compare against the EFFECTIVE (possibly coerced) style so that opening
+        # Settings on a restricted display and clicking OK without touching the
+        # card style doesn't overwrite the saved preference (which is what lets
+        # it come back on a larger display).
+        card_style_changed = self._normalize_loupe_card_style(result.loupe_card_style) != self._effective_loupe_card_style
         new_ui_gamma = normalize_ui_gamma(result.ui_gamma)
         ui_gamma_changed = abs(new_ui_gamma - self._ui_gamma) > 1e-3
         free_scroll_changed = result.free_smooth_scroll_enabled != self._free_smooth_scroll_enabled
@@ -22050,7 +22269,10 @@ class MainWindow(QMainWindow):
         self._winner_mode = result.winner_mode
         self._delete_mode = result.delete_mode
         self._toolbar_style = self._normalize_toolbar_style(result.toolbar_style)
-        self._loupe_card_style = self._normalize_loupe_card_style(result.loupe_card_style)
+        # Only overwrite the saved preference when the user actively changed it,
+        # so a coerced style on a small display never clobbers the real choice.
+        if card_style_changed:
+            self._loupe_card_style = self._normalize_loupe_card_style(result.loupe_card_style)
         self._ui_gamma = new_ui_gamma
         self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
         self._preview_preload_batch_size = new_preview_preload_batch_size
@@ -22112,7 +22334,9 @@ class MainWindow(QMainWindow):
         self.summary_session.setText(f"Session: {self._session_id}")
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
         self.preview.set_preload_batch_size(self._preview_preload_batch_size)
-        self.grid.set_loupe_card_style(self._loupe_card_style)
+        # Apply through the resolution policy so the effective (coerced) style
+        # and column thresholds land on the grid.
+        self._apply_display_style_policy(show_warning=False)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         if ui_gamma_changed:
             self._apply_appearance()
