@@ -93,8 +93,17 @@ COMPACT_COLUMN_THRESHOLD = 4
 # Past this many columns even the compact overlay goes away — plain photo.
 PLAIN_PHOTO_COLUMN_THRESHOLD = 5
 
-# Fixed corner rounding for the photo at every card size. Scaling it with the
-# card width made the corners look sharp past three or four columns.
+# The detailed card is composed at the size of the approved four-column view
+# and then uniformly transformed into the live tile. Keeping every internal
+# measurement in this one design space makes the card behave like a flattened
+# layout in a graphics editor: text, badges, buttons, scrims, and strokes all
+# resize together instead of independently hitting pixel-size floors.
+DETAILED_CARD_REFERENCE_WIDTH = 356
+DETAILED_CARD_REFERENCE_HEIGHT = 285
+
+# Default corner rounding in the renderer's native coordinate space. Detailed
+# cards transform it with the rest of the composition; compact cards use it as
+# a live-pixel value unless the caller supplies a column-aware override.
 IMAGE_CORNER_RADIUS = 8.0
 
 # Photo corner rounding scales with the grid column count: wide single-column
@@ -194,6 +203,47 @@ def render_grid_card_pixmap(
 
 
 def paint_grid_card(
+    painter: QPainter,
+    rect: QRect,
+    source_pixmap: QPixmap | None,
+    data: GridCardData,
+    *,
+    compact: bool = False,
+    compact_actions: str = "corners",
+    compact_filename: bool = False,
+    compact_badge_text: bool = False,
+    compact_overlay: bool = True,
+    corner_radius: float | None = None,
+) -> GridCardHitRects:
+    """Paint one card and return action hit rectangles in viewport space."""
+
+    if not compact and not data.immersive:
+        return _paint_scaled_detailed_card(
+            painter,
+            rect,
+            source_pixmap,
+            data,
+            compact_actions=compact_actions,
+            compact_filename=compact_filename,
+            compact_badge_text=compact_badge_text,
+            compact_overlay=compact_overlay,
+            corner_radius=corner_radius,
+        )
+    return _paint_grid_card_native(
+        painter,
+        rect,
+        source_pixmap,
+        data,
+        compact=compact,
+        compact_actions=compact_actions,
+        compact_filename=compact_filename,
+        compact_badge_text=compact_badge_text,
+        compact_overlay=compact_overlay,
+        corner_radius=corner_radius,
+    )
+
+
+def _paint_grid_card_native(
     painter: QPainter,
     rect: QRect,
     source_pixmap: QPixmap | None,
@@ -311,6 +361,73 @@ def paint_grid_card(
     return GridCardHitRects(favorite_rect, reject_rect)
 
 
+def _detailed_card_transform(rect: QRect) -> tuple[float, float, float]:
+    """Uniform scale and origin for the fixed detailed-card composition."""
+
+    scale = min(
+        rect.width() / DETAILED_CARD_REFERENCE_WIDTH,
+        rect.height() / DETAILED_CARD_REFERENCE_HEIGHT,
+    )
+    rendered_width = DETAILED_CARD_REFERENCE_WIDTH * scale
+    rendered_height = DETAILED_CARD_REFERENCE_HEIGHT * scale
+    origin_x = rect.left() + (rect.width() - rendered_width) / 2.0
+    origin_y = rect.top() + (rect.height() - rendered_height) / 2.0
+    return scale, origin_x, origin_y
+
+
+def _map_detailed_hit_rect(rect: QRect, scale: float, origin_x: float, origin_y: float) -> QRect:
+    if rect.isEmpty():
+        return QRect()
+    return QRect(
+        round(origin_x + rect.left() * scale),
+        round(origin_y + rect.top() * scale),
+        max(1, round(rect.width() * scale)),
+        max(1, round(rect.height() * scale)),
+    )
+
+
+def _paint_scaled_detailed_card(
+    painter: QPainter,
+    rect: QRect,
+    source_pixmap: QPixmap | None,
+    data: GridCardData,
+    *,
+    compact_actions: str,
+    compact_filename: bool,
+    compact_badge_text: bool,
+    compact_overlay: bool,
+    corner_radius: float | None,
+) -> GridCardHitRects:
+    if rect.width() <= 8 or rect.height() <= 8:
+        return GridCardHitRects(QRect(), QRect())
+
+    scale, origin_x, origin_y = _detailed_card_transform(rect)
+    design_rect = QRect(0, 0, DETAILED_CARD_REFERENCE_WIDTH, DETAILED_CARD_REFERENCE_HEIGHT)
+
+    painter.save()
+    painter.setClipRect(rect, Qt.ClipOperation.IntersectClip)
+    painter.translate(origin_x, origin_y)
+    painter.scale(scale, scale)
+    hits = _paint_grid_card_native(
+        painter,
+        design_rect,
+        source_pixmap,
+        data,
+        compact=False,
+        compact_actions=compact_actions,
+        compact_filename=compact_filename,
+        compact_badge_text=compact_badge_text,
+        compact_overlay=compact_overlay,
+        corner_radius=corner_radius,
+    )
+    painter.restore()
+
+    return GridCardHitRects(
+        _map_detailed_hit_rect(hits.favorite, scale, origin_x, origin_y),
+        _map_detailed_hit_rect(hits.reject, scale, origin_x, origin_y),
+    )
+
+
 def _scale_for(rect: QRect, compact: bool = False) -> float:
     if compact:
         # Sub-linear (square-root) response: the chrome keeps shrinking as
@@ -370,6 +487,16 @@ def grid_card_action_rects(
         return GridCardHitRects(QRect(), QRect())
     if compact and not compact_overlay:
         return GridCardHitRects(QRect(), QRect())
+    if not compact:
+        design_rect = QRect(0, 0, DETAILED_CARD_REFERENCE_WIDTH, DETAILED_CARD_REFERENCE_HEIGHT)
+        design_scale = _scale_for(design_rect, False)
+        design_hits = _action_button_rects(design_rect, design_rect, design_scale)
+        scale, origin_x, origin_y = _detailed_card_transform(rect)
+        return GridCardHitRects(
+            _map_detailed_hit_rect(design_hits.favorite, scale, origin_x, origin_y),
+            _map_detailed_hit_rect(design_hits.reject, scale, origin_x, origin_y),
+        )
+
     scale = _scale_for(rect, compact)
     pad = _content_pad(scale, compact)
     content_rect = QRect(
@@ -378,9 +505,7 @@ def grid_card_action_rects(
         max(1, rect.width() - pad * 2),
         max(1, rect.height() - pad * 2),
     )
-    if compact:
-        return _compact_action_button_rects(rect, content_rect, scale, compact_actions)
-    return _action_button_rects(rect, content_rect, scale)
+    return _compact_action_button_rects(rect, content_rect, scale, compact_actions)
 
 
 def _action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> GridCardHitRects:
@@ -394,17 +519,7 @@ def _action_button_rects(card_rect: QRect, image_rect: QRect, scale: float) -> G
     reject_rect = QRect(image_rect.right() - margin - button, 0, button, button)
     favorite_rect = QRect(reject_rect.left() - gap - button, 0, button, button)
 
-    meta_font = QFont("Segoe UI", max(8, round(9 * scale)))
-    status_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
-    position_height = QFontMetrics(meta_font).height()
-    status_height = QFontMetrics(status_font).height()
-    initial_button_bottom = card_rect.bottom() - round(basis * 0.0475)
-    right_stack_height = round(basis * 0.172)
-    side_top = initial_button_bottom - right_stack_height + 1
-    side_rect_top = side_top - round(basis * 0.009)
-    status_top = side_top + position_height + max(2, round(3 * scale)) - round(basis * 0.0114)
-    right_text_gap = max(0, status_top - (side_rect_top + position_height - 1))
-    action_top = (status_top + status_height - 1) + right_text_gap + 1 + round(basis * 0.008)
+    _, _, action_top = _right_stack_vertical_positions(card_rect, scale)
     reject_rect.moveTop(action_top)
     favorite_rect.moveTop(action_top)
     return GridCardHitRects(favorite_rect, reject_rect)
@@ -584,6 +699,42 @@ def _metadata_text_top(card_rect: QRect, scale: float) -> int:
     text_block_bottom = card_rect.bottom() - round(basis * 0.08)
     # name_rect top == position_top in the overlay layout.
     return text_block_bottom - text_block_height + 1
+
+
+def _right_stack_vertical_positions(card_rect: QRect, scale: float) -> tuple[int, int, int]:
+    """Position, status, and action tops for the detailed card's right rail.
+
+    The position text shares the filename baseline. The status and action rows
+    retain their existing offsets from it, so the whole rail moves as one unit.
+    """
+
+    basis = _full_card_basis(card_rect)
+    name_font = QFont("Segoe UI", max(11, round(13 * scale)), QFont.Weight.DemiBold)
+    meta_font = QFont("Segoe UI", max(8, round(9 * scale)))
+    status_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
+    name_metrics = QFontMetrics(name_font)
+    meta_metrics = QFontMetrics(meta_font)
+    status_metrics = QFontMetrics(status_font)
+
+    filename_baseline = _metadata_text_top(card_rect, scale) + name_metrics.ascent()
+    position_top = filename_baseline - status_metrics.ascent()
+    side_top = position_top + round(basis * 0.009)
+    status_top = (
+        side_top
+        + meta_metrics.height()
+        + max(2, round(3 * scale))
+        - round(basis * 0.0114)
+    )
+    right_text_gap = max(0, status_top - (position_top + meta_metrics.height() - 1))
+    action_top = (
+        status_top
+        + status_metrics.height()
+        - 1
+        + right_text_gap
+        + 1
+        + round(basis * 0.008)
+    )
+    return position_top, status_top, action_top
 
 
 def _paint_scrim(
@@ -1036,8 +1187,6 @@ def _paint_bottom_overlay(
     hit_rects = _action_button_rects(card_rect, image_rect, scale)
     favorite_rect = QRect(hit_rects.favorite)
     reject_rect = QRect(hit_rects.reject)
-    initial_button_bottom = card_rect.bottom() - round(basis * 0.0475)
-
     body_left = image_rect.left() + margin
 
     name_font = QFont("Segoe UI", max(11, round(13 * scale)), QFont.Weight.DemiBold)
@@ -1085,11 +1234,10 @@ def _paint_bottom_overlay(
     _draw_elided_text(painter, exif_rect, data.exif_text, exif_font, QColor(204, 214, 226))
     _draw_elided_text(painter, meta_rect, data.meta_text, meta_font, QColor(132, 147, 168))
 
-    right_stack_height = round(basis * 0.172)
-    side_top = initial_button_bottom - right_stack_height + 1
+    side_top, status_top, _ = _right_stack_vertical_positions(card_rect, scale)
     side_rect = QRect(
         side_left,
-        side_top - round(basis * 0.009),
+        side_top,
         side_width,
         position_height,
     )
@@ -1106,7 +1254,7 @@ def _paint_bottom_overlay(
     if data.status_text:
         status_rect = QRect(
             side_left,
-            side_top + position_height + max(2, round(3 * scale)) - round(basis * 0.0114),
+            status_top,
             side_width,
             status_height,
         )
@@ -1407,6 +1555,8 @@ def _paint_heart_icon(painter: QPainter, rect: QRect, color: QColor, *, filled: 
 
 __all__ = [
     "COMPACT_COLUMN_THRESHOLD",
+    "DETAILED_CARD_REFERENCE_HEIGHT",
+    "DETAILED_CARD_REFERENCE_WIDTH",
     "PLAIN_PHOTO_COLUMN_THRESHOLD",
     "IMAGE_CORNER_RADIUS",
     "grid_card_corner_radius",
