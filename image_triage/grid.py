@@ -763,31 +763,34 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _use_loupe_card_style(self) -> bool:
         if self._compact_card_mode or self._columns != 1:
             return False
-        # Immersive/zen single-column uses the shared barebones card instead
-        # of the legacy loupe layout (kept for non-normal action modes, whose
-        # undo affordances live in the legacy painter).
-        return not (self._loupe_card_style in ("immersive", "zen") and self._action_mode == "normal")
+        # Normal review uses the shared renderer for every modern style,
+        # including the one-column detailed card. Filtered action modes keep
+        # the legacy loupe because its buttons carry their undo affordances.
+        return not (
+            self._loupe_card_style in ("detailed", "immersive", "zen")
+            and self._action_mode == "normal"
+        )
 
     def _use_new_grid_card(self) -> bool:
         """Tiles that use the shared grid_card_renderer design.
 
-        All multi-column tiles, plus the single-column view in immersive and
-        zen styles. Non-"normal" action modes keep the legacy card because
-        its buttons carry the undo affordances those filtered views rely on.
+        All modern card styles at every column count. Non-"normal" action
+        modes keep the legacy card because its buttons carry the undo
+        affordances those filtered views rely on.
         """
         if self._compact_card_mode or self._action_mode != "normal":
             return False
-        return self._columns > 1 or self._loupe_card_style in ("immersive", "zen")
+        return True
 
     def _use_compact_grid_card(self) -> bool:
         """Whether multi-column tiles use the barebones compact card (3:2
         photo, paired heart/reject buttons bottom-right, filename bottom-left,
         badge chips in the top corners).
 
-        Detailed style keeps the full review card up to the column threshold
-        and collapses past it; immersive and zen styles are always barebones."""
+        Detailed style keeps the full review card through the supported 1–8
+        column range; immersive and zen styles are always barebones."""
         if self._loupe_card_style == "detailed":
-            return self._columns > self._compact_column_threshold
+            return self._columns > 8
         return True
 
     def _grid_card_badge_text(self) -> bool:
@@ -823,9 +826,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         """Select the card style.
 
         "detailed": the full review card (filename, EXIF, meta, position,
-        status) up to the column threshold; past it the card collapses to the
-        barebones compact layout. In the single-column loupe the photo is
-        fitted above the metadata strip so the overlay never covers it.
+        status) at every supported column count from 1 through 8.
         "immersive": the photo fills the cell at every size — the grid always
         uses the barebones card, and the loupe paints its metadata over the
         photo's bottom edge on a lighter (65% alpha) scrim.
@@ -841,8 +842,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             return
         self._loupe_card_style = normalized
         self._compact_card_mode = normalized == "classic"
-        # The styles change tile metrics in the grid too (full cards at low
-        # column counts in detailed mode), so always reflow.
+        # The styles change tile metrics in the grid too, so always reflow.
         self._refresh_layout_after_visible_items_changed()
         self._schedule_visible_thumbnail_requests(immediate=True)
         self.viewport().update()
@@ -1773,6 +1773,11 @@ class ThumbnailGridView(QAbstractScrollArea):
             and not self._adapter_review_mode
             and not (index == self._zoom_index and self._zoom_factor > 1.0)
         )
+        if use_new_grid_card and not self._use_compact_grid_card():
+            # Detailed cards are one fixed composition based on the approved
+            # four-column view. The renderer scales this radius with every
+            # other layer instead of recomputing it from the live column count.
+            card_corner_radius = grid_card_corner_radius(COMPACT_COLUMN_THRESHOLD)
         painter.save()
         image_rect = self._image_rect(rect)
         photo_bottom: int | None = None
@@ -4247,7 +4252,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 card_chrome_height = 0
             self._tile_width_value = inner
             max_tile_height = max(160, self.viewport().height() - (self._margin * 2))
-            if not self._compact_card_mode:
+            if not self._compact_card_mode and self._use_loupe_card_style():
                 max_tile_height = self._loupe_fitted_tile_height(inner, max_tile_height)
             self._image_height_value = max(64, max_tile_height - card_chrome_height)
             self._row_x_offset = 0
@@ -4257,22 +4262,35 @@ class ThumbnailGridView(QAbstractScrollArea):
             used = columns * target + ((columns - 1) * self._spacing)
             self._row_x_offset = max(0, (inner - used) // 2)
         self._tile_height_value = card_chrome_height + self._image_height_value
-        if self._use_new_grid_card() and columns > 1:
-            # Single-column keeps the loupe-fitted tile computed above (the
-            # photo hugs the viewport/aspect); only multi-column tiles take
-            # the width-derived card aspects.
+        use_shared_card_metrics = self._use_new_grid_card() and (
+            columns > 1 or self._loupe_card_style == "detailed"
+        )
+        if use_shared_card_metrics:
             compact_tiles = self._use_compact_grid_card()
+            card_width = target
+            if columns == 1 and not compact_tiles:
+                # Keep the 5:4 detailed composition fully visible in loupe
+                # view. When the viewport is height-limited, narrow and center
+                # the card instead of clipping its footer below the fold.
+                max_card_height = max(96, self.viewport().height() - (self._margin * 2))
+                card_width = min(inner, max(self.MIN_TILE_WIDTH, (max_card_height * 5) // 4))
+                while (
+                    card_width > self.MIN_TILE_WIDTH
+                    and grid_card_height_for_width(card_width, compact=False) > max_card_height
+                ):
+                    card_width -= 1
+                self._tile_width_value = card_width
+                self._row_x_offset = max(0, (inner - card_width) // 2)
             if compact_tiles:
                 # Barebones compact card: the tile is the bare 3:2 photo with
                 # the chrome overlaid, so the photo owns the full cell.
-                self._tile_height_value = max(80, grid_card_height_for_width(target, compact=True))
+                self._tile_height_value = max(80, grid_card_height_for_width(card_width, compact=True))
                 self._image_height_value = self._tile_height_value
             else:
-                # Detailed card at low column counts: the tuned 5:4 review
-                # tile with a full-width 3:2 photo pane on top and the text
-                # footer strip just grazing its lower edge.
-                self._tile_height_value = max(96, grid_card_height_for_width(target, compact=False))
-                self._image_height_value = max(64, round(target * 2 / 3))
+                # Detailed card at every 1–8 column count: the tuned 5:4
+                # review tile with a full-width 3:2 photo pane on top.
+                self._tile_height_value = max(96, grid_card_height_for_width(card_width, compact=False))
+                self._image_height_value = max(64, round(card_width * 2 / 3))
         self._row_height_value = self._tile_height_value + self._spacing
         thumbnail_width = self._tile_width_value
         if not (columns == 1 and not self._compact_card_mode) and not self._use_new_grid_card():
