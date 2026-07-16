@@ -2476,9 +2476,9 @@ class MainWindow(QMainWindow):
     # 720p-class). Smaller displays restrict the selectable styles, pick a
     # photo-first default, and collapse detailed->barebones at fewer columns.
     _DISPLAY_STYLE_POLICY = {
-        "low": {"styles": ("zen",), "default": "zen", "compact_threshold": 4, "plain_threshold": 5},
-        "medium": {"styles": ("detailed", "immersive", "zen", "classic"), "default": "detailed", "compact_threshold": 3, "plain_threshold": 4},
-        "high": {"styles": ("detailed", "immersive", "zen", "classic"), "default": "detailed", "compact_threshold": 4, "plain_threshold": 5},
+        "low": {"styles": ("zen", "gallery"), "default": "zen", "compact_threshold": 4, "plain_threshold": 5},
+        "medium": {"styles": ("detailed", "immersive", "zen", "gallery", "classic"), "default": "detailed", "compact_threshold": 3, "plain_threshold": 4},
+        "high": {"styles": ("detailed", "immersive", "zen", "gallery", "classic"), "default": "detailed", "compact_threshold": 4, "plain_threshold": 5},
     }
     FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
@@ -4603,7 +4603,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _normalize_loupe_card_style(value: object) -> str:
         normalized = str(value or "detailed").strip().casefold().replace("-", "_").replace(" ", "_")
-        if normalized in {"immersive", "zen", "classic"}:
+        if normalized in {"immersive", "zen", "classic", "gallery"}:
             return normalized
         if normalized in {"legacy", "legacy_cards", "compact"}:
             return "classic"
@@ -22387,6 +22387,7 @@ class MainWindow(QMainWindow):
                 "detailed": "Detailed",
                 "immersive": "Immersive",
                 "zen": "Zen",
+                "gallery": "Gallery",
                 "classic": "Classic",
             }.get(self._loupe_card_style, self._loupe_card_style)
             self.statusBar().showMessage(f"Card style set to {label}")

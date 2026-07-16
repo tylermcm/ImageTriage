@@ -300,6 +300,7 @@ class WorkflowSettingsDialog(QDialog):
             ("Detailed", "detailed"),
             ("Immersive", "immersive"),
             ("Zen", "zen"),
+            ("Gallery", "gallery"),
             ("Classic", "classic"),
         )
         _allowed = set(allowed_card_styles) if allowed_card_styles else {key for _label, key in _card_style_options}

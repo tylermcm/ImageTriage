@@ -472,7 +472,8 @@ class Filmstrip(QFrame):
     """A full-width reel of thumbnails that fills the strip edge to edge, with
     bare chevron scroll arrows floating over each end. It packs in as many
     frames as fit and repopulates on resize; the arrows page through the full
-    set and hide at the extremes.
+    set and hide at the extremes. Middle-focused strips always use an odd slot
+    count and pad the ends so the current frame stays in the physical center.
 
     ``focus`` places the current frame at a fixed slot ("second" or "middle").
     Without a source it renders placeholder thumbs; ``set_source`` supplies the
@@ -617,7 +618,10 @@ class Filmstrip(QFrame):
 
     def _fit_count(self) -> int:
         avail = self.width() - self.MARGIN * 2
-        return max(1, (avail + self.GAP) // (self._target_thumb_w() + self.GAP))
+        fit = max(1, (avail + self.GAP) // (self._target_thumb_w() + self.GAP))
+        if self._focus == "middle" and fit % 2 == 0:
+            fit = max(1, fit - 1)
+        return fit
 
     def _focus_index(self) -> int:
         return 1 if self._focus == "second" else self._count // 2
@@ -643,14 +647,29 @@ class Filmstrip(QFrame):
             self._left.hide()
             self._right.hide()
             return
-        visible = max(0, min(self._count, self._total - self._offset))
         # Only stretch thumbs to fill the row when the reel is scrollable (more
         # frames than fit). When they all fit, keep them at their natural
-        # landscape width and left-align, so a short set doesn't flatten out.
+        # landscape width and center the complete slot group.
         fill = self._total > self._count
         target_w = self._target_thumb_w()
-        for i in range(visible):
-            index = self._offset + i
+        if not fill:
+            self._layout.addStretch(1)
+        for slot in range(self._count):
+            index = self._offset + slot
+            if not 0 <= index < self._total:
+                spacer = QWidget()
+                spacer.setFixedHeight(self._thumb_h)
+                spacer.setMinimumWidth(
+                    round(FilmstripThumb.BASE_MIN_WIDTH * self._thumb_h / FilmstripThumb.BASE_HEIGHT)
+                )
+                spacer.setSizePolicy(
+                    QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Fixed,
+                    QSizePolicy.Policy.Fixed,
+                )
+                if not fill:
+                    spacer.setFixedWidth(target_w)
+                self._layout.addWidget(spacer)
+                continue
             thumb = FilmstripThumb(
                 index,
                 self._tag_for(index),
@@ -665,17 +684,20 @@ class Filmstrip(QFrame):
             self._layout.addWidget(thumb)
         if not fill:
             self._layout.addStretch(1)
-        self._left.setVisible(self._offset > 0)
-        self._right.setVisible(self._offset + visible < self._total)
+        self._left.setVisible(self._total > 0 and self._current > 0)
+        self._right.setVisible(self._total > 0 and self._current < self._total - 1)
         self._left.raise_()
         self._right.raise_()
 
     def _scroll(self, direction: int) -> None:
         step = max(1, self._count // 2)
-        max_offset = max(0, self._total - self._count)
-        self._offset = min(max_offset, max(0, self._offset + direction * step))
-        self._recenter_pending = False
-        self._populate()
+        target = max(0, min(self._total - 1, self._current + direction * step)) if self._total else 0
+        if target == self._current:
+            return
+        self._current = target
+        self._recenter_pending = True
+        self._reflow(force=True)
+        self.frame_selected.emit(target)
 
     def _position_arrows(self) -> None:
         # Centered over the reel area (below the drag handle).
@@ -691,12 +713,19 @@ class Filmstrip(QFrame):
         fit = self._fit_count()
         changed = fit != self._count
         self._count = fit
-        max_offset = max(0, self._total - self._count)
-        if self._recenter_pending or force:
-            self._offset = min(max_offset, max(0, self._current - self._focus_index()))
+        if self._recenter_pending or force or changed:
+            if self._focus == "middle":
+                # Negative/start-overflow offsets are intentional: _populate
+                # turns them into empty slots so edge frames remain centered.
+                self._offset = self._current - self._focus_index()
+            else:
+                max_offset = max(0, self._total - self._count)
+                self._offset = min(max_offset, max(0, self._current - self._focus_index()))
             self._recenter_pending = False
         else:
-            self._offset = min(self._offset, max_offset)
+            max_offset = max(0, self._total - self._count)
+            if self._focus != "middle":
+                self._offset = min(self._offset, max_offset)
         if changed or force:
             self._populate()
         self._position_arrows()
