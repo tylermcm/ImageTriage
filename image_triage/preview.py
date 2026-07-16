@@ -1358,7 +1358,7 @@ class FullScreenPreview(QDialog):
         self.info_label.hide()
 
         self._filmstrip_current = 0
-        self._filmstrip = studio.Filmstrip(focus="second")
+        self._filmstrip = studio.Filmstrip(focus="middle")
         self._filmstrip.restore_layout(
             self._settings.value(self.FILMSTRIP_THUMB_HEIGHT_KEY, studio.Filmstrip.DEFAULT_THUMB_H, int),
             self._settings.value(self.FILMSTRIP_COLLAPSED_KEY, False, bool),
