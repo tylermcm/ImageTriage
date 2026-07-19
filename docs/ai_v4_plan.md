@@ -121,6 +121,7 @@ The **old adapter is not removed — it *becomes* the global learner.**
 - [x] Shared learner engine — `learner.py`: ridge preference learner, honest cross-validation, confidence blend.
 - [x] End-to-end per-folder ranking — `winner.py`: fit on a folder's labeled embeddings, score all images, blend with global by confidence, DB loader. Tested + validated on Canada.
 - [x] **Validated:** per-folder learner on embeddings = **0.55 cross-validated** (vs 0.146 existing, 0.29 best generic dim). Embeddings carry "wow"; dims do not (0.36). In-sample sanity on Canada: top-15 ranked mean label 0.83, bottom-15 0.00.
+- [x] **Cold start no longer uses the global prior** (2026-07-19). Below `min_labels`, `rank_folder_winners` ranked with 100% the global prior. Leave-one-folder-out over Banff/Canada/China puts that prior at **-0.132 / -0.001 / -0.053**, with winners-in-first-20 of 15% against an 18–27% random floor — it never beats shuffling. It now prefers the base composite (`COALESCE(final_score, technical_score)`), which scores **+0.238** on China. The blend path above `min_labels` is unchanged. New `source="base"`.
 - [ ] In-the-loop retrain hook (retrain as the folder is labeled) + UI surfacing of the ranking.
 - [ ] Confidence/coverage badge; advisory gating; feed dimensions into the global learner to test cross-folder transfer.
 - **DoD:** per-folder ranking usable while culling; global stays the cold-start prior, improving via the flywheel.
@@ -157,5 +158,32 @@ The **old adapter is not removed — it *becomes* the global learner.**
 
 1. Dimension storage: new columns on the existing images table vs a dedicated `image_dimensions` table.
 2. Package location/name: `image_triage/quality/` vs `aiculler/dimensions/`.
-3. Genre/category source for per-category weights: reuse existing semantic category or add a dedicated classifier.
+3. ~~Genre/category source for per-category weights: reuse existing semantic category or add a dedicated classifier.~~ **Settled 2026-07-19 — reuse the existing CLIP category; do not build a dedicated classifier yet.** Category slicing does not currently earn one. See §7.
 4. Frozen-app footprint: confirm `insightface` + `onnxruntime` + `opencv` are acceptable in the AppImage/MSI bundle; CPU-only default.
+
+---
+
+## 7. Settled experiments (don't re-run these from scratch)
+
+### Semantic-category adapters — weak, unproven, not dead (2026-07-19)
+
+**Hypothesis:** the adapter fails across folders because folders differ by *place* (China vs Canada). Pool labels by CLIP scene category instead (`landscape`, `travel_built`, `people_portrait`, `night_astro`, …) and train per category, so a street scene learns from street scenes everywhere.
+
+**The control that matters:** category-pure training also *shrinks the training set*, and a smaller training set changes the score on its own. Comparing category-pure against the full pool conflates the two and shows a fake +0.19 gain. The honest comparison is against **random subsets of the same size** drawn ignoring category.
+
+**Result** (3 folders, 410 labels, held-out folder never in training):
+
+| | |
+|---|---|
+| median percentile within its own size-matched null | **60%** (50% = category adds nothing) |
+| cells beating the null's 90th percentile | 2 / 13 |
+| mean advantage, cells with n_te ≥ 25 | **+0.080** |
+
+A weak positive lean, not established. **Do not build per-category adapters over embeddings** regardless of how this resolves — that splits already-scarce labels N ways, which is the opposite of what the label budget allows. Per-category *weights* over the ~12 dimensions (§2 Stage B) stays the affordable form.
+
+**The one live thread:** `night_astro` beat its null outright (100th percentile, +0.476 vs +0.112). Mechanically plausible — astro has quality criteria (star trails, noise floor, focus at infinity) that share nothing with other categories. Worth isolating as a narrow claim before betting on category slicing broadly.
+
+### Two evaluation traps found the hard way
+
+1. **Stored scores grade their own homework.** `adapter_scores.adapter_score` correlates **+0.74** with labels on Banff and Canada — but only because those adapters were trained on those folders' labels. `images.final_score` is contaminated the same way: adapter training *overwrites* it with a blend containing adapter output. Any transfer claim must come from leave-one-folder-out, never from stored columns. China is currently the only uncontaminated folder (no adapter ever trained on it).
+2. **The label store has two copies.** The app runs Windows Store Python, which redirects `%APPDATA%` into a per-package sandbox. `AppData\Roaming\ImageTriage\...` and `AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_*\LocalCache\Roaming\ImageTriage\...` are different files with different row counts; `PRAGMA database_list` reports the same path for both and `integrity_check` says `ok` on both. **Run label-store diagnostics under `py -3.13`**, not the CLI-Culler venv (3.12) or anaconda (3.9), or you will silently analyse weeks-old data. Note `py -3.13` has no scipy — use `quality/analysis.py`'s `spearman`.
