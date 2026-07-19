@@ -150,7 +150,7 @@ class GridCardData:
     duplicate_text: str = "Near Duplicate \u00b7 2/3"
     ai_text: str = "AI Pick \u00b7 99"
     position_text: str = "1 / 24"
-    status_text: str = "Keeper"
+    status_text: str = "Winner"
     status_kind: str = "keeper"
     duplicate_visible: bool = True
     ai_visible: bool = True
@@ -597,6 +597,13 @@ def paint_gallery_card(
     data: GridCardData,
     *,
     corner_radius: float | None = None,
+    filename_color: QColor | None = None,
+    action_fill: QColor | None = None,
+    action_hover_fill: QColor | None = None,
+    action_border: QColor | None = None,
+    action_hover_border: QColor | None = None,
+    action_icon_color: QColor | None = None,
+    action_hover_icon_color: QColor | None = None,
 ) -> GridCardHitRects:
     """Paint the gallery card: a rounded 3:2 photo with the filename and the
     heart/reject actions on the transparent strip below it."""
@@ -638,10 +645,22 @@ def paint_gallery_card(
         _paint_action_button(
             painter, favorite_rect, "heart",
             active=data.favorite, hover=data.hover_favorite, active_color=QColor(245, 95, 118),
+            idle_fill=action_fill,
+            hover_fill=action_hover_fill,
+            idle_border=action_border,
+            hover_border=action_hover_border,
+            idle_icon_color=action_icon_color,
+            hover_icon_color=action_hover_icon_color,
         )
         _paint_action_button(
             painter, reject_rect, "reject",
             active=data.rejected, hover=data.hover_reject, active_color=QColor(255, 107, 107),
+            idle_fill=action_fill,
+            hover_fill=action_hover_fill,
+            idle_border=action_border,
+            hover_border=action_hover_border,
+            idle_icon_color=action_icon_color,
+            hover_icon_color=action_hover_icon_color,
         )
         name_right_limit = favorite_rect.left() - gap
     else:
@@ -652,7 +671,7 @@ def paint_gallery_card(
     name_left = rect.left() + max(1, round(2 * chrome_scale))
     name_font = QFont("Segoe UI", max(11, round(12 * chrome_scale)))
     name_rect = QRect(name_left, strip_top, max(1, name_right_limit - name_left), strip)
-    _draw_elided_text(painter, name_rect, data.filename, name_font, QColor(154, 160, 166))
+    _draw_elided_text(painter, name_rect, data.filename, name_font, filename_color or QColor(154, 160, 166))
 
     painter.restore()
     return GridCardHitRects(favorite_rect, reject_rect)
@@ -1080,22 +1099,10 @@ def _paint_badges(
 # Accent colors for AI workflow tags, keyed by GridCardData.tags kind.
 # Status kinds reuse the card's status text colors; workflow kinds follow the
 # AI activity tag palette so the grid and the AI settings stay in step.
+# AI Miss is the only tag the rail draws now (see grid._review_workflow_tags);
+# every other accent was for a retired tag and has been removed.
 _TAG_ACCENTS: dict[str, tuple[int, int, int]] = {
-    "ai_pick": (215, 164, 58),
-    "keeper": (95, 230, 132),
-    "winner": (95, 230, 132),
-    "accepted": (95, 230, 132),
-    "reject": (255, 105, 105),
-    "rejected": (255, 105, 105),
-    "review": (112, 210, 255),
-    "maybe": (112, 210, 255),
-    "needs_review": (210, 135, 53),
-    "best_frame": (70, 189, 120),
-    "ai_review": (217, 120, 53),
     "ai_miss": (215, 84, 122),
-    "round": (87, 177, 255),
-    "disputed": (255, 196, 110),
-    "edited": (120, 170, 255),
 }
 
 
@@ -1696,14 +1703,22 @@ def _paint_action_button(
     active: bool,
     hover: bool,
     active_color: QColor,
+    idle_fill: QColor | None = None,
+    hover_fill: QColor | None = None,
+    idle_border: QColor | None = None,
+    hover_border: QColor | None = None,
+    idle_icon_color: QColor | None = None,
+    hover_icon_color: QColor | None = None,
 ) -> None:
     painter.save()
-    fill = QColor(21, 24, 30, 214)
-    border = QColor(255, 255, 255, 54)
-    text_color = QColor(242, 246, 250)
+    fill = QColor(idle_fill) if idle_fill is not None else QColor(21, 24, 30, 214)
+    border = QColor(idle_border) if idle_border is not None else QColor(255, 255, 255, 54)
+    text_color = QColor(idle_icon_color) if idle_icon_color is not None else QColor(242, 246, 250)
     if hover:
-        fill = QColor(35, 40, 48, 232)
-        border = QColor(255, 255, 255, 88)
+        fill = QColor(hover_fill) if hover_fill is not None else QColor(35, 40, 48, 232)
+        border = QColor(hover_border) if hover_border is not None else QColor(255, 255, 255, 88)
+        if hover_icon_color is not None:
+            text_color = QColor(hover_icon_color)
     if active:
         fill = QColor(active_color)
         fill.setAlpha(60)

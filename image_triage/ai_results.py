@@ -96,28 +96,16 @@ def set_cull_thresholds(*, keeper_percentile: float, reject_percentile: float) -
 
 AI_REVIEW_TAG_DEFINITIONS: tuple[tuple[str, str], ...] = (
     (
-        "AI Pick",
-        "The strongest automatic keep. Apply AI Decisions moves these frames into _winners without another prompt.",
+        "Winner",
+        "The AI's top tier — a strong keep. Apply AI Decisions moves these frames into _winners without another prompt.",
     ),
     (
-        "Keeper",
-        "A strong frame, but not decisive enough to file automatically. Review these manually before committing them.",
-    ),
-    (
-        "Needs Review",
+        "Review",
         "The model saw mixed signals here. This is a deliberate human-review bucket, not a silent failure.",
     ),
     (
         "Reject",
         "A low-confidence frame that Apply AI Decisions can move into the program recycle bin.",
-    ),
-    (
-        "Best Frame",
-        "The burst or similarity workflow thinks this is the strongest frame inside a local capture group.",
-    ),
-    (
-        "AI Review",
-        "Your manual state and the AI bucket disagree enough that the image deserves a second look.",
     ),
     (
         "AI Miss",
@@ -773,7 +761,7 @@ def confidence_bucket_label(bucket: AIConfidenceBucket | str) -> str:
     if resolved == AIConfidenceBucket.OBVIOUS_WINNER:
         return "Obvious winner"
     if resolved == AIConfidenceBucket.LIKELY_KEEPER:
-        return "Likely keeper"
+        return "Likely winner"
     if resolved == AIConfidenceBucket.LIKELY_REJECT:
         return "Likely reject"
     return "Needs review"
@@ -784,7 +772,7 @@ def confidence_bucket_short_label(bucket: AIConfidenceBucket | str) -> str:
     if resolved == AIConfidenceBucket.OBVIOUS_WINNER:
         return "Winner"
     if resolved == AIConfidenceBucket.LIKELY_KEEPER:
-        return "Keeper"
+        return "Winner"
     if resolved == AIConfidenceBucket.LIKELY_REJECT:
         return "Reject"
     return "Review"
@@ -805,11 +793,11 @@ def ai_cull_bucket_for_result(result: AIImageResult | None) -> AICullBucket:
 def ai_review_badge_label(result: AIImageResult | None) -> str:
     bucket = ai_cull_bucket_for_result(result)
     if bucket == AICullBucket.AI_PICK:
-        return "AI Pick"
+        return "Winner"
     if bucket == AICullBucket.REJECT:
         return "Reject"
     if bucket == AICullBucket.KEEPER:
-        return "Keeper"
+        return "Winner"
     if bucket == AICullBucket.NEEDS_REVIEW:
         return "Needs Review"
     return "Unrated"

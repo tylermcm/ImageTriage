@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -496,6 +496,8 @@ class Filmstrip(QFrame):
     DEFAULT_THUMB_H = 76
     REEL_TOP_PAD = 2
     REEL_BOTTOM_PAD = 8
+    WHEEL_ANGLE_STEP = 120
+    WHEEL_PIXEL_STEP = 40
 
     def __init__(self, focus: str = "middle", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -514,21 +516,27 @@ class Filmstrip(QFrame):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self._handle = FilmstripHandle(self)
+        self._handle.installEventFilter(self)
         outer.addWidget(self._handle)
         self._reel = QWidget()
+        self._reel.installEventFilter(self)
         self._layout = QHBoxLayout(self._reel)
         self._layout.setContentsMargins(self.MARGIN, self.REEL_TOP_PAD, self.MARGIN, self.REEL_BOTTOM_PAD)
         self._layout.setSpacing(self.GAP)
         outer.addWidget(self._reel, 1)
 
         self._left = ArrowButton("left", self)
+        self._left.installEventFilter(self)
         self._left.clicked.connect(lambda: self._scroll(-1))
         self._right = ArrowButton("right", self)
+        self._right.installEventFilter(self)
         self._right.clicked.connect(lambda: self._scroll(1))
 
         self._offset = 0        # index of first visible frame (0-based)
         self._count = 0
         self._recenter_pending = True
+        self._wheel_angle_remainder = 0
+        self._wheel_pixel_remainder = 0
         self._apply_strip_height()
 
     # -- resize / collapse (drag handle) ----------------------------------
@@ -668,6 +676,7 @@ class Filmstrip(QFrame):
                 )
                 if not fill:
                     spacer.setFixedWidth(target_w)
+                spacer.installEventFilter(self)
                 self._layout.addWidget(spacer)
                 continue
             thumb = FilmstripThumb(
@@ -680,6 +689,7 @@ class Filmstrip(QFrame):
             if not fill:
                 thumb.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 thumb.setFixedWidth(target_w)
+            thumb.installEventFilter(self)
             thumb.clicked.connect(self.frame_selected)
             self._layout.addWidget(thumb)
         if not fill:
@@ -691,13 +701,56 @@ class Filmstrip(QFrame):
 
     def _scroll(self, direction: int) -> None:
         step = max(1, self._count // 2)
-        target = max(0, min(self._total - 1, self._current + direction * step)) if self._total else 0
+        self._select_relative(direction * step)
+
+    def _select_relative(self, delta: int) -> None:
+        target = max(0, min(self._total - 1, self._current + int(delta))) if self._total else 0
         if target == self._current:
             return
         self._current = target
         self._recenter_pending = True
         self._reflow(force=True)
         self.frame_selected.emit(target)
+
+    @staticmethod
+    def _consume_wheel_steps(remainder: int, delta: int, step_size: int) -> tuple[int, int]:
+        remainder += int(delta)
+        steps = int(remainder / step_size)
+        return steps, remainder - steps * step_size
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt override
+        angle_y = event.angleDelta().y()
+        pixel_y = event.pixelDelta().y()
+        steps = 0
+        if angle_y:
+            steps, self._wheel_angle_remainder = self._consume_wheel_steps(
+                self._wheel_angle_remainder,
+                angle_y,
+                self.WHEEL_ANGLE_STEP,
+            )
+            self._wheel_pixel_remainder = 0
+        elif pixel_y:
+            steps, self._wheel_pixel_remainder = self._consume_wheel_steps(
+                self._wheel_pixel_remainder,
+                pixel_y,
+                self.WHEEL_PIXEL_STEP,
+            )
+            self._wheel_angle_remainder = 0
+        else:
+            event.ignore()
+            return
+
+        # Qt reports wheel-up as positive. In the horizontal filmstrip that
+        # means move left; wheel-down (negative) advances to the right.
+        if steps:
+            self._select_relative(-steps)
+        event.accept()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if event.type() == QEvent.Type.Wheel:
+            self.wheelEvent(event)
+            return event.isAccepted()
+        return super().eventFilter(watched, event)
 
     def _position_arrows(self) -> None:
         # Centered over the reel area (below the drag handle).

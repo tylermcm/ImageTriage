@@ -330,9 +330,9 @@ def _matches_ai_state(
 def ai_cull_bucket_label(bucket: AICullBucket | str) -> str:
     resolved = AICullBucket(bucket) if isinstance(bucket, str) else bucket
     if resolved == AICullBucket.AI_PICK:
-        return "AI Pick"
+        return "Winner"
     if resolved == AICullBucket.KEEPER:
-        return "Keeper"
+        return "Winner"
     if resolved == AICullBucket.NEEDS_REVIEW:
         return "Needs Review"
     if resolved == AICullBucket.REJECT:
@@ -348,10 +348,6 @@ def _matches_ai_cull_bucket(ai_cull_bucket: AICullBucket | None, ai_result: "AII
 
 def ai_workflow_tag_label(tag: str) -> str:
     normalized = tag.strip().casefold()
-    if normalized == "best_frame":
-        return "Best Frame"
-    if normalized == "ai_review":
-        return "AI Review"
     if normalized == "ai_miss":
         return "AI Miss"
     return ""
@@ -363,10 +359,6 @@ def _matches_ai_workflow_tag(tag: str, workflow_insight: "RecordWorkflowInsight 
         return True
     if workflow_insight is None:
         return False
-    if normalized == "best_frame":
-        return bool(getattr(workflow_insight, "best_in_group", False))
-    if normalized == "ai_review":
-        return getattr(workflow_insight, "disagreement_badge", "") == "AI Review"
     if normalized == "ai_miss":
         return getattr(workflow_insight, "disagreement_badge", "") == "AI Miss"
     return True
@@ -519,14 +511,7 @@ def builtin_filter_presets() -> tuple[SavedFilterPreset, ...]:
             ),
         ),
         SavedFilterPreset(
-            name="Obvious Winners",
-            query=RecordFilterQuery(
-                ai_state=AIStateFilter.OBVIOUS_WINNERS,
-                review_state=ReviewStateFilter.UNREVIEWED,
-            ),
-        ),
-        SavedFilterPreset(
-            name="Likely Keepers",
+            name="Likely Winners",
             query=RecordFilterQuery(
                 ai_state=AIStateFilter.LIKELY_KEEPERS,
                 review_state=ReviewStateFilter.UNREVIEWED,
@@ -558,34 +543,9 @@ def builtin_filter_presets() -> tuple[SavedFilterPreset, ...]:
             ),
         ),
         SavedFilterPreset(
-            name="AI Prefilter Dumped",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.AI_PREFILTER_DUMPED,
-            ),
-        ),
-        SavedFilterPreset(
-            name="DINO Quarantine",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.DINO_QUARANTINE,
-            ),
-        ),
-        SavedFilterPreset(
-            name="DINO Removed",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.DINO_REMOVED,
-            ),
-        ),
-        SavedFilterPreset(
-            name="DINO Rescued",
-            query=RecordFilterQuery(
-                quick_filter=FilterMode.DINO_RESCUED,
-            ),
-        ),
-        SavedFilterPreset(
-            name="Edited Winners",
+            name="Edited",
             query=RecordFilterQuery(
                 file_type=FileTypeFilter.EDITED,
-                review_state=ReviewStateFilter.ACCEPTED,
             ),
         ),
     )
