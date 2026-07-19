@@ -1,9 +1,13 @@
 """End-to-end per-folder winner ranking (Stage B integration).
 
 Fits the per-folder learner on a folder's labeled embeddings, scores every image
-in the folder, and blends with the global prior by confidence. With few in-folder
-labels the global prior dominates; as the folder is labeled, the per-folder
-learner takes over (``learner.blend_weight``).
+in the folder, and blends with the global prior by confidence. As the folder is
+labeled, the per-folder learner takes over (``learner.blend_weight``).
+
+Before there are enough labels to fit anything, ranking falls back to the base
+composite score rather than the global prior — leave-one-folder-out over
+Banff/Canada/China puts the prior at ~-0.06 rank correlation on folders it has
+not seen (no better than random), while the base composite reaches ~+0.22.
 
 Per-folder predictions and global scores live on different scales, so both are
 converted to within-folder percentile ranks before blending — the output is a
@@ -47,12 +51,26 @@ def _percentile_ranks(values: np.ndarray) -> np.ndarray:
     return order.astype(np.float64) / (n - 1)
 
 
+def _optional_percentiles(
+    scores: Sequence[float | None] | None, count: int
+) -> tuple[np.ndarray | None, list[float | None]]:
+    """Percentile-rank an optional score column; missing values sort to the bottom."""
+    raw_out: list[float | None] = [None] * count
+    if scores is None or not any(s is not None for s in scores):
+        return None, raw_out
+    raw = np.array([np.nan if s is None else float(s) for s in scores], dtype=np.float64)
+    raw_out = [None if np.isnan(v) else float(v) for v in raw]
+    filled = np.nan_to_num(raw, nan=float(np.nanmin(raw)))
+    return _percentile_ranks(filled), raw_out
+
+
 def rank_folder_winners(
     labeled_embeddings: np.ndarray,
     labeled_labels: Sequence[float],
     all_ids: Sequence[int],
     all_embeddings: np.ndarray,
     global_scores: Sequence[float | None] | None = None,
+    base_scores: Sequence[float | None] | None = None,
     *,
     alpha: float = 30.0,
     ramp: int = 20,
@@ -62,14 +80,8 @@ def rank_folder_winners(
     all_embeddings = np.asarray(all_embeddings, dtype=np.float64)
     n_local = len(labeled_labels)
 
-    have_global = global_scores is not None and any(g is not None for g in global_scores)
-    global_pct = None
-    global_raw: list[float | None] = [None] * len(all_ids)
-    if have_global:
-        raw = np.array([np.nan if g is None else float(g) for g in global_scores], dtype=np.float64)
-        global_raw = [None if np.isnan(v) else float(v) for v in raw]
-        filled = np.nan_to_num(raw, nan=float(np.nanmin(raw)))
-        global_pct = _percentile_ranks(filled)
+    global_pct, global_raw = _optional_percentiles(global_scores, len(all_ids))
+    base_pct, _ = _optional_percentiles(base_scores, len(all_ids))
 
     local_pct = None
     local_raw = None
@@ -91,6 +103,14 @@ def rank_folder_winners(
         elif local_pct is not None:
             blended = float(local_pct[i])
             source = "per_folder"
+        elif base_pct is not None:
+            # Cold start: the global prior measures ~-0.06 rank correlation on folders
+            # it has not been trained on (leave-one-folder-out over Banff/Canada/China),
+            # i.e. no better than shuffling. The base composite scores ~+0.22 on the one
+            # folder with no adapter contamination, so it leads until a per-folder
+            # learner exists.
+            blended = float(base_pct[i])
+            source = "base"
         elif global_pct is not None:
             blended = float(global_pct[i])
             source = "global"
@@ -112,8 +132,8 @@ def rank_folder_winners(
 
 def load_winner_inputs(
     connection: sqlite3.Connection, *, model_version: str | None = None
-) -> tuple[np.ndarray, list[float], list[int], np.ndarray, list[float | None]]:
-    """Pull labeled embeddings+labels and all embeddings(+global score) from a folder DB."""
+) -> tuple[np.ndarray, list[float], list[int], np.ndarray, list[float | None], list[float | None]]:
+    """Pull labeled embeddings+labels and all embeddings(+global and base score) from a folder DB."""
     previous = connection.row_factory
     connection.row_factory = sqlite3.Row
     try:
@@ -134,7 +154,8 @@ def load_winner_inputs(
         all_rows = connection.execute(
             """
             SELECT images.id AS image_id, embeddings.embedding AS emb, embeddings.dtype AS dt,
-                   adapter_scores.adapter_score AS global_score
+                   adapter_scores.adapter_score AS global_score,
+                   COALESCE(images.final_score, images.technical_score) AS base_score
             FROM images
             JOIN embeddings ON embeddings.image_id = images.id
             LEFT JOIN adapter_scores
@@ -162,6 +183,9 @@ def load_winner_inputs(
     global_scores: list[float | None] = [
         None if r["global_score"] is None else float(r["global_score"]) for r in all_rows
     ]
+    base_scores: list[float | None] = [
+        None if r["base_score"] is None else float(r["base_score"]) for r in all_rows
+    ]
     labeled_emb = np.vstack([_vec(r) for r in labeled_rows]) if labeled_rows else np.empty((0, 0))
     labeled_labels = [float(r["label"]) for r in labeled_rows]
-    return labeled_emb, labeled_labels, all_ids, all_emb, global_scores
+    return labeled_emb, labeled_labels, all_ids, all_emb, global_scores, base_scores
