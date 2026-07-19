@@ -73,11 +73,9 @@ class RecordWorkflowInsight:
 
     @property
     def disagreement_badge(self) -> str:
-        if self.disagreement_level == "strong":
-            return "AI Miss"
-        if self.disagreement_level:
-            return "AI Review"
-        return ""
+        # disagreement_level is only ever "strong" or "" (see
+        # disagreement_level_for), so AI Miss is the sole disagreement badge.
+        return "AI Miss" if self.disagreement_level == "strong" else ""
 
 
 @dataclass(slots=True, frozen=True)

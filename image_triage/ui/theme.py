@@ -11,6 +11,10 @@ from PySide6.QtWidgets import QApplication
 class AppearanceMode(str, Enum):
     DARK = "dark"
     MIDNIGHT = "midnight"
+    GRAPHITE = "graphite"
+    FOREST = "forest"
+    HIGH_CONTRAST = "high_contrast"
+    WARM_NEUTRAL = "warm_neutral"
     LIGHT = "light"
     AUTO = "auto"
 
@@ -109,35 +113,176 @@ def _midnight_theme() -> ThemePalette:
     return ThemePalette(
         name="midnight",
         is_dark=True,
-        # Prototype neutral-dark backgrounds, retaining Midnight's blue accent.
-        window_bg=ColorToken(7, 7, 7),
-        chrome_bg=ColorToken(13, 13, 13),
-        toolbar_bg=ColorToken(20, 20, 21),
-        panel_bg=ColorToken(22, 21, 22),
-        panel_alt_bg=ColorToken(21, 21, 21),
-        raised_bg=ColorToken(32, 32, 31),
-        input_bg=ColorToken(17, 17, 17),
-        input_hover_bg=ColorToken(24, 24, 24),
-        border=ColorToken(37, 38, 40),
-        border_muted=ColorToken(30, 30, 31),
-        text_primary=ColorToken(232, 238, 246),
-        text_secondary=ColorToken(178, 192, 211),
-        text_muted=ColorToken(126, 144, 168),
-        text_disabled=ColorToken(94, 108, 126),
-        accent=ColorToken(88, 145, 255),
-        accent_hover=ColorToken(116, 165, 255),
-        accent_soft=ColorToken(88, 145, 255, 44),
-        selection_fill=ColorToken(88, 145, 255, 50),
-        selection_outline=ColorToken(110, 155, 235),
-        success=ColorToken(77, 194, 122),
-        success_soft=ColorToken(37, 88, 58, 215),
-        warning=ColorToken(214, 166, 73),
-        warning_soft=ColorToken(92, 70, 18, 220),
-        danger=ColorToken(242, 124, 124),
-        danger_soft=ColorToken(108, 43, 48, 215),
-        image_bg=ColorToken(7, 7, 7),
-        badge_bg=ColorToken(9, 14, 22, 210),
-        badge_text=ColorToken(244, 247, 251),
+        # Restored from the older blue-black profile: cool panels, blue
+        # selection, and a neutral image well so photo colour stays honest.
+        window_bg=ColorToken(9, 11, 15),
+        chrome_bg=ColorToken(12, 14, 18),
+        toolbar_bg=ColorToken(22, 25, 31),
+        panel_bg=ColorToken(31, 35, 42),
+        panel_alt_bg=ColorToken(25, 29, 35),
+        raised_bg=ColorToken(36, 41, 49),
+        input_bg=ColorToken(17, 20, 25),
+        input_hover_bg=ColorToken(43, 49, 59),
+        border=ColorToken(55, 63, 75),
+        border_muted=ColorToken(39, 45, 54),
+        text_primary=ColorToken(236, 242, 249),
+        text_secondary=ColorToken(180, 192, 207),
+        text_muted=ColorToken(122, 137, 157),
+        text_disabled=ColorToken(83, 96, 115),
+        accent=ColorToken(82, 133, 218),
+        accent_hover=ColorToken(112, 161, 241),
+        accent_soft=ColorToken(82, 133, 218, 54),
+        selection_fill=ColorToken(82, 133, 218, 58),
+        selection_outline=ColorToken(111, 161, 238),
+        success=ColorToken(72, 191, 127),
+        success_soft=ColorToken(31, 82, 59, 222),
+        warning=ColorToken(220, 173, 77),
+        warning_soft=ColorToken(88, 68, 24, 222),
+        danger=ColorToken(239, 105, 111),
+        danger_soft=ColorToken(94, 39, 47, 222),
+        image_bg=ColorToken(8, 10, 13),
+        badge_bg=ColorToken(11, 15, 21, 224),
+        badge_text=ColorToken(244, 248, 252),
+    )
+
+
+def _graphite_theme() -> ThemePalette:
+    return ThemePalette(
+        name="graphite",
+        is_dark=True,
+        window_bg=ColorToken(14, 14, 14),
+        chrome_bg=ColorToken(19, 19, 19),
+        toolbar_bg=ColorToken(30, 31, 32),
+        panel_bg=ColorToken(36, 37, 39),
+        panel_alt_bg=ColorToken(29, 30, 32),
+        raised_bg=ColorToken(49, 50, 52),
+        input_bg=ColorToken(22, 23, 24),
+        input_hover_bg=ColorToken(57, 58, 61),
+        border=ColorToken(72, 74, 77),
+        border_muted=ColorToken(50, 52, 55),
+        text_primary=ColorToken(240, 241, 242),
+        text_secondary=ColorToken(190, 194, 198),
+        text_muted=ColorToken(128, 134, 140),
+        text_disabled=ColorToken(89, 94, 100),
+        accent=ColorToken(118, 165, 255),
+        accent_hover=ColorToken(146, 184, 255),
+        accent_soft=ColorToken(118, 165, 255, 48),
+        selection_fill=ColorToken(118, 165, 255, 48),
+        selection_outline=ColorToken(146, 184, 255),
+        success=ColorToken(77, 190, 124),
+        success_soft=ColorToken(35, 82, 56, 222),
+        warning=ColorToken(219, 169, 71),
+        warning_soft=ColorToken(88, 68, 22, 222),
+        danger=ColorToken(237, 100, 105),
+        danger_soft=ColorToken(91, 37, 43, 222),
+        image_bg=ColorToken(12, 12, 12),
+        badge_bg=ColorToken(17, 18, 20, 224),
+        badge_text=ColorToken(245, 246, 247),
+    )
+
+
+def _forest_theme() -> ThemePalette:
+    return ThemePalette(
+        name="forest",
+        is_dark=True,
+        window_bg=ColorToken(8, 14, 12),
+        chrome_bg=ColorToken(12, 19, 16),
+        toolbar_bg=ColorToken(20, 29, 25),
+        panel_bg=ColorToken(27, 38, 33),
+        panel_alt_bg=ColorToken(21, 31, 27),
+        raised_bg=ColorToken(38, 53, 46),
+        input_bg=ColorToken(14, 22, 19),
+        input_hover_bg=ColorToken(44, 61, 53),
+        border=ColorToken(55, 76, 66),
+        border_muted=ColorToken(38, 54, 47),
+        text_primary=ColorToken(235, 243, 238),
+        text_secondary=ColorToken(184, 199, 191),
+        text_muted=ColorToken(121, 143, 132),
+        text_disabled=ColorToken(83, 101, 92),
+        accent=ColorToken(61, 178, 126),
+        accent_hover=ColorToken(88, 205, 151),
+        accent_soft=ColorToken(61, 178, 126, 48),
+        selection_fill=ColorToken(61, 178, 126, 48),
+        selection_outline=ColorToken(90, 204, 153),
+        success=ColorToken(81, 203, 130),
+        success_soft=ColorToken(31, 84, 57, 222),
+        warning=ColorToken(219, 176, 82),
+        warning_soft=ColorToken(88, 70, 24, 222),
+        danger=ColorToken(235, 99, 105),
+        danger_soft=ColorToken(91, 37, 43, 222),
+        image_bg=ColorToken(7, 10, 9),
+        badge_bg=ColorToken(9, 16, 13, 226),
+        badge_text=ColorToken(243, 248, 245),
+    )
+
+
+def _high_contrast_theme() -> ThemePalette:
+    return ThemePalette(
+        name="high_contrast",
+        is_dark=True,
+        window_bg=ColorToken(0, 0, 0),
+        chrome_bg=ColorToken(0, 0, 0),
+        toolbar_bg=ColorToken(12, 12, 12),
+        panel_bg=ColorToken(18, 18, 18),
+        panel_alt_bg=ColorToken(10, 10, 10),
+        raised_bg=ColorToken(32, 32, 32),
+        input_bg=ColorToken(6, 6, 6),
+        input_hover_bg=ColorToken(42, 42, 42),
+        border=ColorToken(130, 130, 130),
+        border_muted=ColorToken(76, 76, 76),
+        text_primary=ColorToken(255, 255, 255),
+        text_secondary=ColorToken(224, 224, 224),
+        text_muted=ColorToken(172, 172, 172),
+        text_disabled=ColorToken(116, 116, 116),
+        accent=ColorToken(255, 204, 0),
+        accent_hover=ColorToken(255, 221, 74),
+        accent_soft=ColorToken(255, 204, 0, 58),
+        selection_fill=ColorToken(255, 204, 0, 64),
+        selection_outline=ColorToken(255, 222, 76),
+        success=ColorToken(74, 255, 146),
+        success_soft=ColorToken(19, 84, 48, 230),
+        warning=ColorToken(255, 204, 0),
+        warning_soft=ColorToken(92, 72, 0, 230),
+        danger=ColorToken(255, 92, 92),
+        danger_soft=ColorToken(96, 22, 28, 230),
+        image_bg=ColorToken(0, 0, 0),
+        badge_bg=ColorToken(0, 0, 0, 238),
+        badge_text=ColorToken(255, 255, 255),
+    )
+
+
+def _warm_neutral_theme() -> ThemePalette:
+    return ThemePalette(
+        name="warm_neutral",
+        is_dark=False,
+        window_bg=ColorToken(236, 233, 228),
+        chrome_bg=ColorToken(247, 245, 241),
+        toolbar_bg=ColorToken(250, 248, 244),
+        panel_bg=ColorToken(255, 253, 249),
+        panel_alt_bg=ColorToken(242, 239, 233),
+        raised_bg=ColorToken(233, 229, 221),
+        input_bg=ColorToken(249, 247, 243),
+        input_hover_bg=ColorToken(239, 235, 228),
+        border=ColorToken(202, 194, 182),
+        border_muted=ColorToken(221, 215, 205),
+        text_primary=ColorToken(39, 35, 31),
+        text_secondary=ColorToken(82, 75, 67),
+        text_muted=ColorToken(121, 111, 101),
+        text_disabled=ColorToken(158, 149, 138),
+        accent=ColorToken(46, 107, 178),
+        accent_hover=ColorToken(61, 124, 197),
+        accent_soft=ColorToken(46, 107, 178, 30),
+        selection_fill=ColorToken(46, 107, 178, 34),
+        selection_outline=ColorToken(69, 119, 190),
+        success=ColorToken(41, 142, 84),
+        success_soft=ColorToken(218, 242, 226),
+        warning=ColorToken(159, 111, 30),
+        warning_soft=ColorToken(249, 236, 210),
+        danger=ColorToken(191, 69, 69),
+        danger_soft=ColorToken(250, 226, 224),
+        image_bg=ColorToken(226, 224, 220),
+        badge_bg=ColorToken(246, 243, 238, 238),
+        badge_text=ColorToken(43, 38, 34),
     )
 
 
@@ -187,6 +332,35 @@ def parse_appearance_mode(raw: str | AppearanceMode | None) -> AppearanceMode:
     return AppearanceMode.AUTO
 
 
+def appearance_profile_modes(*, include_auto: bool = True) -> tuple[AppearanceMode, ...]:
+    modes = (
+        AppearanceMode.DARK,
+        AppearanceMode.MIDNIGHT,
+        AppearanceMode.GRAPHITE,
+        AppearanceMode.FOREST,
+        AppearanceMode.HIGH_CONTRAST,
+        AppearanceMode.WARM_NEUTRAL,
+        AppearanceMode.LIGHT,
+    )
+    if include_auto:
+        return (*modes, AppearanceMode.AUTO)
+    return modes
+
+
+def appearance_mode_label(mode: AppearanceMode) -> str:
+    labels = {
+        AppearanceMode.DARK: "Dark",
+        AppearanceMode.MIDNIGHT: "Midnight",
+        AppearanceMode.GRAPHITE: "Graphite",
+        AppearanceMode.FOREST: "Forest",
+        AppearanceMode.HIGH_CONTRAST: "High Contrast",
+        AppearanceMode.WARM_NEUTRAL: "Warm Neutral",
+        AppearanceMode.LIGHT: "Light",
+        AppearanceMode.AUTO: "Auto",
+    }
+    return labels.get(mode, str(mode.value).replace("_", " ").title())
+
+
 def _system_prefers_dark(app: QApplication) -> bool:
     style_hints = app.styleHints()
     color_scheme = getattr(style_hints, "colorScheme", None)
@@ -205,9 +379,17 @@ def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
         return _dark_theme()
     if mode == AppearanceMode.MIDNIGHT:
         return _midnight_theme()
+    if mode == AppearanceMode.GRAPHITE:
+        return _graphite_theme()
+    if mode == AppearanceMode.FOREST:
+        return _forest_theme()
+    if mode == AppearanceMode.HIGH_CONTRAST:
+        return _high_contrast_theme()
+    if mode == AppearanceMode.WARM_NEUTRAL:
+        return _warm_neutral_theme()
     if mode == AppearanceMode.LIGHT:
         return _light_theme()
-    return _dark_theme()
+    return _dark_theme() if _system_prefers_dark(app) else _light_theme()
 
 
 def default_theme() -> ThemePalette:
@@ -530,12 +712,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-family: "Segoe UI Symbol", "Segoe UI";
         }}
         QToolButton#appTopBarButton:hover {{
-            background-color: rgb(49, 49, 48);
+            background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
         }}
         QToolButton#appTopBarButton:checked {{
-            background-color: rgb(49, 49, 48);
+            background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
         }}
@@ -599,7 +781,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#appTopBar QToolButton#appTopBarActionButton:hover,
         QWidget#appTopBar QToolButton#workspacePresetsButton:hover,
         QWidget#appTopBar QToolButton#appTopBarIconButton:hover {{
-            background-color: rgb(49, 49, 48);
+            background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
         }}
@@ -745,9 +927,9 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_primary.css};
         }}
         QPushButton#reviewCommandButton:disabled, QPushButton#reviewPrimaryDecisionButton:disabled {{
-            background-color: {theme.panel_alt_bg.css};
-            border-color: {theme.border_muted.css};
-            color: {theme.text_disabled.css};
+            background-color: {theme.raised_bg.css};
+            border-color: {theme.text_muted.css};
+            color: {theme.text_muted.css};
         }}
         QToolButton#leftQuickActionIcon {{
             background-color: {theme.raised_bg.css};
@@ -761,7 +943,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border-color: {theme.border.css};
         }}
         QToolButton#leftQuickActionIcon:disabled {{
-            background-color: {theme.panel_alt_bg.css};
+            background-color: {theme.raised_bg.css};
+            border-color: {theme.text_muted.css};
         }}
         QWidget#reviewControlsPane {{
             background-color: {theme.input_bg.css};

@@ -61,7 +61,9 @@ class PreviewRequest:
     target_size: QSize
     source_signature: tuple[int, int] | None = None
     prefer_embedded: bool = False
+    load_image: bool = True
     load_metadata: bool = True
+    zoom_refresh: bool = False
     cache_only: bool = False
     fits_display_settings: FitsDisplaySettings | None = None
     queued_at_perf: float = 0.0
@@ -100,52 +102,60 @@ class PreviewTask(QRunnable):
             else 0.0
         )
         suffix = suffix_for_path(self.request.path)
-        image, error = load_image_for_display(
-            self.request.path,
-            self.request.target_size,
-            prefer_embedded=self.request.prefer_embedded,
-            fits_display_settings=self.request.fits_display_settings,
-        )
-        if image.isNull():
-            failed_at = time.perf_counter() if logger.enabled else 0.0
-            display_error = sanitize_display_error(error, path=self.request.path)
-            self.result_queue.put(("failed", self.request, display_error, failed_at))
+        if self.request.load_image:
+            image, error = load_image_for_display(
+                self.request.path,
+                self.request.target_size,
+                prefer_embedded=self.request.prefer_embedded,
+                fits_display_settings=self.request.fits_display_settings,
+            )
+            if image.isNull():
+                failed_at = time.perf_counter() if logger.enabled else 0.0
+                display_error = sanitize_display_error(error, path=self.request.path)
+                self.result_queue.put(("failed", self.request, display_error, failed_at))
+                if logger.enabled:
+                    logger.duration(
+                        "preview.task",
+                        (failed_at - start) * 1000.0,
+                        state="failed",
+                        path=self.request.path,
+                        slot=self.request.slot,
+                        request_token=self.request.token,
+                        suffix=suffix,
+                        width=self.request.target_size.width(),
+                        height=self.request.target_size.height(),
+                        prefer_embedded=self.request.prefer_embedded,
+                        cache_only=self.request.cache_only,
+                        load_metadata=self.request.load_metadata,
+                        zoom_refresh=self.request.zoom_refresh,
+                        queue_wait_ms=queue_wait_ms,
+                        active_request=not self.request.cache_only,
+                        error=display_error,
+                    )
+                return
+            ready_at = time.perf_counter() if logger.enabled else 0.0
+            image_ready_ms = (ready_at - start) * 1000.0 if logger.enabled else 0.0
+            self.result_queue.put(("ready", self.request, image, None, ready_at))
             if logger.enabled:
                 logger.duration(
                     "preview.task",
-                    (failed_at - start) * 1000.0,
-                    state="failed",
+                    image_ready_ms,
+                    state="ready",
                     path=self.request.path,
                     slot=self.request.slot,
+                    request_token=self.request.token,
+                    suffix=suffix,
                     width=self.request.target_size.width(),
                     height=self.request.target_size.height(),
+                    image_width=image.width(),
+                    image_height=image.height(),
                     prefer_embedded=self.request.prefer_embedded,
                     cache_only=self.request.cache_only,
+                    load_metadata=self.request.load_metadata,
+                    zoom_refresh=self.request.zoom_refresh,
                     queue_wait_ms=queue_wait_ms,
                     active_request=not self.request.cache_only,
-                    error=display_error,
                 )
-            return
-        ready_at = time.perf_counter() if logger.enabled else 0.0
-        image_ready_ms = (ready_at - start) * 1000.0 if logger.enabled else 0.0
-        self.result_queue.put(("ready", self.request, image, None, ready_at))
-        if logger.enabled:
-            logger.duration(
-                "preview.task",
-                image_ready_ms,
-                state="ready",
-                path=self.request.path,
-                slot=self.request.slot,
-                width=self.request.target_size.width(),
-                height=self.request.target_size.height(),
-                image_width=image.width(),
-                image_height=image.height(),
-                prefer_embedded=self.request.prefer_embedded,
-                cache_only=self.request.cache_only,
-                metadata=False,
-                queue_wait_ms=queue_wait_ms,
-                active_request=not self.request.cache_only,
-            )
         if self.request.load_metadata:
             metadata_start = time.perf_counter() if logger.enabled else 0.0
             metadata_error = ""
@@ -161,8 +171,12 @@ class PreviewTask(QRunnable):
                     (time.perf_counter() - metadata_start) * 1000.0,
                     path=self.request.path,
                     slot=self.request.slot,
+                    request_token=self.request.token,
                     cache_only=self.request.cache_only,
+                    metadata_only=not self.request.load_image,
+                    zoom_refresh=self.request.zoom_refresh,
                     suffix=suffix,
+                    queue_wait_ms=queue_wait_ms,
                     error=metadata_error,
                 )
 
@@ -572,6 +586,8 @@ class FullScreenPreview(QDialog):
         self._load_token = 0
         self._pending_requests = 0
         self._pending_zoom_refresh_slots: list[int] = []
+        self._inflight_preview_decodes: dict[str, int] = {}
+        self._deferred_zoom_refreshes: set[tuple[int, str]] = set()
         self._compare_mode = False
         self._before_after_enabled = False
         self._compare_count = 3
@@ -1373,7 +1389,7 @@ class FullScreenPreview(QDialog):
         self._filmstrip_refresh_timer = QTimer(self)
         self._filmstrip_refresh_timer.setSingleShot(True)
         self._filmstrip_refresh_timer.setInterval(120)
-        self._filmstrip_refresh_timer.timeout.connect(self._filmstrip.refresh)
+        self._filmstrip_refresh_timer.timeout.connect(self._refresh_studio_filmstrip)
 
         self._apply_studio_theme()
         # Reflect initial state into the freshly-built Studio controls
@@ -1393,11 +1409,29 @@ class FullScreenPreview(QDialog):
         is the 0-based index into the owner's ordered records; providers map an
         index to a thumbnail pixmap / status tag color.
         """
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self._filmstrip_current = max(0, int(current))
         if not getattr(self, "_studio_layout_active", False):
+            if logger.enabled:
+                logger.duration(
+                    "preview.filmstrip_set_source",
+                    (time.perf_counter() - start) * 1000.0,
+                    state="studio_inactive",
+                    total=total,
+                    current=current,
+                )
             return
         self._filmstrip.set_source(total, current, thumb_provider, tag_provider)
         self._studio_nav_count.setText(f"{current + 1} / {total}" if total > 0 else "—")
+        if logger.enabled:
+            logger.duration(
+                "preview.filmstrip_set_source",
+                (time.perf_counter() - start) * 1000.0,
+                state="populated",
+                total=total,
+                current=current,
+            )
 
     def refresh_filmstrip(self) -> None:
         """Repopulate filmstrip thumbs soon (debounced); used by the owner when
@@ -1405,12 +1439,31 @@ class FullScreenPreview(QDialog):
         if getattr(self, "_studio_layout_active", False) and self.isVisible():
             self._filmstrip_refresh_timer.start()
 
+    def _refresh_studio_filmstrip(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        self._filmstrip.refresh()
+        if logger.enabled:
+            logger.duration(
+                "preview.filmstrip_refresh",
+                (time.perf_counter() - start) * 1000.0,
+                current=getattr(self, "_filmstrip_current", 0),
+            )
+
     def _save_filmstrip_layout(self) -> None:
         self._settings.setValue(self.FILMSTRIP_THUMB_HEIGHT_KEY, self._filmstrip.thumb_height())
         self._settings.setValue(self.FILMSTRIP_COLLAPSED_KEY, self._filmstrip.is_collapsed())
 
     def _handle_studio_filmstrip_selected(self, index: int) -> None:
         delta = index - getattr(self, "_filmstrip_current", 0)
+        logger = perf_logger()
+        if logger.enabled:
+            logger.log(
+                "preview.filmstrip_selected",
+                index=index,
+                previous_index=getattr(self, "_filmstrip_current", 0),
+                delta=delta,
+            )
         if delta:
             self.navigation_requested.emit(delta)
 
@@ -1861,6 +1914,9 @@ class FullScreenPreview(QDialog):
         self._focused_slot = 0
         self._manual_zoom = False
         self._zoom_scale = 1.0
+        self._pending_zoom_refresh_slots = []
+        self._deferred_zoom_refreshes.clear()
+        self._zoom_request_timer.stop()
         self._dragging = False
         self._pending_right_close = False
         self._edited_variant_index = 0
@@ -1958,6 +2014,8 @@ class FullScreenPreview(QDialog):
         self._poll_round_robin_slot = 0
         self._edited_discovery_requested = False
         self._zoom_request_timer.stop()
+        self._pending_zoom_refresh_slots = []
+        self._deferred_zoom_refreshes.clear()
         self.closed.emit()
         super().closeEvent(event)
 
@@ -2407,7 +2465,13 @@ class FullScreenPreview(QDialog):
             return 4
         return 3
 
-    def _request_preview_loads(self, slots: list[int] | None = None, *, force_metadata: bool = False) -> None:
+    def _request_preview_loads(
+        self,
+        slots: list[int] | None = None,
+        *,
+        force_metadata: bool = False,
+        zoom_refresh: bool = False,
+    ) -> None:
         if not self._entries:
             return
 
@@ -2422,13 +2486,21 @@ class FullScreenPreview(QDialog):
         self._pending_metadata_requests = {
             key for key in self._pending_metadata_requests if key[3]
         }
+        cache_hits = 0
+        metadata_cache_hits = 0
+        queued_requests = 0
+        queued_metadata_only = 0
         for slot in target_slots:
+            slot_start = time.perf_counter() if logger.enabled else 0.0
             if not 0 <= slot < len(self._entries):
                 continue
             entry = self._entries[slot]
             source_signature = self._entry_source_signature(entry)
             target_size = self._decode_target_size(slot)
-            prefer_embedded = not self._manual_zoom
+            # Keep RAW previews on the camera-rendered embedded JPEG at every
+            # zoom level. Switching to rawpy for manual zoom changes white
+            # balance and tone rendering, making the photo appear to change.
+            prefer_embedded = True
             fits_display_settings = self._fits_display_settings_for_entry(entry)
             cached_image, cache_key = self._cached_preview_image_with_fallback(
                 entry.source_path,
@@ -2443,7 +2515,9 @@ class FullScreenPreview(QDialog):
                 entry.source_path,
                 prefer_embedded=prefer_embedded,
             )
-            if cached_image is not None and not cached_image.isNull():
+            has_cached_image = cached_image is not None and not cached_image.isNull()
+            if has_cached_image:
+                cache_hits += 1
                 if not preserve_placeholder:
                     self._current_images[slot] = cached_image
                     if slot < len(self._current_image_display_tokens):
@@ -2465,8 +2539,27 @@ class FullScreenPreview(QDialog):
                 elif slot == self._focused_slot and metadata is not None:
                     self._schedule_analysis_panel_update()
                 if not should_load_metadata:
+                    metadata_cache_hits += 1
+                    if logger.enabled:
+                        logger.duration(
+                            "preview.request_slot",
+                            (time.perf_counter() - slot_start) * 1000.0,
+                            path=entry.source_path,
+                            slot=slot,
+                            request_token=token,
+                            state="cache_hit",
+                            metadata_cached=True,
+                            preserve_placeholder=preserve_placeholder,
+                            width=target_size.width(),
+                            height=target_size.height(),
+                        )
                     continue
-            self._pending_requests += 1
+            load_image = not has_cached_image
+            if load_image:
+                self._pending_requests += 1
+            else:
+                queued_metadata_only += 1
+            queued_requests += 1
             if should_load_metadata:
                 self._pending_metadata_requests.add((token, slot, entry.source_path, False))
             task = PreviewTask(
@@ -2477,13 +2570,33 @@ class FullScreenPreview(QDialog):
                     target_size=target_size,
                     source_signature=source_signature,
                     prefer_embedded=prefer_embedded,
+                    load_image=load_image,
                     load_metadata=should_load_metadata,
+                    zoom_refresh=zoom_refresh,
                     fits_display_settings=fits_display_settings,
                     queued_at_perf=time.perf_counter() if logger.enabled else 0.0,
                 ),
                 self._result_queue,
             )
+            if load_image:
+                self._inflight_preview_decodes[entry.source_path] = (
+                    self._inflight_preview_decodes.get(entry.source_path, 0) + 1
+                )
             self._pool.start(task, self._visible_request_priority(slot))
+            if logger.enabled:
+                logger.duration(
+                    "preview.request_slot",
+                    (time.perf_counter() - slot_start) * 1000.0,
+                    path=entry.source_path,
+                    slot=slot,
+                    request_token=token,
+                    state="queued_metadata_only" if has_cached_image else "queued_decode",
+                    zoom_refresh=zoom_refresh,
+                    metadata_cached=not should_load_metadata,
+                    preserve_placeholder=preserve_placeholder,
+                    width=target_size.width(),
+                    height=target_size.height(),
+                )
         if not self._drain_timer.isActive():
             self._drain_timer.start()
         if logger.enabled:
@@ -2492,14 +2605,21 @@ class FullScreenPreview(QDialog):
                 (time.perf_counter() - start) * 1000.0,
                 requested_slots=len(target_slots),
                 pending_requests=self._pending_requests,
+                request_token=token,
+                cache_hits=cache_hits,
+                metadata_cache_hits=metadata_cache_hits,
+                queued_requests=queued_requests,
+                queued_metadata_only=queued_metadata_only,
                 force_metadata=force_metadata,
                 manual_zoom=self._manual_zoom,
+                zoom_refresh=zoom_refresh,
             )
 
     def _drain_results(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         processed = 0
+        resumable_zoom_slots: set[int] = set()
         while processed < 16:
             try:
                 item = self._result_queue.get_nowait()
@@ -2519,6 +2639,24 @@ class FullScreenPreview(QDialog):
 
             if state in {"ready", "failed"} and not request.cache_only and request.token == self._load_token and self._pending_requests > 0:
                 self._pending_requests -= 1
+            if state in {"ready", "failed"} and request.load_image and not request.cache_only:
+                inflight_count = self._inflight_preview_decodes.get(request.path, 0)
+                if inflight_count <= 1:
+                    self._inflight_preview_decodes.pop(request.path, None)
+                    deferred_for_path = [
+                        item for item in self._deferred_zoom_refreshes if item[1] == request.path
+                    ]
+                    for slot, path in deferred_for_path:
+                        self._deferred_zoom_refreshes.discard((slot, path))
+                        if (
+                            self.isVisible()
+                            and self._manual_zoom
+                            and 0 <= slot < len(self._entries)
+                            and self._entries[slot].source_path == path
+                        ):
+                            resumable_zoom_slots.add(slot)
+                else:
+                    self._inflight_preview_decodes[request.path] = inflight_count - 1
             if state == "failed":
                 self._pending_metadata_requests.discard(metadata_request_key)
             if state == "metadata":
@@ -2609,6 +2747,8 @@ class FullScreenPreview(QDialog):
                 )
             processed += 1
 
+        if resumable_zoom_slots:
+            self._request_preview_loads(sorted(resumable_zoom_slots), zoom_refresh=True)
         if processed == 0 and self._pending_requests == 0 and not self._pending_metadata_requests:
             self._drain_timer.stop()
         if logger.enabled and processed:
@@ -2811,6 +2951,15 @@ class FullScreenPreview(QDialog):
                 pane.image_label.setText("Loading full preview...")
             if slot < len(self._rendered_display_keys):
                 self._rendered_display_keys[slot] = None
+            if logger.enabled:
+                logger.duration(
+                    "preview.render_pane",
+                    (time.perf_counter() - start) * 1000.0,
+                    state="loading_placeholder",
+                    path=entry.source_path,
+                    slot=slot,
+                    request_token=self._load_token,
+                )
             return
 
         if self._manual_zoom:
@@ -2850,6 +2999,17 @@ class FullScreenPreview(QDialog):
                 and pane.image_label.pixmap() is not None
                 and not pane.image_label.pixmap().isNull()
             ):
+                if logger.enabled:
+                    logger.duration(
+                        "preview.render_pane",
+                        (time.perf_counter() - start) * 1000.0,
+                        state="render_cache_hit",
+                        path=entry.source_path,
+                        slot=slot,
+                        request_token=self._load_token,
+                        image_width=display_image.width(),
+                        image_height=display_image.height(),
+                    )
                 return
             transform_mode = Qt.TransformationMode.SmoothTransformation
             fitted_size = display_image.size().scaled(target, Qt.AspectRatioMode.KeepAspectRatio)
@@ -2874,7 +3034,10 @@ class FullScreenPreview(QDialog):
             logger.duration(
                 "preview.render_pane",
                 (time.perf_counter() - start) * 1000.0,
+                state="rendered",
+                path=entry.source_path,
                 slot=slot,
+                request_token=self._load_token,
                 image_width=display_image.width(),
                 image_height=display_image.height(),
                 manual_zoom=self._manual_zoom,
@@ -3106,7 +3269,7 @@ class FullScreenPreview(QDialog):
                 entry.source_path,
                 source_signature,
                 target_size,
-                prefer_embedded=not self._manual_zoom,
+                prefer_embedded=True,
                 fits_display_settings=self._fits_display_settings_for_entry(entry),
             )
             if cached_image is None or cached_image.isNull():
@@ -3114,7 +3277,7 @@ class FullScreenPreview(QDialog):
             preserve_placeholder = self._should_preserve_raw_placeholder_visual(
                 slot,
                 entry.source_path,
-                prefer_embedded=not self._manual_zoom,
+                prefer_embedded=True,
             )
             if not preserve_placeholder:
                 self._current_images[slot] = cached_image
@@ -3257,6 +3420,7 @@ class FullScreenPreview(QDialog):
         self._zoom_scale = self._fit_scale_threshold()
         self._dragging = False
         self._pending_zoom_refresh_slots = []
+        self._deferred_zoom_refreshes.clear()
         self._zoom_request_timer.stop()
         self._hide_all_loupes()
         self._render_all()
@@ -3299,7 +3463,30 @@ class FullScreenPreview(QDialog):
             return
         slots = list(self._pending_zoom_refresh_slots)
         self._pending_zoom_refresh_slots = []
-        self._request_preview_loads(slots)
+        ready_slots: list[int] = []
+        deferred_slots: list[int] = []
+        for slot in slots:
+            if not 0 <= slot < len(self._entries):
+                continue
+            path = self._entries[slot].source_path
+            key = (slot, path)
+            self._deferred_zoom_refreshes = {
+                item for item in self._deferred_zoom_refreshes if item[0] != slot
+            }
+            if self._inflight_preview_decodes.get(path, 0) > 0:
+                self._deferred_zoom_refreshes.add(key)
+                deferred_slots.append(slot)
+            else:
+                ready_slots.append(slot)
+        logger = perf_logger()
+        if logger.enabled and deferred_slots:
+            logger.log(
+                "preview.zoom_refresh_coalesced",
+                slots=deferred_slots,
+                paths=[self._entries[slot].source_path for slot in deferred_slots],
+            )
+        if ready_slots:
+            self._request_preview_loads(ready_slots, zoom_refresh=True)
 
     def _handle_mouse_press(self, event: QMouseEvent) -> bool:
         if not self._manual_zoom:

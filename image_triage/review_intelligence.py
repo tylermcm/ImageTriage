@@ -685,12 +685,9 @@ def _classify_pair(
     if distance <= 5 and size_similarity >= 0.90 and luma_delta <= 16.0:
         return "likely_duplicate", ("Same composition with only minor framing or exposure drift.",)
 
-    if distance <= 8 and (size_similarity >= 0.84 or _metadata_scene_match(anchor.metadata, candidate.metadata)):
-        return "similar", ("Strong visual match inside the same local capture sequence.",)
-
-    if distance <= 10 and _time_close(anchor.metadata, candidate.metadata, seconds=18.0):
-        return "similar", ("Looks related and was captured close in time.",)
-
+    # "Similar" (loose-match) detection retired: only near-duplicates (exact +
+    # likely) and bursts group now. Looser related-but-distinct frames are left
+    # ungrouped so they stay independent keepers.
     return "", ()
 
 
@@ -714,28 +711,6 @@ def _time_gap_too_large(left: CaptureMetadata, right: CaptureMetadata) -> bool:
     if left.captured_at_value is None or right.captured_at_value is None:
         return False
     return abs(left.captured_at_value - right.captured_at_value) > timedelta(seconds=40.0)
-
-
-def _time_close(left: CaptureMetadata, right: CaptureMetadata, *, seconds: float) -> bool:
-    if left is EMPTY_METADATA or right is EMPTY_METADATA:
-        return False
-    if left.captured_at_value is None or right.captured_at_value is None:
-        return False
-    return abs(left.captured_at_value - right.captured_at_value) <= timedelta(seconds=seconds)
-
-
-def _metadata_scene_match(left: CaptureMetadata, right: CaptureMetadata) -> bool:
-    if left is EMPTY_METADATA or right is EMPTY_METADATA:
-        return False
-    if left.lens and right.lens and left.lens != right.lens:
-        return False
-    return all(
-        (
-            _close_numeric(left.focal_length_value, right.focal_length_value, tolerance=4.0),
-            _close_numeric(left.aperture_value, right.aperture_value, tolerance=0.8),
-            _close_numeric(left.iso_value, right.iso_value, tolerance=80.0),
-        )
-    )
 
 
 def _is_burst_neighbor(anchor: CaptureMetadata, previous: CaptureMetadata, candidate: CaptureMetadata) -> bool:

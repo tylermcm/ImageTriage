@@ -298,10 +298,8 @@ class WorkflowSettingsDialog(QDialog):
         # only Immersive/Zen), so honor the allowed list when given.
         _card_style_options = (
             ("Detailed", "detailed"),
-            ("Immersive", "immersive"),
             ("Zen", "zen"),
             ("Gallery", "gallery"),
-            ("Classic", "classic"),
         )
         _allowed = set(allowed_card_styles) if allowed_card_styles else {key for _label, key in _card_style_options}
         for _label, _key in _card_style_options:
@@ -494,8 +492,8 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_keep_top_spin.setValue(max(1, min(50, int(ai_keep_top_percent))))
         self.ai_keep_top_spin.setMinimumWidth(120)
         self.ai_keep_top_spin.setToolTip(_settings_tooltip(
-            "Top percentile of the folder marked as Keeper. 10% means the AI "
-            "passes through roughly the top 10% of images as 'Likely Keeper' "
+            "Top percentile of the folder marked as Winner. 10% means the AI "
+            "passes through roughly the top 10% of images as 'Likely Winner' "
             "after each run."
         ))
 
@@ -506,9 +504,9 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_review_band_spin.setValue(max(0, min(30, int(ai_review_band_percent))))
         self.ai_review_band_spin.setMinimumWidth(120)
         self.ai_review_band_spin.setToolTip(_settings_tooltip(
-            "Additional band of close-to-keeper images marked as 'Needs "
-            "Review' (sitting just below the Keeper cutoff). Set to 0 to "
-            "disable the Review band entirely so every card is either Keeper "
+            "Additional band of close-to-winner images marked as 'Needs "
+            "Review' (sitting just below the Winner cutoff). Set to 0 to "
+            "disable the Review band entirely so every card is either Winner "
             "or Reject."
         ))
 
@@ -534,7 +532,7 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_base_score_weight_spin.setToolTip(_settings_tooltip(
             "Weight of the tag-penalty-aware base score vs. the trained "
             "adapter when blending the final ranking. 100% = base score wins "
-            "outright (heavily penalized images can never pass as Keeper); "
+            "outright (heavily penalized images can never pass as Winner); "
             "0% = adapter only (tag penalties for blur / blown / harsh light "
             "have no effect). Default 65% favors the base score so the "
             "negative prompts stay authoritative, while still letting the "
@@ -1049,7 +1047,7 @@ class WorkflowSettingsDialog(QDialog):
                 self.ai_review_band_spin.setValue(review)
         reject = max(0, 100 - keep - review)
         self.ai_cull_summary_label.setText(
-            f"~{keep}% Keeper · ~{review}% Review · ~{reject}% Reject"
+            f"~{keep}% Winner · ~{review}% Review · ~{reject}% Reject"
         )
 
     def _refresh_session_combo(self, *, sessions: list[str], current_session: str) -> None:

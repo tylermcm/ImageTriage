@@ -75,7 +75,7 @@ def build_best_of_set_plan(
                 reasons.append("Obvious winner")
             elif ai_result.confidence_bucket == AIConfidenceBucket.LIKELY_KEEPER:
                 score += 3.0
-                reasons.append("Likely keeper")
+                reasons.append("Likely winner")
         if burst is not None and burst.is_recommended:
             score += 9.0
             reasons.append("Best frame in group")

@@ -234,10 +234,6 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._review_index_text = QColor("#8fc1ff")
         self._ai_score_badge_fill = QColor(14, 19, 29, 210)
         self._ai_score_badge_text = QColor("#dce8ff")
-        self._workflow_best_badge_fill = QColor(34, 96, 64, 220)
-        self._workflow_best_badge_text = QColor("#ebfff2")
-        self._workflow_round_badge_fill = QColor(28, 82, 120, 220)
-        self._workflow_round_badge_text = QColor("#e8f4ff")
         self._workflow_miss_badge_fill = QColor(120, 28, 36, 220)
         self._workflow_miss_badge_text = QColor("#ffe8ea")
         self._workflow_review_badge_fill = QColor(117, 82, 18, 220)
@@ -322,10 +318,6 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._ai_pick_badge_text = theme.badge_text.qcolor() if theme.is_dark else theme.warning.qcolor()
         self._ai_score_badge_fill = theme.badge_bg.qcolor()
         self._ai_score_badge_text = theme.badge_text.qcolor()
-        self._workflow_best_badge_fill = theme.success_soft.qcolor()
-        self._workflow_best_badge_text = theme.badge_text.qcolor() if theme.is_dark else theme.success.qcolor()
-        self._workflow_round_badge_fill = theme.accent_soft.qcolor()
-        self._workflow_round_badge_text = theme.badge_text.qcolor() if theme.is_dark else theme.accent.qcolor()
         self._workflow_miss_badge_fill = theme.danger_soft.qcolor()
         self._workflow_miss_badge_text = theme.badge_text.qcolor() if theme.is_dark else theme.danger.qcolor()
         self._workflow_review_badge_fill = theme.warning_soft.qcolor()
@@ -340,6 +332,21 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._checkbox_fill = theme.raised_bg.with_alpha(225).qcolor()
         self._checkbox_selected_fill = theme.accent.qcolor()
         self._checkbox_check = theme.badge_text.qcolor() if theme.is_dark else QColor("#ffffff")
+        self._gallery_filename_color = theme.text_secondary.qcolor()
+        if theme.is_dark:
+            self._gallery_action_fill = theme.badge_bg.qcolor()
+            self._gallery_action_hover_fill = theme.raised_bg.with_alpha(238).qcolor()
+            self._gallery_action_border = theme.border.with_alpha(150).qcolor()
+            self._gallery_action_hover_border = theme.border.with_alpha(205).qcolor()
+            self._gallery_action_icon = theme.badge_text.qcolor()
+            self._gallery_action_hover_icon = theme.text_primary.qcolor()
+        else:
+            self._gallery_action_fill = theme.raised_bg.with_alpha(244).qcolor()
+            self._gallery_action_hover_fill = theme.input_hover_bg.with_alpha(255).qcolor()
+            self._gallery_action_border = theme.border.with_alpha(230).qcolor()
+            self._gallery_action_hover_border = theme.text_muted.with_alpha(190).qcolor()
+            self._gallery_action_icon = theme.text_secondary.qcolor()
+            self._gallery_action_hover_icon = theme.text_primary.qcolor()
 
         palette = self.palette()
         # Darker viewport so the thumbnail cards float over it (prototype look).
@@ -1823,21 +1830,21 @@ class ThumbnailGridView(QAbstractScrollArea):
                 )
             else:
                 status_text = self._review_keeper_label(ai_result, self._workflow_insight_for(record))
-                duplicate_text = self._review_group_badge_text(
-                    burst_info, self._dino_prefilter_decision_for(record)
-                )
+                # Near Duplicate is data-only now (filterable, never a card
+                # badge), so the top-left group chip stays hidden. The grouping
+                # itself still drives navigation and the duplicate filter.
                 ai_text = self._review_ai_badge_label(ai_result)
                 card_data = GridCardData(
                     tags=self._review_workflow_tags(record),
                     filename=variant.name if record.has_variant_stack else record.name,
                     exif_text=self._review_capture_text(record),
                     meta_text=self._review_passive_meta_text(record, variant),
-                    duplicate_text=duplicate_text,
+                    duplicate_text="",
                     ai_text=ai_text,
                     position_text=self._review_position_text(index),
                     status_text=status_text,
                     status_kind=status_text.casefold(),
-                    duplicate_visible=bool(duplicate_text),
+                    duplicate_visible=False,
                     ai_visible=bool(ai_text),
                     selected=is_current or is_selected,
                     favorite=is_winner,
@@ -1853,6 +1860,13 @@ class ThumbnailGridView(QAbstractScrollArea):
                     pixmap if pixmap is not None and not pixmap.isNull() else None,
                     card_data,
                     corner_radius=card_corner_radius,
+                    filename_color=self._gallery_filename_color,
+                    action_fill=self._gallery_action_fill,
+                    action_hover_fill=self._gallery_action_hover_fill,
+                    action_border=self._gallery_action_border,
+                    action_hover_border=self._gallery_action_hover_border,
+                    action_icon_color=self._gallery_action_icon,
+                    action_hover_icon_color=self._gallery_action_hover_icon,
                 )
             else:
                 paint_grid_card(
@@ -2044,36 +2058,6 @@ class ThumbnailGridView(QAbstractScrollArea):
                 )
                 left_badge_y += 30
 
-            if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
-                self._paint_state_badge(
-                    painter,
-                    QRect(left_badge_x, left_badge_y, 94, 24),
-                    "Best Frame",
-                    self._workflow_best_badge_fill,
-                    self._workflow_best_badge_text,
-                )
-                left_badge_y += 30
-            if self._show_ai_annotations and _fast_path_key(record.path) in self._disputed_paths:
-                self._paint_state_badge(
-                    painter,
-                    QRect(left_badge_x, left_badge_y, 88, 24),
-                    "Disputed",
-                    QColor(140, 78, 16, 220),
-                    QColor("#fff1d6"),
-                )
-                left_badge_y += 30
-            if self._show_ai_annotations and dino_decision is not None:
-                dino_badge = self._dino_prefilter_badge(dino_decision)
-                if dino_badge is not None:
-                    badge_text, fill, text, badge_width = dino_badge
-                    self._paint_state_badge(
-                        painter,
-                        QRect(left_badge_x, left_badge_y, badge_width, 24),
-                        badge_text,
-                        fill,
-                        text,
-                    )
-                    left_badge_y += 30
             if self._show_ai_annotations and workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
                 fill, text = self._workflow_disagreement_palette(getattr(workflow_insight, "disagreement_level", ""))
                 self._paint_state_badge(
@@ -2342,8 +2326,6 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _confidence_badge_palette(self, short_label: str) -> tuple[QColor, QColor]:
         if short_label == "Winner":
             return QColor(34, 96, 64, 220), QColor("#ebfff2")
-        if short_label == "Keeper":
-            return QColor(28, 82, 120, 220), QColor("#e8f4ff")
         if short_label in {"Needs Review", "Review"}:
             return self._workflow_review_badge_fill, self._workflow_review_badge_text
         return QColor(118, 54, 48, 220), QColor("#fff0ee")
@@ -2354,26 +2336,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         if ai_result is None:
             return None
         if ai_result.is_top_pick:
-            return ("AI Pick", self._ai_pick_badge_fill, self._ai_pick_badge_text, 94)
+            return ("Winner", self._ai_pick_badge_fill, self._ai_pick_badge_text, 94)
         if ai_result.confidence_bucket == AIConfidenceBucket.NEEDS_REVIEW:
             fill, text = self._confidence_badge_palette("Needs Review")
             return ("Needs Review", fill, text, 116)
         label = ai_result.confidence_bucket_short_label
         fill, text = self._confidence_badge_palette(label)
         return (label, fill, text, 106)
-
-    def _dino_prefilter_badge(self, decision) -> tuple[str, QColor, QColor, int] | None:
-        action = str(getattr(decision, "action", "") or "")
-        reason = str(getattr(decision, "reason", "") or "")
-        prefix = "pHash" if reason == "phash_duplicate_trash" else "DINO"
-        if action == "quarantine":
-            label = "pHash Duplicate" if prefix == "pHash" else "DINO Quarantine"
-            return (label, self._workflow_review_badge_fill, self._workflow_review_badge_text, 126)
-        if action == "remove_from_pool":
-            return (f"{prefix} Removed", self._workflow_miss_badge_fill, self._workflow_miss_badge_text, 112)
-        if action == "rescued":
-            return (f"{prefix} Rescued", self._workflow_best_badge_fill, self._workflow_best_badge_text, 112)
-        return None
 
     def _workflow_disagreement_palette(self, level: str) -> tuple[QColor, QColor]:
         if level == "strong":
@@ -2726,19 +2695,21 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _review_ai_badge_label(self, ai_result: AIImageResult | None) -> str:
         if not self._show_ai_annotations or ai_result is None:
             return ""
+        # One badge per image: the AI's decision word (Winner / Reject /
+        # Review) with its score attached \u2014 no separate "AI Pick" or bare-score
+        # variants.
+        label = ai_result.confidence_bucket_short_label
         score = ai_result.display_score_text
-        if ai_result.is_top_pick:
-            return f"AI Pick \u00b7 {score}" if score else "AI Pick"
-        return f"AI {score}" if score else ai_result.confidence_bucket_short_label
+        return f"{label} \u00b7 {score}" if score else label
 
     def _review_keeper_label(self, ai_result: AIImageResult | None, workflow_insight) -> str:
         if ai_result is not None:
             if ai_result.is_top_pick:
-                return "Keeper"
+                return "Winner"
             label = ai_result.confidence_bucket_short_label
             return "Review" if label in {"Needs Review", "Review"} else label
         if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
-            return "Keeper"
+            return "Winner"
         return ""
 
     def _review_workflow_tags(self, record: ImageRecord) -> tuple[tuple[str, str], ...]:
@@ -2750,46 +2721,16 @@ class ThumbnailGridView(QAbstractScrollArea):
         Accepted/Rejected are omitted — the card's heart/reject buttons
         already carry that state.
         """
-        # Every tag on the rail is treated as an AI annotation: the whole rail
-        # is empty in manual review and only populates in AI Review. (A future
-        # setting may let the user opt specific tags back into manual review.)
+        # The rail is AI-Review-only, and it now carries a single tag: AI Miss —
+        # the one place where the user overruled a call the AI was confident
+        # about. Everything else (Best Frame, dup/prefilter states, Edited) is
+        # data-only now: computed and filterable, never drawn on the card.
         if not self._show_ai_annotations:
             return ()
-        tags: list[tuple[str, str]] = []
         workflow_insight = self._workflow_insight_for(record)
-        if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
-            tags.append(("Best Frame", "best_frame"))
-        if _fast_path_key(record.path) in self._disputed_paths:
-            tags.append(("Disputed", "disputed"))
-        dino_tag = self._dino_prefilter_tag(self._dino_prefilter_decision_for(record))
-        if dino_tag is not None:
-            tags.append(dino_tag)
-        if workflow_insight is not None and getattr(workflow_insight, "disagreement_badge", ""):
-            level = getattr(workflow_insight, "disagreement_level", "")
-            tags.append(
-                (
-                    getattr(workflow_insight, "disagreement_badge", ""),
-                    "ai_miss" if level == "strong" else "needs_review",
-                )
-            )
-        if record.has_edits:
-            tags.append(("Edited", "edited"))
-        return tuple(tags)
-
-    def _dino_prefilter_tag(self, decision) -> tuple[str, str] | None:
-        """(text, tag kind) form of _dino_prefilter_badge for the card rail."""
-        if decision is None:
-            return None
-        action = str(getattr(decision, "action", "") or "")
-        reason = str(getattr(decision, "reason", "") or "")
-        prefix = "pHash" if reason == "phash_duplicate_trash" else "DINO"
-        if action == "quarantine":
-            return ("pHash Duplicate" if prefix == "pHash" else "DINO Quarantine", "needs_review")
-        if action == "remove_from_pool":
-            return (f"{prefix} Removed", "ai_miss")
-        if action == "rescued":
-            return (f"{prefix} Rescued", "best_frame")
-        return None
+        if workflow_insight is not None and getattr(workflow_insight, "disagreement_level", "") == "strong":
+            return (("AI Miss", "ai_miss"),)
+        return ()
 
     def _review_position_text(self, index: int) -> str:
         slot = self._visible_slot_for_index(index)

@@ -333,6 +333,7 @@ from .ui import (
     WorkspaceDocks,
     apply_gamma,
     apply_shortcut_overrides,
+    appearance_mode_label,
     load_shortcut_overrides,
     normalize_ui_gamma,
     save_shortcut_overrides,
@@ -1368,8 +1369,8 @@ class AIReviewCompleteDialog(QDialog):
             counts_row.addWidget(QLabel("Result buckets:", self))
             counts_row.addWidget(
                 _AIBadgePreview(
-                    f"AI Pick {bucket_counts.get(AICullBucket.AI_PICK, 0)}",
-                    background="rgba(215, 164, 58, 218)",
+                    f"Winner {bucket_counts.get(AICullBucket.AI_PICK, 0)}",
+                    background="rgba(70, 189, 120, 218)",
                     foreground="#fffaf2",
                     parent=self,
                 )
@@ -1384,15 +1385,7 @@ class AIReviewCompleteDialog(QDialog):
             )
             counts_row.addWidget(
                 _AIBadgePreview(
-                    f"Keeper {bucket_counts.get(AICullBucket.KEEPER, 0)}",
-                    background="rgba(95, 130, 216, 218)",
-                    foreground="#fffaf2",
-                    parent=self,
-                )
-            )
-            counts_row.addWidget(
-                _AIBadgePreview(
-                    f"Needs Review {bucket_counts.get(AICullBucket.NEEDS_REVIEW, 0)}",
+                    f"Review {bucket_counts.get(AICullBucket.NEEDS_REVIEW, 0)}",
                     background="rgba(210, 135, 53, 218)",
                     foreground="#fffaf2",
                     parent=self,
@@ -1581,38 +1574,20 @@ class AIReviewCompleteDialog(QDialog):
     @staticmethod
     def _build_tag_preview(tag_name: str) -> QWidget:
         preview_map: dict[str, tuple[tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str], ...], str]] = {
-            "AI Pick": (
+            "Winner": (
                 (),
-                (
-                    ("AI Pick", "rgba(215, 164, 58, 218)", "#fffaf2"),
-                    ("Winner", "rgba(70, 189, 120, 218)", "#fffaf2"),
-                ),
+                (("Winner", "rgba(70, 189, 120, 218)", "#fffaf2"),),
                 "_DSC1024.NEF",
             ),
-            "Keeper": (
+            "Review": (
                 (),
-                (("Keeper", "rgba(95, 130, 216, 218)", "#fffaf2"),),
-                "_DSC1031.NEF",
-            ),
-            "Needs Review": (
-                (),
-                (("Needs Review", "rgba(210, 135, 53, 218)", "#fffaf2"),),
+                (("Review", "rgba(210, 135, 53, 218)", "#fffaf2"),),
                 "_DSC1040.NEF",
             ),
             "Reject": (
                 (),
                 (("Reject", "rgba(214, 90, 103, 218)", "#fffaf2"),),
                 "_DSC1044.NEF",
-            ),
-            "Best Frame": (
-                (("Best Frame", "rgba(70, 189, 120, 218)", "#fffaf2"),),
-                (),
-                "_DSC1050.NEF",
-            ),
-            "AI Review": (
-                (("AI Review", "rgba(217, 120, 53, 218)", "#fffaf2"),),
-                (),
-                "_DSC1056.NEF",
             ),
             "AI Miss": (
                 (("AI Miss", "rgba(215, 84, 122, 218)", "#fffaf2"),),
@@ -2476,9 +2451,9 @@ class MainWindow(QMainWindow):
     # 720p-class). Smaller displays restrict the selectable styles, pick a
     # photo-first default, and collapse detailed->barebones at fewer columns.
     _DISPLAY_STYLE_POLICY = {
-        "low": {"styles": ("zen", "gallery"), "default": "zen", "compact_threshold": 4, "plain_threshold": 5},
-        "medium": {"styles": ("detailed", "immersive", "zen", "gallery", "classic"), "default": "detailed", "compact_threshold": 3, "plain_threshold": 4},
-        "high": {"styles": ("detailed", "immersive", "zen", "gallery", "classic"), "default": "detailed", "compact_threshold": 4, "plain_threshold": 5},
+        "low": {"styles": ("zen",), "default": "zen", "compact_threshold": 4, "plain_threshold": 5},
+        "medium": {"styles": ("detailed", "zen", "gallery"), "default": "gallery", "compact_threshold": 3, "plain_threshold": 4},
+        "high": {"styles": ("detailed", "zen", "gallery"), "default": "gallery", "compact_threshold": 4, "plain_threshold": 5},
     }
     FREE_SMOOTH_SCROLL_KEY = "view/free_smooth_scroll"
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
@@ -2492,11 +2467,9 @@ class MainWindow(QMainWindow):
     DETAILS_SORT_ORDER_KEY = "view/details_sort_order"
     PREVIEW_PRELOAD_BATCH_SIZE_KEY = "preview/preload_batch_size"
     PERFORMANCE_LOGGING_KEY = "diagnostics/performance_logging"
-    # Perf logging is focused on toolbar button-movement events only; the rest of
-    # the app-wide instrumentation stays muted so the log isn't flooded. Add
-    # prefixes here (e.g. "ai_toolbar_state.") to profile a specific area, or set
-    # to () to record everything again.
-    PERF_FOCUS_PREFIXES = ("toolbar.", "perf.")
+    # Keep diagnostics focused on the active UI investigations so the JSONL log
+    # remains readable while still capturing the popout's full loading path.
+    PERF_FOCUS_PREFIXES = ("toolbar.", "preview.", "window.open_preview", "perf.")
     CHECK_UPDATES_ON_STARTUP_KEY = "updates/check_on_startup"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
     TOOLBAR_STYLE_KEY = "view/toolbar_style"
@@ -2578,12 +2551,9 @@ class MainWindow(QMainWindow):
         "open_performance_logs",
     )
     AI_ACTIVITY_TAG_SPECS = (
-        ("bucket:ai_pick", "AI Pick", "#d7a43a"),
+        ("bucket:ai_pick", "Winner", "#46bd78"),
         ("bucket:reject", "Reject", "#d65a67"),
-        ("bucket:keeper", "Keeper", "#5f82d8"),
-        ("bucket:needs_review", "Needs Review", "#d28735"),
-        ("workflow:best_frame", "Best Frame", "#46bd78"),
-        ("workflow:ai_review", "AI Review", "#d97835"),
+        ("bucket:needs_review", "Review", "#d28735"),
         ("workflow:ai_miss", "AI Miss", "#d7547a"),
     )
     # Items the top bar renders as fixed chrome (nav glyphs, path combo, search)
@@ -2897,6 +2867,7 @@ class MainWindow(QMainWindow):
         self.preview = FullScreenPreview(self)
         self.preview.navigation_requested.connect(self._navigate_preview)
         self.preview.set_photoshop_available(bool(self._photoshop_executable))
+        self._preview_navigation_dirty = False
         self._preview_preload_index: int | None = None
         self._preview_preload_timer = QTimer(self)
         self._preview_preload_timer.setSingleShot(True)
@@ -3182,13 +3153,14 @@ class MainWindow(QMainWindow):
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
         self._burst_stacks_enabled = self._settings.value(self.BURST_STACKS_KEY, False, bool)
         self._loupe_card_style = self._normalize_loupe_card_style(
-            self._settings.value(self.LOUPE_CARD_STYLE_KEY, "detailed", str)
+            self._settings.value(self.LOUPE_CARD_STYLE_KEY, "gallery", str)
         )
         if self._settings.value(self.COMPACT_CARDS_KEY, False, bool):
-            # One-time migration: the removed "Legacy cards" toggle overrode
-            # the card style, so carry it into the style enum as "classic".
-            self._loupe_card_style = "classic"
-            self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, "classic")
+            # One-time migration: the removed "Legacy cards" toggle overrode the
+            # card style. Its "classic" successor has since been retired too, so
+            # fall back to the default detailed card.
+            self._loupe_card_style = "detailed"
+            self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, "detailed")
         self._settings.remove(self.COMPACT_CARDS_KEY)
         self._free_smooth_scroll_enabled = self._settings.value(self.FREE_SMOOTH_SCROLL_KEY, False, bool)
         self._preview_preload_batch_size = self._normalize_preview_preload_batch_size(
@@ -4603,11 +4575,11 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _normalize_loupe_card_style(value: object) -> str:
         normalized = str(value or "detailed").strip().casefold().replace("-", "_").replace(" ", "_")
-        if normalized in {"immersive", "zen", "classic", "gallery"}:
+        if normalized in {"zen", "gallery"}:
             return normalized
-        if normalized in {"legacy", "legacy_cards", "compact"}:
-            return "classic"
-        # "photo_fit" was renamed to "detailed"; migrate stored values.
+        # Detailed, Zen, and Gallery are the only styles. Retired ones
+        # (immersive, classic, legacy, photo_fit) and anything unknown fall
+        # back to the default detailed card.
         return "detailed"
 
     # -- Resolution-aware card-style policy --------------------------------
@@ -4759,7 +4731,7 @@ class MainWindow(QMainWindow):
         is not resolved yet when these chrome buttons are first built."""
         theme = getattr(self, "_theme", None)
         if theme is not None:
-            return theme.text_muted.qcolor()
+            return theme.text_secondary.qcolor() if not theme.is_dark else theme.text_muted.qcolor()
         return QColor(138, 144, 154)
 
     def _workspace_toolbar_icon(self, item_id: str) -> QIcon:
@@ -4774,6 +4746,11 @@ class MainWindow(QMainWindow):
         if color is None:
             color = theme.text_secondary.qcolor() if theme is not None else QColor(218, 226, 238)
         accent = theme.accent.qcolor() if theme is not None else QColor(25, 195, 125)
+        disabled = (
+            theme.text_muted.qcolor()
+            if theme is not None and not theme.is_dark
+            else (theme.text_disabled.qcolor() if theme is not None else QColor(116, 124, 136))
+        )
         # The rendered glyph depends only on (primary, secondary, color, accent) —
         # never on the owning action's enabled/checked state (Qt auto-dims the
         # disabled variant). Memoize so the per-action.changed toolbar syncs are
@@ -4781,41 +4758,87 @@ class MainWindow(QMainWindow):
         # otherwise stalls folder loads by seconds when the icon toolbar style
         # is active. The colour key makes the cache self-invalidate on theme change.
         cache = self.__dict__.setdefault("_fluent_toolbar_icon_cache", {})
-        cache_key = (primary, secondary, color.rgba(), accent.rgba())
+        cache_key = (primary, secondary, color.rgba(), accent.rgba(), disabled.rgba())
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
-        def draw_glyph(glyph: str, *, x: int, y: int, size: int, selected_color: QColor) -> None:
-            font_family = "Segoe MDL2 Assets" if len(glyph) > 2 else "Segoe UI"
-            font = QFont(font_family, size, QFont.Weight.DemiBold if len(glyph) <= 2 else QFont.Weight.Normal)
-            font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-            painter.setFont(font)
-            painter.setPen(selected_color)
-            if len(glyph) > 2:
-                text = chr(int(glyph, 16))
-            else:
-                text = glyph
-            painter.drawText(QRect(x, y, 64 - x, 64 - y), Qt.AlignmentFlag.AlignCenter, text)
+        def render(primary_color: QColor, secondary_color: QColor) -> QPixmap:
+            pixmap = QPixmap(64, 64)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
-        draw_glyph(primary, x=0, y=0, size=31 if len(primary) > 2 else 24, selected_color=color)
-        if secondary:
-            draw_glyph(secondary, x=30, y=30, size=19, selected_color=accent)
-        painter.end()
+            def draw_glyph(glyph: str, *, x: int, y: int, size: int, selected_color: QColor) -> None:
+                font_family = "Segoe MDL2 Assets" if len(glyph) > 2 else "Segoe UI"
+                font = QFont(font_family, size, QFont.Weight.DemiBold if len(glyph) <= 2 else QFont.Weight.Normal)
+                font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+                painter.setFont(font)
+                painter.setPen(selected_color)
+                if len(glyph) > 2:
+                    text = chr(int(glyph, 16))
+                else:
+                    text = glyph
+                painter.drawText(QRect(x, y, 64 - x, 64 - y), Qt.AlignmentFlag.AlignCenter, text)
+
+            draw_glyph(primary, x=0, y=0, size=31 if len(primary) > 2 else 24, selected_color=primary_color)
+            if secondary:
+                draw_glyph(secondary, x=30, y=30, size=19, selected_color=secondary_color)
+            painter.end()
+            return pixmap
+
+        pixmap = render(color, accent)
         icon = QIcon(pixmap)
+        icon.addPixmap(render(disabled, disabled), QIcon.Mode.Disabled)
         cache[cache_key] = icon
         return icon
+
+    def _refresh_themed_chrome_icons(self) -> None:
+        self.__dict__.pop("_fluent_toolbar_icon_cache", None)
+
+        add_button = getattr(self, "_left_rail_add_button", None)
+        if add_button is not None:
+            add_button.setIcon(self._fluent_toolbar_icon("E710", color=self._chrome_icon_color()))
+        edit_add_button = getattr(self, "_toolbar_edit_add_button", None)
+        if edit_add_button is not None:
+            edit_add_button.setIcon(self._fluent_toolbar_icon("E710", color=self._chrome_icon_color()))
+
+        for item_id, value in getattr(self, "_left_rail_action_buttons", {}).items():
+            button = value[0]
+            button.setIcon(self._workspace_toolbar_icon(item_id))
+
+        for button, _base in getattr(self, "_left_settings_buttons", ()):
+            glyph = button.property("fluentGlyph")
+            if isinstance(glyph, str) and glyph:
+                button.setIcon(self._fluent_filled_icon(glyph, self._chrome_icon_color()))
+
+        for widget in getattr(self, "left_quick_action_buttons", {}).values():
+            glyph = widget.property("fluentGlyph") if isinstance(widget, QWidget) else None
+            if isinstance(glyph, str) and glyph:
+                widget.setIcon(self._fluent_toolbar_icon(glyph))
+
+        for widgets in getattr(self, "_workspace_toolbar_item_widgets", {}).values():
+            for item_id, widget in widgets.items():
+                if isinstance(widget, QToolButton):
+                    self._configure_workspace_toolbar_button(
+                        widget,
+                        item_id=item_id,
+                        text=self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id),
+                    )
+        for button in getattr(self, "_workspace_toolbar_overflow_buttons", {}).values():
+            if isinstance(button, QToolButton):
+                self._configure_workspace_toolbar_button(button, item_id="more", text="More")
+
+        if hasattr(self, "topbar_action_stack"):
+            self._rebuild_topbar_action_stack()
 
     def _configure_workspace_toolbar_button(self, button: QToolButton, *, item_id: str, text: str) -> None:
         style = self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text"))
         icon = self._workspace_toolbar_icon(item_id)
         action = button.defaultAction()
         button.setToolTip(button.toolTip() or text)
+        button.setProperty("toolbarItemId", item_id)
         button.setCursor(Qt.CursorShape.ArrowCursor)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         if style == "text":
@@ -4870,7 +4893,8 @@ class MainWindow(QMainWindow):
 
         self._left_rail_add_button = QToolButton(rail)
         self._left_rail_add_button.setObjectName("generatedLeftRailButton")
-        self._left_rail_add_button.setIcon(self._fluent_toolbar_icon("E710", color=QColor("#8a909a")))
+        self._left_rail_add_button.setProperty("fluentGlyph", "E710")
+        self._left_rail_add_button.setIcon(self._fluent_toolbar_icon("E710", color=self._chrome_icon_color()))
         self._left_rail_add_button.setIconSize(QSize(22, 22))
         self._left_rail_add_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._left_rail_add_button.setToolTip("Add rail tool")
@@ -5123,6 +5147,7 @@ class MainWindow(QMainWindow):
         def add_button(glyph: str, tooltip: str, handler) -> None:
             button = QToolButton(bar)
             button.setObjectName("leftSettingsBarButton")
+            button.setProperty("fluentGlyph", glyph)
             button.setIcon(self._fluent_filled_icon(glyph, self._chrome_icon_color()))
             button.setIconSize(QSize(18, 18))
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -5284,6 +5309,7 @@ class MainWindow(QMainWindow):
         for key, glyph, tooltip, action in compact_specs:
             button = QToolButton(panel)
             button.setObjectName("leftQuickActionIcon")
+            button.setProperty("fluentGlyph", glyph)
             button.setIcon(self._fluent_toolbar_icon(glyph))
             button.setIconSize(QSize(18, 18))
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -5309,6 +5335,7 @@ class MainWindow(QMainWindow):
         for position, (key, text, glyph, action) in enumerate(text_specs):
             button = QPushButton(text, panel)
             button.setObjectName("inspectorActionButton")
+            button.setProperty("fluentGlyph", glyph)
             button.setIcon(self._fluent_toolbar_icon(glyph))
             button.setIconSize(QSize(16, 16))
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -6337,15 +6364,11 @@ class MainWindow(QMainWindow):
         button.setToolTip("Add a button — drops into the next open cell, then drag it where you want")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setIcon(self._fluent_toolbar_icon("E710", color=QColor("#8a909a")))
+        button.setProperty("fluentGlyph", "E710")
+        button.setIcon(self._fluent_toolbar_icon("E710", color=self._chrome_icon_color()))
         button.setIconSize(QSize(20, 20))
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setAutoRaise(True)
-        button.setStyleSheet(
-            "QToolButton#toolbarEditAddButton { background: transparent; border: 1px solid transparent;"
-            " border-radius: 7px; padding: 0px; }"
-            " QToolButton#toolbarEditAddButton:hover { background: #24262b; }"
-        )
         button.setGeometry(self._toolbar_edit_cell_rect(last, cell_w, page_h))
         button.clicked.connect(lambda _checked=False, m=mode: self._open_toolbar_item_picker(m))
         button.show()
@@ -7634,12 +7657,13 @@ class MainWindow(QMainWindow):
             )
 
             for mode, action in self.actions.appearance_actions.items():
+                label = appearance_mode_label(mode)
                 add_action_command(
                     f"appearance.{mode.value.casefold()}",
                     action,
                     section="Appearance",
-                    title=f"Set Theme: {mode.value}",
-                    keywords=("theme", "appearance", mode.value.casefold()),
+                    title=f"Set Theme: {label}",
+                    keywords=("theme", "appearance", mode.value.casefold(), label.casefold()),
                 )
             for mode, action in self.actions.sort_actions.items():
                 add_action_command(
@@ -8124,6 +8148,7 @@ class MainWindow(QMainWindow):
         app.setPalette(build_app_palette(self._theme))
         app.setStyleSheet(build_app_stylesheet(self._theme))
         self._write_child_sync_state()
+        self._refresh_themed_chrome_icons()
         self._update_dynamic_action_icons()
         self._refresh_update_button_state()
         self._refresh_directory_nav_button_icons()
@@ -16402,6 +16427,12 @@ class MainWindow(QMainWindow):
     def _handle_preview_closed(self) -> None:
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
+        if not self._preview_navigation_dirty:
+            return
+        self._preview_navigation_dirty = False
+        current_index = self.grid.current_index()
+        if 0 <= current_index < len(self._records):
+            self.grid.set_current_index(current_index)
 
     def _winner_ladder_candidate_rows(self, index: int) -> tuple[list[tuple[int, ImageRecord]], str, str]:
         record = self._record_at(index)
@@ -19450,7 +19481,7 @@ class MainWindow(QMainWindow):
     def _open_ai_cull_follow_up_review(self, source_paths: tuple[str, ...]) -> None:
         existing_paths = tuple(path for path in source_paths if self._record_index_for_path(path) is not None)
         if not existing_paths:
-            self.statusBar().showMessage("No Keeper or Needs Review images remain for follow-up review.")
+            self.statusBar().showMessage("No Winner or Needs Review images remain for follow-up review.")
             return
         self._set_ui_mode("manual")
         current_path = self._current_visible_record_path()
@@ -19461,7 +19492,7 @@ class MainWindow(QMainWindow):
         index = self._record_index_for_path(target_path)
         if index is not None:
             self.grid.set_current_index(index)
-        self.statusBar().showMessage(f"{len(existing_paths)} Keeper or Needs Review image(s) remain for manual review.")
+        self.statusBar().showMessage(f"{len(existing_paths)} Winner or Needs Review image(s) remain for manual review.")
 
     def _apply_ai_culling(self) -> None:
         if not self._current_folder:
@@ -19530,9 +19561,9 @@ class MainWindow(QMainWindow):
 
         follow_up = QMessageBox.question(
             self,
-            "Review Keepers And Needs Review?",
+            "Review Winners And Needs Review?",
             (
-                f"{len(reviewable_paths)} image(s) remain in Keeper or Needs Review.\n\n"
+                f"{len(reviewable_paths)} image(s) remain in Winner or Needs Review.\n\n"
                 "Jump to the first remaining image in Manual Review?"
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -20720,7 +20751,7 @@ class MainWindow(QMainWindow):
         from .ai_results import AIConfidenceBucket, _combine_confidence_summaries, _replace_confidence
         summary = _combine_confidence_summaries(
             getattr(result, "confidence_summary", ""),
-            "Demoted because a stronger frame in the same burst already passes as Keeper.",
+            "Demoted because a stronger frame in the same burst already passes as Winner.",
         )
         return _replace_confidence(result, AIConfidenceBucket.LIKELY_REJECT, summary)
 
@@ -20948,22 +20979,6 @@ class MainWindow(QMainWindow):
                 self._correction_events = []
             return
         self._correction_events = self._decision_store.load_correction_events(self._session_id, self._current_folder)
-
-    def _refresh_taste_and_burst_recommendations(self) -> None:
-        if not self._all_records:
-            self._taste_profile = TasteProfile()
-            self._burst_recommendations = {}
-            self._workflow_insights_by_path = {}
-            return
-        taste_profile, recommendations = build_burst_recommendations(
-            self._all_records,
-            ai_bundle=self._ai_bundle,
-            review_bundle=self._review_intelligence,
-            correction_events=self._correction_events,
-        )
-        self._taste_profile = taste_profile
-        self._burst_recommendations = recommendations
-        self._refresh_workflow_insights_cache(force_full=True)
 
     def _refresh_workflow_insights_cache(
         self,
@@ -22385,10 +22400,8 @@ class MainWindow(QMainWindow):
         elif card_style_changed:
             label = {
                 "detailed": "Detailed",
-                "immersive": "Immersive",
                 "zen": "Zen",
                 "gallery": "Gallery",
-                "classic": "Classic",
             }.get(self._loupe_card_style, self._loupe_card_style)
             self.statusBar().showMessage(f"Card style set to {label}")
         elif free_scroll_changed:
@@ -22957,9 +22970,11 @@ class MainWindow(QMainWindow):
         if logger.enabled:
             logger.duration("annotation.reject_toggle", (time.perf_counter() - start) * 1000.0, path=record.path, reject=annotation.reject, advance=should_advance)
 
-    def _open_preview(self, index: int) -> None:
+    def _open_preview(self, index: int, *, lightweight_grid_sync: bool = False) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        if not self.preview.isVisible():
+            self._preview_navigation_dirty = False
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
         record = self._record_at(index)
@@ -22985,7 +23000,10 @@ class MainWindow(QMainWindow):
             self._compare_count = effective_count
             self.preview.set_compare_count(effective_count)
             if anchor_index != index:
-                self.grid.set_current_index(anchor_index)
+                if lightweight_grid_sync:
+                    self.grid.set_logical_selection([anchor_index], current_index=anchor_index)
+                else:
+                    self.grid.set_current_index(anchor_index)
         self.preview.set_winner_ladder_mode(False)
         if logger.enabled:
             logger.duration(
@@ -23008,6 +23026,8 @@ class MainWindow(QMainWindow):
             )
 
     def _navigate_preview(self, delta: int) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         if not self._records:
             return
 
@@ -23015,27 +23035,69 @@ class MainWindow(QMainWindow):
         if current < 0:
             current = 0
         next_index = max(0, min(len(self._records) - 1, current + delta))
-        self.grid.set_current_index(next_index)
-        self._open_preview(next_index)
+        if next_index != current:
+            self.grid.set_logical_selection([next_index], current_index=next_index)
+            self._preview_navigation_dirty = True
+        self._open_preview(next_index, lightweight_grid_sync=True)
+        if logger.enabled:
+            record = self._record_at(next_index)
+            logger.duration(
+                "preview.navigation",
+                (time.perf_counter() - start) * 1000.0,
+                delta=delta,
+                previous_index=current,
+                current_index=next_index,
+                clamped=next_index == current,
+                path=record.path if record is not None else "",
+            )
 
     PREVIEW_FILMSTRIP_THUMB_SIZE = QSize(192, 128)
 
     def _sync_preview_browse_context(self, current_index: int) -> None:
         """Feed the popout's filmstrip/nav pill its position in the record list."""
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         self.preview.set_browse_context(
             len(self._records),
             current_index,
             self._preview_filmstrip_thumb,
             self._preview_filmstrip_tag,
         )
+        if logger.enabled:
+            logger.duration(
+                "preview.browse_context",
+                (time.perf_counter() - start) * 1000.0,
+                current_index=current_index,
+                total=len(self._records),
+            )
 
     def _preview_filmstrip_thumb(self, index: int) -> QPixmap | None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
         record = self._record_at(index)
         if record is None or record.is_folder:
+            if logger.enabled:
+                logger.duration(
+                    "preview.filmstrip_thumbnail",
+                    (time.perf_counter() - start) * 1000.0,
+                    index=index,
+                    state="invalid_record",
+                )
             return None
         image = self.thumbnail_manager.get_cached(record, self.PREVIEW_FILMSTRIP_THUMB_SIZE)
         if image is not None and not image.isNull():
-            return QPixmap.fromImage(image)
+            pixmap = QPixmap.fromImage(image)
+            if logger.enabled:
+                logger.duration(
+                    "preview.filmstrip_thumbnail",
+                    (time.perf_counter() - start) * 1000.0,
+                    index=index,
+                    path=record.path,
+                    state="memory_hit",
+                    width=image.width(),
+                    height=image.height(),
+                )
+            return pixmap
         # Kick off an async load and refresh the strip when it lands; fall
         # back to the grid's thumbnail so the strip is rarely empty meanwhile.
         self.thumbnail_manager.request_thumbnail(
@@ -23046,7 +23108,26 @@ class MainWindow(QMainWindow):
         )
         fallback = self.grid.thumbnail_for(index)
         if fallback is not None and not fallback.isNull():
-            return QPixmap.fromImage(fallback)
+            pixmap = QPixmap.fromImage(fallback)
+            if logger.enabled:
+                logger.duration(
+                    "preview.filmstrip_thumbnail",
+                    (time.perf_counter() - start) * 1000.0,
+                    index=index,
+                    path=record.path,
+                    state="grid_fallback",
+                    width=fallback.width(),
+                    height=fallback.height(),
+                )
+            return pixmap
+        if logger.enabled:
+            logger.duration(
+                "preview.filmstrip_thumbnail",
+                (time.perf_counter() - start) * 1000.0,
+                index=index,
+                path=record.path,
+                state="queued_no_fallback",
+            )
         return None
 
     def _preview_filmstrip_tag(self, index: int) -> str | None:
@@ -23068,6 +23149,9 @@ class MainWindow(QMainWindow):
 
     def _handle_preview_filmstrip_thumbnail_ready(self, *_args) -> None:
         if self.preview.isVisible():
+            logger = perf_logger()
+            if logger.enabled:
+                logger.log("preview.filmstrip_refresh_requested")
             self.preview.refresh_filmstrip()
 
     def _preview_source_path(self, record: ImageRecord) -> str:

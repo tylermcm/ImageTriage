@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QMenu
 from ..filtering import AIStateFilter
 from ..models import FilterMode
 from .actions import MainWindowActions
-from .theme import AppearanceMode
+from .theme import appearance_profile_modes
 
 
 def add_ai_adapter_actions(menu: QMenu, actions: MainWindowActions) -> None:
@@ -108,7 +108,7 @@ def build_main_menu_bar(
 
     view_menu = menu_bar.addMenu("&View")
     appearance_menu = view_menu.addMenu("Appearance")
-    for mode in (AppearanceMode.DARK, AppearanceMode.MIDNIGHT, AppearanceMode.LIGHT, AppearanceMode.AUTO):
+    for mode in appearance_profile_modes():
         appearance_menu.addAction(actions.appearance_actions[mode])
 
     layout_menu = view_menu.addMenu("Layout")

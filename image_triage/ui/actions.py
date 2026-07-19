@@ -14,7 +14,7 @@ from .shortcuts import (
     load_shortcut_overrides,
     save_shortcut_overrides,
 )
-from .theme import AppearanceMode
+from .theme import AppearanceMode, appearance_mode_label, appearance_profile_modes
 
 if TYPE_CHECKING:
     from ..window import MainWindow
@@ -579,15 +579,10 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
 
     appearance_group = QActionGroup(window)
     appearance_group.setExclusive(True)
-    for mode, label in (
-        (AppearanceMode.DARK, "Dark"),
-        (AppearanceMode.MIDNIGHT, "Midnight"),
-        (AppearanceMode.LIGHT, "Light"),
-        (AppearanceMode.AUTO, "Auto"),
-    ):
+    for mode in appearance_profile_modes():
         action = _create_action(
             window,
-            label,
+            appearance_mode_label(mode),
             slot=lambda _checked=False, selected=mode: window._set_appearance_mode(selected),
             checkable=True,
         )
