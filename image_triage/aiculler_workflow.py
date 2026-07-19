@@ -2306,7 +2306,7 @@ def compute_and_store_winner_scores(
     with sqlite3.connect(path) as connection:
         ensure_winner_scores_table(connection)
         try:
-            labeled_emb, labels, all_ids, all_emb, global_scores = load_winner_inputs(
+            labeled_emb, labels, all_ids, all_emb, global_scores, base_scores = load_winner_inputs(
                 connection,
                 model_version=None if resolved_version == WINNER_SCORE_FALLBACK_MODEL_VERSION else resolved_version,
             )
@@ -2334,6 +2334,7 @@ def compute_and_store_winner_scores(
             all_ids,
             all_emb,
             global_scores,
+            base_scores,
             alpha=alpha,
             ramp=ramp,
             min_labels=min_labels,
