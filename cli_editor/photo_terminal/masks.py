@@ -187,7 +187,7 @@ def refine_color_range(
     out_pixels = out.load()
     sr, sg, sb = sample
     tolerance = max(1, int(tolerance))
-    feather = max(1, int(feather))
+    feather = max(0, int(feather))
     max_distance = tolerance + feather
 
     for y in range(work_height):
@@ -196,7 +196,7 @@ def refine_color_range(
             distance = math.sqrt((red - sr) ** 2 + (green - sg) ** 2 + (blue - sb) ** 2)
             if distance <= tolerance:
                 amount = 1.0
-            elif distance >= max_distance:
+            elif feather == 0 or distance >= max_distance:
                 amount = 0.0
             else:
                 amount = 1.0 - ((distance - tolerance) / feather)

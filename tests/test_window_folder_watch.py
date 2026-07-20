@@ -35,7 +35,8 @@ class _WindowStub:
         self._folder_watch_refresh_pending = False
         self._folder_watch_refresh_timer = _TimerStub()
         self._status = _StatusBarStub()
-        self.load_calls: list[tuple[str, bool]] = []
+        self.current_path = rf"{folder}\IMG_0042.CR3"
+        self.load_calls: list[tuple[str, bool, str | None]] = []
         self.queued_delays: list[int] = []
         self.refresh_watch_calls = 0
 
@@ -46,14 +47,32 @@ class _WindowStub:
         self._folder_watch_refresh_pending = True
         self.queued_delays.append(delay_ms)
 
-    def _load_folder(self, folder: str, *, force_refresh: bool = False, chunked_restore: bool = False) -> None:
-        self.load_calls.append((folder, force_refresh))
+    def _current_visible_record_path(self) -> str | None:
+        return self.current_path
+
+    def _load_folder(
+        self,
+        folder: str,
+        *,
+        force_refresh: bool = False,
+        chunked_restore: bool = False,
+        preferred_record_path: str | None = None,
+    ) -> None:
+        self.load_calls.append((folder, force_refresh, preferred_record_path))
 
     def _refresh_current_folder_watch(self) -> None:
         self.refresh_watch_calls += 1
 
 
 class FolderWatchTests(unittest.TestCase):
+    def test_manual_folder_refresh_preserves_current_image(self) -> None:
+        folder = r"X:\Shots\Set Manual"
+        window = _WindowStub(folder)
+
+        MainWindow._refresh_folder(window)
+
+        self.assertEqual([(folder, True, window.current_path)], window.load_calls)
+
     def test_handle_watched_folder_change_queues_refresh_for_current_folder(self) -> None:
         folder = r"X:\Shots\Set A"
         window = _WindowStub(folder)
@@ -73,7 +92,7 @@ class FolderWatchTests(unittest.TestCase):
             MainWindow._run_watched_folder_refresh(window)
 
         self.assertFalse(window._folder_watch_refresh_pending)
-        self.assertEqual([(folder, True)], window.load_calls)
+        self.assertEqual([(folder, True, window.current_path)], window.load_calls)
         self.assertIn("refreshing changed folder", window.statusBar().messages[-1].casefold())
 
     def test_run_watched_folder_refresh_requeues_while_scan_active(self) -> None:

@@ -23,7 +23,15 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 from .formats import IMAGE_SUFFIXES, suffix_for_path
 from .models import ImageRecord, ImageVariant
 from .scan_cache import app_data_root
-from .scanner import EDIT_DIRECTORIES, JPEG_PAIR_DIRECTORIES, normalize_filesystem_path, normalized_path_key, scan_folder
+from .scanner import (
+    EDITOR_ASSET_DIR_SUFFIX,
+    EDIT_DIRECTORIES,
+    JPEG_PAIR_DIRECTORIES,
+    is_editor_asset_path,
+    normalize_filesystem_path,
+    normalized_path_key,
+    scan_folder,
+)
 
 
 COLLECTION_KINDS: tuple[str, ...] = (
@@ -652,11 +660,11 @@ class LibraryStore:
             record
             for row in rows
             for record in [_deserialize_record_json(row[0])]
-            if record is not None
+            if record is not None and not is_editor_asset_path(record.path)
         ]
 
     def load_catalog_records_for_paths(self, paths: tuple[str, ...] | list[str]) -> dict[str, ImageRecord]:
-        normalized_paths = _unique_paths(paths)
+        normalized_paths = [path for path in _unique_paths(paths) if not is_editor_asset_path(path)]
         if not normalized_paths:
             return {}
         loaded: dict[str, ImageRecord] = {}
@@ -945,6 +953,8 @@ def _catalog_folder_signature(folder_path: str) -> str:
         with os.scandir(folder_path) as entries:
             for entry in sorted(entries, key=lambda candidate: candidate.name.casefold()):
                 entry_name = entry.name.casefold()
+                if entry_name.endswith(EDITOR_ASSET_DIR_SUFFIX):
+                    continue
                 try:
                     stat_result = entry.stat(follow_symlinks=False)
                 except OSError:
@@ -963,6 +973,14 @@ def _iter_catalog_candidate_folders(root_path: str):
     if not normalized_root or not os.path.isdir(normalized_root):
         return
     for current_dir, dirnames, filenames in os.walk(normalized_root):
+        # Prune in place so masks cannot become catalog candidates and cannot
+        # recursively acquire their own edit-assets directories.
+        dirnames[:] = [
+            name for name in dirnames
+            if not name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX)
+        ]
+        if is_editor_asset_path(current_dir):
+            continue
         lower_dirs = {name.casefold() for name in dirnames}
         if any(suffix_for_path(name) in IMAGE_SUFFIXES for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):
             yield normalize_filesystem_path(current_dir)
