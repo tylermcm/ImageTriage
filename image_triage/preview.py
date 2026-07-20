@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
@@ -29,6 +29,7 @@ from .ai_results import AIImageResult, build_ai_explanation_lines
 from .cache import THUMBNAIL_CACHE_VERSION
 from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display, sanitize_display_error
+from .image_resize import _pillow_from_qimage, _qimage_from_pillow
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord, JPEG_SUFFIXES
 from .perf import perf_logger
@@ -47,6 +48,10 @@ from .review_tools import (
     focus_assist_strength_by_id,
 )
 from .scanner import discover_edited_paths
+from PIL import Image as PILImage
+
+from .ui.mask_overlay import MaskOverlay, mask_strength_qimage
+from .ui.photo_editor_panel import EditRecipe, PhotoEditorPanel
 from .ui import preview_studio as studio
 from .ui.theme import ThemePalette, default_theme
 
@@ -668,6 +673,9 @@ class FullScreenPreview(QDialog):
         self._watched_widgets: dict[object, int] = {}
         self._inspection_stats_cache: dict[tuple[object, ...], InspectionStats] = {}
         self._focus_assist_cache: dict[tuple[object, ...], QImage] = {}
+        self._editor_recipe = EditRecipe()
+        self._editor_recipe_version = 0
+        self._editor_preview_cache: dict[tuple[object, ...], QImage] = {}
         self._theme = default_theme()
 
         self.setWindowTitle("Preview")
@@ -1067,6 +1075,155 @@ class FullScreenPreview(QDialog):
             QLabel#previewControlLabel {{ color: {studio.TEXT_DIM}; font-size: 12px; font-weight: 500; }}
             QLabel#previewAnalysisValue {{ color: {studio.TEXT}; font-size: 12px; }}
             QLabel#previewAnalysisHint {{ color: {studio.TEXT_MUTE}; font-size: 11px; }}
+            QFrame#photoEditorPanel {{
+                background: #2e2e2e; border: 1px solid #1c1c1c;
+                border-radius: 6px;
+            }}
+            QFrame#editorTabBar {{
+                background: #232323; border: none; border-bottom: 1px solid #1a1a1a;
+                border-top-left-radius: 6px; border-top-right-radius: 6px;
+            }}
+            QToolButton#editorTab {{
+                background: transparent; border: none; color: #9a9a9a;
+                padding: 7px 11px; font-size: 11px; font-weight: 600;
+                border-top-left-radius: 4px; border-top-right-radius: 4px;
+                min-height: 0px;
+            }}
+            QToolButton#editorTab:hover {{ color: #d9d9d9; }}
+            QToolButton#editorTab:checked {{ background: #2e2e2e; color: #f2f2f2; }}
+            QFrame#photoEditorDocBar {{ background: #2e2e2e; border-bottom: 1px solid #232323; }}
+            QLabel#photoEditorSubtitle {{ color: #a0a0a0; font-size: 11px; }}
+            QStackedWidget#photoEditorStack {{ background: #2e2e2e; }}
+            QScrollArea#photoEditorScrollArea {{ background: #2e2e2e; border: none; }}
+            QScrollArea#photoEditorScrollArea QWidget {{ background: #2e2e2e; }}
+            QWidget#photoEditorBody {{ background: #2e2e2e; }}
+            QScrollArea#photoEditorScrollArea QScrollBar:vertical {{
+                background: transparent; width: 9px; margin: 2px 1px;
+            }}
+            QScrollArea#photoEditorScrollArea QScrollBar::handle:vertical {{
+                background: #464646; border-radius: 4px; min-height: 24px;
+            }}
+            QScrollArea#photoEditorScrollArea QScrollBar::handle:vertical:hover {{ background: #5a5a5a; }}
+            QScrollArea#photoEditorScrollArea QScrollBar::add-line:vertical,
+            QScrollArea#photoEditorScrollArea QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollArea#photoEditorScrollArea QScrollBar::add-page:vertical,
+            QScrollArea#photoEditorScrollArea QScrollBar::sub-page:vertical {{ background: transparent; }}
+            QFrame#editorSection {{ background: transparent; border-bottom: 1px solid #262626; }}
+            QPushButton#editorSectionHeader {{
+                background: transparent; border: none; color: #d6d6d6;
+                text-align: left; padding: 7px 10px; border-radius: 0px;
+                font-size: 11px; font-weight: 600;
+            }}
+            QPushButton#editorSectionHeader:hover {{ background: #363636; color: #ffffff; }}
+            QLabel#editorControlLabel {{ color: #c4c4c4; font-size: 11px; }}
+            QLabel#editorNumber {{
+                color: #e6e6e6; background: #232323; border: 1px solid #191919;
+                border-radius: 2px; min-height: 16px; padding: 0 4px; font-size: 11px;
+            }}
+            QLabel#curveModeDot {{
+                color: #cfcfcf; background: #232323; border: 1px solid #191919;
+                border-radius: 2px; padding: 1px 6px; font-size: 10px; font-weight: 600;
+            }}
+            QFrame#photoEditorFooter {{
+                background: #232323; border: none; border-top: 1px solid #1a1a1a;
+                border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
+            }}
+            QLabel#photoEditorStatus {{ color: #8f8f8f; font-size: 10px; }}
+            QFrame#photoEditorPanel QSlider::groove:horizontal {{
+                height: 2px; background: #565656; border-radius: 1px;
+            }}
+            QFrame#photoEditorPanel QSlider::sub-page:horizontal {{
+                background: #565656; border-radius: 1px;
+            }}
+            QFrame#photoEditorPanel QSlider::handle:horizontal {{
+                width: 0px; height: 0px; margin: -5px 0;
+                border-left: 5px solid transparent; border-right: 5px solid transparent;
+                border-bottom: 9px solid #cfcfcf; background: transparent;
+            }}
+            QFrame#photoEditorPanel QSlider::handle:horizontal:hover {{ border-bottom-color: #ffffff; }}
+            QFrame#photoEditorPanel QSlider#slider_temperature::groove:horizontal {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f69ff, stop:0.5 #9a9a9a, stop:1 #ffd94f);
+            }}
+            QFrame#photoEditorPanel QSlider#slider_tint::groove:horizontal {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #52d46b, stop:0.5 #9a9a9a, stop:1 #d64bd5);
+            }}
+            QFrame#photoEditorPanel QSlider#slider_vibrance::groove:horizontal,
+            QFrame#photoEditorPanel QSlider#slider_saturation::groove:horizontal {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #65b7ff, stop:0.5 #d9cb60, stop:1 #ff5a5a);
+            }}
+            QFrame#photoEditorPanel QSlider#slider_temperature::sub-page:horizontal,
+            QFrame#photoEditorPanel QSlider#slider_tint::sub-page:horizontal,
+            QFrame#photoEditorPanel QSlider#slider_vibrance::sub-page:horizontal,
+            QFrame#photoEditorPanel QSlider#slider_saturation::sub-page:horizontal {{
+                background: transparent;
+            }}
+            QFrame#photoEditorPanel QPushButton {{
+                background: #3d3d3d; border: 1px solid #2a2a2a;
+                color: #e6e6e6; padding: 5px 10px; border-radius: 3px;
+                font-size: 11px; font-weight: 500;
+            }}
+            QFrame#photoEditorPanel QPushButton#editorActionButton {{
+                min-height: 24px; padding: 5px 10px;
+            }}
+            QFrame#photoEditorPanel QPushButton#editorToolToggle {{
+                min-height: 26px; padding: 5px 10px; font-weight: 600;
+            }}
+            QFrame#photoEditorPanel QPushButton#editorToolToggle:checked {{
+                background: #1473e6; border-color: #1473e6; color: #ffffff;
+            }}
+            QLabel#editorHint {{ color: #8f8f8f; font-size: 10px; }}
+            QFrame#photoEditorPanel QPushButton:hover {{
+                background: #4a4a4a; border-color: #5a5a5a;
+            }}
+            QFrame#photoEditorPanel QPushButton:pressed {{ background: #333333; }}
+            QFrame#photoEditorPanel QPushButton:disabled {{
+                color: #767676; background: #333333; border-color: #282828;
+            }}
+            QFrame#photoEditorPanel QPushButton#editorPrimaryButton {{
+                background: #1473e6; border: 1px solid #1473e6; color: #ffffff; font-weight: 600;
+            }}
+            QFrame#photoEditorPanel QPushButton#editorPrimaryButton:hover {{
+                background: #2b84f0; border-color: #2b84f0;
+            }}
+            QFrame#photoEditorPanel QPushButton#editorPrimaryButton:disabled {{
+                background: #2c4a6e; border-color: #2c4a6e; color: #8fa5bf;
+            }}
+            QFrame#photoEditorPanel QListWidget#editorList,
+            QFrame#photoEditorPanel QPlainTextEdit#editorText,
+            QFrame#photoEditorPanel QLineEdit,
+            QFrame#photoEditorPanel QSpinBox,
+            QFrame#photoEditorPanel QDoubleSpinBox,
+            QFrame#photoEditorPanel QComboBox {{
+                background: #1e1e1e; color: #e0e0e0;
+                border: 1px solid #161616; border-radius: 3px;
+                padding: 4px 6px; selection-background-color: #1473e6;
+            }}
+            QFrame#photoEditorPanel QLineEdit:focus,
+            QFrame#photoEditorPanel QSpinBox:focus,
+            QFrame#photoEditorPanel QDoubleSpinBox:focus,
+            QFrame#photoEditorPanel QComboBox:focus {{ border-color: #1473e6; }}
+            QFrame#photoEditorPanel QPlainTextEdit#editorText {{
+                font-family: 'Consolas'; font-size: 10px; color: #c8c8c8;
+            }}
+            QFrame#photoEditorPanel QListWidget#editorList {{
+                min-height: 74px; background: #262626; border-color: #1a1a1a;
+            }}
+            QFrame#photoEditorPanel QListWidget#editorList::item {{
+                padding: 7px 8px; border-radius: 2px; color: #d6d6d6;
+            }}
+            QFrame#photoEditorPanel QListWidget#editorList::item:hover {{ background: #303030; }}
+            QFrame#photoEditorPanel QListWidget#editorList::item:selected {{
+                background: #264f78; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QCheckBox {{ color: #d6d6d6; spacing: 6px; font-size: 11px; }}
+            QFrame#photoEditorPanel QCheckBox::indicator {{
+                width: 13px; height: 13px; background: #1e1e1e;
+                border: 1px solid #3a3a3a; border-radius: 2px;
+            }}
+            QFrame#photoEditorPanel QCheckBox::indicator:hover {{ border-color: #5a5a5a; }}
+            QFrame#photoEditorPanel QCheckBox::indicator:checked {{
+                background: #1473e6; border-color: #1473e6;
+            }}
         """
         return (
             f"{scope} {{ background-color: {studio.GROUND}; color: {studio.TEXT}; }}\n"
@@ -1193,6 +1350,25 @@ class FullScreenPreview(QDialog):
         if rail is not None:
             rail.setVisible(shown)
         self._settings.setValue(self.INSPECTOR_VISIBLE_KEY, shown)
+        self._sync_mask_overlay()
+
+    def _sync_mask_overlay(self) -> None:
+        """Push the editor panel's mask state onto the focused pane's overlay.
+        The overlay goes inert (invisible, mouse-transparent) whenever the
+        editor rail is hidden or the Masks tab is not active."""
+        overlay = getattr(self, "_mask_overlay", None)
+        panel = getattr(self, "photo_editor_panel", None)
+        if overlay is None or panel is None:
+            return
+        state = panel.mask_overlay_state()
+        rail = getattr(self, "_studio_rail", None)
+        if rail is None or rail.isHidden():
+            state["interactive"] = False
+            state["show_overlay"] = False
+            state["create_mode"] = None
+        if 0 <= self._focused_slot < len(self._panes):
+            overlay.attach_to(self._panes[self._focused_slot].image_label)
+        overlay.set_state(**state)
 
     def _build_studio_toolbar(self) -> QFrame:
         toolbar = QFrame()
@@ -1226,7 +1402,7 @@ class FullScreenPreview(QDialog):
         layout.addWidget(self.command_palette_button)
         layout.addStretch(1)
 
-        self.inspector_toggle = QPushButton("Inspector")
+        self.inspector_toggle = QPushButton("Editor")
         self.inspector_toggle.setObjectName("toolBtn")
         self.inspector_toggle.setCheckable(True)
         # Restore the persisted state before connecting so no toggle fires;
@@ -1247,101 +1423,37 @@ class FullScreenPreview(QDialog):
         return toolbar
 
     def _build_studio_rail(self) -> QFrame:
-        """Prototype-exact inspector cards. The legacy analysis-panel widgets
-        stay alive (hidden) as the state carriers every shortcut and handler
-        is wired to; the Studio controls built here mirror them — clicks
-        proxy into the legacy widgets, and ``_sync_preview_controls``
-        reflects state back into these controls."""
+        """Build the popout editor rail.
+
+        The legacy analysis panel remains hidden and keeps carrying the old
+        inspection/focus/FITS state. Studio mode now presents the editor as the
+        visible rail instead of mirroring those inspector controls.
+        """
         rail = QFrame()
         rail.setObjectName("rail")
         rail.setFixedWidth(336)
         layout = QVBoxLayout(rail)
-        # The rail is a solid panel spanning the full window height, so it
-        # carries its own 12px inset; cards are 12px apart inside it.
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
-        # Histogram: real data plus key/value stat rows. The inspection label
-        # attributes are re-pointed at the row value labels so the analysis
-        # update path feeds the new rows directly (texts become value-only).
-        hist_card, hist_layout = studio.card("Histogram", "RGB · Luma")
-        hist_layout.addWidget(self.histogram_widget)
-        row, self.inspection_exposure_label = studio.stat_row("Exposure", "--")
-        hist_layout.addWidget(row)
-        row, self.inspection_clipping_label = studio.stat_row("Clipping", "--", warn=True)
-        hist_layout.addWidget(row)
-        row, self.inspection_dimensions_label = studio.stat_row("Size", "--")
-        hist_layout.addWidget(row)
-        row, self.inspection_detail_label = studio.stat_row("Detail", "--")
-        hist_layout.addWidget(row)
-        layout.addWidget(hist_card)
+        self.photo_editor_panel = PhotoEditorPanel(rail)
+        self.photo_editor_panel.recipe_changed.connect(self._handle_editor_recipe_changed)
+        self.photo_editor_panel.status_changed.connect(self._handle_editor_status_changed)
+        self.photo_editor_panel.saved.connect(self._handle_editor_sidecar_saved)
+        layout.addWidget(self.photo_editor_panel, 1)
 
-        focus_card, focus_layout = studio.card("Focus Peaking", "Off")
-        self.focus_controls_summary_label = focus_card.summary_label
-        self._studio_focus_enable = studio.Segmented(
-            ["Off", "On"], 1 if self._focus_assist_enabled else 0
-        )
-        self._studio_focus_enable.selected.connect(
-            lambda index: self.focus_assist_button.setChecked(bool(index))
-        )
-        focus_layout.addWidget(studio.control_row("Enabled", self._studio_focus_enable))
-        self.focus_assist_color_combo.setObjectName("colorCombo")
-        focus_layout.addWidget(studio.control_row("Color", self.focus_assist_color_combo))
-        strength_labels = [
-            "Med" if strength.label == "Medium" else strength.label
-            for strength in FOCUS_ASSIST_STRENGTHS
-        ]
-        self._studio_focus_strength = studio.Segmented(
-            strength_labels, max(0, self.focus_assist_strength_combo.currentIndex())
-        )
-        self._studio_focus_strength.selected.connect(self.focus_assist_strength_combo.setCurrentIndex)
-        focus_layout.addWidget(studio.control_row("Sensitivity", self._studio_focus_strength))
-        self._studio_focus_background = studio.Segmented(
-            ["Dimmed", "Original"], 0 if self._focus_assist_dim_background else 1
-        )
-        self._studio_focus_background.selected.connect(
-            lambda index: self.focus_assist_background_button.setChecked(index == 0)
-        )
-        focus_layout.addWidget(studio.control_row("Background", self._studio_focus_background))
-        layout.addWidget(focus_card)
+        # On-canvas mask editing: the overlay lives on the focused pane's image
+        # label and round-trips mask geometry with the editor panel.
+        self._mask_overlay = MaskOverlay()
+        self._mask_overlay.mask_created.connect(self.photo_editor_panel.handle_overlay_mask_created)
+        self._mask_overlay.mask_edited.connect(self.photo_editor_panel.handle_overlay_mask_edited)
+        self._mask_overlay.bitmap_edited.connect(self.photo_editor_panel.handle_overlay_bitmap_edited)
+        self._mask_overlay.source_clicked.connect(self.photo_editor_panel.handle_overlay_source_clicked)
+        self._mask_overlay.edit_committed.connect(self.photo_editor_panel.handle_overlay_commit)
+        self.photo_editor_panel.mask_overlay_changed.connect(self._sync_mask_overlay)
 
-        fits_card, fits_layout = studio.card("FITS Display", self._fits_display_settings.preset.label)
-        self.fits_controls_summary_label = fits_card.summary_label
-        fits_layout.addWidget(studio.control_row("Stretch", self.fits_stf_combo))
-        fits_layout.addWidget(self.fits_reset_button, 0, Qt.AlignmentFlag.AlignRight)
-        # Sync toggles the card's visibility through this attribute.
-        self.fits_controls_card = fits_card
-        layout.addWidget(fits_card)
-
-        ai_card, ai_layout = studio.card("Why AI picked this")
-        confidence_row = QWidget()
-        confidence_layout = QHBoxLayout(confidence_row)
-        confidence_layout.setContentsMargins(0, 0, 0, 0)
-        confidence_layout.setSpacing(10)
-        self._studio_confidence_bar = studio.ConfidenceBar(0)
-        confidence_layout.addWidget(self._studio_confidence_bar, 1)
-        self._studio_confidence_pct = QLabel("--")
-        self._studio_confidence_pct.setObjectName("confPct")
-        confidence_layout.addWidget(self._studio_confidence_pct)
-        ai_layout.addWidget(confidence_row)
-        self.ai_confidence_label = QLabel("Confidence: --")
-        self.ai_confidence_label.setObjectName("reason")
-        ai_layout.addWidget(self.ai_confidence_label)
-        self.ai_explanation_label = QLabel()
-        self.ai_explanation_label.setObjectName("reason")
-        self.ai_explanation_label.setWordWrap(True)
-        ai_layout.addWidget(self.ai_explanation_label)
-        layout.addWidget(ai_card)
-
-        layout.addStretch(1)
-        # Styled directly per-card in _apply_studio_theme (bulletproof against
-        # the app stylesheet cascading in from the main window).
-        self._studio_cards = [hist_card, focus_card, fits_card, ai_card]
-        self._studio_segments = [
-            self._studio_focus_enable,
-            self._studio_focus_strength,
-            self._studio_focus_background,
-        ]
+        self._studio_cards = []
+        self._studio_segments = []
         return rail
 
     def _apply_studio_layout(self) -> None:
@@ -1355,13 +1467,13 @@ class FullScreenPreview(QDialog):
         self._studio_rail = rail
         # Every studio surface (toolbar, image stage, rail, filmstrip) floats as
         # a rounded panel on a uniform 8px gutter (matching the main window's
-        # central container inset): the outer dialog layout owns the window inset
-        # and the gaps between the chrome bands, so the body only keeps the 8px
-        # gap between the image stage and the rail.
+        # central container inset). Below the toolbar the body is two columns:
+        # the image stage stacked over the filmstrip on the left, and the
+        # full-height editor rail on the right — so the filmstrip ends at the
+        # rail's left edge instead of running across the whole bottom.
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         self._content_layout.setSpacing(8)
         self.panes_layout.setContentsMargins(0, 0, 0, 0)
-        self._content_layout.replaceWidget(self.analysis_panel, rail)
         self.analysis_panel.hide()
         for widget in (self.analysis_title_label, self.analysis_subtitle_label, self.inspection_hint_label):
             widget.hide()
@@ -1381,8 +1493,22 @@ class FullScreenPreview(QDialog):
         )
         self._filmstrip.layout_changed.connect(self._save_filmstrip_layout)
         self._filmstrip.frame_selected.connect(self._handle_studio_filmstrip_selected)
-        layout.insertWidget(2, self._filmstrip)
-        # Apply the persisted Inspector visibility now that the rail exists.
+
+        body = QWidget(self)
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
+        left_column = QWidget(body)
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        layout.replaceWidget(self.content_widget, body)
+        layout.setStretchFactor(body, 1)
+        left_layout.addWidget(self.content_widget, 1)
+        left_layout.addWidget(self._filmstrip)
+        body_layout.addWidget(left_column, 1)
+        body_layout.addWidget(rail)
+        # Apply the persisted editor rail visibility now that the rail exists.
         rail.setVisible(self.inspector_toggle.isChecked())
         # Debounce for async thumbnail arrivals so a burst of thumbnail_ready
         # signals repopulates the strip once, not once per thumb.
@@ -1715,7 +1841,7 @@ class FullScreenPreview(QDialog):
         self.focus_assist_button.setText("On" if self._focus_assist_enabled else "Off")
         self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
         advanced_focus_visible = self._focus_assist_enabled
-        if getattr(self, "_studio_layout_active", False):
+        if getattr(self, "_studio_layout_active", False) and hasattr(self, "_studio_focus_enable"):
             # Studio: the segmented controls mirror the hidden legacy widgets
             # that carry the state; everything except the Enabled toggle grays
             # out when focus peaking is off instead of vanishing.
@@ -1730,10 +1856,11 @@ class FullScreenPreview(QDialog):
             self.focus_strength_row.setVisible(advanced_focus_visible)
             self.focus_background_row.setVisible(advanced_focus_visible)
 
-        self.focus_controls_summary_label.setText("On" if self._focus_assist_enabled else "Off")
+        if hasattr(self, "focus_controls_summary_label"):
+            self.focus_controls_summary_label.setText("On" if self._focus_assist_enabled else "Off")
         fits_controls_visible = self._focused_entry_supports_fits_stf()
         fits_reset_enabled = self._fits_display_settings.preset.id != FitsDisplaySettings().preset.id
-        if getattr(self, "_studio_layout_active", False):
+        if getattr(self, "_studio_layout_active", False) and hasattr(self, "fits_controls_card"):
             # Studio: the FITS card keeps its place in the rail (prototype
             # layout); its controls gray out for non-FITS images.
             self.fits_controls_card.setVisible(True)
@@ -1742,7 +1869,8 @@ class FullScreenPreview(QDialog):
         else:
             self.fits_controls_card.setVisible(fits_controls_visible)
             self.fits_reset_button.setEnabled(fits_reset_enabled)
-        self.fits_controls_summary_label.setText(self._fits_display_settings.preset.label)
+        if hasattr(self, "fits_controls_summary_label"):
+            self.fits_controls_summary_label.setText(self._fits_display_settings.preset.label)
         with QSignalBlocker(self.fits_stf_combo):
             fits_preset_index = self.fits_stf_combo.findData(self._fits_display_settings.preset.id)
             if fits_preset_index >= 0:
@@ -1921,6 +2049,7 @@ class FullScreenPreview(QDialog):
         self._pending_right_close = False
         self._edited_variant_index = 0
         self._rebuild_entries()
+        self._sync_editor_to_focused_entry()
         self._sync_preview_controls()
         fullscreen_reapplied = False
         window_activated = False
@@ -3044,10 +3173,99 @@ class FullScreenPreview(QDialog):
                 focus_assist=self._focus_assist_enabled,
             )
 
+    def _sync_editor_to_focused_entry(self) -> None:
+        panel = getattr(self, "photo_editor_panel", None)
+        if panel is None:
+            return
+        if not self._entries or not 0 <= self._focused_slot < len(self._entries):
+            panel.set_image(None)
+            return
+        panel.set_image(self._entries[self._focused_slot].source_path)
+
+    def _handle_editor_recipe_changed(self, recipe: EditRecipe) -> None:
+        self._editor_recipe = recipe
+        self._editor_recipe_version += 1
+        self._editor_preview_cache.clear()
+        self._focus_assist_cache.clear()
+        if (
+            0 <= self._focused_slot < len(self._rendered_display_keys)
+            and self._focused_slot < len(self._panes)
+        ):
+            self._rendered_display_keys[self._focused_slot] = None
+            self._render_pane(self._focused_slot)
+
+    def _handle_editor_status_changed(self, message: str) -> None:
+        if message and getattr(self, "_studio_layout_active", False):
+            self.info_label.setText(message)
+
+    def _handle_editor_sidecar_saved(self, path: str) -> None:
+        if getattr(self, "_studio_layout_active", False):
+            self.info_label.setText(f"Saved edit sidecar: {Path(path).name}")
+
+    def _editor_recipe_is_default(self) -> bool:
+        for value in asdict(self._editor_recipe).values():
+            if value not in (0, 0.0, None):
+                return False
+        return True
+
+    def _editor_masked_adjustments(self) -> list:
+        panel = getattr(self, "photo_editor_panel", None)
+        if panel is None:
+            return []
+        return panel.masked_adjustments()
+
+    def _editor_edits_active(self) -> bool:
+        return not self._editor_recipe_is_default() or bool(self._editor_masked_adjustments())
+
+    def _editor_image_for_slot(self, slot: int, image: QImage) -> QImage:
+        masked = self._editor_masked_adjustments()
+        if (
+            not 0 <= slot < len(self._entries)
+            or image.isNull()
+            or (self._editor_recipe_is_default() and not masked)
+        ):
+            return image
+        cache_key = (*self._image_cache_key(slot, image), "editor", self._editor_recipe_version)
+        cached = self._editor_preview_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            source = _pillow_from_qimage(image)
+            adjusted = self._editor_recipe.apply(source)
+            for components, source_size, mask_recipe in masked:
+                # Union strength field for the mask group, from the same
+                # linear-falloff math as the renderer; local adjustments
+                # composite on top of the global result, weighted per-pixel
+                # by group strength.
+                strength_q = mask_strength_qimage(
+                    components, adjusted.width, adjusted.height, source_size
+                )
+                if strength_q is None:
+                    continue
+                strength = PILImage.frombuffer(
+                    "L",
+                    (strength_q.width(), strength_q.height()),
+                    bytes(strength_q.constBits()),
+                    "raw",
+                    "L",
+                    strength_q.bytesPerLine(),
+                    1,
+                )
+                local = mask_recipe.apply(adjusted)
+                adjusted = PILImage.composite(local, adjusted, strength)
+            rendered = _qimage_from_pillow(adjusted, target_size=QSize())
+        except Exception as exc:
+            self._handle_editor_status_changed(f"Preview edit failed: {exc}")
+            return image
+        self._editor_preview_cache[cache_key] = rendered
+        return rendered
+
     def _display_image_for_slot(self, slot: int) -> QImage:
         if not 0 <= slot < len(self._current_images):
             return QImage()
         image = self._current_images[slot]
+        if slot == self._focused_slot:
+            image = self._editor_image_for_slot(slot, image)
         if image.isNull() or not self._focus_assist_enabled:
             return image
         cache_key = self._focus_assist_cache_key(slot, image)
@@ -3104,6 +3322,8 @@ class FullScreenPreview(QDialog):
 
     def _display_render_key(self, slot: int, image: QImage) -> tuple[object, ...]:
         base_key = self._image_cache_key(slot, image)
+        if slot == self._focused_slot and self._editor_edits_active():
+            base_key = (*base_key, "editor", self._editor_recipe_version)
         if not self._focus_assist_enabled:
             return (*base_key, "display")
         return (*self._focus_assist_cache_key(slot, image), "focus-assist")
@@ -3111,8 +3331,11 @@ class FullScreenPreview(QDialog):
     def _focus_assist_cache_key(
         self, slot: int, image: QImage
     ) -> tuple[object, ...]:
+        base_key = self._image_cache_key(slot, image)
+        if slot == self._focused_slot and self._editor_edits_active():
+            base_key = (*base_key, "editor", self._editor_recipe_version)
         return (
-            *self._image_cache_key(slot, image),
+            *base_key,
             self._focus_assist_color.id,
             self._focus_assist_strength.id,
             self._focus_assist_dim_background,
@@ -3133,6 +3356,8 @@ class FullScreenPreview(QDialog):
     def _update_studio_confidence(self, result) -> None:
         """Feed the gold confidence bar + number from the AI result's folder
         percentile (the same metric the grid badge shows)."""
+        if not hasattr(self, "_studio_confidence_bar") or not hasattr(self, "_studio_confidence_pct"):
+            return
         if result is None:
             self._studio_confidence_bar.set_pct(0)
             self._studio_confidence_pct.setText("--")
@@ -3639,6 +3864,8 @@ class FullScreenPreview(QDialog):
         if self._focused_slot == slot:
             return
         self._focused_slot = slot
+        self._sync_editor_to_focused_entry()
+        self._sync_mask_overlay()
         self._update_focus_styles()
         if getattr(self, "_studio_layout_active", False):
             # The Studio ring is painted on the photo pixmap, so moving focus

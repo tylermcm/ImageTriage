@@ -522,7 +522,8 @@ def _qimage_from_pillow(image, *, target_size: QSize) -> QImage:
 def _pillow_from_qimage(image: QImage):
     converted = image.convertToFormat(QImage.Format.Format_RGBA8888)
     buffer = converted.bits()
-    buffer.setsize(converted.sizeInBytes())
+    if hasattr(buffer, "setsize"):
+        buffer.setsize(converted.sizeInBytes())
     return Image.frombuffer(
         "RGBA",
         (converted.width(), converted.height()),
