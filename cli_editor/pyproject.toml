@@ -1,0 +1,15 @@
+[project]
+name = "terminal-photo-editor"
+version = "0.1.0"
+description = "Terminal-first raw-lite photo editing tools."
+requires-python = ">=3.9"
+dependencies = [
+  "Pillow>=10.0"
+]
+
+[project.scripts]
+photoedit = "photo_terminal.cli:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

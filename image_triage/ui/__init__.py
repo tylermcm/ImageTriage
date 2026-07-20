@@ -26,6 +26,7 @@ from .icons import build_pin_icon, build_symbol_icon, build_undo_icon
 from .keyboard_dialog import KeyboardShortcutDialog
 from .layout_state import clear_window_layout, restore_window_layout, save_window_layout
 from .menus import build_main_menu_bar
+from .photo_editor_panel import PhotoEditorPanel
 from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, TrainingSourcesDialog
 from .review_controls import ReviewControlsContext, ReviewControlsPanel
 from .resize_dialog import ResizeDialog
@@ -78,6 +79,7 @@ __all__ = [
     "save_shortcut_overrides",
     "PaletteCommand",
     "PagedHelpDialog",
+    "PhotoEditorPanel",
     "PrepareTrainingSourcesDialog",
     "ResizeDialog",
     "ReviewControlsContext",
