@@ -26,6 +26,16 @@ EDIT_DIRECTORIES = {
     "edits",
 }
 
+# Photo-editor bitmap masks live beside their source in directories such as
+# ``IMG_0001.edit-assets``. They are implementation data, not library photos.
+EDITOR_ASSET_DIR_SUFFIX = ".edit-assets"
+
+
+def is_editor_asset_path(path: str | Path) -> bool:
+    """Return whether ``path`` is inside an editor-generated asset directory."""
+    normalized_parts = str(path).replace("\\", "/").split("/")
+    return any(part.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX) for part in normalized_parts if part)
+
 
 @functools.lru_cache(maxsize=16384)
 def _normalize_filesystem_path_cached(raw: str) -> str:
@@ -91,6 +101,8 @@ def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[Ima
     except OSError:
         return records
     for entry in entries:
+        if entry.name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX):
+            continue
         try:
             if not entry.is_dir(follow_symlinks=False):
                 continue
@@ -127,6 +139,8 @@ def _is_hidden_directory_entry(entry: os.DirEntry[str], stat_result: os.stat_res
 
 def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     folder = normalize_filesystem_path(folder)
+    if is_editor_asset_path(folder):
+        return []
     folder_key = _path_key_fast(folder)
     root_files: list[ScannedFile] = []
     paired_jpegs: dict[str, list[ScannedFile]] = {}
@@ -528,4 +542,15 @@ class FolderScanTask(QRunnable):
                 return cached_records, "catalog"
         return None, ""
 
-__all__ = ["FolderScanTask", "discover_edited_paths", "ImageRecord", "normalize_filesystem_path", "normalized_path_key", "scan_child_folders", "scan_folder", "scan_folder_quick"]
+__all__ = [
+    "EDITOR_ASSET_DIR_SUFFIX",
+    "FolderScanTask",
+    "discover_edited_paths",
+    "ImageRecord",
+    "is_editor_asset_path",
+    "normalize_filesystem_path",
+    "normalized_path_key",
+    "scan_child_folders",
+    "scan_folder",
+    "scan_folder_quick",
+]

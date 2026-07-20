@@ -93,6 +93,26 @@ class LibraryStoreTests(unittest.TestCase):
         self.assertEqual(len(loaded_by_path), 1)
         self.assertEqual(next(iter(loaded_by_path.values())).name, "hero.jpg")
 
+    def test_catalog_excludes_editor_generated_mask_assets(self) -> None:
+        root = Path(self._temp_dir.name) / "library"
+        shoot = root / "shoot"
+        asset_dir = shoot / "portrait.edit-assets"
+        shoot.mkdir(parents=True)
+        asset_dir.mkdir()
+        source = shoot / "portrait.jpg"
+        mask = asset_dir / "mask-001.png"
+        source.write_bytes(b"source")
+        mask.write_bytes(b"mask")
+
+        store = LibraryStore()
+        store.add_catalog_root(str(root))
+        summary = store.refresh_catalog((str(root),))
+
+        self.assertEqual(1, summary.folder_count)
+        self.assertEqual(1, summary.record_count)
+        self.assertEqual([source.name], [record.name for record in store.search_catalog(root_path=str(root))])
+        self.assertEqual({}, store.load_catalog_records_for_paths((str(mask),)))
+
     def test_catalog_refresh_skips_unchanged_folders_and_updates_changed_folder(self) -> None:
         root = Path(self._temp_dir.name) / "library"
         day_one = root / "day_one"

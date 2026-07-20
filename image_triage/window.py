@@ -16580,7 +16580,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_folder(self) -> None:
         if self._current_folder:
-            self._load_folder(self._current_folder, force_refresh=True)
+            self._load_folder(
+                self._current_folder,
+                force_refresh=True,
+                preferred_record_path=self._current_visible_record_path(),
+            )
 
     def _rebuild_current_folder_catalog_cache(self) -> None:
         if self._scope_kind != "folder" or not self._current_folder:
@@ -16663,7 +16667,11 @@ class MainWindow(QMainWindow):
             return
         self._folder_watch_refresh_pending = False
         self.statusBar().showMessage(f"Refreshing changed folder: {self._current_folder}")
-        self._load_folder(self._current_folder, force_refresh=True)
+        self._load_folder(
+            self._current_folder,
+            force_refresh=True,
+            preferred_record_path=self._current_visible_record_path(),
+        )
 
     def _load_folder(
         self,

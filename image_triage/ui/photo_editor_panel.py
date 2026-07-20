@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
 )
 from PIL import Image
 
+from ..scanner import is_editor_asset_path
+
 
 _CLI_EDITOR_ROOT = Path(__file__).resolve().parents[2] / "cli_editor"
 if _CLI_EDITOR_ROOT.exists() and str(_CLI_EDITOR_ROOT) not in sys.path:
@@ -251,6 +253,8 @@ class PhotoEditorPanel(QFrame):
         self._pending_parent_id: str | None = None
         self._pending_combine: str = "add"
         self._brush_paint_mode: str | None = None
+        self._color_resample_mask_id: str | None = None
+        self._pending_range_mask_id: str | None = None
         self._updating_mask_controls = False
         self._overlay_suppressed_for_drag = False
         self._source_size_cache: tuple[Path, tuple[int, int]] | None = None
@@ -258,6 +262,10 @@ class PhotoEditorPanel(QFrame):
         self._mask_commit_timer.setSingleShot(True)
         self._mask_commit_timer.setInterval(400)
         self._mask_commit_timer.timeout.connect(self._flush_mask_commit)
+        self._range_update_timer = QTimer(self)
+        self._range_update_timer.setSingleShot(True)
+        self._range_update_timer.setInterval(160)
+        self._range_update_timer.timeout.connect(self._regenerate_selected_range_mask)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -305,6 +313,7 @@ class PhotoEditorPanel(QFrame):
         footer_layout.addWidget(self.status_label)
         root.addWidget(footer)
         self._sync_enabled()
+        self._sync_mask_controls(None)
 
     @property
     def recipe(self) -> EditRecipe:
@@ -447,6 +456,8 @@ class PhotoEditorPanel(QFrame):
 
     def _set_mask_tool(self, mode: str | None) -> None:
         self._mask_create_mode = mode
+        if mode != "color-range":
+            self._color_resample_mask_id = None
         with (
             QSignalBlocker(self.radial_tool_button),
             QSignalBlocker(self.linear_tool_button),
@@ -622,10 +633,15 @@ class PhotoEditorPanel(QFrame):
         self.mask_feather_spin = self._double_spin(selected_section, 0, 100, 50, decimals=1)
         self.mask_density_spin = self._double_spin(selected_section, 0, 100, 100, decimals=1)
         self.mask_invert_check = QCheckBox("Invert", selected_section)
-        self._mask_control_rows = [
-            self._slider_spin_row("Feather", self.mask_feather_spin, minimum=0, maximum=100, scale=10, parent=selected_section),
-            self._slider_spin_row("Density", self.mask_density_spin, minimum=0, maximum=100, scale=10, parent=selected_section),
-        ]
+        self.mask_feather_row = self._slider_spin_row(
+            "Shape Feather", self.mask_feather_spin,
+            minimum=0, maximum=100, scale=10, parent=selected_section,
+        )
+        self.mask_density_row = self._slider_spin_row(
+            "Density", self.mask_density_spin,
+            minimum=0, maximum=100, scale=10, parent=selected_section,
+        )
+        self._mask_control_rows = [self.mask_feather_row, self.mask_density_row]
         for row in self._mask_control_rows:
             selected_layout.addWidget(row)
         selected_layout.addWidget(self.mask_invert_check)
@@ -633,6 +649,50 @@ class PhotoEditorPanel(QFrame):
         self.mask_density_spin.valueChanged.connect(self._handle_mask_control_changed)
         self.mask_invert_check.toggled.connect(self._handle_mask_control_changed)
         layout.addWidget(selected_section)
+
+        range_section, range_layout = self._section("Range Mask", tab)
+        self.range_hint = QLabel(
+            "Select a luminance or color range mask to tune its selection.", range_section
+        )
+        self.range_hint.setObjectName("editorHint")
+        self.range_hint.setWordWrap(True)
+        range_layout.addWidget(self.range_hint)
+        self.range_sample_label = QLabel("", range_section)
+        self.range_sample_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.range_sample_label.setMinimumHeight(26)
+        range_layout.addWidget(self.range_sample_label)
+        self.range_low_spin = self._spin(range_section, 0, 255, 0)
+        self.range_high_spin = self._spin(range_section, 0, 255, 255)
+        self.range_tolerance_spin = self._spin(range_section, 1, 255, 45)
+        self.range_feather_spin = self._spin(range_section, 0, 255, 20)
+        self.range_low_row = self._slider_spin_row(
+            "Luminance Low", self.range_low_spin, minimum=0, maximum=255, parent=range_section
+        )
+        self.range_high_row = self._slider_spin_row(
+            "Luminance High", self.range_high_spin, minimum=0, maximum=255, parent=range_section
+        )
+        self.range_tolerance_row = self._slider_spin_row(
+            "Color Tolerance", self.range_tolerance_spin, minimum=1, maximum=255, parent=range_section
+        )
+        self.range_feather_row = self._slider_spin_row(
+            "Range Feather", self.range_feather_spin, minimum=0, maximum=255, parent=range_section
+        )
+        range_layout.addWidget(self.range_low_row)
+        range_layout.addWidget(self.range_high_row)
+        range_layout.addWidget(self.range_tolerance_row)
+        range_layout.addWidget(self.range_feather_row)
+        self.resample_color_button = self._action_button("Resample Color", range_section)
+        self.resample_color_button.setToolTip("Click, then sample a new color from the photo.")
+        self.resample_color_button.clicked.connect(self.resample_selected_color_range)
+        range_layout.addWidget(self.resample_color_button)
+        for spin in (
+            self.range_low_spin,
+            self.range_high_spin,
+            self.range_tolerance_spin,
+            self.range_feather_spin,
+        ):
+            spin.valueChanged.connect(self._handle_range_control_changed)
+        layout.addWidget(range_section)
 
         local_section, local_layout = self._section("Mask Adjustments", tab)
         local_hint = QLabel("Applied only inside the selected mask.", local_section)
@@ -660,8 +720,8 @@ class PhotoEditorPanel(QFrame):
         self.brush_flow_spin = self._spin(brush_section, 0, 100, 100)
         brush_layout.addWidget(self._slider_spin_row("Size", self.brush_size_spin, minimum=1, maximum=500, parent=brush_section))
         brush_layout.addWidget(self._slider_spin_row("Flow", self.brush_flow_spin, minimum=0, maximum=100, parent=brush_section))
-        self.auto_mask_check = QCheckBox("Auto Mask", brush_section)
-        brush_layout.addWidget(self.auto_mask_check)
+        self.brush_size_spin.valueChanged.connect(lambda _value: self.mask_overlay_changed.emit())
+        self.brush_flow_spin.valueChanged.connect(lambda _value: self.mask_overlay_changed.emit())
         brush_row = QHBoxLayout()
         add_brush_button = self._action_button("Add", brush_section)
         subtract_brush_button = self._action_button("Subtract", brush_section)
@@ -739,6 +799,11 @@ class PhotoEditorPanel(QFrame):
         return scroll
 
     def set_image(self, source_path: str | Path | None) -> None:
+        rejected_editor_asset = bool(source_path and is_editor_asset_path(source_path))
+        if rejected_editor_asset:
+            source_path = None
+        if self._range_update_timer.isActive():
+            self._regenerate_selected_range_mask()
         if self._mask_commit_timer.isActive():
             self._flush_mask_commit()
         self._pending_parent_id = None
@@ -748,11 +813,15 @@ class PhotoEditorPanel(QFrame):
             self._session_path = None
             self._session = None
             self._recipe = EditRecipe()
-            self.subtitle_label.setText("No image selected")
+            self.subtitle_label.setText(
+                "Generated mask asset" if rejected_editor_asset else "No image selected"
+            )
             self._sync_rows_from_recipe()
             self._sync_enabled()
             self._refresh_session_views()
             self.recipe_changed.emit(self._recipe)
+            if rejected_editor_asset:
+                self._set_status("Generated mask assets cannot be edited as source photos")
             return
 
         path = Path(source_path)
@@ -866,6 +935,8 @@ class PhotoEditorPanel(QFrame):
     def _ensure_session(self) -> tuple[Path, dict[str, Any]]:
         if self._source_path is None:
             raise SessionError("no image selected")
+        if self._range_update_timer.isActive():
+            self._regenerate_selected_range_mask()
         # Unsaved debounced mask edits must land before we reload from disk,
         # or the reload would silently revert them.
         if self._mask_commit_timer.isActive():
@@ -1278,10 +1349,15 @@ class PhotoEditorPanel(QFrame):
 
     def _sync_mask_controls(self, mask: dict[str, Any] | None) -> None:
         is_shape = mask is not None and mask.get("type") in self.MASK_SHAPE_TYPES
-        for row in self._mask_control_rows:
-            row.setEnabled(is_shape)
-        self.mask_invert_check.setEnabled(is_shape)
+        is_bitmap = mask is not None and mask.get("type") == "bitmap"
+        self.mask_feather_row.setEnabled(is_shape)
+        self.mask_density_row.setEnabled(is_shape or is_bitmap)
+        self.mask_invert_check.setEnabled(is_shape or is_bitmap)
         params = (mask or {}).get("params") or {}
+        style = str((mask or {}).get("uiStyle") or "")
+        is_luma_range = style == "luminance-range"
+        is_color_range = style == "color-range"
+        is_range = is_luma_range or is_color_range
         local_recipe = EditRecipe()
         if mask is not None and self._session is not None:
             local_recipe = recipe_for_mask(self._session, str(self._mask_root(mask).get("id")))
@@ -1292,21 +1368,53 @@ class PhotoEditorPanel(QFrame):
             self.mask_feather_spin.setValue(float(params.get("feather", 50.0)))
             self.mask_density_spin.setValue(float(params.get("density", 100.0)))
             self.mask_invert_check.setChecked(bool(params.get("invert", False)))
+            self.range_low_spin.setValue(int(params.get("low", 0)))
+            self.range_high_spin.setValue(int(params.get("high", 255)))
+            self.range_tolerance_spin.setValue(int(params.get("tolerance", 45)))
+            self.range_feather_spin.setValue(int(params.get("feather", 20 if is_luma_range else 35)))
             for key, row in self._mask_rows.items():
                 row.set_value(float(local_values.get(key) or 0.0))
                 row.setEnabled(has_mask)
         finally:
             self._updating_mask_controls = False
         self.reset_mask_adjustments_button.setEnabled(has_mask)
+        self.range_low_row.setVisible(is_luma_range)
+        self.range_high_row.setVisible(is_luma_range)
+        self.range_tolerance_row.setVisible(is_color_range)
+        self.range_feather_row.setVisible(is_range)
+        self.resample_color_button.setVisible(is_color_range)
+        self.range_sample_label.setVisible(is_color_range)
+        if is_color_range:
+            sample = list(params.get("sample") or (0, 0, 0))
+            if len(sample) == 3:
+                red, green, blue = (max(0, min(255, int(value))) for value in sample)
+                text_color = "#111111" if (red * 299 + green * 587 + blue * 114) >= 150000 else "#ffffff"
+                self.range_sample_label.setText(f"Sample  RGB {red}, {green}, {blue}")
+                self.range_sample_label.setStyleSheet(
+                    f"background: rgb({red}, {green}, {blue}); color: {text_color}; "
+                    "border: 1px solid #555555; border-radius: 3px; font-weight: 600;"
+                )
+        else:
+            self.range_sample_label.clear()
+            self.range_sample_label.setStyleSheet("")
+        self.range_hint.setText(
+            "Tune the tonal band selected by this luminance mask."
+            if is_luma_range else
+            "Tune the sampled color distance, or resample directly from the photo."
+            if is_color_range else
+            "Select a luminance or color range mask to tune its selection."
+        )
+        self.range_hint.setEnabled(is_range)
 
     def _handle_mask_control_changed(self, *_args) -> None:
         if self._updating_mask_controls:
             return
         mask = self._selected_mask_dict()
-        if mask is None or mask.get("type") not in self.MASK_SHAPE_TYPES:
+        if mask is None or mask.get("type") not in (*self.MASK_SHAPE_TYPES, "bitmap"):
             return
         params = mask.setdefault("params", {})
-        params["feather"] = round(self.mask_feather_spin.value(), 1)
+        if mask.get("type") in self.MASK_SHAPE_TYPES:
+            params["feather"] = round(self.mask_feather_spin.value(), 1)
         params["density"] = round(self.mask_density_spin.value(), 1)
         params["invert"] = self.mask_invert_check.isChecked()
         self.mask_overlay_changed.emit()
@@ -1314,6 +1422,82 @@ class PhotoEditorPanel(QFrame):
             # Geometry affects where local adjustments land — recomposite live.
             self.recipe_changed.emit(self._recipe)
         self._mask_commit_timer.start()
+
+    def _handle_range_control_changed(self, *_args) -> None:
+        if self._updating_mask_controls:
+            return
+        mask = self._selected_mask_dict()
+        if mask is None or mask.get("type") != "bitmap":
+            return
+        style = str(mask.get("uiStyle") or "")
+        if style not in ("luminance-range", "color-range"):
+            return
+        params = mask.setdefault("params", {})
+        if style == "luminance-range":
+            low = self.range_low_spin.value()
+            high = self.range_high_spin.value()
+            if low >= high:
+                if self.sender() is self.range_low_spin:
+                    high = min(255, low + 1)
+                    if high == low:
+                        low = high - 1
+                else:
+                    low = max(0, high - 1)
+                    if low == high:
+                        high = low + 1
+                with QSignalBlocker(self.range_low_spin), QSignalBlocker(self.range_high_spin):
+                    self.range_low_spin.setValue(low)
+                    self.range_high_spin.setValue(high)
+            params["low"] = low
+            params["high"] = high
+        else:
+            params["tolerance"] = self.range_tolerance_spin.value()
+        params["feather"] = self.range_feather_spin.value()
+        self._pending_range_mask_id = str(mask.get("id"))
+        self._range_update_timer.start()
+
+    def _regenerate_selected_range_mask(self) -> None:
+        self._range_update_timer.stop()
+        mask_id = self._pending_range_mask_id
+        self._pending_range_mask_id = None
+        mask = self._mask_by_id(mask_id)
+        if mask is None or self._source_path is None or self._session is None:
+            return
+        style = str(mask.get("uiStyle") or "")
+        params = mask.get("params") or {}
+        if style not in ("luminance-range", "color-range"):
+            return
+        try:
+            with open_image(self._source_path) as image:
+                base = Image.new("L", image.size, 255)
+                if style == "luminance-range":
+                    rendered = refine_luminance_range(
+                        image,
+                        base,
+                        int(params.get("low", 0)),
+                        int(params.get("high", 255)),
+                        feather=int(params.get("feather", 20)),
+                        invert=False,
+                    )
+                else:
+                    sample = tuple(int(value) for value in params.get("sample", (0, 0, 0)))
+                    if len(sample) != 3:
+                        raise SessionError("color range sample is missing")
+                    rendered = refine_color_range(
+                        image,
+                        base,
+                        sample,
+                        tolerance=int(params.get("tolerance", 45)),
+                        feather=int(params.get("feather", 35)),
+                        invert=False,
+                    )
+            asset_path = self._bitmap_asset_path(mask)
+            if asset_path is None:
+                raise SessionError("bitmap asset missing")
+            rendered.save(asset_path)
+            self._write_session(self._session, "Updated range mask")
+        except Exception as exc:
+            self._set_status(f"Range mask update failed: {exc}")
 
     def _mask_has_local_adjustments(self, mask: dict[str, Any] | None) -> bool:
         if mask is None or self._session is None:
@@ -1533,30 +1717,50 @@ class PhotoEditorPanel(QFrame):
         try:
             if self._source_path is None:
                 raise SessionError("no image selected")
+            low = self.range_low_spin.value()
+            high = self.range_high_spin.value()
+            feather = self.range_feather_spin.value()
             with open_image(self._source_path) as image:
                 base = Image.new("L", image.size, 255)
                 mask = refine_luminance_range(
                     image,
                     base,
-                    self.refine_low_spin.value(),
-                    self.refine_high_spin.value(),
-                    feather=20,
+                    low,
+                    high,
+                    feather=feather,
                     invert=False,
                 )
             self._create_bitmap_mask(
                 mask,
                 style="luminance-range",
-                params={"low": self.refine_low_spin.value(), "high": self.refine_high_spin.value(), "feather": 20},
+                params={
+                    "low": low,
+                    "high": high,
+                    "feather": feather,
+                    "density": 100.0,
+                    "invert": False,
+                },
                 message="Created luminance range mask",
             )
         except Exception as exc:
             self._set_status(f"Luminance mask failed: {exc}")
 
     def arm_color_range_mask(self) -> None:
+        self._color_resample_mask_id = None
         self._pending_parent_id = None
         self._pending_combine = "add"
         self._brush_paint_mode = None
         self._set_mask_tool("color-range")
+
+    def resample_selected_color_range(self) -> None:
+        mask = self._selected_mask_dict()
+        if mask is None or mask.get("uiStyle") != "color-range":
+            self._set_status("Select a color range mask first")
+            return
+        self._color_resample_mask_id = str(mask.get("id"))
+        self._brush_paint_mode = None
+        self._set_mask_tool("color-range")
+        self._set_status("Click the photo to sample a new color")
 
     def add_color_range_mask(self) -> None:
         self.arm_color_range_mask()
@@ -1574,21 +1778,43 @@ class PhotoEditorPanel(QFrame):
                     max(0, min(rgb.height - 1, int(round(y)))),
                 )
                 sample = rgb.getpixel(sample_xy)
-                base = Image.new("L", rgb.size, 255)
-                mask = refine_color_range(
-                    rgb,
-                    base,
-                    sample,
-                    tolerance=45,
-                    feather=35,
-                    invert=False,
+                target = self._mask_by_id(self._color_resample_mask_id)
+                tolerance = (
+                    int((target.get("params") or {}).get("tolerance", 45))
+                    if target is not None else self.range_tolerance_spin.value()
                 )
-            self._create_bitmap_mask(
-                mask,
-                style="color-range",
-                params={"sample": list(sample), "x": sample_xy[0], "y": sample_xy[1], "tolerance": 45, "feather": 35},
-                message="Created color range mask",
-            )
+                feather = (
+                    int((target.get("params") or {}).get("feather", 35))
+                    if target is not None else self.range_feather_spin.value()
+                )
+                base = Image.new("L", rgb.size, 255)
+                rendered = refine_color_range(
+                    rgb, base, sample, tolerance=tolerance, feather=feather, invert=False
+                )
+            if target is not None:
+                params = target.setdefault("params", {})
+                params.update({"sample": list(sample), "x": sample_xy[0], "y": sample_xy[1]})
+                asset_path = self._bitmap_asset_path(target)
+                if asset_path is None:
+                    raise SessionError("bitmap asset missing")
+                rendered.save(asset_path)
+                self._write_session(self._session, "Resampled color range mask")
+            else:
+                self._create_bitmap_mask(
+                    rendered,
+                    style="color-range",
+                    params={
+                        "sample": list(sample),
+                        "x": sample_xy[0],
+                        "y": sample_xy[1],
+                        "tolerance": tolerance,
+                        "feather": feather,
+                        "density": 100.0,
+                        "invert": False,
+                    },
+                    message="Created color range mask",
+                )
+            self._color_resample_mask_id = None
             self._set_mask_tool(None)
         except Exception as exc:
             self._set_status(f"Color mask failed: {exc}")

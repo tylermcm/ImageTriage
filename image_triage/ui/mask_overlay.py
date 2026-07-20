@@ -12,13 +12,13 @@ is emitted in source-image pixel coordinates, matching the session's
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
-    QPainterPath,
     QLinearGradient,
     QPainter,
     QPen,
@@ -37,6 +37,43 @@ STRENGTH_CACHE_EDGE = 2048
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def paint_brush_stroke(
+    image: QImage,
+    start: QPointF,
+    end: QPointF,
+    *,
+    size: float,
+    flow: int,
+    mode: str,
+) -> None:
+    """Paint one continuous source-space brush segment into a grayscale mask."""
+    if image.isNull() or flow <= 0 or mode not in ("add", "subtract"):
+        return
+    amount = max(0, min(255, int(round(255 * flow / 100.0))))
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if mode == "add":
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        color = QColor(amount, amount, amount)
+    else:
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        color = QColor(0, 0, 0, amount)
+    painter.setPen(
+        QPen(
+            color,
+            max(1.0, float(size)),
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+    )
+    if (end - start).manhattanLength() < 0.01:
+        painter.drawPoint(start)
+    else:
+        painter.drawLine(start, end)
+    painter.end()
 
 
 def _paint_component_gray(
@@ -220,6 +257,7 @@ class MaskOverlay(QWidget):
         self._interactive = False
         self._show_overlay = True
         self._drag: dict[str, Any] | None = None
+        self._hover_pos: QPointF | None = None
         self._strength_cache: QImage | None = None
         self._strength_cache_key: tuple | None = None
         self._watched: QWidget | None = None
@@ -331,7 +369,7 @@ class MaskOverlay(QWidget):
         return pos.x() / scales[0], pos.y() / scales[1]
 
     # -- painting -------------------------------------------------------------
-    def _effective_components(self) -> list[tuple[str, dict[str, Any]]]:
+    def _effective_components(self) -> list[tuple[str, dict[str, Any], str]]:
         """Group components with the selected component's live (possibly
         mid-drag) params substituted in; an in-progress create is appended."""
         components = [(t, dict(p), c) for t, p, c in self._components]
@@ -380,12 +418,19 @@ class MaskOverlay(QWidget):
             return None
 
         def freeze(params: dict[str, Any]) -> tuple:
-            return tuple(
+            frozen = list(
                 sorted(
                     (k, round(float(v), 3) if isinstance(v, (int, float)) else str(v))
                     for k, v in params.items()
                 )
             )
+            asset_path = str(params.get("assetPath") or params.get("path") or "")
+            if asset_path:
+                try:
+                    frozen.append(("_assetMtimeNs", Path(asset_path).stat().st_mtime_ns))
+                except OSError:
+                    frozen.append(("_assetMtimeNs", None))
+            return tuple(frozen)
 
         key = (
             tuple((t, freeze(p), c) for t, p, c in components),
@@ -488,15 +533,19 @@ class MaskOverlay(QWidget):
         painter.drawEllipse(end, 4.0, 4.0)
 
     def _paint_brush_cursor(self, painter: QPainter) -> None:
-        if self._drag is None or "pos" not in self._drag:
+        pos = self._drag.get("pos") if self._drag is not None else self._hover_pos
+        if pos is None:
             return
-        pos = self._drag["pos"]
-        radius = max(2.0, self._brush_size / 2.0)
+        scales = self._scales()
+        if scales is None:
+            return
+        radius_x = max(2.0, self._brush_size * scales[0] / 2.0)
+        radius_y = max(2.0, self._brush_size * scales[1] / 2.0)
         halo, line = self._handle_pen()
         for pen in (halo, line):
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(pos, radius, radius)
+            painter.drawEllipse(pos, radius_x, radius_y)
 
     # -- geometry helpers -----------------------------------------------------
     def _radial_display_parts(self) -> dict[str, Any] | None:
@@ -599,7 +648,8 @@ class MaskOverlay(QWidget):
         if mode == "move" and self._create_mode is not None:
             mode = None
         if self._mask_type == "bitmap" and self._brush_mode is not None and self._bitmap_image is not None:
-            self._drag = {"mode": "brush", "pos": pos}
+            source_pos = QPointF(*self._to_source(pos))
+            self._drag = {"mode": "brush", "pos": pos, "last_src": source_pos}
             self._paint_bitmap_at(pos)
             event.accept()
             return
@@ -642,7 +692,9 @@ class MaskOverlay(QWidget):
         pos = QPointF(event.position())
         if self._drag is None:
             if self._interactive:
+                self._hover_pos = pos
                 self._update_hover_cursor(pos)
+                self.update()
             event.ignore()
             return
         self._apply_drag(pos)
@@ -658,8 +710,14 @@ class MaskOverlay(QWidget):
             event.ignore()
             return
         drag = self._drag
+        release_pos = QPointF(event.position())
+        last_pos = drag.get("pos")
+        if drag.get("mode") != "brush" or not isinstance(last_pos, QPointF) or (
+            release_pos - last_pos
+        ).manhattanLength() >= 0.01:
+            self._apply_drag(release_pos)
+        self._hover_pos = release_pos
         self._drag = None
-        self._apply_drag(QPointF(event.position()))
         self.update()
         if drag["mode"] == "create" and self._params is not None:
             self.mask_created.emit(self._mask_type or "radial", dict(self._params))
@@ -669,6 +727,11 @@ class MaskOverlay(QWidget):
             self.mask_edited.emit(dict(self._params))
             self.edit_committed.emit()
         event.accept()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._hover_pos = None
+        self.update()
+        super().leaveEvent(event)
 
     def _apply_drag(self, pos: QPointF) -> None:
         if self._drag is None or self._params is None:
@@ -763,20 +826,16 @@ class MaskOverlay(QWidget):
     def _paint_bitmap_at(self, pos: QPointF) -> None:
         if self._bitmap_image is None or self._source_size is None:
             return
-        sx, sy = self._to_source(pos)
-        radius = max(1.0, self._brush_size / 2.0)
-        value = int(round(255 * (self._brush_flow / 100.0)))
-        if self._brush_mode == "subtract":
-            value = -value
-        painter = QPainter(self._bitmap_image)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        path = QPainterPath()
-        path.addEllipse(QPointF(sx, sy), radius, radius)
-        if value >= 0:
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-            painter.fillPath(path, QColor(value, value, value))
-        else:
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-            painter.fillPath(path, QColor(0, 0, 0, min(255, abs(value))))
-        painter.end()
+        current = QPointF(*self._to_source(pos))
+        previous = current
+        if self._drag is not None and isinstance(self._drag.get("last_src"), QPointF):
+            previous = self._drag["last_src"]
+            self._drag["last_src"] = current
+        paint_brush_stroke(
+            self._bitmap_image,
+            previous,
+            current,
+            size=self._brush_size,
+            flow=self._brush_flow,
+            mode=self._brush_mode or "add",
+        )
