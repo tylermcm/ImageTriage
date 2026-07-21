@@ -108,6 +108,22 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual({primary_fits.name, compressed_fits.name}, {record.name for record in records})
             self.assertEqual(_path_set((primary_fits, compressed_fits)), _path_set(record.path for record in records))
 
+    def test_scan_folder_ignores_macos_appledouble_image_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            photo = root / "DSC_8499.JPG"
+            raw = root / "DSC_7758.NEF"
+            apple_double_jpeg = root / "._DSC_8499.JPG"
+            apple_double_raw = root / "._DSC_7758.NEF"
+            for path in (photo, raw, apple_double_jpeg, apple_double_raw):
+                _write_image(path)
+
+            records = scan_folder(str(root))
+
+            self.assertEqual({photo.name, raw.name}, {record.name for record in records})
+            self.assertNotIn(apple_double_jpeg.name, {record.name for record in records})
+            self.assertNotIn(apple_double_raw.name, {record.name for record in records})
+
     def test_scan_child_folders_returns_folder_records(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
             root = Path(temp_dir)
@@ -136,6 +152,23 @@ class ScannerTests(unittest.TestCase):
 
             self.assertEqual(["Visible"], [record.name for record in default_records])
             self.assertEqual([".image_triage_ai", "Visible"], [record.name for record in visible_records])
+
+    def test_os_and_nas_metadata_directories_are_never_scanned(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            visible = root / "Visible"
+            ignored = [root / "@eaDir", root / "__MACOSX", root / ".thumbnails", root / "$RECYCLE.BIN"]
+            visible.mkdir()
+            for directory in ignored:
+                directory.mkdir()
+                _write_image(directory / "cached-thumbnail.jpg")
+
+            child_records = scan_child_folders(str(root), include_hidden=True)
+
+            self.assertEqual([visible.name], [record.name for record in child_records])
+            for directory in ignored:
+                with self.subTest(directory=directory.name):
+                    self.assertEqual([], scan_folder(str(directory)))
 
     def test_editor_mask_assets_are_never_scanned_as_photos_or_folders(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:

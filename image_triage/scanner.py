@@ -11,7 +11,17 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from .catalog import CatalogRepository, catalog_cache_enabled
-from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, ROOT_PRIMARY_PRIORITY, suffix_for_path
+from .formats import (
+    EDIT_PRIORITY,
+    EDIT_SUFFIXES,
+    IMAGE_SUFFIXES,
+    JPEG_SUFFIXES,
+    RAW_SUFFIXES,
+    ROOT_PRIMARY_PRIORITY,
+    is_appledouble_path,
+    is_image_file_candidate,
+    suffix_for_path,
+)
 from .models import ImageRecord, ImageVariant, SortMode, sort_records
 from .perf import perf_logger
 
@@ -30,11 +40,44 @@ EDIT_DIRECTORIES = {
 # ``IMG_0001.edit-assets``. They are implementation data, not library photos.
 EDITOR_ASSET_DIR_SUFFIX = ".edit-assets"
 
+IGNORED_SYSTEM_DIRECTORY_NAMES = frozenset(
+    {
+        "$recycle.bin",
+        "#recycle",
+        "@eadir",
+        "@recycle",
+        "__macosx",
+        ".apdisk",
+        ".appledb",
+        ".appledesktop",
+        ".appledouble",
+        ".cache",
+        ".documentrevisions-v100",
+        ".fseventsd",
+        ".spotlight-v100",
+        ".temporaryitems",
+        ".thumbnails",
+        ".trashes",
+        "lost+found",
+        "network trash folder",
+        "recycler",
+        "system volume information",
+        "temporary items",
+    }
+)
+
 
 def is_editor_asset_path(path: str | Path) -> bool:
     """Return whether ``path`` is inside an editor-generated asset directory."""
     normalized_parts = str(path).replace("\\", "/").split("/")
     return any(part.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX) for part in normalized_parts if part)
+
+
+def is_ignored_system_directory(path: str | Path) -> bool:
+    """Return whether a directory is OS or NAS implementation data."""
+
+    name = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
+    return name in IGNORED_SYSTEM_DIRECTORY_NAMES or name.startswith(".trash-")
 
 
 @functools.lru_cache(maxsize=16384)
@@ -101,7 +144,7 @@ def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[Ima
     except OSError:
         return records
     for entry in entries:
-        if entry.name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX):
+        if entry.name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX) or is_ignored_system_directory(entry.name):
             continue
         try:
             if not entry.is_dir(follow_symlinks=False):
@@ -139,7 +182,7 @@ def _is_hidden_directory_entry(entry: os.DirEntry[str], stat_result: os.stat_res
 
 def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     folder = normalize_filesystem_path(folder)
-    if is_editor_asset_path(folder):
+    if is_editor_asset_path(folder) or is_ignored_system_directory(folder):
         return []
     folder_key = _path_key_fast(folder)
     root_files: list[ScannedFile] = []
@@ -148,13 +191,14 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
 
     with os.scandir(folder) as entries:
         for entry in entries:
-            suffix = suffix_for_path(entry.name)
-            if suffix in IMAGE_SUFFIXES:
+            if is_image_file_candidate(entry.name):
                 scanned = to_scanned_file(entry, IMAGE_SUFFIXES, include_stat=include_stat, parent_folder=folder)
                 if scanned is not None:
                     root_files.append(scanned)
                 continue
             if not entry.is_dir(follow_symlinks=False):
+                continue
+            if is_ignored_system_directory(entry.name):
                 continue
 
             child_folder = os.path.normpath(os.path.join(folder, entry.name))
@@ -409,6 +453,8 @@ def to_scanned_file(
     include_stat: bool = True,
     parent_folder: str | None = None,
 ) -> ScannedFile | None:
+    if is_appledouble_path(entry.name):
+        return None
     suffix = suffix_for_path(entry.name)
     if suffix not in allowed_suffixes:
         return None
@@ -544,10 +590,12 @@ class FolderScanTask(QRunnable):
 
 __all__ = [
     "EDITOR_ASSET_DIR_SUFFIX",
+    "IGNORED_SYSTEM_DIRECTORY_NAMES",
     "FolderScanTask",
     "discover_edited_paths",
     "ImageRecord",
     "is_editor_asset_path",
+    "is_ignored_system_directory",
     "normalize_filesystem_path",
     "normalized_path_key",
     "scan_child_folders",

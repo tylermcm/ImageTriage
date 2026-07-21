@@ -54,6 +54,10 @@ class ThumbnailDecodeGuardTests(unittest.TestCase):
             sanitize_display_error("this is not a PSD or PSB file", path="bad.psd"),
             "Could not decode PSD composite.",
         )
+        self.assertEqual(
+            sanitize_display_error("b'Unsupported file format or not RAW file'", path="bad.nef"),
+            "File is not a valid RAW image.",
+        )
 
     def test_placeholder_thumbnail_is_rendered_image(self) -> None:
         image = _placeholder_thumbnail("example.psd", QSize(240, 180), "Large PSD placeholder")

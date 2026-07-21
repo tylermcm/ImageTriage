@@ -3183,16 +3183,23 @@ class FullScreenPreview(QDialog):
         panel.set_image(self._entries[self._focused_slot].source_path)
 
     def _handle_editor_recipe_changed(self, recipe: EditRecipe) -> None:
-        self._editor_recipe = recipe
-        self._editor_recipe_version += 1
-        self._editor_preview_cache.clear()
-        self._focus_assist_cache.clear()
-        if (
-            0 <= self._focused_slot < len(self._rendered_display_keys)
-            and self._focused_slot < len(self._panes)
+        logger = perf_logger()
+        with logger.span(
+            "editslider.recipe_changed",
+            slot=self._focused_slot,
+            version=self._editor_recipe_version + 1,
         ):
-            self._rendered_display_keys[self._focused_slot] = None
-            self._render_pane(self._focused_slot)
+            self._editor_recipe = recipe
+            self._editor_recipe_version += 1
+            self._editor_preview_cache.clear()
+            self._focus_assist_cache.clear()
+            if (
+                0 <= self._focused_slot < len(self._rendered_display_keys)
+                and self._focused_slot < len(self._panes)
+            ):
+                self._rendered_display_keys[self._focused_slot] = None
+                with logger.span("editslider.render_pane", slot=self._focused_slot):
+                    self._render_pane(self._focused_slot)
 
     def _handle_editor_status_changed(self, message: str) -> None:
         if message and getattr(self, "_studio_layout_active", False):
@@ -3225,35 +3232,62 @@ class FullScreenPreview(QDialog):
             or (self._editor_recipe_is_default() and not masked)
         ):
             return image
+        logger = perf_logger()
         cache_key = (*self._image_cache_key(slot, image), "editor", self._editor_recipe_version)
         cached = self._editor_preview_cache.get(cache_key)
         if cached is not None:
+            logger.log(
+                "editslider.render_image_cache_hit",
+                slot=slot,
+                w=image.width(),
+                h=image.height(),
+            )
             return cached
         try:
-            source = _pillow_from_qimage(image)
-            adjusted = self._editor_recipe.apply(source)
-            for components, source_size, mask_recipe in masked:
-                # Union strength field for the mask group, from the same
-                # linear-falloff math as the renderer; local adjustments
-                # composite on top of the global result, weighted per-pixel
-                # by group strength.
-                strength_q = mask_strength_qimage(
-                    components, adjusted.width, adjusted.height, source_size
-                )
-                if strength_q is None:
-                    continue
-                strength = PILImage.frombuffer(
-                    "L",
-                    (strength_q.width(), strength_q.height()),
-                    bytes(strength_q.constBits()),
-                    "raw",
-                    "L",
-                    strength_q.bytesPerLine(),
-                    1,
-                )
-                local = mask_recipe.apply(adjusted)
-                adjusted = PILImage.composite(local, adjusted, strength)
-            rendered = _qimage_from_pillow(adjusted, target_size=QSize())
+            with logger.span(
+                "editslider.render_image",
+                slot=slot,
+                w=image.width(),
+                h=image.height(),
+                masks=len(masked),
+                version=self._editor_recipe_version,
+            ):
+                with logger.span("editslider.qimage_to_pil", w=image.width(), h=image.height()):
+                    source = _pillow_from_qimage(image)
+                with logger.span("editslider.recipe_apply"):
+                    adjusted = self._editor_recipe.apply(source)
+                for group_index, (components, source_size, mask_recipe) in enumerate(masked):
+                    # Union strength field for the mask group, from the same
+                    # linear-falloff math as the renderer; local adjustments
+                    # composite on top of the global result, weighted per-pixel
+                    # by group strength.
+                    with logger.span(
+                        "editslider.mask_strength",
+                        group=group_index,
+                        components=len(components),
+                        w=adjusted.width,
+                        h=adjusted.height,
+                    ):
+                        strength_q = mask_strength_qimage(
+                            components, adjusted.width, adjusted.height, source_size
+                        )
+                    if strength_q is None:
+                        continue
+                    strength = PILImage.frombuffer(
+                        "L",
+                        (strength_q.width(), strength_q.height()),
+                        bytes(strength_q.constBits()),
+                        "raw",
+                        "L",
+                        strength_q.bytesPerLine(),
+                        1,
+                    )
+                    with logger.span("editslider.mask_recipe_apply", group=group_index):
+                        local = mask_recipe.apply(adjusted)
+                    with logger.span("editslider.mask_composite", group=group_index):
+                        adjusted = PILImage.composite(local, adjusted, strength)
+                with logger.span("editslider.pil_to_qimage", w=adjusted.width, h=adjusted.height):
+                    rendered = _qimage_from_pillow(adjusted, target_size=QSize())
         except Exception as exc:
             self._handle_editor_status_changed(f"Preview edit failed: {exc}")
             return image

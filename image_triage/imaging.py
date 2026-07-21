@@ -16,7 +16,16 @@ from .fits_support import (
     load_basic_fits_image,
     normalize_basic_fits_array,
 )
-from .formats import JPEG_SUFFIXES, FITS_SUFFIXES, MODEL_SUFFIXES, PILLOW_FALLBACK_SUFFIXES, PSD_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import (
+    FITS_SUFFIXES,
+    JPEG_SUFFIXES,
+    MODEL_SUFFIXES,
+    PILLOW_FALLBACK_SUFFIXES,
+    PSD_SUFFIXES,
+    RAW_SUFFIXES,
+    is_appledouble_path,
+    suffix_for_path,
+)
 from .perf import perf_logger
 from .plugins import DisplayLoadRequest, register_display_provider, resolve_display_provider
 from .raw_embedded_jpeg import extract_embedded_jpeg
@@ -209,6 +218,8 @@ def load_image_for_display(
     prefer_embedded: bool,
     fits_display_settings: FitsDisplaySettings | None = None,
 ):
+    if is_appledouble_path(path):
+        return QImage(), "macOS metadata sidecar; not an image file."
     request = DisplayLoadRequest(
         path=path,
         suffix=suffix_for_path(path),
@@ -301,6 +312,8 @@ def sanitize_display_error(message: str | None, *, path: str = "") -> str:
         return "Could not decode PSD composite."
     if "cannot identify image file" in lowered:
         return "Could not decode image."
+    if "unsupported file format or not raw file" in lowered:
+        return "File is not a valid RAW image."
     if "truncated" in lowered or "broken data stream" in lowered:
         return "Image file appears incomplete or corrupt."
     if "permission" in lowered or "access is denied" in lowered:
@@ -311,6 +324,8 @@ def sanitize_display_error(message: str | None, *, path: str = "") -> str:
 
 
 def load_image_for_resize(path: str, *, target_size: QSize | None = None, ignore_orientation: bool = False) -> tuple[QImage, str | None]:
+    if is_appledouble_path(path):
+        return QImage(), "macOS metadata sidecar; not an image file."
     suffix = suffix_for_path(path)
     requested_size = target_size if target_size is not None and _has_target(target_size) else QSize()
     if suffix in MODEL_SUFFIXES:

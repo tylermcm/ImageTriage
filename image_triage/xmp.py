@@ -6,6 +6,7 @@ from tempfile import NamedTemporaryFile
 from xml.etree import ElementTree as ET
 
 from .formats import RAW_SUFFIXES, suffix_for_path
+from .mac_media import existing_mac_sidecar_paths
 from .models import ImageRecord, SessionAnnotation
 
 X_NS = "adobe:ns:meta/"
@@ -82,7 +83,16 @@ def existing_sidecar_paths(image_path: str) -> tuple[str, ...]:
 
 
 def sidecar_bundle_paths(record: ImageRecord) -> tuple[str, ...]:
-    return existing_sidecar_paths(record.path)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for image_path in record.stack_paths:
+        for candidate in (*existing_sidecar_paths(image_path), *existing_mac_sidecar_paths(image_path)):
+            key = os.path.normcase(os.path.normpath(candidate))
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(candidate)
+    return tuple(ordered)
 
 
 def _read_single_sidecar(sidecar_path: str) -> SessionAnnotation:
@@ -151,19 +161,25 @@ def _sidecar_candidates(image_path: str) -> tuple[str, ...]:
     normalized = os.path.normpath(image_path)
     source = Path(normalized)
     suffix = suffix_for_path(normalized)
-    collapsed = os.path.normpath(str(source.with_suffix(".xmp")))
-    appended = os.path.normpath(f"{normalized}.xmp")
+    collapsed = (
+        os.path.normpath(str(source.with_suffix(".xmp"))),
+        os.path.normpath(str(source.with_suffix(".XMP"))),
+    )
+    appended = (
+        os.path.normpath(f"{normalized}.xmp"),
+        os.path.normpath(f"{normalized}.XMP"),
+    )
 
     ordered: list[str] = []
     if suffix in RAW_SUFFIXES:
-        ordered.extend([collapsed, appended])
+        ordered.extend([*collapsed, *appended])
     else:
-        ordered.extend([appended, collapsed])
+        ordered.extend([*appended, *collapsed])
 
     deduped: list[str] = []
     seen: set[str] = set()
     for candidate in ordered:
-        key = candidate.casefold()
+        key = candidate
         if key in seen:
             continue
         seen.add(key)

@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..formats import is_image_file_candidate
 from ..models import ImageRecord, ImageVariant
 from ..perf import perf_logger
 from .db import connect_catalog_db, default_catalog_db_path
@@ -226,6 +227,8 @@ class CatalogRepository:
         records: list[ImageRecord] = []
         for row in record_rows:
             record_path = str(row["record_path"])
+            if not is_image_file_candidate(record_path):
+                continue
             companion_rows = member_paths.get((record_path, "companion"), [])
             edit_rows = member_paths.get((record_path, "edit"), [])
             variant_rows = member_paths.get((record_path, "variant"), [])
@@ -235,8 +238,16 @@ class CatalogRepository:
                     name=str(row["name"]),
                     size=int(row["size"]),
                     modified_ns=int(row["modified_ns"]),
-                    companion_paths=tuple(str(member["member_path"]) for member in companion_rows),
-                    edited_paths=tuple(str(member["member_path"]) for member in edit_rows),
+                    companion_paths=tuple(
+                        str(member["member_path"])
+                        for member in companion_rows
+                        if is_image_file_candidate(str(member["member_path"]))
+                    ),
+                    edited_paths=tuple(
+                        str(member["member_path"])
+                        for member in edit_rows
+                        if is_image_file_candidate(str(member["member_path"]))
+                    ),
                     variants=tuple(
                         ImageVariant(
                             path=str(member["member_path"]),
@@ -245,6 +256,7 @@ class CatalogRepository:
                             modified_ns=int(member["member_modified_ns"]),
                         )
                         for member in variant_rows
+                        if is_image_file_candidate(str(member["member_path"]))
                     ),
                 )
             )
@@ -271,6 +283,7 @@ class CatalogRepository:
         start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
         folder_key = _normalized_path_key(folder_path)
+        records = [record for record in records if is_image_file_candidate(record.path)]
         try:
             with closing(connect_catalog_db(self.db_path)) as connection:
                 apply_catalog_migrations(connection)

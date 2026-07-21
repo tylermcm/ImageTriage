@@ -177,9 +177,28 @@ ROOT_PRIMARY_PRIORITY = {
 }
 
 
-def suffix_for_path(path: str) -> str:
-    lowered = os.path.basename(path).casefold()
+def _portable_basename(path: str | os.PathLike[str]) -> str:
+    """Return a filename from either Windows- or POSIX-style path text."""
+
+    return os.fspath(path).replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def suffix_for_path(path: str | os.PathLike[str]) -> str:
+    lowered = _portable_basename(path).casefold()
     for suffix in COMPOSITE_SUFFIXES:
         if lowered.endswith(suffix):
             return suffix
     return os.path.splitext(lowered)[1]
+
+
+def is_appledouble_path(path: str | os.PathLike[str]) -> bool:
+    """Return whether a path is a macOS AppleDouble metadata sidecar."""
+
+    return _portable_basename(path).startswith("._")
+
+
+def is_image_file_candidate(path: str | os.PathLike[str]) -> bool:
+    """Return whether a filename should enter image discovery and catalogs."""
+
+    raw_path = os.fspath(path)
+    return not is_appledouble_path(raw_path) and suffix_for_path(raw_path) in IMAGE_SUFFIXES

@@ -594,3 +594,17 @@ graphify-out/2026-07-19/.graphify_semantic_marker
 graphify-out/2026-07-19/GRAPH_REPORT.md
 graphify-out/2026-07-19/graph.json
 graphify-out/2026-07-19/manifest.json
+tests/test_catalog_repository.py
+tests/test_formats.py
+tests/test_mac_media.py
+tests/test_scanner.py
+tests/test_sidecar_compatibility.py
+tests/test_thumbnail_decode_guard.py
+tests/test_catalog_repository.py
+tests/test_formats.py
+tests/test_scanner.py
+tests/test_thumbnail_decode_guard.py
+tests/test_catalog_repository.py
+tests/test_formats.py
+tests/test_scanner.py
+tests/test_thumbnail_decode_guard.py
