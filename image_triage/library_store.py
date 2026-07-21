@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .formats import IMAGE_SUFFIXES, suffix_for_path
+from .formats import is_appledouble_path, is_image_file_candidate
 from .models import ImageRecord, ImageVariant
 from .scan_cache import app_data_root
 from .scanner import (
@@ -28,6 +28,7 @@ from .scanner import (
     EDIT_DIRECTORIES,
     JPEG_PAIR_DIRECTORIES,
     is_editor_asset_path,
+    is_ignored_system_directory,
     normalize_filesystem_path,
     normalized_path_key,
     scan_folder,
@@ -955,6 +956,10 @@ def _catalog_folder_signature(folder_path: str) -> str:
                 entry_name = entry.name.casefold()
                 if entry_name.endswith(EDITOR_ASSET_DIR_SUFFIX):
                     continue
+                if entry.is_dir(follow_symlinks=False) and is_ignored_system_directory(entry.name):
+                    continue
+                if is_appledouble_path(entry_name):
+                    continue
                 try:
                     stat_result = entry.stat(follow_symlinks=False)
                 except OSError:
@@ -978,11 +983,12 @@ def _iter_catalog_candidate_folders(root_path: str):
         dirnames[:] = [
             name for name in dirnames
             if not name.casefold().endswith(EDITOR_ASSET_DIR_SUFFIX)
+            and not is_ignored_system_directory(name)
         ]
-        if is_editor_asset_path(current_dir):
+        if is_editor_asset_path(current_dir) or is_ignored_system_directory(current_dir):
             continue
         lower_dirs = {name.casefold() for name in dirnames}
-        if any(suffix_for_path(name) in IMAGE_SUFFIXES for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):
+        if any(is_image_file_candidate(name) for name in filenames) or lower_dirs.intersection(JPEG_PAIR_DIRECTORIES | EDIT_DIRECTORIES):
             yield normalize_filesystem_path(current_dir)
 
 
@@ -1014,13 +1020,20 @@ def _deserialize_record_json(raw: str) -> ImageRecord | None:
     if not isinstance(payload, dict):
         return None
     try:
+        record_path = str(payload["path"])
+        if not is_image_file_candidate(record_path):
+            return None
         return ImageRecord(
-            path=str(payload["path"]),
+            path=record_path,
             name=str(payload["name"]),
             size=int(payload["size"]),
             modified_ns=int(payload["modified_ns"]),
-            companion_paths=tuple(str(path) for path in payload.get("companion_paths", [])),
-            edited_paths=tuple(str(path) for path in payload.get("edited_paths", [])),
+            companion_paths=tuple(
+                str(path) for path in payload.get("companion_paths", []) if is_image_file_candidate(str(path))
+            ),
+            edited_paths=tuple(
+                str(path) for path in payload.get("edited_paths", []) if is_image_file_candidate(str(path))
+            ),
             variants=tuple(
                 ImageVariant(
                     path=str(variant["path"]),
@@ -1029,7 +1042,7 @@ def _deserialize_record_json(raw: str) -> ImageRecord | None:
                     modified_ns=int(variant["modified_ns"]),
                 )
                 for variant in payload.get("variants", [])
-                if isinstance(variant, dict)
+                if isinstance(variant, dict) and is_image_file_candidate(str(variant.get("path", "")))
             ),
         )
     except (KeyError, TypeError, ValueError):

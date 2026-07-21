@@ -8,6 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import Qt, QSignalBlocker, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from ..perf import perf_logger
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -860,10 +861,13 @@ class PhotoEditorPanel(QFrame):
         self.status_changed.emit(message)
 
     def _handle_adjustment_changed(self, key: str, value: float) -> None:
-        data = asdict(self._recipe)
-        data[key] = value
-        self._recipe = EditRecipe.from_dict(data)
-        self.recipe_changed.emit(self._recipe)
+        # The recipe_changed emit runs the preview render synchronously, so this
+        # span measures the full slider-tick cost from the Adjust tab.
+        with perf_logger().span("editslider.adjust_slider", key=key):
+            data = asdict(self._recipe)
+            data[key] = value
+            self._recipe = EditRecipe.from_dict(data)
+            self.recipe_changed.emit(self._recipe)
 
     def _sync_rows_from_recipe(self) -> None:
         data = asdict(self._recipe)
@@ -953,16 +957,22 @@ class PhotoEditorPanel(QFrame):
     def _write_session(self, session: dict[str, Any], message: str) -> None:
         if self._session_path is None:
             raise SessionError("no session path")
-        selected_mask_id = self._selected_mask_id()
-        validate_session(session, session_path=self._session_path)
-        save_session(self._session_path, session)
-        self._session = load_session(self._session_path)
-        self._recipe = recipe_from_session(self._session)
-        self._sync_rows_from_recipe()
-        self._refresh_session_views(selected_mask_id=selected_mask_id)
-        self.recipe_changed.emit(self._recipe)
-        self._set_status(message)
-        self.saved.emit(str(self._session_path))
+        logger = perf_logger()
+        with logger.span("editslider.write_session"):
+            selected_mask_id = self._selected_mask_id()
+            with logger.span("editslider.write_validate"):
+                validate_session(session, session_path=self._session_path)
+            with logger.span("editslider.write_save"):
+                save_session(self._session_path, session)
+            with logger.span("editslider.write_reload"):
+                self._session = load_session(self._session_path)
+                self._recipe = recipe_from_session(self._session)
+            self._sync_rows_from_recipe()
+            with logger.span("editslider.write_refresh_views"):
+                self._refresh_session_views(selected_mask_id=selected_mask_id)
+            self.recipe_changed.emit(self._recipe)
+            self._set_status(message)
+            self.saved.emit(str(self._session_path))
 
     def _refresh_session_views(self, *, selected_mask_id: str | None = None) -> None:
         # Rebuilding the mask list clears it, which would fire currentItemChanged
@@ -1332,7 +1342,10 @@ class PhotoEditorPanel(QFrame):
         if self._session is None or self._session_path is None:
             return
         try:
-            self._write_session(self._session, "Mask updated")
+            # Debounced ~400ms after a mask-slider move — the "after first move"
+            # cost suspect (save + reload + list rebuild + a second render).
+            with perf_logger().span("editslider.commit_flush"):
+                self._write_session(self._session, "Mask updated")
         except Exception as exc:
             self._set_status(f"Mask save failed: {exc}")
 
@@ -1511,14 +1524,17 @@ class PhotoEditorPanel(QFrame):
         mask = self._selected_mask_dict()
         if mask is None or self._session is None:
             return
-        values = {row_key: row.slider.value() / row.scale for row_key, row in self._mask_rows.items()}
-        values[key] = value
-        # Adjustments always live on the group root — the union of the whole
-        # group is what they apply through.
-        root_id = str(self._mask_root(mask).get("id"))
-        replace_mask_operations(self._session, root_id, EditRecipe.from_dict(values))
-        self.recipe_changed.emit(self._recipe)
-        self._mask_commit_timer.start()
+        logger = perf_logger()
+        with logger.span("editslider.mask_slider", key=key):
+            values = {row_key: row.slider.value() / row.scale for row_key, row in self._mask_rows.items()}
+            values[key] = value
+            # Adjustments always live on the group root — the union of the whole
+            # group is what they apply through.
+            root_id = str(self._mask_root(mask).get("id"))
+            with logger.span("editslider.replace_ops"):
+                replace_mask_operations(self._session, root_id, EditRecipe.from_dict(values))
+            self.recipe_changed.emit(self._recipe)
+            self._mask_commit_timer.start()
 
     def _begin_mask_slider_drag(self) -> None:
         if not self._overlay_suppressed_for_drag:

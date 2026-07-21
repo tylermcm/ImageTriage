@@ -284,6 +284,9 @@ def _renamed_bundle_name(
         return new_primary_name
     if source_lower == f"{primary_name_lower}.xmp":
         return f"{new_primary_name}.xmp"
+    appledouble_stem = f"._{primary_stem_lower}"
+    if source_lower.startswith(appledouble_stem):
+        return f"._{new_primary_stem}{source_name[len(appledouble_stem):]}"
     if source_lower.startswith(primary_stem_lower):
         return f"{new_primary_stem}{source_name[len(primary_stem):]}"
     raise ValueError(f"Could not derive a safe renamed path for {source_name}.")

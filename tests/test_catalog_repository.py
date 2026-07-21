@@ -62,6 +62,28 @@ class CatalogRepositoryTests(unittest.TestCase):
             assert loaded is not None
             self.assertEqual(records, loaded)
 
+    def test_folder_record_cache_rejects_appledouble_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_catalog_") as temp_dir:
+            db_path = Path(temp_dir) / "catalog.sqlite3"
+            repository = CatalogRepository(db_path)
+            folder = str(Path(temp_dir) / "shots")
+            photo = _record(
+                f"{folder}/DSC_8499.JPG",
+                name="DSC_8499.JPG",
+                size=12_345,
+                modified_ns=101,
+            )
+            apple_double = _record(
+                f"{folder}/._DSC_8499.JPG",
+                name="._DSC_8499.JPG",
+                size=4_096,
+                modified_ns=102,
+            )
+
+            repository.save_folder_records(folder, [photo, apple_double])
+
+            self.assertEqual([photo], repository.load_folder_records(folder))
+
     def test_catalog_stats_report_saved_counts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_catalog_") as temp_dir:
             db_path = Path(temp_dir) / "catalog.sqlite3"

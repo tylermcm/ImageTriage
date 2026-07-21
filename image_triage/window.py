@@ -2469,7 +2469,9 @@ class MainWindow(QMainWindow):
     PERFORMANCE_LOGGING_KEY = "diagnostics/performance_logging"
     # Keep diagnostics focused on the active UI investigations so the JSONL log
     # remains readable while still capturing the popout's full loading path.
-    PERF_FOCUS_PREFIXES = ("toolbar.", "preview.", "window.open_preview", "perf.")
+    # Stashed while profiling the popout editor sliders — restore when done:
+    #   PERF_FOCUS_PREFIXES = ("toolbar.", "preview.", "window.open_preview", "perf.")
+    PERF_FOCUS_PREFIXES = ("editslider.", "perf.")
     CHECK_UPDATES_ON_STARTUP_KEY = "updates/check_on_startup"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
     TOOLBAR_STYLE_KEY = "view/toolbar_style"
