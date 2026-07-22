@@ -29,7 +29,6 @@ from .ai_results import AIImageResult, build_ai_explanation_lines
 from .cache import THUMBNAIL_CACHE_VERSION
 from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display, sanitize_display_error
-from .image_resize import _pillow_from_qimage, _qimage_from_pillow
 from .metadata import CaptureMetadata, EMPTY_METADATA, load_capture_metadata
 from .models import ImageRecord, JPEG_SUFFIXES
 from .perf import perf_logger
@@ -48,9 +47,10 @@ from .review_tools import (
     focus_assist_strength_by_id,
 )
 from .scanner import discover_edited_paths
-from PIL import Image as PILImage
 
-from .ui.mask_overlay import MaskOverlay, mask_strength_qimage
+from .editor_copy import EditorCopyService
+from .editor_render import CpuEditorRenderBackend, EditorRenderService
+from .ui.mask_overlay import MaskOverlay
 from .ui.photo_editor_panel import EditRecipe, PhotoEditorPanel
 from .ui import preview_studio as studio
 from .ui.theme import ThemePalette, default_theme
@@ -676,6 +676,14 @@ class FullScreenPreview(QDialog):
         self._editor_recipe = EditRecipe()
         self._editor_recipe_version = 0
         self._editor_preview_cache: dict[tuple[object, ...], QImage] = {}
+        # Editor renders run off the UI thread through this service so slider
+        # drags never block; the backend is swappable (CPU today, GPU later).
+        self._editor_render_backend = CpuEditorRenderBackend()
+        self._editor_render_service = EditorRenderService(self._editor_render_backend, self)
+        self._editor_render_service.rendered.connect(self._on_editor_render_ready)
+        self._editor_copy_service = EditorCopyService(self)
+        self._editor_copy_service.saved.connect(self._handle_editor_copy_saved)
+        self._editor_copy_service.failed.connect(self._handle_editor_copy_failed)
         self._theme = default_theme()
 
         self.setWindowTitle("Preview")
@@ -1440,6 +1448,7 @@ class FullScreenPreview(QDialog):
         self.photo_editor_panel.recipe_changed.connect(self._handle_editor_recipe_changed)
         self.photo_editor_panel.status_changed.connect(self._handle_editor_status_changed)
         self.photo_editor_panel.saved.connect(self._handle_editor_sidecar_saved)
+        self.photo_editor_panel.save_copy_requested.connect(self._handle_editor_save_copy_requested)
         layout.addWidget(self.photo_editor_panel, 1)
 
         # On-canvas mask editing: the overlay lives on the focused pane's image
@@ -3091,6 +3100,12 @@ class FullScreenPreview(QDialog):
                 )
             return
 
+        self._present_display_image(slot, pane, entry, display_image, logger, start)
+
+    def _present_display_image(self, slot, pane, entry, display_image, logger, start) -> None:
+        """Scale ``display_image`` to fit/zoom and set it on the pane. Split out
+        of _render_pane so the async render delivery can present a freshly
+        rendered image without recomputing the pipeline."""
         if self._manual_zoom:
             pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -3183,23 +3198,74 @@ class FullScreenPreview(QDialog):
         panel.set_image(self._entries[self._focused_slot].source_path)
 
     def _handle_editor_recipe_changed(self, recipe: EditRecipe) -> None:
-        logger = perf_logger()
-        with logger.span(
-            "editslider.recipe_changed",
-            slot=self._focused_slot,
-            version=self._editor_recipe_version + 1,
+        # Fast, non-blocking: update state and hand the render to the worker.
+        # The pane keeps showing the previous frame until the result arrives.
+        self._editor_recipe = recipe
+        self._editor_recipe_version += 1
+        self._editor_preview_cache.clear()
+        self._focus_assist_cache.clear()
+        if (
+            0 <= self._focused_slot < len(self._rendered_display_keys)
+            and self._focused_slot < len(self._panes)
         ):
-            self._editor_recipe = recipe
-            self._editor_recipe_version += 1
-            self._editor_preview_cache.clear()
-            self._focus_assist_cache.clear()
-            if (
-                0 <= self._focused_slot < len(self._rendered_display_keys)
-                and self._focused_slot < len(self._panes)
-            ):
-                self._rendered_display_keys[self._focused_slot] = None
-                with logger.span("editslider.render_pane", slot=self._focused_slot):
-                    self._render_pane(self._focused_slot)
+            self._request_editor_render(self._focused_slot)
+
+    def _request_editor_render(self, slot: int) -> None:
+        """Queue an off-thread editor render for ``slot`` (coalesced). When
+        there are no edits, present the base image immediately instead."""
+        if not (0 <= slot < len(self._current_images)):
+            return
+        image = self._current_images[slot]
+        if image.isNull():
+            return
+        masked = self._editor_masked_adjustments()
+        if self._editor_recipe_is_default() and not masked:
+            # Reset to un-edited — nothing to compute; show the base now.
+            # cancel() (not cancel_pending) also invalidates any in-flight
+            # render, so a late edited frame can't overwrite the base.
+            self._editor_render_service.cancel()
+            if slot < len(self._rendered_display_keys):
+                self._rendered_display_keys[slot] = None
+            self._render_pane(slot)
+            return
+        base_key = self._image_cache_key(slot, image)
+        source_key = (*base_key, "editor", self._editor_recipe_version)
+        self._editor_render_service.request(
+            image, self._editor_recipe, masked, base_key=base_key, source_key=source_key
+        )
+
+    def _on_editor_render_ready(self, seq: int, source_key: object, image: QImage) -> None:
+        slot = self._focused_slot
+        if not (0 <= slot < len(self._current_images)) or slot >= len(self._entries) or image.isNull():
+            return
+        current = self._current_images[slot]
+        if current.isNull():
+            return
+        # Second guard (defense in depth with the service's stale-seq drop):
+        # only present a result that exactly matches the current edit state.
+        # If edits were reset, or the base/recipe-version changed after the
+        # request was queued, the source_key won't match and we ignore it —
+        # so a late frame can never overwrite the base or a newer edit.
+        if not self._editor_edits_active():
+            return
+        expected_key = (
+            *self._image_cache_key(slot, current),
+            "editor",
+            self._editor_recipe_version,
+        )
+        if tuple(source_key) != tuple(expected_key):
+            return
+        self._editor_preview_cache[source_key] = image
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        with logger.span("editslider.present", slot=slot):
+            display = self._display_image_from_edited(slot, image)
+            # Force a present: the display key is derived from the current
+            # recipe version, so consecutive coalesced frames would otherwise
+            # collide on the key and skip the newest image.
+            if slot < len(self._rendered_display_keys):
+                self._rendered_display_keys[slot] = None
+            self._present_display_image(slot, self._panes[slot], self._entries[slot], display, logger, start)
 
     def _handle_editor_status_changed(self, message: str) -> None:
         if message and getattr(self, "_studio_layout_active", False):
@@ -3207,7 +3273,46 @@ class FullScreenPreview(QDialog):
 
     def _handle_editor_sidecar_saved(self, path: str) -> None:
         if getattr(self, "_studio_layout_active", False):
-            self.info_label.setText(f"Saved edit sidecar: {Path(path).name}")
+            self.info_label.setText("Saved edits")
+
+    def _handle_editor_save_copy_requested(
+        self,
+        target_path: str,
+        source_path: str,
+        recipe: object,
+        masked_adjustments: object,
+    ) -> None:
+        requested = self._editor_copy_service.request(
+            source_path,
+            target_path,
+            recipe,
+            list(masked_adjustments or []),
+        )
+        if not requested:
+            self.photo_editor_panel.finish_save_copy(target_path, "Another copy is still being saved.")
+
+    def _handle_editor_copy_saved(self, source_path: str, target_path: str) -> None:
+        self.photo_editor_panel.finish_save_copy(target_path)
+        candidates: tuple[str, ...] = ()
+        record_path = source_path
+        for entry in (*self._source_entries, *self._entries):
+            entry_paths = {
+                os.path.normcase(os.path.abspath(entry.record.path)),
+                os.path.normcase(os.path.abspath(entry.source_path)),
+            }
+            if os.path.normcase(os.path.abspath(source_path)) in entry_paths:
+                record_path = entry.record.path
+                candidates = self._edited_candidates_for_entry(entry)
+                break
+        target_key = os.path.normcase(os.path.abspath(target_path))
+        if all(os.path.normcase(os.path.abspath(path)) != target_key for path in candidates):
+            candidates = (*candidates, target_path)
+        self.set_edited_candidates(record_path, candidates)
+        self._edited_discovery_requested = True
+        self._next_edited_discovery_at = 0.0
+
+    def _handle_editor_copy_failed(self, target_path: str, error: str) -> None:
+        self.photo_editor_panel.finish_save_copy(target_path, error)
 
     def _editor_recipe_is_default(self) -> bool:
         for value in asdict(self._editor_recipe).values():
@@ -3225,6 +3330,10 @@ class FullScreenPreview(QDialog):
         return not self._editor_recipe_is_default() or bool(self._editor_masked_adjustments())
 
     def _editor_image_for_slot(self, slot: int, image: QImage) -> QImage:
+        # Synchronous editor render, used by non-drag paths (zoom/focus/decode).
+        # Slider drags go through _request_editor_render instead so the UI
+        # thread never blocks; both share one backend, so the pipeline lives in
+        # exactly one place.
         masked = self._editor_masked_adjustments()
         if (
             not 0 <= slot < len(self._entries)
@@ -3232,62 +3341,16 @@ class FullScreenPreview(QDialog):
             or (self._editor_recipe_is_default() and not masked)
         ):
             return image
-        logger = perf_logger()
-        cache_key = (*self._image_cache_key(slot, image), "editor", self._editor_recipe_version)
+        base_key = self._image_cache_key(slot, image)
+        cache_key = (*base_key, "editor", self._editor_recipe_version)
         cached = self._editor_preview_cache.get(cache_key)
         if cached is not None:
-            logger.log(
-                "editslider.render_image_cache_hit",
-                slot=slot,
-                w=image.width(),
-                h=image.height(),
-            )
+            perf_logger().log("editslider.render_image_cache_hit", slot=slot, w=image.width(), h=image.height())
             return cached
         try:
-            with logger.span(
-                "editslider.render_image",
-                slot=slot,
-                w=image.width(),
-                h=image.height(),
-                masks=len(masked),
-                version=self._editor_recipe_version,
-            ):
-                with logger.span("editslider.qimage_to_pil", w=image.width(), h=image.height()):
-                    source = _pillow_from_qimage(image)
-                with logger.span("editslider.recipe_apply"):
-                    adjusted = self._editor_recipe.apply(source)
-                for group_index, (components, source_size, mask_recipe) in enumerate(masked):
-                    # Union strength field for the mask group, from the same
-                    # linear-falloff math as the renderer; local adjustments
-                    # composite on top of the global result, weighted per-pixel
-                    # by group strength.
-                    with logger.span(
-                        "editslider.mask_strength",
-                        group=group_index,
-                        components=len(components),
-                        w=adjusted.width,
-                        h=adjusted.height,
-                    ):
-                        strength_q = mask_strength_qimage(
-                            components, adjusted.width, adjusted.height, source_size
-                        )
-                    if strength_q is None:
-                        continue
-                    strength = PILImage.frombuffer(
-                        "L",
-                        (strength_q.width(), strength_q.height()),
-                        bytes(strength_q.constBits()),
-                        "raw",
-                        "L",
-                        strength_q.bytesPerLine(),
-                        1,
-                    )
-                    with logger.span("editslider.mask_recipe_apply", group=group_index):
-                        local = mask_recipe.apply(adjusted)
-                    with logger.span("editslider.mask_composite", group=group_index):
-                        adjusted = PILImage.composite(local, adjusted, strength)
-                with logger.span("editslider.pil_to_qimage", w=adjusted.width, h=adjusted.height):
-                    rendered = _qimage_from_pillow(adjusted, target_size=QSize())
+            rendered = self._editor_render_backend.render(
+                image, self._editor_recipe, masked, base_key=base_key
+            )
         except Exception as exc:
             self._handle_editor_status_changed(f"Preview edit failed: {exc}")
             return image
@@ -3300,6 +3363,11 @@ class FullScreenPreview(QDialog):
         image = self._current_images[slot]
         if slot == self._focused_slot:
             image = self._editor_image_for_slot(slot, image)
+        return self._display_image_from_edited(slot, image)
+
+    def _display_image_from_edited(self, slot: int, image: QImage) -> QImage:
+        """Apply focus assist (if enabled) to an already-edited image. Shared by
+        the synchronous path and the async render delivery."""
         if image.isNull() or not self._focus_assist_enabled:
             return image
         cache_key = self._focus_assist_cache_key(slot, image)

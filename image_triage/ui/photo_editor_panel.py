@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict
 import json
 import sys
@@ -33,6 +34,13 @@ from PySide6.QtWidgets import (
 )
 from PIL import Image
 
+from ..editor_copy import (
+    SAVE_COPY_FILTER_TEXT,
+    default_save_copy_path,
+    normalize_save_copy_path,
+    selected_save_copy_filter,
+    validate_save_copy_paths,
+)
 from ..scanner import is_editor_asset_path
 
 
@@ -227,6 +235,7 @@ class _AdjustmentRow(QWidget):
 class PhotoEditorPanel(QFrame):
     recipe_changed = Signal(object)
     saved = Signal(str)
+    save_copy_requested = Signal(str, str, object, object)
     status_changed = Signal(str)
     # The on-canvas mask overlay should re-read mask_overlay_state().
     mask_overlay_changed = Signal()
@@ -259,6 +268,7 @@ class PhotoEditorPanel(QFrame):
         self._updating_mask_controls = False
         self._overlay_suppressed_for_drag = False
         self._source_size_cache: tuple[Path, tuple[int, int]] | None = None
+        self._copy_save_busy = False
         self._mask_commit_timer = QTimer(self)
         self._mask_commit_timer.setSingleShot(True)
         self._mask_commit_timer.setInterval(400)
@@ -301,12 +311,15 @@ class PhotoEditorPanel(QFrame):
         button_row.setContentsMargins(0, 0, 0, 0)
         button_row.setSpacing(8)
         self.reset_button = QPushButton("Reset", footer)
-        self.save_button = QPushButton("Save Sidecar", footer)
+        self.save_button = QPushButton("Save", footer)
+        self.save_copy_button = QPushButton("Save Copy", footer)
         self.save_button.setObjectName("editorPrimaryButton")
         self.reset_button.clicked.connect(self.reset_recipe)
         self.save_button.clicked.connect(self.save_sidecar)
+        self.save_copy_button.clicked.connect(self.save_copy)
         button_row.addWidget(self.reset_button)
         button_row.addWidget(self.save_button)
+        button_row.addWidget(self.save_copy_button)
         footer_layout.addLayout(button_row)
         self.status_label = QLabel("", footer)
         self.status_label.setObjectName("photoEditorStatus")
@@ -848,17 +861,65 @@ class PhotoEditorPanel(QFrame):
         if self._source_path is None:
             return
         try:
-            session_path = self._save_recipe_to_session(self._source_path, self._recipe)
+            session_path = self._persist_current_edits()
         except Exception as exc:
-            self._set_status(f"Could not save sidecar: {exc}")
+            self._set_status(f"Could not save edits: {exc}")
             return
+        self._set_status("Saved edits")
+
+    def save_copy(self) -> None:
+        if self._source_path is None or self._copy_save_busy:
+            return
+        default_path = default_save_copy_path(self._source_path)
+        selected_filter = selected_save_copy_filter(self._source_path)
+        chosen_path, chosen_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Edited Copy",
+            str(default_path),
+            SAVE_COPY_FILTER_TEXT,
+            selected_filter,
+        )
+        if not chosen_path:
+            return
+        target_path = normalize_save_copy_path(chosen_path, chosen_filter)
+        try:
+            validate_save_copy_paths(self._source_path, target_path)
+            self._persist_current_edits()
+        except Exception as exc:
+            self._set_status(f"Could not save copy: {exc}")
+            return
+
+        self._copy_save_busy = True
+        self._sync_enabled()
+        self._set_status(f"Saving {target_path.name}...")
+        self.save_copy_requested.emit(
+            str(target_path),
+            str(self._source_path),
+            self._recipe,
+            deepcopy(self.masked_adjustments()),
+        )
+
+    def finish_save_copy(self, target_path: str, error: str = "") -> None:
+        self._copy_save_busy = False
+        self._sync_enabled()
+        if error:
+            self._set_status(f"Could not save copy: {error}")
+            return
+        self._set_status(f"Saved copy {Path(target_path).name}")
+
+    def _persist_current_edits(self) -> Path:
+        if self._source_path is None:
+            raise SessionError("no image selected")
+        if self._range_update_timer.isActive():
+            self._regenerate_selected_range_mask()
+        if self._mask_commit_timer.isActive():
+            self._flush_mask_commit()
+        session_path = self._save_recipe_to_session(self._source_path, self._recipe)
         self._session_path = session_path
         self._session = load_session(session_path)
         self._refresh_session_views()
-        message = f"Saved {session_path.name}"
-        self.status_label.setText(message)
         self.saved.emit(str(session_path))
-        self.status_changed.emit(message)
+        return session_path
 
     def _handle_adjustment_changed(self, key: str, value: float) -> None:
         # The recipe_changed emit runs the preview render synchronously, so this
@@ -880,6 +941,7 @@ class PhotoEditorPanel(QFrame):
             row.setEnabled(enabled)
         self.reset_button.setEnabled(enabled)
         self.save_button.setEnabled(enabled)
+        self.save_copy_button.setEnabled(enabled and not self._copy_save_busy)
         for widget_name in (
             "editor_stack",
             "create_session_button",
@@ -1902,14 +1964,14 @@ class PhotoEditorPanel(QFrame):
     def _load_recipe_for_path(self, path: Path) -> EditRecipe:
         session_path = default_session_path(path)
         if not session_path.exists():
-            self.status_label.setText("No sidecar yet")
+            self.status_label.setText("No saved edits yet")
             return EditRecipe()
         try:
             session = load_session(session_path)
             validate_session(session, session_path=session_path)
             recipe = recipe_from_session(session)
         except Exception as exc:
-            self.status_label.setText(f"Sidecar load failed: {exc}")
+            self.status_label.setText(f"Saved edits could not be loaded: {exc}")
             return EditRecipe()
         self.status_label.setText(f"Loaded {session_path.name}")
         return recipe
