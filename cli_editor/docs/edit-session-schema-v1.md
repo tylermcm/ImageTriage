@@ -86,6 +86,8 @@ adjust.grain
 
 Renderer parameter names and scales are preserved from `EditRecipe`; for example `contrast` is `-100..100`, and `exposure` is EV stops.
 
+`adjust.vignette` carries the post-crop shape alongside the amount: `midpoint` and `feather` are `0..100` (`50` neutral), `roundness` is `-100` (frame-shaped) to `100` (circular), and `highlights` is `0..100` (how far bright pixels are spared). They are written only when `vignette` itself is non-zero; a reader that omits them gets the neutral shape.
+
 ## Editing Operations Added Ahead Of Rendering
 
 These operations are valid in the v1 session schema and CLI, but the current renderer does not implement them yet:

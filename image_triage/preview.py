@@ -1116,6 +1116,57 @@ class FullScreenPreview(QDialog):
             QScrollArea#photoEditorScrollArea QScrollBar::sub-line:vertical {{ height: 0px; }}
             QScrollArea#photoEditorScrollArea QScrollBar::add-page:vertical,
             QScrollArea#photoEditorScrollArea QScrollBar::sub-page:vertical {{ background: transparent; }}
+            QLabel#maskPaneTitle {{ color: #e2e2e2; font-size: 11px; font-weight: 600; }}
+            QFrame#maskHairline {{ background: #333333; border: none; max-height: 1px; }}
+            /* Quiet full-width tool rows: glyph, label, shortcut chip. */
+            QFrame#photoEditorPanel QPushButton#maskToolRow {{
+                background: transparent; border: none; border-radius: 4px;
+                text-align: left; min-height: 30px; padding: 0px;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskToolRow:hover {{ background: #383838; }}
+            QFrame#photoEditorPanel QPushButton#maskToolRow:checked {{ background: #34506e; }}
+            QLabel#maskToolRowLabel {{ color: #dcdcdc; font-size: 12px; background: transparent; }}
+            QLabel#maskShortcutChip {{
+                color: #9a9a9a; font-size: 10px; background: #2a2a2a;
+                border: 1px solid #3a3a3a; border-radius: 3px; padding: 0px 5px;
+            }}
+            /* AI scene masks as chips, promoted to the top of Create. */
+            QFrame#photoEditorPanel QPushButton#semanticMaskButton {{
+                background: #333333; border: 1px solid #414141; color: #e2e2e2;
+                border-radius: 13px; padding: 4px 12px; font-size: 11px; min-height: 18px;
+            }}
+            QFrame#photoEditorPanel QPushButton#semanticMaskButton:hover {{
+                background: {studio.ACCENT}; border-color: {studio.ACCENT}; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QPushButton#newMaskButton {{
+                background: {studio.ACCENT}; border: 1px solid {studio.ACCENT}; color: #ffffff;
+                border-radius: 4px; min-height: 20px; max-height: 20px;
+                font-size: 11px; padding: 0px 8px;
+            }}
+            QFrame#photoEditorPanel QPushButton#newMaskButton:hover {{ background: #5aa9ff; border-color: #5aa9ff; }}
+            QFrame#photoEditorPanel QPushButton#newMaskButton:disabled {{
+                background: #333333; border-color: #333333; color: #6d6d6d;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskCombineButton {{
+                background: #333333; border: 1px solid #414141; color: #e2e2e2;
+                border-radius: 4px; min-height: 20px; max-height: 20px;
+                font-size: 11px; padding: 0px 8px;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskCombineButton:hover {{
+                background: #414141; border-color: #555555; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskCombineButton:disabled {{
+                background: #2d2d2d; border-color: #383838; color: #6d6d6d;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskLinkButton {{
+                background: transparent; border: none; color: #9a9a9a; font-size: 11px;
+                padding: 0px 2px;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskLinkButton:hover {{ color: #ffffff; }}
+            QFrame#photoEditorPanel QPushButton#deleteMaskButton:hover {{
+                color: #ff8a8a; border-color: #6a3a3a;
+            }}
+            QWidget#maskListBlock {{ border-bottom: 1px solid #232323; }}
             QFrame#editorSection {{ background: transparent; border-bottom: 1px solid #262626; }}
             QPushButton#editorSectionHeader {{
                 background: transparent; border: none; color: #d6d6d6;
@@ -1124,31 +1175,86 @@ class FullScreenPreview(QDialog):
             }}
             QPushButton#editorSectionHeader:hover {{ background: #363636; color: #ffffff; }}
             QLabel#editorControlLabel {{ color: #c4c4c4; font-size: 11px; }}
-            QLabel#editorNumber {{
-                color: #e6e6e6; background: #232323; border: 1px solid #191919;
-                border-radius: 2px; min-height: 16px; padding: 0 4px; font-size: 11px;
+            /* A slider label that doubles as a disclosure — reads as the plain
+               label until hovered, so the row keeps its normal height. */
+            QFrame#photoEditorPanel QPushButton#editorExpanderLabel {{
+                color: #c4c4c4; font-size: 11px; text-align: left;
+                background: transparent; border: none; padding: 0px;
             }}
-            QLabel#curveModeDot {{
+            QFrame#photoEditorPanel QPushButton#editorExpanderLabel:hover,
+            QFrame#photoEditorPanel QPushButton#editorExpanderLabel:checked {{
+                color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QWidget#vignetteOptions {{
+                background: transparent; border-left: 1px solid #333333;
+            }}
+            /* Compact, editable numeric readout (QSpinBox/QDoubleSpinBox with
+               no buttons). Explicit per-class rules so they out-specify the
+               generic spin-box styling below. */
+            QFrame#photoEditorPanel QSpinBox#editorNumber,
+            QFrame#photoEditorPanel QDoubleSpinBox#editorNumber {{
+                color: #e6e6e6; background: #232323;
+                border: 1px solid #191919; border-radius: 3px;
+                min-height: 18px; max-height: 18px;
+                min-width: 48px; max-width: 48px;
+                padding: 0 2px; font-size: 11px;
+                selection-background-color: #1473e6;
+            }}
+            QFrame#photoEditorPanel QSpinBox#editorNumber:hover,
+            QFrame#photoEditorPanel QDoubleSpinBox#editorNumber:hover {{
+                border-color: #3a3a3a;
+            }}
+            QFrame#photoEditorPanel QSpinBox#editorNumber:focus,
+            QFrame#photoEditorPanel QDoubleSpinBox#editorNumber:focus {{
+                border-color: #1473e6; background: #1e1e1e;
+            }}
+            QFrame#photoEditorPanel QSpinBox#editorNumber:disabled,
+            QFrame#photoEditorPanel QDoubleSpinBox#editorNumber:disabled {{
+                color: #6f6f6f; background: #262626; border-color: #202020;
+            }}
+            QFrame#photoEditorPanel QPushButton#curveChannelButton {{
                 color: #cfcfcf; background: #232323; border: 1px solid #191919;
-                border-radius: 2px; padding: 1px 6px; font-size: 10px; font-weight: 600;
+                border-radius: 3px; padding: 2px 8px; font-size: 10px; font-weight: 600;
+                min-height: 18px; min-width: 0px;
+            }}
+            QFrame#photoEditorPanel QPushButton#curveChannelButton:hover {{
+                background: #303030; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QPushButton#curveChannelButton:checked {{
+                background: #1473e6; border-color: #1473e6; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QPushButton#curveResetButton {{
+                color: #cfcfcf; background: #303030; border: 1px solid #232323;
+                border-radius: 3px; padding: 2px 10px; font-size: 10px; font-weight: 500;
+                min-height: 18px; max-height: 18px; min-width: 0px;
+            }}
+            QFrame#photoEditorPanel QPushButton#curveResetButton:hover {{
+                background: #3c3c3c; color: #ffffff; border-color: #4a4a4a;
+            }}
+            QFrame#photoEditorPanel QPushButton#curveResetButton:disabled {{
+                color: #6f6f6f; background: #2a2a2a; border-color: #232323;
             }}
             QFrame#photoEditorFooter {{
                 background: #232323; border: none; border-top: 1px solid #1a1a1a;
                 border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
             }}
-            QLabel#photoEditorStatus {{ color: #8f8f8f; font-size: 10px; }}
+            /* Round handle sitting centred on the track: the groove is 4px and
+               the handle 10px, so a -3px vertical margin puts the handle's
+               centre exactly on the groove's centre. */
+            QFrame#photoEditorPanel QSlider {{ min-height: 14px; }}
             QFrame#photoEditorPanel QSlider::groove:horizontal {{
-                height: 2px; background: #565656; border-radius: 1px;
+                height: 4px; background: #4f4f4f; border-radius: 2px;
             }}
             QFrame#photoEditorPanel QSlider::sub-page:horizontal {{
-                background: #565656; border-radius: 1px;
+                background: #4f4f4f; border-radius: 2px;
             }}
             QFrame#photoEditorPanel QSlider::handle:horizontal {{
-                width: 0px; height: 0px; margin: -5px 0;
-                border-left: 5px solid transparent; border-right: 5px solid transparent;
-                border-bottom: 9px solid #cfcfcf; background: transparent;
+                width: 10px; height: 10px; margin: -3px 0;
+                border-radius: 5px; border: none; background: #e8e8e8;
             }}
-            QFrame#photoEditorPanel QSlider::handle:horizontal:hover {{ border-bottom-color: #ffffff; }}
+            QFrame#photoEditorPanel QSlider::handle:horizontal:hover {{ background: #ffffff; }}
+            QFrame#photoEditorPanel QSlider::handle:horizontal:pressed {{ background: #1473e6; }}
+            QFrame#photoEditorPanel QSlider::handle:horizontal:disabled {{ background: #6a6a6a; }}
             QFrame#photoEditorPanel QSlider#slider_temperature::groove:horizontal {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f69ff, stop:0.5 #9a9a9a, stop:1 #ffd94f);
             }}
@@ -1213,16 +1319,40 @@ class FullScreenPreview(QDialog):
             QFrame#photoEditorPanel QPlainTextEdit#editorText {{
                 font-family: 'Consolas'; font-size: 10px; color: #c8c8c8;
             }}
+            QFrame#photoEditorPanel QFrame#maskListViewport {{
+                background: #242424; border: 1px solid #414141;
+                border-radius: 4px;
+            }}
+            QFrame#photoEditorPanel QFrame#maskListViewport QWidget#maskPaneHeader,
+            QFrame#photoEditorPanel QFrame#maskListViewport QLabel {{
+                border: none;
+            }}
+            /* The outer frame is the viewport; the list itself stays flush and
+               compact inside it. */
             QFrame#photoEditorPanel QListWidget#editorList {{
-                min-height: 74px; background: #262626; border-color: #1a1a1a;
+                background: transparent; border: none; padding: 0px; outline: 0;
             }}
+            /* Rows are custom widgets (name + trash), so the item itself is just
+               the selection backing — no padding, and no focus rectangle box. */
             QFrame#photoEditorPanel QListWidget#editorList::item {{
-                padding: 7px 8px; border-radius: 2px; color: #d6d6d6;
+                padding: 0px; border-radius: 3px; color: #d6d6d6; outline: 0;
             }}
-            QFrame#photoEditorPanel QListWidget#editorList::item:hover {{ background: #303030; }}
+            QFrame#photoEditorPanel QListWidget#editorList::item:hover {{ background: transparent; }}
             QFrame#photoEditorPanel QListWidget#editorList::item:selected {{
-                background: #264f78; color: #ffffff;
+                background: transparent; color: #ffffff; border: none;
             }}
+            QWidget#maskRow {{ background: transparent; border: none; border-radius: 4px; }}
+            QWidget#maskRow:hover {{ background: #333333; border-radius: 4px; }}
+            QWidget#maskRow[selected="true"] {{
+                background: #264f78; border: none; border-radius: 4px;
+            }}
+            QWidget#maskRow[separated="true"] {{ border-top: 1px solid #3a3a3a; }}
+            QLabel#maskRowLabel {{ color: #dcdcdc; font-size: 12px; background: transparent; }}
+            QLabel#maskRowMarker {{ color: #8f8f8f; font-size: 12px; background: transparent; }}
+            QFrame#photoEditorPanel QToolButton#maskRowTrash {{
+                background: transparent; border: none; border-radius: 3px; padding: 1px;
+            }}
+            QFrame#photoEditorPanel QToolButton#maskRowTrash:hover {{ background: #5a2a2a; }}
             QFrame#photoEditorPanel QCheckBox {{ color: #d6d6d6; spacing: 6px; font-size: 11px; }}
             QFrame#photoEditorPanel QCheckBox::indicator {{
                 width: 13px; height: 13px; background: #1e1e1e;
@@ -1231,6 +1361,16 @@ class FullScreenPreview(QDialog):
             QFrame#photoEditorPanel QCheckBox::indicator:hover {{ border-color: #5a5a5a; }}
             QFrame#photoEditorPanel QCheckBox::indicator:checked {{
                 background: #1473e6; border-color: #1473e6;
+            }}
+            QFrame#photoEditorPanel QToolButton#overlayMenuButton {{
+                background: #333333; border: 1px solid #414141;
+                border-radius: 4px; padding: 0px 3px;
+            }}
+            QFrame#photoEditorPanel QToolButton#overlayMenuButton:hover {{
+                background: #414141; border-color: #555555;
+            }}
+            QFrame#photoEditorPanel QToolButton#overlayMenuButton::menu-indicator {{
+                subcontrol-position: right center; subcontrol-origin: padding;
             }}
         """
         return (
@@ -1374,6 +1514,7 @@ class FullScreenPreview(QDialog):
             state["interactive"] = False
             state["show_overlay"] = False
             state["create_mode"] = None
+            state["scene_pick"] = False
         if 0 <= self._focused_slot < len(self._panes):
             overlay.attach_to(self._panes[self._focused_slot].image_label)
         overlay.set_state(**state)
@@ -1458,6 +1599,7 @@ class FullScreenPreview(QDialog):
         self._mask_overlay.mask_edited.connect(self.photo_editor_panel.handle_overlay_mask_edited)
         self._mask_overlay.bitmap_edited.connect(self.photo_editor_panel.handle_overlay_bitmap_edited)
         self._mask_overlay.source_clicked.connect(self.photo_editor_panel.handle_overlay_source_clicked)
+        self._mask_overlay.scene_region_picked.connect(self.photo_editor_panel.handle_overlay_scene_picked)
         self._mask_overlay.edit_committed.connect(self.photo_editor_panel.handle_overlay_commit)
         self.photo_editor_panel.mask_overlay_changed.connect(self._sync_mask_overlay)
 
@@ -2131,18 +2273,48 @@ class FullScreenPreview(QDialog):
 
         return super().eventFilter(watched, event)
 
+    def _right_click_closes_at(self, position: QPoint) -> bool:
+        """Whether a dialog-local point belongs to the passive close surface.
+
+        Right-click is a convenient way to leave the visual canvas, but it must
+        never turn ordinary interaction with the toolbar, editor, or filmstrip
+        into an accidental close.
+        """
+        widget = self.childAt(position)
+        if widget is None:
+            return True
+        for name in ("_studio_toolbar", "_studio_rail", "_filmstrip"):
+            surface = getattr(self, name, None)
+            if surface is not None and (
+                widget is surface or surface.isAncestorOf(widget)
+            ):
+                return False
+        return True
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.RightButton:
-            self._pending_right_close = True
-            event.accept()
+            self._pending_right_close = self._right_click_closes_at(
+                event.position().toPoint()
+            )
+            if self._pending_right_close:
+                event.accept()
+            else:
+                event.ignore()
             return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.RightButton and self._pending_right_close:
+        if event.button() == Qt.MouseButton.RightButton:
+            should_close = (
+                self._pending_right_close
+                and self._right_click_closes_at(event.position().toPoint())
+            )
             self._pending_right_close = False
-            self.close()
-            event.accept()
+            if should_close:
+                self.close()
+                event.accept()
+            else:
+                event.ignore()
             return
         super().mouseReleaseEvent(event)
 
@@ -3315,10 +3487,7 @@ class FullScreenPreview(QDialog):
         self.photo_editor_panel.finish_save_copy(target_path, error)
 
     def _editor_recipe_is_default(self) -> bool:
-        for value in asdict(self._editor_recipe).values():
-            if value not in (0, 0.0, None):
-                return False
-        return True
+        return asdict(self._editor_recipe) == asdict(EditRecipe())
 
     def _editor_masked_adjustments(self) -> list:
         panel = getattr(self, "photo_editor_panel", None)

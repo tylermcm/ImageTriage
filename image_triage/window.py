@@ -2470,7 +2470,14 @@ class MainWindow(QMainWindow):
     # Keep diagnostics focused on the active UI investigations so the JSONL log
     # remains readable while still capturing the popout's full loading path.
     # editslider.* stays available for slider-latency profiling under perf logging.
-    PERF_FOCUS_PREFIXES = ("toolbar.", "preview.", "window.open_preview", "perf.", "editslider.")
+    PERF_FOCUS_PREFIXES = (
+        "toolbar.",
+        "preview.",
+        "window.open_preview",
+        "perf.",
+        "editslider.",
+        "brush.",
+    )
     CHECK_UPDATES_ON_STARTUP_KEY = "updates/check_on_startup"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"
     TOOLBAR_STYLE_KEY = "view/toolbar_style"

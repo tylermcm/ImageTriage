@@ -42,6 +42,15 @@ def _dict_list_literals(tree: ast.AST, assignment_name: str, key_name: str) -> l
 
 
 class PackagingScriptTests(unittest.TestCase):
+    def test_frozen_apps_include_onnxruntime_for_in_process_masking(self) -> None:
+        for setup_path in ("setup_msi.py", "setup_linux.py"):
+            includes = _dict_list_literals(
+                _read_tree(setup_path),
+                "build_exe_options",
+                "includes",
+            )
+            self.assertIn("onnxruntime", includes, setup_path)
+
     def test_linux_appimage_packages_current_frozen_helpers(self) -> None:
         constants = _string_constants(_read_tree("setup_linux.py"))
 

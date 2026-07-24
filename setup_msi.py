@@ -18,6 +18,7 @@ build_exe_options = {
         "astropy",
         "astropy.io.fits",
         "astropy.visualization",
+        "onnxruntime",
         "PIL",
         "pip",
         "pip._internal",

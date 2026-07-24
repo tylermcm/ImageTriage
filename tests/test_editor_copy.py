@@ -45,7 +45,7 @@ class EditorCopyTests(unittest.TestCase):
             panel.save_sidecar()
 
             self.assertTrue((Path(temp_dir) / "photo.edit.json").exists())
-            self.assertEqual("Saved edits", panel.status_label.text())
+            self.assertEqual("Saved edits", panel.status_message)
             panel.close()
 
     def test_default_copy_name_is_non_colliding_stack_variant(self) -> None:

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import threading
 import time
 import unittest
 from collections import defaultdict
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PIL import Image
 from PySide6.QtCore import QCoreApplication
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
-from image_triage.editor_render import EditorRenderService
+from image_triage.editor_render import CpuEditorRenderBackend, EditorRenderService
+from image_triage.ui.photo_editor_panel import EditRecipe
 
 
 def _app() -> QApplication:
@@ -124,6 +128,52 @@ class EditorRenderServiceRaceTests(unittest.TestCase):
         backend.release(("A",))
         _pump(lambda: False, timeout=0.3)
         self.assertEqual([], delivered)
+
+
+class EditorRenderMaskCacheTests(unittest.TestCase):
+    def test_rewritten_subtract_bitmap_invalidates_cached_group_strength(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_render_mask_") as temp_dir:
+            root_path = Path(temp_dir) / "root.png"
+            subtract_path = Path(temp_dir) / "subtract.png"
+            Image.new("L", (16, 8), 255).save(root_path)
+            Image.new("L", (16, 8), 0).save(subtract_path)
+            components = [
+                ("bitmap", {"assetPath": str(root_path)}, "add"),
+                ("bitmap", {"assetPath": str(subtract_path)}, "subtract"),
+            ]
+            masked = [
+                (
+                    components,
+                    (16, 8),
+                    EditRecipe.from_dict({"exposure": 1.0}),
+                )
+            ]
+            base = QImage(16, 8, QImage.Format.Format_RGB32)
+            base.fill(QColor(64, 64, 64))
+            backend = CpuEditorRenderBackend()
+
+            before = backend.render(
+                base,
+                EditRecipe(),
+                masked,
+                base_key=("source",),
+            )
+            self.assertGreater(before.pixelColor(2, 4).red(), 64)
+
+            subtract = Image.new("L", (16, 8), 0)
+            subtract.paste(255, (0, 0, 8, 8))
+            subtract.save(subtract_path)
+            now = time.time_ns()
+            os.utime(subtract_path, ns=(now, now))
+            after = backend.render(
+                base,
+                EditRecipe(),
+                masked,
+                base_key=("source",),
+            )
+
+            self.assertAlmostEqual(64, after.pixelColor(2, 4).red(), delta=1)
+            self.assertGreater(after.pixelColor(13, 4).red(), 64)
 
 
 class PreviewResetRaceTests(unittest.TestCase):

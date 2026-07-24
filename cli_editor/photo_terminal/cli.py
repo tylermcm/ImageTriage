@@ -54,6 +54,10 @@ def add_adjustment_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sharpen", type=float, default=0.0)
     parser.add_argument("--denoise", type=float, default=0.0)
     parser.add_argument("--vignette", type=float, default=0.0)
+    parser.add_argument("--vignette-midpoint", type=float, default=50.0, help="Where the vignette starts, 0..100.")
+    parser.add_argument("--vignette-roundness", type=float, default=0.0, help="-100 frame-shaped .. 100 circular.")
+    parser.add_argument("--vignette-feather", type=float, default=50.0, help="Falloff softness, 0..100.")
+    parser.add_argument("--vignette-highlights", type=float, default=0.0, help="Protect bright pixels, 0..100.")
     parser.add_argument("--rotate", type=float, default=0.0)
     parser.add_argument("--crop", nargs=4, type=int, metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"))
 
@@ -75,6 +79,10 @@ def recipe_from_args(args: argparse.Namespace) -> EditRecipe:
         sharpen=args.sharpen,
         denoise=args.denoise,
         vignette=args.vignette,
+        vignette_midpoint=args.vignette_midpoint,
+        vignette_roundness=args.vignette_roundness,
+        vignette_feather=args.vignette_feather,
+        vignette_highlights=args.vignette_highlights,
         rotate=args.rotate,
         crop=tuple(args.crop) if args.crop else None,
     )

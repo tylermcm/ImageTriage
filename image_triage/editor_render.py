@@ -22,6 +22,7 @@ resolution; nothing here reduces fidelity.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any, Protocol
 
 from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal
@@ -47,8 +48,17 @@ def _freeze_value(value: Any) -> Any:
 def _freeze_component(component: Any) -> tuple:
     mask_type, params = component[0], component[1]
     combine = component[2] if len(component) >= 3 else "add"
-    frozen = tuple(sorted((k, _freeze_value(v)) for k, v in dict(params).items()))
-    return (str(mask_type), frozen, str(combine))
+    values = dict(params)
+    frozen = list(sorted((k, _freeze_value(v)) for k, v in values.items()))
+    asset_path = str(values.get("assetPath") or values.get("path") or "")
+    if asset_path:
+        try:
+            stat = Path(asset_path).stat()
+            revision = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        except OSError:
+            revision = None
+        frozen.append(("_assetRevision", revision))
+    return (str(mask_type), tuple(frozen), str(combine))
 
 
 class EditorRenderBackend(Protocol):

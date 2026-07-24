@@ -372,6 +372,9 @@ def validate_operation_params(op_id: str, op_type: str, params: Dict[str, Any]) 
         elif not (0 <= black < white <= 255 and 0.05 <= midpoint <= 10.0):
             errors.append(f"{op_id} levels must satisfy 0 <= black < white <= 255 and midpoint 0.05..10")
     elif op_type == "adjust.point_curve":
+        channel = params.get("channel", "rgb")
+        if channel not in {"rgb", "red", "green", "blue"}:
+            errors.append(f"{op_id} point_curve channel must be rgb/red/green/blue")
         points = params.get("points")
         if not isinstance(points, list) or len(points) < 2:
             errors.append(f"{op_id} adjust.point_curve requires points=[[x,y],...]")
