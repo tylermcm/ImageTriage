@@ -16,6 +16,9 @@ DEFAULT_AI_MODEL_SIZE_MB = 1210
 DEFAULT_SEMANTIC_MODEL_REPO_ID = "openai/clip-vit-base-patch32"
 DEFAULT_SEMANTIC_MODEL_REVISION = "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268"
 DEFAULT_SEMANTIC_MODEL_SIZE_MB = 610
+DEFAULT_SEGMENTATION_MODEL_REPO_ID = "nvidia/segformer-b0-finetuned-ade-512-512"
+DEFAULT_SEGMENTATION_MODEL_REVISION = "b9175de73a0a34f7843135853d27629aa6987b2f"
+DEFAULT_SEGMENTATION_MODEL_SIZE_MB = 15
 DEFAULT_AICULLER_CLIP_REPO_ID = "Skulleton12/Clip"
 DEFAULT_AICULLER_CLIP_REVISION = "581ad0eebb9540a2ec865c6a84d188bfec81dc15"
 DEFAULT_AICULLER_CLIP_SIZE_MB = 1865
@@ -35,6 +38,11 @@ DEFAULT_SEMANTIC_MODEL_SHA256 = {
     "special_tokens_map.json": "f8c0d6c39aee3f8431078ef6646567b0aba7f2246e9c54b8b99d55c22b707cbf",
     "pytorch_model.bin": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f",
 }
+DEFAULT_SEGMENTATION_MODEL_SHA256 = {
+    "onnx/model.onnx": "f6520c8c7a414b9b17b6ccdf099fe1c357371d25fca090a021c9e6d0ce49bbed",
+    "onnx/config.json": "4a7813fc7e89fa581278e5db3ffb25967bf02b36a980f2445dc94755062031cd",
+    "onnx/preprocessor_config.json": "dbabd93c735c8a5c39ef207c6c4459bf2d261a5dcc55e1ba1c1b982e5947f518",
+}
 DEFAULT_AICULLER_CLIP_MODEL_SHA256: dict[str, str] = {}
 DEFAULT_AICULLER_TOPIQ_MODEL_SHA256: dict[str, str] = {}
 AI_MODEL_DIR_ENV = "AICULLING_MODEL_DIR"
@@ -43,6 +51,9 @@ AI_MODEL_REVISION_ENV = "AICULLING_MODEL_REVISION"
 SEMANTIC_MODEL_DIR_ENV = "AICULLING_SEMANTIC_MODEL_DIR"
 SEMANTIC_MODEL_REPO_ENV = "AICULLING_SEMANTIC_MODEL_REPO_ID"
 SEMANTIC_MODEL_REVISION_ENV = "AICULLING_SEMANTIC_MODEL_REVISION"
+SEGMENTATION_MODEL_DIR_ENV = "IMAGE_TRIAGE_SEGMENTATION_MODEL_DIR"
+SEGMENTATION_MODEL_REPO_ENV = "IMAGE_TRIAGE_SEGMENTATION_MODEL_REPO_ID"
+SEGMENTATION_MODEL_REVISION_ENV = "IMAGE_TRIAGE_SEGMENTATION_MODEL_REVISION"
 AICULLER_CLIP_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_DIR"
 AICULLER_CLIP_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_REPO_ID"
 AICULLER_CLIP_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_REVISION"
@@ -59,6 +70,11 @@ SEMANTIC_MODEL_REQUIRED_FILENAMES = (
     "merges.txt",
     "special_tokens_map.json",
     "pytorch_model.bin",
+)
+SEGMENTATION_MODEL_REQUIRED_FILENAMES = (
+    "onnx/model.onnx",
+    "onnx/config.json",
+    "onnx/preprocessor_config.json",
 )
 AICULLER_CLIP_MODEL_REQUIRED_FILENAMES = (
     "tokenizer.json",
@@ -191,6 +207,42 @@ def resolve_semantic_model_installation(
     )
 
 
+def resolve_segmentation_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(SEGMENTATION_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_SEGMENTATION_MODEL_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(SEGMENTATION_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_SEGMENTATION_MODEL_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(SEGMENTATION_MODEL_DIR_ENV, "") or "").strip()
+        or default_segmentation_model_install_dir(repo_id=resolved_repo_id)
+    )
+    resolved_dir = Path(resolved_dir_value).expanduser().resolve()
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=resolved_dir,
+        required_filenames=SEGMENTATION_MODEL_REQUIRED_FILENAMES,
+        expected_sha256=(
+            DEFAULT_SEGMENTATION_MODEL_SHA256
+            if resolved_repo_id == DEFAULT_SEGMENTATION_MODEL_REPO_ID
+            and resolved_revision == DEFAULT_SEGMENTATION_MODEL_REVISION
+            else None
+        ),
+    )
+
+
 def resolve_aiculler_clip_model_installation(
     *,
     install_dir: str | Path | None = None,
@@ -270,6 +322,14 @@ def default_ai_model_install_dir(*, repo_id: str = DEFAULT_AI_MODEL_REPO_ID) -> 
 
 
 def default_semantic_model_install_dir(*, repo_id: str = DEFAULT_SEMANTIC_MODEL_REPO_ID) -> Path:
+    _owner, name = _repo_path_parts(repo_id)
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
+
+
+def default_segmentation_model_install_dir(
+    *,
+    repo_id: str = DEFAULT_SEGMENTATION_MODEL_REPO_ID,
+) -> Path:
     _owner, name = _repo_path_parts(repo_id)
     return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
 
@@ -355,6 +415,19 @@ def download_semantic_model(
 ) -> AIModelInstallation:
     return download_ai_model(
         installation or resolve_semantic_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
+
+
+def download_segmentation_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_segmentation_model_installation(),
         force=force,
         progress_callback=progress_callback,
     )

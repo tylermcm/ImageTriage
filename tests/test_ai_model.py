@@ -13,6 +13,7 @@ from image_triage.ai_model import (
     AICULLER_CLIP_MODEL_REQUIRED_FILENAMES,
     AICULLER_FACE_MODEL_REQUIRED_FILENAMES,
     AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES,
+    SEGMENTATION_MODEL_REQUIRED_FILENAMES,
     SEMANTIC_MODEL_REQUIRED_FILENAMES,
     download_ai_model,
     download_aiculler_clip_model,
@@ -23,6 +24,7 @@ from image_triage.ai_model import (
     resolve_aiculler_face_model_installation,
     resolve_aiculler_topiq_model_installation,
     resolve_ai_model_installation,
+    resolve_segmentation_model_installation,
     resolve_semantic_model_installation,
 )
 
@@ -84,6 +86,30 @@ class AIModelTests(unittest.TestCase):
         self.assertEqual(installation.install_dir.name, "clip-vit-base-patch32")
         self.assertEqual(installation.install_dir.parent.name, "models")
         self.assertEqual(installation.required_filenames, SEMANTIC_MODEL_REQUIRED_FILENAMES)
+
+    def test_default_segmentation_model_installation_uses_onnx_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_segmentation_model_installation()
+
+        self.assertEqual(
+            installation.repo_id,
+            "nvidia/segformer-b0-finetuned-ade-512-512",
+        )
+        self.assertEqual(
+            installation.install_dir.name,
+            "segformer-b0-finetuned-ade-512-512",
+        )
+        self.assertEqual(
+            installation.required_filenames,
+            SEGMENTATION_MODEL_REQUIRED_FILENAMES,
+        )
+        self.assertTrue(
+            installation.download_url("onnx/model.onnx").endswith(
+                "/onnx/model.onnx?download=true"
+            )
+        )
 
     def test_default_aiculler_clip_model_installation_uses_runtime_cache_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

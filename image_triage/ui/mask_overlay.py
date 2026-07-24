@@ -1,23 +1,24 @@
 """On-canvas mask creation and editing for the studio preview.
 
 MaskOverlay is a transparent widget stretched over a preview pane's image
-label. It paints the selected mask's strength as a translucent red field —
-alpha at each pixel is proportional to the mask's real strength there, using
-the same linear falloff as photo_terminal.masks (full red inside the core,
-fading to transparent through the feathered region) — plus Lightroom-style
-edit handles. Dragging on the image creates or reshapes masks; all geometry
-is emitted in source-image pixel coordinates, matching the session's
-``space-source-full`` coordinate space.
+label. It paints the selected mask using a configurable display mode while
+preserving the same strength field and linear falloff as photo_terminal.masks,
+plus Lightroom-style edit handles. Dragging on the image creates or reshapes
+masks; all geometry is emitted in source-image pixel coordinates, matching the
+session's ``space-source-full`` coordinate space.
 """
 from __future__ import annotations
 
 import math
 from pathlib import Path
+import time
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QBrush,
     QColor,
+    QFontMetricsF,
     QImage,
     QLinearGradient,
     QPainter,
@@ -26,17 +27,129 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-OVERLAY_RED = QColor(255, 64, 64)
+from ..perf import perf_logger
+from .scene_regions import SceneRegionIndex
+
 MAX_ALPHA = 128          # overlay opacity at full mask strength / 100 density
+OVERLAY_RED = QColor(255, 64, 64, MAX_ALPHA)
+OVERLAY_DISPLAY_MODES = frozenset(
+    {
+        "color",
+        "color-bw",
+        "image-bw",
+        "image-black",
+        "image-white",
+        "white-black",
+    }
+)
 HANDLE_PX = 5.0          # visual half-size of resize handles
 HIT_PX = 10.0            # hit-test tolerance in display pixels
 MIN_RADIUS_SRC = 4.0     # smallest radius (source px) a drag can produce
 ROT_KNOB_GAP = 24.0      # display px from the top handle to the rotation knob
 STRENGTH_CACHE_EDGE = 2048
+LIVE_BRUSH_CACHE_EDGE = 768
+CHIP_PAD = 6.0           # padding inside the hovered-region name chip
+CHIP_GAP = 14.0          # display px from the cursor to the chip
 
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _brush_core_ratio(feather: float) -> float:
+    """Hard-core diameter/radius ratio for the brush's 0-100 feather scale."""
+    return 1.0 - 0.5 * _clamp(float(feather), 0.0, 100.0) / 100.0
+
+
+def compose_mask_overlay(
+    strength: QImage,
+    mode: str,
+    color: QColor,
+    base_image: QImage | None = None,
+) -> QImage:
+    """Build the visual overlay for a grayscale mask strength field.
+
+    This changes only how a mask is previewed. The grayscale mask itself stays
+    untouched and remains the source of truth for editing and export.
+    """
+    if strength.isNull():
+        return QImage()
+    alpha = strength.convertToFormat(QImage.Format.Format_Grayscale8)
+    width, height = alpha.width(), alpha.height()
+    normalized_mode = mode if mode in OVERLAY_DISPLAY_MODES else "color"
+    overlay_color = QColor(color)
+    if not overlay_color.isValid():
+        overlay_color = QColor(OVERLAY_RED)
+
+    def transparent_canvas() -> QImage:
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        return image
+
+    def solid_layer(fill: QColor, layer_alpha: QImage) -> QImage:
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        opaque = QColor(fill)
+        opaque.setAlpha(255)
+        image.fill(opaque)
+        image.setAlphaChannel(layer_alpha)
+        return image
+
+    def draw_tint(target: QImage) -> None:
+        tint = solid_layer(overlay_color, alpha)
+        painter = QPainter(target)
+        painter.setOpacity(overlay_color.alphaF())
+        painter.drawImage(0, 0, tint)
+        painter.end()
+
+    base: QImage | None = None
+    if base_image is not None and not base_image.isNull():
+        base = base_image.convertToFormat(QImage.Format.Format_ARGB32)
+        if base.size() != alpha.size():
+            base = base.scaled(
+                alpha.size(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+    if normalized_mode == "color" or (
+        normalized_mode in ("color-bw", "image-bw") and base is None
+    ):
+        result = transparent_canvas()
+        draw_tint(result)
+        return result
+
+    if normalized_mode == "color-bw":
+        result = base.convertToFormat(QImage.Format.Format_Grayscale8).convertToFormat(
+            QImage.Format.Format_ARGB32_Premultiplied
+        )
+        draw_tint(result)
+        return result
+
+    if normalized_mode == "image-bw":
+        result = base.convertToFormat(QImage.Format.Format_Grayscale8).convertToFormat(
+            QImage.Format.Format_ARGB32_Premultiplied
+        )
+        selected = base.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+        selected.setAlphaChannel(alpha)
+        painter = QPainter(result)
+        painter.drawImage(0, 0, selected)
+        painter.end()
+        return result
+
+    if normalized_mode in ("image-black", "image-white"):
+        outside = alpha.copy()
+        outside.invertPixels()
+        fill = QColor("#000000" if normalized_mode == "image-black" else "#ffffff")
+        return solid_layer(fill, outside)
+
+    # White mask strength on an opaque black field.
+    result = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    result.fill(QColor("#000000"))
+    selected = solid_layer(QColor("#ffffff"), alpha)
+    painter = QPainter(result)
+    painter.drawImage(0, 0, selected)
+    painter.end()
+    return result
 
 
 def paint_brush_stroke(
@@ -45,6 +158,7 @@ def paint_brush_stroke(
     end: QPointF,
     *,
     size: float,
+    feather: float = 0.0,
     flow: int,
     mode: str,
 ) -> None:
@@ -52,27 +166,62 @@ def paint_brush_stroke(
     if image.isNull() or flow <= 0 or mode not in ("add", "subtract"):
         return
     amount = max(0, min(255, int(round(255 * flow / 100.0))))
+    feather = _clamp(float(feather), 0.0, 100.0)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    if mode == "add":
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-        color = QColor(amount, amount, amount)
-    else:
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        color = QColor(0, 0, 0, amount)
-    painter.setPen(
-        QPen(
-            color,
-            max(1.0, float(size)),
-            Qt.PenStyle.SolidLine,
-            Qt.PenCapStyle.RoundCap,
-            Qt.PenJoinStyle.RoundJoin,
+    if feather <= 0.0:
+        if mode == "add":
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Lighten)
+            color = QColor(amount, amount, amount)
+        else:
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Darken)
+            remaining = 255 - amount
+            color = QColor(remaining, remaining, remaining)
+        painter.setPen(
+            QPen(
+                color,
+                max(1.0, float(size)),
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+                Qt.PenJoinStyle.RoundJoin,
+            )
         )
-    )
-    if (end - start).manhattanLength() < 0.01:
-        painter.drawPoint(start)
+        if (end - start).manhattanLength() < 0.01:
+            painter.drawPoint(start)
+        else:
+            painter.drawLine(start, end)
+        painter.end()
+        return
+
+    if mode == "add":
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Lighten)
+        center_color = QColor(amount, amount, amount, 255)
+        edge_color = QColor(0, 0, 0, 255)
     else:
-        painter.drawLine(start, end)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Darken)
+        remaining = 255 - amount
+        center_color = QColor(remaining, remaining, remaining, 255)
+        edge_color = QColor(255, 255, 255, 255)
+    radius = max(0.5, float(size) / 2.0)
+    core_stop = _brush_core_ratio(feather)
+    distance = math.hypot(end.x() - start.x(), end.y() - start.y())
+    step = max(1.0, radius * 0.25)
+    segment_count = max(1, int(math.ceil(distance / step)))
+    dab_count = 1 if distance < 0.01 else segment_count + 1
+    painter.setPen(Qt.PenStyle.NoPen)
+    for index in range(dab_count):
+        ratio = 0.0 if dab_count == 1 else index / (dab_count - 1)
+        center = QPointF(
+            start.x() + (end.x() - start.x()) * ratio,
+            start.y() + (end.y() - start.y()) * ratio,
+        )
+        gradient = QRadialGradient(center, radius)
+        gradient.setColorAt(0.0, center_color)
+        if core_stop > 0.0:
+            gradient.setColorAt(core_stop, center_color)
+        gradient.setColorAt(1.0, edge_color)
+        painter.setBrush(QBrush(gradient))
+        painter.drawEllipse(center, radius, radius)
     painter.end()
 
 
@@ -131,10 +280,14 @@ def _paint_component_gray(
             painter.fillRect(0, 0, width, height, gradient)
     elif mask_type == "bitmap":
         painter.end()
-        path = str(params.get("assetPath") or params.get("path") or "")
-        if not path:
-            return None
-        bitmap = QImage(path)
+        live_bitmap = params.get("_liveBitmap")
+        bitmap = (
+            QImage(live_bitmap)
+            if isinstance(live_bitmap, QImage) and not live_bitmap.isNull()
+            else QImage(
+                str(params.get("assetPath") or params.get("path") or "")
+            )
+        )
         if bitmap.isNull():
             return None
         bitmap = bitmap.convertToFormat(QImage.Format.Format_Grayscale8)
@@ -236,6 +389,8 @@ class MaskOverlay(QWidget):
     bitmap_edited = Signal(object)
     # A click on the source image in an armed sampling mode.
     source_clicked = Signal(float, float)
+    # A detected scene region was clicked (category name).
+    scene_region_picked = Signal(str)
     # An edit drag ended; owners should persist the pending changes.
     edit_committed = Signal()
 
@@ -252,14 +407,23 @@ class MaskOverlay(QWidget):
         self._create_combine: str = "add"
         self._brush_mode: str | None = None
         self._brush_size = 25
+        self._brush_feather = 50
         self._brush_flow = 100
         self._bitmap_image: QImage | None = None
+        self._bitmap_revision = 0
+        self._bitmap_source_cache: dict[tuple[str, int | None], QImage] = {}
         self._interactive = False
         self._show_overlay = True
+        self._overlay_mode = "color"
+        self._overlay_color = QColor(OVERLAY_RED)
+        self._show_tools = True
         self._drag: dict[str, Any] | None = None
         self._hover_pos: QPointF | None = None
         self._strength_cache: QImage | None = None
         self._strength_cache_key: tuple | None = None
+        self._scene_index: SceneRegionIndex | None = None
+        self._scene_pick = False
+        self._scene_hover: str | None = None
         self._watched: QWidget | None = None
         self._set_pass_through(True)
 
@@ -298,7 +462,13 @@ class MaskOverlay(QWidget):
         create_combine: str = "add",
         brush_mode: str | None = None,
         brush_size: int = 25,
+        brush_feather: int = 50,
         brush_flow: int = 100,
+        scene_index: SceneRegionIndex | None = None,
+        scene_pick: bool = False,
+        overlay_mode: str = "color",
+        overlay_color: QColor | str | None = None,
+        show_tools: bool = True,
     ) -> None:
         """``mask_type``/``params`` describe the selected component (handles,
         hit-testing); ``components`` is the whole mask group whose union the
@@ -308,20 +478,52 @@ class MaskOverlay(QWidget):
         component is (type, params[, combine]); combine defaults to add."""
         self._interactive = bool(interactive)
         self._show_overlay = bool(show_overlay)
+        self._overlay_mode = (
+            overlay_mode if overlay_mode in OVERLAY_DISPLAY_MODES else "color"
+        )
+        candidate_color = QColor(overlay_color) if overlay_color is not None else QColor(OVERLAY_RED)
+        self._overlay_color = (
+            candidate_color if candidate_color.isValid() else QColor(OVERLAY_RED)
+        )
+        self._show_tools = bool(show_tools)
         self._create_mode = create_mode
         self._create_combine = create_combine or "add"
         self._brush_mode = brush_mode if brush_mode in ("add", "subtract") else None
         self._brush_size = max(1, int(brush_size))
+        self._brush_feather = max(0, min(100, int(brush_feather)))
         self._brush_flow = max(0, min(100, int(brush_flow)))
         self._mask_type = mask_type
         self._params = dict(params) if params else None
         self._bitmap_image = None
+        self._bitmap_revision = 0
         if self._mask_type == "bitmap" and self._params:
             path = str(self._params.get("assetPath") or self._params.get("path") or "")
             if path:
+                logger = perf_logger()
+                load_start = time.perf_counter() if logger.enabled else 0.0
                 image = QImage(path)
                 if not image.isNull():
-                    self._bitmap_image = image.convertToFormat(QImage.Format.Format_Grayscale8)
+                    self._bitmap_image = image.convertToFormat(
+                        QImage.Format.Format_Grayscale8
+                    )
+                    self._bitmap_source_cache[
+                        self._bitmap_cache_key(path)
+                    ] = self._bitmap_image
+                if logger.enabled and (
+                    "brushSize" in self._params or "brushFeather" in self._params
+                ):
+                    asset_bytes = 0
+                    try:
+                        asset_bytes = Path(path).stat().st_size
+                    except OSError:
+                        pass
+                    logger.duration(
+                        "brush.state.bitmap_load",
+                        (time.perf_counter() - load_start) * 1000.0,
+                        width=image.width(),
+                        height=image.height(),
+                        asset_bytes=asset_bytes,
+                    )
         if components is not None:
             self._components = [_component_parts(component) for component in components]
             self._selected_index = selected_index
@@ -332,10 +534,20 @@ class MaskOverlay(QWidget):
             self._components = []
             self._selected_index = None
         self._source_size = source_size
+        if scene_index is not self._scene_index:
+            self._scene_index = scene_index
+            self._scene_hover = None
+        self._scene_pick = bool(scene_pick) and self._scene_index is not None
+        if not self._scene_pick:
+            self._scene_hover = None
         accepts_mouse = self._interactive and source_size is not None and (
             self._create_mode is not None
-            or self._params is not None
+            or (
+                self._mask_type in ("radial", "linear-gradient")
+                and self._params is not None
+            )
             or (self._mask_type == "bitmap" and self._brush_mode is not None)
+            or self._scene_pick
         )
         self._set_pass_through(not accepts_mouse)
         if not accepts_mouse:
@@ -369,38 +581,76 @@ class MaskOverlay(QWidget):
         return pos.x() / scales[0], pos.y() / scales[1]
 
     # -- painting -------------------------------------------------------------
+    @staticmethod
+    def _bitmap_cache_key(path: str) -> tuple[str, int | None]:
+        try:
+            return path, Path(path).stat().st_mtime_ns
+        except OSError:
+            return path, None
+
+    def _cached_component_bitmap(self, params: dict[str, Any]) -> QImage | None:
+        path = str(params.get("assetPath") or params.get("path") or "")
+        if not path:
+            return None
+        key = self._bitmap_cache_key(path)
+        cached = self._bitmap_source_cache.get(key)
+        if cached is not None and not cached.isNull():
+            return cached
+        image = QImage(path)
+        if image.isNull():
+            return None
+        converted = image.convertToFormat(QImage.Format.Format_Grayscale8)
+        if len(self._bitmap_source_cache) >= 16:
+            self._bitmap_source_cache.clear()
+        self._bitmap_source_cache[key] = converted
+        return converted
+
     def _effective_components(self) -> list[tuple[str, dict[str, Any], str]]:
         """Group components with the selected component's live (possibly
         mid-drag) params substituted in; an in-progress create is appended."""
         components = [(t, dict(p), c) for t, p, c in self._components]
-        if self._mask_type == "bitmap" and self._bitmap_image is not None and self._params is not None:
-            # During a brush stroke, write a small temp-less in-memory view by
-            # leaving the component path as-is for cached draws. The live red
-            # overlay catches up after bitmap_edited persists and set_state is
-            # called again; painting feedback is shown by the brush cursor.
-            pass
+        for index, (mask_type, params, combine) in enumerate(components):
+            if mask_type != "bitmap" or index == self._selected_index:
+                continue
+            bitmap = self._cached_component_bitmap(params)
+            if bitmap is not None:
+                params["_liveBitmap"] = bitmap
+                components[index] = (mask_type, params, combine)
+        selected_params = dict(self._params or {})
+        if self._mask_type == "bitmap" and self._bitmap_image is not None:
+            selected_params["_liveBitmap"] = self._bitmap_image
+            selected_params["_liveRevision"] = self._bitmap_revision
         if self._params is not None and self._mask_type is not None:
             if self._drag is not None and self._drag.get("mode") == "create":
-                components.append((self._mask_type, dict(self._params), self._create_combine))
+                components.append((self._mask_type, selected_params, self._create_combine))
             elif self._selected_index is not None and 0 <= self._selected_index < len(components):
                 combine = components[self._selected_index][2]
-                components[self._selected_index] = (self._mask_type, dict(self._params), combine)
+                components[self._selected_index] = (
+                    self._mask_type,
+                    selected_params,
+                    combine,
+                )
             elif not components:
-                components = [(self._mask_type, dict(self._params), "add")]
+                components = [(self._mask_type, selected_params, "add")]
         return components
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         if self._scales() is None:
             return
-        if self._params is None and not self._components:
-            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Painted first so a committed mask's red field reads on top of a
+        # candidate region, and painted even with no mask at all — hovering an
+        # empty canvas is the whole point of scene picking.
+        if self._scene_pick and self._scene_hover:
+            self._paint_scene_hover(painter)
+        if self._params is None and not self._components:
+            return
         if self._show_overlay:
             image = self._strength_image()
             if image is not None:
                 painter.drawImage(self.rect(), image)
-        if self._interactive and self._params is not None:
+        if self._interactive and self._show_tools and self._params is not None:
             if self._mask_type == "radial":
                 self._paint_radial_handles(painter)
             elif self._mask_type == "linear-gradient":
@@ -409,10 +659,25 @@ class MaskOverlay(QWidget):
                 self._paint_brush_cursor(painter)
         painter.end()
 
+    def _display_base_image(self, width: int, height: int) -> QImage | None:
+        pixmap_getter = getattr(self._watched, "pixmap", None)
+        pixmap = pixmap_getter() if callable(pixmap_getter) else None
+        if pixmap is None or pixmap.isNull():
+            return None
+        return pixmap.toImage().scaled(
+            width,
+            height,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _display_base_cache_key(self) -> int:
+        pixmap_getter = getattr(self._watched, "pixmap", None)
+        pixmap = pixmap_getter() if callable(pixmap_getter) else None
+        return int(pixmap.cacheKey()) if pixmap is not None and not pixmap.isNull() else 0
+
     def _strength_image(self) -> QImage | None:
-        """Cached translucent red union of the group's strength fields at
-        capped resolution. Gray union (exact per-pixel max, photo_terminal
-        falloff math) becomes the red overlay's alpha channel."""
+        """Cached visual presentation of the selected group's strength field."""
         components = self._effective_components()
         if not components or self._source_size is None:
             return None
@@ -422,6 +687,7 @@ class MaskOverlay(QWidget):
                 sorted(
                     (k, round(float(v), 3) if isinstance(v, (int, float)) else str(v))
                     for k, v in params.items()
+                    if k != "_liveBitmap"
                 )
             )
             asset_path = str(params.get("assetPath") or params.get("path") or "")
@@ -437,25 +703,104 @@ class MaskOverlay(QWidget):
             self.width(),
             self.height(),
             self._source_size,
+            self._overlay_mode,
+            int(self._overlay_color.rgba()),
+            self._display_base_cache_key(),
         )
         if key == self._strength_cache_key and self._strength_cache is not None:
             return self._strength_cache
 
-        scale_down = min(1.0, STRENGTH_CACHE_EDGE / max(self.width(), self.height()))
+        logger = perf_logger()
+        live_start = (
+            time.perf_counter()
+            if logger.enabled
+            and self._drag is not None
+            and self._drag.get("mode") == "brush"
+            else 0.0
+        )
+        cache_edge = (
+            LIVE_BRUSH_CACHE_EDGE
+            if self._drag is not None and self._drag.get("mode") == "brush"
+            else STRENGTH_CACHE_EDGE
+        )
+        scale_down = min(1.0, cache_edge / max(self.width(), self.height()))
         cw = max(1, int(round(self.width() * scale_down)))
         ch = max(1, int(round(self.height() * scale_down)))
         gray = build_group_strength(
-            components, cw, ch, self._source_size, level_scale=MAX_ALPHA / 255.0
+            components, cw, ch, self._source_size, level_scale=1.0
         )
         if gray is None:
             return None
-        image = QImage(cw, ch, QImage.Format.Format_ARGB32)
-        image.fill(OVERLAY_RED)
-        image.setAlphaChannel(gray)
+        image = compose_mask_overlay(
+            gray.convertToFormat(QImage.Format.Format_Grayscale8),
+            self._overlay_mode,
+            self._overlay_color,
+            self._display_base_image(cw, ch),
+        )
 
         self._strength_cache = image
         self._strength_cache_key = key
+        if live_start and self._drag is not None:
+            elapsed_ms = (time.perf_counter() - live_start) * 1000.0
+            self._drag["perf_live_frames"] = int(
+                self._drag.get("perf_live_frames") or 0
+            ) + 1
+            self._drag["perf_live_ms"] = float(
+                self._drag.get("perf_live_ms") or 0.0
+            ) + elapsed_ms
+            self._drag["perf_live_max_ms"] = max(
+                float(self._drag.get("perf_live_max_ms") or 0.0),
+                elapsed_ms,
+            )
         return image
+
+    # -- scene regions --------------------------------------------------------
+    def _scene_category_at(self, pos: QPointF) -> str | None:
+        """Detected region under ``pos``, unless a mask handle claims it —
+        reshaping the mask you already have beats picking a new one."""
+        if not self._scene_pick or self._scene_index is None:
+            return None
+        if self._create_mode is not None or self._brush_mode is not None:
+            return None
+        if self._hit_test(pos) is not None:
+            return None
+        source_x, source_y = self._to_source(pos)
+        return self._scene_index.category_at(
+            source_x,
+            source_y,
+            coordinate_size=self._source_size,
+        )
+
+    def _refresh_scene_hover(self, pos: QPointF | None) -> bool:
+        category = self._scene_category_at(pos) if pos is not None else None
+        if category == self._scene_hover:
+            return False
+        self._scene_hover = category
+        return True
+
+    def _paint_scene_hover(self, painter: QPainter) -> None:
+        if self._scene_index is None or not self._scene_hover:
+            return
+        highlight = self._scene_index.highlight(
+            self._scene_hover, self.width(), self.height()
+        )
+        if highlight is not None:
+            painter.drawImage(self.rect(), highlight)
+        if self._hover_pos is None:
+            return
+        text = f"{self._scene_index.label_for(self._scene_hover)}  ·  click to mask"
+        metrics = QFontMetricsF(painter.font())
+        width = metrics.horizontalAdvance(text) + CHIP_PAD * 2
+        height = metrics.height() + CHIP_PAD
+        # Prefer above-right of the cursor, then flip back inside the canvas.
+        left = min(self._hover_pos.x() + CHIP_GAP, self.width() - width - 2)
+        top = min(max(2.0, self._hover_pos.y() - height - CHIP_GAP), self.height() - height - 2)
+        chip = QRectF(max(2.0, left), max(2.0, top), width, height)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(20, 20, 20, 225))
+        painter.drawRoundedRect(chip, 4, 4)
+        painter.setPen(QPen(QColor(240, 240, 240)))
+        painter.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
 
     def _handle_pen(self) -> tuple[QPen, QPen]:
         halo = QPen(QColor(0, 0, 0, 140), 3.0)
@@ -541,11 +886,18 @@ class MaskOverlay(QWidget):
             return
         radius_x = max(2.0, self._brush_size * scales[0] / 2.0)
         radius_y = max(2.0, self._brush_size * scales[1] / 2.0)
+        core_ratio = _brush_core_ratio(self._brush_feather)
         halo, line = self._handle_pen()
         for pen in (halo, line):
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(pos, radius_x, radius_y)
+            if core_ratio < 0.995:
+                painter.drawEllipse(
+                    pos,
+                    radius_x * core_ratio,
+                    radius_y * core_ratio,
+                )
 
     # -- geometry helpers -----------------------------------------------------
     def _radial_display_parts(self) -> dict[str, Any] | None:
@@ -649,7 +1001,29 @@ class MaskOverlay(QWidget):
             mode = None
         if self._mask_type == "bitmap" and self._brush_mode is not None and self._bitmap_image is not None:
             source_pos = QPointF(*self._to_source(pos))
-            self._drag = {"mode": "brush", "pos": pos, "last_src": source_pos}
+            logger = perf_logger()
+            self._drag = {
+                "mode": "brush",
+                "pos": pos,
+                "last_src": source_pos,
+                "perf_started": time.perf_counter() if logger.enabled else 0.0,
+                "perf_segments": 0,
+                "perf_raster_ms": 0.0,
+                "perf_raster_max_ms": 0.0,
+                "perf_live_frames": 0,
+                "perf_live_ms": 0.0,
+                "perf_live_max_ms": 0.0,
+            }
+            if logger.enabled:
+                logger.log(
+                    "brush.stroke_start",
+                    mode=self._brush_mode,
+                    size=self._brush_size,
+                    feather=self._brush_feather,
+                    flow=self._brush_flow,
+                    source_width=self._bitmap_image.width(),
+                    source_height=self._bitmap_image.height(),
+                )
             self._paint_bitmap_at(pos)
             event.accept()
             return
@@ -686,6 +1060,11 @@ class MaskOverlay(QWidget):
             self.update()
             event.accept()
             return
+        category = self._scene_category_at(pos)
+        if category:
+            self.scene_region_picked.emit(category)
+            event.accept()
+            return
         event.ignore()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -693,6 +1072,7 @@ class MaskOverlay(QWidget):
         if self._drag is None:
             if self._interactive:
                 self._hover_pos = pos
+                self._refresh_scene_hover(pos)
                 self._update_hover_cursor(pos)
                 self.update()
             event.ignore()
@@ -722,7 +1102,39 @@ class MaskOverlay(QWidget):
         if drag["mode"] == "create" and self._params is not None:
             self.mask_created.emit(self._mask_type or "radial", dict(self._params))
         elif drag["mode"] == "brush" and self._bitmap_image is not None:
+            logger = perf_logger()
+            commit_start = time.perf_counter() if logger.enabled else 0.0
             self.bitmap_edited.emit(self._bitmap_image)
+            if logger.enabled:
+                commit_ms = (time.perf_counter() - commit_start) * 1000.0
+                started = float(drag.get("perf_started") or commit_start)
+                segments = int(drag.get("perf_segments") or 0)
+                raster_ms = float(drag.get("perf_raster_ms") or 0.0)
+                live_frames = int(drag.get("perf_live_frames") or 0)
+                live_ms = float(drag.get("perf_live_ms") or 0.0)
+                logger.duration(
+                    "brush.stroke_complete",
+                    (time.perf_counter() - started) * 1000.0,
+                    mode=self._brush_mode,
+                    segments=segments,
+                    raster_total_ms=round(raster_ms, 3),
+                    raster_average_ms=round(raster_ms / max(1, segments), 3),
+                    raster_max_ms=round(
+                        float(drag.get("perf_raster_max_ms") or 0.0), 3
+                    ),
+                    live_overlay_frames=live_frames,
+                    live_overlay_total_ms=round(live_ms, 3),
+                    live_overlay_average_ms=round(
+                        live_ms / max(1, live_frames), 3
+                    ),
+                    live_overlay_max_ms=round(
+                        float(drag.get("perf_live_max_ms") or 0.0), 3
+                    ),
+                    commit_signal_ms=round(commit_ms, 3),
+                    source_width=self._bitmap_image.width(),
+                    source_height=self._bitmap_image.height(),
+                )
+                logger.flush()
         elif self._params is not None:
             self.mask_edited.emit(dict(self._params))
             self.edit_committed.emit()
@@ -730,6 +1142,7 @@ class MaskOverlay(QWidget):
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._hover_pos = None
+        self._scene_hover = None
         self.update()
         super().leaveEvent(event)
 
@@ -808,6 +1221,8 @@ class MaskOverlay(QWidget):
         if mode is None:
             if self._create_mode is not None:
                 self.setCursor(Qt.CursorShape.CrossCursor)
+            elif self._scene_hover:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
             else:
                 self.unsetCursor()
             return
@@ -831,11 +1246,27 @@ class MaskOverlay(QWidget):
         if self._drag is not None and isinstance(self._drag.get("last_src"), QPointF):
             previous = self._drag["last_src"]
             self._drag["last_src"] = current
+        logger = perf_logger()
+        raster_start = time.perf_counter() if logger.enabled else 0.0
         paint_brush_stroke(
             self._bitmap_image,
             previous,
             current,
             size=self._brush_size,
+            feather=self._brush_feather,
             flow=self._brush_flow,
             mode=self._brush_mode or "add",
         )
+        self._bitmap_revision += 1
+        if logger.enabled and self._drag is not None:
+            elapsed_ms = (time.perf_counter() - raster_start) * 1000.0
+            self._drag["perf_segments"] = int(
+                self._drag.get("perf_segments") or 0
+            ) + 1
+            self._drag["perf_raster_ms"] = float(
+                self._drag.get("perf_raster_ms") or 0.0
+            ) + elapsed_ms
+            self._drag["perf_raster_max_ms"] = max(
+                float(self._drag.get("perf_raster_max_ms") or 0.0),
+                elapsed_ms,
+            )

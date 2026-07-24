@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
+from functools import lru_cache
 import json
 import math
 from pathlib import Path
 from typing import Any, Optional, Tuple, Union
 
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 
@@ -65,11 +67,24 @@ class EditRecipe:
     luminance_noise: float = 0.0
     color_noise: float = 0.0
     vignette: float = 0.0
+    # Post-crop vignette shape. Midpoint/feather are 0..100 (50 = neutral),
+    # roundness is -100 (frame-shaped) .. 100 (circular), highlights 0..100
+    # protects bright pixels from the effect.
+    vignette_midpoint: float = 50.0
+    vignette_roundness: float = 0.0
+    vignette_feather: float = 50.0
+    vignette_highlights: float = 0.0
     texture: float = 0.0
     grain: float = 0.0
     curve_shadows: float = 0.0
     curve_mids: float = 0.0
     curve_highlights: float = 0.0
+    # Photoshop-style point curves: [[x, y], ...] in 0..255, or None/[] for
+    # identity. ``curve_rgb`` is the composite; the others are per channel.
+    curve_rgb: Optional[list] = None
+    curve_red: Optional[list] = None
+    curve_green: Optional[list] = None
+    curve_blue: Optional[list] = None
     red_saturation: float = 0.0
     orange_saturation: float = 0.0
     yellow_saturation: float = 0.0
@@ -92,6 +107,9 @@ class EditRecipe:
         kwargs = {key: value for key, value in data.items() if key in valid}
         if kwargs.get("crop") is not None:
             kwargs["crop"] = tuple(int(v) for v in kwargs["crop"])
+        for curve_key in ("curve_rgb", "curve_red", "curve_green", "curve_blue"):
+            if kwargs.get(curve_key) is not None:
+                kwargs[curve_key] = normalize_curve_points(kwargs[curve_key]) or None
         return cls(**kwargs)
 
     @classmethod
@@ -108,8 +126,12 @@ class EditRecipe:
 
     def merged(self, override: "EditRecipe") -> "EditRecipe":
         base = asdict(self)
+        defaults = {field.name: field.default for field in fields(self)}
         for key, value in asdict(override).items():
-            if value not in (0, 0.0, None):
+            # An override counts only when it differs from the field default.
+            # Plain zero-checking breaks fields whose neutral value is not zero
+            # (the vignette shape controls sit at 50).
+            if value != defaults.get(key, 0):
                 base[key] = value
         return EditRecipe.from_dict(base)
 
@@ -209,10 +231,25 @@ class EditRecipe:
         if self.curve_shadows or self.curve_mids or self.curve_highlights:
             working = apply_tone_curve(working, self.curve_shadows, self.curve_mids, self.curve_highlights)
 
+        if not all(
+            is_identity_curve(points)
+            for points in (self.curve_rgb, self.curve_red, self.curve_green, self.curve_blue)
+        ):
+            working = apply_point_curves(
+                working, self.curve_rgb, self.curve_red, self.curve_green, self.curve_blue
+            )
+
         if self.vignette_correction:
             working = apply_vignette(working, -_clamp_percent(self.vignette_correction) / 100.0)
         if self.vignette:
-            working = apply_vignette(working, _clamp_percent(self.vignette) / 100.0)
+            working = apply_vignette(
+                working,
+                _clamp_percent(self.vignette) / 100.0,
+                midpoint=self.vignette_midpoint,
+                roundness=self.vignette_roundness,
+                feather=self.vignette_feather,
+                highlights=self.vignette_highlights,
+            )
         if self.chromatic_aberration:
             working = reduce_chromatic_aberration(working, self.chromatic_aberration)
         if self.grain:
@@ -231,24 +268,91 @@ def apply_white_balance(image: Image.Image, temperature: float, tint: float) -> 
     return Image.merge("RGB", (red, green, blue))
 
 
-def apply_vignette(image: Image.Image, amount: float) -> Image.Image:
-    width, height = image.size
-    center_x = width / 2.0
-    center_y = height / 2.0
-    max_distance = math.sqrt(center_x * center_x + center_y * center_y)
-    mask = Image.new("L", image.size, 0)
-    pixels = mask.load()
+VIGNETTE_MAX_STOPS = 2.0
+VIGNETTE_DEFAULTS = {"midpoint": 50.0, "roundness": 0.0, "feather": 50.0, "highlights": 0.0}
 
-    for y in range(height):
-        for x in range(width):
-            distance = math.sqrt((x - center_x) ** 2 + (y - center_y) ** 2) / max_distance
-            value = max(0.0, min(1.0, (distance - 0.22) / 0.78)) ** 1.8
-            pixels[x, y] = _clamp_byte(value * 255 * min(1.0, abs(amount)))
 
-    if amount > 0:
-        adjusted = ImageEnhance.Brightness(image).enhance(0.45)
+@lru_cache(maxsize=8)
+def _vignette_falloff(
+    width: int, height: int, midpoint: float, roundness: float, feather: float
+) -> Image.Image:
+    """Frame-shaped falloff, 0 in the protected centre and 255 at the corners.
+
+    Cached because it depends only on the frame and the shape controls — never
+    on Amount — so dragging Amount costs one PIL composite and nothing else.
+    """
+    shape = max(-1.0, min(1.0, roundness / 100.0))
+    if shape >= 0.0:
+        # Toward a true circle in *pixel* space: scaling the normalized axes by
+        # the frame's own proportions stops the contours tracking the aspect
+        # ratio, which is why the old fixed formula bit harder on the long edge.
+        longest = float(max(width, height, 1))
+        scale_x = 1.0 + shape * (width / longest - 1.0)
+        scale_y = 1.0 + shape * (height / longest - 1.0)
+        power = 2.0
     else:
-        adjusted = ImageEnhance.Brightness(image).enhance(1.35)
+        # Toward the frame shape: a superellipse with a rising exponent squares
+        # the corners off.
+        scale_x = scale_y = 1.0
+        power = 2.0 + (-shape) * 6.0
+
+    ys, xs = np.ogrid[0:height, 0:width]
+    norm_x = np.abs(xs * (2.0 / max(1, width - 1)) - 1.0).astype(np.float32) * scale_x
+    norm_y = np.abs(ys * (2.0 / max(1, height - 1)) - 1.0).astype(np.float32) * scale_y
+    if power == 2.0:
+        radius = np.sqrt(norm_x * norm_x + norm_y * norm_y)
+        corner = math.sqrt(scale_x * scale_x + scale_y * scale_y)
+    else:
+        radius = (norm_x**power + norm_y**power) ** (1.0 / power)
+        corner = (scale_x**power + scale_y**power) ** (1.0 / power)
+    radius = radius / corner  # 1.0 at the corners whatever the shape
+
+    centre = max(0.0, min(1.0, midpoint / 100.0))
+    half_width = 0.02 + max(0.0, min(1.0, feather / 100.0)) * 0.6
+    inner = centre - half_width
+    ramp = np.clip((radius - inner) / max(1e-6, 2.0 * half_width), 0.0, 1.0)
+    # Smoothstep instead of the old clipped x**1.8 ramp: that one only reached
+    # full strength at the literal corner pixel and left a kink where it hit 0.
+    ramp = ramp * ramp * (3.0 - 2.0 * ramp)
+    return Image.fromarray(np.rint(ramp * 255.0).astype(np.uint8), "L")
+
+
+def _vignette_highlight_guard(image: Image.Image, highlights: float) -> Image.Image:
+    """Attenuates the falloff over already-bright pixels, so a strong vignette
+    darkens the sky without swallowing the sun (and a negative one does not
+    blow the corners straight to white)."""
+    strength = max(0.0, min(1.0, highlights / 100.0))
+    lut = [_clamp_byte(255.0 * (1.0 - strength * (index / 255.0) ** 2)) for index in range(256)]
+    return image.convert("L").point(lut)
+
+
+def apply_vignette(
+    image: Image.Image,
+    amount: float,
+    *,
+    midpoint: float = 50.0,
+    roundness: float = 0.0,
+    feather: float = 50.0,
+    highlights: float = 0.0,
+) -> Image.Image:
+    """Post-crop vignette. ``amount`` is -1..1, positive darkens the corners."""
+    amount = max(-1.0, min(1.0, float(amount)))
+    if amount == 0.0:
+        return image
+    width, height = image.size
+    mask = _vignette_falloff(
+        width,
+        height,
+        round(float(midpoint), 2),
+        round(float(roundness), 2),
+        round(float(feather), 2),
+    )
+    if highlights > 0.0:
+        mask = ImageChops.multiply(mask, _vignette_highlight_guard(image, highlights))
+    # Symmetric in stops. The old fixed 0.45/1.35 brightness pair meant +100 was
+    # -1.15 EV while -100 was only +0.43 EV, so a negative vignette barely
+    # registered on anything but a dark frame.
+    adjusted = ImageEnhance.Brightness(image).enhance(2.0 ** (-VIGNETTE_MAX_STOPS * amount))
     return _composite_adjusted(image, adjusted, mask)
 
 
@@ -286,6 +390,104 @@ def reduce_color_noise(image: Image.Image, amount: float) -> Image.Image:
     return Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
 
 
+IDENTITY_CURVE: Tuple[Tuple[int, int], ...] = ((0, 0), (255, 255))
+
+
+def normalize_curve_points(points: Any) -> list[list[int]]:
+    """Coerce control points to sorted, deduplicated, in-range [[x, y], ...]."""
+    if not points:
+        return []
+    cleaned: dict[int, int] = {}
+    for point in points:
+        try:
+            x, y = point
+        except (TypeError, ValueError):
+            continue
+        xi = max(0, min(255, int(round(float(x)))))
+        yi = max(0, min(255, int(round(float(y)))))
+        cleaned[xi] = yi
+    return [[x, cleaned[x]] for x in sorted(cleaned)]
+
+
+def is_identity_curve(points: Any) -> bool:
+    normalized = normalize_curve_points(points)
+    if not normalized:
+        return True
+    return normalized == [[0, 0], [255, 255]]
+
+
+def curve_lut(points: Any) -> list[int]:
+    """256-entry lookup table through ``points`` using monotone cubic (Fritsch-
+    Carlson) interpolation — smooth like Photoshop's curve but guaranteed not to
+    overshoot or wobble between control points. Values outside the control range
+    are clamped to the nearest endpoint."""
+    pts = normalize_curve_points(points)
+    if len(pts) < 2:
+        return list(range(256))
+    xs = [float(p[0]) for p in pts]
+    ys = [float(p[1]) for p in pts]
+    n = len(xs)
+    h = [xs[i + 1] - xs[i] for i in range(n - 1)]
+    delta = [(ys[i + 1] - ys[i]) / h[i] for i in range(n - 1)]
+
+    # Tangents: interior points use the weighted harmonic mean, and any local
+    # extremum gets a zero tangent so the curve stays monotone between points.
+    m = [0.0] * n
+    m[0] = delta[0]
+    m[n - 1] = delta[-1]
+    for i in range(1, n - 1):
+        if delta[i - 1] * delta[i] <= 0.0:
+            m[i] = 0.0
+        else:
+            w1 = 2.0 * h[i] + h[i - 1]
+            w2 = h[i] + 2.0 * h[i - 1]
+            m[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i])
+
+    lut: list[int] = []
+    segment = 0
+    for x in range(256):
+        if x <= xs[0]:
+            lut.append(_clamp_byte(ys[0]))
+            continue
+        if x >= xs[-1]:
+            lut.append(_clamp_byte(ys[-1]))
+            continue
+        while segment < n - 2 and x > xs[segment + 1]:
+            segment += 1
+        span = h[segment]
+        t = (x - xs[segment]) / span
+        t2 = t * t
+        t3 = t2 * t
+        value = (
+            (2 * t3 - 3 * t2 + 1) * ys[segment]
+            + (t3 - 2 * t2 + t) * span * m[segment]
+            + (-2 * t3 + 3 * t2) * ys[segment + 1]
+            + (t3 - t2) * span * m[segment + 1]
+        )
+        lut.append(_clamp_byte(value))
+    return lut
+
+
+def apply_point_curves(
+    image: Image.Image,
+    rgb: Any = None,
+    red: Any = None,
+    green: Any = None,
+    blue: Any = None,
+) -> Image.Image:
+    """Apply Photoshop-style point curves. Each channel is mapped by its own
+    curve first, then the composite RGB curve is applied on top, so the RGB
+    curve shapes the combined result exactly as it does in Photoshop."""
+    if all(is_identity_curve(points) for points in (rgb, red, green, blue)):
+        return image
+    composite = curve_lut(rgb)
+    per_channel = (curve_lut(red), curve_lut(green), curve_lut(blue))
+    combined: list[int] = []
+    for channel_lut in per_channel:
+        combined.extend(composite[channel_lut[value]] for value in range(256))
+    return image.convert("RGB").point(combined)
+
+
 def apply_tone_curve(image: Image.Image, shadows: float, mids: float, highlights: float) -> Image.Image:
     shadows = _clamp_percent(shadows) / 100.0
     mids = _clamp_percent(mids) / 100.0
@@ -314,23 +516,29 @@ def apply_hsl_adjustments(image: Image.Image, recipe: EditRecipe) -> Image.Image
         ((176, 210), recipe.purple_saturation),
         ((211, 255), recipe.magenta_saturation),
     )
-    hp = h.load()
-    sp = s.load()
-    vp = v.load()
     lum = _clamp_percent(recipe.hsl_luminance) / 100.0
-    for y in range(image.height):
-        for x in range(image.width):
-            hue = hp[x, y]
-            sat_delta = 0.0
-            for (low, high), amount in hue_ranges:
-                if low <= hue <= high:
-                    sat_delta = _clamp_percent(amount) / 100.0
-                    break
-            if sat_delta:
-                sp[x, y] = _clamp_byte(sp[x, y] * (1.0 + sat_delta))
-            if lum:
-                vp[x, y] = _clamp_byte(vp[x, y] * (1.0 + lum * 0.35))
-    return Image.merge("HSV", (h, s, v)).convert("RGB")
+    # Vectorized replacement for the former per-pixel Python loop (byte-identical).
+    # Per-hue saturation is a 256-entry lookup by hue; ranges are contiguous and
+    # non-overlapping, so first-match ordering is preserved.
+    hue_arr = np.asarray(h, dtype=np.uint8)
+    s_arr = np.asarray(s, dtype=np.float64)
+    v_arr = np.asarray(v, dtype=np.float64)
+    sat_lut = np.zeros(256, dtype=np.float64)
+    for (low, high), amount in hue_ranges:
+        sat_lut[low : high + 1] = _clamp_percent(amount) / 100.0
+    sat_delta = sat_lut[hue_arr]
+    # round(s*1)==s where sat_delta is 0, so applying everywhere matches the
+    # loop's "only touch pixels whose hue is in a band" behaviour exactly.
+    s_new = np.clip(np.rint(s_arr * (1.0 + sat_delta)), 0, 255).astype(np.uint8)
+    if lum:
+        v_new = np.clip(np.rint(v_arr * (1.0 + lum * 0.35)), 0, 255).astype(np.uint8)
+    else:
+        v_new = np.asarray(v, dtype=np.uint8)
+    merged = Image.merge(
+        "HSV",
+        (h, Image.fromarray(s_new, "L"), Image.fromarray(v_new, "L")),
+    )
+    return merged.convert("RGB")
 
 
 def apply_grain(image: Image.Image, amount: float) -> Image.Image:

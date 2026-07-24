@@ -88,5 +88,6 @@ Values are intentionally Camera Raw-like:
 - `exposure`: EV stops, usually `-2` to `2`
 - `contrast`, `highlights`, `shadows`, `whites`, `blacks`: `-100` to `100`
 - `temperature`, `tint`, `vibrance`, `saturation`, `clarity`, `dehaze`, `sharpen`, `denoise`, `vignette`: `-100` to `100`
+- `vignette` is `+` to darken the corners and `-` to lighten them, two stops at either end. Its shape is set by `--vignette-midpoint` and `--vignette-feather` (`0..100`, `50` neutral), `--vignette-roundness` (`-100` frame-shaped to `100` circular), and `--vignette-highlights` (`0..100`, how far bright pixels are spared)
 
 This is not intended to replace a full raw processor yet. It gives you fast terminal edits for proofing and minor cleanup. The current pipeline is Pillow-only, which keeps the CLI light and easy to embed later.
