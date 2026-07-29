@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 METRIC_PREFIX = "AI_METRIC "
@@ -28,6 +29,25 @@ def emit_metric(event: str, **fields: object) -> None:
     payload: dict[str, object] = {"event": event}
     payload.update({key: _safe_metric_value(value) for key, value in fields.items()})
     print(METRIC_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+@contextmanager
+def metric_span(event: str, **fields: object) -> Iterator[dict]:
+    """Time a block and emit ``event`` with its duration when metrics are on.
+
+    Yields a dict the caller can populate with results known only after the
+    block (counts, sizes); those merge into the emitted fields. Zero overhead
+    when metrics are disabled.
+    """
+    if not metrics_enabled():
+        yield {}
+        return
+    extra: dict[str, object] = {}
+    start = time.perf_counter()
+    try:
+        yield extra
+    finally:
+        emit_metric(event, duration_ms=now_ms(start), **{**fields, **extra})
 
 
 def _safe_metric_value(value: object) -> object:

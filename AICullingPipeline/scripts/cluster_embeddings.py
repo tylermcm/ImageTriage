@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 import sys
+import time
 from typing import Optional
 
 
@@ -14,8 +16,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+def _emit_startup_metric(event: str, **fields: object) -> None:
+    if (os.environ.get("IMAGE_TRIAGE_AI_METRICS", "") or "").strip().casefold() not in {"1", "true", "yes", "on"}:
+        return
+    payload = {"event": event}
+    payload.update(fields)
+    print("AI_METRIC " + json.dumps(payload, default=str), flush=True)
+
+
+_dependency_start = time.perf_counter()
+_emit_startup_metric("ai.script.cluster.dependencies_start")
 from app.engine import ClusteringConfig, run_similarity_clustering
 from app.utils.logging_utils import setup_logging
+from app.utils.perf_metrics import emit_metric, now_ms
+_emit_startup_metric("ai.script.cluster.dependencies", duration_ms=(time.perf_counter() - _dependency_start) * 1000.0)
 
 
 def parse_args() -> argparse.Namespace:
@@ -208,8 +223,10 @@ def main() -> None:
         log_file=config.output_dir / "cluster_embeddings.log",
     )
 
+    run_start = time.perf_counter()
     try:
         outputs = run_similarity_clustering(config)
+        emit_metric("ai.script.cluster.total", duration_ms=now_ms(run_start))
 
         summary = json.loads(
             Path(outputs["summary"]).read_text(encoding="utf-8")
