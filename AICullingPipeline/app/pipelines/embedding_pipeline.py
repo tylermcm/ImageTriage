@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 import time
 
@@ -164,12 +165,18 @@ class EmbeddingExtractionPipeline:
         """Run batched inference and return the final embedding matrix."""
 
         collect_timings = metrics_enabled()
+        # Opt-in fusion: compute technical signals from the same decode and
+        # pre-populate the signals-stage cache. Off by default (a scoring change
+        # that must be validated by ranking first).
+        fuse_technical = _fuse_technical_enabled()
         dataloader_setup_start = time.perf_counter()
         dataset = ImageDataset(
             valid_records,
             extractor.transform,
             collect_timings=collect_timings,
             target_short_edge=max(extractor.preprocessing.height, extractor.preprocessing.width),
+            compute_technical=fuse_technical,
+            technical_max_side=_fuse_technical_max_side(),
         )
         loader_kwargs = dict(
             dataset=dataset,
@@ -195,6 +202,7 @@ class EmbeddingExtractionPipeline:
         )
 
         embedding_batches: list[np.ndarray] = []
+        technical_entries: list = []
         next_embedding_index = 0
         batch_index = 0
         dataloader_wait_total_ms = 0.0
@@ -313,9 +321,19 @@ class EmbeddingExtractionPipeline:
                     tensor_shape=list(pixel_values.shape),
                     device=str(extractor.device),
                 )
+                technical_entries.extend(batch.get("technical") or [])
                 progress.update(processed_count)
         finally:
             progress.close()
+
+        if fuse_technical and technical_entries:
+            try:
+                from app.engine.signals.technical import populate_technical_cache
+
+                written = populate_technical_cache(self.config.output_dir, technical_entries)
+                emit_metric("ai.script.extract.technical_fused", written=written)
+            except Exception as exc:  # never let the cache write fail extraction
+                LOGGER.warning("Technical-signal fusion cache write failed: %s", exc)
 
         if not embedding_batches:
             emit_metric(
@@ -347,6 +365,23 @@ class EmbeddingExtractionPipeline:
             numpy_ms=numpy_total_ms,
         )
         return embeddings
+
+
+def _fuse_technical_enabled() -> bool:
+    return (os.environ.get("AICULLING_FUSE_TECHNICAL", "") or "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _fuse_technical_max_side() -> int:
+    raw = (os.environ.get("AICULLING_TECHNICAL_MAX_SIDE", "") or "").strip()
+    try:
+        return max(64, int(raw))
+    except ValueError:
+        return 768
 
 
 def _embedded_records(records: list[ImageRecord]) -> list[ImageRecord]:

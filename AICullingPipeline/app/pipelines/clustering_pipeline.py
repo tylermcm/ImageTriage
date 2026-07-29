@@ -16,6 +16,7 @@ from app.clustering.artifacts import (
 )
 from app.clustering.windowing import CandidateWindow
 from app.config import ClusteringConfig
+from app.utils.perf_metrics import metric_span
 
 
 LOGGER = logging.getLogger(__name__)
@@ -32,17 +33,23 @@ class SimilarityClusteringPipeline:
 
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
 
-        artifacts = load_embedding_artifacts(
-            self.config.artifacts_dir,
-            metadata_filename=self.config.metadata_filename,
-            embeddings_filename=self.config.embeddings_filename,
-            image_ids_filename=self.config.image_ids_filename,
-            enrich_missing_timestamps=self.config.enrich_missing_timestamps,
-            compute_perceptual_hashes=self.config.use_perceptual_hash_filter,
-            hash_size=self.config.hash_size,
-            compute_akaze_features=self.config.use_akaze_verifier,
-            akaze_max_side=self.config.akaze_max_side,
-        )
+        # load_embedding_artifacts also computes perceptual hashes and AKAZE
+        # features when enabled; those two sub-steps emit their own metrics.
+        with metric_span("ai.script.cluster.load_artifacts") as m:
+            artifacts = load_embedding_artifacts(
+                self.config.artifacts_dir,
+                metadata_filename=self.config.metadata_filename,
+                embeddings_filename=self.config.embeddings_filename,
+                image_ids_filename=self.config.image_ids_filename,
+                enrich_missing_timestamps=self.config.enrich_missing_timestamps,
+                compute_perceptual_hashes=self.config.use_perceptual_hash_filter,
+                hash_size=self.config.hash_size,
+                compute_akaze_features=self.config.use_akaze_verifier,
+                akaze_max_side=self.config.akaze_max_side,
+            )
+            m["images"] = len(artifacts.records)
+            m["perceptual_hashes"] = self.config.use_perceptual_hash_filter
+            m["akaze"] = self.config.use_akaze_verifier
         LOGGER.info(
             "Loaded %s embedded images from %s (%s timestamps available, %s missing).",
             len(artifacts.records),
@@ -51,7 +58,8 @@ class SimilarityClusteringPipeline:
             artifacts.timestamp_missing_count,
         )
 
-        normalized_embeddings = normalize_embeddings(artifacts.embeddings)
+        with metric_span("ai.script.cluster.normalize", images=len(artifacts.records)):
+            normalized_embeddings = normalize_embeddings(artifacts.embeddings)
         LOGGER.info(
             "Clustering with method=%s similarity_threshold=%.3f max_time_gap_seconds=%.1f time_filter_required=%s.",
             self.config.clustering_method,
@@ -59,46 +67,58 @@ class SimilarityClusteringPipeline:
             self.config.max_time_gap_seconds,
             self.config.time_filter_required,
         )
-        cluster_groups, windows = cluster_embeddings(
-            normalized_embeddings,
-            artifacts.records,
+        # The DINO similarity grouping itself — the dominant clustering cost, and
+        # where the phash/AKAZE/representative/relink gates are applied.
+        cluster_span = metric_span(
+            "ai.script.cluster.dino_grouping",
+            images=len(artifacts.records),
             method=self.config.clustering_method,
-            similarity_threshold=self.config.similarity_threshold,
-            dbscan_eps=self.config.dbscan_eps,
-            dbscan_min_samples=self.config.dbscan_min_samples,
-            minimum_cluster_size=self.config.minimum_cluster_size,
-            max_time_gap_seconds=self.config.max_time_gap_seconds,
-            time_filter_required=self.config.time_filter_required,
-            timestamp_fallback_mode=self.config.timestamp_fallback_mode,
-            filename_order_window=self.config.filename_order_window,
-            use_perceptual_hash_filter=self.config.use_perceptual_hash_filter,
-            max_hash_distance=self.config.max_hash_distance,
-            representative_gate_enabled=self.config.representative_gate_enabled,
-            representative_gate_min_cluster_size=self.config.representative_gate_min_cluster_size,
-            representative_min_matches=self.config.representative_min_matches,
-            use_akaze_verifier=self.config.use_akaze_verifier,
-            akaze_ratio_test_threshold=self.config.akaze_ratio_test_threshold,
-            akaze_min_good_matches=self.config.akaze_min_good_matches,
-            akaze_min_inliers=self.config.akaze_min_inliers,
-            akaze_min_inlier_ratio=self.config.akaze_min_inlier_ratio,
-            cluster_relink_enabled=self.config.cluster_relink_enabled,
-            cluster_relink_similarity_threshold=self.config.cluster_relink_similarity_threshold,
-            cluster_relink_centroid_threshold=self.config.cluster_relink_centroid_threshold,
-            cluster_relink_max_sequence_gap=self.config.cluster_relink_max_sequence_gap,
-            cluster_relink_min_matches=self.config.cluster_relink_min_matches,
         )
+        with cluster_span as m:
+            cluster_groups, windows = cluster_embeddings(
+                normalized_embeddings,
+                artifacts.records,
+                method=self.config.clustering_method,
+                similarity_threshold=self.config.similarity_threshold,
+                dbscan_eps=self.config.dbscan_eps,
+                dbscan_min_samples=self.config.dbscan_min_samples,
+                minimum_cluster_size=self.config.minimum_cluster_size,
+                max_time_gap_seconds=self.config.max_time_gap_seconds,
+                time_filter_required=self.config.time_filter_required,
+                timestamp_fallback_mode=self.config.timestamp_fallback_mode,
+                filename_order_window=self.config.filename_order_window,
+                use_perceptual_hash_filter=self.config.use_perceptual_hash_filter,
+                max_hash_distance=self.config.max_hash_distance,
+                representative_gate_enabled=self.config.representative_gate_enabled,
+                representative_gate_min_cluster_size=self.config.representative_gate_min_cluster_size,
+                representative_min_matches=self.config.representative_min_matches,
+                use_akaze_verifier=self.config.use_akaze_verifier,
+                akaze_ratio_test_threshold=self.config.akaze_ratio_test_threshold,
+                akaze_min_good_matches=self.config.akaze_min_good_matches,
+                akaze_min_inliers=self.config.akaze_min_inliers,
+                akaze_min_inlier_ratio=self.config.akaze_min_inlier_ratio,
+                cluster_relink_enabled=self.config.cluster_relink_enabled,
+                cluster_relink_similarity_threshold=self.config.cluster_relink_similarity_threshold,
+                cluster_relink_centroid_threshold=self.config.cluster_relink_centroid_threshold,
+                cluster_relink_max_sequence_gap=self.config.cluster_relink_max_sequence_gap,
+                cluster_relink_min_matches=self.config.cluster_relink_min_matches,
+            )
+            m["clusters"] = len(cluster_groups)
 
-        cluster_rows = _build_cluster_rows(artifacts, cluster_groups)
-        grouped_rows = _group_rows_by_cluster(cluster_rows)
-        summary = _build_summary(self.config, artifacts, cluster_groups, windows)
+        with metric_span("ai.script.cluster.build_rows") as m:
+            cluster_rows = _build_cluster_rows(artifacts, cluster_groups)
+            grouped_rows = _group_rows_by_cluster(cluster_rows)
+            summary = _build_summary(self.config, artifacts, cluster_groups, windows)
+            m["rows"] = len(cluster_rows)
 
         clusters_path = self.config.output_dir / self.config.clusters_filename
         summary_path = self.config.output_dir / self.config.summary_filename
         report_path = self.config.output_dir / self.config.report_filename
 
-        save_clusters_csv(clusters_path, cluster_rows)
-        save_cluster_summary(summary_path, summary)
-        save_cluster_report(report_path, summary=summary, grouped_rows=grouped_rows)
+        with metric_span("ai.script.cluster.save"):
+            save_clusters_csv(clusters_path, cluster_rows)
+            save_cluster_summary(summary_path, summary)
+            save_cluster_report(report_path, summary=summary, grouped_rows=grouped_rows)
 
         LOGGER.info(
             "Saved %s cluster assignments across %s clusters to %s.",

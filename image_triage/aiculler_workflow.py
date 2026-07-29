@@ -20,7 +20,14 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 
 from .ai_model import AICULLER_FACE_MODEL_REQUIRED_FILENAMES
 from .ai_runtime_packages import resolve_ai_runtime_site_packages
-from .ai_workflow import AIWorkflowPaths, AIWorkflowRuntime, build_ai_workflow_paths
+from .ai_workflow import (
+    AI_METRICS_ENV_VAR,
+    AIWorkflowPaths,
+    AIWorkflowRuntime,
+    build_ai_workflow_paths,
+    _log_ai_metric_payload,
+    _parse_ai_metric_line,
+)
 from .aiculler_global_store import (
     GlobalAdapterLabel,
     default_global_adapter_db_path,
@@ -1073,6 +1080,14 @@ class AICullerRunTask(QRunnable):
         if existing_pythonpath:
             path_entries.extend(part for part in existing_pythonpath.split(os.pathsep) if part)
         env["PYTHONPATH"] = os.pathsep.join(path_entries)
+        env[AI_METRICS_ENV_VAR] = "1" if logger.enabled else "0"
+        metric_context = {
+            "workflow": "dino_prefilter",
+            "run_id": self.run_id,
+            "folder": str(self.folder),
+            "stage": _stage_key_from_message(stage_message),
+            "stage_message": stage_message,
+        }
         process = subprocess.Popen(
             command,
             cwd=str(runtime.engine_root),
@@ -1106,6 +1121,9 @@ class AICullerRunTask(QRunnable):
             if not line:
                 continue
             output_lines.append(line)
+            metric_payload = _parse_ai_metric_line(line)
+            if metric_payload is not None:
+                _log_ai_metric_payload(metric_payload, context=metric_context)
             self._emit_detail(line)
             parsed = _parse_tqdm_progress(line)
             if parsed is not None:
@@ -1237,6 +1255,16 @@ class AICullerRunTask(QRunnable):
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONPATH"] = _aiculler_pythonpath(self.runtime.root, env.get("PYTHONPATH", ""))
+        # Turn on the engine's per-step metrics only while performance logging is
+        # on; the scripts print AI_METRIC lines we parse back into the perf log.
+        env[AI_METRICS_ENV_VAR] = "1" if logger.enabled else "0"
+        metric_context = {
+            "workflow": "clip_topiq",
+            "run_id": self.run_id,
+            "folder": str(self.folder),
+            "stage": _stage_key_from_message(stage_message),
+            "stage_message": stage_message,
+        }
         process = subprocess.Popen(
             command,
             cwd=str(self.runtime.root),
@@ -1272,6 +1300,9 @@ class AICullerRunTask(QRunnable):
             if not line:
                 continue
             output_lines.append(line)
+            metric_payload = _parse_ai_metric_line(line)
+            if metric_payload is not None:
+                _log_ai_metric_payload(metric_payload, context=metric_context)
             self._emit_progress_for_line(stage_message, line)
         return_code = process.wait()
         self._current_process = None

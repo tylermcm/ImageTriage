@@ -2470,6 +2470,10 @@ class MainWindow(QMainWindow):
     # Keep diagnostics focused on the active UI investigations so the JSONL log
     # remains readable while still capturing the popout's full loading path.
     # editslider.* stays available for slider-latency profiling under perf logging.
+    # ai. captures the AI-workflow stage/step timing (ai.workflow.*, ai.script.*,
+    # ai.stage.*, ai.task.*) — without it the focus filter silently drops every
+    # AI metric. (Note the trailing dot: it excludes the noisy ai_toolbar_state.*
+    # / ai_state.* UI events, which use an underscore.)
     PERF_FOCUS_PREFIXES = (
         "toolbar.",
         "preview.",
@@ -2477,6 +2481,7 @@ class MainWindow(QMainWindow):
         "perf.",
         "editslider.",
         "brush.",
+        "ai.",
     )
     CHECK_UPDATES_ON_STARTUP_KEY = "updates/check_on_startup"
     ZEN_MENU_PINNED_KEY = "view/zen_menu_pinned"

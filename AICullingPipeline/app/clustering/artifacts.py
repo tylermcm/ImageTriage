@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from pathlib import Path
+import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -17,6 +18,7 @@ from app.clustering.akaze import AkazeFeatures, compute_akaze_features as comput
 from app.clustering.hashing import compute_average_hash
 from app.data.image_scanner import read_capture_time_from_file
 from app.utils.io_utils import save_json
+from app.utils.perf_metrics import emit_metric, now_ms
 
 
 LOGGER = logging.getLogger(__name__)
@@ -292,6 +294,14 @@ def _extract_embedded_records(
 ) -> List[EmbeddedImageRecord]:
     """Extract and enrich metadata rows that map directly to embeddings."""
 
+    # Perceptual-hash and AKAZE feature extraction are optional per-image steps
+    # that read every file off disk, so their cost is tracked separately from
+    # the rest of the metadata parse to make either one easy to spot in a slow run.
+    hash_ms = 0.0
+    hash_count = 0
+    akaze_ms = 0.0
+    akaze_count = 0
+
     records: List[EmbeddedImageRecord] = []
     for row in rows:
         embedding_index_text = (row.get("embedding_index") or "").strip()
@@ -304,16 +314,18 @@ def _extract_embedded_records(
             Path(file_path),
             enrich_missing_timestamps=enrich_missing_timestamps,
         )
-        perceptual_hash = (
-            compute_average_hash(Path(file_path), hash_size=hash_size)
-            if compute_perceptual_hashes
-            else None
-        )
-        akaze_features = (
-            compute_akaze_image_features(Path(file_path), max_side=akaze_max_side)
-            if compute_akaze_features
-            else None
-        )
+        perceptual_hash = None
+        if compute_perceptual_hashes:
+            hash_start = time.perf_counter()
+            perceptual_hash = compute_average_hash(Path(file_path), hash_size=hash_size)
+            hash_ms += now_ms(hash_start)
+            hash_count += 1
+        akaze_features = None
+        if compute_akaze_features:
+            akaze_start = time.perf_counter()
+            akaze_features = compute_akaze_image_features(Path(file_path), max_side=akaze_max_side)
+            akaze_ms += now_ms(akaze_start)
+            akaze_count += 1
 
         records.append(
             EmbeddedImageRecord(
@@ -331,6 +343,21 @@ def _extract_embedded_records(
                 perceptual_hash=perceptual_hash,
                 akaze_features=akaze_features,
             )
+        )
+
+    if compute_perceptual_hashes:
+        emit_metric(
+            "ai.script.cluster.perceptual_hashes",
+            duration_ms=round(hash_ms, 3),
+            images=hash_count,
+            hash_size=hash_size,
+        )
+    if compute_akaze_features:
+        emit_metric(
+            "ai.script.cluster.akaze_features",
+            duration_ms=round(akaze_ms, 3),
+            images=akaze_count,
+            akaze_max_side=akaze_max_side,
         )
 
     return sorted(records, key=lambda record: record.embedding_index)

@@ -15,6 +15,7 @@ from app.storage.ranking_artifacts import (
     load_ranking_artifacts,
     save_ranking_summary_json,
 )
+from app.utils.perf_metrics import metric_span
 
 if TYPE_CHECKING:
     from app.engine.ranking.service import RankedClusterMember, RankerService
@@ -237,42 +238,51 @@ def export_ranked_results(config: RankingReportConfig) -> Dict[str, Path]:
     from app.engine.ranking.service import load_ranker, rank_clusters_by_embedding_centrality
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    ranking_artifacts = load_ranking_artifacts(
-        config.artifacts_dir,
-        metadata_filename=config.metadata_filename,
-        embeddings_filename=config.embeddings_filename,
-        image_ids_filename=config.image_ids_filename,
-        clusters_filename=config.clusters_filename,
-    )
-    cluster_labels_by_id = (
-        load_latest_cluster_labels(
-            labels_dir=config.labels_dir,
-            cluster_labels_filename=config.cluster_labels_filename,
+    with metric_span("ai.script.report.load_artifacts") as m:
+        ranking_artifacts = load_ranking_artifacts(
+            config.artifacts_dir,
+            metadata_filename=config.metadata_filename,
+            embeddings_filename=config.embeddings_filename,
+            image_ids_filename=config.image_ids_filename,
+            clusters_filename=config.clusters_filename,
         )
-        if config.labels_dir is not None
-        else {}
-    )
-    service = load_ranker(
-        config.checkpoint_path,
-        device=config.device,
-        reference_bank_path=config.reference_bank_path,
-    )
+        cluster_labels_by_id = (
+            load_latest_cluster_labels(
+                labels_dir=config.labels_dir,
+                cluster_labels_filename=config.cluster_labels_filename,
+            )
+            if config.labels_dir is not None
+            else {}
+        )
+        m["images"] = len(ranking_artifacts.ordered_images)
+    # The ranker checkpoint load is a discrete, potentially heavy step (Torch
+    # weights + optional reference bank), kept separate from scoring.
+    with metric_span("ai.script.report.load_ranker", device=config.device):
+        service = load_ranker(
+            config.checkpoint_path,
+            device=config.device,
+            reference_bank_path=config.reference_bank_path,
+        )
     fallback_reason = ""
     fallback_expected_dim = 0
-    try:
-        ranked_clusters = service.rank_clusters(
+    with metric_span("ai.script.report.rank_clusters") as m:
+        try:
+            ranked_clusters = service.rank_clusters(
+                ranking_artifacts,
+                batch_size=config.score_batch_size,
+            )
+        except RankerEmbeddingDimensionError as exc:
+            fallback_reason = str(exc)
+            fallback_expected_dim = exc.expected_dim
+            ranked_clusters = rank_clusters_by_embedding_centrality(ranking_artifacts)
+        m["fallback"] = bool(fallback_reason)
+    with metric_span("ai.script.report.build_rows") as m:
+        rows = build_ranked_export_rows(
+            ranked_clusters,
             ranking_artifacts,
-            batch_size=config.score_batch_size,
+            cluster_labels_by_id=cluster_labels_by_id,
         )
-    except RankerEmbeddingDimensionError as exc:
-        fallback_reason = str(exc)
-        fallback_expected_dim = exc.expected_dim
-        ranked_clusters = rank_clusters_by_embedding_centrality(ranking_artifacts)
-    rows = build_ranked_export_rows(
-        ranked_clusters,
-        ranking_artifacts,
-        cluster_labels_by_id=cluster_labels_by_id,
-    )
+        m["rows"] = len(rows)
 
     export_path = config.output_dir / config.ranked_export_filename
     summary_path = config.output_dir / config.summary_filename
@@ -302,14 +312,15 @@ def export_ranked_results(config: RankingReportConfig) -> Dict[str, Path]:
         else service.checkpoint_metadata.get("reference_conditioning", {}).get("reference_bank_path")
     )
     summary["reference_feature_names"] = [] if fallback_reason else list(service.reference_feature_names)
-    save_ranking_summary_json(summary_path, summary)
-    build_cluster_report(
-        html_path,
-        rows,
-        summary=summary,
-        include_singletons=config.html_include_singletons,
-        max_clusters=config.html_max_clusters,
-    )
+    with metric_span("ai.script.report.save"):
+        save_ranking_summary_json(summary_path, summary)
+        build_cluster_report(
+            html_path,
+            rows,
+            summary=summary,
+            include_singletons=config.html_include_singletons,
+            max_clusters=config.html_max_clusters,
+        )
 
     return {
         "ranked_export": export_path,
