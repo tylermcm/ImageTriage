@@ -3,8 +3,9 @@ from __future__ import annotations
 import csv
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -12,6 +13,9 @@ import numpy as np
 from PIL import Image
 
 from aiculler.storage import SQLiteFeatureStore
+
+
+_LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,8 @@ class TechnicalMetricCacheStats:
     cache_misses: int
     failures: int
     workers: int
+    phase_total_seconds: dict[str, float] = field(default_factory=dict)
+    phase_average_seconds: dict[str, float] = field(default_factory=dict)
 
 
 class TechnicalTagScorer:
@@ -132,6 +138,7 @@ def compute_technical_metrics_batch(
     missing: list[tuple[int, Path, str, int, int]] = []
     cache_hits = 0
     failures = 0
+    phase_values: dict[str, list[float]] = {}
     for image_id, image_path in items:
         signature = _path_signature(image_path)
         if signature is None:
@@ -154,7 +161,8 @@ def compute_technical_metrics_batch(
     if missing:
         if workers <= 1:
             for item in missing:
-                image_id, image_path, path_key, size, mtime_ns, metrics = _compute_metrics_cache_row(item)
+                image_id, image_path, path_key, size, mtime_ns, metrics, timings = _compute_metrics_cache_row(item)
+                _append_phase_timings(phase_values, timings)
                 if metrics is None:
                     failures += 1
                 else:
@@ -173,7 +181,8 @@ def compute_technical_metrics_batch(
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tag-metrics") as executor:
                 futures = [executor.submit(_compute_metrics_cache_row, item) for item in missing]
                 for future in as_completed(futures):
-                    image_id, image_path, path_key, size, mtime_ns, metrics = future.result()
+                    image_id, image_path, path_key, size, mtime_ns, metrics, timings = future.result()
+                    _append_phase_timings(phase_values, timings)
                     if metrics is None:
                         failures += 1
                     else:
@@ -194,10 +203,32 @@ def compute_technical_metrics_batch(
         cache_misses=len(missing),
         failures=failures,
         workers=workers,
+        phase_total_seconds={
+            phase: round(sum(values), 6)
+            for phase, values in sorted(phase_values.items())
+        },
+        phase_average_seconds={
+            phase: round(sum(values) / len(values), 6)
+            for phase, values in sorted(phase_values.items())
+            if values
+        },
     )
 
 
-def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
+def compute_technical_metrics(
+    image_path: str | Path,
+    *,
+    timings: dict[str, float] | None = None,
+) -> ImageTechnicalMetrics:
+    def measured(name: str, operation):
+        started_at = time.perf_counter()
+        result = operation()
+        if timings is not None:
+            timings[name] = time.perf_counter() - started_at
+        return result
+
+    total_started_at = time.perf_counter()
+    decode_started_at = time.perf_counter()
     with Image.open(image_path) as opened:
         img = opened.convert("RGB")
     # Larger sample window: 1024-px thumbs lose almost all evidence of
@@ -205,8 +236,19 @@ def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
     # high-frequency content for Laplacian variance to discriminate sharp
     # from soft frames without making per-image cost unreasonable.
     img.thumbnail((2048, 2048), Image.Resampling.BILINEAR)
-    rgb = np.asarray(img, dtype=np.float32) / 255.0
-    gray = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    if timings is not None:
+        timings["decode_resize"] = time.perf_counter() - decode_started_at
+    rgb_uint8 = measured("rgb_uint8", lambda: np.asarray(img, dtype=np.uint8))
+    def rgb_float_values() -> np.ndarray:
+        result = rgb_uint8.astype(np.float32)
+        np.divide(result, 255.0, out=result)
+        return result
+
+    rgb = measured("rgb_float", rgb_float_values)
+    gray = measured(
+        "grayscale",
+        lambda: rgb @ _LUMA_WEIGHTS,
+    )
 
     # Focus / sharpness: variance of the Laplacian (the canonical sharpness
     # metric in OpenCV / scikit-image). The first-derivative magnitude we used
@@ -214,14 +256,14 @@ def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
     # tree foliage), saturating to "sharp" even when the image is clearly
     # motion-blurred. The Laplacian (second derivative) falls off much faster
     # under any kind of blur because blur smooths the local intensity curve.
-    laplacian = (
-        gray[:-2, 1:-1]
-        + gray[2:, 1:-1]
-        + gray[1:-1, :-2]
-        + gray[1:-1, 2:]
-        - 4.0 * gray[1:-1, 1:-1]
-    )
-    laplacian_variance = float(np.var(laplacian))
+    def laplacian_variance_value() -> float:
+        laplacian = gray[:-2, 1:-1] + gray[2:, 1:-1]
+        np.add(laplacian, gray[1:-1, :-2], out=laplacian)
+        np.add(laplacian, gray[1:-1, 2:], out=laplacian)
+        np.subtract(laplacian, 4.0 * gray[1:-1, 1:-1], out=laplacian)
+        return float(np.var(laplacian))
+
+    laplacian_variance = measured("laplacian", laplacian_variance_value)
     # Multiplier 80 maps a sharp landscape (lap_var ~0.015+) to ~1.0 and a
     # noticeably soft frame (lap_var ~0.003) to ~0.24 (below the default
     # outoffocus threshold of 0.30). Tune via tag_penalties.csv if needed.
@@ -232,30 +274,55 @@ def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
     # softness * directional_balance formula gives clean signal: it fires
     # when the image is both visibly soft AND has axis-asymmetric edges
     # (the signature of a camera pan or shake along one axis).
-    gx = np.diff(gray, axis=1)
-    gy = np.diff(gray, axis=0)
-    edge_energy = float(np.mean(np.abs(gx)) + np.mean(np.abs(gy)))
-    directional_balance = abs(float(np.mean(np.abs(gx))) - float(np.mean(np.abs(gy)))) / (edge_energy + 1e-6)
+    def gradient_values() -> tuple[float, float]:
+        gx = np.diff(gray, axis=1)
+        gy = np.diff(gray, axis=0)
+        mean_gx = np.mean(np.abs(gx))
+        mean_gy = np.mean(np.abs(gy))
+        edge_energy_value = float(mean_gx + mean_gy)
+        directional_balance_value = (
+            abs(float(mean_gx) - float(mean_gy)) / (edge_energy_value + 1e-6)
+        )
+        return edge_energy_value, directional_balance_value
+
+    edge_energy, directional_balance = measured("gradients", gradient_values)
     motion_blur_score = float(np.clip((1.0 - focus_score) * directional_balance, 0.0, 1.0))
 
-    max_channel = np.max(rgb, axis=2)
-    highlight_clip_ratio = float(np.mean(max_channel >= 0.985))
-    shadow_clip_ratio = float(np.mean(gray <= 0.025))
-    contrast_score = float(np.clip(np.std(gray) * 4.0, 0.0, 1.0))
+    def clipping_contrast_values() -> tuple[float, float, float]:
+        max_channel = np.maximum(rgb_uint8[..., 0], rgb_uint8[..., 1])
+        np.maximum(max_channel, rgb_uint8[..., 2], out=max_channel)
+        return (
+            float(np.mean(max_channel >= 252)),
+            float(np.mean(gray <= 0.025)),
+            float(np.clip(np.std(gray) * 4.0, 0.0, 1.0)),
+        )
 
-    blurred = local_mean(gray)
-    high_frequency = gray - blurred
-    noise_score = float(np.clip(np.std(high_frequency) * 8.0, 0.0, 1.0))
+    highlight_clip_ratio, shadow_clip_ratio, contrast_score = measured(
+        "clipping_contrast",
+        clipping_contrast_values,
+    )
 
-    bright_ratio = float(np.mean(gray >= 0.90))
-    p50 = float(np.percentile(gray, 50))
-    p99 = float(np.percentile(gray, 99))
+    blurred = measured("local_mean", lambda: local_mean(gray))
+    noise_score = measured(
+        "noise",
+        lambda: float(np.clip(np.std(gray - blurred) * 8.0, 0.0, 1.0)),
+    )
+
+    def harsh_light_values() -> tuple[float, float, float]:
+        p50, p99 = np.percentile(gray, [50, 99])
+        return (
+            float(np.mean(gray >= 0.90)),
+            float(p50),
+            float(p99),
+        )
+
+    bright_ratio, p50, p99 = measured("harsh_light_inputs", harsh_light_values)
     highlight_severity = min(1.0, highlight_clip_ratio * 18.0)
     bright_severity = min(1.0, bright_ratio * 4.0)
     glare_gap = max(0.0, p99 - p50 - 0.30)
     harsh_light_score = float(np.clip(0.55 * highlight_severity + 0.30 * bright_severity + 0.15 * glare_gap * 2.0, 0.0, 1.0))
 
-    return ImageTechnicalMetrics(
+    result = ImageTechnicalMetrics(
         focus_score=focus_score,
         motion_blur_score=motion_blur_score,
         highlight_clip_ratio=highlight_clip_ratio,
@@ -264,6 +331,9 @@ def compute_technical_metrics(image_path: str | Path) -> ImageTechnicalMetrics:
         noise_score=noise_score,
         harsh_light_score=harsh_light_score,
     )
+    if timings is not None:
+        timings["total"] = time.perf_counter() - total_started_at
+    return result
 
 
 def technical_metrics_to_dict(metrics: ImageTechnicalMetrics) -> dict[str, float]:
@@ -292,13 +362,22 @@ def technical_metrics_from_dict(payload: dict[str, object]) -> ImageTechnicalMet
 
 def _compute_metrics_cache_row(
     item: tuple[int, Path, str, int, int],
-) -> tuple[int, Path, str, int, int, ImageTechnicalMetrics | None]:
+) -> tuple[int, Path, str, int, int, ImageTechnicalMetrics | None, dict[str, float]]:
     image_id, image_path, path_key, size, mtime_ns = item
+    timings: dict[str, float] = {}
     try:
-        metrics = compute_technical_metrics(image_path)
+        metrics = compute_technical_metrics(image_path, timings=timings)
     except Exception:
         metrics = None
-    return image_id, image_path, path_key, size, mtime_ns, metrics
+    return image_id, image_path, path_key, size, mtime_ns, metrics, timings
+
+
+def _append_phase_timings(
+    phase_values: dict[str, list[float]],
+    timings: dict[str, float],
+) -> None:
+    for phase, duration in timings.items():
+        phase_values.setdefault(str(phase), []).append(float(duration))
 
 
 def _path_signature(path: Path) -> tuple[str, int, int] | None:
@@ -320,17 +399,16 @@ def _technical_worker_count(*, max_workers: int | None, item_count: int) -> int:
 
 def local_mean(gray: np.ndarray) -> np.ndarray:
     padded = np.pad(gray, 1, mode="edge")
-    return (
-        padded[:-2, :-2]
-        + padded[:-2, 1:-1]
-        + padded[:-2, 2:]
-        + padded[1:-1, :-2]
-        + padded[1:-1, 1:-1]
-        + padded[1:-1, 2:]
-        + padded[2:, :-2]
-        + padded[2:, 1:-1]
-        + padded[2:, 2:]
-    ) / 9.0
+    result = padded[:-2, :-2] + padded[:-2, 1:-1]
+    np.add(result, padded[:-2, 2:], out=result)
+    np.add(result, padded[1:-1, :-2], out=result)
+    np.add(result, padded[1:-1, 1:-1], out=result)
+    np.add(result, padded[1:-1, 2:], out=result)
+    np.add(result, padded[2:, :-2], out=result)
+    np.add(result, padded[2:, 1:-1], out=result)
+    np.add(result, padded[2:, 2:], out=result)
+    np.divide(result, 9.0, out=result)
+    return result
 
 
 def compute_tag_penalty(

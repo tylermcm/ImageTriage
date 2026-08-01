@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -90,8 +91,14 @@ def find_perceptual_duplicate_groups_with_stats(
     hamming_threshold: int = 6,
     cache_path: str | Path | None = None,
     max_workers: int | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> PerceptualDuplicateResult:
-    hashes, stats = _load_or_compute_hashes(paths, cache_path=cache_path, max_workers=max_workers)
+    hashes, stats = _load_or_compute_hashes(
+        paths,
+        cache_path=cache_path,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
+    )
 
     if len(hashes) < 2:
         return PerceptualDuplicateResult(groups=[], stats=replace(stats, hash_count=len(hashes)))
@@ -162,6 +169,7 @@ def _load_or_compute_hashes(
     *,
     cache_path: str | Path | None,
     max_workers: int | None,
+    progress_callback: Callable[[int, int], None] | None,
 ) -> tuple[list[tuple[str, int]], PerceptualHashStats]:
     cache_file = Path(cache_path).expanduser().resolve() if cache_path is not None else None
     cache_read_started = time.perf_counter()
@@ -171,12 +179,17 @@ def _load_or_compute_hashes(
     hashes_by_path: dict[str, int] = {}
     missing: list[tuple[str, Path, dict[str, object], str]] = []
     cached = 0
+    completed = 0
+    total = len(paths)
 
     lookup_started = time.perf_counter()
     for raw_path in paths:
         path = Path(raw_path)
         signature = _file_signature(path)
         if signature is None:
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total)
             continue
         key = _cache_key(path)
         entry = entries.get(key)
@@ -185,6 +198,9 @@ def _load_or_compute_hashes(
             if isinstance(cached_hash, int):
                 hashes_by_path[raw_path] = cached_hash
             cached += 1
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total)
             continue
         missing.append((raw_path, path, signature, key))
     signature_lookup_ms = (time.perf_counter() - lookup_started) * 1000.0
@@ -197,10 +213,20 @@ def _load_or_compute_hashes(
         worker_count = _worker_count(max_workers=max_workers, item_count=len(missing))
         compute_started = time.perf_counter()
         if worker_count <= 1:
-            computed_rows = [_compute_cache_row(item) for item in missing]
+            computed_rows = []
+            for item in missing:
+                computed_rows.append(_compute_cache_row(item))
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, total)
         else:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                computed_rows = list(executor.map(_compute_cache_row, missing))
+                computed_rows = []
+                for row in executor.map(_compute_cache_row, missing):
+                    computed_rows.append(row)
+                    completed += 1
+                    if progress_callback is not None:
+                        progress_callback(completed, total)
         compute_ms = (time.perf_counter() - compute_started) * 1000.0
         for raw_path, key, signature, value in computed_rows:
             entries[key] = {**signature, "hash": value}

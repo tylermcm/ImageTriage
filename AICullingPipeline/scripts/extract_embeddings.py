@@ -24,11 +24,24 @@ def _emit_startup_metric(event: str, **fields: object) -> None:
     print("AI_METRIC " + json.dumps(payload, default=str), flush=True)
 
 
-_dependency_start = time.perf_counter()
-_emit_startup_metric("ai.script.extract.dependencies_start")
-from app.engine import ExtractionConfig, run_embedding_extraction
-from app.utils.logging_utils import setup_logging
-_emit_startup_metric("ai.script.extract.dependencies", duration_ms=(time.perf_counter() - _dependency_start) * 1000.0)
+def _load_runtime_dependencies():
+    """Import the heavy engine only in the extraction host process.
+
+    Windows DataLoader workers re-import this entrypoint while spawning. Keeping
+    these imports out of module scope prevents every worker from loading the
+    complete model and pipeline dependency graph before it can decode images.
+    """
+
+    dependency_start = time.perf_counter()
+    _emit_startup_metric("ai.script.extract.dependencies_start")
+    from app.engine import ExtractionConfig, run_embedding_extraction
+    from app.utils.logging_utils import setup_logging
+
+    _emit_startup_metric(
+        "ai.script.extract.dependencies",
+        duration_ms=(time.perf_counter() - dependency_start) * 1000.0,
+    )
+    return ExtractionConfig, run_embedding_extraction, setup_logging
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +85,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional text file of relative or absolute image paths to embed.",
     )
+    parser.add_argument(
+        "--include-paths-ready-file",
+        type=Path,
+        help="Optional marker that defers path scanning while the model initializes.",
+    )
     return parser.parse_args()
 
 
@@ -79,6 +97,7 @@ def main() -> None:
     """Load config, run the pipeline, and print output locations."""
 
     args = parse_args()
+    ExtractionConfig, run_embedding_extraction, setup_logging = _load_runtime_dependencies()
     config = ExtractionConfig.from_file(args.config).apply_overrides(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
@@ -89,6 +108,7 @@ def main() -> None:
         num_workers=args.num_workers,
         scan_workers=args.scan_workers,
         include_paths_file=args.include_paths_file,
+        include_paths_ready_file=args.include_paths_ready_file,
     )
 
     setup_logging(

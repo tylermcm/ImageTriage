@@ -122,6 +122,7 @@ class FaceQualityAnalyzer:
         name: str = "buffalo_l",
         det_size: int = 640,
         ctx_id: int = -1,
+        providers: Sequence[str] | None = None,
     ) -> None:
         """``root`` is the model directory containing ``models/<name>/`` (the app's
         local model store from ai_model.download_aiculler_face_model). Defaults to
@@ -144,6 +145,8 @@ class FaceQualityAnalyzer:
                 "name": name,
                 "allowed_modules": ["detection", "landmark_2d_106", "genderage"],
             }
+            if providers:
+                kwargs["providers"] = list(providers)
             if root is not None:
                 kwargs["root"] = root
             app = FaceAnalysis(**kwargs)

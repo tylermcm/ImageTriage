@@ -98,6 +98,39 @@ class TechnicalDimensionTests(unittest.TestCase):
         # Phase-2 fields stay unset.
         self.assertIsNone(scores.aesthetic)
 
+    def test_analyze_technical_reports_primitive_timings_without_changing_scores(self) -> None:
+        image = to_bgr(gradient())
+        expected = analyze_technical(image)
+        timings: dict[str, float] = {}
+
+        actual = analyze_technical(image, timings=timings)
+
+        self.assertEqual(expected, actual)
+        self.assertEqual(
+            {
+                "gray_conversion",
+                "sharpness",
+                "exposure",
+                "dynamic_range",
+                "noise",
+                "contrast",
+                "hsv_conversion",
+                "color_harmony",
+                "monochrome",
+                "total",
+            },
+            set(timings),
+        )
+        self.assertTrue(all(duration >= 0.0 for duration in timings.values()))
+
+    def test_shared_hsv_path_matches_independent_metric_calls_exactly(self) -> None:
+        image = self.rng.integers(0, 256, (47, 63, 3), dtype=np.uint8)
+
+        scores = analyze_technical(image)
+
+        self.assertEqual(color_harmony_score(image), scores.color_harmony)
+        self.assertEqual(is_monochrome(image), scores.monochrome)
+
     def test_high_iso_boost_does_not_lower_sharpness(self) -> None:
         img = gradient()
         self.assertGreaterEqual(sharpness_score(img, iso=6400), sharpness_score(img, iso=None))

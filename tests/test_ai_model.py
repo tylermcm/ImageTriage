@@ -124,6 +124,23 @@ class AIModelTests(unittest.TestCase):
         self.assertIn("Skulleton12/Clip", installation.download_url("tokenizer.json"))
         self.assertIn("Skulleton12/Clip", installation.download_url("onnx/text_model_uint8.onnx"))
 
+    def test_fp16_aiculler_clip_model_uses_pinned_xenova_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_aiculler_clip_model_installation(variant="fp16")
+
+        self.assertEqual("Xenova/clip-vit-large-patch14", installation.repo_id)
+        self.assertEqual(
+            (
+                "tokenizer.json",
+                "onnx/vision_model_fp16.onnx",
+                "onnx/text_model_fp16.onnx",
+            ),
+            installation.required_filenames,
+        )
+        self.assertIn("Xenova/clip-vit-large-patch14", installation.download_url("onnx/vision_model_fp16.onnx"))
+
     def test_default_aiculler_topiq_model_installation_uses_runtime_cache_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {"LOCALAPPDATA": temp_dir}

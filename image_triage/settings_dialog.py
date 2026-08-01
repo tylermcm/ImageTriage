@@ -35,20 +35,19 @@ from .aiculler_workflow import (
     clip_model_variant_options,
     coerce_clip_model_variant,
 )
+from .ai_workflow import (
+    available_ai_dataloader_worker_capacity,
+    clamp_ai_dataloader_workers,
+    recommended_ai_dataloader_workers,
+)
 from .dino_prefilter import (
-    DINOPrefilterMode,
     DINOPrefilterSettings,
-    coerce_dino_prefilter_mode,
     default_dino_prefilter_settings,
-    dino_prefilter_mode_label,
 )
 from .models import DeleteMode, WinnerMode
 from .phash_prefilter import (
-    PHashExecutionMode,
     PHashPrefilterSettings,
-    coerce_phash_execution_mode,
     default_phash_prefilter_settings,
-    phash_execution_mode_label,
 )
 from .ui.help_dialog import build_help_button, show_paged_help
 from .ui.help_topics import settings_help_pages
@@ -81,6 +80,7 @@ class WorkflowSettingsResult:
     watch_current_folder: bool = True
     check_updates_on_startup: bool = True
     ai_embed_batch_size: int = 0
+    ai_dino_worker_count: int = 4
     ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     ai_review_detail_progress_enabled: bool = False
     ai_dispute_weight: int = 3
@@ -151,6 +151,8 @@ class WorkflowSettingsDialog(QDialog):
         watch_current_folder: bool = True,
         check_updates_on_startup: bool = True,
         ai_embed_batch_size: int = 0,
+        ai_dino_worker_count: int = 4,
+        ai_dino_worker_capacity: int | None = None,
         ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT,
         ai_review_detail_progress_enabled: bool = False,
         ai_dispute_weight: int = 3,
@@ -167,6 +169,8 @@ class WorkflowSettingsDialog(QDialog):
         keyboard_shortcuts_callback: Callable[[], None] | None = None,
         toolbar_callback: Callable[[], None] | None = None,
         reset_layout_callback: Callable[[], None] | None = None,
+        clip_variant_installed_callback: Callable[[str], bool] | None = None,
+        download_clip_variant_callback: Callable[[str], bool] | None = None,
         shortcut_overrides: dict[str, str] | None = None,
         initial_section: str | None = None,
         parent=None,
@@ -178,9 +182,18 @@ class WorkflowSettingsDialog(QDialog):
         self.resize(720, 540)
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
+        self._clip_variant_installed_callback = clip_variant_installed_callback
+        self._download_clip_variant_callback = download_clip_variant_callback
         self._updating_session = False
         dino_settings = (dino_prefilter_settings or default_dino_prefilter_settings()).normalized()
         phash_settings = (phash_prefilter_settings or default_phash_prefilter_settings()).normalized()
+        self._ai_dino_worker_capacity = max(
+            1,
+            int(ai_dino_worker_capacity or available_ai_dataloader_worker_capacity()),
+        )
+        self._ai_dino_recommended_workers = recommended_ai_dataloader_workers(
+            self._ai_dino_worker_capacity
+        )
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -463,6 +476,22 @@ class WorkflowSettingsDialog(QDialog):
         ))
         self.ai_clip_model_combo.currentIndexChanged.connect(self._update_ai_clip_model_summary)
 
+        # Per-variant download button on the far right of the combo. Only the
+        # selected variant is fetched — the app no longer downloads every export.
+        self.ai_clip_model_download_button = QPushButton("Download")
+        self.ai_clip_model_download_button.setObjectName("settingsInlineButton")
+        self.ai_clip_model_download_button.setToolTip(_settings_tooltip(
+            "Download the ONNX files for the selected CLIP version. "
+            "Only this version is fetched, not every export in the repo."
+        ))
+        self.ai_clip_model_download_button.clicked.connect(self._on_download_clip_variant_clicked)
+        self._ai_clip_model_row_widget = QWidget()
+        _clip_row_layout = QHBoxLayout(self._ai_clip_model_row_widget)
+        _clip_row_layout.setContentsMargins(0, 0, 0, 0)
+        _clip_row_layout.setSpacing(8)
+        _clip_row_layout.addWidget(self.ai_clip_model_combo, 1)
+        _clip_row_layout.addWidget(self.ai_clip_model_download_button, 0)
+
         self.ai_review_detail_progress_checkbox = QCheckBox("Show detailed AI Review activity")
         self.ai_review_detail_progress_checkbox.setChecked(ai_review_detail_progress_enabled)
         self.ai_review_detail_progress_checkbox.setToolTip(_settings_tooltip(
@@ -551,7 +580,7 @@ class WorkflowSettingsDialog(QDialog):
 
         ai_page, ai_layout = self._build_settings_page("AI")
         self._add_form_row(ai_layout, "Processing workers", self.ai_embed_batch_size_spin)
-        self._add_form_row(ai_layout, "CLIP model version", self.ai_clip_model_combo)
+        self._add_form_row(ai_layout, "CLIP model version", self._ai_clip_model_row_widget)
         self._add_text_row(ai_layout, "Model notes", self.ai_clip_model_warning_label)
         self._add_checkbox_row(ai_layout, "Detailed progress log", self.ai_review_detail_progress_checkbox)
         self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
@@ -569,18 +598,6 @@ class WorkflowSettingsDialog(QDialog):
         self.dino_prefilter_enabled_checkbox.setChecked(dino_settings.enabled)
         self.dino_prefilter_enabled_checkbox.setToolTip(_settings_tooltip(
             "Runs a base-model DINO visual screen before the AI Culler. Off keeps the current AI workflow unchanged."
-        ))
-
-        self.dino_prefilter_mode_combo = QComboBox()
-        self.dino_prefilter_mode_combo.setMinimumWidth(220)
-        for mode in DINOPrefilterMode:
-            self.dino_prefilter_mode_combo.addItem(dino_prefilter_mode_label(mode), mode)
-        self.dino_prefilter_mode_combo.setCurrentIndex(
-            max(0, self.dino_prefilter_mode_combo.findData(dino_settings.mode))
-        )
-        self.dino_prefilter_mode_combo.setToolTip(_settings_tooltip(
-            "Soft Quarantine marks candidates while keeping them in the AI pool. "
-            "Pool Removal excludes candidates from downstream AI scoring while keeping them visible in review."
         ))
 
         self.dino_prefilter_aggressiveness_spin = QSpinBox()
@@ -610,43 +627,44 @@ class WorkflowSettingsDialog(QDialog):
             "Allows DINO to mark low-content filler frames that are unlikely to be useful."
         ))
 
-        self.dino_rescue_ai_high_score_checkbox = QCheckBox("Rescue if current AI scores high")
-        self.dino_rescue_ai_high_score_checkbox.setChecked(dino_settings.rescue_ai_high_score_enabled)
-        self.dino_rescue_ai_high_score_checkbox.setToolTip(_settings_tooltip(
-            "Keeps a DINO-marked image in the pool if the current AI score says it may be strong."
-        ))
-        self.dino_rescue_user_keep_checkbox = QCheckBox("Rescue if adapter or user label says keep")
-        self.dino_rescue_user_keep_checkbox.setChecked(dino_settings.rescue_user_keep_enabled)
-        self.dino_rescue_user_keep_checkbox.setToolTip(_settings_tooltip(
-            "Keeps a DINO-marked image in the pool if your labels or adapter indicate it should be kept."
-        ))
-        self.dino_rescue_semantic_unique_checkbox = QCheckBox("Rescue if semantically unique")
-        self.dino_rescue_semantic_unique_checkbox.setChecked(dino_settings.rescue_semantic_unique_enabled)
-        self.dino_rescue_semantic_unique_checkbox.setToolTip(_settings_tooltip(
-            "Keeps a DINO-marked image if it is visually or semantically different from the surrounding set."
-        ))
-        self.dino_rescue_best_representative_checkbox = QCheckBox("Rescue if best visual representative")
-        self.dino_rescue_best_representative_checkbox.setChecked(dino_settings.rescue_best_representative_enabled)
-        self.dino_rescue_best_representative_checkbox.setToolTip(_settings_tooltip(
-            "Keeps the strongest representative from a similar-image group even when other frames are dumped."
-        ))
-
         self.dino_diagnostics_checkbox = QCheckBox("Write per-run diagnostics and audit rows")
         self.dino_diagnostics_checkbox.setChecked(dino_settings.diagnostics_enabled)
         self.dino_diagnostics_checkbox.setToolTip(_settings_tooltip(
             "Writes per-run DINO decisions and reason counts for debugging and threshold tuning."
         ))
 
+        self.ai_dino_worker_spin = QSpinBox()
+        self.ai_dino_worker_spin.setRange(1, self._ai_dino_worker_capacity)
+        self.ai_dino_worker_spin.setSingleStep(1)
+        self.ai_dino_worker_spin.setValue(
+            clamp_ai_dataloader_workers(
+                ai_dino_worker_count,
+                self._ai_dino_worker_capacity,
+            )
+        )
+        self.ai_dino_worker_spin.setMinimumWidth(120)
+        self.ai_dino_worker_spin.setToolTip(_settings_tooltip(
+            "Image preparation workers used by the DINO Prefilter. Four was fastest in measured Windows testing. "
+            "Higher values can spend more time starting processes than they save during extraction. "
+            "The maximum is limited to the logical processors reported by this computer."
+        ))
+        self.ai_dino_worker_summary_label = QLabel("")
+        self.ai_dino_worker_summary_label.setWordWrap(True)
+        self.ai_dino_worker_summary_label.setObjectName("mutedText")
+        self.ai_dino_worker_summary_label.setStyleSheet("font-size: 11px;")
+        self.ai_dino_worker_spin.valueChanged.connect(self._update_ai_dino_worker_summary)
+
         dino_page, dino_layout = self._build_settings_page("DINO Prefilter")
         dino_hint = QLabel(
-            "DINO Prefilter uses the base DINO model only. It is an optional first-pass screen for obvious trash and redundancy; it does not train, adapt, or decide final keeps."
+            "DINO Prefilter uses the base DINO model only. It is an optional first-pass screen for obvious trash and redundancy; explicit manual winners are always protected."
         )
         dino_hint.setWordWrap(True)
         dino_hint.setObjectName("settingsRowLabel")
         dino_layout.addWidget(dino_hint)
         dino_layout.addSpacing(4)
         self._add_checkbox_row(dino_layout, "DINO Prefilter", self.dino_prefilter_enabled_checkbox)
-        self._add_form_row(dino_layout, "Marking mode", self.dino_prefilter_mode_combo)
+        self._add_form_row(dino_layout, "DINO workers", self.ai_dino_worker_spin)
+        self._add_text_row(dino_layout, "Worker guidance", self.ai_dino_worker_summary_label)
         self._add_form_row(dino_layout, "Trash confidence", self.dino_prefilter_aggressiveness_spin)
         reason_heading = QLabel("Allowed trash reasons")
         reason_heading.setObjectName("settingsCategoryHeading")
@@ -655,14 +673,6 @@ class WorkflowSettingsDialog(QDialog):
         self._add_checkbox_row(dino_layout, "Technical", self.dino_technical_trash_checkbox)
         self._add_checkbox_row(dino_layout, "Duplicates", self.dino_duplicate_trash_checkbox)
         self._add_checkbox_row(dino_layout, "Low information", self.dino_low_information_checkbox)
-        rescue_heading = QLabel("Rescue rules")
-        rescue_heading.setObjectName("settingsCategoryHeading")
-        dino_layout.addSpacing(8)
-        dino_layout.addWidget(rescue_heading)
-        self._add_checkbox_row(dino_layout, "AI score", self.dino_rescue_ai_high_score_checkbox)
-        self._add_checkbox_row(dino_layout, "User labels", self.dino_rescue_user_keep_checkbox)
-        self._add_checkbox_row(dino_layout, "Uniqueness", self.dino_rescue_semantic_unique_checkbox)
-        self._add_checkbox_row(dino_layout, "Representative", self.dino_rescue_best_representative_checkbox)
         diagnostics_heading = QLabel("Diagnostics")
         diagnostics_heading.setObjectName("settingsCategoryHeading")
         dino_layout.addSpacing(8)
@@ -670,17 +680,13 @@ class WorkflowSettingsDialog(QDialog):
         self._add_checkbox_row(dino_layout, "Run diagnostics", self.dino_diagnostics_checkbox)
         dino_layout.addStretch(1)
         self._dino_dependent_controls = (
-            self.dino_prefilter_mode_combo,
             self.dino_prefilter_aggressiveness_spin,
             self.dino_technical_trash_checkbox,
             self.dino_duplicate_trash_checkbox,
             self.dino_low_information_checkbox,
-            self.dino_rescue_ai_high_score_checkbox,
-            self.dino_rescue_user_keep_checkbox,
-            self.dino_rescue_semantic_unique_checkbox,
-            self.dino_rescue_best_representative_checkbox,
             self.dino_diagnostics_checkbox,
         )
+        self._update_ai_dino_worker_summary()
         self.dino_prefilter_enabled_checkbox.toggled.connect(self._set_dino_prefilter_controls_enabled)
         self._set_dino_prefilter_controls_enabled(self.dino_prefilter_enabled_checkbox.isChecked())
         self._add_settings_page("DINO Prefilter", dino_page)
@@ -689,29 +695,8 @@ class WorkflowSettingsDialog(QDialog):
         self.phash_prefilter_enabled_checkbox.setChecked(phash_settings.enabled)
         self.phash_prefilter_enabled_checkbox.setToolTip(_settings_tooltip(
             "Runs a perceptual hash duplicate pass independent of DINO. "
-            "This catches tight visual repeats and near-identical frames."
-        ))
-        self.phash_prefilter_mode_combo = QComboBox()
-        self.phash_prefilter_mode_combo.setMinimumWidth(220)
-        for mode in DINOPrefilterMode:
-            self.phash_prefilter_mode_combo.addItem(dino_prefilter_mode_label(mode), mode)
-        self.phash_prefilter_mode_combo.setCurrentIndex(
-            max(0, self.phash_prefilter_mode_combo.findData(phash_settings.mode))
-        )
-        self.phash_prefilter_mode_combo.setToolTip(_settings_tooltip(
-            "Soft Quarantine labels duplicates; Pool Removal keeps duplicate candidates out of the main AI scoring pool."
-        ))
-        self.phash_execution_mode_combo = QComboBox()
-        self.phash_execution_mode_combo.setMinimumWidth(220)
-        for mode in PHashExecutionMode:
-            self.phash_execution_mode_combo.addItem(phash_execution_mode_label(mode), mode)
-        self.phash_execution_mode_combo.setCurrentIndex(
-            max(0, self.phash_execution_mode_combo.findData(phash_settings.execution_mode))
-        )
-        self.phash_execution_mode_combo.setToolTip(_settings_tooltip(
-            "Before AI scoring can remove duplicates from the current pool. "
-            "Async with DINO overlaps both prefilters. "
-            "Async with main AI only annotates the current run because ingest has already started."
+            "This catches tight visual repeats and near-identical frames. "
+            "Manual winners are always preserved and preferred as group representatives."
         ))
         self.phash_hamming_spin = QSpinBox()
         self.phash_hamming_spin.setRange(0, 64)
@@ -735,22 +720,18 @@ class WorkflowSettingsDialog(QDialog):
 
         phash_page, phash_layout = self._build_settings_page("pHash Prefilter")
         phash_hint = QLabel(
-            "pHash Prefilter is independent of DINO. It detects tight visual duplicates using hash metadata only; it does not train or copy images."
+            "pHash Prefilter is independent of DINO. It detects tight visual duplicates using hash metadata only; manual winners are always protected."
         )
         phash_hint.setWordWrap(True)
         phash_hint.setObjectName("settingsRowLabel")
         phash_layout.addWidget(phash_hint)
         phash_layout.addSpacing(4)
         self._add_checkbox_row(phash_layout, "pHash Prefilter", self.phash_prefilter_enabled_checkbox)
-        self._add_form_row(phash_layout, "Marking mode", self.phash_prefilter_mode_combo)
-        self._add_form_row(phash_layout, "Run timing", self.phash_execution_mode_combo)
         self._add_form_row(phash_layout, "Duplicate distance", self.phash_hamming_spin)
         self._add_checkbox_row(phash_layout, "Cache hash metadata", self.phash_cache_checkbox)
         self._add_checkbox_row(phash_layout, "Run diagnostics", self.phash_diagnostics_checkbox)
         phash_layout.addStretch(1)
         self._phash_dependent_controls = (
-            self.phash_prefilter_mode_combo,
-            self.phash_execution_mode_combo,
             self.phash_hamming_spin,
             self.phash_cache_checkbox,
             self.phash_diagnostics_checkbox,
@@ -971,6 +952,20 @@ class WorkflowSettingsDialog(QDialog):
         for control in getattr(self, "_dino_dependent_controls", ()):
             control.setEnabled(bool(enabled))
 
+    def _update_ai_dino_worker_summary(self) -> None:
+        selected = int(self.ai_dino_worker_spin.value())
+        recommended = self._ai_dino_recommended_workers
+        capacity = self._ai_dino_worker_capacity
+        if selected == recommended:
+            self.ai_dino_worker_summary_label.setText(
+                f"Recommended: {recommended} workers. This computer reports {capacity} logical processors."
+            )
+            return
+        self.ai_dino_worker_summary_label.setText(
+            f"Warning: {recommended} workers is recommended. This computer reports {capacity} logical processors; "
+            "changing this may make DINO runs slower."
+        )
+
     def _set_phash_prefilter_controls_enabled(self, enabled: bool) -> None:
         for control in getattr(self, "_phash_dependent_controls", ()):
             control.setEnabled(bool(enabled))
@@ -983,6 +978,42 @@ class WorkflowSettingsDialog(QDialog):
         elif info.recommended:
             parts.append("Recommended default.")
         self.ai_clip_model_warning_label.setText("\n".join(parts))
+        self._refresh_clip_download_button()
+
+    def _refresh_clip_download_button(self) -> None:
+        button = getattr(self, "ai_clip_model_download_button", None)
+        if button is None:
+            return
+        installed_cb = self._clip_variant_installed_callback
+        if installed_cb is None:
+            # No host wiring (e.g. isolated dialog tests) — nothing to download.
+            button.setVisible(False)
+            return
+        variant = coerce_clip_model_variant(self.ai_clip_model_combo.currentData())
+        try:
+            installed = bool(installed_cb(variant))
+        except Exception:
+            installed = False
+        button.setVisible(True)
+        if installed:
+            button.setText("Installed")
+            button.setEnabled(False)
+        else:
+            button.setText("Download")
+            button.setEnabled(self._download_clip_variant_callback is not None)
+
+    def _on_download_clip_variant_clicked(self) -> None:
+        callback = self._download_clip_variant_callback
+        if callback is None:
+            return
+        variant = coerce_clip_model_variant(self.ai_clip_model_combo.currentData())
+        button = self.ai_clip_model_download_button
+        button.setEnabled(False)
+        button.setText("Downloading…")
+        try:
+            callback(variant)
+        finally:
+            self._refresh_clip_download_button()
 
     def _collect_shortcut_state(self) -> tuple[dict[str, str], dict[str, list[str]]]:
         """Return (effective_chords_by_attr, conflicts_by_chord) from current editor state."""
@@ -1165,6 +1196,10 @@ class WorkflowSettingsDialog(QDialog):
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
             check_updates_on_startup=self.check_updates_on_startup_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
+            ai_dino_worker_count=clamp_ai_dataloader_workers(
+                self.ai_dino_worker_spin.value(),
+                self._ai_dino_worker_capacity,
+            ),
             ai_clip_model_variant=coerce_clip_model_variant(self.ai_clip_model_combo.currentData()),
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
@@ -1174,21 +1209,14 @@ class WorkflowSettingsDialog(QDialog):
             ai_label_near_duplicate_threshold=max(0.500, min(0.995, int(self.ai_label_near_duplicate_slider.value()) / 1000.0)),
             dino_prefilter_settings=DINOPrefilterSettings(
                 enabled=self.dino_prefilter_enabled_checkbox.isChecked(),
-                mode=coerce_dino_prefilter_mode(self.dino_prefilter_mode_combo.currentData()),
                 aggressiveness_percent=int(self.dino_prefilter_aggressiveness_spin.value()),
                 technical_trash_enabled=self.dino_technical_trash_checkbox.isChecked(),
                 duplicate_trash_enabled=self.dino_duplicate_trash_checkbox.isChecked(),
                 low_information_enabled=self.dino_low_information_checkbox.isChecked(),
-                rescue_ai_high_score_enabled=self.dino_rescue_ai_high_score_checkbox.isChecked(),
-                rescue_user_keep_enabled=self.dino_rescue_user_keep_checkbox.isChecked(),
-                rescue_semantic_unique_enabled=self.dino_rescue_semantic_unique_checkbox.isChecked(),
-                rescue_best_representative_enabled=self.dino_rescue_best_representative_checkbox.isChecked(),
                 diagnostics_enabled=self.dino_diagnostics_checkbox.isChecked(),
             ).normalized(),
             phash_prefilter_settings=PHashPrefilterSettings(
                 enabled=self.phash_prefilter_enabled_checkbox.isChecked(),
-                mode=coerce_dino_prefilter_mode(self.phash_prefilter_mode_combo.currentData()),
-                execution_mode=coerce_phash_execution_mode(self.phash_execution_mode_combo.currentData()),
                 hamming_threshold=int(self.phash_hamming_spin.value()),
                 cache_enabled=self.phash_cache_checkbox.isChecked(),
                 diagnostics_enabled=self.phash_diagnostics_checkbox.isChecked(),

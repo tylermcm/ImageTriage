@@ -83,11 +83,9 @@ ARTICLES = [
 
         **pHash (perceptual hash)** — a fingerprint of an image's appearance, used to detect near-duplicates.
 
-        **Pool Removal** — a prefilter mode that excludes flagged images from the scoring pool entirely.
+        **Pool Removal** — prefilter behavior that excludes flagged images from AI scoring while leaving them available for manual review.
 
         **Score Fit** — a score-regression metric showing how closely an adapter matched your labels in testing. See [Evaluating an adapter](doc:evaluating).
-
-        **Soft Quarantine** — a prefilter mode that flags questionable images without hiding or removing them.
 
         **Virtual collection** — a saved set of image references that does not move or copy files. See [Virtual collections](doc:collections).
         """,

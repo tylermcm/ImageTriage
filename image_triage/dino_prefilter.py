@@ -2,62 +2,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Iterable
-
-
-class DINOPrefilterMode(str, Enum):
-    SOFT_QUARANTINE = "soft_quarantine"
-    POOL_REMOVAL = "pool_removal"
 
 
 @dataclass(slots=True, frozen=True)
 class DINOPrefilterSettings:
     enabled: bool = False
-    mode: DINOPrefilterMode = DINOPrefilterMode.SOFT_QUARANTINE
     aggressiveness_percent: int = 85
     technical_trash_enabled: bool = True
     duplicate_trash_enabled: bool = True
-    phash_duplicate_enabled: bool = True
-    phash_hamming_threshold: int = 6
     low_information_enabled: bool = False
-    rescue_ai_high_score_enabled: bool = True
-    rescue_user_keep_enabled: bool = True
-    rescue_semantic_unique_enabled: bool = True
-    rescue_best_representative_enabled: bool = True
     diagnostics_enabled: bool = True
 
     def normalized(self) -> "DINOPrefilterSettings":
-        mode = self.mode
-        if not isinstance(mode, DINOPrefilterMode):
-            try:
-                mode = DINOPrefilterMode(str(mode))
-            except ValueError:
-                mode = DINOPrefilterMode.SOFT_QUARANTINE
         return replace(
             self,
             enabled=bool(self.enabled),
-            mode=mode,
             aggressiveness_percent=max(1, min(100, int(self.aggressiveness_percent))),
             technical_trash_enabled=bool(self.technical_trash_enabled),
             duplicate_trash_enabled=bool(self.duplicate_trash_enabled),
-            phash_duplicate_enabled=bool(self.phash_duplicate_enabled),
-            phash_hamming_threshold=max(0, min(64, int(self.phash_hamming_threshold))),
             low_information_enabled=bool(self.low_information_enabled),
-            rescue_ai_high_score_enabled=bool(self.rescue_ai_high_score_enabled),
-            rescue_user_keep_enabled=bool(self.rescue_user_keep_enabled),
-            rescue_semantic_unique_enabled=bool(self.rescue_semantic_unique_enabled),
-            rescue_best_representative_enabled=bool(self.rescue_best_representative_enabled),
             diagnostics_enabled=bool(self.diagnostics_enabled),
         )
 
     def to_cache_payload(self) -> dict[str, object]:
         normalized = self.normalized()
         payload = asdict(normalized)
-        payload["mode"] = normalized.mode.value
         payload["schema_version"] = DINO_PREFILTER_SCHEMA_VERSION
         payload["model_policy"] = "base_model_only"
         return payload
@@ -72,12 +46,7 @@ class DINOPrefilterSignals:
     path: str
     technical_trash_score: float = 0.0
     duplicate_trash_score: float = 0.0
-    phash_duplicate_trash_score: float = 0.0
     low_information_score: float = 0.0
-    ai_high_score: bool = False
-    user_keep: bool = False
-    semantic_unique: bool = False
-    best_representative: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -106,7 +75,7 @@ class DINOPrefilterDecision:
         }
 
 
-DINO_PREFILTER_SCHEMA_VERSION = 1
+DINO_PREFILTER_SCHEMA_VERSION = 3
 DINO_PREFILTER_ARTIFACT_DIRNAME = "dino_prefilter"
 DINO_PREFILTER_REPORT_FILENAME = "dino_prefilter_report.json"
 DINO_PREFILTER_ROWS_FILENAME = "dino_prefilter_rows.jsonl"
@@ -156,8 +125,6 @@ def decide_dino_prefilter_action(
         reason_scores["technical_trash"] = _clamped_score(signals.technical_trash_score)
     if normalized.duplicate_trash_enabled:
         reason_scores["duplicate_trash"] = _clamped_score(signals.duplicate_trash_score)
-    if normalized.phash_duplicate_enabled:
-        reason_scores["phash_duplicate_trash"] = _clamped_score(signals.phash_duplicate_trash_score)
     if normalized.low_information_enabled:
         reason_scores["low_information"] = _clamped_score(signals.low_information_score)
     if not reason_scores:
@@ -168,26 +135,7 @@ def decide_dino_prefilter_action(
     if score < threshold:
         return DINOPrefilterDecision(path=signals.path, action="pass", reason=reason, score=score)
 
-    rescue_reasons: list[str] = []
-    if normalized.rescue_ai_high_score_enabled and signals.ai_high_score:
-        rescue_reasons.append("ai_high_score")
-    if normalized.rescue_user_keep_enabled and signals.user_keep:
-        rescue_reasons.append("user_keep")
-    if normalized.rescue_semantic_unique_enabled and signals.semantic_unique:
-        rescue_reasons.append("semantic_unique")
-    if normalized.rescue_best_representative_enabled and signals.best_representative:
-        rescue_reasons.append("best_representative")
-    if rescue_reasons:
-        return DINOPrefilterDecision(
-            path=signals.path,
-            action="rescued",
-            reason=reason,
-            score=score,
-            rescue_reasons=tuple(rescue_reasons),
-        )
-
-    action = "remove_from_pool" if normalized.mode == DINOPrefilterMode.POOL_REMOVAL else "quarantine"
-    return DINOPrefilterDecision(path=signals.path, action=action, reason=reason, score=score)
+    return DINOPrefilterDecision(path=signals.path, action="remove_from_pool", reason=reason, score=score)
 
 
 def dino_prefilter_signals_from_signal_row(row: dict[str, object]) -> DINOPrefilterSignals | None:
@@ -207,16 +155,11 @@ def dino_prefilter_signals_from_signal_row(row: dict[str, object]) -> DINOPrefil
     duplicate_score = 0.0
     if group_size > 1 and dino_rank > 1:
         duplicate_score = min(1.0, 0.55 + (dino_rank - 1) / max(1, group_size - 1) * 0.45)
-    best_representative = group_size <= 1 or dino_rank == 1
-    if "best_representative" in row:
-        best_representative = _bool_value(row.get("best_representative"), best_representative)
     return DINOPrefilterSignals(
         path=path,
         technical_trash_score=max(technical_scores) if technical_scores else 0.0,
         duplicate_trash_score=duplicate_score,
-        phash_duplicate_trash_score=_optional_score(row.get("phash_duplicate_score")) or 0.0,
         low_information_score=_low_information_score(row),
-        best_representative=best_representative,
     )
 
 
@@ -226,19 +169,19 @@ def run_dino_prefilter_from_signal_rows(
     settings: DINOPrefilterSettings,
     paths: DINOPrefilterPaths,
     cache_hit: bool = False,
+    protected_paths: Iterable[str] = (),
 ) -> dict[str, DINOPrefilterDecision]:
     decisions: list[DINOPrefilterDecision] = []
     scanned_count = 0
     reason_counts: dict[str, int] = {}
     rescue_counts: dict[str, int] = {}
-    quarantined_count = 0
     removed_count = 0
     rescued_count = 0
+    protected_keys = {_path_key(path) for path in protected_paths if str(path).strip()}
     append_dino_prefilter_log(
         paths,
         "dino_prefilter.start",
         enabled=settings.normalized().enabled,
-        mode=settings.normalized().mode.value,
         settings_cache_key=settings.normalized().cache_key(),
         cache_hit=cache_hit,
     )
@@ -252,14 +195,20 @@ def run_dino_prefilter_from_signal_rows(
     for signals in signals_by_path.values():
         scanned_count += 1
         decision = decide_dino_prefilter_action(signals, settings)
+        if decision.is_candidate and _path_key(signals.path) in protected_keys:
+            decision = DINOPrefilterDecision(
+                path=decision.path,
+                action="rescued",
+                reason=decision.reason,
+                score=decision.score,
+                rescue_reasons=("manual_keep",),
+            )
         decisions.append(decision)
         if decision.reason and decision.action != "pass":
             reason_counts[decision.reason] = reason_counts.get(decision.reason, 0) + 1
         for rescue_reason in decision.rescue_reasons:
             rescue_counts[rescue_reason] = rescue_counts.get(rescue_reason, 0) + 1
-        if decision.action == "quarantine":
-            quarantined_count += 1
-        elif decision.action == "remove_from_pool":
+        if decision.action == "remove_from_pool":
             removed_count += 1
         elif decision.action == "rescued":
             rescued_count += 1
@@ -268,7 +217,6 @@ def run_dino_prefilter_from_signal_rows(
         settings=settings,
         rows=(decision.to_row() for decision in decisions),
         scanned_count=scanned_count,
-        quarantined_count=quarantined_count,
         removed_from_pool_count=removed_count,
         rescued_count=rescued_count,
         reason_counts=reason_counts,
@@ -279,7 +227,6 @@ def run_dino_prefilter_from_signal_rows(
         paths,
         "dino_prefilter.finished",
         scanned=scanned_count,
-        quarantined=quarantined_count,
         removed_from_pool=removed_count,
         rescued=rescued_count,
     )
@@ -291,20 +238,18 @@ def _merge_prefilter_signals(left: DINOPrefilterSignals, right: DINOPrefilterSig
         path=left.path,
         technical_trash_score=max(left.technical_trash_score, right.technical_trash_score),
         duplicate_trash_score=max(left.duplicate_trash_score, right.duplicate_trash_score),
-        phash_duplicate_trash_score=max(left.phash_duplicate_trash_score, right.phash_duplicate_trash_score),
         low_information_score=max(left.low_information_score, right.low_information_score),
-        ai_high_score=left.ai_high_score or right.ai_high_score,
-        user_keep=left.user_keep or right.user_keep,
-        semantic_unique=left.semantic_unique or right.semantic_unique,
-        best_representative=left.best_representative and right.best_representative,
     )
+
+
+def _path_key(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
 def build_dino_prefilter_report_payload(
     *,
     settings: DINOPrefilterSettings,
     scanned_count: int,
-    quarantined_count: int = 0,
     removed_from_pool_count: int = 0,
     rescued_count: int = 0,
     reason_counts: dict[str, int] | None = None,
@@ -323,7 +268,6 @@ def build_dino_prefilter_report_payload(
         "cache_hit": bool(cache_hit),
         "counts": {
             "scanned": max(0, int(scanned_count)),
-            "quarantined": max(0, int(quarantined_count)),
             "removed_from_pool": max(0, int(removed_from_pool_count)),
             "rescued": max(0, int(rescued_count)),
         },
@@ -342,7 +286,6 @@ def write_dino_prefilter_audit(
     settings: DINOPrefilterSettings,
     rows: Iterable[dict[str, object]] = (),
     scanned_count: int = 0,
-    quarantined_count: int = 0,
     removed_from_pool_count: int = 0,
     rescued_count: int = 0,
     reason_counts: dict[str, int] | None = None,
@@ -356,7 +299,6 @@ def write_dino_prefilter_audit(
     payload = build_dino_prefilter_report_payload(
         settings=settings,
         scanned_count=scanned_count,
-        quarantined_count=quarantined_count,
         removed_from_pool_count=removed_from_pool_count,
         rescued_count=rescued_count,
         reason_counts=reason_counts,
@@ -405,22 +347,6 @@ def append_dino_prefilter_log(paths: DINOPrefilterPaths, event: str, **fields: o
     }
     with paths.log_path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")) + "\n")
-
-
-def dino_prefilter_mode_label(mode: DINOPrefilterMode | str) -> str:
-    resolved = coerce_dino_prefilter_mode(mode)
-    if resolved == DINOPrefilterMode.POOL_REMOVAL:
-        return "Pool Removal"
-    return "Soft Quarantine"
-
-
-def coerce_dino_prefilter_mode(value: object) -> DINOPrefilterMode:
-    if isinstance(value, DINOPrefilterMode):
-        return value
-    try:
-        return DINOPrefilterMode(str(value or ""))
-    except ValueError:
-        return DINOPrefilterMode.SOFT_QUARANTINE
 
 
 def default_dino_prefilter_settings() -> DINOPrefilterSettings:

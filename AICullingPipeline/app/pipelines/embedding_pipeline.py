@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ from tqdm.auto import tqdm
 
 from app.config import ExtractionConfig
 from app.data.image_dataset import ImageDataset, collate_image_batch
+from app.data.image_loading import resolve_inference_read_block_bytes
 from app.data.image_scanner import ImageRecord, scan_image_directory
 from app.models.dinov2_extractor import DINOv2EmbeddingExtractor
 from app.utils.io_utils import (
@@ -54,6 +56,26 @@ class EmbeddingExtractionPipeline:
         image_ids_path = self.config.output_dir / self.config.image_ids_filename
         resolved_config_path = self.config.output_dir / "resolved_config.json"
 
+        output_paths = {
+            "metadata": metadata_path,
+            "embeddings": embeddings_path,
+            "image_ids": image_ids_path,
+            "resolved_config": resolved_config_path,
+        }
+        ready_file = self.config.include_paths_ready_file
+        deferred_payload = _read_ready_payload(ready_file)
+        if deferred_payload is not None and _reuse_existing_outputs(deferred_payload, output_paths):
+            emit_metric("ai.script.extract.deferred_cache_reuse", model_loaded=False)
+            return output_paths
+
+        extractor = None
+        if ready_file is not None:
+            extractor = self._load_extractor()
+            deferred_payload = deferred_payload or _wait_for_ready_payload(ready_file)
+            if _reuse_existing_outputs(deferred_payload, output_paths):
+                emit_metric("ai.script.extract.deferred_cache_reuse", model_loaded=True)
+                return output_paths
+
         scan_start = time.perf_counter()
         include_paths = _load_include_paths(self.config.include_paths_file)
         all_records, valid_records = scan_image_directory(
@@ -81,30 +103,8 @@ class EmbeddingExtractionPipeline:
                 f"No supported image files were found in {self.config.input_dir}."
             )
 
-        emit_metric(
-            "ai.script.extract.model_load_start",
-            requested_model=self.config.model_name,
-            requested_device=self.config.device,
-        )
-        model_start = time.perf_counter()
-        extractor = DINOv2EmbeddingExtractor(
-            self.config.model_name,
-            device=self.config.device,
-            image_size=self.config.image_size,
-            fallback_model_name=self.config.fallback_model_name,
-            allow_fallback=self.config.allow_model_fallback,
-        )
-        emit_metric(
-            "ai.script.extract.model_load",
-            duration_ms=now_ms(model_start),
-            model_name=extractor.model_name,
-            requested_model=self.config.model_name,
-            backend=getattr(extractor, "backend", ""),
-            device=str(extractor.device),
-            feature_dim=extractor.feature_dim,
-            input_height=extractor.preprocessing.height,
-            input_width=extractor.preprocessing.width,
-        )
+        if extractor is None:
+            extractor = self._load_extractor()
 
         if not valid_records:
             empty_embeddings = np.empty((0, extractor.feature_dim), dtype=np.float32)
@@ -157,6 +157,33 @@ class EmbeddingExtractionPipeline:
         emit_metric("ai.script.extract.total", duration_ms=now_ms(run_start))
         return outputs
 
+    def _load_extractor(self) -> DINOv2EmbeddingExtractor:
+        emit_metric(
+            "ai.script.extract.model_load_start",
+            requested_model=self.config.model_name,
+            requested_device=self.config.device,
+        )
+        model_start = time.perf_counter()
+        extractor = DINOv2EmbeddingExtractor(
+            self.config.model_name,
+            device=self.config.device,
+            image_size=self.config.image_size,
+            fallback_model_name=self.config.fallback_model_name,
+            allow_fallback=self.config.allow_model_fallback,
+        )
+        emit_metric(
+            "ai.script.extract.model_load",
+            duration_ms=now_ms(model_start),
+            model_name=extractor.model_name,
+            requested_model=self.config.model_name,
+            backend=getattr(extractor, "backend", ""),
+            device=str(extractor.device),
+            feature_dim=extractor.feature_dim,
+            input_height=extractor.preprocessing.height,
+            input_width=extractor.preprocessing.width,
+        )
+        return extractor
+
     def _extract_embeddings(
         self,
         valid_records: list[ImageRecord],
@@ -165,6 +192,7 @@ class EmbeddingExtractionPipeline:
         """Run batched inference and return the final embedding matrix."""
 
         collect_timings = metrics_enabled()
+        decoder_read_block_bytes = resolve_inference_read_block_bytes()
         # Opt-in fusion: compute technical signals from the same decode and
         # pre-populate the signals-stage cache. Off by default (a scoring change
         # that must be validated by ranking first).
@@ -199,6 +227,7 @@ class EmbeddingExtractionPipeline:
             pin_memory=extractor.device.type == "cuda",
             persistent_workers=self.config.num_workers > 0,
             prefetch_factor=2 if self.config.num_workers > 0 else 0,
+            decoder_read_block_bytes=decoder_read_block_bytes,
         )
 
         embedding_batches: list[np.ndarray] = []
@@ -210,7 +239,12 @@ class EmbeddingExtractionPipeline:
         numpy_total_ms = 0.0
         image_load_total_ms = 0.0
         transform_total_ms = 0.0
+        transform_cpu_total_ms = 0.0
+        technical_total_ms = 0.0
+        technical_cpu_total_ms = 0.0
         sample_total_ms = 0.0
+        sample_cpu_total_ms = 0.0
+        io_totals: dict[str, object] = {}
 
         progress = tqdm(total=len(valid_records), desc="Extracting embeddings", unit="image")
         try:
@@ -264,7 +298,20 @@ class EmbeddingExtractionPipeline:
                 timings = batch.get("timings") or {}
                 image_load_total_ms += float(timings.get("load_ms") or 0.0)
                 transform_total_ms += float(timings.get("transform_ms") or 0.0)
+                transform_cpu_total_ms += float(timings.get("transform_cpu_ms") or 0.0)
+                technical_total_ms += float(timings.get("technical_ms") or 0.0)
+                technical_cpu_total_ms += float(timings.get("technical_cpu_ms") or 0.0)
                 sample_total_ms += float(timings.get("total_ms") or 0.0)
+                sample_cpu_total_ms += float(timings.get("total_cpu_ms") or 0.0)
+                io_summary = timings.get("io") if isinstance(timings.get("io"), dict) else {}
+                if io_summary:
+                    _merge_io_summary(io_totals, io_summary)
+                    emit_metric(
+                        "ai.script.extract.io_batch",
+                        batch_index=batch_index,
+                        processed=processed_count,
+                        **_serializable_io_summary(io_summary),
+                    )
                 if pixel_values is None:
                     emit_metric(
                         "ai.script.extract.batch",
@@ -275,7 +322,11 @@ class EmbeddingExtractionPipeline:
                         dataloader_wait_ms=dataloader_wait_ms,
                         image_load_ms=float(timings.get("load_ms") or 0.0),
                         transform_ms=float(timings.get("transform_ms") or 0.0),
+                        transform_cpu_ms=float(timings.get("transform_cpu_ms") or 0.0),
+                        technical_ms=float(timings.get("technical_ms") or 0.0),
+                        technical_cpu_ms=float(timings.get("technical_cpu_ms") or 0.0),
                         sample_total_ms=float(timings.get("total_ms") or 0.0),
+                        sample_cpu_ms=float(timings.get("total_cpu_ms") or 0.0),
                         sample_max_ms=float(timings.get("max_ms") or 0.0),
                         sample_max_file=str(timings.get("max_file") or ""),
                         encode_ms=0.0,
@@ -313,7 +364,11 @@ class EmbeddingExtractionPipeline:
                     dataloader_wait_ms=dataloader_wait_ms,
                     image_load_ms=float(timings.get("load_ms") or 0.0),
                     transform_ms=float(timings.get("transform_ms") or 0.0),
+                    transform_cpu_ms=float(timings.get("transform_cpu_ms") or 0.0),
+                    technical_ms=float(timings.get("technical_ms") or 0.0),
+                    technical_cpu_ms=float(timings.get("technical_cpu_ms") or 0.0),
                     sample_total_ms=float(timings.get("total_ms") or 0.0),
+                    sample_cpu_ms=float(timings.get("total_cpu_ms") or 0.0),
                     sample_max_ms=float(timings.get("max_ms") or 0.0),
                     sample_max_file=str(timings.get("max_file") or ""),
                     encode_ms=encode_ms,
@@ -336,6 +391,8 @@ class EmbeddingExtractionPipeline:
                 LOGGER.warning("Technical-signal fusion cache write failed: %s", exc)
 
         if not embedding_batches:
+            if io_totals:
+                emit_metric("ai.script.extract.io_summary", **_serializable_io_summary(io_totals))
             emit_metric(
                 "ai.script.extract.inference_summary",
                 batches=batch_index,
@@ -343,7 +400,11 @@ class EmbeddingExtractionPipeline:
                 dataloader_wait_ms=dataloader_wait_total_ms,
                 image_load_ms=image_load_total_ms,
                 transform_ms=transform_total_ms,
+                transform_cpu_ms=transform_cpu_total_ms,
+                technical_ms=technical_total_ms,
+                technical_cpu_ms=technical_cpu_total_ms,
                 sample_total_ms=sample_total_ms,
+                sample_cpu_ms=sample_cpu_total_ms,
                 encode_ms=encode_total_ms,
                 numpy_ms=numpy_total_ms,
             )
@@ -351,6 +412,8 @@ class EmbeddingExtractionPipeline:
 
         concat_start = time.perf_counter()
         embeddings = np.concatenate(embedding_batches, axis=0).astype(np.float32, copy=False)
+        if io_totals:
+            emit_metric("ai.script.extract.io_summary", **_serializable_io_summary(io_totals))
         emit_metric(
             "ai.script.extract.inference_summary",
             duration_ms=now_ms(concat_start),
@@ -360,7 +423,11 @@ class EmbeddingExtractionPipeline:
             dataloader_wait_ms=dataloader_wait_total_ms,
             image_load_ms=image_load_total_ms,
             transform_ms=transform_total_ms,
+            transform_cpu_ms=transform_cpu_total_ms,
+            technical_ms=technical_total_ms,
+            technical_cpu_ms=technical_cpu_total_ms,
             sample_total_ms=sample_total_ms,
+            sample_cpu_ms=sample_cpu_total_ms,
             encode_ms=encode_total_ms,
             numpy_ms=numpy_total_ms,
         )
@@ -374,6 +441,37 @@ def _fuse_technical_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _merge_io_summary(target: dict[str, object], source: dict[str, object]) -> None:
+    for key, value in source.items():
+        if key == "worker_pids" and isinstance(value, list):
+            worker_pids = target.setdefault(key, set())
+            if isinstance(worker_pids, set):
+                worker_pids.update(int(item) for item in value)
+            continue
+        if key in {"formats", "frame_counts"} and isinstance(value, dict):
+            counts = target.setdefault(key, {})
+            if isinstance(counts, dict):
+                for label, count in value.items():
+                    counts[str(label)] = int(counts.get(str(label), 0)) + int(count)
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            target[key] = float(target.get(key, 0.0)) + float(value)
+
+
+def _serializable_io_summary(summary: dict[str, object]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in summary.items():
+        if isinstance(value, set):
+            result[key] = sorted(value)
+        elif isinstance(value, dict):
+            result[key] = dict(value)
+        elif key in {"samples", "read_calls", "seek_calls"} or key.endswith(("_calls", "_bytes")):
+            result[key] = int(value)
+        else:
+            result[key] = value
+    return result
 
 
 def _fuse_technical_max_side() -> int:
@@ -391,6 +489,53 @@ def _embedded_records(records: list[ImageRecord]) -> list[ImageRecord]:
         (record for record in records if record.embedding_index is not None),
         key=lambda record: int(record.embedding_index),
     )
+
+
+def _read_ready_payload(path: Path | None) -> dict[str, object] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _wait_for_ready_payload(path: Path) -> dict[str, object]:
+    timeout_seconds = _deferred_include_timeout_seconds()
+    wait_start = time.perf_counter()
+    emit_metric(
+        "ai.script.extract.include_wait_start",
+        ready_file=path,
+        timeout_seconds=timeout_seconds,
+    )
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        payload = _read_ready_payload(path)
+        if payload is not None:
+            emit_metric(
+                "ai.script.extract.include_ready",
+                duration_ms=now_ms(wait_start),
+                include_paths=int(payload.get("include_paths") or 0),
+                duplicate_candidates=int(payload.get("duplicate_candidates") or 0),
+                cache_hit=bool(payload.get("reuse_existing_outputs")),
+                fallback=bool(payload.get("fallback")),
+            )
+            return payload
+        time.sleep(0.05)
+    raise TimeoutError(f"Timed out waiting for deferred image list: {path}")
+
+
+def _reuse_existing_outputs(payload: dict[str, object], outputs: dict[str, Path]) -> bool:
+    return bool(payload.get("reuse_existing_outputs")) and all(path.exists() for path in outputs.values())
+
+
+def _deferred_include_timeout_seconds() -> float:
+    raw = (os.environ.get("AICULLING_DEFERRED_INCLUDE_TIMEOUT_SECONDS", "") or "").strip()
+    try:
+        return max(5.0, float(raw))
+    except ValueError:
+        return 300.0
 
 
 def _load_include_paths(path: Path | None) -> set[str] | None:

@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..dino_prefilter import DINOPrefilterMode, DINOPrefilterSettings
-from ..phash_prefilter import PHashExecutionMode, PHashPrefilterSettings
+from ..dino_prefilter import DINOPrefilterSettings
+from ..phash_prefilter import PHashPrefilterSettings
 
 
 @dataclass(slots=True, frozen=True)
@@ -221,23 +221,14 @@ class GuidedAICullPreferencesDialog(QDialog):
         dino_enabled = blurry
         dino_settings = DINOPrefilterSettings(
             enabled=dino_enabled,
-            mode=DINOPrefilterMode.SOFT_QUARANTINE,
             aggressiveness_percent=max(1, min(100, int(self.blur_slider.value()))),
             technical_trash_enabled=blurry,
             duplicate_trash_enabled=False,
-            phash_duplicate_enabled=False,
-            phash_hamming_threshold=self._initial_dino_settings.phash_hamming_threshold,
             low_information_enabled=False,
-            rescue_ai_high_score_enabled=True,
-            rescue_user_keep_enabled=True,
-            rescue_semantic_unique_enabled=True,
-            rescue_best_representative_enabled=True,
             diagnostics_enabled=True,
         ).normalized()
         phash_settings = PHashPrefilterSettings(
             enabled=duplicates,
-            mode=DINOPrefilterMode.SOFT_QUARANTINE,
-            execution_mode=PHashExecutionMode.BEFORE_AI,
             hamming_threshold=self._initial_phash_settings.hamming_threshold,
             cache_enabled=self._initial_phash_settings.cache_enabled,
             diagnostics_enabled=True,

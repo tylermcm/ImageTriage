@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -13,6 +14,7 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from aiculler.storage import SQLiteFeatureStore
+from aiculler.onnx_runtime import create_onnx_session, preflight_onnx_session, preferred_onnx_providers
 from image_triage.quality.face import FaceQualityAnalyzer
 from image_triage.quality.store import upsert_dimensions, upsert_faces
 from image_triage.quality.technical import analyze_technical
@@ -42,6 +44,8 @@ class HeadlessFeatureExtractor:
         *,
         providers: list[str] | None = None,
         enable_face_quality: bool = False,
+        intra_op_num_threads: int | None = None,
+        allow_spinning: bool | None = None,
     ):
         try:
             import onnxruntime as ort
@@ -51,33 +55,92 @@ class HeadlessFeatureExtractor:
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        opts.intra_op_num_threads = max(1, min(8, threading.active_count() or 1))
-        providers = providers or self._available_providers(ort)
-        self.clip_session = ort.InferenceSession(str(clip_onnx_path), opts, providers=providers)
+        active_python_threads = threading.active_count()
+        selected_intra_threads = (
+            max(1, int(intra_op_num_threads))
+            if intra_op_num_threads is not None
+            else max(1, min(8, active_python_threads or 1))
+        )
+        opts.intra_op_num_threads = selected_intra_threads
+        if allow_spinning is not None:
+            spinning_value = "1" if allow_spinning else "0"
+            opts.add_session_config_entry("session.intra_op.allow_spinning", spinning_value)
+            opts.add_session_config_entry("session.inter_op.allow_spinning", spinning_value)
+        providers = providers or preferred_onnx_providers(ort)
+        self.clip_session = create_onnx_session(ort, clip_onnx_path, opts, providers=providers)
         self.clip_input_name = self._select_image_input(self.clip_session)
-        self.clip_output_name = self._select_embedding_output(self.clip_session)
         self.clip_input_size = self._select_spatial_size(self.clip_session, default=224)
+        self.clip_session = preflight_onnx_session(
+            ort,
+            self.clip_session,
+            clip_onnx_path,
+            opts,
+            input_name=self.clip_input_name,
+            input_shape=(1, 3, self.clip_input_size, self.clip_input_size),
+        )
+        self.clip_output_name = self._select_embedding_output(self.clip_session)
 
         self.topiq_session = None
         self.topiq_input_name = None
         self.topiq_input_size = 512
         if topiq_onnx_path is not None and str(topiq_onnx_path).lower().endswith(".onnx"):
-            self.topiq_session = ort.InferenceSession(str(topiq_onnx_path), opts, providers=providers)
+            self.topiq_session = create_onnx_session(ort, topiq_onnx_path, opts, providers=providers)
             self.topiq_input_name = self._select_image_input(self.topiq_session)
             self.topiq_input_size = self._select_spatial_size(self.topiq_session, default=512)
+            self.topiq_session = preflight_onnx_session(
+                ort,
+                self.topiq_session,
+                topiq_onnx_path,
+                opts,
+                input_name=self.topiq_input_name,
+                input_shape=(1, 3, self.topiq_input_size, self.topiq_input_size),
+            )
         self.technical_scorer = HeuristicTechnicalScorer()
-        self.face_analyzer = FaceQualityAnalyzer() if enable_face_quality else None
+        active_providers = list(self.clip_session.get_providers())
+        self.face_analyzer = (
+            FaceQualityAnalyzer(
+                ctx_id=0 if "CUDAExecutionProvider" in active_providers else -1,
+                providers=active_providers,
+            )
+            if enable_face_quality
+            else None
+        )
         self._face_lock = threading.Lock()
+        self._runtime_details = {
+            "onnxruntime_version": str(getattr(ort, "__version__", "")),
+            "available_providers": list(ort.get_available_providers()),
+            "requested_providers": list(providers),
+            "clip_providers": list(self.clip_session.get_providers()),
+            "topiq_providers": [] if self.topiq_session is None else list(self.topiq_session.get_providers()),
+            "execution_mode": "ORT_SEQUENTIAL",
+            "graph_optimization": "ORT_ENABLE_ALL",
+            "intra_op_num_threads": selected_intra_threads,
+            "intra_op_source": "explicit" if intra_op_num_threads is not None else "python_active_threads",
+            "active_python_threads_at_session_build": active_python_threads,
+            "allow_spinning": allow_spinning,
+            "logical_cpu_count": int(os.cpu_count() or 0),
+            "clip_input_shape": list(self.clip_session.get_inputs()[0].shape),
+            "clip_input_size": self.clip_input_size,
+            "topiq_input_shape": (
+                [] if self.topiq_session is None else list(self.topiq_session.get_inputs()[0].shape)
+            ),
+            "topiq_input_size": self.topiq_input_size if self.topiq_session is not None else 0,
+        }
+
+    def runtime_details(self) -> dict[str, object]:
+        return dict(self._runtime_details)
+
+    def prepare_model_inputs(self, image_path: str | Path) -> dict[str, np.ndarray]:
+        with Image.open(image_path) as opened:
+            image = opened.convert("RGB")
+        inputs = {"clip": self._preprocess_for_clip(image)}
+        if self.topiq_session is not None and self.topiq_input_name is not None:
+            inputs["topiq"] = self._preprocess_for_topiq(image)
+        return inputs
 
     @staticmethod
     def _available_providers(ort) -> list[str]:
-        preferred = [
-            "CUDAExecutionProvider",
-            "CoreMLExecutionProvider",
-            "CPUExecutionProvider",
-        ]
-        available = set(ort.get_available_providers())
-        return [provider for provider in preferred if provider in available] or ["CPUExecutionProvider"]
+        return preferred_onnx_providers(ort)
 
     @staticmethod
     def _select_image_input(session) -> str:
@@ -119,12 +182,27 @@ class HeadlessFeatureExtractor:
         return default
 
     def extract_features(self, image_path: str | Path) -> dict[str, object]:
+        timings: dict[str, float] = {}
+        phase_started_at = time.perf_counter()
         with Image.open(image_path) as opened:
             img = opened.convert("RGB")
         bgr = np.asarray(img, dtype=np.uint8)[:, :, ::-1]
-        dimensions = analyze_technical(bgr)
+        timings["decode"] = time.perf_counter() - phase_started_at
+
+        phase_started_at = time.perf_counter()
+        technical_timings: dict[str, float] = {}
+        dimensions = analyze_technical(bgr, timings=technical_timings)
+        timings["technical_analysis"] = time.perf_counter() - phase_started_at
+        timings.update(
+            {
+                f"technical.{name}": duration
+                for name, duration in technical_timings.items()
+                if name != "total"
+            }
+        )
         faces = []
         if self.face_analyzer is not None:
+            phase_started_at = time.perf_counter()
             with self._face_lock:
                 face_result = self.face_analyzer.analyze(bgr)
             dimensions.face_quality = _float_or_none(face_result.get("face_quality"))
@@ -132,20 +210,33 @@ class HeadlessFeatureExtractor:
             blink_value = face_result.get("blink")
             dimensions.blink = bool(blink_value) if blink_value is not None else None
             faces = list(face_result.get("faces") or [])
+            timings["face_analysis"] = time.perf_counter() - phase_started_at
+
+        phase_started_at = time.perf_counter()
         clip_input = self._preprocess_for_clip(img)
+        timings["clip_preprocess"] = time.perf_counter() - phase_started_at
+        phase_started_at = time.perf_counter()
         clip_outputs = self.clip_session.run([self.clip_output_name], {self.clip_input_name: clip_input})
+        timings["clip_inference"] = time.perf_counter() - phase_started_at
         clip_embed = clip_outputs[0]
         if self.topiq_session is not None and self.topiq_input_name is not None:
+            phase_started_at = time.perf_counter()
             topiq_input = self._preprocess_for_topiq(img)
+            timings["topiq_preprocess"] = time.perf_counter() - phase_started_at
+            phase_started_at = time.perf_counter()
             topiq_score = self.topiq_session.run(None, {self.topiq_input_name: topiq_input})[0]
+            timings["topiq_inference"] = time.perf_counter() - phase_started_at
             technical_score = float(np.asarray(topiq_score).reshape(-1)[0])
         else:
+            phase_started_at = time.perf_counter()
             technical_score = self.technical_scorer.score(img)
+            timings["heuristic_score"] = time.perf_counter() - phase_started_at
         return {
             "embedding": np.asarray(clip_embed, dtype=np.float32).reshape(-1),
             "technical_score": technical_score,
             "dimensions": dimensions,
             "faces": faces,
+            "timings": timings,
         }
 
     def _preprocess_for_clip(self, img: Image.Image) -> np.ndarray:
@@ -184,7 +275,9 @@ class IngestionEvent:
     message: str = ""
     preview_seconds: float = 0.0
     feature_seconds: float = 0.0
+    persistence_seconds: float = 0.0
     total_seconds: float = 0.0
+    feature_timings: dict[str, float] = field(default_factory=dict)
 
 
 class PreviewExtractor:
@@ -485,6 +578,7 @@ class IngestionEngine:
                 return image_id
             features = self.extractor.extract_features(preview_path)
             feature_seconds = time.perf_counter() - feature_started_at
+            persistence_started_at = time.perf_counter()
             self.store.save_features(
                 image_id,
                 np.asarray(features["embedding"], dtype=np.float32),
@@ -501,6 +595,7 @@ class IngestionEngine:
                     upsert_dimensions(self.store.connection, image_id, dimensions)
                     upsert_faces(self.store.connection, image_id, list(features.get("faces") or []))
                     self.store.connection.commit()
+            persistence_seconds = time.perf_counter() - persistence_started_at
             self._emit(
                 IngestionEvent(
                     image_id,
@@ -509,7 +604,12 @@ class IngestionEngine:
                     "ready",
                     preview_seconds=preview_seconds,
                     feature_seconds=feature_seconds,
+                    persistence_seconds=persistence_seconds,
                     total_seconds=time.perf_counter() - started_at,
+                    feature_timings={
+                        str(key): float(value)
+                        for key, value in dict(features.get("timings") or {}).items()
+                    },
                 )
             )
             return image_id

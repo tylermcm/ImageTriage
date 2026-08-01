@@ -138,6 +138,8 @@ class CompositeRanker:
             metric_cache_misses=getattr(tag_stats, "cache_misses", 0),
             metric_failures=getattr(tag_stats, "failures", 0),
             metric_workers=getattr(tag_stats, "workers", 0),
+            metric_phase_total_seconds=getattr(tag_stats, "phase_total_seconds", {}),
+            metric_phase_average_seconds=getattr(tag_stats, "phase_average_seconds", {}),
         )
 
         phase_started_at = time.perf_counter()

@@ -82,6 +82,8 @@ ARTICLES = [
 
         **Index & Score** is the core AI pass. It extracts features from every image, groups similar shots, scores them with the CLIP/TOPIQ models, and exports a report.
 
+        When DINO Prefilter is enabled, run it first. Index & Score reuses the saved DINO and pHash decisions; it does not rerun DINO.
+
         ## Running it
 
         1. Open the folder you want to review.
@@ -131,7 +133,7 @@ ARTICLES = [
 
         ## Inspecting what the AI did
 
-        Use the result filters to audit the pipeline — **AI Ingested**, **AI Prefilter Dumped**, **DINO Quarantine**, **DINO Removed**, and **AI Top Picks**. See [Prefilters: DINO & pHash](doc:prefilters).
+        Use the result filters to audit the pipeline — **AI Ingested**, **AI Prefilter Dumped**, **DINO Removed**, and **AI Top Picks**. See [Prefilters: DINO & pHash](doc:prefilters).
 
         When the AI gets a specific image wrong, you can correct it — see [Disputing AI decisions](doc:disputing).
         """,
@@ -141,7 +143,7 @@ ARTICLES = [
         title="Prefilters: DINO & pHash",
         category="ai-culling",
         summary="Optional early checks that reduce what reaches full scoring.",
-        keywords=("prefilter", "dino", "phash", "quarantine", "duplicate", "pool"),
+        keywords=("prefilter", "dino", "phash", "duplicate", "pool"),
         markdown="""
         # Prefilters: DINO & pHash
 
@@ -155,20 +157,16 @@ ARTICLES = [
 
         pHash detects very similar images, such as tight near-duplicates, using perceptual hashing. It works independently of DINO.
 
-        ## Soft Quarantine vs. Pool Removal
+        ## Pool Removal
 
-        - **Soft Quarantine** marks images as questionable without hiding or deleting them. They stay visible but labeled, so you can inspect them later.
-        - **Pool Removal** keeps flagged images out of the main scoring stage. This is faster, but those images are then excluded from the AI ranking.
-
-        > **Tip:** When testing new thresholds, start with Soft Quarantine. It lets you see what the AI *would* have removed before anything is actually excluded.
+        DINO and pHash keep flagged images out of the main scoring stage. This saves processing time without hiding or deleting those images. They remain available for manual review, and images already marked as winners are protected from removal.
 
         ## Checking the results
 
         After changing prefilter behavior, audit it with these filters:
 
         - **AI Ingested** — images that reached the main scoring step.
-        - **AI Prefilter Dumped** — images quarantined or removed by DINO or pHash.
-        - **DINO Quarantine** — images DINO marked for soft quarantine.
+        - **AI Prefilter Dumped** — images removed from AI scoring by DINO or pHash.
         - **DINO Removed** — images DINO removed from the scoring pool.
         - **AI Top Picks** — the strongest current keep candidates.
 

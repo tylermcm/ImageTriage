@@ -42,6 +42,7 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
             7. **Rank & Apply** — apply the final ranking to the folder.
 
             When DINO or pHash prefiltering is enabled, it runs before the main CLIP/TOPIQ scoring step.
+            Index & Score then reuses those saved prefilter decisions instead of rerunning DINO.
 
             Prefilters only remove or flag obvious problem images early. The main AI culler still makes the final ranking decisions.
             """,
@@ -61,15 +62,9 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 
             Detects very similar images, such as tight near-duplicates. It works independently of DINO.
 
-            ## Soft Quarantine
-
-            Marks images as questionable without hiding or deleting them. They stay visible but labeled, so you can inspect them later.
-
             ## Pool Removal
 
-            Keeps flagged images out of the main CLIP/TOPIQ scoring stage. This is faster, but those images are then excluded from the main AI ranking.
-
-            **Tip:** when testing new thresholds, start with Soft Quarantine. It lets you see what the AI would have removed before anything is actually excluded from later steps.
+            Prefilters keep flagged images out of the main CLIP/TOPIQ scoring stage. This saves processing time without hiding or deleting those images. They remain available for manual review, and any image already marked as a winner is protected from removal.
             """,
         ),
         HelpPage(
@@ -128,12 +123,11 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
             These filters let you inspect what the AI did:
 
             - **AI Ingested** — images that reached the main CLIP/TOPIQ scoring step.
-            - **AI Prefilter Dumped** — images quarantined or removed by DINO or pHash.
-            - **DINO Quarantine** — images DINO marked for soft quarantine.
+            - **AI Prefilter Dumped** — images removed from AI scoring by DINO or pHash.
             - **DINO Removed** — images DINO removed from the scoring pool.
             - **AI Top Picks** — the strongest current AI keep candidates.
 
-            Use these views to confirm the prefilters are helping, not accidentally hiding useful images.
+            Use these views to confirm the prefilters are helping. Removed images remain visible and can still be kept during manual review.
             """,
         ),
     )
@@ -427,7 +421,6 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
 
             - AI Ingested
             - AI Prefilter Dumped
-            - DINO Quarantine
             - DINO Removed
             - AI Top Picks
 

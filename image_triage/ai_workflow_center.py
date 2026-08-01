@@ -41,7 +41,6 @@ from .aiculler_global_store import GlobalAdapterLabelStore, default_global_adapt
 from .dino_prefilter import (
     build_dino_prefilter_paths,
     default_dino_prefilter_settings,
-    dino_prefilter_mode_label,
 )
 from .phash_prefilter import build_phash_prefilter_paths
 
@@ -221,17 +220,13 @@ class WorkflowSnapshot:
     folder_path: str = ""
     file_count: int = 0
     dino_enabled: bool = False
-    dino_mode_label: str = "Soft Quarantine"
     dino_aggressiveness_percent: int = 85
-    dino_phash_duplicate_enabled: bool = True
-    dino_phash_hamming_threshold: int = 6
     dino_diagnostics_enabled: bool = True
     dino_report_exists: bool = False
     dino_rows_exists: bool = False
     dino_report_created_at: str = ""
     dino_model_policy: str = "base_model_only"
     dino_scanned_count: int = 0
-    dino_quarantined_count: int = 0
     dino_removed_from_pool_count: int = 0
     dino_rescued_count: int = 0
     dino_cache_hit: bool = False
@@ -889,7 +884,6 @@ class AIWorkflowCenterDialog(QDialog):
         dino_report_created_at = ""
         dino_model_policy = "base_model_only"
         dino_scanned_count = 0
-        dino_quarantined_count = 0
         dino_removed_from_pool_count = 0
         dino_rescued_count = 0
         dino_cache_hit = False
@@ -947,7 +941,6 @@ class AIWorkflowCenterDialog(QDialog):
                     dino_report_created_at = str(report.get("created_at") or "")
                     dino_model_policy = str(report.get("model_policy") or dino_model_policy)
                     dino_scanned_count = _int_value(counts.get("scanned"))
-                    dino_quarantined_count = _int_value(counts.get("quarantined"))
                     dino_removed_from_pool_count = _int_value(counts.get("removed_from_pool"))
                     dino_rescued_count = _int_value(counts.get("rescued"))
                     dino_cache_hit = bool(report.get("cache_hit"))
@@ -1022,7 +1015,6 @@ class AIWorkflowCenterDialog(QDialog):
             folder_path=folder_path,
             file_count=file_count,
             dino_enabled=dino_settings.enabled,
-            dino_mode_label=dino_prefilter_mode_label(dino_settings.mode),
             dino_aggressiveness_percent=dino_settings.aggressiveness_percent,
             dino_diagnostics_enabled=dino_settings.diagnostics_enabled,
             dino_report_exists=dino_report_exists,
@@ -1030,7 +1022,6 @@ class AIWorkflowCenterDialog(QDialog):
             dino_report_created_at=dino_report_created_at,
             dino_model_policy=dino_model_policy,
             dino_scanned_count=dino_scanned_count,
-            dino_quarantined_count=dino_quarantined_count,
             dino_removed_from_pool_count=dino_removed_from_pool_count,
             dino_rescued_count=dino_rescued_count,
             dino_cache_hit=dino_cache_hit,
@@ -1074,6 +1065,11 @@ class AIWorkflowCenterDialog(QDialog):
                     enabled=True,
                 ),
                 ActionSpec(
+                    label="Uninstall AI Runtime & Models",
+                    callback=lambda: self._invoke("_uninstall_ai_components"),
+                    enabled=True,
+                ),
+                ActionSpec(
                     label="Open AI Culler source",
                     callback=lambda: self._invoke("_open_aiculler_root"),
                     enabled=True,
@@ -1096,7 +1092,6 @@ class AIWorkflowCenterDialog(QDialog):
             dino_status = STATUS_READY
         dino_metrics: list[tuple[str, str]] = [
             ("Configured", "Enabled" if snap.dino_enabled else "Disabled"),
-            ("Mode", snap.dino_mode_label),
             ("Confidence threshold", f"{snap.dino_aggressiveness_percent}%"),
             ("Model policy", snap.dino_model_policy or "base_model_only"),
             ("Diagnostics", "On" if snap.dino_diagnostics_enabled else "Off"),
@@ -1106,7 +1101,6 @@ class AIWorkflowCenterDialog(QDialog):
                 [
                     ("Last run", snap.dino_report_created_at or "—"),
                     ("Scanned", str(snap.dino_scanned_count)),
-                    ("Quarantined", str(snap.dino_quarantined_count)),
                     ("Removed from pool", str(snap.dino_removed_from_pool_count)),
                     ("Rescued", str(snap.dino_rescued_count)),
                     ("Cache", "Hit" if snap.dino_cache_hit else "Fresh run"),
@@ -1115,7 +1109,7 @@ class AIWorkflowCenterDialog(QDialog):
             if snap.dino_reason_counts:
                 dino_metrics.append(("Trash reasons", _format_count_pairs(snap.dino_reason_counts)))
             if snap.dino_rescue_counts:
-                dino_metrics.append(("Rescue rules", _format_count_pairs(snap.dino_rescue_counts)))
+                dino_metrics.append(("Protected manual keeps", _format_count_pairs(snap.dino_rescue_counts)))
         else:
             dino_metrics.append(("Last run", "No DINO report for this folder."))
         steps["dino"] = StepSpec(
@@ -1123,10 +1117,9 @@ class AIWorkflowCenterDialog(QDialog):
             title="DINO Prefilter",
             subtitle="Optional base-model first pass before the AI culler judges the folder.",
             description=(
-                "Run DINO Prefilter as its own first pass, then review the marks before moving "
-                "to Index & Score. Soft Quarantine marks likely trash while keeping the folder "
-                "in the downstream AI pool; Pool Removal excludes those candidates before the "
-                "current AI and adapter score the remaining images."
+                "Run DINO Prefilter as its own first pass, then review the removed candidates before "
+                "moving to Index & Score. Flagged images stay visible for manual review but do not "
+                "consume downstream AI scoring time."
             ),
             status=dino_status,
             metrics=dino_metrics,
