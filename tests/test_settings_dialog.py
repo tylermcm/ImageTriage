@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from image_triage.models import DeleteMode, WinnerMode
-from image_triage.dino_prefilter import DINOPrefilterMode, DINOPrefilterSettings
-from image_triage.phash_prefilter import PHashExecutionMode, PHashPrefilterSettings
+from image_triage.dino_prefilter import DINOPrefilterSettings
+from image_triage.phash_prefilter import PHashPrefilterSettings
 from image_triage.settings_dialog import WorkflowSettingsDialog, _settings_tooltip
 
 
@@ -34,6 +34,40 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         result = dialog.result_settings()
 
         self.assertEqual(0, result.ai_embed_batch_size)
+        dialog.deleteLater()
+
+    def test_dino_workers_default_to_recommended_and_respect_hardware_limit(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+            ai_dino_worker_count=8,
+            ai_dino_worker_capacity=4,
+        )
+
+        result = dialog.result_settings()
+
+        self.assertEqual(4, dialog.ai_dino_worker_spin.maximum())
+        self.assertEqual(4, result.ai_dino_worker_count)
+        self.assertIn("Recommended: 4 workers", dialog.ai_dino_worker_summary_label.text())
+        dialog.deleteLater()
+
+    def test_dino_workers_warn_when_changed_from_recommendation(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+            ai_dino_worker_count=4,
+            ai_dino_worker_capacity=8,
+        )
+        dialog.ai_dino_worker_spin.setValue(8)
+
+        result = dialog.result_settings()
+
+        self.assertEqual(8, result.ai_dino_worker_count)
+        self.assertIn("Warning: 4 workers is recommended", dialog.ai_dino_worker_summary_label.text())
         dialog.deleteLater()
 
     def test_result_settings_defaults_startup_update_checks_on(self) -> None:
@@ -96,11 +130,11 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
             delete_mode=DeleteMode.SAFE_TRASH,
             ai_clip_model_variant="uint8",
         )
-        dialog.ai_clip_model_combo.setCurrentIndex(dialog.ai_clip_model_combo.findData("q4"))
+        dialog.ai_clip_model_combo.setCurrentIndex(dialog.ai_clip_model_combo.findData("fp16"))
 
         result = dialog.result_settings()
 
-        self.assertEqual("q4", result.ai_clip_model_variant)
+        self.assertEqual("fp16", result.ai_clip_model_variant)
         self.assertIn("Warning:", dialog.ai_clip_model_warning_label.text())
         dialog.deleteLater()
 
@@ -132,7 +166,6 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
 
         self.assertIn("DINO Prefilter", pages)
         self.assertFalse(result.dino_prefilter_settings.enabled)
-        self.assertEqual(DINOPrefilterMode.SOFT_QUARANTINE, result.dino_prefilter_settings.mode)
         dialog.deleteLater()
 
     def test_dino_prefilter_result_settings_round_trip_controls(self) -> None:
@@ -143,15 +176,10 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
             delete_mode=DeleteMode.SAFE_TRASH,
             dino_prefilter_settings=DINOPrefilterSettings(
                 enabled=True,
-                mode=DINOPrefilterMode.POOL_REMOVAL,
                 aggressiveness_percent=92,
                 technical_trash_enabled=False,
                 duplicate_trash_enabled=True,
                 low_information_enabled=True,
-                rescue_ai_high_score_enabled=False,
-                rescue_user_keep_enabled=True,
-                rescue_semantic_unique_enabled=False,
-                rescue_best_representative_enabled=True,
                 diagnostics_enabled=True,
             ),
         )
@@ -159,12 +187,11 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         result = dialog.result_settings().dino_prefilter_settings
 
         self.assertTrue(result.enabled)
-        self.assertEqual(DINOPrefilterMode.POOL_REMOVAL, result.mode)
         self.assertEqual(92, result.aggressiveness_percent)
         self.assertFalse(result.technical_trash_enabled)
         self.assertTrue(result.low_information_enabled)
-        self.assertFalse(result.rescue_ai_high_score_enabled)
-        self.assertFalse(result.rescue_semantic_unique_enabled)
+        labels = {label.text() for label in dialog.findChildren(QLabel)}
+        self.assertNotIn("Rescue rules", labels)
         dialog.deleteLater()
 
     def test_phash_prefilter_result_settings_round_trip_controls(self) -> None:
@@ -175,8 +202,6 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
             delete_mode=DeleteMode.SAFE_TRASH,
             phash_prefilter_settings=PHashPrefilterSettings(
                 enabled=True,
-                mode=DINOPrefilterMode.POOL_REMOVAL,
-                execution_mode=PHashExecutionMode.PARALLEL_WITH_DINO,
                 hamming_threshold=4,
                 cache_enabled=False,
                 diagnostics_enabled=True,
@@ -186,8 +211,7 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         result = dialog.result_settings().phash_prefilter_settings
 
         self.assertTrue(result.enabled)
-        self.assertEqual(DINOPrefilterMode.POOL_REMOVAL, result.mode)
-        self.assertEqual(PHashExecutionMode.PARALLEL_WITH_DINO, result.execution_mode)
+        self.assertNotIn("Run timing", {label.text() for label in dialog.findChildren(QLabel)})
         self.assertEqual(4, result.hamming_threshold)
         self.assertFalse(result.cache_enabled)
         self.assertTrue(result.diagnostics_enabled)

@@ -52,7 +52,6 @@ ARTICLES = [
 
         - AI Ingested
         - AI Prefilter Dumped
-        - DINO Quarantine
         - DINO Removed
         - AI Top Picks
 

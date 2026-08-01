@@ -58,6 +58,7 @@ class ExtractionConfig:
     device: str = "auto"
     image_size: Optional[int] = None
     include_paths_file: Optional[Path] = None
+    include_paths_ready_file: Optional[Path] = None
     supported_extensions: tuple[str, ...] = DEFAULT_EXTENSIONS
     metadata_filename: str = "images.csv"
     embeddings_filename: str = "embeddings.npy"
@@ -91,6 +92,9 @@ class ExtractionConfig:
         normalized["fallback_model_name"] = _resolve_optional_model_reference(
             normalized.get("fallback_model_name"), base_dir
         )
+        for key in ("include_paths_file", "include_paths_ready_file"):
+            if normalized.get(key) is not None:
+                normalized[key] = _resolve_path(normalized[key], base_dir)
 
         if "supported_extensions" in normalized:
             normalized["supported_extensions"] = tuple(
@@ -109,7 +113,7 @@ class ExtractionConfig:
             if value is None:
                 continue
 
-            if key in {"input_dir", "output_dir", "include_paths_file"}:
+            if key in {"input_dir", "output_dir", "include_paths_file", "include_paths_ready_file"}:
                 updated[key] = _resolve_path(value, Path.cwd())
             elif key in {"model_name", "fallback_model_name"}:
                 updated[key] = _resolve_optional_model_reference(value, Path.cwd())
@@ -140,6 +144,9 @@ class ExtractionConfig:
         if self.include_paths_file is not None and not self.include_paths_file.exists():
             raise FileNotFoundError(f"include_paths_file does not exist: {self.include_paths_file}")
 
+        if self.include_paths_ready_file is not None and self.include_paths_file is None:
+            raise ValueError("include_paths_ready_file requires include_paths_file.")
+
         if not self.model_name:
             raise ValueError("model_name must be provided.")
 
@@ -156,6 +163,9 @@ class ExtractionConfig:
         payload["input_dir"] = str(self.input_dir)
         payload["output_dir"] = str(self.output_dir)
         payload["include_paths_file"] = str(self.include_paths_file) if self.include_paths_file is not None else None
+        payload["include_paths_ready_file"] = (
+            str(self.include_paths_ready_file) if self.include_paths_ready_file is not None else None
+        )
         payload["supported_extensions"] = list(self.supported_extensions)
         return payload
 

@@ -223,8 +223,6 @@ def _matches_quick_filter(
         return ai_ingested
     if quick_filter == FilterMode.AI_PREFILTER_DUMPED:
         return dino_decision is not None and dino_decision.action in {"quarantine", "remove_from_pool"}
-    if quick_filter == FilterMode.DINO_QUARANTINE:
-        return dino_decision is not None and dino_decision.action == "quarantine"
     if quick_filter == FilterMode.DINO_REMOVED:
         return dino_decision is not None and dino_decision.action == "remove_from_pool"
     if quick_filter == FilterMode.DINO_RESCUED:

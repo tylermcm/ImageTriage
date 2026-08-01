@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -12,9 +16,63 @@ import numpy as np
 
 from aiculler.storage import SQLiteFeatureStore
 from aiculler.telemetry import ensure_user_overrides_schema
+from aiculler.cli import _ingestion_speed_summary, _log_speed_phase
 
 
 class AICullerCliReportTests(unittest.TestCase):
+    def test_ingestion_summary_counts_each_preview_once_and_reports_feature_phases(self) -> None:
+        events = [
+            {
+                "status": "previewed",
+                "preview_seconds": 0.25,
+                "feature_seconds": 0.0,
+                "persistence_seconds": 0.0,
+                "total_seconds": 0.25,
+                "feature_timings": {},
+            },
+            {
+                "status": "ready",
+                "preview_seconds": 0.25,
+                "feature_seconds": 0.5,
+                "persistence_seconds": 0.1,
+                "total_seconds": 0.85,
+                "feature_timings": {"clip_inference": 0.2, "topiq_inference": 0.15},
+            },
+        ]
+
+        summary = _ingestion_speed_summary(events, 1.0)
+
+        self.assertEqual(0.25, summary["preview_total_seconds"])
+        self.assertEqual(0.5, summary["feature_total_seconds"])
+        self.assertEqual(0.1, summary["persistence_total_seconds"])
+        self.assertEqual(0.2, summary["feature_phase_total_seconds"]["clip_inference"])
+        self.assertEqual(0.15, summary["feature_phase_total_seconds"]["topiq_inference"])
+
+    def test_speed_phase_emits_cross_process_performance_metric(self) -> None:
+        class LoggerStub:
+            def event(self, _event: str, _payload: dict) -> None:
+                return
+
+        output = io.StringIO()
+        previous = os.environ.get("IMAGE_TRIAGE_AI_METRICS")
+        os.environ["IMAGE_TRIAGE_AI_METRICS"] = "1"
+        try:
+            with redirect_stdout(output):
+                _log_speed_phase(LoggerStub(), "assign_categories", time.perf_counter(), rows=12)
+        finally:
+            if previous is None:
+                os.environ.pop("IMAGE_TRIAGE_AI_METRICS", None)
+            else:
+                os.environ["IMAGE_TRIAGE_AI_METRICS"] = previous
+
+        line = output.getvalue().strip()
+        self.assertTrue(line.startswith("AI_METRIC "))
+        payload = json.loads(line.removeprefix("AI_METRIC "))
+        self.assertEqual("ai.script.aiculler.phase", payload["event"])
+        self.assertEqual("assign_categories", payload["phase"])
+        self.assertEqual(12, payload["rows"])
+        self.assertGreaterEqual(payload["duration_ms"], 0.0)
+
     def test_override_report_outputs_stable_json(self) -> None:
         with tempfile.TemporaryDirectory(prefix="aiculler_override_cli_") as temp_dir:
             db_path = Path(temp_dir) / "aiculler.sqlite"

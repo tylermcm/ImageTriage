@@ -46,6 +46,12 @@ def _materialize_runtime_modules(target_dir: Path) -> None:
         "Name: transformers\nVersion: 5.5.4\n",
         encoding="utf-8",
     )
+    ort_dist_info = target_dir / "onnxruntime_gpu-1.26.0.dist-info"
+    ort_dist_info.mkdir(parents=True, exist_ok=True)
+    (ort_dist_info / "METADATA").write_text(
+        "Name: onnxruntime-gpu\nVersion: 1.26.0\n",
+        encoding="utf-8",
+    )
 
 
 def _materialize_base_runtime_modules(target_dir: Path) -> None:
@@ -76,6 +82,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
             self.assertEqual(status.installed_variants, (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT))
             self.assertEqual(status.preferred_variant, AI_RUNTIME_GPU_VARIANT)
+            self.assertEqual(status.onnx_gpu_installed_variants, (AI_RUNTIME_GPU_VARIANT,))
             self.assertEqual(len(recorded_calls), 2)
             self.assertIn("https://download.pytorch.org/whl/cpu", recorded_calls[0])
             self.assertIn("https://download.pytorch.org/whl/cu128", recorded_calls[1])
@@ -99,6 +106,8 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("--progress-bar", args)
         self.assertIn("raw", args)
         self.assertIn("transformers>=4.56", args)
+        self.assertIn("onnxruntime>=1.16", args)
+        self.assertNotIn("onnxruntime-gpu>=1.26,<1.27", args)
 
     def test_default_pip_runner_uses_embedded_pip_when_frozen(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -123,6 +132,8 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("https://download.pytorch.org/whl/cu128", args)
         self.assertIn("torch==2.9.0+cu128", args)
         self.assertIn("torchvision==0.24.0+cu128", args)
+        self.assertIn("onnxruntime-gpu>=1.26,<1.27", args)
+        self.assertNotIn("onnxruntime>=1.16", args)
 
     def test_runtime_install_can_skip_optional_dino_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -160,6 +171,21 @@ class AIRuntimePackageTests(unittest.TestCase):
 
         self.assertFalse(status.profiles[AI_RUNTIME_GPU_VARIANT].is_installed)
         self.assertIn("torch>=2.9.0+cu128", status.profiles[AI_RUNTIME_GPU_VARIANT].missing_modules)
+
+    def test_legacy_gpu_profile_remains_valid_but_reports_missing_onnx_gpu_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir) / "runtime"
+            site_packages = install_root / "profiles" / AI_RUNTIME_GPU_VARIANT / "site-packages"
+            _materialize_runtime_modules(site_packages)
+            for metadata_dir in site_packages.glob("onnxruntime_gpu-*.dist-info"):
+                for child in metadata_dir.iterdir():
+                    child.unlink()
+                metadata_dir.rmdir()
+
+            status = load_ai_runtime_installation_status(install_root=install_root)
+
+        self.assertIn(AI_RUNTIME_GPU_VARIANT, status.installed_variants)
+        self.assertNotIn(AI_RUNTIME_GPU_VARIANT, status.onnx_gpu_installed_variants)
 
     def test_runtime_size_estimates_are_available_for_setup_copy(self) -> None:
         self.assertGreater(estimate_ai_runtime_download_size_mb(AI_RUNTIME_GPU_VARIANT), 3000)

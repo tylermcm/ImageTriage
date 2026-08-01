@@ -27,17 +27,29 @@ class FilteringTests(unittest.TestCase):
             modified_ns=1,
         )
 
+        removed = DINOPrefilterDecision(path=record.path, action="remove_from_pool")
         self.assertTrue(
             matches_record_query(
                 record,
-                RecordFilterQuery(quick_filter=FilterMode.DINO_QUARANTINE),
-                dino_decision=DINOPrefilterDecision(path=record.path, action="quarantine"),
+                RecordFilterQuery(quick_filter=FilterMode.DINO_REMOVED),
+                dino_decision=removed,
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             matches_record_query(
                 record,
-                RecordFilterQuery(quick_filter=FilterMode.DINO_REMOVED),
+                RecordFilterQuery(quick_filter=FilterMode.AI_PREFILTER_DUMPED),
+                dino_decision=removed,
+            )
+        )
+
+    def test_prefilter_dumped_keeps_historical_quarantine_rows_visible(self) -> None:
+        record = ImageRecord(path="C:/photos/old.jpg", name="old.jpg", size=1024, modified_ns=1)
+
+        self.assertTrue(
+            matches_record_query(
+                record,
+                RecordFilterQuery(quick_filter=FilterMode.AI_PREFILTER_DUMPED),
                 dino_decision=DINOPrefilterDecision(path=record.path, action="quarantine"),
             )
         )

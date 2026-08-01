@@ -1,45 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
-from .dino_prefilter import DINOPrefilterDecision, DINOPrefilterMode, _bool_value, _clamped_score
-
-
-class PHashExecutionMode(str, Enum):
-    BEFORE_AI = "before_ai"
-    PARALLEL_WITH_DINO = "parallel_with_dino"
-    PARALLEL_WITH_MAIN = "parallel_with_main"
+from .dino_prefilter import DINOPrefilterDecision, _bool_value, _clamped_score
 
 
 @dataclass(slots=True, frozen=True)
 class PHashPrefilterSettings:
     enabled: bool = True
-    mode: DINOPrefilterMode = DINOPrefilterMode.SOFT_QUARANTINE
-    execution_mode: PHashExecutionMode = PHashExecutionMode.BEFORE_AI
     hamming_threshold: int = 6
     cache_enabled: bool = True
     diagnostics_enabled: bool = True
 
     def normalized(self) -> "PHashPrefilterSettings":
-        mode = self.mode
-        if not isinstance(mode, DINOPrefilterMode):
-            try:
-                mode = DINOPrefilterMode(str(mode))
-            except ValueError:
-                mode = DINOPrefilterMode.SOFT_QUARANTINE
-        execution_mode = self.execution_mode
-        if not isinstance(execution_mode, PHashExecutionMode):
-            execution_mode = coerce_phash_execution_mode(execution_mode)
         return replace(
             self,
             enabled=bool(self.enabled),
-            mode=mode,
-            execution_mode=execution_mode,
             hamming_threshold=max(0, min(64, int(self.hamming_threshold))),
             cache_enabled=bool(self.cache_enabled),
             diagnostics_enabled=bool(self.diagnostics_enabled),
@@ -48,13 +29,11 @@ class PHashPrefilterSettings:
     def to_cache_payload(self) -> dict[str, object]:
         normalized = self.normalized()
         payload = asdict(normalized)
-        payload["mode"] = normalized.mode.value
-        payload["execution_mode"] = normalized.execution_mode.value
         payload["schema_version"] = PHASH_PREFILTER_SCHEMA_VERSION
         return payload
 
 
-PHASH_PREFILTER_SCHEMA_VERSION = 1
+PHASH_PREFILTER_SCHEMA_VERSION = 2
 PHASH_PREFILTER_ARTIFACT_DIRNAME = "phash_prefilter"
 PHASH_PREFILTER_REPORT_FILENAME = "phash_prefilter_report.json"
 PHASH_PREFILTER_ROWS_FILENAME = "phash_prefilter_rows.jsonl"
@@ -99,18 +78,18 @@ def run_phash_prefilter_from_signal_rows(
     *,
     settings: PHashPrefilterSettings,
     paths: PHashPrefilterPaths,
+    protected_paths: Iterable[str] = (),
 ) -> dict[str, DINOPrefilterDecision]:
     normalized = settings.normalized()
     decisions: list[DINOPrefilterDecision] = []
     scanned_count = 0
-    quarantined_count = 0
     removed_count = 0
+    protected_count = 0
+    protected_keys = {_path_key(path) for path in protected_paths if str(path).strip()}
     append_phash_prefilter_log(
         paths,
         "phash_prefilter.start",
         enabled=normalized.enabled,
-        mode=normalized.mode.value,
-        execution_mode=normalized.execution_mode.value,
         hamming_threshold=normalized.hamming_threshold,
     )
     for row in rows:
@@ -123,27 +102,35 @@ def run_phash_prefilter_from_signal_rows(
         if not normalized.enabled or score < 1.0 or best_representative:
             decisions.append(DINOPrefilterDecision(path=path, action="pass", reason="phash_duplicate_trash", score=score))
             continue
-        action = "remove_from_pool" if normalized.mode == DINOPrefilterMode.POOL_REMOVAL else "quarantine"
-        if action == "remove_from_pool":
-            removed_count += 1
-        else:
-            quarantined_count += 1
-        decisions.append(DINOPrefilterDecision(path=path, action=action, reason="phash_duplicate_trash", score=score))
+        if _path_key(path) in protected_keys:
+            protected_count += 1
+            decisions.append(
+                DINOPrefilterDecision(
+                    path=path,
+                    action="rescued",
+                    reason="phash_duplicate_trash",
+                    score=score,
+                    rescue_reasons=("manual_keep",),
+                )
+            )
+            continue
+        removed_count += 1
+        decisions.append(DINOPrefilterDecision(path=path, action="remove_from_pool", reason="phash_duplicate_trash", score=score))
 
     write_phash_prefilter_audit(
         paths,
         settings=normalized,
         rows=(decision.to_row() for decision in decisions),
         scanned_count=scanned_count,
-        quarantined_count=quarantined_count,
         removed_from_pool_count=removed_count,
+        protected_count=protected_count,
     )
     append_phash_prefilter_log(
         paths,
         "phash_prefilter.finished",
         scanned=scanned_count,
-        quarantined=quarantined_count,
         removed_from_pool=removed_count,
+        protected=protected_count,
     )
     return {decision.path: decision for decision in decisions}
 
@@ -154,8 +141,8 @@ def write_phash_prefilter_audit(
     settings: PHashPrefilterSettings,
     rows: Iterable[dict[str, object]],
     scanned_count: int = 0,
-    quarantined_count: int = 0,
     removed_from_pool_count: int = 0,
+    protected_count: int = 0,
 ) -> dict[str, object]:
     paths.ensure()
     with paths.rows_path.open("w", encoding="utf-8", newline="\n") as handle:
@@ -167,8 +154,8 @@ def write_phash_prefilter_audit(
         "settings": settings.normalized().to_cache_payload(),
         "counts": {
             "scanned": max(0, int(scanned_count)),
-            "quarantined": max(0, int(quarantined_count)),
             "removed_from_pool": max(0, int(removed_from_pool_count)),
+            "protected": max(0, int(protected_count)),
         },
         "artifacts": {
             "rows": str(paths.rows_path),
@@ -218,23 +205,9 @@ def append_phash_prefilter_log(paths: PHashPrefilterPaths, event: str, **fields:
         handle.write(json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")) + "\n")
 
 
-def phash_execution_mode_label(mode: PHashExecutionMode | str) -> str:
-    resolved = coerce_phash_execution_mode(mode)
-    if resolved == PHashExecutionMode.PARALLEL_WITH_DINO:
-        return "Async with DINO"
-    if resolved == PHashExecutionMode.PARALLEL_WITH_MAIN:
-        return "Async with main AI"
-    return "Before AI scoring"
-
-
-def coerce_phash_execution_mode(value: object) -> PHashExecutionMode:
-    if isinstance(value, PHashExecutionMode):
-        return value
-    try:
-        return PHashExecutionMode(str(value or ""))
-    except ValueError:
-        return PHashExecutionMode.BEFORE_AI
-
-
 def default_phash_prefilter_settings() -> PHashPrefilterSettings:
     return PHashPrefilterSettings()
+
+
+def _path_key(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))

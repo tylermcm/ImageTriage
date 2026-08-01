@@ -97,6 +97,7 @@ REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
 )
 MISSING_MODULE_PATTERN = re.compile(r"ModuleNotFoundError:\s+No module named ['\"](?P<module>[^'\"]+)['\"]")
 FAILURE_OUTPUT_TAIL_LINE_COUNT = 80
+RECOMMENDED_AI_DATALOADER_WORKERS = 4
 
 
 @dataclass(slots=True, frozen=True)
@@ -689,7 +690,12 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
         model_installation.model_name if model_installation is not None else ""
     )
     batch_size = _positive_int_env("AICULLING_BATCH_SIZE", 16)
-    num_workers = _nonnegative_int_env("AICULLING_NUM_WORKERS", _default_ai_dataloader_workers())
+    worker_capacity = available_ai_dataloader_worker_capacity()
+    requested_workers = _nonnegative_int_env(
+        "AICULLING_NUM_WORKERS",
+        recommended_ai_dataloader_workers(worker_capacity),
+    )
+    num_workers = min(worker_capacity, requested_workers) if requested_workers > 0 else 0
     local_stage_mode = (os.environ.get("AICULLING_LOCAL_STAGE_MODE", "auto") or "auto").strip().lower()
     local_stage_root = Path(
         os.environ.get(
@@ -705,7 +711,10 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     )
     semantic_batch_size = _positive_int_env("AICULLING_SEMANTIC_BATCH_SIZE", 16)
     runtime_status = load_ai_runtime_installation_status()
-    if "gpu" in runtime_status.installed_variants:
+    device_override = ai_device_environment_override()
+    if device_override is not None:
+        device = device_override
+    elif "gpu" in runtime_status.installed_variants:
         device = "cuda"
     elif runtime_status.installed_variants == ("cpu",):
         device = "cpu"
@@ -737,10 +746,29 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
 
 
 def _default_ai_dataloader_workers() -> int:
-    if os.name == "nt":
-        return 0
-    cpu_count = os.cpu_count() or 4
-    return max(2, min(8, max(1, cpu_count // 2)))
+    return recommended_ai_dataloader_workers()
+
+
+def available_ai_dataloader_worker_capacity() -> int:
+    """Return the logical processors available to this process."""
+
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    detected = process_cpu_count() if callable(process_cpu_count) else os.cpu_count()
+    return max(1, int(detected or 1))
+
+
+def recommended_ai_dataloader_workers(capacity: int | None = None) -> int:
+    available = available_ai_dataloader_worker_capacity() if capacity is None else max(1, int(capacity))
+    return min(RECOMMENDED_AI_DATALOADER_WORKERS, available)
+
+
+def clamp_ai_dataloader_workers(value: object, capacity: int | None = None) -> int:
+    available = available_ai_dataloader_worker_capacity() if capacity is None else max(1, int(capacity))
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = recommended_ai_dataloader_workers(available)
+    return max(1, min(available, parsed))
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -774,6 +802,16 @@ def _bool_env(name: str, default: bool) -> bool:
     if raw_value in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def ai_device_environment_override() -> str | None:
+    """Return a valid explicit AI device override, if one is configured."""
+    value = (os.environ.get("AICULLING_DEVICE", "") or "").strip().lower()
+    if value in {"auto", "cpu", "cuda"}:
+        return value
+    if value.startswith("cuda:") and value[5:].isdigit():
+        return value
+    return None
 
 
 def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:

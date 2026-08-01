@@ -21,12 +21,16 @@ AI_RUNTIME_CPU_VARIANT = "cpu"
 AI_RUNTIME_GPU_VARIANT = "gpu"
 AI_RUNTIME_BOTH_VARIANT = "both"
 AI_RUNTIME_VARIANTS = (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT)
+AI_RUNTIME_ONNX_CPU_REQUIREMENT = "onnxruntime>=1.16"
+# ONNX Runtime 1.27+ PyPI GPU wheels target CUDA 13. Keep the managed
+# CUDA-12.8 PyTorch and ONNX runtimes on the same CUDA generation.
+AI_RUNTIME_ONNX_GPU_REQUIREMENT = "onnxruntime-gpu>=1.26,<1.27"
 AI_RUNTIME_INSTALL_CHOICES = (*AI_RUNTIME_VARIANTS, AI_RUNTIME_BOTH_VARIANT)
 DEFAULT_CPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 DEFAULT_GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     "numpy>=1.26",
-    "onnxruntime>=1.16",
+    AI_RUNTIME_ONNX_CPU_REQUIREMENT,
     "Pillow>=10.4",
     "opencv-python-headless>=4.10",
     "scikit-learn>=1.5",
@@ -70,11 +74,11 @@ AI_RUNTIME_REQUIRED_VERSION_FLOORS = {
 AI_RUNTIME_GPU_TORCH_MINIMUM_VERSION = (2, 9, 0)
 AI_RUNTIME_ESTIMATED_DOWNLOAD_MB = {
     AI_RUNTIME_CPU_VARIANT: 2600,
-    AI_RUNTIME_GPU_VARIANT: 6200,
+    AI_RUNTIME_GPU_VARIANT: 6600,
 }
 AI_RUNTIME_ESTIMATED_INSTALLED_MB = {
     AI_RUNTIME_CPU_VARIANT: 4300,
-    AI_RUNTIME_GPU_VARIANT: 8800,
+    AI_RUNTIME_GPU_VARIANT: 9300,
 }
 
 PipRunner = Callable[[list[str], Path], int]
@@ -109,6 +113,7 @@ class AIRuntimeInstallationStatus:
     installed_variants: tuple[str, ...]
     preferred_variant: str
     dino_installed_variants: tuple[str, ...] = ()
+    onnx_gpu_installed_variants: tuple[str, ...] = ()
 
     @property
     def is_installed(self) -> bool:
@@ -219,12 +224,19 @@ def load_ai_runtime_installation_status(
         if variant in dino_enabled_variants
         and _profile_status(directories, variant, include_dino=True).is_installed
     )
+    onnx_gpu_installed_variants = tuple(
+        variant
+        for variant in AI_RUNTIME_VARIANTS
+        if variant == AI_RUNTIME_GPU_VARIANT
+        and bool(_installed_distribution_version(directories.site_packages_dir(variant), "onnxruntime-gpu"))
+    )
     return AIRuntimeInstallationStatus(
         directories=directories,
         profiles=profiles,
         installed_variants=installed_variants,
         preferred_variant=preferred_variant,
         dino_installed_variants=dino_installed_variants,
+        onnx_gpu_installed_variants=onnx_gpu_installed_variants,
     )
 
 
@@ -314,6 +326,17 @@ def install_ai_runtime(
     return load_ai_runtime_installation_status(install_root=install_root)
 
 
+def uninstall_ai_runtime(*, install_root: str | Path | None = None) -> bool:
+    """Remove the entire installed AI runtime directory (all profiles + metadata).
+
+    Returns True if a runtime directory existed and was removed."""
+    directories = resolve_ai_runtime_directories(install_root=install_root)
+    if not directories.root.exists():
+        return False
+    shutil.rmtree(directories.root, ignore_errors=True)
+    return not directories.root.exists()
+
+
 def build_ai_runtime_pip_install_args(
     *,
     variant: str,
@@ -348,14 +371,21 @@ def build_ai_runtime_pip_install_args(
 
 
 def _ai_runtime_pip_requirements_for_variant(variant: str, *, include_dino: bool = True) -> tuple[str, ...]:
-    if not include_dino:
-        return AI_RUNTIME_BASE_PIP_REQUIREMENTS
-    if normalize_ai_runtime_variant(variant) != AI_RUNTIME_GPU_VARIANT:
-        return AI_RUNTIME_PIP_REQUIREMENTS
+    normalized = normalize_ai_runtime_variant(variant)
+    requirements = AI_RUNTIME_PIP_REQUIREMENTS if include_dino else AI_RUNTIME_BASE_PIP_REQUIREMENTS
+    if normalized == AI_RUNTIME_GPU_VARIANT:
+        requirements = tuple(
+            AI_RUNTIME_ONNX_GPU_REQUIREMENT
+            if requirement.partition(">=")[0] == "onnxruntime"
+            else requirement
+            for requirement in requirements
+        )
+    if not include_dino or normalized != AI_RUNTIME_GPU_VARIANT:
+        return requirements
     return tuple(
         requirement
-        for requirement in AI_RUNTIME_PIP_REQUIREMENTS
-        if not requirement.partition(">=")[0] in {"torch", "torchvision"}
+        for requirement in requirements
+        if not requirement.partition("==")[0] in {"torch", "torchvision"}
     ) + (
         f"torch=={_gpu_torch_version_spec()}",
         f"torchvision=={_gpu_torchvision_version_spec()}",

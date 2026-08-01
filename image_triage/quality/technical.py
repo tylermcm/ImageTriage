@@ -19,6 +19,7 @@ Formula references (FACET github.com/ncoevoet/facet, analyzers/technical.py):
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 
@@ -41,7 +42,7 @@ def _to_gray(image: np.ndarray) -> np.ndarray:
     """BGR uint8 -> float64 luma (BT.601, the OpenCV default), 0..255."""
     arr = np.asarray(image)
     if arr.ndim == 2:
-        return arr.astype(np.float64)
+        return arr.astype(np.float64, copy=False)
     b = arr[..., 0].astype(np.float64)
     g = arr[..., 1].astype(np.float64)
     r = arr[..., 2].astype(np.float64)
@@ -127,11 +128,15 @@ def contrast_score(gray: np.ndarray) -> float:
     return float(min(10.0, max(0.0, percentile_range * 5.0 + rms * 20.0)))
 
 
-def color_harmony_score(image: np.ndarray) -> float:
+def color_harmony_score(
+    image: np.ndarray,
+    *,
+    hsv: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+) -> float:
     arr = np.asarray(image)
     if arr.ndim == 2:
         return 0.0
-    hue, sat, _ = _bgr_to_hsv(arr)
+    hue, sat, _ = hsv if hsv is not None else _bgr_to_hsv(arr)
     hist, _, _ = np.histogram2d(
         hue.ravel(), sat.ravel(), bins=[180, 256], range=[[0, 180], [0, 256]]
     )
@@ -143,23 +148,58 @@ def color_harmony_score(image: np.ndarray) -> float:
     return float(min(10.0, max(0.0, entropy / _COLOR_MAX_ENTROPY * 10.0)))
 
 
-def is_monochrome(image: np.ndarray) -> bool:
+def is_monochrome(
+    image: np.ndarray,
+    *,
+    saturation: np.ndarray | None = None,
+) -> bool:
     arr = np.asarray(image)
     if arr.ndim == 2:
         return True
-    _, sat, _ = _bgr_to_hsv(arr)
+    sat = saturation if saturation is not None else _bgr_to_hsv(arr)[1]
     return bool(float(np.mean(sat)) / 255.0 < _MONOCHROME_SAT_THRESHOLD)
 
 
-def analyze_technical(image: np.ndarray, *, iso: float | None = None) -> DimensionScores:
+def analyze_technical(
+    image: np.ndarray,
+    *,
+    iso: float | None = None,
+    timings: dict[str, float] | None = None,
+) -> DimensionScores:
     """Compute all Phase-1 classical dimensions for a BGR uint8 image."""
-    gray = _to_gray(image)
+    def measured(name: str, operation):
+        started_at = time.perf_counter()
+        result = operation()
+        if timings is not None:
+            timings[name] = time.perf_counter() - started_at
+        return result
+
+    total_started_at = time.perf_counter()
+    gray = measured("gray_conversion", lambda: _to_gray(image))
+    sharpness = measured("sharpness", lambda: sharpness_score(gray, iso=iso))
+    exposure = measured("exposure", lambda: exposure_score(gray))
+    dynamic_range = measured("dynamic_range", lambda: dynamic_range_score(gray))
+    noise = measured("noise", lambda: noise_score(gray))
+    contrast = measured("contrast", lambda: contrast_score(gray))
+    if np.asarray(image).ndim == 2:
+        hsv = None
+        if timings is not None:
+            timings["hsv_conversion"] = 0.0
+    else:
+        hsv = measured("hsv_conversion", lambda: _bgr_to_hsv(image))
+    color_harmony = measured("color_harmony", lambda: color_harmony_score(image, hsv=hsv))
+    monochrome = measured(
+        "monochrome",
+        lambda: is_monochrome(image, saturation=None if hsv is None else hsv[1]),
+    )
+    if timings is not None:
+        timings["total"] = time.perf_counter() - total_started_at
     return DimensionScores(
-        sharpness=sharpness_score(gray, iso=iso),
-        exposure=exposure_score(gray),
-        dynamic_range=dynamic_range_score(gray),
-        noise=noise_score(gray),
-        contrast=contrast_score(gray),
-        color_harmony=color_harmony_score(image),
-        monochrome=is_monochrome(image),
+        sharpness=sharpness,
+        exposure=exposure,
+        dynamic_range=dynamic_range,
+        noise=noise,
+        contrast=contrast,
+        color_harmony=color_harmony,
+        monochrome=monochrome,
     )

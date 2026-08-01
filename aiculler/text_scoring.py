@@ -7,6 +7,7 @@ from typing import Sequence
 import numpy as np
 
 from aiculler.clip_tokenizer import SimpleCLIPTokenizer
+from aiculler.onnx_runtime import create_onnx_session, preflight_onnx_session, preferred_onnx_providers
 from aiculler.storage import SQLiteFeatureStore
 
 
@@ -43,12 +44,19 @@ class CLIPTextEncoder:
 
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        providers = providers or self._available_providers(ort)
-        self.session = ort.InferenceSession(str(text_onnx_path), opts, providers=providers)
-        self.input_name = self._select_input_name(self.session)
-        self.output_name = self._select_output_name(self.session)
-
         self.sequence_length = int(sequence_length)
+        providers = providers or preferred_onnx_providers(ort)
+        self.session = create_onnx_session(ort, text_onnx_path, opts, providers=providers)
+        self.input_name = self._select_input_name(self.session)
+        self.session = preflight_onnx_session(
+            ort,
+            self.session,
+            text_onnx_path,
+            opts,
+            input_name=self.input_name,
+            input_shape=(1, self.sequence_length),
+        )
+        self.output_name = self._select_output_name(self.session)
         if Tokenizer is None:
             self.tokenizer = SimpleCLIPTokenizer(tokenizer_json_path, sequence_length=self.sequence_length)
         else:
@@ -61,9 +69,7 @@ class CLIPTextEncoder:
 
     @staticmethod
     def _available_providers(ort) -> list[str]:
-        preferred = ["CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"]
-        available = set(ort.get_available_providers())
-        return [provider for provider in preferred if provider in available] or ["CPUExecutionProvider"]
+        return preferred_onnx_providers(ort)
 
     @staticmethod
     def _select_input_name(session) -> str:

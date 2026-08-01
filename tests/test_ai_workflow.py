@@ -18,10 +18,13 @@ from image_triage.ai_workflow import (
     _resolve_stage_command,
     _run_command_with_live_output,
     ai_semantic_artifacts_ready,
+    available_ai_dataloader_worker_capacity,
     build_ai_stage_cache_keys,
     build_ai_workflow_paths,
+    clamp_ai_dataloader_workers,
     default_ai_workflow_runtime,
     load_supported_extensions,
+    recommended_ai_dataloader_workers,
     reset_hidden_ai_review_cache,
 )
 from image_triage.models import ImageRecord
@@ -284,12 +287,37 @@ class AIWorkflowStreamingTests(unittest.TestCase):
                 "AICULLING_CHECKPOINT": "",
                 "AICULLING_CHECKPOINT_URL": "",
                 "AICULLING_MODEL_NAME": "mock-model",
+                "AICULLING_DEVICE": "",
             }
             with patch.dict(os.environ, env, clear=False):
                 runtime = default_ai_workflow_runtime()
 
             self.assertEqual(runtime.checkpoint_path, checkpoint_path.resolve())
             self.assertEqual(runtime.device, "auto")
+
+    def test_default_runtime_honors_device_environment_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine_root = Path(temp_dir) / "engine"
+            config_dir = engine_root / "configs"
+            checkpoint_path = engine_root / "outputs" / "ranker_run_mlp_100ep" / "best_ranker.pt"
+            config_dir.mkdir(parents=True)
+            checkpoint_path.parent.mkdir(parents=True)
+            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
+            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
+            checkpoint_path.write_bytes(b"checkpoint")
+
+            env = {
+                "AICULLING_ENGINE_ROOT": str(engine_root),
+                "AICULLING_PYTHON": sys.executable,
+                "AICULLING_CHECKPOINT": str(checkpoint_path),
+                "AICULLING_MODEL_NAME": "mock-model",
+                "AICULLING_DEVICE": "CPU",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                runtime = default_ai_workflow_runtime()
+
+            self.assertEqual(runtime.device, "cpu")
 
     def test_default_runtime_honors_batch_size_and_worker_environment_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -317,9 +345,7 @@ class AIWorkflowStreamingTests(unittest.TestCase):
             self.assertEqual(runtime.batch_size, 48)
             self.assertEqual(runtime.num_workers, 7)
 
-    def test_default_runtime_uses_zero_ai_workers_on_windows(self) -> None:
-        if os.name != "nt":
-            self.skipTest("Windows-specific DataLoader default")
+    def test_default_runtime_uses_hardware_bounded_recommended_workers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             engine_root = Path(temp_dir) / "engine"
             config_dir = engine_root / "configs"
@@ -341,7 +367,17 @@ class AIWorkflowStreamingTests(unittest.TestCase):
                 os.environ.pop("AICULLING_NUM_WORKERS", None)
                 runtime = default_ai_workflow_runtime()
 
-        self.assertEqual(runtime.num_workers, 0)
+        self.assertEqual(
+            runtime.num_workers,
+            recommended_ai_dataloader_workers(),
+        )
+
+    def test_worker_helpers_never_exceed_reported_capacity(self) -> None:
+        self.assertEqual(recommended_ai_dataloader_workers(2), 2)
+        self.assertEqual(recommended_ai_dataloader_workers(16), 4)
+        self.assertEqual(clamp_ai_dataloader_workers(8, 4), 4)
+        self.assertEqual(clamp_ai_dataloader_workers("invalid", 3), 3)
+        self.assertGreaterEqual(available_ai_dataloader_worker_capacity(), 1)
 
     def test_load_supported_extensions_fallback_includes_raw_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

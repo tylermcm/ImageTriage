@@ -34,7 +34,6 @@ def add_ai_results_actions(menu: QMenu, actions: MainWindowActions) -> None:
     for mode in (
         FilterMode.AI_INGESTED,
         FilterMode.AI_PREFILTER_DUMPED,
-        FilterMode.DINO_QUARANTINE,
         FilterMode.DINO_REMOVED,
     ):
         prefilter_menu.addAction(actions.filter_actions[mode])
@@ -225,6 +224,7 @@ def build_main_menu_bar(
     setup_menu = ai_menu.addMenu("Runtime And Cache")
     setup_menu.addAction(actions.install_ai_runtime)
     setup_menu.addAction(actions.download_ai_model)
+    setup_menu.addAction(actions.uninstall_ai_components)
     setup_menu.addSeparator()
     setup_menu.addAction(actions.reset_ai_review_cache)
 

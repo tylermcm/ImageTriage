@@ -44,14 +44,28 @@ class ImageDataset(Dataset[dict[str, Any]]):
 
         try:
             total_start = time.perf_counter() if self.collect_timings else 0.0
+            total_cpu_start = time.thread_time() if self.collect_timings else 0.0
             load_start = total_start
-            rgb_image = load_rgb_for_inference(path, target_short_edge=self.target_short_edge)
+            io_profile: dict[str, Any] | None = {} if self.collect_timings else None
+            rgb_image = load_rgb_for_inference(
+                path,
+                target_short_edge=self.target_short_edge,
+                profile=io_profile,
+            )
             load_ms = (time.perf_counter() - load_start) * 1000.0 if self.collect_timings else 0.0
             technical = None
+            technical_ms = 0.0
+            technical_cpu_ms = 0.0
             try:
                 transform_start = time.perf_counter() if self.collect_timings else 0.0
+                transform_cpu_start = time.thread_time() if self.collect_timings else 0.0
                 tensor = self.transform(rgb_image)
                 transform_ms = (time.perf_counter() - transform_start) * 1000.0 if self.collect_timings else 0.0
+                transform_cpu_ms = (
+                    (time.thread_time() - transform_cpu_start) * 1000.0
+                    if self.collect_timings
+                    else 0.0
+                )
                 # Derive technical signals from this same decode. Failure here must
                 # never break extraction — fall through with technical=None and the
                 # signals stage will compute it the old way.
@@ -59,14 +73,31 @@ class ImageDataset(Dataset[dict[str, Any]]):
                     try:
                         from app.engine.signals.technical import technical_signals_from_image
 
+                        technical_start = time.perf_counter() if self.collect_timings else 0.0
+                        technical_cpu_start = time.thread_time() if self.collect_timings else 0.0
                         technical = technical_signals_from_image(
                             rgb_image, max_side=self.technical_max_side, apply_exif=False
+                        )
+                        technical_ms = (
+                            (time.perf_counter() - technical_start) * 1000.0
+                            if self.collect_timings
+                            else 0.0
+                        )
+                        technical_cpu_ms = (
+                            (time.thread_time() - technical_cpu_start) * 1000.0
+                            if self.collect_timings
+                            else 0.0
                         )
                     except Exception:
                         technical = None
             finally:
                 rgb_image.close()
             total_ms = (time.perf_counter() - total_start) * 1000.0 if self.collect_timings else 0.0
+            total_cpu_ms = (
+                (time.thread_time() - total_cpu_start) * 1000.0
+                if self.collect_timings
+                else 0.0
+            )
             return {
                 "pixel_values": tensor,
                 "record_index": index,
@@ -75,8 +106,13 @@ class ImageDataset(Dataset[dict[str, Any]]):
                 "timing": {
                     "load_ms": load_ms,
                     "transform_ms": transform_ms,
+                    "transform_cpu_ms": transform_cpu_ms,
+                    "technical_ms": technical_ms,
+                    "technical_cpu_ms": technical_cpu_ms,
                     "total_ms": total_ms,
+                    "total_cpu_ms": total_cpu_ms,
                     "file_name": record.file_name,
+                    "io": io_profile or {},
                 },
             }
         except (OSError, ValueError) as exc:
@@ -88,8 +124,13 @@ class ImageDataset(Dataset[dict[str, Any]]):
                 "timing": {
                     "load_ms": 0.0,
                     "transform_ms": 0.0,
+                    "transform_cpu_ms": 0.0,
+                    "technical_ms": 0.0,
+                    "technical_cpu_ms": 0.0,
                     "total_ms": total_ms,
+                    "total_cpu_ms": 0.0,
                     "file_name": record.file_name,
+                    "io": locals().get("io_profile") or {},
                 },
             }
 
@@ -125,6 +166,9 @@ def collate_image_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
     batch = torch.stack(pixel_values) if pixel_values else None
     total_ms_values = [float(timing.get("total_ms") or 0.0) for timing in timings]
     max_timing = timings[total_ms_values.index(max(total_ms_values))] if total_ms_values else {}
+    io_summary = _collate_io_profiles(
+        [timing.get("io") for timing in timings if isinstance(timing.get("io"), dict)]
+    )
     return {
         "pixel_values": batch,
         "record_indices": record_indices,
@@ -134,8 +178,55 @@ def collate_image_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "count": len(timings),
             "load_ms": sum(float(timing.get("load_ms") or 0.0) for timing in timings),
             "transform_ms": sum(float(timing.get("transform_ms") or 0.0) for timing in timings),
+            "transform_cpu_ms": sum(float(timing.get("transform_cpu_ms") or 0.0) for timing in timings),
+            "technical_ms": sum(float(timing.get("technical_ms") or 0.0) for timing in timings),
+            "technical_cpu_ms": sum(float(timing.get("technical_cpu_ms") or 0.0) for timing in timings),
             "total_ms": sum(total_ms_values),
+            "total_cpu_ms": sum(float(timing.get("total_cpu_ms") or 0.0) for timing in timings),
             "max_ms": max(total_ms_values) if total_ms_values else 0.0,
             "max_file": str(max_timing.get("file_name") or ""),
+            "io": io_summary,
         },
+    }
+
+
+def _collate_io_profiles(profiles: list[dict[str, Any]]) -> dict[str, Any]:
+    profiles = [profile for profile in profiles if profile]
+    if not profiles:
+        return {}
+    totals: dict[str, float] = {}
+    formats: dict[str, int] = {}
+    frame_counts: dict[str, int] = {}
+    worker_pids: set[int] = set()
+    for profile in profiles:
+        image_format = str(profile.get("image_format") or "unknown")
+        formats[image_format] = formats.get(image_format, 0) + 1
+        frame_count = str(int(profile.get("frame_count") or 1))
+        frame_counts[frame_count] = frame_counts.get(frame_count, 0) + 1
+        worker_pid = int(profile.get("worker_pid") or 0)
+        if worker_pid:
+            worker_pids.add(worker_pid)
+        for key, value in profile.items():
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            if key in {
+                "worker_pid",
+                "thread_id",
+                "frame_count",
+                "source_width",
+                "source_height",
+                "draft_width",
+                "draft_height",
+                "output_width",
+                "output_height",
+                "decoder_read_block_bytes",
+            }:
+                continue
+            totals[key] = totals.get(key, 0.0) + float(value)
+    return {
+        "samples": len(profiles),
+        "worker_pids": sorted(worker_pids),
+        "formats": formats,
+        "frame_counts": frame_counts,
+        **totals,
     }

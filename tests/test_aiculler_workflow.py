@@ -4,10 +4,13 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
+from PySide6.QtCore import Qt
 
 from image_triage.ai_workflow import AIWorkflowPaths, AIWorkflowRuntime
 from image_triage.aiculler_workflow import (
@@ -15,6 +18,7 @@ from image_triage.aiculler_workflow import (
     AICullerRuntime,
     DINOPrefilterRunTask,
     SOURCE_AICULLER_ROOT,
+    clip_model_variant_options,
     coerce_clip_model_variant,
     compute_and_store_winner_scores,
     default_aiculler_runtime,
@@ -22,13 +26,26 @@ from image_triage.aiculler_workflow import (
     list_adapter_model_summaries,
     load_adapter_review_candidates,
     load_latest_winner_scores,
+    _aiculler_pythonpath,
+    _default_aiculler_python,
     _rows_to_gui_output,
 )
 from image_triage.dino_prefilter import DINOPrefilterSettings, build_dino_prefilter_paths, write_dino_prefilter_audit
 from image_triage.models import ImageRecord
+from image_triage.phash_prefilter import (
+    PHashPrefilterSettings,
+    build_phash_prefilter_paths,
+    run_phash_prefilter_from_signal_rows,
+)
 
 
 class AICullerWorkflowTests(unittest.TestCase):
+    def test_clip_model_catalog_only_exposes_cpu_and_cuda_exports(self) -> None:
+        self.assertEqual(
+            ("uint8", "fp16"),
+            tuple(option.key for option in clip_model_variant_options()),
+        )
+
     def _build_adapter_review_db(self, folder: Path, *, count: int = 200) -> Path:
         db_path = folder / "aiculler.sqlite"
         connection = sqlite3.connect(db_path)
@@ -167,6 +184,32 @@ class AICullerWorkflowTests(unittest.TestCase):
             self.assertIsNone(runtime.topiq_model)
             self.assertEqual(3, runtime.workers)
 
+    def test_default_runtime_and_pythonpath_route_managed_gpu_profile(self) -> None:
+        root = Path("C:/app")
+        managed = Path("C:/runtime/gpu/site-packages")
+
+        runtime = default_aiculler_runtime(device="cuda")
+        pythonpath = _aiculler_pythonpath(
+            root,
+            "C:/existing",
+            runtime_site_packages=(managed,),
+        ).split(os.pathsep)
+
+        self.assertEqual("cuda", runtime.device)
+        self.assertEqual(str(managed), pythonpath[0])
+        self.assertIn("C:/existing", pythonpath)
+
+    def test_default_aiculler_python_does_not_use_project_venv_with_managed_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            venv_python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            venv_python.parent.mkdir(parents=True)
+            venv_python.write_bytes(b"")
+
+            selected = _default_aiculler_python(root)
+
+        self.assertEqual(Path(sys.executable), selected)
+
     def test_default_model_root_prefers_image_triage_cache(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_cache_") as temp_dir:
             local_appdata = Path(temp_dir) / "local"
@@ -212,12 +255,12 @@ class AICullerWorkflowTests(unittest.TestCase):
             self.assertEqual((clip_root / "onnx" / "text_model_uint8.onnx").resolve(), runtime.clip_text_model)
             self.assertEqual((clip_root / "tokenizer.json").resolve(), runtime.tokenizer)
 
-    def test_default_runtime_selects_configured_clip_model_variant(self) -> None:
+    def test_default_runtime_migrates_removed_clip_model_variant_to_uint8(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_variant_") as temp_dir:
             model_root = Path(temp_dir) / "models"
             clip_root = model_root / "Clip" / "clip-vit-large-patch14"
             (clip_root / "onnx").mkdir(parents=True)
-            for filename in ("vision_model_q4.onnx", "text_model_q4.onnx"):
+            for filename in ("vision_model_uint8.onnx", "text_model_uint8.onnx"):
                 (clip_root / "onnx" / filename).write_bytes(b"model")
             (clip_root / "tokenizer.json").write_text("{}", encoding="utf-8")
 
@@ -243,10 +286,29 @@ class AICullerWorkflowTests(unittest.TestCase):
                     else:
                         os.environ[name] = value
 
-            self.assertEqual("q4", runtime.clip_model_variant)
-            self.assertEqual((clip_root / "onnx" / "vision_model_q4.onnx").resolve(), runtime.clip_vision_model)
-            self.assertEqual((clip_root / "onnx" / "text_model_q4.onnx").resolve(), runtime.clip_text_model)
+            self.assertEqual("uint8", runtime.clip_model_variant)
+            self.assertEqual((clip_root / "onnx" / "vision_model_uint8.onnx").resolve(), runtime.clip_vision_model)
+            self.assertEqual((clip_root / "onnx" / "text_model_uint8.onnx").resolve(), runtime.clip_text_model)
             self.assertEqual("uint8", coerce_clip_model_variant("not-a-model"))
+
+    def test_default_runtime_selects_fp16_clip_pair(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_fp16_") as temp_dir:
+            model_root = Path(temp_dir) / "models"
+            clip_root = model_root / "Clip" / "clip-vit-large-patch14"
+            (clip_root / "onnx").mkdir(parents=True)
+            previous_model_root = os.environ.get("IMAGE_TRIAGE_AICULLER_MODEL_ROOT")
+            os.environ["IMAGE_TRIAGE_AICULLER_MODEL_ROOT"] = str(model_root)
+            try:
+                runtime = default_aiculler_runtime(clip_model_variant="fp16")
+            finally:
+                if previous_model_root is None:
+                    os.environ.pop("IMAGE_TRIAGE_AICULLER_MODEL_ROOT", None)
+                else:
+                    os.environ["IMAGE_TRIAGE_AICULLER_MODEL_ROOT"] = previous_model_root
+
+        self.assertEqual("fp16", runtime.clip_model_variant)
+        self.assertEqual(clip_root / "onnx" / "vision_model_fp16.onnx", runtime.clip_vision_model)
+        self.assertEqual(clip_root / "onnx" / "text_model_fp16.onnx", runtime.clip_text_model)
 
     def test_command_runs_cli_entrypoint_from_source_tree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_command_") as temp_dir:
@@ -369,7 +431,7 @@ class AICullerWorkflowTests(unittest.TestCase):
                 ),
                 runtime=runtime,
                 paths=paths,
-                dino_prefilter_settings=DINOPrefilterSettings(enabled=True, mode="pool_removal"),
+                dino_prefilter_settings=DINOPrefilterSettings(enabled=True),
             )
 
             include_path = task._write_dino_prefilter_include_file()
@@ -377,6 +439,184 @@ class AICullerWorkflowTests(unittest.TestCase):
             self.assertIsNotNone(include_path)
             assert include_path is not None
             self.assertEqual(str(good_path), include_path.read_text(encoding="utf-8").strip())
+
+    def test_index_score_can_reuse_prefilter_artifacts_without_rerunning_prefilters(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_reuse_prefilters_") as temp_dir:
+            root = Path(temp_dir)
+            photo_dir = root / "photos"
+            paths = AIWorkflowPaths(
+                folder=photo_dir,
+                hidden_root=photo_dir / ".image_triage_ai",
+                artifacts_dir=photo_dir / ".image_triage_ai" / "artifacts",
+                report_dir=photo_dir / ".image_triage_ai" / "ranker_report",
+                ranked_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_export.csv",
+                html_report_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_report.html",
+                semantic_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_classifications.csv",
+                semantic_summary_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_summary.json",
+            )
+            runtime = AICullerRuntime(
+                root=root,
+                python_executable=root / "python.exe",
+                cli_entrypoint=root / "aiculler" / "cli.py",
+                clip_vision_model=root / "vision.onnx",
+                clip_text_model=root / "text.onnx",
+                tokenizer=root / "tokenizer.json",
+            )
+            task = AICullerRunTask(
+                folder=photo_dir,
+                records=(),
+                runtime=runtime,
+                paths=paths,
+                run_dino_prefilter=False,
+                run_phash_prefilter=False,
+                dino_prefilter_settings=DINOPrefilterSettings(enabled=True),
+                phash_prefilter_settings=PHashPrefilterSettings(enabled=True),
+            )
+
+            self.assertEqual((False, False), task._prefilter_stage_flags())
+
+    def test_phash_pool_removal_reduces_deferred_dino_include_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_phash_dino_pool_") as temp_dir:
+            root = Path(temp_dir)
+            photo_dir = root / "photos"
+            keeper_path = photo_dir / "keeper.jpg"
+            duplicate_path = photo_dir / "duplicate.jpg"
+            paths = AIWorkflowPaths(
+                folder=photo_dir,
+                hidden_root=photo_dir / ".image_triage_ai",
+                artifacts_dir=photo_dir / ".image_triage_ai" / "artifacts",
+                report_dir=photo_dir / ".image_triage_ai" / "ranker_report",
+                ranked_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_export.csv",
+                html_report_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_report.html",
+                semantic_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_classifications.csv",
+                semantic_summary_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_summary.json",
+            )
+            phash_settings = PHashPrefilterSettings(enabled=True, hamming_threshold=0)
+            run_phash_prefilter_from_signal_rows(
+                (
+                    {
+                        "file_path": str(keeper_path),
+                        "phash_duplicate_score": "0.0",
+                        "best_representative": "1",
+                    },
+                    {
+                        "file_path": str(duplicate_path),
+                        "phash_duplicate_score": "1.0",
+                        "best_representative": "0",
+                    },
+                ),
+                settings=phash_settings,
+                paths=build_phash_prefilter_paths(paths),
+            )
+            runtime = AICullerRuntime(
+                root=root,
+                python_executable=root / "python.exe",
+                cli_entrypoint=root / "aiculler" / "cli.py",
+                clip_vision_model=root / "vision.onnx",
+                clip_text_model=root / "text.onnx",
+                tokenizer=root / "tokenizer.json",
+            )
+            task = AICullerRunTask(
+                folder=photo_dir,
+                records=(
+                    ImageRecord(path=str(keeper_path), name=keeper_path.name, size=1, modified_ns=1),
+                    ImageRecord(path=str(duplicate_path), name=duplicate_path.name, size=1, modified_ns=1),
+                ),
+                runtime=runtime,
+                paths=paths,
+                phash_prefilter_settings=phash_settings,
+            )
+
+            include_path = task._write_dino_extraction_include_file(
+                build_dino_prefilter_paths(paths),
+                apply_phash_removals=True,
+            )
+
+            self.assertIsNotNone(include_path)
+            assert include_path is not None
+            self.assertEqual(str(keeper_path), include_path.read_text(encoding="utf-8").strip())
+
+    def test_standalone_dino_presents_phash_as_foreground_startup(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_phash_foreground_") as temp_dir:
+            root = Path(temp_dir)
+            photo_dir = root / "photos"
+            photo_dir.mkdir()
+            first_path = photo_dir / "first.jpg"
+            second_path = photo_dir / "second.jpg"
+            pixels = np.tile(np.arange(64, dtype=np.uint8), (64, 1))
+            rgb = np.dstack((pixels, pixels, pixels))
+            Image.fromarray(rgb).save(first_path)
+            Image.fromarray(rgb).save(second_path)
+            paths = AIWorkflowPaths(
+                folder=photo_dir,
+                hidden_root=photo_dir / ".image_triage_ai",
+                artifacts_dir=photo_dir / ".image_triage_ai" / "artifacts",
+                report_dir=photo_dir / ".image_triage_ai" / "ranker_report",
+                ranked_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_export.csv",
+                html_report_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_report.html",
+                semantic_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_classifications.csv",
+                semantic_summary_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_summary.json",
+            )
+            dino_runtime = AIWorkflowRuntime(
+                engine_root=root / "engine",
+                python_executable=Path(sys.executable),
+                model_name="mock-dino",
+                checkpoint_path=root / "unused.pt",
+                extraction_config_path=root / "extract.json",
+                clustering_config_path=root / "cluster.json",
+                report_config_path=root / "report.json",
+                batch_size=2,
+                num_workers=0,
+            )
+            task = DINOPrefilterRunTask(
+                folder=photo_dir,
+                paths=paths,
+                dino_prefilter_settings=DINOPrefilterSettings(enabled=True),
+                dino_runtime=dino_runtime,
+                phash_prefilter_settings=PHashPrefilterSettings(
+                    enabled=True,
+                    hamming_threshold=0,
+                ),
+                records=(
+                    ImageRecord(path=str(first_path), name=first_path.name, size=1, modified_ns=1),
+                    ImageRecord(path=str(second_path), name=second_path.name, size=1, modified_ns=1),
+                ),
+                protected_paths=(str(second_path),),
+            )
+            captured: dict[str, object] = {}
+
+            def fake_dino_run(*, extraction_include_file=None, include_ready_file=None) -> None:
+                deadline = time.monotonic() + 5.0
+                while include_ready_file is not None and not include_ready_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                captured["include_file"] = extraction_include_file
+                captured["ready_file"] = include_ready_file
+
+            task._run_dino_prefilter = fake_dino_run
+            stages: list[str] = []
+            progress: list[str] = []
+            failures: list[str] = []
+            task.signals.stage.connect(lambda _folder, _index, _total, message: stages.append(message))
+            task.signals.progress.connect(
+                lambda _folder, message, _current, _total, _eta: progress.append(message),
+                Qt.ConnectionType.DirectConnection,
+            )
+            task.signals.failed.connect(lambda _folder, message: failures.append(message))
+
+            task.run()
+
+            self.assertFalse(failures)
+            self.assertEqual("Finding duplicates", stages[0])
+            self.assertTrue(any("duplicates skipped" in message for message in progress))
+            include_file = captured["include_file"]
+            ready_file = captured["ready_file"]
+            self.assertIsInstance(include_file, Path)
+            self.assertIsInstance(ready_file, Path)
+            assert isinstance(include_file, Path)
+            assert isinstance(ready_file, Path)
+            self.assertTrue(ready_file.exists())
+            included = include_file.read_text(encoding="utf-8").splitlines()
+            self.assertEqual([str(second_path)], included)
 
     def test_scoped_ingest_prunes_stale_aiculler_database_rows(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_prune_") as temp_dir:

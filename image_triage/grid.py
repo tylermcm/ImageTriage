@@ -2688,7 +2688,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if dino_decision is not None:
             action = str(getattr(dino_decision, "action", "") or "")
             reason = str(getattr(dino_decision, "reason", "") or "")
-            if action == "quarantine" and reason == "phash_duplicate_trash":
+            if action in {"quarantine", "remove_from_pool"} and reason == "phash_duplicate_trash":
                 return "Near Duplicate"
         return ""
 

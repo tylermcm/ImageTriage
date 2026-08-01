@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from aiculler.run_logging import RunLogger, normalize_value
+from aiculler.perf_metrics import emit_metric
 from aiculler.session_review import collect_review_feedback, load_csv_rows, write_comparison_report
 
 
@@ -43,13 +44,20 @@ def _loggable_args(args) -> dict:
 
 
 def _log_speed_phase(logger: RunLogger, phase: str, started_at: float, **payload) -> None:
+    duration_seconds = time.perf_counter() - started_at
     logger.event(
         "speed_phase",
         {
             "phase": phase,
-            "duration_seconds": round(time.perf_counter() - started_at, 6),
+            "duration_seconds": round(duration_seconds, 6),
             **payload,
         },
+    )
+    emit_metric(
+        "ai.script.aiculler.phase",
+        duration_ms=duration_seconds * 1000.0,
+        phase=phase,
+        **payload,
     )
 
 
@@ -63,6 +71,7 @@ def command_ingest(args) -> int:
     try:
         phase_started_at = time.perf_counter()
         extractor = _build_extractor(args)
+        runtime_details = {} if extractor is None else extractor.runtime_details()
         _log_speed_phase(
             logger,
             "build_extractor",
@@ -71,7 +80,11 @@ def command_ingest(args) -> int:
             topiq_model=str(args.topiq or ""),
             face_quality=bool(getattr(args, "face_quality", False)),
             features_enabled=not args.no_features,
+            **runtime_details,
         )
+        if runtime_details:
+            logger.event("onnx_runtime", runtime_details)
+            emit_metric("ai.script.aiculler.runtime", **runtime_details)
 
         def on_event(event) -> None:
             _event_printer(event)
@@ -112,7 +125,13 @@ def command_ingest(args) -> int:
         phase_started_at = time.perf_counter()
         ids = engine.ingest_paths(include_paths) if include_paths is not None else engine.ingest(args.folder, recursive=not args.no_recursive)
         ingest_elapsed = time.perf_counter() - phase_started_at
-        logger.event("ingest_speed_summary", _ingestion_speed_summary(events, ingest_elapsed))
+        ingest_summary = _ingestion_speed_summary(events, ingest_elapsed)
+        logger.event("ingest_speed_summary", ingest_summary)
+        emit_metric(
+            "ai.script.aiculler.ingest.summary",
+            duration_ms=ingest_elapsed * 1000.0,
+            **ingest_summary,
+        )
         _log_speed_phase(logger, "ingest_pipeline", phase_started_at, image_count=len(ids), events=len(events))
         phase_started_at = time.perf_counter()
         logger.table("ingestion_events", events)
@@ -317,6 +336,12 @@ def command_rank(args) -> int:
                     "duration_seconds": round(float(duration_seconds), 6),
                     **payload,
                 },
+            )
+            emit_metric(
+                "ai.script.aiculler.rank.phase",
+                duration_ms=float(duration_seconds) * 1000.0,
+                phase=phase,
+                **payload,
             )
 
         phase_started_at = time.perf_counter()
@@ -527,6 +552,381 @@ def command_compare_rankings(args) -> int:
         return 0
     finally:
         logger.close()
+
+
+def command_benchmark_models(args) -> int:
+    from aiculler.features import HeadlessFeatureExtractor, IngestionEngine, PreviewExtractor
+    from aiculler.model_benchmark import benchmark_model_session
+
+    if not args.clip:
+        raise SystemExit("--clip is required")
+    logger = _open_logger(args)
+    try:
+        if args.include_paths_file:
+            paths = _load_include_paths(args.include_paths_file)
+        else:
+            paths = sorted(IngestionEngine._iter_visible_images(args.folder))
+        if args.limit is not None:
+            paths = paths[: max(0, int(args.limit))]
+        preview_extractor = PreviewExtractor(args.cache)
+        preview_paths: list[Path] = []
+        preview_errors: list[dict[str, str]] = []
+        for source_path in paths:
+            try:
+                preview_path, _size = preview_extractor.extract(source_path)
+                preview_paths.append(preview_path)
+            except Exception as exc:
+                preview_errors.append({"path": str(source_path), "error": str(exc)})
+        if not preview_paths:
+            print("No readable images were available for model benchmarking.", file=sys.stderr)
+            return 2
+
+        intra_thread_values = _parse_positive_ints(args.intra_threads)
+        batch_sizes = _parse_positive_ints(args.batch_sizes)
+        caller_counts = _parse_positive_ints(args.callers)
+        allow_spinning = {"default": None, "on": True, "off": False}[args.spinning]
+        prepared_inputs: dict[str, list] | None = None
+        records: list[dict[str, object]] = []
+        runtime_records: list[dict[str, object]] = []
+
+        for intra_threads in intra_thread_values:
+            session_started_at = time.perf_counter()
+            extractor = HeadlessFeatureExtractor(
+                args.clip,
+                args.topiq,
+                enable_face_quality=False,
+                intra_op_num_threads=intra_threads,
+                allow_spinning=allow_spinning,
+            )
+            session_build_seconds = time.perf_counter() - session_started_at
+            runtime_details = extractor.runtime_details()
+            runtime_records.append(
+                {
+                    "intra_op_num_threads": intra_threads,
+                    "session_build_seconds": round(session_build_seconds, 6),
+                    **runtime_details,
+                }
+            )
+            if prepared_inputs is None:
+                prepared_inputs = {"clip": [], "topiq": []}
+                for preview_path in preview_paths:
+                    model_inputs = extractor.prepare_model_inputs(preview_path)
+                    prepared_inputs["clip"].append(model_inputs["clip"])
+                    if "topiq" in model_inputs:
+                        prepared_inputs["topiq"].append(model_inputs["topiq"])
+
+            model_runs = [
+                (
+                    "clip",
+                    extractor.clip_session,
+                    extractor.clip_input_name,
+                    [extractor.clip_output_name],
+                    prepared_inputs["clip"],
+                )
+            ]
+            if (
+                extractor.topiq_session is not None
+                and extractor.topiq_input_name is not None
+                and prepared_inputs["topiq"]
+            ):
+                model_runs.append(
+                    (
+                        "topiq",
+                        extractor.topiq_session,
+                        extractor.topiq_input_name,
+                        None,
+                        prepared_inputs["topiq"],
+                    )
+                )
+            for model_name, session, input_name, output_names, samples in model_runs:
+                for result in benchmark_model_session(
+                    session,
+                    model_name=model_name,
+                    input_name=input_name,
+                    output_names=output_names,
+                    samples=samples,
+                    batch_sizes=batch_sizes,
+                    caller_counts=caller_counts,
+                    repetitions=args.repetitions,
+                ):
+                    record = {
+                        **result.to_dict(),
+                        "intra_op_num_threads": intra_threads,
+                        "spinning": args.spinning,
+                        "session_build_seconds": round(session_build_seconds, 6),
+                    }
+                    records.append(record)
+                    emit_metric("ai.script.aiculler.model_benchmark", **record)
+                    if result.status == "completed":
+                        print(
+                            f"{model_name:5s} {result.strategy:20s}={result.setting:<2d} "
+                            f"intra={intra_threads:<2d} median={result.median_seconds:.3f}s "
+                            f"rate={result.images_per_second:.2f} image/s "
+                            f"max_error={result.max_absolute_error:.3g}"
+                        )
+                    else:
+                        print(
+                            f"{model_name:5s} {result.strategy:20s}={result.setting:<2d} "
+                            f"intra={intra_threads:<2d} unsupported: {result.error}"
+                        )
+
+        payload = {
+            "sample_count": len(preview_paths),
+            "preview_errors": preview_errors,
+            "runtime": runtime_records,
+            "results": records,
+        }
+        logger.event("model_benchmark_runtime", {"runtime": runtime_records})
+        logger.table("model_benchmark_results", records)
+        logger.summary(payload)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+            print(f"Wrote benchmark results to {args.out}")
+        return 0
+    finally:
+        logger.close()
+
+
+def command_compare_clip_quality(args) -> int:
+    from aiculler.clip_quality import build_category_vectors, compare_clip_outputs
+    from aiculler.features import HeadlessFeatureExtractor, IngestionEngine, PreviewExtractor
+    from aiculler.semantic import load_category_prompts
+    from aiculler.text_scoring import CLIPTextEncoder
+
+    logger = _open_logger(args)
+    try:
+        paths = (
+            _load_include_paths(args.include_paths_file)
+            if args.include_paths_file
+            else sorted(IngestionEngine._iter_visible_images(args.folder))
+        )
+        if args.limit is not None:
+            paths = paths[: max(0, int(args.limit))]
+        preview_extractor = PreviewExtractor(args.cache)
+        preview_paths: list[Path] = []
+        source_paths: list[Path] = []
+        preview_errors: list[dict[str, str]] = []
+        for source_path in paths:
+            try:
+                preview_path, _size = preview_extractor.extract(source_path)
+                source_paths.append(source_path)
+                preview_paths.append(preview_path)
+            except Exception as exc:
+                preview_errors.append({"path": str(source_path), "error": " ".join(str(exc).split())})
+        if not preview_paths:
+            print("No readable images were available for CLIP quality comparison.", file=sys.stderr)
+            return 2
+
+        candidate_providers = ["CPUExecutionProvider"] if args.candidate_provider == "cpu" else None
+        reference_providers = ["CPUExecutionProvider"] if args.reference_provider == "cpu" else None
+        build_started_at = time.perf_counter()
+        candidate_extractor = HeadlessFeatureExtractor(
+            args.candidate_vision,
+            providers=candidate_providers,
+            enable_face_quality=False,
+        )
+        candidate_build_seconds = time.perf_counter() - build_started_at
+        build_started_at = time.perf_counter()
+        reference_extractor = HeadlessFeatureExtractor(
+            args.reference_vision,
+            providers=reference_providers,
+            enable_face_quality=False,
+        )
+        reference_build_seconds = time.perf_counter() - build_started_at
+        if candidate_extractor.clip_input_size != reference_extractor.clip_input_size:
+            raise ValueError(
+                "Candidate and reference vision models require different image input sizes: "
+                f"{candidate_extractor.clip_input_size} vs {reference_extractor.clip_input_size}"
+            )
+
+        preprocess_started_at = time.perf_counter()
+        prepared_inputs = [
+            candidate_extractor.prepare_model_inputs(path)["clip"]
+            for path in preview_paths
+        ]
+        preprocess_seconds = time.perf_counter() - preprocess_started_at
+
+        def run_vision(extractor) -> tuple[list, float]:
+            started_at = time.perf_counter()
+            embeddings = [
+                extractor.clip_session.run(
+                    [extractor.clip_output_name],
+                    {extractor.clip_input_name: model_input},
+                )[0].reshape(-1)
+                for model_input in prepared_inputs
+            ]
+            return embeddings, time.perf_counter() - started_at
+
+        candidate_embeddings, candidate_inference_seconds = run_vision(candidate_extractor)
+        reference_embeddings, reference_inference_seconds = run_vision(reference_extractor)
+
+        text_started_at = time.perf_counter()
+        candidate_text_encoder = CLIPTextEncoder(
+            args.candidate_text,
+            args.tokenizer,
+            providers=candidate_providers,
+        )
+        reference_text_encoder = CLIPTextEncoder(
+            args.reference_text,
+            args.tokenizer,
+            providers=reference_providers,
+        )
+        category_prompts = load_category_prompts(args.categories)
+        candidate_category_vectors = build_category_vectors(candidate_text_encoder, category_prompts)
+        reference_category_vectors = build_category_vectors(reference_text_encoder, category_prompts)
+        text_seconds = time.perf_counter() - text_started_at
+
+        report = compare_clip_outputs(
+            candidate_embeddings,
+            reference_embeddings,
+            candidate_category_vectors=candidate_category_vectors,
+            reference_category_vectors=reference_category_vectors,
+            neighbor_count=args.neighbors,
+        )
+        report.update(
+            {
+                "candidate": {
+                    "vision_model": str(args.candidate_vision),
+                    "text_model": str(args.candidate_text),
+                    "provider_mode": args.candidate_provider,
+                    "runtime": candidate_extractor.runtime_details(),
+                },
+                "reference": {
+                    "vision_model": str(args.reference_vision),
+                    "text_model": str(args.reference_text),
+                    "provider_mode": args.reference_provider,
+                    "runtime": reference_extractor.runtime_details(),
+                },
+                "timing_seconds": {
+                    "candidate_session_build": round(candidate_build_seconds, 6),
+                    "reference_session_build": round(reference_build_seconds, 6),
+                    "shared_preprocess": round(preprocess_seconds, 6),
+                    "candidate_vision_inference": round(candidate_inference_seconds, 6),
+                    "reference_vision_inference": round(reference_inference_seconds, 6),
+                    "text_models_and_prompts": round(text_seconds, 6),
+                },
+                "source_paths": [str(path) for path in source_paths],
+                "preview_errors": preview_errors,
+            }
+        )
+        logger.summary(report)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            print(f"Wrote CLIP quality report to {args.out}")
+
+        embedding = report["embedding_cosine"]
+        pairwise = report["pairwise_similarity"]
+        neighbors = report["nearest_neighbors"]
+        semantic = report["semantic_categories"]
+        print(
+            f"Embedding cosine: mean={embedding['mean']:.6f}, min={embedding['minimum']:.6f}"
+        )
+        print(
+            f"Pairwise rank agreement: {pairwise['spearman']:.6f}; "
+            f"top-{neighbors['k']} neighbor overlap: {neighbors['overlap']['mean']:.2%}"
+        )
+        print(
+            f"Semantic category agreement: {semantic['primary_category_agreement']:.2%} "
+            f"({semantic['disagreement_count']} disagreement(s))"
+        )
+        print(
+            "Candidate recommendation: "
+            + ("PASS" if report["candidate_recommended"] else "FAIL")
+        )
+        return 0
+    finally:
+        logger.close()
+
+
+def command_compare_clip_matrix(args) -> int:
+    from aiculler.clip_quality import ClipVariantSpec, run_clip_quality_matrix
+    from aiculler.features import IngestionEngine, PreviewExtractor
+    from aiculler.semantic import load_category_prompts
+
+    logger = _open_logger(args)
+    try:
+        paths = (
+            _load_include_paths(args.include_paths_file)
+            if args.include_paths_file
+            else sorted(IngestionEngine._iter_visible_images(args.folder))
+        )
+        if args.limit is not None:
+            paths = paths[: max(0, int(args.limit))]
+        preview_extractor = PreviewExtractor(args.cache)
+        preview_paths: list[Path] = []
+        source_paths: list[Path] = []
+        preview_errors: list[dict[str, str]] = []
+        for source_path in paths:
+            try:
+                preview_path, _size = preview_extractor.extract(source_path)
+                source_paths.append(source_path)
+                preview_paths.append(preview_path)
+            except Exception as exc:
+                preview_errors.append({"path": str(source_path), "error": " ".join(str(exc).split())})
+        if not preview_paths:
+            print("No readable images were available for the CLIP matrix.", file=sys.stderr)
+            return 2
+
+        reference = ClipVariantSpec(
+            name=args.reference_name,
+            vision_model=args.reference_vision,
+            text_model=args.reference_text,
+            provider_mode=args.reference_provider,
+        )
+        candidates = [_parse_clip_variant_spec(value) for value in args.candidate]
+        report = run_clip_quality_matrix(
+            preview_paths,
+            reference=reference,
+            candidates=candidates,
+            tokenizer=args.tokenizer,
+            category_prompts=load_category_prompts(args.categories),
+            neighbor_count=args.neighbors,
+        )
+        report["source_paths"] = [str(path) for path in source_paths]
+        report["preview_errors"] = preview_errors
+        logger.summary(report)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            print(f"Wrote CLIP matrix report to {args.out}")
+
+        print("variant      provider  quality  cosine   pairwise  neighbors  categories  inference")
+        for name, result in report["candidates"].items():
+            runtime_providers = result["runtime"]["clip_providers"]
+            active_provider = "cuda" if "CUDAExecutionProvider" in runtime_providers else "cpu"
+            print(
+                f"{name:12s} {active_provider:8s} "
+                f"{'PASS' if result['candidate_recommended'] else 'FAIL':7s} "
+                f"{result['embedding_cosine']['mean']:.6f} "
+                f"{result['pairwise_similarity']['spearman']:.6f} "
+                f"{result['nearest_neighbors']['overlap']['mean']:.2%}     "
+                f"{result['semantic_categories']['primary_category_agreement']:.2%}      "
+                f"{result['timing_seconds']['vision_inference']:.3f}s"
+            )
+        return 0
+    finally:
+        logger.close()
+
+
+def _parse_clip_variant_spec(value: str):
+    from aiculler.clip_quality import ClipVariantSpec
+
+    parts = [part.strip() for part in str(value).split("|")]
+    if len(parts) != 4 or not all(parts):
+        raise ValueError(
+            "--candidate must use NAME|VISION_MODEL|TEXT_MODEL|PROVIDER format"
+        )
+    name, vision_model, text_model, provider_mode = parts
+    if provider_mode not in {"cpu", "auto"}:
+        raise ValueError("Candidate provider must be cpu or auto")
+    return ClipVariantSpec(
+        name=name,
+        vision_model=Path(vision_model),
+        text_model=Path(text_model),
+        provider_mode=provider_mode,
+    )
 
 
 def command_assign_categories(args) -> int:
@@ -1336,6 +1736,16 @@ def _build_extractor(args):
     )
 
 
+def _parse_positive_ints(value: str) -> list[int]:
+    try:
+        values = sorted({int(item.strip()) for item in str(value).split(",") if item.strip()})
+    except ValueError as exc:
+        raise SystemExit(f"Expected a comma-separated list of integers, got: {value}") from exc
+    if not values or values[0] <= 0:
+        raise SystemExit(f"Values must be positive integers, got: {value}")
+    return values
+
+
 def command_list(args) -> int:
     logger = _open_logger(args)
     store = _open_store(args)
@@ -1434,7 +1844,9 @@ def _ingestion_event_record(event) -> dict:
         "message": event.message,
         "preview_seconds": event.preview_seconds,
         "feature_seconds": event.feature_seconds,
+        "persistence_seconds": event.persistence_seconds,
         "total_seconds": event.total_seconds,
+        "feature_timings": dict(event.feature_timings),
     }
 
 
@@ -1443,9 +1855,28 @@ def _ingestion_speed_summary(events: list[dict], elapsed_seconds: float) -> dict
     previewed = [record for record in events if record.get("status") == "previewed"]
     errors = [record for record in events if record.get("status") == "error"]
     feature_cache_hits = sum(1 for record in ready if str(record.get("message") or "") == "feature_cache_hit")
-    preview_seconds = [_float_record_value(record, "preview_seconds") for record in previewed + ready]
+    # A successful image emits both previewed and ready events carrying the
+    # same preview duration. Count the previewed event once instead of doubling
+    # the aggregate; fall back to ready for older/custom event producers.
+    preview_records = previewed or ready
+    preview_seconds = [_float_record_value(record, "preview_seconds") for record in preview_records]
     feature_seconds = [_float_record_value(record, "feature_seconds") for record in ready]
+    persistence_seconds = [_float_record_value(record, "persistence_seconds") for record in ready]
     total_seconds = [_float_record_value(record, "total_seconds") for record in ready + errors]
+    feature_phase_names = sorted(
+        {
+            str(phase)
+            for record in ready
+            for phase in dict(record.get("feature_timings") or {})
+        }
+    )
+    feature_phase_values = {
+        phase: [
+            float(dict(record.get("feature_timings") or {}).get(phase) or 0.0)
+            for record in ready
+        ]
+        for phase in feature_phase_names
+    }
     completed = len(ready) + len(errors)
     return {
         "elapsed_seconds": round(elapsed_seconds, 6),
@@ -1461,6 +1892,21 @@ def _ingestion_speed_summary(events: list[dict], elapsed_seconds: float) -> dict
         "feature_total_seconds": round(sum(feature_seconds), 6),
         "feature_avg_seconds": _mean(feature_seconds),
         "feature_p95_seconds": _percentile(feature_seconds, 0.95),
+        "persistence_total_seconds": round(sum(persistence_seconds), 6),
+        "persistence_avg_seconds": _mean(persistence_seconds),
+        "persistence_p95_seconds": _percentile(persistence_seconds, 0.95),
+        "feature_phase_total_seconds": {
+            phase: round(sum(values), 6)
+            for phase, values in feature_phase_values.items()
+        },
+        "feature_phase_avg_seconds": {
+            phase: _mean(values)
+            for phase, values in feature_phase_values.items()
+        },
+        "feature_phase_p95_seconds": {
+            phase: _percentile(values, 0.95)
+            for phase, values in feature_phase_values.items()
+        },
         "image_total_avg_seconds": _mean(total_seconds),
         "image_total_p95_seconds": _percentile(total_seconds, 0.95),
     }
@@ -1640,6 +2086,76 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--no-features", action="store_true", help="Only benchmark preview extraction")
     benchmark.add_argument("--include-paths-file", type=Path, help="Optional newline-delimited image pool to benchmark instead of scanning the folder")
     benchmark.set_defaults(func=command_benchmark)
+
+    model_benchmark = subparsers.add_parser(
+        "benchmark-models",
+        help="Compare batched and concurrent singleton ONNX inference on exact installed models",
+    )
+    model_benchmark.add_argument("folder", type=Path)
+    model_benchmark.add_argument("--cache", default=".aiculler_cache", type=Path)
+    model_benchmark.add_argument("--clip", required=True, type=Path, help="CLIP ONNX model path")
+    model_benchmark.add_argument("--topiq", type=Path, help="TOPIQ ONNX model path")
+    model_benchmark.add_argument("--limit", type=int, default=16, help="Maximum preview count")
+    model_benchmark.add_argument("--repetitions", type=int, default=3)
+    model_benchmark.add_argument("--intra-threads", default="1,2,4")
+    model_benchmark.add_argument("--batch-sizes", default="1,2,4,8")
+    model_benchmark.add_argument("--callers", default="1,2,4,8")
+    model_benchmark.add_argument("--spinning", choices=("default", "on", "off"), default="off")
+    model_benchmark.add_argument("--include-paths-file", type=Path)
+    model_benchmark.add_argument("--out", type=Path, help="Optional JSON output path")
+    model_benchmark.set_defaults(func=command_benchmark_models)
+
+    clip_quality = subparsers.add_parser(
+        "compare-clip-quality",
+        help="Compare a candidate CLIP export with a higher-precision reference",
+    )
+    clip_quality.add_argument("folder", type=Path)
+    clip_quality.add_argument("--cache", default=".aiculler_cache", type=Path)
+    clip_quality.add_argument("--candidate-vision", required=True, type=Path)
+    clip_quality.add_argument("--candidate-text", required=True, type=Path)
+    clip_quality.add_argument("--reference-vision", required=True, type=Path)
+    clip_quality.add_argument("--reference-text", required=True, type=Path)
+    clip_quality.add_argument("--tokenizer", required=True, type=Path)
+    clip_quality.add_argument(
+        "--categories",
+        default=Path(__file__).resolve().parent / "resources" / "categories.csv",
+        type=Path,
+    )
+    clip_quality.add_argument("--limit", type=int, default=64)
+    clip_quality.add_argument("--neighbors", type=int, default=5)
+    clip_quality.add_argument("--candidate-provider", choices=("cpu", "auto"), default="cpu")
+    clip_quality.add_argument("--reference-provider", choices=("cpu", "auto"), default="auto")
+    clip_quality.add_argument("--include-paths-file", type=Path)
+    clip_quality.add_argument("--out", type=Path)
+    clip_quality.set_defaults(func=command_compare_clip_quality)
+
+    clip_matrix = subparsers.add_parser(
+        "compare-clip-matrix",
+        help="Compare multiple CLIP exports against one FP32 reference",
+    )
+    clip_matrix.add_argument("folder", type=Path)
+    clip_matrix.add_argument("--cache", default=".aiculler_cache", type=Path)
+    clip_matrix.add_argument("--reference-name", default="fp32")
+    clip_matrix.add_argument("--reference-vision", required=True, type=Path)
+    clip_matrix.add_argument("--reference-text", required=True, type=Path)
+    clip_matrix.add_argument("--reference-provider", choices=("cpu", "auto"), default="cpu")
+    clip_matrix.add_argument(
+        "--candidate",
+        action="append",
+        required=True,
+        help="Repeat NAME|VISION_MODEL|TEXT_MODEL|PROVIDER (provider: cpu or auto)",
+    )
+    clip_matrix.add_argument("--tokenizer", required=True, type=Path)
+    clip_matrix.add_argument(
+        "--categories",
+        default=Path(__file__).resolve().parent / "resources" / "categories.csv",
+        type=Path,
+    )
+    clip_matrix.add_argument("--limit", type=int, default=64)
+    clip_matrix.add_argument("--neighbors", type=int, default=5)
+    clip_matrix.add_argument("--include-paths-file", type=Path)
+    clip_matrix.add_argument("--out", type=Path)
+    clip_matrix.set_defaults(func=command_compare_clip_matrix)
 
     sort = subparsers.add_parser("sort", help="Run active culling sort")
     sort.add_argument("--active-threshold", type=float, default=0.10)
