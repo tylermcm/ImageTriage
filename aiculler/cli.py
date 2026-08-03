@@ -98,7 +98,11 @@ def command_ingest(args) -> int:
             extractor=extractor,
             max_workers=args.workers,
             on_event=on_event,
-            feature_cache_identity=_feature_cache_identity(args),
+            feature_cache_identity=_feature_cache_identity(
+                args,
+                active_clip_path=(None if extractor is None else extractor.clip_model_path),
+                active_topiq_path=(None if extractor is None else extractor.topiq_model_path),
+            ),
         )
         phase_started_at = time.perf_counter()
         try:
@@ -938,8 +942,19 @@ def command_assign_categories(args) -> int:
     command_started_at = time.perf_counter()
     try:
         phase_started_at = time.perf_counter()
-        encoder = CLIPTextEncoder(args.text_model, args.tokenizer)
-        _log_speed_phase(logger, "load_text_encoder", phase_started_at, text_model=str(args.text_model), tokenizer=str(args.tokenizer))
+        encoder = CLIPTextEncoder(
+            args.text_model,
+            args.tokenizer,
+            fallback_text_onnx_path=args.text_model_fallback,
+        )
+        _log_speed_phase(
+            logger,
+            "load_text_encoder",
+            phase_started_at,
+            text_model=str(encoder.model_path),
+            text_model_fallback_used=encoder.fallback_used,
+            tokenizer=str(args.tokenizer),
+        )
         phase_started_at = time.perf_counter()
         category_prompts = load_category_prompts(args.categories) if args.categories is not None else None
         _log_speed_phase(
@@ -1732,6 +1747,7 @@ def _build_extractor(args):
     return HeadlessFeatureExtractor(
         args.clip,
         args.topiq,
+        clip_fallback_onnx_path=getattr(args, "clip_fallback", None),
         enable_face_quality=bool(getattr(args, "face_quality", False)),
     )
 
@@ -1933,13 +1949,18 @@ def _percentile(values: list[float], percentile: float) -> float:
     return round(ordered[index], 6)
 
 
-def _feature_cache_identity(args) -> dict[str, object]:
+def _feature_cache_identity(
+    args,
+    *,
+    active_clip_path: Path | None = None,
+    active_topiq_path: Path | None = None,
+) -> dict[str, object]:
     if getattr(args, "no_features", False):
         return {}
     return {
         "schema_version": 1,
-        "clip": _file_identity(getattr(args, "clip", None)),
-        "topiq": _file_identity(getattr(args, "topiq", None)),
+        "clip": _file_identity(active_clip_path or getattr(args, "clip", None)),
+        "topiq": _file_identity(active_topiq_path or getattr(args, "topiq", None)),
         "face_quality": bool(getattr(args, "face_quality", False)),
     }
 
@@ -2064,6 +2085,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("folder", type=Path)
     ingest.add_argument("--cache", default=".aiculler_cache", type=Path)
     ingest.add_argument("--clip", type=Path, help="CLIP ONNX model path")
+    ingest.add_argument("--clip-fallback", type=Path, help="Fallback CLIP ONNX model path")
     ingest.add_argument("--topiq", type=Path, help="TOPIQ ONNX model path; non-ONNX files fall back to heuristic scoring")
     ingest.add_argument("--face-quality", action="store_true", help="Run InsightFace face-quality analysis when models are installed")
     ingest.add_argument("--workers", type=int, default=4)
@@ -2171,7 +2193,7 @@ def build_parser() -> argparse.ArgumentParser:
     rank.add_argument("--tag-config", default=Path("tag_penalties.csv"), type=Path)
     rank.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model_uint8.onnx"),
+        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
         type=Path,
     )
     rank.add_argument(
@@ -2215,9 +2237,14 @@ def build_parser() -> argparse.ArgumentParser:
     assign_categories = subparsers.add_parser("assign-categories", help="Assign one primary semantic category per image")
     assign_categories.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model_uint8.onnx"),
+        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
         type=Path,
         help="CLIP text ONNX model path",
+    )
+    assign_categories.add_argument(
+        "--text-model-fallback",
+        type=Path,
+        help="Fallback CLIP text ONNX model path",
     )
     assign_categories.add_argument(
         "--tokenizer",
@@ -2310,7 +2337,7 @@ def build_parser() -> argparse.ArgumentParser:
     score_text.add_argument("--prompt", required=True, help="Prompt describing what should be prioritized")
     score_text.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model_uint8.onnx"),
+        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
         type=Path,
         help="CLIP text ONNX model path",
     )
@@ -2333,7 +2360,7 @@ def build_parser() -> argparse.ArgumentParser:
     score_profile.add_argument("--list-profiles", action="store_true")
     score_profile.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model_uint8.onnx"),
+        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
         type=Path,
         help="CLIP text ONNX model path",
     )

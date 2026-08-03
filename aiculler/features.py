@@ -14,7 +14,13 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from aiculler.storage import SQLiteFeatureStore
-from aiculler.onnx_runtime import create_onnx_session, preflight_onnx_session, preferred_onnx_providers
+from aiculler.onnx_runtime import (
+    create_onnx_session,
+    create_preflight_session_with_model_fallback,
+    preflight_onnx_session,
+    preferred_onnx_providers,
+)
+from aiculler.topiq_onnx import prepare_topiq_model_for_providers
 from image_triage.quality.face import FaceQualityAnalyzer
 from image_triage.quality.store import upsert_dimensions, upsert_faces
 from image_triage.quality.technical import analyze_technical
@@ -42,6 +48,7 @@ class HeadlessFeatureExtractor:
         clip_onnx_path: str | Path,
         topiq_onnx_path: str | Path | None = None,
         *,
+        clip_fallback_onnx_path: str | Path | None = None,
         providers: list[str] | None = None,
         enable_face_quality: bool = False,
         intra_op_num_threads: int | None = None,
@@ -67,30 +74,46 @@ class HeadlessFeatureExtractor:
             opts.add_session_config_entry("session.intra_op.allow_spinning", spinning_value)
             opts.add_session_config_entry("session.inter_op.allow_spinning", spinning_value)
         providers = providers or preferred_onnx_providers(ort)
-        self.clip_session = create_onnx_session(ort, clip_onnx_path, opts, providers=providers)
+        clip_selection = create_preflight_session_with_model_fallback(
+            ort,
+            clip_onnx_path,
+            clip_fallback_onnx_path,
+            opts,
+            providers=providers,
+            select_input_name=self._select_image_input,
+            input_shape=lambda session: (
+                1,
+                3,
+                self._select_spatial_size(session, default=224),
+                self._select_spatial_size(session, default=224),
+            ),
+        )
+        self.clip_session = clip_selection.session
+        self.clip_model_path = clip_selection.model_path
+        self.clip_fallback_used = clip_selection.fallback_used
         self.clip_input_name = self._select_image_input(self.clip_session)
         self.clip_input_size = self._select_spatial_size(self.clip_session, default=224)
-        self.clip_session = preflight_onnx_session(
-            ort,
-            self.clip_session,
-            clip_onnx_path,
-            opts,
-            input_name=self.clip_input_name,
-            input_shape=(1, 3, self.clip_input_size, self.clip_input_size),
-        )
         self.clip_output_name = self._select_embedding_output(self.clip_session)
 
         self.topiq_session = None
         self.topiq_input_name = None
         self.topiq_input_size = 512
+        self.topiq_model_path = None
+        self.topiq_cuda_optimized = False
+        self.topiq_model_preparation = ""
         if topiq_onnx_path is not None and str(topiq_onnx_path).lower().endswith(".onnx"):
-            self.topiq_session = create_onnx_session(ort, topiq_onnx_path, opts, providers=providers)
+            topiq_preparation = prepare_topiq_model_for_providers(topiq_onnx_path, providers)
+            active_topiq_path = topiq_preparation.path
+            self.topiq_model_path = active_topiq_path
+            self.topiq_cuda_optimized = topiq_preparation.optimized
+            self.topiq_model_preparation = topiq_preparation.detail
+            self.topiq_session = create_onnx_session(ort, active_topiq_path, opts, providers=providers)
             self.topiq_input_name = self._select_image_input(self.topiq_session)
             self.topiq_input_size = self._select_spatial_size(self.topiq_session, default=512)
             self.topiq_session = preflight_onnx_session(
                 ort,
                 self.topiq_session,
-                topiq_onnx_path,
+                active_topiq_path,
                 opts,
                 input_name=self.topiq_input_name,
                 input_shape=(1, 3, self.topiq_input_size, self.topiq_input_size),
@@ -111,7 +134,12 @@ class HeadlessFeatureExtractor:
             "available_providers": list(ort.get_available_providers()),
             "requested_providers": list(providers),
             "clip_providers": list(self.clip_session.get_providers()),
+            "clip_model_path": str(self.clip_model_path),
+            "clip_fallback_used": self.clip_fallback_used,
             "topiq_providers": [] if self.topiq_session is None else list(self.topiq_session.get_providers()),
+            "topiq_model_path": "" if self.topiq_model_path is None else str(self.topiq_model_path),
+            "topiq_cuda_optimized": self.topiq_cuda_optimized,
+            "topiq_model_preparation": self.topiq_model_preparation,
             "execution_mode": "ORT_SEQUENTIAL",
             "graph_optimization": "ORT_ENABLE_ALL",
             "intra_op_num_threads": selected_intra_threads,

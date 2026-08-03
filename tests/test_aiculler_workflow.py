@@ -40,9 +40,9 @@ from image_triage.phash_prefilter import (
 
 
 class AICullerWorkflowTests(unittest.TestCase):
-    def test_clip_model_catalog_only_exposes_cpu_and_cuda_exports(self) -> None:
+    def test_clip_model_catalog_exposes_only_automatic_policy(self) -> None:
         self.assertEqual(
-            ("uint8", "fp16"),
+            ("fp32",),
             tuple(option.key for option in clip_model_variant_options()),
         )
 
@@ -142,8 +142,10 @@ class AICullerWorkflowTests(unittest.TestCase):
             model_root = Path(temp_dir) / "models"
             clip_root = model_root / "Clip" / "clip-vit-large-patch14"
             (clip_root / "onnx").mkdir(parents=True)
-            (clip_root / "onnx" / "vision_model_uint8.onnx").write_bytes(b"vision")
-            (clip_root / "onnx" / "text_model_uint8.onnx").write_bytes(b"text")
+            (clip_root / "onnx" / "vision_model.onnx").write_bytes(b"vision")
+            (clip_root / "onnx" / "text_model.onnx").write_bytes(b"text")
+            (clip_root / "onnx" / "vision_model_fp16.onnx").write_bytes(b"vision-fallback")
+            (clip_root / "onnx" / "text_model_fp16.onnx").write_bytes(b"text-fallback")
             (clip_root / "tokenizer.json").write_text("{}", encoding="utf-8")
 
             saved_env = {
@@ -216,8 +218,10 @@ class AICullerWorkflowTests(unittest.TestCase):
             model_root = local_appdata / "image_triage_ai_cache" / "models" / "CLI-Culler"
             clip_root = model_root / "Clip" / "clip-vit-large-patch14"
             (clip_root / "onnx").mkdir(parents=True)
-            (clip_root / "onnx" / "vision_model_uint8.onnx").write_bytes(b"vision")
-            (clip_root / "onnx" / "text_model_uint8.onnx").write_bytes(b"text")
+            (clip_root / "onnx" / "vision_model.onnx").write_bytes(b"vision")
+            (clip_root / "onnx" / "text_model.onnx").write_bytes(b"text")
+            (clip_root / "onnx" / "vision_model_fp16.onnx").write_bytes(b"vision-fallback")
+            (clip_root / "onnx" / "text_model_fp16.onnx").write_bytes(b"text-fallback")
             (clip_root / "tokenizer.json").write_text("{}", encoding="utf-8")
 
             saved_env = {
@@ -251,16 +255,23 @@ class AICullerWorkflowTests(unittest.TestCase):
                     else:
                         os.environ[name] = value
 
-            self.assertEqual((clip_root / "onnx" / "vision_model_uint8.onnx").resolve(), runtime.clip_vision_model)
-            self.assertEqual((clip_root / "onnx" / "text_model_uint8.onnx").resolve(), runtime.clip_text_model)
+            self.assertEqual((clip_root / "onnx" / "vision_model.onnx").resolve(), runtime.clip_vision_model)
+            self.assertEqual((clip_root / "onnx" / "text_model.onnx").resolve(), runtime.clip_text_model)
+            self.assertEqual((clip_root / "onnx" / "vision_model_fp16.onnx").resolve(), runtime.clip_fallback_vision_model)
+            self.assertEqual((clip_root / "onnx" / "text_model_fp16.onnx").resolve(), runtime.clip_fallback_text_model)
             self.assertEqual((clip_root / "tokenizer.json").resolve(), runtime.tokenizer)
 
-    def test_default_runtime_migrates_removed_clip_model_variant_to_uint8(self) -> None:
+    def test_default_runtime_ignores_removed_clip_model_variant(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_variant_") as temp_dir:
             model_root = Path(temp_dir) / "models"
             clip_root = model_root / "Clip" / "clip-vit-large-patch14"
             (clip_root / "onnx").mkdir(parents=True)
-            for filename in ("vision_model_uint8.onnx", "text_model_uint8.onnx"):
+            for filename in (
+                "vision_model.onnx",
+                "text_model.onnx",
+                "vision_model_fp16.onnx",
+                "text_model_fp16.onnx",
+            ):
                 (clip_root / "onnx" / filename).write_bytes(b"model")
             (clip_root / "tokenizer.json").write_text("{}", encoding="utf-8")
 
@@ -286,12 +297,12 @@ class AICullerWorkflowTests(unittest.TestCase):
                     else:
                         os.environ[name] = value
 
-            self.assertEqual("uint8", runtime.clip_model_variant)
-            self.assertEqual((clip_root / "onnx" / "vision_model_uint8.onnx").resolve(), runtime.clip_vision_model)
-            self.assertEqual((clip_root / "onnx" / "text_model_uint8.onnx").resolve(), runtime.clip_text_model)
-            self.assertEqual("uint8", coerce_clip_model_variant("not-a-model"))
+            self.assertEqual("fp32", runtime.clip_model_variant)
+            self.assertEqual((clip_root / "onnx" / "vision_model.onnx").resolve(), runtime.clip_vision_model)
+            self.assertEqual((clip_root / "onnx" / "text_model.onnx").resolve(), runtime.clip_text_model)
+            self.assertEqual("fp32", coerce_clip_model_variant("not-a-model"))
 
-    def test_default_runtime_selects_fp16_clip_pair(self) -> None:
+    def test_default_runtime_keeps_precision_selection_automatic(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_fp16_") as temp_dir:
             model_root = Path(temp_dir) / "models"
             clip_root = model_root / "Clip" / "clip-vit-large-patch14"
@@ -306,9 +317,11 @@ class AICullerWorkflowTests(unittest.TestCase):
                 else:
                     os.environ["IMAGE_TRIAGE_AICULLER_MODEL_ROOT"] = previous_model_root
 
-        self.assertEqual("fp16", runtime.clip_model_variant)
-        self.assertEqual(clip_root / "onnx" / "vision_model_fp16.onnx", runtime.clip_vision_model)
-        self.assertEqual(clip_root / "onnx" / "text_model_fp16.onnx", runtime.clip_text_model)
+        self.assertEqual("fp32", runtime.clip_model_variant)
+        self.assertEqual(clip_root / "onnx" / "vision_model.onnx", runtime.clip_vision_model)
+        self.assertEqual(clip_root / "onnx" / "text_model.onnx", runtime.clip_text_model)
+        self.assertEqual(clip_root / "onnx" / "vision_model_fp16.onnx", runtime.clip_fallback_vision_model)
+        self.assertEqual(clip_root / "onnx" / "text_model_fp16.onnx", runtime.clip_fallback_text_model)
 
     def test_command_runs_cli_entrypoint_from_source_tree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_command_") as temp_dir:

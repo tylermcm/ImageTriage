@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from aiculler.onnx_runtime import create_onnx_session, preflight_onnx_session, preferred_onnx_providers
+from aiculler.onnx_runtime import (
+    create_onnx_session,
+    create_preflight_session_with_model_fallback,
+    preflight_onnx_session,
+    preferred_onnx_providers,
+)
 
 
 class _InputMeta:
@@ -29,8 +34,9 @@ class _Session:
 
 
 class _FakeOrt:
-    def __init__(self, *, fail_cuda: bool = False) -> None:
+    def __init__(self, *, fail_cuda: bool = False, fail_cuda_paths: tuple[str, ...] = ()) -> None:
         self.fail_cuda = fail_cuda
+        self.fail_cuda_paths = set(fail_cuda_paths)
         self.preloaded = False
         self.calls: list[list[str]] = []
 
@@ -40,10 +46,13 @@ class _FakeOrt:
     def preload_dlls(self) -> None:
         self.preloaded = True
 
-    def InferenceSession(self, _path, _options, *, providers):
+    def InferenceSession(self, path, _options, *, providers):
         selected = list(providers)
         self.calls.append(selected)
-        if self.fail_cuda and "CUDAExecutionProvider" in selected:
+        if (
+            "CUDAExecutionProvider" in selected
+            and (self.fail_cuda or str(path) in self.fail_cuda_paths)
+        ):
             raise RuntimeError("CUDA provider failed")
         return _Session(selected)
 
@@ -85,6 +94,29 @@ class AICullerOnnxRuntimeTests(unittest.TestCase):
 
         self.assertEqual(["CPUExecutionProvider"], selected.get_providers())
         self.assertEqual([["CPUExecutionProvider"]], runtime.calls)
+
+    def test_model_fallback_is_tried_on_cuda_before_cpu(self) -> None:
+        runtime = _FakeOrt(fail_cuda_paths=("primary.onnx",))
+
+        selected = create_preflight_session_with_model_fallback(
+            runtime,
+            "primary.onnx",
+            "fallback.onnx",
+            object(),
+            providers=None,
+            select_input_name=lambda _session: "pixels",
+            input_shape=lambda _session: (1, 3, 4, 4),
+        )
+
+        self.assertTrue(selected.fallback_used)
+        self.assertTrue(str(selected.model_path).endswith("fallback.onnx"))
+        self.assertEqual(
+            [
+                ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            ],
+            runtime.calls,
+        )
 
 
 if __name__ == "__main__":

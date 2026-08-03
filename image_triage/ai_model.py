@@ -20,15 +20,10 @@ DEFAULT_SEMANTIC_MODEL_SIZE_MB = 610
 DEFAULT_SEGMENTATION_MODEL_REPO_ID = "nvidia/segformer-b0-finetuned-ade-512-512"
 DEFAULT_SEGMENTATION_MODEL_REVISION = "b9175de73a0a34f7843135853d27629aa6987b2f"
 DEFAULT_SEGMENTATION_MODEL_SIZE_MB = 15
-DEFAULT_AICULLER_CLIP_REPO_ID = "Skulleton12/Clip"
-DEFAULT_AICULLER_CLIP_REVISION = "581ad0eebb9540a2ec865c6a84d188bfec81dc15"
-DEFAULT_AICULLER_CLIP_FP16_REPO_ID = "Xenova/clip-vit-large-patch14"
-DEFAULT_AICULLER_CLIP_FP16_REVISION = "c307790166907339eed5a9a53a249af534102536"
-# Full repo (every quantization pair) is ~1.9 GB, but only ONE variant is
-# downloaded. A single vision/text pair + tokenizer is ~415 MB (uint8 default).
-DEFAULT_AICULLER_CLIP_SIZE_MB = 1865
-DEFAULT_AICULLER_CLIP_VARIANT_SIZE_MB = 415
-DEFAULT_AICULLER_CLIP_FP16_SIZE_MB = 857
+DEFAULT_AICULLER_CLIP_REPO_ID = "Xenova/clip-vit-large-patch14"
+DEFAULT_AICULLER_CLIP_REVISION = "c307790166907339eed5a9a53a249af534102536"
+# The automatic install contains FP32 primary models and FP16 fallback models.
+DEFAULT_AICULLER_CLIP_SIZE_MB = 2572
 DEFAULT_AICULLER_TOPIQ_REPO_ID = "Skulleton12/TOPIQ"
 DEFAULT_AICULLER_TOPIQ_REVISION = "56526fd721537c9abd4ec41b10b2ffcad5166c46"
 DEFAULT_AICULLER_TOPIQ_SIZE_MB = 185
@@ -50,8 +45,9 @@ DEFAULT_SEGMENTATION_MODEL_SHA256 = {
     "onnx/config.json": "4a7813fc7e89fa581278e5db3ffb25967bf02b36a980f2445dc94755062031cd",
     "onnx/preprocessor_config.json": "dbabd93c735c8a5c39ef207c6c4459bf2d261a5dcc55e1ba1c1b982e5947f518",
 }
-DEFAULT_AICULLER_CLIP_MODEL_SHA256: dict[str, str] = {}
-DEFAULT_AICULLER_CLIP_FP16_SHA256 = {
+DEFAULT_AICULLER_CLIP_MODEL_SHA256 = {
+    "onnx/vision_model.onnx": "ff49f8aa57c7abfd26e382eb083e4dbf988505223a9bd3767dbfd4e729206709",
+    "onnx/text_model.onnx": "a86051a90491b97e2ea1d0351ef664926735bca7536034384f901915ee91fd69",
     "onnx/vision_model_fp16.onnx": "6e6b9e280b73bdc432b6c3b1c05f33596bbe5570f6825f1174eaa207fc1d22dc",
     "onnx/text_model_fp16.onnx": "643d385d6adbc4b9067f3f94384cc63a8409accb1bfd414496d17df84b161032",
 }
@@ -87,27 +83,29 @@ SEGMENTATION_MODEL_REQUIRED_FILENAMES = (
     "onnx/config.json",
     "onnx/preprocessor_config.json",
 )
-AICULLER_CLIP_VARIANT_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_VARIANT"
-DEFAULT_AICULLER_CLIP_VARIANT = "uint8"
-# Image Triage supports one CPU export and one CUDA export. Historical model
-# selections are coerced back to UINT8 rather than keeping an untested matrix
-# of quantization formats in the product.
-AICULLER_CLIP_VARIANT_KEYS = ("uint8", "fp16")
+DEFAULT_AICULLER_CLIP_VARIANT = "fp32"
+AICULLER_CLIP_VARIANT_KEYS = ("fp32", "fp16")
 AICULLER_CLIP_TOKENIZER_FILENAME = "tokenizer.json"
 
 
 def aiculler_clip_variant_filenames(variant: str | None) -> tuple[str, ...]:
-    """Repo files required for a single CLIP variant: the shared tokenizer plus
-    that variant's vision/text ONNX pair. Unknown variants fall back to uint8."""
+    """Return one precision pair for diagnostics and compatibility tests."""
     normalized = str(variant or "").strip().lower() or DEFAULT_AICULLER_CLIP_VARIANT
     if normalized not in AICULLER_CLIP_VARIANT_KEYS:
         normalized = DEFAULT_AICULLER_CLIP_VARIANT
-    vision = f"onnx/vision_model_{normalized}.onnx"
-    text = f"onnx/text_model_{normalized}.onnx"
+    suffix = "" if normalized == "fp32" else f"_{normalized}"
+    vision = f"onnx/vision_model{suffix}.onnx"
+    text = f"onnx/text_model{suffix}.onnx"
     return (AICULLER_CLIP_TOKENIZER_FILENAME, vision, text)
 
 
-AICULLER_CLIP_MODEL_REQUIRED_FILENAMES = aiculler_clip_variant_filenames(DEFAULT_AICULLER_CLIP_VARIANT)
+AICULLER_CLIP_MODEL_REQUIRED_FILENAMES = (
+    AICULLER_CLIP_TOKENIZER_FILENAME,
+    "onnx/vision_model.onnx",
+    "onnx/text_model.onnx",
+    "onnx/vision_model_fp16.onnx",
+    "onnx/text_model_fp16.onnx",
+)
 AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES = ("topiq_nr.onnx",)
 # Face-quality models (InsightFace buffalo_l): detection + landmarks + gender/age.
 # Recognition (w600k_r50.onnx) is intentionally EXCLUDED here — the face-sort /
@@ -269,31 +267,10 @@ def resolve_aiculler_clip_model_installation(
     revision: str | None = None,
     variant: str | None = None,
 ) -> AIModelInstallation:
-    resolved_variant = (
-        (variant or "").strip().lower()
-        or (os.environ.get(AICULLER_CLIP_VARIANT_ENV, "") or "").strip().lower()
-        or DEFAULT_AICULLER_CLIP_VARIANT
-    )
-    if resolved_variant not in AICULLER_CLIP_VARIANT_KEYS:
-        resolved_variant = DEFAULT_AICULLER_CLIP_VARIANT
     configured_repo_id = repo_id or (os.environ.get(AICULLER_CLIP_MODEL_REPO_ENV, "") or "").strip()
-    resolved_repo_id = (
-        configured_repo_id
-        or (
-            DEFAULT_AICULLER_CLIP_FP16_REPO_ID
-            if resolved_variant == "fp16"
-            else DEFAULT_AICULLER_CLIP_REPO_ID
-        )
-    )
+    resolved_repo_id = configured_repo_id or DEFAULT_AICULLER_CLIP_REPO_ID
     configured_revision = revision or (os.environ.get(AICULLER_CLIP_MODEL_REVISION_ENV, "") or "").strip()
-    resolved_revision = (
-        configured_revision
-        or (
-            DEFAULT_AICULLER_CLIP_FP16_REVISION
-            if resolved_repo_id == DEFAULT_AICULLER_CLIP_FP16_REPO_ID
-            else DEFAULT_AICULLER_CLIP_REVISION
-        )
-    )
+    resolved_revision = configured_revision or DEFAULT_AICULLER_CLIP_REVISION
     resolved_dir_value = (
         install_dir
         or (os.environ.get(AICULLER_CLIP_MODEL_DIR_ENV, "") or "").strip()
@@ -303,21 +280,15 @@ def resolve_aiculler_clip_model_installation(
         repo_id=resolved_repo_id,
         revision=resolved_revision,
         install_dir=Path(resolved_dir_value).expanduser().resolve(),
-        required_filenames=aiculler_clip_variant_filenames(resolved_variant),
-        expected_sha256=(
-            DEFAULT_AICULLER_CLIP_FP16_SHA256
-            if resolved_repo_id == DEFAULT_AICULLER_CLIP_FP16_REPO_ID
-            and resolved_revision == DEFAULT_AICULLER_CLIP_FP16_REVISION
-            else (
-                DEFAULT_AICULLER_CLIP_MODEL_SHA256
-                if resolved_repo_id == DEFAULT_AICULLER_CLIP_REPO_ID
-                and resolved_revision == DEFAULT_AICULLER_CLIP_REVISION
-                else None
-            )
+        required_filenames=(
+            aiculler_clip_variant_filenames(variant)
+            if variant is not None
+            else AICULLER_CLIP_MODEL_REQUIRED_FILENAMES
         ),
-        alternate_download_filenames=(
-            {"tokenizer.json": ("onnx/tokenizer.json", "clip-vit-large-patch14/tokenizer.json")}
+        expected_sha256=(
+            DEFAULT_AICULLER_CLIP_MODEL_SHA256
             if resolved_repo_id == DEFAULT_AICULLER_CLIP_REPO_ID
+            and resolved_revision == DEFAULT_AICULLER_CLIP_REVISION
             else None
         ),
     )
@@ -551,8 +522,8 @@ def download_aiculler_face_model(
 def uninstall_ai_model(installation: AIModelInstallation) -> bool:
     """Delete a managed model's install directory and everything under it.
 
-    For the CLIP cache this removes every downloaded variant, not just the one
-    currently selected. Returns True if the directory existed and was removed."""
+    For the CLIP cache this removes both automatic precision exports. Returns
+    True if the directory existed and was removed."""
     target = installation.install_dir
     if not target.exists():
         return False
