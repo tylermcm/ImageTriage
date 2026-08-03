@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
-from .dino_prefilter import DINOPrefilterDecision, _bool_value, _clamped_score
+from .dino_prefilter import (
+    DINOPrefilterDecision,
+    _bool_value,
+    _clamped_score,
+    _preserve_duplicate_group_representatives,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -33,7 +38,7 @@ class PHashPrefilterSettings:
         return payload
 
 
-PHASH_PREFILTER_SCHEMA_VERSION = 2
+PHASH_PREFILTER_SCHEMA_VERSION = 3
 PHASH_PREFILTER_ARTIFACT_DIRNAME = "phash_prefilter"
 PHASH_PREFILTER_REPORT_FILENAME = "phash_prefilter_report.json"
 PHASH_PREFILTER_ROWS_FILENAME = "phash_prefilter_rows.jsonl"
@@ -85,6 +90,7 @@ def run_phash_prefilter_from_signal_rows(
     scanned_count = 0
     removed_count = 0
     protected_count = 0
+    duplicate_groups: dict[str, dict[str, int]] = {}
     protected_keys = {_path_key(path) for path in protected_paths if str(path).strip()}
     append_phash_prefilter_log(
         paths,
@@ -97,6 +103,13 @@ def run_phash_prefilter_from_signal_rows(
         if not path:
             continue
         scanned_count += 1
+        group_id = str(row.get("phash_group") or "").strip()
+        if group_id:
+            try:
+                rank = max(1, int(row.get("phash_rank") or 1))
+            except (TypeError, ValueError):
+                rank = 1
+            duplicate_groups.setdefault(group_id, {})[path] = rank
         score = _clamped_score(row.get("phash_duplicate_score"))
         best_representative = _bool_value(row.get("best_representative"), score <= 0.0)
         if not normalized.enabled or score < 1.0 or best_representative:
@@ -117,6 +130,18 @@ def run_phash_prefilter_from_signal_rows(
         removed_count += 1
         decisions.append(DINOPrefilterDecision(path=path, action="remove_from_pool", reason="phash_duplicate_trash", score=score))
 
+    decisions = _preserve_duplicate_group_representatives(
+        decisions,
+        duplicate_groups,
+        duplicate_reasons=("phash_duplicate_trash",),
+    )
+    removed_count = sum(1 for decision in decisions if decision.action == "remove_from_pool")
+    representative_rescue_count = sum(
+        1
+        for decision in decisions
+        if "duplicate_group_representative" in decision.rescue_reasons
+    )
+
     write_phash_prefilter_audit(
         paths,
         settings=normalized,
@@ -124,6 +149,7 @@ def run_phash_prefilter_from_signal_rows(
         scanned_count=scanned_count,
         removed_from_pool_count=removed_count,
         protected_count=protected_count,
+        representative_rescue_count=representative_rescue_count,
     )
     append_phash_prefilter_log(
         paths,
@@ -131,6 +157,7 @@ def run_phash_prefilter_from_signal_rows(
         scanned=scanned_count,
         removed_from_pool=removed_count,
         protected=protected_count,
+        representative_rescues=representative_rescue_count,
     )
     return {decision.path: decision for decision in decisions}
 
@@ -143,6 +170,7 @@ def write_phash_prefilter_audit(
     scanned_count: int = 0,
     removed_from_pool_count: int = 0,
     protected_count: int = 0,
+    representative_rescue_count: int = 0,
 ) -> dict[str, object]:
     paths.ensure()
     with paths.rows_path.open("w", encoding="utf-8", newline="\n") as handle:
@@ -156,6 +184,7 @@ def write_phash_prefilter_audit(
             "scanned": max(0, int(scanned_count)),
             "removed_from_pool": max(0, int(removed_from_pool_count)),
             "protected": max(0, int(protected_count)),
+            "representative_rescues": max(0, int(representative_rescue_count)),
         },
         "artifacts": {
             "rows": str(paths.rows_path),

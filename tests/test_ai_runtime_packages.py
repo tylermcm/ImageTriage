@@ -106,6 +106,7 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("--progress-bar", args)
         self.assertIn("raw", args)
         self.assertIn("transformers>=4.56", args)
+        self.assertIn("onnx>=1.16", args)
         self.assertIn("onnxruntime>=1.16", args)
         self.assertNotIn("onnxruntime-gpu>=1.26,<1.27", args)
 
@@ -132,6 +133,7 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("https://download.pytorch.org/whl/cu128", args)
         self.assertIn("torch==2.9.0+cu128", args)
         self.assertIn("torchvision==0.24.0+cu128", args)
+        self.assertIn("onnx>=1.16", args)
         self.assertIn("onnxruntime-gpu>=1.26,<1.27", args)
         self.assertNotIn("onnxruntime>=1.16", args)
 

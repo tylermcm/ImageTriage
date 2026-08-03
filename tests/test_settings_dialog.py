@@ -122,20 +122,19 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(64, result.ai_embed_batch_size)
         dialog.deleteLater()
 
-    def test_result_settings_returns_clip_model_variant(self) -> None:
+    def test_clip_model_precision_is_automatic(self) -> None:
         dialog = WorkflowSettingsDialog(
             sessions=["Default"],
             current_session="Default",
             winner_mode=WinnerMode.COPY,
             delete_mode=DeleteMode.SAFE_TRASH,
-            ai_clip_model_variant="uint8",
+            ai_clip_model_variant="fp16",
         )
-        dialog.ai_clip_model_combo.setCurrentIndex(dialog.ai_clip_model_combo.findData("fp16"))
 
         result = dialog.result_settings()
 
-        self.assertEqual("fp16", result.ai_clip_model_variant)
-        self.assertIn("Warning:", dialog.ai_clip_model_warning_label.text())
+        self.assertEqual("fp32", result.ai_clip_model_variant)
+        self.assertFalse(hasattr(dialog, "ai_clip_model_combo"))
         dialog.deleteLater()
 
     def test_result_settings_returns_label_duplicate_threshold(self) -> None:

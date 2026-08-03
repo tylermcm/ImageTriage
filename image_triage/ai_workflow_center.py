@@ -831,7 +831,7 @@ class AIWorkflowCenterDialog(QDialog):
         runtime_source = ""
         model_root = ""
         runtime_note = ""
-        clip_model_label = clip_model_variant_info(getattr(self._window, "_ai_clip_model_variant", "uint8")).label
+        clip_model_label = clip_model_variant_info(getattr(self._window, "_ai_clip_model_variant", "fp32")).label
         try:
             status = aiculler_runtime_status()
             runtime_ready = status.is_ready

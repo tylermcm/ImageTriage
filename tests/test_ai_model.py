@@ -117,12 +117,13 @@ class AIModelTests(unittest.TestCase):
             with patch.dict(os.environ, env, clear=False):
                 installation = resolve_aiculler_clip_model_installation()
 
-        self.assertEqual("Skulleton12/Clip", installation.repo_id)
+        self.assertEqual("Xenova/clip-vit-large-patch14", installation.repo_id)
         self.assertEqual(installation.install_dir.name, "clip-vit-large-patch14")
         self.assertEqual(installation.install_dir.parent.name, "Clip")
         self.assertEqual(installation.required_filenames, AICULLER_CLIP_MODEL_REQUIRED_FILENAMES)
-        self.assertIn("Skulleton12/Clip", installation.download_url("tokenizer.json"))
-        self.assertIn("Skulleton12/Clip", installation.download_url("onnx/text_model_uint8.onnx"))
+        self.assertIn("Xenova/clip-vit-large-patch14", installation.download_url("tokenizer.json"))
+        self.assertIn("Xenova/clip-vit-large-patch14", installation.download_url("onnx/text_model.onnx"))
+        self.assertIn("onnx/text_model_fp16.onnx", installation.required_filenames)
 
     def test_fp16_aiculler_clip_model_uses_pinned_xenova_export(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -348,7 +349,8 @@ class AIModelTests(unittest.TestCase):
                 download_aiculler_clip_model(installation)
 
             self.assertTrue(installation.is_installed)
-            self.assertTrue((installation.install_dir / "onnx" / "vision_model_uint8.onnx").exists())
+            self.assertTrue((installation.install_dir / "onnx" / "vision_model.onnx").exists())
+            self.assertTrue((installation.install_dir / "onnx" / "vision_model_fp16.onnx").exists())
 
     def test_download_aiculler_topiq_model_fetches_required_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

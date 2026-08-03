@@ -72,8 +72,7 @@ from aiculler.telemetry import TelemetryEvent, ThreadedTelemetryLogger, classify
 from .ai_model import (
     AIModelInstallation,
     DEFAULT_AICULLER_CLIP_VARIANT,
-    DEFAULT_AICULLER_CLIP_VARIANT_SIZE_MB,
-    DEFAULT_AICULLER_CLIP_FP16_SIZE_MB,
+    DEFAULT_AICULLER_CLIP_SIZE_MB,
     DEFAULT_AICULLER_FACE_SIZE_MB,
     DEFAULT_AICULLER_TOPIQ_SIZE_MB,
     DEFAULT_AI_MODEL_SIZE_MB,
@@ -174,8 +173,6 @@ from .aiculler_workflow import (
     aiculler_rerank_readiness,
     aiculler_runtime_available,
     build_aiculler_workflow_paths,
-    clip_model_variant_info,
-    coerce_clip_model_variant,
     default_aiculler_runtime,
     delete_adapter_model,
     global_aiculler_db_path,
@@ -2386,7 +2383,6 @@ class MainWindow(QMainWindow):
     CATALOG_WATCH_CURRENT_FOLDER_KEY = "catalog/watch_current_folder"
     AI_EMBED_BATCH_SIZE_KEY = "ai/embed_batch_size"
     AI_DINO_WORKER_COUNT_KEY = "ai/dino_prefilter/workers"
-    AI_CLIP_MODEL_VARIANT_KEY = "ai/clip_model_variant"
     AI_REVIEW_DETAIL_PROGRESS_KEY = "ai/review_detail_progress"
     AI_DISPUTE_WEIGHT_KEY = "ai/dispute_weight"
     AI_DISPUTE_WEIGHT_DEFAULT = 3
@@ -3228,9 +3224,7 @@ class MainWindow(QMainWindow):
             ),
             self._ai_dino_worker_capacity,
         )
-        self._ai_clip_model_variant = coerce_clip_model_variant(
-            self._settings.value(self.AI_CLIP_MODEL_VARIANT_KEY, "uint8", str)
-        )
+        self._ai_clip_model_variant = DEFAULT_AICULLER_CLIP_VARIANT
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(
             self._settings.value(self.AI_DISPUTE_WEIGHT_KEY, self.AI_DISPUTE_WEIGHT_DEFAULT, int)
         )
@@ -8411,79 +8405,7 @@ class MainWindow(QMainWindow):
         return self._semantic_model_installation
 
     def _managed_aiculler_clip_model_installation(self) -> AIModelInstallation:
-        # Resolve fresh against the currently selected variant so availability
-        # checks and downloads only ever consider that one variant's files.
-        return resolve_aiculler_clip_model_installation(
-            variant=getattr(self, "_ai_clip_model_variant", DEFAULT_AICULLER_CLIP_VARIANT)
-        )
-
-    def _aiculler_clip_variant_installed(self, variant: str) -> bool:
-        """Whether the given CLIP variant's ONNX files are already on disk."""
-        return resolve_aiculler_clip_model_installation(variant=variant).is_installed
-
-    def _download_clip_model_variant(self, variant: str) -> bool:
-        """Download only the selected CLIP variant, blocking on a modal progress
-        dialog. Returns True on success. Wired to the Settings download button."""
-        variant = coerce_clip_model_variant(variant)
-        installation = resolve_aiculler_clip_model_installation(variant=variant)
-        label = clip_model_variant_info(variant).label
-        parent = QApplication.activeModalWidget() or self
-        if installation.is_installed:
-            self.statusBar().showMessage(f"CLIP model already installed: {label}")
-            return True
-
-        progress = QProgressDialog(f"Downloading CLIP model — {label}…", None, 0, 0, parent)
-        progress.setWindowTitle("CLI-Culler CLIP")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.setCancelButton(None)
-
-        loop = QEventLoop()
-        outcome: dict[str, object] = {"ok": False, "error": ""}
-
-        def on_progress(detail: str, current: int, total: int) -> None:
-            if total > 0:
-                progress.setRange(0, int(total))
-                progress.setValue(min(int(current), int(total)))
-            else:
-                progress.setRange(0, 0)
-            progress.setLabelText(f"Downloading CLIP model — {label}\n{detail}")
-
-        def on_finished(_summary: str) -> None:
-            outcome["ok"] = True
-            loop.quit()
-
-        def on_failed(message: str) -> None:
-            outcome["error"] = message
-            loop.quit()
-
-        task = AIModelDownloadTask(
-            requests=(
-                AIModelDownloadRequest(
-                    label=f"CLI-Culler CLIP ({label})",
-                    installation=installation,
-                ),
-            )
-        )
-        task.signals.progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
-        progress.show()
-        self._ai_model_pool.start(task)
-        loop.exec()
-        progress.close()
-
-        if outcome["ok"]:
-            self.statusBar().showMessage(f"CLIP model downloaded: {label}")
-            return True
-        QMessageBox.warning(
-            parent,
-            "CLIP model download failed",
-            str(outcome["error"]) or "The CLIP model download did not complete.",
-        )
-        return False
+        return resolve_aiculler_clip_model_installation()
 
     def _managed_aiculler_topiq_model_installation(self) -> AIModelInstallation:
         return self._aiculler_topiq_model_installation
@@ -8708,12 +8630,26 @@ class MainWindow(QMainWindow):
     def _configured_aiculler_runtime(self, *, workers: int | None = None):
         return default_aiculler_runtime(
             workers=workers,
-            clip_model_variant=self._ai_clip_model_variant,
             device=self._ai_runtime.device,
         )
 
+    def _confirm_cpu_clip_run(self, runtime) -> bool:
+        if runtime.device != "cpu":
+            return True
+        choice = QMessageBox.warning(
+            self,
+            "CPU AI Culling",
+            "GPU acceleration is unavailable, so CLIP will run on the CPU.\n\n"
+            "Large folders can take tens of minutes. Image Triage will still use FP32 first "
+            "and retry FP16 automatically if FP32 cannot initialize.\n\n"
+            "Continue with CPU inference?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return choice == QMessageBox.StandardButton.Ok
+
     def _ai_clip_model_variant_label(self) -> str:
-        return clip_model_variant_info(self._ai_clip_model_variant).label
+        return "Automatic (FP32 to FP16)"
 
     def _refresh_ai_runtime_preferences(self) -> None:
         runtime_status = self._managed_ai_runtime_status()
@@ -8852,38 +8788,15 @@ class MainWindow(QMainWindow):
 
     def _aiculler_clip_model_explanation_text(self) -> str:
         installation = self._managed_aiculler_clip_model_installation()
-        variant_label = self._ai_clip_model_variant_label()
         installed_size = directory_size_bytes(installation.install_dir)
-        # Size of just the selected variant's files, measured on disk when they
-        # already exist (older caches may hold several variants). Fresh installs
-        # fall back to the single-variant estimate.
-        selected_bytes = 0
-        for name in installation.required_filenames:
-            path = installation.install_dir / name
-            try:
-                if path.is_file():
-                    selected_bytes += path.stat().st_size
-            except OSError:
-                pass
-        if selected_bytes > 0:
-            size_line = f"Download size: about {_format_bytes(selected_bytes)} for {variant_label}\n"
-        else:
-            estimated_size_mb = (
-                DEFAULT_AICULLER_CLIP_FP16_SIZE_MB
-                if getattr(self, "_ai_clip_model_variant", "") == "fp16"
-                else DEFAULT_AICULLER_CLIP_VARIANT_SIZE_MB
-            )
-            size_line = (
-                f"Download size: about {estimated_size_mb} MB for {variant_label}\n"
-            )
         installed_line = ""
         if installed_size > 0:
             installed_line = f"\nCurrent CLIP cache: {_format_bytes(installed_size)}"
         return (
             "CLI-Culler uses a local CLIP ONNX model for image embeddings and category scoring. "
-            "Only the CLIP version selected in Settings → AI is downloaded — not every export. "
-            "Switch versions and fetch another anytime from Settings.\n\n"
-            f"{size_line}"
+            "Image Triage runs the full-precision FP32 export by default and automatically retries "
+            "the paired FP16 export if FP32 cannot initialize.\n\n"
+            f"Download size: about {DEFAULT_AICULLER_CLIP_SIZE_MB} MB\n"
             f"Install location:\n{installation.install_dir}"
             f"{installed_line}"
         )
@@ -19546,9 +19459,18 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            self._refresh_ai_runtime_preferences()
             runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
             runtime.validate()
-            self._refresh_ai_runtime_preferences()
+            if not self._confirm_cpu_clip_run(runtime):
+                if logger.enabled:
+                    logger.duration(
+                        "ai.run_prepare.blocked",
+                        (time.perf_counter() - start) * 1000.0,
+                        folder=self._current_folder,
+                        reason="cpu_warning_cancelled",
+                    )
+                return
             paths = build_aiculler_workflow_paths(self._current_folder)
             task = AICullerRunTask(
                 folder=Path(self._current_folder),
@@ -22529,9 +22451,6 @@ class MainWindow(QMainWindow):
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
             ai_dino_worker_count=self._ai_dino_worker_count_setting,
             ai_dino_worker_capacity=self._ai_dino_worker_capacity,
-            ai_clip_model_variant=self._ai_clip_model_variant,
-            clip_variant_installed_callback=self._aiculler_clip_variant_installed,
-            download_clip_variant_callback=self._download_clip_model_variant,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
             ai_dispute_weight=self._ai_dispute_weight_setting,
             ai_keep_top_percent=self._ai_keep_top_percent_setting,
@@ -22583,7 +22502,6 @@ class MainWindow(QMainWindow):
         update_check_changed = result.check_updates_on_startup != self._check_updates_on_startup
         ai_batch_changed = result.ai_embed_batch_size != self._ai_embed_batch_size_setting
         ai_dino_workers_changed = result.ai_dino_worker_count != self._ai_dino_worker_count_setting
-        ai_clip_model_changed = coerce_clip_model_variant(result.ai_clip_model_variant) != self._ai_clip_model_variant
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
         dino_prefilter_changed = result.dino_prefilter_settings.normalized() != self._dino_prefilter_settings
         phash_prefilter_changed = result.phash_prefilter_settings.normalized() != self._phash_prefilter_settings
@@ -22611,7 +22529,6 @@ class MainWindow(QMainWindow):
             result.ai_dino_worker_count,
             self._ai_dino_worker_capacity,
         )
-        self._ai_clip_model_variant = coerce_clip_model_variant(result.ai_clip_model_variant)
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
         self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(result.ai_label_near_duplicate_threshold)
         self._dino_prefilter_settings = result.dino_prefilter_settings.normalized()
@@ -22649,7 +22566,6 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.CHECK_UPDATES_ON_STARTUP_KEY, self._check_updates_on_startup)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
         self._settings.setValue(self.AI_DINO_WORKER_COUNT_KEY, self._ai_dino_worker_count_setting)
-        self._settings.setValue(self.AI_CLIP_MODEL_VARIANT_KEY, self._ai_clip_model_variant)
         self._settings.setValue(self.AI_DISPUTE_WEIGHT_KEY, self._ai_dispute_weight_setting)
         self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
         self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
@@ -22752,8 +22668,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"DINO worker count set to {self._ai_dino_worker_count_setting}"
             )
-        elif ai_clip_model_changed:
-            self.statusBar().showMessage(f"CLIP model set to {self._ai_clip_model_variant_label()}")
         elif ai_progress_detail_changed:
             state = "enabled" if self._ai_review_detail_progress_enabled else "disabled"
             self.statusBar().showMessage(f"Detailed AI Review progress {state}")

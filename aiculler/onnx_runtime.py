@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class OnnxSessionSelection:
+    session: Any
+    model_path: Path
+    fallback_used: bool
 
 
 def preferred_onnx_providers(ort: Any) -> list[str]:
@@ -30,12 +38,13 @@ def create_onnx_session(
     options: Any,
     *,
     providers: Sequence[str] | None = None,
+    allow_cpu_fallback: bool = True,
 ) -> Any:
     selected = list(providers) if providers else preferred_onnx_providers(ort)
     try:
         return ort.InferenceSession(str(model_path), options, providers=selected)
     except Exception:
-        if "CUDAExecutionProvider" not in selected:
+        if not allow_cpu_fallback or "CUDAExecutionProvider" not in selected:
             raise
         return ort.InferenceSession(
             str(model_path),
@@ -52,6 +61,7 @@ def preflight_onnx_session(
     *,
     input_name: str,
     input_shape: Sequence[int] | None = None,
+    allow_cpu_fallback: bool = True,
 ) -> Any:
     """Keep CUDA only when the exact model can complete a representative run."""
     if "CUDAExecutionProvider" not in session.get_providers():
@@ -72,8 +82,68 @@ def preflight_onnx_session(
         session.run(None, {input_name: np.zeros(shape, dtype=dtype)})
         return session
     except Exception:
+        if not allow_cpu_fallback:
+            raise
         return ort.InferenceSession(
             str(model_path),
             options,
             providers=["CPUExecutionProvider"],
         )
+
+
+def create_preflight_session_with_model_fallback(
+    ort: Any,
+    primary_model_path: str | Path,
+    fallback_model_path: str | Path | None,
+    options: Any,
+    *,
+    providers: Sequence[str] | None,
+    select_input_name: Callable[[Any], str],
+    input_shape: Callable[[Any], Sequence[int]],
+) -> OnnxSessionSelection:
+    """Try the primary precision before the fallback on each viable provider."""
+    selected = list(providers) if providers else preferred_onnx_providers(ort)
+    candidates = [Path(primary_model_path)]
+    if fallback_model_path is not None:
+        fallback = Path(fallback_model_path)
+        if fallback != candidates[0]:
+            candidates.append(fallback)
+
+    provider_attempts = [selected]
+    if "CUDAExecutionProvider" in selected:
+        provider_attempts.append(["CPUExecutionProvider"])
+
+    failures: list[str] = []
+    for attempt_providers in provider_attempts:
+        require_cuda = "CUDAExecutionProvider" in attempt_providers
+        for candidate_index, candidate in enumerate(candidates):
+            try:
+                session = create_onnx_session(
+                    ort,
+                    candidate,
+                    options,
+                    providers=attempt_providers,
+                    allow_cpu_fallback=False,
+                )
+                if require_cuda and "CUDAExecutionProvider" not in session.get_providers():
+                    raise RuntimeError("CUDA provider was requested but did not initialize")
+                name = select_input_name(session)
+                session = preflight_onnx_session(
+                    ort,
+                    session,
+                    candidate,
+                    options,
+                    input_name=name,
+                    input_shape=input_shape(session),
+                    allow_cpu_fallback=False,
+                )
+                return OnnxSessionSelection(
+                    session=session,
+                    model_path=candidate.expanduser().resolve(),
+                    fallback_used=candidate_index > 0,
+                )
+            except Exception as exc:
+                failures.append(f"{candidate.name} on {','.join(attempt_providers)}: {exc}")
+
+    detail = "\n".join(failures)
+    raise RuntimeError(f"Could not initialize the primary or fallback ONNX model.\n{detail}")

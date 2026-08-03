@@ -106,21 +106,14 @@ class AICullerClipModelVariant:
 
 
 CLIP_MODEL_VARIANT_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_VARIANT"
-DEFAULT_CLIP_MODEL_VARIANT = "uint8"
+DEFAULT_CLIP_MODEL_VARIANT = "fp32"
 CLIP_MODEL_VARIANTS: tuple[AICullerClipModelVariant, ...] = (
     AICullerClipModelVariant(
-        key="uint8",
-        label="UInt8 CPU",
-        description="Compact CPU export for systems without CUDA.",
-        expected_delta="Use this with the CPU AI runtime.",
+        key="fp32",
+        label="Automatic (FP32 to FP16)",
+        description="Full-precision CLIP with a transparent FP16 fallback.",
+        expected_delta="Image Triage chooses the working precision automatically.",
         recommended=True,
-    ),
-    AICullerClipModelVariant(
-        key="fp16",
-        label="FP16 CUDA",
-        description="Half-precision OpenAI CLIP export optimized for CUDA inference.",
-        expected_delta="Use this with the GPU AI runtime.",
-        warning="Requires a working CUDA runtime. Use UInt8 CPU on systems without CUDA.",
     ),
 )
 
@@ -151,6 +144,8 @@ class AICullerRuntime:
     clip_vision_model: Path
     clip_text_model: Path
     tokenizer: Path
+    clip_fallback_vision_model: Path | None = None
+    clip_fallback_text_model: Path | None = None
     clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     topiq_model: Path | None = None
     face_quality_enabled: bool = False
@@ -172,6 +167,12 @@ class AICullerRuntime:
             ("CLIP tokenizer", self.tokenizer),
         ):
             if not path.exists():
+                missing.append(f"{label}: {path}")
+        for label, path in (
+            ("CLIP fallback vision model", self.clip_fallback_vision_model),
+            ("CLIP fallback text model", self.clip_fallback_text_model),
+        ):
+            if path is not None and not path.exists():
                 missing.append(f"{label}: {path}")
         if self.categories_csv is not None and not self.categories_csv.exists():
             missing.append(f"category prompts: {self.categories_csv}")
@@ -295,6 +296,11 @@ class AICullerRunTask(QRunnable):
                 phash_enabled=self.phash_prefilter_settings.enabled,
                 clip_model_variant=self.runtime.clip_model_variant,
                 clip_vision_model=self.runtime.clip_vision_model.name,
+                clip_fallback_vision_model=(
+                    ""
+                    if self.runtime.clip_fallback_vision_model is None
+                    else self.runtime.clip_fallback_vision_model.name
+                ),
                 topiq_enabled=self.runtime.topiq_model is not None,
                 face_quality_enabled=self.runtime.face_quality_enabled,
                 workers=self.runtime.workers,
@@ -377,6 +383,11 @@ class AICullerRunTask(QRunnable):
                         str(cache_dir),
                         "--clip",
                         str(self.runtime.clip_vision_model),
+                        *(
+                            ("--clip-fallback", str(self.runtime.clip_fallback_vision_model))
+                            if self.runtime.clip_fallback_vision_model is not None
+                            else ()
+                        ),
                         "--workers",
                         str(max(1, self.runtime.workers)),
                         *self._include_paths_args(include_paths_file),
@@ -391,6 +402,11 @@ class AICullerRunTask(QRunnable):
                         "assign-categories",
                         "--text-model",
                         str(self.runtime.clip_text_model),
+                        *(
+                            ("--text-model-fallback", str(self.runtime.clip_fallback_text_model))
+                            if self.runtime.clip_fallback_text_model is not None
+                            else ()
+                        ),
                         "--tokenizer",
                         str(self.runtime.tokenizer),
                         "--out",
@@ -2056,6 +2072,11 @@ class AICullerGlobalAdapterTask(QRunnable):
                         str(cache_dir),
                         "--clip",
                         str(self.runtime.clip_vision_model),
+                        *(
+                            ("--clip-fallback", str(self.runtime.clip_fallback_vision_model))
+                            if self.runtime.clip_fallback_vision_model is not None
+                            else ()
+                        ),
                         "--workers",
                         str(max(1, self.runtime.workers)),
                         "--include-paths-file",
@@ -2070,6 +2091,11 @@ class AICullerGlobalAdapterTask(QRunnable):
                         "assign-categories",
                         "--text-model",
                         str(self.runtime.clip_text_model),
+                        *(
+                            ("--text-model-fallback", str(self.runtime.clip_fallback_text_model))
+                            if self.runtime.clip_fallback_text_model is not None
+                            else ()
+                        ),
                         "--tokenizer",
                         str(self.runtime.tokenizer),
                         "--out",
@@ -2258,12 +2284,11 @@ def default_aiculler_runtime(
         or _default_aiculler_cli(root)
     ).expanduser().resolve()
     clip_root = model_root / "Clip" / "clip-vit-large-patch14"
-    resolved_clip_variant = coerce_clip_model_variant(
-        clip_model_variant
-        or os.environ.get(CLIP_MODEL_VARIANT_ENV, "")
-        or DEFAULT_CLIP_MODEL_VARIANT
-    )
-    default_clip_vision, default_clip_text = _clip_model_paths_for_variant(clip_root, resolved_clip_variant)
+    # Precision is a runtime recovery policy, not a user preference: always
+    # attempt FP32 first and keep the paired FP16 export ready as fallback.
+    resolved_clip_variant = DEFAULT_CLIP_MODEL_VARIANT
+    default_clip_vision, default_clip_text = _clip_model_paths_for_variant(clip_root, "fp32")
+    fallback_clip_vision, fallback_clip_text = _clip_model_paths_for_variant(clip_root, "fp16")
     configured_topiq = os.environ.get("IMAGE_TRIAGE_AICULLER_TOPIQ", "").strip()
     topiq_path = Path(configured_topiq or model_root / "TOPIQ" / "topiq_nr.onnx")
     face_pack_dir = model_root / "insightface" / "models" / "buffalo_l"
@@ -2300,6 +2325,14 @@ def default_aiculler_runtime(
             os.environ.get("IMAGE_TRIAGE_AICULLER_TOKENIZER", "")
             or clip_root / "tokenizer.json"
         ).expanduser().resolve(),
+        clip_fallback_vision_model=Path(
+            os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_VISION_FALLBACK", "")
+            or fallback_clip_vision
+        ).expanduser().resolve(),
+        clip_fallback_text_model=Path(
+            os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_TEXT_FALLBACK", "")
+            or fallback_clip_text
+        ).expanduser().resolve(),
         clip_model_variant=resolved_clip_variant,
         topiq_model=(
             topiq_path.expanduser().resolve()
@@ -2317,9 +2350,12 @@ def default_aiculler_runtime(
 
 
 def _clip_model_paths_for_variant(clip_root: Path, variant: str) -> tuple[Path, Path]:
-    normalized = coerce_clip_model_variant(variant)
+    normalized = str(variant or "").strip().lower()
+    if normalized not in {"fp32", "fp16"}:
+        normalized = "fp32"
     onnx_root = clip_root / "onnx"
-    return onnx_root / f"vision_model_{normalized}.onnx", onnx_root / f"text_model_{normalized}.onnx"
+    suffix = "" if normalized == "fp32" else f"_{normalized}"
+    return onnx_root / f"vision_model{suffix}.onnx", onnx_root / f"text_model{suffix}.onnx"
 
 
 def _default_aiculler_python(root: Path) -> Path:
@@ -3079,6 +3115,12 @@ def write_run_config(
             "clip_model_variant": runtime.clip_model_variant,
             "clip_vision": str(runtime.clip_vision_model),
             "clip_text": str(runtime.clip_text_model),
+            "clip_fallback_vision": (
+                "" if runtime.clip_fallback_vision_model is None else str(runtime.clip_fallback_vision_model)
+            ),
+            "clip_fallback_text": (
+                "" if runtime.clip_fallback_text_model is None else str(runtime.clip_fallback_text_model)
+            ),
             "tokenizer": str(runtime.tokenizer),
             "topiq": "" if runtime.topiq_model is None else str(runtime.topiq_model),
         },

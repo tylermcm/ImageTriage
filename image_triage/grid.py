@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal, QSignalBlocker
 from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
-from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton
+from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton, QWidget
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
 from .cache import ThumbnailKey
@@ -62,6 +62,47 @@ class GridDeltaUpdate:
     changed_paths: tuple[str, ...] = ()
     selection_anchor: int | None = None
     preserve_pixmap_cache: bool = True
+
+
+class _AutoScrollAnchor(QWidget):
+    """Non-interactive overlay marking the middle-click autoscroll origin."""
+
+    _SIZE = 34
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self._SIZE, self._SIZE)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.hide()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect().adjusted(3, 3, -3, -3)
+        painter.setPen(QPen(QColor(20, 20, 20, 170), 1.5))
+        painter.setBrush(QBrush(QColor(245, 245, 245, 210)))
+        painter.drawEllipse(rect)
+        center = rect.center()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(40, 40, 40, 220)))
+        painter.drawEllipse(center, 2, 2)
+        cx = center.x()
+        top = rect.top() + 4
+        bottom = rect.bottom() - 4
+        up = QPainterPath()
+        up.moveTo(cx, top)
+        up.lineTo(cx - 4, top + 5)
+        up.lineTo(cx + 4, top + 5)
+        up.closeSubpath()
+        down = QPainterPath()
+        down.moveTo(cx, bottom)
+        down.lineTo(cx - 4, bottom - 5)
+        down.lineTo(cx + 4, bottom - 5)
+        down.closeSubpath()
+        painter.drawPath(up)
+        painter.drawPath(down)
+        painter.end()
 
 
 class ThumbnailGridView(QAbstractScrollArea):
@@ -276,6 +317,17 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._zoom_index = -1
         self._zoom_factor = 1.0
         self._zoom_focus = (0.5, 0.5)
+
+        # Middle-click ("scroll wheel button") autoscroll: click sets an anchor,
+        # then moving away from it scrolls — farther = faster.
+        self._autoscroll_active = False
+        self._autoscroll_origin = QPoint()
+        self._autoscroll_pointer_y = 0
+        self._autoscroll_press_moved = False
+        self._autoscroll_anchor: _AutoScrollAnchor | None = None
+        self._autoscroll_timer = QTimer(self)
+        self._autoscroll_timer.setInterval(16)
+        self._autoscroll_timer.timeout.connect(self._autoscroll_tick)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1036,6 +1088,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        if self._autoscroll_active:
+            self._stop_autoscroll()
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier and self._handle_zoom_wheel(event):
@@ -1127,7 +1181,18 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton:
+        button = event.button()
+        if self._autoscroll_active:
+            # Any click exits autoscroll (and is consumed, so it doesn't also
+            # select/deselect underneath — matches browser behavior).
+            self._stop_autoscroll()
+            event.accept()
+            return
+        if button == Qt.MouseButton.MiddleButton:
+            self._start_autoscroll(event.position().toPoint())
+            event.accept()
+            return
+        if button != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
 
@@ -1270,6 +1335,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton and self._autoscroll_active:
+            # Press-drag-release stops; a quick click stays "sticky" until the
+            # next click anywhere.
+            if self._autoscroll_press_moved:
+                self._stop_autoscroll()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             if self._marquee_active:
                 self._clear_marquee_selection()
@@ -1290,6 +1362,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._autoscroll_active:
+            point = event.position().toPoint()
+            self._autoscroll_pointer_y = point.y()
+            if (point - self._autoscroll_origin).manhattanLength() >= QApplication.startDragDistance():
+                self._autoscroll_press_moved = True
+            event.accept()
+            return
         if event.buttons() & Qt.MouseButton.LeftButton:
             point = event.position().toPoint()
             if self._marquee_origin is not None and (self._marquee_active or (point - self._marquee_origin).manhattanLength() >= QApplication.startDragDistance()):
@@ -1403,7 +1482,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._hovered_burst_left_index = -1
         self._hovered_burst_right_index = -1
         self._hovered_checkbox_index = -1
-        self.viewport().unsetCursor()
+        if not self._autoscroll_active:
+            self.viewport().unsetCursor()
         for tile_index in {
             previous_winner,
             previous_reject,
@@ -1418,6 +1498,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         super().leaveEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._autoscroll_active and event.key() == Qt.Key.Key_Escape:
+            self._stop_autoscroll()
+            event.accept()
+            return
         if not self._items:
             super().keyPressEvent(event)
             return
@@ -4048,6 +4132,61 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._wheel_pixel_remainder = 0
         free_step = max(90, int(row_height * 0.55))
         return int(round((-angle_y / 120.0) * free_step))
+
+    # --- Middle-click autoscroll -------------------------------------------
+
+    _AUTOSCROLL_DEADZONE = 16
+    _AUTOSCROLL_SPEED_DIVISOR = 9.0
+    _AUTOSCROLL_MAX_STEP = 130
+
+    def _ensure_autoscroll_anchor(self) -> _AutoScrollAnchor:
+        if self._autoscroll_anchor is None:
+            self._autoscroll_anchor = _AutoScrollAnchor(self.viewport())
+        return self._autoscroll_anchor
+
+    def _start_autoscroll(self, origin: QPoint) -> None:
+        self._stop_smooth_scroll()
+        self._autoscroll_active = True
+        self._autoscroll_origin = QPoint(origin)
+        self._autoscroll_pointer_y = origin.y()
+        self._autoscroll_press_moved = False
+        anchor = self._ensure_autoscroll_anchor()
+        anchor.move(origin.x() - anchor.width() // 2, origin.y() - anchor.height() // 2)
+        anchor.show()
+        anchor.raise_()
+        self.viewport().setCursor(Qt.CursorShape.SizeVerCursor)
+        if not self._autoscroll_timer.isActive():
+            self._autoscroll_timer.start()
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def _stop_autoscroll(self) -> None:
+        if not self._autoscroll_active:
+            return
+        self._autoscroll_active = False
+        self._autoscroll_press_moved = False
+        self._autoscroll_timer.stop()
+        if self._autoscroll_anchor is not None:
+            self._autoscroll_anchor.hide()
+        self.viewport().unsetCursor()
+
+    def _autoscroll_tick(self) -> None:
+        if not self._autoscroll_active:
+            return
+        dy = self._autoscroll_pointer_y - self._autoscroll_origin.y()
+        magnitude = abs(dy) - self._AUTOSCROLL_DEADZONE
+        if magnitude <= 0:
+            return
+        direction = 1 if dy > 0 else -1
+        # Linear with the distance, plus a gentle super-linear term so far
+        # pushes accelerate; capped so it never becomes uncontrollable.
+        speed = (magnitude / self._AUTOSCROLL_SPEED_DIVISOR) * (1.0 + magnitude / 140.0)
+        step = int(round(direction * min(self._AUTOSCROLL_MAX_STEP, speed)))
+        if step == 0:
+            return
+        scrollbar = self.verticalScrollBar()
+        target = max(scrollbar.minimum(), min(scrollbar.maximum(), scrollbar.value() + step))
+        if target != scrollbar.value():
+            scrollbar.setValue(target)
 
     def _scroll_by_pixels(self, delta: int) -> None:
         if delta == 0:

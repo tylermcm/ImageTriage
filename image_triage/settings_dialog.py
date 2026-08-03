@@ -29,12 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .aiculler_workflow import (
-    DEFAULT_CLIP_MODEL_VARIANT,
-    clip_model_variant_info,
-    clip_model_variant_options,
-    coerce_clip_model_variant,
-)
+from .aiculler_workflow import DEFAULT_CLIP_MODEL_VARIANT
 from .ai_workflow import (
     available_ai_dataloader_worker_capacity,
     clamp_ai_dataloader_workers,
@@ -169,8 +164,6 @@ class WorkflowSettingsDialog(QDialog):
         keyboard_shortcuts_callback: Callable[[], None] | None = None,
         toolbar_callback: Callable[[], None] | None = None,
         reset_layout_callback: Callable[[], None] | None = None,
-        clip_variant_installed_callback: Callable[[str], bool] | None = None,
-        download_clip_variant_callback: Callable[[str], bool] | None = None,
         shortcut_overrides: dict[str, str] | None = None,
         initial_section: str | None = None,
         parent=None,
@@ -182,8 +175,6 @@ class WorkflowSettingsDialog(QDialog):
         self.resize(720, 540)
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
-        self._clip_variant_installed_callback = clip_variant_installed_callback
-        self._download_clip_variant_callback = download_clip_variant_callback
         self._updating_session = False
         dino_settings = (dino_prefilter_settings or default_dino_prefilter_settings()).normalized()
         phash_settings = (phash_prefilter_settings or default_phash_prefilter_settings()).normalized()
@@ -450,48 +441,6 @@ class WorkflowSettingsDialog(QDialog):
             "ONNX's internal thread pool."
         ))
 
-        self.ai_clip_model_combo = QComboBox()
-        self.ai_clip_model_combo.setMinimumWidth(260)
-        for variant in clip_model_variant_options():
-            self.ai_clip_model_combo.addItem(variant.label, variant.key)
-            index = self.ai_clip_model_combo.count() - 1
-            self.ai_clip_model_combo.setItemData(
-                index,
-                _settings_tooltip(f"{variant.description}\n{variant.expected_delta}"),
-                Qt.ItemDataRole.ToolTipRole,
-            )
-        selected_clip_variant = coerce_clip_model_variant(ai_clip_model_variant)
-        self.ai_clip_model_combo.setCurrentIndex(
-            max(0, self.ai_clip_model_combo.findData(selected_clip_variant))
-        )
-        self.ai_clip_model_combo.setToolTip(_settings_tooltip(
-            "Select the paired CLIP vision/text ONNX export used by CLI-Culler ingest and category scoring."
-        ))
-        self.ai_clip_model_warning_label = QLabel("")
-        self.ai_clip_model_warning_label.setWordWrap(True)
-        self.ai_clip_model_warning_label.setObjectName("mutedText")
-        self.ai_clip_model_warning_label.setStyleSheet("font-size: 11px; color: #d0a85c;")
-        self.ai_clip_model_warning_label.setToolTip(_settings_tooltip(
-            "Shows cautions for the selected CLIP model version."
-        ))
-        self.ai_clip_model_combo.currentIndexChanged.connect(self._update_ai_clip_model_summary)
-
-        # Per-variant download button on the far right of the combo. Only the
-        # selected variant is fetched — the app no longer downloads every export.
-        self.ai_clip_model_download_button = QPushButton("Download")
-        self.ai_clip_model_download_button.setObjectName("settingsInlineButton")
-        self.ai_clip_model_download_button.setToolTip(_settings_tooltip(
-            "Download the ONNX files for the selected CLIP version. "
-            "Only this version is fetched, not every export in the repo."
-        ))
-        self.ai_clip_model_download_button.clicked.connect(self._on_download_clip_variant_clicked)
-        self._ai_clip_model_row_widget = QWidget()
-        _clip_row_layout = QHBoxLayout(self._ai_clip_model_row_widget)
-        _clip_row_layout.setContentsMargins(0, 0, 0, 0)
-        _clip_row_layout.setSpacing(8)
-        _clip_row_layout.addWidget(self.ai_clip_model_combo, 1)
-        _clip_row_layout.addWidget(self.ai_clip_model_download_button, 0)
-
         self.ai_review_detail_progress_checkbox = QCheckBox("Show detailed AI Review activity")
         self.ai_review_detail_progress_checkbox.setChecked(ai_review_detail_progress_enabled)
         self.ai_review_detail_progress_checkbox.setToolTip(_settings_tooltip(
@@ -580,8 +529,6 @@ class WorkflowSettingsDialog(QDialog):
 
         ai_page, ai_layout = self._build_settings_page("AI")
         self._add_form_row(ai_layout, "Processing workers", self.ai_embed_batch_size_spin)
-        self._add_form_row(ai_layout, "CLIP model version", self._ai_clip_model_row_widget)
-        self._add_text_row(ai_layout, "Model notes", self.ai_clip_model_warning_label)
         self._add_checkbox_row(ai_layout, "Detailed progress log", self.ai_review_detail_progress_checkbox)
         self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
@@ -590,7 +537,6 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(ai_layout, "Dispute label weight", self.ai_dispute_weight_spin)
         self._add_form_row(ai_layout, "Legacy duplicate threshold", self.ai_label_near_duplicate_slider)
         ai_layout.addStretch(1)
-        self._update_ai_clip_model_summary()
         self._update_ai_cull_summary()
         self._add_settings_page("AI", ai_page)
 
@@ -970,51 +916,6 @@ class WorkflowSettingsDialog(QDialog):
         for control in getattr(self, "_phash_dependent_controls", ()):
             control.setEnabled(bool(enabled))
 
-    def _update_ai_clip_model_summary(self) -> None:
-        info = clip_model_variant_info(self.ai_clip_model_combo.currentData())
-        parts = [info.description, info.expected_delta]
-        if info.warning:
-            parts.append(f"Warning: {info.warning}")
-        elif info.recommended:
-            parts.append("Recommended default.")
-        self.ai_clip_model_warning_label.setText("\n".join(parts))
-        self._refresh_clip_download_button()
-
-    def _refresh_clip_download_button(self) -> None:
-        button = getattr(self, "ai_clip_model_download_button", None)
-        if button is None:
-            return
-        installed_cb = self._clip_variant_installed_callback
-        if installed_cb is None:
-            # No host wiring (e.g. isolated dialog tests) — nothing to download.
-            button.setVisible(False)
-            return
-        variant = coerce_clip_model_variant(self.ai_clip_model_combo.currentData())
-        try:
-            installed = bool(installed_cb(variant))
-        except Exception:
-            installed = False
-        button.setVisible(True)
-        if installed:
-            button.setText("Installed")
-            button.setEnabled(False)
-        else:
-            button.setText("Download")
-            button.setEnabled(self._download_clip_variant_callback is not None)
-
-    def _on_download_clip_variant_clicked(self) -> None:
-        callback = self._download_clip_variant_callback
-        if callback is None:
-            return
-        variant = coerce_clip_model_variant(self.ai_clip_model_combo.currentData())
-        button = self.ai_clip_model_download_button
-        button.setEnabled(False)
-        button.setText("Downloading…")
-        try:
-            callback(variant)
-        finally:
-            self._refresh_clip_download_button()
-
     def _collect_shortcut_state(self) -> tuple[dict[str, str], dict[str, list[str]]]:
         """Return (effective_chords_by_attr, conflicts_by_chord) from current editor state."""
 
@@ -1200,7 +1101,7 @@ class WorkflowSettingsDialog(QDialog):
                 self.ai_dino_worker_spin.value(),
                 self._ai_dino_worker_capacity,
             ),
-            ai_clip_model_variant=coerce_clip_model_variant(self.ai_clip_model_combo.currentData()),
+            ai_clip_model_variant=DEFAULT_CLIP_MODEL_VARIANT,
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
             ai_keep_top_percent=max(1, min(50, int(self.ai_keep_top_spin.value()))),

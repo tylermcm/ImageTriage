@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
+from typing import AbstractSet, Iterable, Mapping
 
 
 @dataclass(slots=True, frozen=True)
@@ -75,7 +75,7 @@ class DINOPrefilterDecision:
         }
 
 
-DINO_PREFILTER_SCHEMA_VERSION = 3
+DINO_PREFILTER_SCHEMA_VERSION = 4
 DINO_PREFILTER_ARTIFACT_DIRNAME = "dino_prefilter"
 DINO_PREFILTER_REPORT_FILENAME = "dino_prefilter_report.json"
 DINO_PREFILTER_ROWS_FILENAME = "dino_prefilter_rows.jsonl"
@@ -186,12 +186,19 @@ def run_dino_prefilter_from_signal_rows(
         cache_hit=cache_hit,
     )
     signals_by_path: dict[str, DINOPrefilterSignals] = {}
+    duplicate_groups: dict[str, dict[str, int]] = {}
     for row in rows:
         signals = dino_prefilter_signals_from_signal_row(row)
         if signals is None:
             continue
         existing = signals_by_path.get(signals.path)
         signals_by_path[signals.path] = signals if existing is None else _merge_prefilter_signals(existing, signals)
+        cluster_id = str(row.get("cluster_id") or "").strip()
+        group_size = max(1, _int_value(row.get("group_size"), 1))
+        if cluster_id and group_size > 1:
+            rank = max(1, _int_value(row.get("dino_rank"), 1))
+            members = duplicate_groups.setdefault(cluster_id, {})
+            members[signals.path] = min(rank, members.get(signals.path, rank))
     for signals in signals_by_path.values():
         scanned_count += 1
         decision = decide_dino_prefilter_action(signals, settings)
@@ -204,6 +211,26 @@ def run_dino_prefilter_from_signal_rows(
                 rescue_reasons=("manual_keep",),
             )
         decisions.append(decision)
+    normalized_settings = settings.normalized()
+    threshold = normalized_settings.aggressiveness_percent / 100.0
+    independent_trash_paths = {
+        path
+        for path, signals in signals_by_path.items()
+        if (
+            normalized_settings.technical_trash_enabled
+            and signals.technical_trash_score >= threshold
+        )
+        or (
+            normalized_settings.low_information_enabled
+            and signals.low_information_score >= threshold
+        )
+    }
+    decisions = _preserve_duplicate_group_representatives(
+        decisions,
+        duplicate_groups,
+        independent_trash_paths=independent_trash_paths,
+    )
+    for decision in decisions:
         if decision.reason and decision.action != "pass":
             reason_counts[decision.reason] = reason_counts.get(decision.reason, 0) + 1
         for rescue_reason in decision.rescue_reasons:
@@ -231,6 +258,44 @@ def run_dino_prefilter_from_signal_rows(
         rescued=rescued_count,
     )
     return {decision.path: decision for decision in decisions}
+
+
+def _preserve_duplicate_group_representatives(
+    decisions: Iterable[DINOPrefilterDecision],
+    duplicate_groups: Mapping[str, Mapping[str, int]],
+    *,
+    duplicate_reasons: tuple[str, ...] = ("duplicate_trash",),
+    independent_trash_paths: AbstractSet[str] = frozenset(),
+) -> list[DINOPrefilterDecision]:
+    """Prevent duplicate classification alone from emptying a similarity group."""
+    preserved = list(decisions)
+    indexes_by_path = {decision.path: index for index, decision in enumerate(preserved)}
+    for members in duplicate_groups.values():
+        group_indexes = [indexes_by_path[path] for path in members if path in indexes_by_path]
+        if len(group_indexes) < 2:
+            continue
+        group_decisions = [preserved[index] for index in group_indexes]
+        if any(not decision.is_candidate for decision in group_decisions):
+            continue
+        duplicate_only = [
+            index
+            for index in group_indexes
+            if preserved[index].reason in duplicate_reasons
+            and preserved[index].path not in independent_trash_paths
+        ]
+        if not duplicate_only:
+            continue
+        representative_index = min(
+            duplicate_only,
+            key=lambda index: (members.get(preserved[index].path, 2**31 - 1), preserved[index].path),
+        )
+        representative = preserved[representative_index]
+        preserved[representative_index] = replace(
+            representative,
+            action="rescued",
+            rescue_reasons=(*representative.rescue_reasons, "duplicate_group_representative"),
+        )
+    return preserved
 
 
 def _merge_prefilter_signals(left: DINOPrefilterSignals, right: DINOPrefilterSignals) -> DINOPrefilterSignals:

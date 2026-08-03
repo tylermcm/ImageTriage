@@ -30,6 +30,7 @@ DEFAULT_CPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 DEFAULT_GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
 AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     "numpy>=1.26",
+    "onnx>=1.16",
     AI_RUNTIME_ONNX_CPU_REQUIREMENT,
     "Pillow>=10.4",
     "opencv-python-headless>=4.10",
@@ -51,6 +52,7 @@ AI_RUNTIME_DINO_PIP_REQUIREMENTS = (
 AI_RUNTIME_PIP_REQUIREMENTS = AI_RUNTIME_BASE_PIP_REQUIREMENTS + AI_RUNTIME_DINO_PIP_REQUIREMENTS
 AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES = (
     "numpy",
+    "onnx",
     "onnxruntime",
     "cv2",
     "sklearn",

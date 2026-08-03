@@ -21,6 +21,11 @@ from image_triage.perceptual_hash import (
     find_perceptual_duplicate_groups,
     find_perceptual_duplicate_groups_with_stats,
 )
+from image_triage.phash_prefilter import (
+    PHashPrefilterSettings,
+    build_phash_prefilter_paths,
+    run_phash_prefilter_from_signal_rows,
+)
 
 
 class DINOPrefilterTests(unittest.TestCase):
@@ -138,6 +143,109 @@ class DINOPrefilterTests(unittest.TestCase):
 
         self.assertEqual("remove_from_pool", decisions[image_path].action)
         self.assertEqual("technical_trash", decisions[image_path].reason)
+
+    def test_burst_rescues_best_duplicate_only_member_when_rank_one_is_technical_trash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = build_dino_prefilter_paths(temp_dir)
+            rows = []
+            for rank in range(1, 5):
+                rows.append(
+                    {
+                        "file_path": str(Path(temp_dir) / f"burst-{rank}.jpg"),
+                        "cluster_id": "cluster-1",
+                        "group_size": "4",
+                        "dino_rank": str(rank),
+                        "detail": "0.0" if rank == 1 else "0.95",
+                    }
+                )
+
+            decisions = run_dino_prefilter_from_signal_rows(
+                rows,
+                settings=DINOPrefilterSettings(enabled=True, aggressiveness_percent=70),
+                paths=paths,
+            )
+
+        rank_one = decisions[str(Path(temp_dir) / "burst-1.jpg")]
+        rescued = decisions[str(Path(temp_dir) / "burst-2.jpg")]
+        self.assertEqual("remove_from_pool", rank_one.action)
+        self.assertEqual("technical_trash", rank_one.reason)
+        self.assertEqual("rescued", rescued.action)
+        self.assertEqual("duplicate_trash", rescued.reason)
+        self.assertIn("duplicate_group_representative", rescued.rescue_reasons)
+
+    def test_burst_can_be_fully_removed_when_every_member_is_independently_trash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = build_dino_prefilter_paths(temp_dir)
+            rows = [
+                {
+                    "file_path": str(Path(temp_dir) / f"bad-{rank}.jpg"),
+                    "cluster_id": "cluster-1",
+                    "group_size": "3",
+                    "dino_rank": str(rank),
+                    "detail": "0.0",
+                }
+                for rank in range(1, 4)
+            ]
+
+            decisions = run_dino_prefilter_from_signal_rows(
+                rows,
+                settings=DINOPrefilterSettings(enabled=True, aggressiveness_percent=70),
+                paths=paths,
+            )
+
+        self.assertTrue(all(decision.action == "remove_from_pool" for decision in decisions.values()))
+        self.assertTrue(all(decision.reason == "technical_trash" for decision in decisions.values()))
+
+    def test_duplicate_primary_reason_does_not_hide_independent_technical_trash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = build_dino_prefilter_paths(temp_dir)
+            rows = [
+                {
+                    "file_path": str(Path(temp_dir) / f"bad-{rank}.jpg"),
+                    "cluster_id": "cluster-1",
+                    "group_size": "3",
+                    "dino_rank": str(rank),
+                    "detail": "0.1",
+                }
+                for rank in range(1, 4)
+            ]
+
+            decisions = run_dino_prefilter_from_signal_rows(
+                rows,
+                settings=DINOPrefilterSettings(enabled=True, aggressiveness_percent=70),
+                paths=paths,
+            )
+
+        self.assertEqual("duplicate_trash", decisions[str(Path(temp_dir) / "bad-3.jpg")].reason)
+        self.assertTrue(all(decision.action == "remove_from_pool" for decision in decisions.values()))
+
+    def test_phash_group_preserves_one_member_even_if_input_has_no_representative(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = build_phash_prefilter_paths(temp_dir)
+            rows = [
+                {
+                    "file_path": str(Path(temp_dir) / f"duplicate-{rank}.jpg"),
+                    "phash_group": "phash-1",
+                    "phash_rank": str(rank),
+                    "phash_duplicate_score": "1.0",
+                    "best_representative": "0",
+                }
+                for rank in range(1, 4)
+            ]
+
+            decisions = run_phash_prefilter_from_signal_rows(
+                rows,
+                settings=PHashPrefilterSettings(enabled=True, hamming_threshold=0),
+                paths=paths,
+            )
+
+        rescued = decisions[str(Path(temp_dir) / "duplicate-1.jpg")]
+        self.assertEqual("rescued", rescued.action)
+        self.assertIn("duplicate_group_representative", rescued.rescue_reasons)
+        self.assertEqual(
+            2,
+            sum(decision.action == "remove_from_pool" for decision in decisions.values()),
+        )
 
     def test_perceptual_hash_groups_identical_images(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

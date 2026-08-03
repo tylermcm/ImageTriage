@@ -7,7 +7,7 @@ from typing import Sequence
 import numpy as np
 
 from aiculler.clip_tokenizer import SimpleCLIPTokenizer
-from aiculler.onnx_runtime import create_onnx_session, preflight_onnx_session, preferred_onnx_providers
+from aiculler.onnx_runtime import create_preflight_session_with_model_fallback, preferred_onnx_providers
 from aiculler.storage import SQLiteFeatureStore
 
 
@@ -29,6 +29,7 @@ class CLIPTextEncoder:
         text_onnx_path: str | Path,
         tokenizer_json_path: str | Path,
         *,
+        fallback_text_onnx_path: str | Path | None = None,
         sequence_length: int = 77,
         providers: list[str] | None = None,
     ):
@@ -46,16 +47,19 @@ class CLIPTextEncoder:
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.sequence_length = int(sequence_length)
         providers = providers or preferred_onnx_providers(ort)
-        self.session = create_onnx_session(ort, text_onnx_path, opts, providers=providers)
-        self.input_name = self._select_input_name(self.session)
-        self.session = preflight_onnx_session(
+        selection = create_preflight_session_with_model_fallback(
             ort,
-            self.session,
             text_onnx_path,
+            fallback_text_onnx_path,
             opts,
-            input_name=self.input_name,
-            input_shape=(1, self.sequence_length),
+            providers=providers,
+            select_input_name=self._select_input_name,
+            input_shape=lambda _session: (1, self.sequence_length),
         )
+        self.session = selection.session
+        self.model_path = selection.model_path
+        self.fallback_used = selection.fallback_used
+        self.input_name = self._select_input_name(self.session)
         self.output_name = self._select_output_name(self.session)
         if Tokenizer is None:
             self.tokenizer = SimpleCLIPTokenizer(tokenizer_json_path, sequence_length=self.sequence_length)
