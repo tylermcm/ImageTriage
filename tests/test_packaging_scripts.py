@@ -67,6 +67,12 @@ class PackagingScriptTests(unittest.TestCase):
         self.assertIn("pip._internal", constants)
         self.assertNotIn("pip", _dict_list_literals(tree, "build_exe_options", "excludes"))
 
+    def test_birefnet_worker_is_packaged_as_an_external_ai_script(self) -> None:
+        constants = _string_constants(_read_tree("freeze_support.py"))
+
+        self.assertIn("birefnet_worker.py", constants)
+        self.assertIn("ai_workers/birefnet_worker.py", constants)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1389,6 +1389,34 @@ def _resolve_stage_command(
     return [str(runtime.python_executable), str(script_path), *stage_args]
 
 
+def resolve_ai_python_script_command(
+    script_path: str | Path,
+    *args: str,
+    runtime: AIWorkflowRuntime | None = None,
+) -> list[str]:
+    """Run an arbitrary AI worker through the same Python boundary as culling."""
+    resolved_runtime = runtime or default_ai_workflow_runtime()
+    python_executable = resolved_runtime.python_executable
+    if python_executable is None or not python_executable.exists():
+        raise FileNotFoundError("The managed AI Python runner is unavailable.")
+    resolved_script = Path(script_path).expanduser().resolve()
+    if not resolved_script.is_file():
+        raise FileNotFoundError(resolved_script)
+    runtime_root = _application_runtime_root(Path(__file__).resolve().parents[1])
+    runner_script = _runtime_runner_script(runtime_root)
+    if (
+        runner_script is not None
+        and python_executable.name.casefold() == AI_RUNNER_TARGET_NAME.casefold()
+    ):
+        return [
+            str(python_executable),
+            str(runner_script),
+            str(resolved_script),
+            *args,
+        ]
+    return [str(python_executable), str(resolved_script), *args]
+
+
 def _runtime_root_from_engine_root(engine_root: Path) -> Path:
     if engine_root.name == "AICullingPipeline" and engine_root.parent.name == AI_RUNTIME_DIR_NAME:
         return engine_root.parent.parent

@@ -135,6 +135,7 @@ class FreezeAssetLayout:
         include_files = [
             (str(self.ai_stage_root.parent), "ai_runtime"),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
+            (str(ROOT / "image_triage" / "birefnet_worker.py"), "ai_workers/birefnet_worker.py"),
             (str(self.ai_stdlib_stage_root), "ai_stdlib"),
             (str(self.ai_binary_modules_stage_root), "lib"),
         ]

@@ -1138,6 +1138,9 @@ class FullScreenPreview(QDialog):
             QFrame#photoEditorPanel QPushButton#semanticMaskButton:hover {{
                 background: {studio.ACCENT}; border-color: {studio.ACCENT}; color: #ffffff;
             }}
+            QFrame#photoEditorPanel QFrame#subjectChoicePanel {{
+                background: #292929; border: 1px solid #414141; border-radius: 4px;
+            }}
             QFrame#photoEditorPanel QPushButton#newMaskButton {{
                 background: {studio.ACCENT}; border: 1px solid {studio.ACCENT}; color: #ffffff;
                 border-radius: 4px; min-height: 20px; max-height: 20px;
@@ -1600,6 +1603,9 @@ class FullScreenPreview(QDialog):
         self._mask_overlay.bitmap_edited.connect(self.photo_editor_panel.handle_overlay_bitmap_edited)
         self._mask_overlay.source_clicked.connect(self.photo_editor_panel.handle_overlay_source_clicked)
         self._mask_overlay.scene_region_picked.connect(self.photo_editor_panel.handle_overlay_scene_picked)
+        self._mask_overlay.subject_candidate_toggled.connect(
+            self.photo_editor_panel.handle_overlay_subject_candidate_toggled
+        )
         self._mask_overlay.edit_committed.connect(self.photo_editor_panel.handle_overlay_commit)
         self.photo_editor_panel.mask_overlay_changed.connect(self._sync_mask_overlay)
 
