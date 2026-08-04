@@ -13,6 +13,7 @@ from image_triage.ai_model import (
     AICULLER_CLIP_MODEL_REQUIRED_FILENAMES,
     AICULLER_FACE_MODEL_REQUIRED_FILENAMES,
     AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES,
+    BIREFNET_MODEL_REQUIRED_FILENAMES,
     SEGMENTATION_MODEL_REQUIRED_FILENAMES,
     SEMANTIC_MODEL_REQUIRED_FILENAMES,
     download_ai_model,
@@ -24,6 +25,7 @@ from image_triage.ai_model import (
     resolve_aiculler_face_model_installation,
     resolve_aiculler_topiq_model_installation,
     resolve_ai_model_installation,
+    resolve_birefnet_model_installation,
     resolve_segmentation_model_installation,
     resolve_semantic_model_installation,
 )
@@ -109,6 +111,21 @@ class AIModelTests(unittest.TestCase):
             installation.download_url("onnx/model.onnx").endswith(
                 "/onnx/model.onnx?download=true"
             )
+        )
+
+    def test_default_birefnet_installation_is_an_optional_editor_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_birefnet_model_installation()
+
+        self.assertEqual("ZhengPeng7/BiRefNet", installation.repo_id)
+        self.assertEqual("BiRefNet", installation.install_dir.name)
+        self.assertEqual("Editor", installation.install_dir.parent.name)
+        self.assertEqual(BIREFNET_MODEL_REQUIRED_FILENAMES, installation.required_filenames)
+        self.assertIn(
+            "/ZhengPeng7/BiRefNet/resolve/",
+            installation.download_url("model.safetensors"),
         )
 
     def test_default_aiculler_clip_model_installation_uses_runtime_cache_layout(self) -> None:

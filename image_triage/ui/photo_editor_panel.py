@@ -65,6 +65,11 @@ from ..semantic_masks import (
     SemanticMaskResult,
     SemanticMaskTask,
 )
+from ..subject_masks import (
+    SubjectMaskResult,
+    SubjectMaskTask,
+    combine_subject_components,
+)
 
 
 _CLI_EDITOR_ROOT = Path(__file__).resolve().parents[2] / "cli_editor"
@@ -841,6 +846,11 @@ class PhotoEditorPanel(QFrame):
         self._semantic_mask_task: SemanticMaskTask | None = None
         self._semantic_mask_request_context: tuple[str | None, str] | None = None
         self._semantic_mask_result: SemanticMaskResult | None = None
+        self._subject_mask_task: SubjectMaskTask | None = None
+        self._subject_mask_request_context: tuple[str | None, str] | None = None
+        self._subject_choice_result: SubjectMaskResult | None = None
+        self._subject_choice_context: tuple[str | None, str] | None = None
+        self._subject_choice_selected_ids: set[str] = set()
         # Lazily derived from the result above; keyed on it so a new analysis
         # invalidates the index without an explicit reset.
         self._scene_index: SceneRegionIndex | None = None
@@ -1226,6 +1236,7 @@ class PhotoEditorPanel(QFrame):
             self._brush_paint_mode = None
             self._pending_parent_id = None
             self._pending_combine = "add"
+            self._clear_subject_choice()
             self._sync_mask_create_title()
         self._sync_mask_pane_enabled()
         self.mask_overlay_changed.emit()
@@ -1535,6 +1546,7 @@ class PhotoEditorPanel(QFrame):
         shortcut chip. Child labels pass their clicks through to the button."""
         row = QPushButton(self)
         row.setObjectName("maskToolRow")
+        row.setAccessibleName(label)
         row.setCheckable(checkable)
         row.setCursor(Qt.CursorShape.PointingHandCursor)
         row.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -1574,6 +1586,50 @@ class PhotoEditorPanel(QFrame):
         cl = QVBoxLayout(content)
         cl.setContentsMargins(11, 8, 11, 8)
         cl.setSpacing(8)
+
+        self.subject_mask_options = QWidget(content)
+        subject_layout = QVBoxLayout(self.subject_mask_options)
+        subject_layout.setContentsMargins(0, 0, 0, 0)
+        subject_layout.setSpacing(6)
+        self.select_subject_button = self._mask_tool_row("scene", "Select subject")
+        self.select_background_button = self._mask_tool_row("scene", "Select background")
+        self.select_subject_button.clicked.connect(
+            lambda: self.request_subject_mask("subject")
+        )
+        self.select_background_button.clicked.connect(
+            lambda: self.request_subject_mask("background")
+        )
+        subject_layout.addWidget(self.select_subject_button)
+        subject_layout.addWidget(self.select_background_button)
+        self.subject_choice_panel = QFrame(self.subject_mask_options)
+        self.subject_choice_panel.setObjectName("subjectChoicePanel")
+        choice_layout = QVBoxLayout(self.subject_choice_panel)
+        choice_layout.setContentsMargins(8, 8, 8, 8)
+        choice_layout.setSpacing(6)
+        choice_title = QLabel("Select subjects on photo", self.subject_choice_panel)
+        choice_title.setObjectName("maskPaneTitle")
+        choice_layout.addWidget(choice_title)
+        self.subject_choice_hint = QLabel(
+            "Click the highlighted people on the photo.",
+            self.subject_choice_panel,
+        )
+        self.subject_choice_hint.setObjectName("editorHint")
+        self.subject_choice_hint.setWordWrap(True)
+        choice_layout.addWidget(self.subject_choice_hint)
+        self.subject_choice_apply = self._action_button(
+            "Create selected mask",
+            self.subject_choice_panel,
+        )
+        self.subject_choice_apply.clicked.connect(self._apply_subject_choice)
+        self.subject_choice_apply.setEnabled(False)
+        choice_layout.addWidget(self.subject_choice_apply)
+        self.subject_choice_panel.hide()
+        subject_layout.addWidget(self.subject_choice_panel)
+        self.subject_mask_options.hide()
+        cl.addWidget(self.subject_mask_options)
+        self.subject_options_divider = self._mask_hairline(content)
+        self.subject_options_divider.hide()
+        cl.addWidget(self.subject_options_divider)
 
         # Scene: point at the photo, or use whichever categories the model found.
         self._scene_hint = QLabel(
@@ -2074,6 +2130,8 @@ class PhotoEditorPanel(QFrame):
         self._mask_create_mode = None
         self._color_resample_mask_id = None
         self._semantic_mask_request_context = None
+        self._subject_mask_request_context = None
+        self._clear_subject_choice()
         if not source_path:
             self._semantic_mask_result = None
             self._source_path = None
@@ -2268,6 +2326,8 @@ class PhotoEditorPanel(QFrame):
             "add_bounds_refine_button",
             "add_painted_button",
             "add_subject_button",
+            "select_subject_button",
+            "select_background_button",
         ):
             widget = getattr(self, widget_name, None)
             if widget is not None:
@@ -2282,6 +2342,19 @@ class PhotoEditorPanel(QFrame):
         enabled = result_is_current and self._semantic_mask_task is None
         for button in getattr(self, "_semantic_mask_buttons", {}).values():
             button.setEnabled(enabled)
+        subject_enabled = self._source_path is not None and self._subject_mask_task is None
+        for name in ("select_subject_button", "select_background_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(subject_enabled)
+        people_detected = bool(
+            result_is_current
+            and self._semantic_mask_result is not None
+            and "people" in self._semantic_mask_result.detected_categories
+        )
+        if hasattr(self, "subject_mask_options"):
+            self.subject_mask_options.setVisible(people_detected)
+            self.subject_options_divider.setVisible(people_detected)
 
     def _spin(self, parent: QWidget, minimum: int, maximum: int, value: int) -> QSpinBox:
         spin = QSpinBox(parent)
@@ -2583,6 +2656,25 @@ class PhotoEditorPanel(QFrame):
                     ),
                     None,
                 )
+        subject_choice_active = self._subject_choice_result is not None
+        subject_candidates: list[dict[str, Any]] | None = None
+        if subject_choice_active and self._subject_choice_result is not None:
+            mask_type = None
+            params = None
+            selected_index = None
+            components = None
+            subject_candidates = [
+                {
+                    "id": component.component_id,
+                    "assetPath": str(component.mask_path),
+                    "bbox": component.bbox,
+                    "coordinateSize": self._subject_choice_result.source_size,
+                    "selected": (
+                        component.component_id in self._subject_choice_selected_ids
+                    ),
+                }
+                for component in self._subject_choice_result.components
+            ]
         masks_tab = self.editor_stack.currentIndex() == 1
         interactive = masks_tab and self._source_path is not None
         # Scene picking is the idle behaviour of the Masks tab: it yields to
@@ -2595,6 +2687,7 @@ class PhotoEditorPanel(QFrame):
             and self._brush_paint_mode is None
             and self._active_mask_edit_id is None
             and self._color_resample_mask_id is None
+            and self._subject_choice_result is None
         )
         show_luminance_map = bool(
             mask is not None
@@ -2608,7 +2701,11 @@ class PhotoEditorPanel(QFrame):
             "interactive": interactive,
             "show_overlay": (
                 interactive
-                and (self.overlay_check.isChecked() or show_luminance_map)
+                and (
+                    self.overlay_check.isChecked()
+                    or show_luminance_map
+                    or subject_choice_active
+                )
                 and not self._overlay_suppressed_for_drag
             ),
             "overlay_mode": "white-black" if show_luminance_map else self._overlay_mode,
@@ -2627,6 +2724,7 @@ class PhotoEditorPanel(QFrame):
             "mask_type": mask_type,
             "params": params,
             "components": components,
+            "subject_candidates": subject_candidates,
             "selected_index": selected_index,
             "source_size": self._mask_source_size(),
         }
@@ -2726,6 +2824,197 @@ class PhotoEditorPanel(QFrame):
                 return self._session_path.parent / str(asset.get("path", ""))
         return None
 
+    def request_subject_mask(self, request: str) -> None:
+        normalized = request.strip().casefold()
+        if normalized not in ("subject", "background"):
+            self._set_status(f"Unknown subject mask request: {request}")
+            return
+        if self._source_path is None:
+            self._set_status("Select an image first")
+            return
+        existing_id = self._semantic_mask_id(normalized)
+        if self._pending_parent_id is None and existing_id:
+            self._select_mask_in_list(existing_id)
+            self._set_status(f"Selected {normalized.title()} mask")
+            return
+        if self._subject_mask_task is not None:
+            self._set_status("Subject analysis is still running")
+            return
+        self._subject_mask_request_context = (
+            self._pending_parent_id,
+            self._pending_combine,
+        )
+        task = SubjectMaskTask(self._source_path, normalized)
+        task.signals.progress.connect(
+            self._handle_subject_mask_progress,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.finished.connect(
+            self._handle_subject_mask_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            self._handle_subject_mask_failed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._subject_mask_task = task
+        message = f"Preparing {normalized.title()} mask..."
+        self.semantic_mask_status.setText(message)
+        self.semantic_mask_status.show()
+        self._set_status(message)
+        self._sync_semantic_mask_buttons()
+        self._semantic_mask_pool.start(task)
+
+    def _handle_subject_mask_progress(self, request: str, message: str) -> None:
+        if self._subject_mask_task is None:
+            return
+        self.semantic_mask_status.setText(message)
+        self.semantic_mask_status.show()
+        self._set_status(message or f"Preparing {request.title()} mask...")
+
+    def _handle_subject_mask_finished(
+        self,
+        request: str,
+        source_path: str,
+        result: object,
+    ) -> None:
+        self._subject_mask_task = None
+        request_context = self._subject_mask_request_context
+        self._subject_mask_request_context = None
+        self._sync_semantic_mask_buttons()
+        if self._source_path is None or Path(source_path) != self._source_path.resolve():
+            return
+        if not isinstance(result, SubjectMaskResult):
+            self._handle_subject_mask_failed(request, source_path, "Invalid mask result")
+            return
+        try:
+            parent_id, combine = request_context or (None, "add")
+            if request == "subject" and len(result.components) > 1:
+                self._show_subject_choice(result, (parent_id, combine))
+                cache_note = " from cache" if result.cache_hit else ""
+                self.semantic_mask_status.setText(
+                    f"Found {len(result.components)} subjects{cache_note}. Choose at least one."
+                )
+                self.semantic_mask_status.show()
+                self._set_status(self.semantic_mask_status.text())
+                return
+            mask_id = self._register_subject_mask(
+                request,
+                result,
+                parent_id=parent_id,
+                combine=combine,
+            )
+        except Exception as exc:
+            self._handle_subject_mask_failed(request, source_path, str(exc))
+            return
+        self.semantic_mask_status.hide()
+        self._select_mask_in_list(mask_id)
+        cache_note = " from cache" if result.cache_hit else ""
+        self._set_status(f"Created {request.title()} mask{cache_note}")
+
+    def _handle_subject_mask_failed(
+        self,
+        request: str,
+        source_path: str,
+        message: str,
+    ) -> None:
+        self._subject_mask_task = None
+        self._subject_mask_request_context = None
+        self._sync_semantic_mask_buttons()
+        if self._source_path is None or Path(source_path) != self._source_path.resolve():
+            return
+        text = f"{request.title()} mask failed: {message}"
+        self.semantic_mask_status.setText(text)
+        self.semantic_mask_status.show()
+        self._set_status(text)
+
+    def _show_subject_choice(
+        self,
+        result: SubjectMaskResult,
+        context: tuple[str | None, str],
+    ) -> None:
+        self._clear_subject_choice()
+        self._subject_choice_result = result
+        self._subject_choice_context = context
+        self._subject_choice_selected_ids.clear()
+        self.subject_choice_panel.show()
+        self._sync_subject_choice()
+
+    def _clear_subject_choice(self) -> None:
+        self._subject_choice_result = None
+        self._subject_choice_context = None
+        self._subject_choice_selected_ids.clear()
+        if hasattr(self, "subject_choice_apply"):
+            self.subject_choice_apply.setEnabled(False)
+            self.subject_choice_panel.hide()
+        if hasattr(self, "mask_overlay_changed"):
+            self.mask_overlay_changed.emit()
+
+    def handle_overlay_subject_candidate_toggled(self, component_id: str) -> None:
+        result = self._subject_choice_result
+        if result is None or component_id not in {
+            component.component_id for component in result.components
+        }:
+            return
+        if component_id in self._subject_choice_selected_ids:
+            self._subject_choice_selected_ids.remove(component_id)
+        else:
+            self._subject_choice_selected_ids.add(component_id)
+        self._sync_subject_choice()
+
+    def _sync_subject_choice(self) -> None:
+        result = self._subject_choice_result
+        if result is None:
+            return
+        count = len(self._subject_choice_selected_ids)
+        self.subject_choice_apply.setEnabled(count > 0)
+        self.subject_choice_hint.setText(
+            "Click the highlighted people on the photo."
+            if count == 0
+            else f"{count} subject{'s' if count != 1 else ''} selected."
+        )
+        self.mask_overlay_changed.emit()
+
+    def _apply_subject_choice(self) -> None:
+        result = self._subject_choice_result
+        if result is None:
+            return
+        selected_ids = tuple(
+            component.component_id
+            for component in result.components
+            if component.component_id in self._subject_choice_selected_ids
+        )
+        if not selected_ids:
+            self._set_status("Select at least one subject")
+            return
+        try:
+            mask_path = combine_subject_components(result, selected_ids)
+            all_ids = tuple(component.component_id for component in result.components)
+            if selected_ids == all_ids:
+                category = "subject"
+            elif len(selected_ids) == 1:
+                category = selected_ids[0].replace("-", "_")
+            else:
+                suffix = "_".join(value.rsplit("-", 1)[-1] for value in selected_ids)
+                category = f"subjects_{suffix}"
+            parent_id, combine = self._subject_choice_context or (None, "add")
+            mask_id = self._register_subject_mask(
+                "subject",
+                result,
+                parent_id=parent_id,
+                combine=combine,
+                mask_path=mask_path,
+                category=category,
+            )
+        except Exception as exc:
+            self._set_status(f"Could not create subject mask: {exc}")
+            return
+        self._clear_subject_choice()
+        self.semantic_mask_status.hide()
+        self._show_mask_pane(self.MASK_PANE_WORK)
+        self._select_mask_in_list(mask_id)
+        self._set_status("Created selected subject mask")
+
     def _populate_semantic_mask_buttons(self, categories: tuple[str, ...]) -> None:
         grid = getattr(self, "_semantic_grid", None)
         buttons = getattr(self, "_semantic_mask_buttons", {})
@@ -2734,7 +3023,8 @@ class PhotoEditorPanel(QFrame):
         for button in buttons.values():
             grid.removeWidget(button)
             button.hide()
-        for index, category in enumerate(categories):
+        displayed_categories = tuple(category for category in categories if category != "people")
+        for index, category in enumerate(displayed_categories):
             button = buttons.get(category)
             if button is None:
                 continue
@@ -2994,6 +3284,63 @@ class PhotoEditorPanel(QFrame):
         mask_path = result.mask_paths.get(category)
         if mask_path is None or not mask_path.is_file():
             raise SessionError(f"cached {category} mask is missing")
+        return self._register_generated_bitmap_mask(
+            category=category,
+            mask_path=mask_path,
+            source_size=result.source_size,
+            model={
+                "id": result.model_id,
+                "version": result.model_version,
+                "weightsHash": result.weights_hash,
+                "refinementVersion": result.refinement_version,
+            },
+            parent_id=parent_id,
+            combine=combine,
+            ui_style="semantic-category",
+        )
+
+    def _register_subject_mask(
+        self,
+        request: str,
+        result: SubjectMaskResult,
+        *,
+        parent_id: str | None = None,
+        combine: str = "add",
+        mask_path: Path | None = None,
+        category: str | None = None,
+    ) -> str:
+        if self._source_path is None or result.source_path != self._source_path.resolve():
+            raise SessionError("subject mask belongs to a different image")
+        resolved_mask_path = mask_path or result.mask_paths.get(request)
+        if resolved_mask_path is None or not resolved_mask_path.is_file():
+            raise SessionError(f"cached {request} mask is missing")
+        return self._register_generated_bitmap_mask(
+            category=category or request,
+            mask_path=resolved_mask_path,
+            source_size=result.source_size,
+            model={
+                "id": result.model_id,
+                "version": result.model_version,
+                "weightsHash": result.weights_hash,
+                "refinementVersion": result.refinement_version,
+                "runtimeDevice": result.runtime_device,
+            },
+            parent_id=parent_id,
+            combine=combine,
+            ui_style="subject-background",
+        )
+
+    def _register_generated_bitmap_mask(
+        self,
+        *,
+        category: str,
+        mask_path: Path,
+        source_size: tuple[int, int],
+        model: dict[str, str],
+        parent_id: str | None,
+        combine: str,
+        ui_style: str,
+    ) -> str:
         _path, session = self._ensure_session()
         existing_id = self._semantic_mask_id(category)
         if parent_id is None and existing_id:
@@ -3003,7 +3350,7 @@ class PhotoEditorPanel(QFrame):
             if space.get("id") != space_id:
                 continue
             if not space.get("sourceWidth") or not space.get("sourceHeight"):
-                space["sourceWidth"], space["sourceHeight"] = result.source_size
+                space["sourceWidth"], space["sourceHeight"] = source_size
             break
         mask_id = _next_id(mask_ids(session), "mask")
         cache_asset_id = f"{mask_id}-cache"
@@ -3020,15 +3367,10 @@ class PhotoEditorPanel(QFrame):
             "id": mask_id,
             "type": "subject-select",
             "coordinateSpaceId": space_id,
-            "model": {
-                "id": result.model_id,
-                "version": result.model_version,
-                "weightsHash": result.weights_hash,
-                "refinementVersion": result.refinement_version,
-            },
+            "model": dict(model),
             "cacheAssetId": cache_asset_id,
             "semanticCategory": category,
-            "uiStyle": "semantic-category",
+            "uiStyle": ui_style,
             "params": {
                 "density": 100.0,
                 "invert": False,

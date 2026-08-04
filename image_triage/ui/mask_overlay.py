@@ -22,6 +22,7 @@ from PySide6.QtGui import (
     QImage,
     QLinearGradient,
     QPainter,
+    QPainterPath,
     QPen,
     QRadialGradient,
 )
@@ -50,6 +51,8 @@ STRENGTH_CACHE_EDGE = 2048
 LIVE_BRUSH_CACHE_EDGE = 768
 CHIP_PAD = 6.0           # padding inside the hovered-region name chip
 CHIP_GAP = 14.0          # display px from the cursor to the chip
+SUBJECT_MARKER_PX = 24.0
+SUBJECT_TOOLTIP_GAP = 6.0
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -391,6 +394,8 @@ class MaskOverlay(QWidget):
     source_clicked = Signal(float, float)
     # A detected scene region was clicked (category name).
     scene_region_picked = Signal(str)
+    # A BiRefNet foreground component was toggled in the subject picker.
+    subject_candidate_toggled = Signal(str)
     # An edit drag ended; owners should persist the pending changes.
     edit_committed = Signal()
 
@@ -424,6 +429,8 @@ class MaskOverlay(QWidget):
         self._scene_index: SceneRegionIndex | None = None
         self._scene_pick = False
         self._scene_hover: str | None = None
+        self._subject_candidates: list[dict[str, Any]] = []
+        self._subject_hover: str | None = None
         self._watched: QWidget | None = None
         self._set_pass_through(True)
 
@@ -466,6 +473,7 @@ class MaskOverlay(QWidget):
         brush_flow: int = 100,
         scene_index: SceneRegionIndex | None = None,
         scene_pick: bool = False,
+        subject_candidates: list[dict[str, Any]] | None = None,
         overlay_mode: str = "color",
         overlay_color: QColor | str | None = None,
         show_tools: bool = True,
@@ -540,6 +548,14 @@ class MaskOverlay(QWidget):
         self._scene_pick = bool(scene_pick) and self._scene_index is not None
         if not self._scene_pick:
             self._scene_hover = None
+        self._subject_candidates = [
+            dict(candidate) for candidate in (subject_candidates or [])
+        ]
+        candidate_ids = {
+            str(candidate.get("id") or "") for candidate in self._subject_candidates
+        }
+        if self._subject_hover not in candidate_ids:
+            self._subject_hover = None
         accepts_mouse = self._interactive and source_size is not None and (
             self._create_mode is not None
             or (
@@ -548,6 +564,7 @@ class MaskOverlay(QWidget):
             )
             or (self._mask_type == "bitmap" and self._brush_mode is not None)
             or self._scene_pick
+            or bool(self._subject_candidates)
         )
         self._set_pass_through(not accepts_mouse)
         if not accepts_mouse:
@@ -639,12 +656,15 @@ class MaskOverlay(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._subject_candidates:
+            self._paint_subject_candidates(painter)
         # Painted first so a committed mask's red field reads on top of a
         # candidate region, and painted even with no mask at all — hovering an
         # empty canvas is the whole point of scene picking.
         if self._scene_pick and self._scene_hover:
             self._paint_scene_hover(painter)
         if self._params is None and not self._components:
+            painter.end()
             return
         if self._show_overlay:
             image = self._strength_image()
@@ -755,6 +775,176 @@ class MaskOverlay(QWidget):
         return image
 
     # -- scene regions --------------------------------------------------------
+    def _subject_candidate_bitmap(self, candidate: dict[str, Any]) -> QImage | None:
+        path = str(candidate.get("assetPath") or "")
+        if not path:
+            return None
+        return self._cached_component_bitmap({"assetPath": path})
+
+    def _subject_candidate_marker_rect(self, candidate: dict[str, Any]) -> QRectF:
+        bbox = candidate.get("bbox")
+        coordinate_size = candidate.get("coordinateSize")
+        if (
+            not isinstance(bbox, (tuple, list))
+            or len(bbox) != 4
+            or not isinstance(coordinate_size, (tuple, list))
+            or len(coordinate_size) != 2
+            or float(coordinate_size[0]) <= 0
+            or float(coordinate_size[1]) <= 0
+        ):
+            return QRectF()
+        x, y, box_width, _box_height = (float(value) for value in bbox)
+        canvas_width, canvas_height = (float(value) for value in coordinate_size)
+        center_x = (x + box_width / 2.0) / canvas_width * self.width()
+        subject_top = y / canvas_height * self.height()
+        left = _clamp(
+            center_x - SUBJECT_MARKER_PX / 2.0,
+            2.0,
+            max(2.0, self.width() - SUBJECT_MARKER_PX - 2.0),
+        )
+        top = subject_top - SUBJECT_MARKER_PX - 7.0
+        if top < 2.0:
+            top = subject_top + 7.0
+        top = _clamp(
+            top,
+            2.0,
+            max(2.0, self.height() - SUBJECT_MARKER_PX - 2.0),
+        )
+        return QRectF(left, top, SUBJECT_MARKER_PX, SUBJECT_MARKER_PX)
+
+    def _subject_candidate_tooltip_rect(
+        self,
+        marker: QRectF,
+        text: str,
+    ) -> QRectF:
+        metrics = QFontMetricsF(self.font())
+        width = metrics.horizontalAdvance(text) + CHIP_PAD * 2
+        height = metrics.height() + CHIP_PAD
+        left = marker.right() + SUBJECT_TOOLTIP_GAP
+        if left + width > self.width() - 2.0:
+            left = marker.left() - SUBJECT_TOOLTIP_GAP - width
+        top = _clamp(
+            marker.center().y() - height / 2.0,
+            2.0,
+            max(2.0, self.height() - height - 2.0),
+        )
+        return QRectF(max(2.0, left), top, width, height)
+
+    @staticmethod
+    def _paint_subject_marker_icon(
+        painter: QPainter,
+        marker: QRectF,
+        *,
+        selected: bool,
+    ) -> None:
+        center = marker.center()
+        scale = marker.width()
+        pen = QPen(QColor(255, 255, 255, 245), 1.45)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(
+            QPointF(center.x(), marker.top() + scale * 0.34),
+            scale * 0.13,
+            scale * 0.13,
+        )
+        shoulders = QPainterPath()
+        shoulders.moveTo(marker.left() + scale * 0.25, marker.bottom() - scale * 0.22)
+        shoulders.cubicTo(
+            marker.left() + scale * 0.29,
+            marker.top() + scale * 0.57,
+            marker.left() + scale * 0.71,
+            marker.top() + scale * 0.57,
+            marker.right() - scale * 0.25,
+            marker.bottom() - scale * 0.22,
+        )
+        painter.drawPath(shoulders)
+        if selected:
+            check = QPainterPath()
+            check.moveTo(marker.right() - scale * 0.29, marker.bottom() - scale * 0.20)
+            check.lineTo(marker.right() - scale * 0.20, marker.bottom() - scale * 0.11)
+            check.lineTo(marker.right() - scale * 0.07, marker.bottom() - scale * 0.29)
+            painter.drawPath(check)
+
+    def _subject_candidate_at(self, pos: QPointF) -> str | None:
+        if not self._subject_candidates:
+            return None
+        for candidate in reversed(self._subject_candidates):
+            candidate_id = str(candidate.get("id") or "")
+            if candidate_id and self._subject_candidate_marker_rect(candidate).contains(pos):
+                return candidate_id
+        for candidate in reversed(self._subject_candidates):
+            candidate_id = str(candidate.get("id") or "")
+            bitmap = self._subject_candidate_bitmap(candidate)
+            if not candidate_id or bitmap is None or bitmap.isNull():
+                continue
+            x = int(_clamp(pos.x() / max(1, self.width()), 0.0, 0.999999) * bitmap.width())
+            y = int(_clamp(pos.y() / max(1, self.height()), 0.0, 0.999999) * bitmap.height())
+            if int(bitmap.constScanLine(y)[x]) >= 24:
+                return candidate_id
+        return None
+
+    def _refresh_subject_hover(self, pos: QPointF | None) -> bool:
+        candidate_id = self._subject_candidate_at(pos) if pos is not None else None
+        if candidate_id == self._subject_hover:
+            return False
+        self._subject_hover = candidate_id
+        return True
+
+    def _paint_subject_candidates(self, painter: QPainter) -> None:
+        tint = QColor(self._overlay_color)
+        tint.setAlpha(255)
+        for candidate in self._subject_candidates:
+            bitmap = self._subject_candidate_bitmap(candidate)
+            if bitmap is None or bitmap.isNull():
+                continue
+            scaled = bitmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            layer = QImage(
+                scaled.width(),
+                scaled.height(),
+                QImage.Format.Format_ARGB32_Premultiplied,
+            )
+            layer.fill(tint)
+            layer.setAlphaChannel(scaled)
+            candidate_id = str(candidate.get("id") or "")
+            selected = bool(candidate.get("selected"))
+            hovered = candidate_id == self._subject_hover
+            painter.save()
+            painter.setOpacity(0.28 if selected else 0.18 if hovered else 0.08)
+            painter.drawImage(self.rect(), layer)
+            painter.restore()
+
+        for candidate in self._subject_candidates:
+            marker = self._subject_candidate_marker_rect(candidate)
+            if marker.isEmpty():
+                continue
+            candidate_id = str(candidate.get("id") or "")
+            selected = bool(candidate.get("selected"))
+            hovered = candidate_id == self._subject_hover
+            fill = QColor(self._overlay_color) if selected else QColor(20, 20, 20, 190)
+            fill.setAlpha(215 if selected else 215 if hovered else 170)
+            painter.setPen(QPen(QColor(255, 255, 255, 150 if hovered or selected else 80), 1.0))
+            painter.setBrush(fill)
+            painter.drawEllipse(marker)
+            self._paint_subject_marker_icon(
+                painter,
+                marker,
+                selected=selected,
+            )
+            if hovered:
+                text = "Click to deselect" if selected else "Click to select"
+                tooltip = self._subject_candidate_tooltip_rect(marker, text)
+                painter.setPen(QPen(QColor(255, 255, 255, 90), 1.0))
+                painter.setBrush(QColor(20, 20, 20, 220))
+                painter.drawRoundedRect(tooltip, 4, 4)
+                painter.setPen(QPen(QColor(250, 250, 250, 245)))
+                painter.drawText(tooltip, Qt.AlignmentFlag.AlignCenter, text)
+
     def _scene_category_at(self, pos: QPointF) -> str | None:
         """Detected region under ``pos``, unless a mask handle claims it —
         reshaping the mask you already have beats picking a new one."""
@@ -994,6 +1184,11 @@ class MaskOverlay(QWidget):
             event.ignore()
             return
         pos = QPointF(event.position())
+        subject_candidate = self._subject_candidate_at(pos)
+        if subject_candidate:
+            self.subject_candidate_toggled.emit(subject_candidate)
+            event.accept()
+            return
         mode = self._hit_test(pos) if self._params is not None else None
         # With a create tool armed, dragging the mask body starts a new mask;
         # only explicit handles (rings, squares, pins) still edit.
@@ -1072,6 +1267,7 @@ class MaskOverlay(QWidget):
         if self._drag is None:
             if self._interactive:
                 self._hover_pos = pos
+                self._refresh_subject_hover(pos)
                 self._refresh_scene_hover(pos)
                 self._update_hover_cursor(pos)
                 self.update()
@@ -1143,6 +1339,7 @@ class MaskOverlay(QWidget):
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._hover_pos = None
         self._scene_hover = None
+        self._subject_hover = None
         self.update()
         super().leaveEvent(event)
 
@@ -1221,6 +1418,8 @@ class MaskOverlay(QWidget):
         if mode is None:
             if self._create_mode is not None:
                 self.setCursor(Qt.CursorShape.CrossCursor)
+            elif self._subject_hover:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
             elif self._scene_hover:
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
             else:

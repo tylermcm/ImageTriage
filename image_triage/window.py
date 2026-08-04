@@ -8708,7 +8708,8 @@ class MainWindow(QMainWindow):
             "Image Triage can install PyTorch and the larger AI support packages on demand.\n\n"
             "This keeps the MSI much smaller and moves heavy dependencies into your local AI cache. "
             "The core runtime includes ONNX Runtime, scikit-learn, Pillow, and OpenCV. "
-            "DINO Prefilter dependencies add PyTorch, torchvision, transformers, timm, and safetensors.\n\n"
+            "Optional model dependencies add PyTorch, torchvision, transformers, timm, and "
+            "the supporting packages used by DINO and editor masking.\n\n"
             f"Estimated GPU runtime download: about {gpu_download / 1024:.1f} GB "
             f"({gpu_installed / 1024:.1f} GB installed)\n"
             f"Estimated CPU runtime download: about {cpu_download / 1024:.1f} GB "
@@ -8877,7 +8878,13 @@ class MainWindow(QMainWindow):
             layout.addWidget(runtime_variant_label)
             layout.addWidget(runtime_variant_combo)
 
-            dino_runtime_checkbox = QCheckBox("Include optional DINO Prefilter dependencies", dialog)
+            dino_runtime_checkbox = QCheckBox(
+                "Include optional PyTorch model dependencies",
+                dialog,
+            )
+            dino_runtime_checkbox.setToolTip(
+                "Required by DINO and AI subject/background masking."
+            )
             dino_runtime_checkbox.setChecked(default_include_dino_runtime)
             dino_runtime_checkbox.setEnabled(default_install_runtime)
             runtime_checkbox.toggled.connect(dino_runtime_checkbox.setEnabled)

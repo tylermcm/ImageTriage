@@ -20,6 +20,9 @@ DEFAULT_SEMANTIC_MODEL_SIZE_MB = 610
 DEFAULT_SEGMENTATION_MODEL_REPO_ID = "nvidia/segformer-b0-finetuned-ade-512-512"
 DEFAULT_SEGMENTATION_MODEL_REVISION = "b9175de73a0a34f7843135853d27629aa6987b2f"
 DEFAULT_SEGMENTATION_MODEL_SIZE_MB = 15
+DEFAULT_BIREFNET_MODEL_REPO_ID = "ZhengPeng7/BiRefNet"
+DEFAULT_BIREFNET_MODEL_REVISION = "e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4"
+DEFAULT_BIREFNET_MODEL_SIZE_MB = 425
 DEFAULT_AICULLER_CLIP_REPO_ID = "Xenova/clip-vit-large-patch14"
 DEFAULT_AICULLER_CLIP_REVISION = "c307790166907339eed5a9a53a249af534102536"
 # The automatic install contains FP32 primary models and FP16 fallback models.
@@ -45,6 +48,9 @@ DEFAULT_SEGMENTATION_MODEL_SHA256 = {
     "onnx/config.json": "4a7813fc7e89fa581278e5db3ffb25967bf02b36a980f2445dc94755062031cd",
     "onnx/preprocessor_config.json": "dbabd93c735c8a5c39ef207c6c4459bf2d261a5dcc55e1ba1c1b982e5947f518",
 }
+DEFAULT_BIREFNET_MODEL_SHA256 = {
+    "model.safetensors": "9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154",
+}
 DEFAULT_AICULLER_CLIP_MODEL_SHA256 = {
     "onnx/vision_model.onnx": "ff49f8aa57c7abfd26e382eb083e4dbf988505223a9bd3767dbfd4e729206709",
     "onnx/text_model.onnx": "a86051a90491b97e2ea1d0351ef664926735bca7536034384f901915ee91fd69",
@@ -61,6 +67,9 @@ SEMANTIC_MODEL_REVISION_ENV = "AICULLING_SEMANTIC_MODEL_REVISION"
 SEGMENTATION_MODEL_DIR_ENV = "IMAGE_TRIAGE_SEGMENTATION_MODEL_DIR"
 SEGMENTATION_MODEL_REPO_ENV = "IMAGE_TRIAGE_SEGMENTATION_MODEL_REPO_ID"
 SEGMENTATION_MODEL_REVISION_ENV = "IMAGE_TRIAGE_SEGMENTATION_MODEL_REVISION"
+BIREFNET_MODEL_DIR_ENV = "IMAGE_TRIAGE_BIREFNET_MODEL_DIR"
+BIREFNET_MODEL_REPO_ENV = "IMAGE_TRIAGE_BIREFNET_MODEL_REPO_ID"
+BIREFNET_MODEL_REVISION_ENV = "IMAGE_TRIAGE_BIREFNET_MODEL_REVISION"
 AICULLER_CLIP_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_DIR"
 AICULLER_CLIP_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_REPO_ID"
 AICULLER_CLIP_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_CLIP_MODEL_REVISION"
@@ -82,6 +91,12 @@ SEGMENTATION_MODEL_REQUIRED_FILENAMES = (
     "onnx/model.onnx",
     "onnx/config.json",
     "onnx/preprocessor_config.json",
+)
+BIREFNET_MODEL_REQUIRED_FILENAMES = (
+    "BiRefNet_config.py",
+    "birefnet.py",
+    "config.json",
+    "model.safetensors",
 )
 DEFAULT_AICULLER_CLIP_VARIANT = "fp32"
 AICULLER_CLIP_VARIANT_KEYS = ("fp32", "fp16")
@@ -260,6 +275,41 @@ def resolve_segmentation_model_installation(
     )
 
 
+def resolve_birefnet_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(BIREFNET_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_BIREFNET_MODEL_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(BIREFNET_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_BIREFNET_MODEL_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(BIREFNET_MODEL_DIR_ENV, "") or "").strip()
+        or default_birefnet_model_install_dir(repo_id=resolved_repo_id)
+    )
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=Path(resolved_dir_value).expanduser().resolve(),
+        required_filenames=BIREFNET_MODEL_REQUIRED_FILENAMES,
+        expected_sha256=(
+            DEFAULT_BIREFNET_MODEL_SHA256
+            if resolved_repo_id == DEFAULT_BIREFNET_MODEL_REPO_ID
+            and resolved_revision == DEFAULT_BIREFNET_MODEL_REVISION
+            else None
+        ),
+    )
+
+
 def resolve_aiculler_clip_model_installation(
     *,
     install_dir: str | Path | None = None,
@@ -344,6 +394,14 @@ def default_segmentation_model_install_dir(
 ) -> Path:
     _owner, name = _repo_path_parts(repo_id)
     return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
+
+
+def default_birefnet_model_install_dir(
+    *,
+    repo_id: str = DEFAULT_BIREFNET_MODEL_REPO_ID,
+) -> Path:
+    _owner, name = _repo_path_parts(repo_id)
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "Editor" / name
 
 
 def default_aiculler_clip_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_CLIP_REPO_ID) -> Path:
@@ -440,6 +498,19 @@ def download_segmentation_model(
 ) -> AIModelInstallation:
     return download_ai_model(
         installation or resolve_segmentation_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
+
+
+def download_birefnet_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_birefnet_model_installation(),
         force=force,
         progress_callback=progress_callback,
     )
