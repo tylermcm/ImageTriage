@@ -118,6 +118,18 @@ Subject-select is not truly parametric because model weights affect output. v1 r
 
 The cached bitmap is the reproducibility source for old renders. Regeneration after a model change must be explicit.
 
+Generated `subject-select` masks may also store non-destructive edge controls in
+`params`. These values refine the cached bitmap at render time without replacing
+the reproducibility asset:
+
+- `edgeDetectionRadius`: `0..250` source-image pixels used for photo-guided edge refinement.
+- `edgeSmooth`: `0..100` boundary smoothing amount.
+- `edgeFeather`: `0..1000` source-image pixels of outward edge softness.
+- `edgeContrast`: `0..100` transition contrast.
+- `edgeShift`: `-100..100`; negative contracts the mask and positive expands it.
+- `selectionCleared`: boolean; temporarily replaces the generated selection with an empty mask.
+- `invert`: boolean; inverts the final generated-mask strength.
+
 ## Migration
 
 Every session has a `version` integer. A loader must either load v1, migrate known older versions, or fail loudly. It must never silently half-apply a session.

@@ -129,7 +129,14 @@ class CpuEditorRenderBackend:
                 adjusted = recipe.apply(source)
             for group_index, (components, source_size, mask_recipe) in enumerate(masked):
                 strength = self._strength_for(
-                    components, adjusted.width, adjusted.height, source_size, logger, group_index
+                    components,
+                    adjusted.width,
+                    adjusted.height,
+                    source_size,
+                    logger,
+                    group_index,
+                    guide_image=base_image,
+                    guide_key=base_key,
                 )
                 if strength is None:
                     continue
@@ -141,15 +148,36 @@ class CpuEditorRenderBackend:
                 return _qimage_from_pillow(adjusted, target_size=QSize())
 
     def _strength_for(
-        self, components, width, height, source_size, logger, group_index
+        self,
+        components,
+        width,
+        height,
+        source_size,
+        logger,
+        group_index,
+        *,
+        guide_image: QImage | None = None,
+        guide_key: tuple | None = None,
     ) -> PILImage.Image | None:
-        key = (tuple(_freeze_component(c) for c in components), width, height, source_size)
+        key = (
+            tuple(_freeze_component(c) for c in components),
+            width,
+            height,
+            source_size,
+            guide_key,
+        )
         with self._lock:
             cached = self._strength_cache.get(key)
         if cached is not None:
             return cached
         with logger.span("editslider.mask_strength", group=group_index, components=len(components)):
-            strength_q = mask_strength_qimage(components, width, height, source_size)
+            strength_q = mask_strength_qimage(
+                components,
+                width,
+                height,
+                source_size,
+                guide_image=guide_image,
+            )
             if strength_q is None:
                 return None
             strength = PILImage.frombuffer(

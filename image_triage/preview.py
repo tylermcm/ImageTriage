@@ -1352,10 +1352,56 @@ class FullScreenPreview(QDialog):
             QWidget#maskRow[separated="true"] {{ border-top: 1px solid #3a3a3a; }}
             QLabel#maskRowLabel {{ color: #dcdcdc; font-size: 12px; background: transparent; }}
             QLabel#maskRowMarker {{ color: #8f8f8f; font-size: 12px; background: transparent; }}
-            QFrame#photoEditorPanel QToolButton#maskRowTrash {{
+            QFrame#photoEditorPanel QToolButton#maskRowTrash,
+            QFrame#photoEditorPanel QToolButton#maskRowTouchup {{
                 background: transparent; border: none; border-radius: 3px; padding: 1px;
             }}
+            QFrame#photoEditorPanel QToolButton#maskRowTouchup:hover {{ background: #3f5368; }}
             QFrame#photoEditorPanel QToolButton#maskRowTrash:hover {{ background: #5a2a2a; }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage {{
+                background: #242424; color: #dedede;
+            }}
+            QFrame#photoEditorPanel QFrame#maskTouchupHeader {{
+                background: #1f1f1f; border-bottom: 1px solid #151515;
+            }}
+            QFrame#photoEditorPanel QLabel#maskTouchupTitle {{
+                color: #f0f0f0; font-size: 13px; font-weight: 600;
+            }}
+            QFrame#photoEditorPanel QLabel#maskTouchupSubtitle {{
+                color: #a7a7a7; font-size: 11px;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QFrame#editorSection {{
+                background: #2d2d2d; border: none; border-bottom: 1px solid #1c1c1c;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QPushButton#editorSectionHeader {{
+                background: #363636; color: #e2e2e2; border: none;
+                border-radius: 0px; text-align: left; padding: 5px 8px;
+                font-weight: 600;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QLabel#editorControlLabel {{
+                color: #d4d4d4; font-size: 11px;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QSpinBox,
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QDoubleSpinBox {{
+                background: #1e1e1e; color: #e0e0e0;
+                border: 1px solid #161616; border-radius: 3px;
+                padding: 3px 5px; selection-background-color: #1473e6;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QPushButton#maskTouchupSecondaryButton {{
+                background: #333333; border: 1px solid #484848;
+                border-radius: 3px; color: #dedede; padding: 5px 8px;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QPushButton#maskTouchupSecondaryButton:hover,
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QPushButton#maskTouchupSecondaryButton:checked {{
+                background: #414141; border-color: #626262; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QPushButton#maskTouchupOkButton {{
+                background: #1473e6; border: 1px solid #1473e6;
+                border-radius: 3px; color: white; padding: 5px 12px;
+            }}
+            QFrame#photoEditorPanel QWidget#maskTouchupPage QPushButton#maskTouchupOkButton:hover {{
+                background: #2b84f0; border-color: #2b84f0;
+            }}
             QFrame#photoEditorPanel QCheckBox {{ color: #d6d6d6; spacing: 6px; font-size: 11px; }}
             QFrame#photoEditorPanel QCheckBox::indicator {{
                 width: 13px; height: 13px; background: #1e1e1e;

@@ -331,6 +331,28 @@ class MaskRowTrashTests(unittest.TestCase):
         trash.click()
         self.assertEqual(["mask-007"], deleted)
 
+    def test_generated_mask_row_has_a_touchup_button_wired_to_its_id(self) -> None:
+        from PySide6.QtWidgets import QToolButton
+
+        panel = _panel()
+        opened: list[str] = []
+        panel.open_mask_touchup = opened.append  # type: ignore[assignment]
+        row = panel._make_mask_row_widget(
+            "mask-007", "Subject", "", False, can_touch_up=True
+        )
+        touchup = row.findChild(QToolButton, "maskRowTouchup")
+        self.assertIsNotNone(touchup)
+        self.assertFalse(touchup.icon().isNull())
+        touchup.click()
+        self.assertEqual(["mask-007"], opened)
+
+    def test_regular_mask_row_has_no_touchup_button(self) -> None:
+        from PySide6.QtWidgets import QToolButton
+
+        panel = _panel()
+        row = panel._make_mask_row_widget("mask-001", "Radial", "", False)
+        self.assertIsNone(row.findChild(QToolButton, "maskRowTouchup"))
+
     def test_rows_are_single_line_compact(self) -> None:
         panel = _panel()
         row = panel._make_mask_row_widget("mask-001", "Sky", "", False)
@@ -462,10 +484,121 @@ class MaskContextualSectionTests(unittest.TestCase):
         self.assertTrue(panel.luminance_range_controls.isHidden())
         self.assertFalse(panel.color_refine_row.isHidden())
 
-    def test_a_semantic_mask_has_no_shape_or_range_controls(self) -> None:
+    def test_a_semantic_mask_keeps_touchup_out_of_the_adjustment_pane(self) -> None:
         panel = _panel()
         _fake_mask(panel, "mask-001", "subject-select")
         self.assertEqual(set(), self._visible_sections(panel))
+        self.assertFalse(hasattr(panel, "edge_detection_radius_spin"))
+        self.assertFalse(panel.overlay_menu_button.isHidden())
+
+    def test_touchup_page_replaces_editor_and_ok_restores_it(self) -> None:
+        panel = _panel()
+        _fake_mask(panel, "mask-001", "subject-select")
+        page = panel.open_mask_touchup("mask-001")
+        self.assertIs(page, panel._mask_touchup_page)
+        self.assertFalse(panel._mask_touchup_page.isHidden())
+        for widget in (
+            panel._editor_tab_bar,
+            panel._editor_doc_bar,
+            panel.editor_stack,
+            panel._editor_footer,
+        ):
+            self.assertTrue(widget.isHidden())
+
+        panel._mask_touchup_spins["edgeDetectionRadius"].setValue(12.5)
+        panel._mask_touchup_spins["edgeSmooth"].setValue(18)
+        panel._mask_touchup_spins["edgeFeather"].setValue(4.5)
+        panel._mask_touchup_spins["edgeContrast"].setValue(22)
+        panel._mask_touchup_spins["edgeShift"].setValue(-15)
+
+        params = panel._selected_mask_dict()["params"]
+        self.assertEqual(12.5, params["edgeDetectionRadius"])
+        self.assertEqual(18, params["edgeSmooth"])
+        self.assertEqual(4.5, params["edgeFeather"])
+        self.assertEqual(22, params["edgeContrast"])
+        self.assertEqual(-15, params["edgeShift"])
+        self.assertEqual(
+            5,
+            panel._mask_touchup_page.layout().indexOf(
+                panel.mask_touchup_ok_button.parentWidget()
+            ),
+        )
+        panel.mask_touchup_ok_button.click()
+        self.assertIsNone(panel._mask_touchup_mask_id)
+        self.assertTrue(panel._mask_touchup_page.isHidden())
+        for widget in (
+            panel._editor_tab_bar,
+            panel._editor_doc_bar,
+            panel.editor_stack,
+            panel._editor_footer,
+        ):
+            self.assertFalse(widget.isHidden())
+
+    def test_cancelling_touchup_restores_original_values(self) -> None:
+        panel = _panel()
+        _fake_mask(panel, "mask-001", "subject-select")
+        panel._selected_mask_dict()["params"] = {"edgeSmooth": 12}
+        page = panel.open_mask_touchup("mask-001")
+        self.assertIsNotNone(page)
+        panel._mask_touchup_spins["edgeSmooth"].setValue(44)
+        panel._mask_touchup_spins["edgeShift"].setValue(-20)
+
+        panel._finish_mask_touchup(accepted=False)
+
+        self.assertEqual({"edgeSmooth": 12}, panel._selected_mask_dict()["params"])
+        self.assertIsNone(panel._mask_touchup_mask_id)
+
+    def test_touchup_page_keeps_overlay_controls_available(self) -> None:
+        panel = _panel()
+        _fake_mask(panel, "mask-001", "subject-select")
+        panel.open_mask_touchup("mask-001")
+
+        self.assertFalse(panel.touchup_overlay_check.isHidden())
+        self.assertFalse(panel.touchup_overlay_menu_button.isHidden())
+        self.assertFalse(panel.touchup_overlay_menu_button.icon().isNull())
+
+    def test_touchup_clear_is_reversible_and_invert_is_persisted(self) -> None:
+        panel = _panel()
+        _fake_mask(panel, "mask-001", "subject-select")
+        panel.open_mask_touchup("mask-001")
+
+        panel.mask_touchup_clear_button.click()
+        params = panel._selected_mask_dict()["params"]
+        self.assertTrue(params["selectionCleared"])
+        self.assertEqual("Restore Selection", panel.mask_touchup_clear_button.text())
+        panel.mask_touchup_clear_button.click()
+        self.assertFalse(params["selectionCleared"])
+        self.assertEqual("Clear Selection", panel.mask_touchup_clear_button.text())
+
+        panel.mask_touchup_invert_button.click()
+        self.assertTrue(params["invert"])
+        self.assertTrue(panel.mask_touchup_invert_button.isChecked())
+
+    def test_feather_slider_allocates_one_third_to_each_pixel_decade(self) -> None:
+        panel = _panel()
+        feather_spin = panel._mask_touchup_spins["edgeFeather"]
+        slider = panel.mask_touchup_feather_slider
+
+        slider.setValue(1000)
+        self.assertAlmostEqual(10.0, feather_spin.value(), places=1)
+        slider.setValue(2000)
+        self.assertAlmostEqual(100.0, feather_spin.value(), places=1)
+        slider.setValue(3000)
+        self.assertAlmostEqual(1000.0, feather_spin.value(), places=1)
+        feather_spin.setValue(10.0)
+        self.assertEqual(1000, slider.value())
+        feather_spin.setValue(100.0)
+        self.assertEqual(2000, slider.value())
+
+    def test_saved_feather_value_restores_the_slider_position(self) -> None:
+        panel = _panel()
+        _fake_mask(panel, "mask-001", "subject-select")
+        panel._selected_mask_dict()["params"]["edgeFeather"] = 1000.0
+
+        panel.open_mask_touchup("mask-001")
+
+        self.assertEqual(1000.0, panel._mask_touchup_spins["edgeFeather"].value())
+        self.assertEqual(3000, panel.mask_touchup_feather_slider.value())
 
     def test_no_mask_leaves_every_contextual_section_hidden(self) -> None:
         panel = _panel()
