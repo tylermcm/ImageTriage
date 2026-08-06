@@ -339,6 +339,29 @@ def validate_session(session: Dict[str, Any], strict: bool = False, session_path
                 errors.append(f"subject mask must pin model id/version/weightsHash: {mask_id}")
             if not mask.get("cacheAssetId"):
                 errors.append(f"subject mask requires cached bitmap asset: {mask_id}")
+            params = mask.get("params") or {}
+            refinement_ranges = {
+                "edgeDetectionRadius": (0.0, 250.0),
+                "edgeSmooth": (0.0, 100.0),
+                "edgeFeather": (0.0, 1000.0),
+                "edgeContrast": (0.0, 100.0),
+                "edgeShift": (-100.0, 100.0),
+            }
+            for key, (minimum, maximum) in refinement_ranges.items():
+                if key not in params:
+                    continue
+                value = params[key]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not minimum <= float(value) <= maximum
+                ):
+                    errors.append(
+                        f"subject mask {key} must be {minimum:g}..{maximum:g}: {mask_id}"
+                    )
+            for key in ("selectionCleared", "invert"):
+                if key in params and not isinstance(params[key], bool):
+                    errors.append(f"subject mask {key} must be boolean: {mask_id}")
         for refinement in mask.get("refinements", []):
             if refinement.get("space") and refinement.get("space") not in spaces:
                 errors.append(f"mask refinement references missing coordinate space: {mask_id}")

@@ -28,6 +28,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
+from ..mask_refinement import has_mask_refinements, refine_bitmap_qimage
 from ..perf import perf_logger
 from .scene_regions import SceneRegionIndex
 
@@ -48,6 +49,7 @@ HIT_PX = 10.0            # hit-test tolerance in display pixels
 MIN_RADIUS_SRC = 4.0     # smallest radius (source px) a drag can produce
 ROT_KNOB_GAP = 24.0      # display px from the top handle to the rotation knob
 STRENGTH_CACHE_EDGE = 2048
+REFINEMENT_CACHE_EDGE = 1280
 LIVE_BRUSH_CACHE_EDGE = 768
 CHIP_PAD = 6.0           # padding inside the hovered-region name chip
 CHIP_GAP = 14.0          # display px from the cursor to the chip
@@ -236,6 +238,7 @@ def _paint_component_gray(
     sx: float,
     sy: float,
     level_scale: float,
+    guide_image: QImage | None = None,
 ) -> QImage | None:
     """One component's strength as an opaque gray RGB32 image (white = full
     effect × level_scale, black = none), mirroring photo_terminal's linear
@@ -296,6 +299,25 @@ def _paint_component_gray(
         bitmap = bitmap.convertToFormat(QImage.Format.Format_Grayscale8)
         if bitmap.width() != width or bitmap.height() != height:
             bitmap = bitmap.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        try:
+            refined_bitmap = refine_bitmap_qimage(
+                bitmap,
+                params,
+                guide_image=guide_image,
+                scale=(sx + sy) / 2.0,
+            )
+        except Exception as exc:
+            logger = perf_logger()
+            if logger.enabled:
+                logger.log(
+                    "mask.refinement.failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+        else:
+            bitmap = refined_bitmap
+        if bool(params.get("selectionCleared", False)):
+            bitmap.fill(Qt.GlobalColor.black)
         if level_scale != 1.0 or density < 1.0 or invert:
             adjusted = QImage(width, height, QImage.Format.Format_Grayscale8)
             for y in range(height):
@@ -328,6 +350,7 @@ def build_group_strength(
     height: int,
     source_size: tuple[int, int],
     level_scale: float = 1.0,
+    guide_image: QImage | None = None,
 ) -> QImage | None:
     """Combine the group's component strength fields into one opaque gray
     RGB32 image. ``add`` components union in (per-pixel max, matching
@@ -344,18 +367,45 @@ def build_group_strength(
         if accum is None:
             if combine == "subtract":
                 continue  # nothing to carve from yet
-            accum = _paint_component_gray(mask_type, params, width, height, sx, sy, level_scale)
+            accum = _paint_component_gray(
+                mask_type,
+                params,
+                width,
+                height,
+                sx,
+                sy,
+                level_scale,
+                guide_image,
+            )
             continue
         if combine == "subtract":
             # Full-strength layer regardless of level_scale so the carve fully
             # removes coverage; invert + Multiply => dst · (1 − strength).
-            layer = _paint_component_gray(mask_type, params, width, height, sx, sy, 1.0)
+            layer = _paint_component_gray(
+                mask_type,
+                params,
+                width,
+                height,
+                sx,
+                sy,
+                1.0,
+                guide_image,
+            )
             if layer is None:
                 continue
             layer.invertPixels()
             mode = QPainter.CompositionMode.CompositionMode_Multiply
         else:
-            layer = _paint_component_gray(mask_type, params, width, height, sx, sy, level_scale)
+            layer = _paint_component_gray(
+                mask_type,
+                params,
+                width,
+                height,
+                sx,
+                sy,
+                level_scale,
+                guide_image,
+            )
             if layer is None:
                 continue
             mode = QPainter.CompositionMode.CompositionMode_Lighten
@@ -371,11 +421,18 @@ def mask_strength_qimage(
     width: int,
     height: int,
     source_size: tuple[int, int],
+    guide_image: QImage | None = None,
 ) -> QImage | None:
     """Grayscale8 union strength field for live masked-adjustment previews.
     White = full effect, black = none. Painted with Qt gradients, so it is
     fast enough to rebuild per slider tick."""
-    gray = build_group_strength(components, width, height, source_size)
+    gray = build_group_strength(
+        components,
+        width,
+        height,
+        source_size,
+        guide_image=guide_image,
+    )
     if gray is None:
         return None
     return gray.convertToFormat(QImage.Format.Format_Grayscale8)
@@ -738,16 +795,27 @@ class MaskOverlay(QWidget):
             and self._drag.get("mode") == "brush"
             else 0.0
         )
-        cache_edge = (
-            LIVE_BRUSH_CACHE_EDGE
-            if self._drag is not None and self._drag.get("mode") == "brush"
-            else STRENGTH_CACHE_EDGE
+        refinement_active = any(
+            mask_type == "bitmap" and has_mask_refinements(params)
+            for mask_type, params, _combine in components
         )
+        if self._drag is not None and self._drag.get("mode") == "brush":
+            cache_edge = LIVE_BRUSH_CACHE_EDGE
+        elif refinement_active:
+            cache_edge = REFINEMENT_CACHE_EDGE
+        else:
+            cache_edge = STRENGTH_CACHE_EDGE
         scale_down = min(1.0, cache_edge / max(self.width(), self.height()))
         cw = max(1, int(round(self.width() * scale_down)))
         ch = max(1, int(round(self.height() * scale_down)))
+        base_image = self._display_base_image(cw, ch)
         gray = build_group_strength(
-            components, cw, ch, self._source_size, level_scale=1.0
+            components,
+            cw,
+            ch,
+            self._source_size,
+            level_scale=1.0,
+            guide_image=base_image,
         )
         if gray is None:
             return None
@@ -755,7 +823,7 @@ class MaskOverlay(QWidget):
             gray.convertToFormat(QImage.Format.Format_Grayscale8),
             self._overlay_mode,
             self._overlay_color,
-            self._display_base_image(cw, ch),
+            base_image,
         )
 
         self._strength_cache = image

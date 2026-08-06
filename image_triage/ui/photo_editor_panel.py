@@ -146,6 +146,16 @@ MASK_ADJUSTMENT_KEYS: tuple[str, ...] = tuple(
     spec[0] for spec in ADJUSTMENT_SPECS if spec[0] != "vignette"
 )
 
+MASK_TOUCHUP_KEYS: tuple[str, ...] = (
+    "edgeDetectionRadius",
+    "edgeSmooth",
+    "edgeFeather",
+    "edgeContrast",
+    "edgeShift",
+    "selectionCleared",
+    "invert",
+)
+
 
 CURVE_OP_TYPE = "adjust.point_curve"
 # Curve editor channel -> EditRecipe field. Persisted as one point_curve op per
@@ -820,6 +830,10 @@ class PhotoEditorPanel(QFrame):
         self._pending_range_mask_id: str | None = None
         self._updating_mask_controls = False
         self._overlay_suppressed_for_drag = False
+        self._mask_touchup_mask_id: str | None = None
+        self._mask_touchup_original_present: set[str] = set()
+        self._mask_touchup_original_values: dict[str, Any] = {}
+        self._mask_touchup_spins: dict[str, QSpinBox | QDoubleSpinBox] = {}
         self._settings = QSettings()
         stored_mode = self._settings.value(self.OVERLAY_MODE_KEY, "color", str)
         supported_modes = {mode for mode, _label in self.OVERLAY_MODE_OPTIONS}
@@ -871,9 +885,11 @@ class PhotoEditorPanel(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_tab_bar())
+        self._editor_tab_bar = self._build_tab_bar()
+        root.addWidget(self._editor_tab_bar)
 
         doc_bar = QFrame(self)
+        self._editor_doc_bar = doc_bar
         doc_bar.setObjectName("photoEditorDocBar")
         doc_layout = QHBoxLayout(doc_bar)
         doc_layout.setContentsMargins(12, 6, 12, 6)
@@ -892,6 +908,7 @@ class PhotoEditorPanel(QFrame):
         root.addWidget(self.editor_stack, 1)
 
         footer = QFrame(self)
+        self._editor_footer = footer
         footer.setObjectName("photoEditorFooter")
         footer_layout = QVBoxLayout(footer)
         # No status line any more, so the action row sits low in the footer.
@@ -912,6 +929,9 @@ class PhotoEditorPanel(QFrame):
         button_row.addWidget(self.save_copy_button)
         footer_layout.addLayout(button_row)
         root.addWidget(footer)
+        self._mask_touchup_page = self._build_mask_touchup_page()
+        self._mask_touchup_page.hide()
+        root.addWidget(self._mask_touchup_page, 1)
         self._sync_enabled()
         self._sync_mask_controls(None)
 
@@ -1028,6 +1048,62 @@ class PhotoEditorPanel(QFrame):
         layout.addWidget(spin, 0, 1, Qt.AlignmentFlag.AlignRight)
         layout.addWidget(slider, 1, 0, 1, 2)
         return row
+
+    def _pixel_decade_slider_row(
+        self,
+        label: str,
+        spin: QDoubleSpinBox,
+        *,
+        parent: QWidget,
+    ) -> tuple[QWidget, QSlider]:
+        """0..1000 px with one third of travel allocated to each decade."""
+        row = QWidget(parent)
+        title = QLabel(label, row)
+        title.setObjectName("editorControlLabel")
+        _configure_value_box(spin)
+        spin.setParent(row)
+        spin.setSuffix(" px")
+        spin.show()
+        slider = QSlider(Qt.Orientation.Horizontal, row)
+        slider.setRange(0, 3000)
+        slider.setSingleStep(1)
+
+        slider.setValue(self._feather_pixels_to_slider(spin.value()))
+
+        def slider_changed(position: int) -> None:
+            spin.setValue(round(self._feather_slider_to_pixels(position), 1))
+
+        def spin_changed(value: float) -> None:
+            with QSignalBlocker(slider):
+                slider.setValue(self._feather_pixels_to_slider(value))
+
+        slider.valueChanged.connect(slider_changed)
+        spin.valueChanged.connect(spin_changed)
+        layout = QGridLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(1)
+        layout.addWidget(title, 0, 0)
+        layout.addWidget(spin, 0, 1, Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(slider, 1, 0, 1, 2)
+        return row, slider
+
+    @staticmethod
+    def _feather_slider_to_pixels(position: int) -> float:
+        if position <= 1000:
+            return position / 100.0
+        if position <= 2000:
+            return 10.0 * (10.0 ** ((position - 1000) / 1000.0))
+        return 100.0 * (10.0 ** ((position - 2000) / 1000.0))
+
+    @staticmethod
+    def _feather_pixels_to_slider(pixels: float) -> int:
+        value = max(0.0, min(1000.0, float(pixels)))
+        if value <= 10.0:
+            return int(round(value * 100.0))
+        if value <= 100.0:
+            return int(round(1000.0 + math.log10(value / 10.0) * 1000.0))
+        return int(round(2000.0 + math.log10(value / 100.0) * 1000.0))
 
     def _action_button(self, text: str, parent: QWidget) -> QPushButton:
         button = QPushButton(text, parent)
@@ -1410,13 +1486,14 @@ class PhotoEditorPanel(QFrame):
         return button
 
     def _sync_overlay_menu_button(self) -> None:
-        button = getattr(self, "overlay_menu_button", None)
-        if button is None:
-            return
-        button.setIcon(self._overlay_settings_icon())
         label = dict(self.OVERLAY_MODE_OPTIONS).get(self._overlay_mode, "Color Overlay")
         opacity = round(self._overlay_color.alphaF() * 100)
-        button.setToolTip(f"Overlay settings: {label} · {opacity}% opacity")
+        for name in ("overlay_menu_button", "touchup_overlay_menu_button"):
+            button = getattr(self, name, None)
+            if button is None:
+                continue
+            button.setIcon(self._overlay_settings_icon())
+            button.setToolTip(f"Overlay settings: {label} · {opacity}% opacity")
 
     def _set_overlay_mode(self, mode: str) -> None:
         if mode not in {value for value, _label in self.OVERLAY_MODE_OPTIONS}:
@@ -2012,11 +2089,16 @@ class PhotoEditorPanel(QFrame):
     MASK_LIST_MAX_ROWS = 6
 
     def _make_mask_row_widget(
-        self, mask_id: str, label: str, marker: str, is_child: bool, *, separated: bool = False
+        self,
+        mask_id: str,
+        label: str,
+        marker: str,
+        is_child: bool,
+        *,
+        separated: bool = False,
+        can_touch_up: bool = False,
     ) -> "_MaskListRow":
-        """A single-line list row: name on the left, a trash button on the right
-        that deletes this exact mask (and its children, for a root). ``separated``
-        draws a hairline above the row — used to divide parent groups."""
+        """A compact mask row with contextual actions in a fixed right gutter."""
         row = _MaskListRow(self.masks_list)
         row.setObjectName("maskRow")
         row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -2047,6 +2129,19 @@ class PhotoEditorPanel(QFrame):
         text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         inner.addWidget(text)
         inner.addStretch(1)
+        if can_touch_up:
+            touchup = QToolButton(row)
+            touchup.setObjectName("maskRowTouchup")
+            touchup.setCursor(Qt.CursorShape.PointingHandCursor)
+            touchup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            touchup.setFixedSize(20, 20)
+            touchup.setIcon(self._mask_glyph("brush"))
+            touchup.setIconSize(QSize(15, 15))
+            touchup.setToolTip("Touch up mask")
+            touchup.clicked.connect(
+                lambda _checked=False, mid=mask_id: self.open_mask_touchup(mid)
+            )
+            inner.addWidget(touchup)
         trash = QToolButton(row)
         trash.setObjectName("maskRowTrash")
         trash.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2060,6 +2155,275 @@ class PhotoEditorPanel(QFrame):
         trash.clicked.connect(lambda _checked=False, mid=mask_id: self.delete_mask(mid))
         inner.addWidget(trash)
         return row
+
+    def _build_mask_touchup_page(self) -> QWidget:
+        page = QWidget(self)
+        page.setObjectName("maskTouchupPage")
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        header = QFrame(page)
+        header.setObjectName("maskTouchupHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(12, 9, 12, 8)
+        header_layout.setSpacing(2)
+        title = QLabel("Mask Touchup", header)
+        title.setObjectName("maskTouchupTitle")
+        self.mask_touchup_subtitle = QLabel("Mask", header)
+        self.mask_touchup_subtitle.setObjectName("maskTouchupSubtitle")
+        header_layout.addWidget(title)
+        header_layout.addWidget(self.mask_touchup_subtitle)
+        root.addWidget(header)
+
+        overlay_bar = QWidget(page)
+        overlay_layout = QHBoxLayout(overlay_bar)
+        overlay_layout.setContentsMargins(12, 7, 12, 7)
+        self.touchup_overlay_check = QCheckBox("Show overlay", overlay_bar)
+        self.touchup_overlay_check.setChecked(self.overlay_check.isChecked())
+        self.touchup_overlay_check.toggled.connect(self.overlay_check.setChecked)
+        self.overlay_check.toggled.connect(self.touchup_overlay_check.setChecked)
+        overlay_layout.addWidget(self.touchup_overlay_check)
+        overlay_layout.addStretch(1)
+        self.touchup_overlay_menu_button = QToolButton(overlay_bar)
+        self.touchup_overlay_menu_button.setObjectName("overlayMenuButton")
+        self.touchup_overlay_menu_button.setFixedSize(30, 22)
+        self.touchup_overlay_menu_button.setIconSize(QSize(18, 18))
+        self.touchup_overlay_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.touchup_overlay_menu_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.touchup_overlay_menu_button.clicked.connect(
+            lambda: self.overlay_menu.exec(
+                self.touchup_overlay_menu_button.mapToGlobal(
+                    self.touchup_overlay_menu_button.rect().bottomLeft()
+                )
+            )
+        )
+        overlay_layout.addWidget(self.touchup_overlay_menu_button)
+        root.addWidget(overlay_bar)
+
+        edge_section, edge_layout = self._section("Edge Detection", page)
+        radius_spin = self._double_spin(edge_section, 0, 250, 0, decimals=1)
+        radius_spin.setObjectName("maskTouchupRadius")
+        radius_row = self._slider_spin_row(
+            "Radius",
+            radius_spin,
+            minimum=0,
+            maximum=250,
+            scale=10,
+            parent=edge_section,
+        )
+        radius_row.setToolTip(
+            "Use nearby image edges to tighten the generated mask boundary."
+        )
+        edge_layout.addWidget(radius_row)
+        root.addWidget(edge_section)
+
+        refinement_section, refinement_layout = self._section(
+            "Global Refinements", page
+        )
+        smooth_spin = self._spin(refinement_section, 0, 100, 0)
+        feather_spin = self._double_spin(
+            refinement_section, 0, 1000, 0, decimals=1
+        )
+        contrast_spin = self._spin(refinement_section, 0, 100, 0)
+        shift_spin = self._spin(refinement_section, -100, 100, 0)
+        self._mask_touchup_spins = {
+            "edgeDetectionRadius": radius_spin,
+            "edgeSmooth": smooth_spin,
+            "edgeFeather": feather_spin,
+            "edgeContrast": contrast_spin,
+            "edgeShift": shift_spin,
+        }
+        for key, spin, label, minimum, maximum in (
+            ("edgeSmooth", smooth_spin, "Smooth", 0, 100),
+            ("edgeContrast", contrast_spin, "Contrast", 0, 100),
+            ("edgeShift", shift_spin, "Shift Edge", -100, 100),
+        ):
+            spin.setObjectName(f"maskTouchup{key.removeprefix('edge')}")
+            refinement_layout.addWidget(
+                self._slider_spin_row(
+                    label,
+                    spin,
+                    minimum=minimum,
+                    maximum=maximum,
+                    parent=refinement_section,
+                )
+            )
+        feather_spin.setObjectName("maskTouchupFeather")
+        feather_row, self.mask_touchup_feather_slider = (
+            self._pixel_decade_slider_row(
+                "Feather",
+                feather_spin,
+                parent=refinement_section,
+            )
+        )
+        refinement_layout.insertWidget(1, feather_row)
+        root.addWidget(refinement_section)
+
+        touchup_actions = QWidget(page)
+        touchup_actions_layout = QHBoxLayout(touchup_actions)
+        touchup_actions_layout.setContentsMargins(12, 8, 12, 0)
+        touchup_actions_layout.setSpacing(8)
+        self.mask_touchup_clear_button = QPushButton(
+            "Clear Selection", touchup_actions
+        )
+        self.mask_touchup_clear_button.setObjectName("maskTouchupSecondaryButton")
+        self.mask_touchup_clear_button.clicked.connect(
+            self._toggle_mask_touchup_clear
+        )
+        self.mask_touchup_invert_button = QPushButton("Invert", touchup_actions)
+        self.mask_touchup_invert_button.setObjectName("maskTouchupSecondaryButton")
+        self.mask_touchup_invert_button.setCheckable(True)
+        self.mask_touchup_invert_button.toggled.connect(
+            self._toggle_mask_touchup_invert
+        )
+        touchup_actions_layout.addWidget(self.mask_touchup_clear_button)
+        touchup_actions_layout.addWidget(self.mask_touchup_invert_button)
+        root.addWidget(touchup_actions)
+
+        ok_holder = QWidget(page)
+        ok_layout = QHBoxLayout(ok_holder)
+        ok_layout.setContentsMargins(12, 8, 12, 0)
+        ok_layout.addStretch(1)
+        self.mask_touchup_ok_button = QPushButton("OK", ok_holder)
+        self.mask_touchup_ok_button.setObjectName("maskTouchupOkButton")
+        self.mask_touchup_ok_button.setFixedWidth(72)
+        self.mask_touchup_ok_button.clicked.connect(
+            lambda: self._finish_mask_touchup(accepted=True)
+        )
+        ok_layout.addWidget(self.mask_touchup_ok_button)
+        root.addWidget(ok_holder)
+        root.addStretch(1)
+
+        for spin in self._mask_touchup_spins.values():
+            spin.valueChanged.connect(self._apply_mask_touchup_values)
+        self._sync_overlay_menu_button()
+        return page
+
+    def open_mask_touchup(self, mask_id: str) -> QWidget | None:
+        mask = self._mask_by_id(mask_id)
+        if mask is None or mask.get("type") != "subject-select":
+            return None
+        if self._mask_touchup_mask_id is not None and self._mask_touchup_mask_id != mask_id:
+            self._finish_mask_touchup(accepted=False)
+
+        self._select_mask_in_list(mask_id)
+        params = mask.setdefault("params", {})
+        self._mask_touchup_mask_id = mask_id
+        self._mask_touchup_original_present = {
+            key for key in MASK_TOUCHUP_KEYS if key in params
+        }
+        self._mask_touchup_original_values = {
+            key: deepcopy(params[key]) for key in self._mask_touchup_original_present
+        }
+        values = {
+            "edgeDetectionRadius": float(params.get("edgeDetectionRadius", 0.0)),
+            "edgeSmooth": int(params.get("edgeSmooth", 0)),
+            "edgeFeather": float(params.get("edgeFeather", 0.0)),
+            "edgeContrast": int(params.get("edgeContrast", 0)),
+            "edgeShift": int(params.get("edgeShift", 0)),
+        }
+        for key, spin in self._mask_touchup_spins.items():
+            with QSignalBlocker(spin):
+                spin.setValue(values[key])
+        with QSignalBlocker(self.mask_touchup_feather_slider):
+            self.mask_touchup_feather_slider.setValue(
+                self._feather_pixels_to_slider(values["edgeFeather"])
+            )
+        cleared = bool(params.get("selectionCleared", False))
+        self.mask_touchup_clear_button.setText(
+            "Restore Selection" if cleared else "Clear Selection"
+        )
+        with QSignalBlocker(self.mask_touchup_invert_button):
+            self.mask_touchup_invert_button.setChecked(
+                bool(params.get("invert", False))
+            )
+        self.mask_touchup_subtitle.setText(_friendly_mask_label(mask))
+        self.touchup_overlay_check.setChecked(self.overlay_check.isChecked())
+        for widget in (
+            self._editor_tab_bar,
+            self._editor_doc_bar,
+            self.editor_stack,
+            self._editor_footer,
+        ):
+            widget.hide()
+        self._mask_touchup_page.show()
+        self._mask_touchup_page.setFocus()
+        return self._mask_touchup_page
+
+    def _apply_mask_touchup_values(self, *_args: object) -> None:
+        target = self._mask_by_id(self._mask_touchup_mask_id)
+        if target is None:
+            return
+        target_params = target.setdefault("params", {})
+        target_params.update(
+            {
+                "edgeDetectionRadius": round(
+                    self._mask_touchup_spins["edgeDetectionRadius"].value(), 1
+                ),
+                "edgeSmooth": self._mask_touchup_spins["edgeSmooth"].value(),
+                "edgeFeather": round(
+                    self._mask_touchup_spins["edgeFeather"].value(), 1
+                ),
+                "edgeContrast": self._mask_touchup_spins["edgeContrast"].value(),
+                "edgeShift": self._mask_touchup_spins["edgeShift"].value(),
+            }
+        )
+        self.mask_overlay_changed.emit()
+        if self._mask_has_local_adjustments(target):
+            self.recipe_changed.emit(self._recipe)
+
+    def _toggle_mask_touchup_clear(self) -> None:
+        target = self._mask_by_id(self._mask_touchup_mask_id)
+        if target is None:
+            return
+        params = target.setdefault("params", {})
+        cleared = not bool(params.get("selectionCleared", False))
+        params["selectionCleared"] = cleared
+        self.mask_touchup_clear_button.setText(
+            "Restore Selection" if cleared else "Clear Selection"
+        )
+        self.mask_overlay_changed.emit()
+        if self._mask_has_local_adjustments(target):
+            self.recipe_changed.emit(self._recipe)
+
+    def _toggle_mask_touchup_invert(self, checked: bool) -> None:
+        target = self._mask_by_id(self._mask_touchup_mask_id)
+        if target is None:
+            return
+        target.setdefault("params", {})["invert"] = bool(checked)
+        self.mask_overlay_changed.emit()
+        if self._mask_has_local_adjustments(target):
+            self.recipe_changed.emit(self._recipe)
+
+    def _finish_mask_touchup(self, *, accepted: bool) -> None:
+        target = self._mask_by_id(self._mask_touchup_mask_id)
+        if target is not None and not accepted:
+            target_params = target.setdefault("params", {})
+            for key in MASK_TOUCHUP_KEYS:
+                if key in self._mask_touchup_original_present:
+                    target_params[key] = deepcopy(
+                        self._mask_touchup_original_values[key]
+                    )
+                else:
+                    target_params.pop(key, None)
+            self.mask_overlay_changed.emit()
+            if self._mask_has_local_adjustments(target):
+                self.recipe_changed.emit(self._recipe)
+        elif target is not None:
+            self._mask_commit_timer.start()
+            self._flush_mask_commit()
+        self._mask_touchup_mask_id = None
+        self._mask_touchup_original_present = set()
+        self._mask_touchup_original_values = {}
+        self._mask_touchup_page.hide()
+        for widget in (
+            self._editor_tab_bar,
+            self._editor_doc_bar,
+            self.editor_stack,
+            self._editor_footer,
+        ):
+            widget.show()
 
     def _resize_mask_list(self) -> None:
         list_widget = getattr(self, "masks_list", None)
@@ -2116,6 +2480,8 @@ class PhotoEditorPanel(QFrame):
         return scroll
 
     def set_image(self, source_path: str | Path | None) -> None:
+        if self._mask_touchup_mask_id is not None:
+            self._finish_mask_touchup(accepted=True)
         rejected_editor_asset = bool(source_path and is_editor_asset_path(source_path))
         if rejected_editor_asset:
             source_path = None
@@ -2491,7 +2857,14 @@ class PhotoEditorPanel(QFrame):
             # the style draw its own selection box behind the transparent-label
             # widget (the "weird box"). Keep the label for screen readers only.
             item.setData(Qt.ItemDataRole.AccessibleTextRole, label)
-            row = self._make_mask_row_widget(mask_id, label, marker, is_child, separated=separated)
+            row = self._make_mask_row_widget(
+                mask_id,
+                label,
+                marker,
+                is_child,
+                separated=separated,
+                can_touch_up=mask.get("type") == "subject-select",
+            )
             row.clicked.connect(lambda it=item: self.masks_list.setCurrentItem(it))
             row.doubleClicked.connect(
                 lambda mid=mask_id: self._begin_mask_edit(mid)
@@ -3374,6 +3747,11 @@ class PhotoEditorPanel(QFrame):
             "params": {
                 "density": 100.0,
                 "invert": False,
+                "edgeDetectionRadius": 0.0,
+                "edgeSmooth": 0,
+                "edgeFeather": 0.0,
+                "edgeContrast": 0,
+                "edgeShift": 0,
             },
         }
         grouped = self._attach_mask_to_group(
@@ -3873,6 +4251,8 @@ class PhotoEditorPanel(QFrame):
         if not mask_id:
             self._set_status("Select a mask first")
             return
+        if self._mask_touchup_mask_id == mask_id:
+            self._finish_mask_touchup(accepted=False)
         try:
             _path, session = self._ensure_session()
             target = next(
