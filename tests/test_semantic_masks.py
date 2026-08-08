@@ -4,7 +4,9 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -37,6 +39,20 @@ from photo_terminal.session import save_session
 
 
 class SemanticMaskCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # ensure_semantic_masks now writes an always-on execution.log line; keep
+        # test runs from touching the user's real log dir by redirecting it.
+        self._log_tmp = tempfile.TemporaryDirectory(prefix="image_triage_execlog_iso_")
+        self._prev_log_dir = os.environ.get("IMAGE_TRIAGE_LOG_DIR")
+        os.environ["IMAGE_TRIAGE_LOG_DIR"] = self._log_tmp.name
+
+    def tearDown(self) -> None:
+        if self._prev_log_dir is None:
+            os.environ.pop("IMAGE_TRIAGE_LOG_DIR", None)
+        else:
+            os.environ["IMAGE_TRIAGE_LOG_DIR"] = self._prev_log_dir
+        self._log_tmp.cleanup()
+
     def test_presence_requires_a_confident_connected_region(self) -> None:
         mountains = np.zeros((128, 128), dtype=np.float32)
         mountains[20:80, 15:95] = 0.9
@@ -74,16 +90,15 @@ class SemanticMaskCacheTests(unittest.TestCase):
         self.assertTrue(separated["animals"].present)
         self.assertTrue(separated["people"].present)
 
-    def test_onnxruntime_falls_back_to_the_installed_ai_runtime(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_ort_runtime_") as temp_dir:
+    def test_opencv_falls_back_to_the_installed_ai_runtime(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_cv2_runtime_") as temp_dir:
             site_packages = Path(temp_dir) / "site-packages"
-            (site_packages / "onnxruntime" / "capi").mkdir(parents=True)
+            (site_packages / "cv2").mkdir(parents=True)
             marker = object()
             calls: list[str] = []
-            original_ort = semantic_masks.ort
-            original_error = semantic_masks._ORT_IMPORT_ERROR
+            original_cv2 = semantic_masks.cv2
             original_import = semantic_masks.importlib.import_module
-            original_candidates = semantic_masks._candidate_onnxruntime_site_packages
+            original_candidates = semantic_masks._candidate_ai_runtime_site_packages
 
             def fake_import(name: str):
                 calls.append(name)
@@ -91,27 +106,84 @@ class SemanticMaskCacheTests(unittest.TestCase):
                     raise ModuleNotFoundError(name)
                 return marker
 
-            semantic_masks.ort = None
-            semantic_masks._ORT_IMPORT_ERROR = ""
+            semantic_masks.cv2 = None
             semantic_masks.importlib.import_module = fake_import
-            semantic_masks._candidate_onnxruntime_site_packages = lambda: (site_packages,)
+            semantic_masks._candidate_ai_runtime_site_packages = lambda: (site_packages,)
             try:
-                self.assertIs(marker, semantic_masks._load_onnxruntime())
+                self.assertIs(marker, semantic_masks._load_opencv())
             finally:
-                semantic_masks.ort = original_ort
-                semantic_masks._ORT_IMPORT_ERROR = original_error
+                semantic_masks.cv2 = original_cv2
                 semantic_masks.importlib.import_module = original_import
-                semantic_masks._candidate_onnxruntime_site_packages = original_candidates
+                semantic_masks._candidate_ai_runtime_site_packages = original_candidates
                 if str(site_packages) in os.sys.path:
                     os.sys.path.remove(str(site_packages))
 
-            self.assertEqual(["onnxruntime", "onnxruntime"], calls)
+            self.assertEqual(["cv2", "cv2"], calls)
 
     def test_box_mean_preserves_constant_images(self) -> None:
         source = np.full((17, 23), 0.375, dtype=np.float32)
         filtered = _box_mean(source, 4)
         self.assertEqual(source.shape, filtered.shape)
         np.testing.assert_allclose(filtered, source, atol=1e-5)
+
+    def test_execution_summary_line_is_human_readable(self) -> None:
+        miss = semantic_masks._format_execution_summary(
+            cache_hit=False, total_ms=1109.7, decode_ms=190.0, worker_ms=210.0,
+            worker_infer_ms=56.0, refine_ms=567.0, detected=("sky", "water"), device="cuda",
+        )
+        self.assertIn("Scene masks ready in 1110 ms", miss)
+        self.assertIn("decode 190", miss)
+        self.assertIn("infer 56", miss)
+        self.assertIn("refine 567", miss)
+        self.assertIn("2 regions", miss)
+        self.assertIn("cuda", miss)
+        hit = semantic_masks._format_execution_summary(
+            cache_hit=True, total_ms=148.0, decode_ms=0.0, worker_ms=0.0,
+            worker_infer_ms=0.0, refine_ms=0.0, detected=("sky",), device="cache",
+        )
+        self.assertIn("from cache in 148 ms", hit)
+        self.assertIn("1 region", hit)
+        self.assertNotIn("1 regions", hit)  # singular
+
+    def test_execution_summary_is_logged_surfaced_and_written_always_on(self) -> None:
+        events: list[tuple[str, dict]] = []
+        messages: list[str] = []
+
+        class _Logger:
+            def log(self, event: str, **fields: object) -> None:
+                events.append((event, fields))
+
+        from image_triage.perf import execution_log_path
+
+        with tempfile.TemporaryDirectory(prefix="image_triage_execlog_") as temp_dir:
+            with unittest.mock.patch.dict(
+                os.environ, {"IMAGE_TRIAGE_LOG_DIR": temp_dir}, clear=False
+            ):
+                semantic_masks._emit_execution_summary(
+                    _Logger(), messages.append, cache_hit=False, total_ms=1000.0,
+                    detected=("sky", "trees"), device="cpu",
+                    decode_ms=1.0, worker_ms=2.0, worker_infer_ms=3.0, refine_ms=4.0,
+                    label="_DSC1363.JPG",
+                )
+                # (1) structured perf event, (2) live status message, (3) always-on file.
+                self.assertEqual("ai.mask.oneformer.summary", events[0][0])
+                self.assertIn("message", events[0][1])
+                self.assertEqual(1, len(messages))
+                self.assertEqual(events[0][1]["message"], messages[0])
+                written = execution_log_path().read_text(encoding="utf-8")
+                self.assertIn("_DSC1363.JPG: Scene masks ready in 1000 ms", written)
+                self.assertIn("pid=", written)
+
+    def test_guided_filter_precomputed_stats_match_standalone(self) -> None:
+        rng = np.random.default_rng(7)
+        rgb = (rng.random((40, 60, 3)) * 255).astype(np.uint8)
+        mask = np.zeros((40, 60), dtype=np.float32)
+        mask[8:30, 12:44] = 1.0
+        standalone = semantic_masks._guided_filter(rgb, mask)
+        shared = semantic_masks._guided_filter(
+            rgb, mask, stats=semantic_masks._guide_stats(rgb)
+        )
+        np.testing.assert_allclose(standalone, shared, atol=1e-6)
 
     def test_confidence_tightening_reduces_edge_tails_without_moving_midpoint(self) -> None:
         source = np.asarray(
@@ -165,99 +237,163 @@ class SemanticMaskCacheTests(unittest.TestCase):
         self.assertGreater(float(np.mean(refined[67:70, 30:150])), 0.15)
         self.assertGreater(float(np.mean(refined[92:112, 2:12])), 0.80)
 
+    @staticmethod
+    def _install_oneformer_model(root: Path, *, revision: str = "revision-1") -> "AIModelInstallation":
+        model_root = root / "model"
+        model_root.mkdir(parents=True, exist_ok=True)
+        for filename in semantic_masks.resolve_segmentation_model_installation().required_filenames:
+            content = b"weights" if filename == "pytorch_model.bin" else b"{}"
+            (model_root / filename).write_bytes(content)
+        return AIModelInstallation(
+            repo_id="shi-labs/oneformer_ade20k_swin_tiny",
+            revision=revision,
+            install_dir=model_root,
+            required_filenames=semantic_masks.resolve_segmentation_model_installation().required_filenames,
+        )
+
+    def _patched_worker(self, present: set[str]):
+        """Patch the worker + refinement path; return a call-counter dict."""
+        calls = {"decode": 0, "worker": 0}
+        rgb = np.full((8, 12, 3), 96, dtype=np.uint8)
+
+        def fake_decode(*_args, **_kwargs):
+            calls["decode"] += 1
+            return rgb
+
+        def fake_worker(*, model_dir, input_path, output_dir, progress_callback):
+            calls["worker"] += 1
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for category in SEMANTIC_MASK_CATEGORIES:
+                fill = 255 if category in present else 0
+                Image.new("L", (12, 8), fill).save(output_dir / f"{category}.png")
+            return SimpleNamespace(device="cpu", source_size=(12, 8), category_stats={}, timings_ms={})
+
+        self._restore = {
+            name: getattr(semantic_masks, name)
+            for name in (
+                "_decode_rgb_preview",
+                "_run_semantic_worker",
+                "validate_semantic_runtime",
+                "_guided_filter",
+                "_repair_sky_mask_boundaries",
+                "_refine_water_mask_topology",
+            )
+        }
+        semantic_masks._decode_rgb_preview = fake_decode
+        semantic_masks._run_semantic_worker = fake_worker
+        semantic_masks.validate_semantic_runtime = lambda: None
+        semantic_masks._guided_filter = lambda _rgb, mask, **_kw: mask
+        semantic_masks._repair_sky_mask_boundaries = lambda _rgb, mask: mask
+        semantic_masks._refine_water_mask_topology = lambda mask: mask
+        return calls
+
+    def _unpatch_worker(self) -> None:
+        for name, original in getattr(self, "_restore", {}).items():
+            setattr(semantic_masks, name, original)
+
     def test_one_inference_populates_all_categories_and_then_hits_cache(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_semantic_cache_") as temp_dir:
             root = Path(temp_dir)
             source_path = root / "source.jpg"
             Image.new("RGB", (12, 8), (20, 80, 140)).save(source_path)
-            model_root = root / "model"
-            onnx_root = model_root / "onnx"
-            onnx_root.mkdir(parents=True)
-            (onnx_root / "model.onnx").write_bytes(b"fake-model")
-            (onnx_root / "config.json").write_text('{"id2label":{"0":"sky"}}', encoding="utf-8")
-            (onnx_root / "preprocessor_config.json").write_text("{}", encoding="utf-8")
-            installation = AIModelInstallation(
-                repo_id="owner/model",
-                revision="revision-1",
-                install_dir=model_root,
-                required_filenames=(
-                    "onnx/model.onnx",
-                    "onnx/config.json",
-                    "onnx/preprocessor_config.json",
-                ),
-            )
-            rgb = np.full((8, 12, 3), 96, dtype=np.uint8)
-            generated = {
-                category: np.full((8, 12), (index + 1) / 10.0, dtype=np.float32)
-                for index, category in enumerate(SEMANTIC_MASK_CATEGORIES)
-            }
+            installation = self._install_oneformer_model(root)
             cache_root = root / "cache"
-            originals = {
-                name: getattr(semantic_masks, name)
-                for name in (
-                    "_decode_rgb_preview",
-                    "_model_session",
-                    "_resolve_category_indices",
-                    "_infer_masks",
-                    "_guided_filter",
-                    "_repair_sky_mask_boundaries",
-                    "_refine_water_mask_topology",
-                    "_tighten_mask_confidence",
-                )
-            }
-            calls = {"decode": 0, "infer": 0}
-
-            def fake_decode(*_args, **_kwargs):
-                calls["decode"] += 1
-                return rgb
-
-            def fake_infer(*_args, **_kwargs):
-                calls["infer"] += 1
-                return generated
-
-            semantic_masks._decode_rgb_preview = fake_decode
-            semantic_masks._model_session = lambda *_args, **_kwargs: object()
-            semantic_masks._resolve_category_indices = lambda *_args, **_kwargs: {}
-            semantic_masks._infer_masks = fake_infer
-            semantic_masks._guided_filter = lambda _rgb, mask: mask
-            semantic_masks._repair_sky_mask_boundaries = lambda _rgb, mask: mask
-            semantic_masks._refine_water_mask_topology = lambda mask: mask
-            semantic_masks._tighten_mask_confidence = lambda mask: mask
+            calls = self._patched_worker({"sky", "water", "mountains", "buildings"})
             try:
                 first = ensure_semantic_masks(
-                    source_path,
-                    installation=installation,
-                    cache_root=cache_root,
+                    source_path, installation=installation, cache_root=cache_root
                 )
                 second = ensure_semantic_masks(
-                    source_path,
-                    installation=installation,
-                    cache_root=cache_root,
+                    source_path, installation=installation, cache_root=cache_root
                 )
             finally:
-                for name, original in originals.items():
-                    setattr(semantic_masks, name, original)
+                self._unpatch_worker()
 
             self.assertFalse(first.cache_hit)
             self.assertTrue(second.cache_hit)
             self.assertEqual(set(first.mask_paths), set(SEMANTIC_MASK_CATEGORIES))
             self.assertTrue(all(path.is_file() for path in first.mask_paths.values()))
             self.assertEqual(
-                ("water", "mountains", "animals", "people"),
+                ("sky", "water", "mountains", "buildings"),
                 first.detected_categories,
             )
             self.assertEqual(first.presence, second.presence)
             self.assertEqual(1, calls["decode"])
-            self.assertEqual(1, calls["infer"])
+            self.assertEqual(1, calls["worker"])
             metadata = json.loads(
-                (first.mask_paths["sky"].parent / "metadata.json").read_text(
-                    encoding="utf-8"
-                )
+                (first.mask_paths["sky"].parent / "metadata.json").read_text(encoding="utf-8")
             )
             self.assertEqual(
                 semantic_masks.SEMANTIC_MASK_REFINEMENT_VERSION,
                 metadata["refinementVersion"],
             )
+            self.assertEqual(
+                semantic_masks.SEMANTIC_MASK_MAPPING_VERSION,
+                metadata["mappingVersion"],
+            )
+
+    def _run_twice_counting_worker(self, mutate) -> tuple[int, int]:
+        """Run ensure_semantic_masks, apply ``mutate``, run again; return worker call counts."""
+        with tempfile.TemporaryDirectory(prefix="image_triage_semantic_inval_") as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "source.jpg"
+            Image.new("RGB", (12, 8), (20, 80, 140)).save(source_path)
+            installation = self._install_oneformer_model(root)
+            cache_root = root / "cache"
+            calls = self._patched_worker({"sky", "water"})
+            try:
+                ensure_semantic_masks(source_path, installation=installation, cache_root=cache_root)
+                first_count = calls["worker"]
+                installation = mutate(root, source_path, installation) or installation
+                ensure_semantic_masks(source_path, installation=installation, cache_root=cache_root)
+                second_count = calls["worker"]
+            finally:
+                self._unpatch_worker()
+        return first_count, second_count
+
+    def test_cache_invalidates_when_source_mtime_changes(self) -> None:
+        def mutate(_root, source_path, _installation):
+            future = source_path.stat().st_mtime_ns + 5_000_000_000
+            os.utime(source_path, ns=(future, future))
+
+        first, second = self._run_twice_counting_worker(mutate)
+        self.assertEqual((1, 2), (first, second))
+
+    def test_cache_invalidates_when_weights_hash_changes(self) -> None:
+        def mutate(_root, _source_path, installation):
+            (installation.install_dir / "pytorch_model.bin").write_bytes(b"different-weights")
+
+        first, second = self._run_twice_counting_worker(mutate)
+        self.assertEqual((1, 2), (first, second))
+
+    def test_cache_invalidates_when_model_revision_changes(self) -> None:
+        def mutate(root, _source_path, installation):
+            return self._install_oneformer_model(root, revision="revision-2")
+
+        first, second = self._run_twice_counting_worker(mutate)
+        self.assertEqual((1, 2), (first, second))
+
+    def test_cache_invalidates_when_mapping_version_changes(self) -> None:
+        def mutate(_root, _source_path, _installation):
+            semantic_masks.SEMANTIC_MASK_MAPPING_VERSION = "ade20k-app-categories-test-2"
+
+        original = semantic_masks.SEMANTIC_MASK_MAPPING_VERSION
+        try:
+            first, second = self._run_twice_counting_worker(mutate)
+        finally:
+            semantic_masks.SEMANTIC_MASK_MAPPING_VERSION = original
+        self.assertEqual((1, 2), (first, second))
+
+    def test_cache_invalidates_when_refinement_version_changes(self) -> None:
+        def mutate(_root, _source_path, _installation):
+            semantic_masks.SEMANTIC_MASK_REFINEMENT_VERSION = "oneformer-ade-guided-test-2"
+
+        original = semantic_masks.SEMANTIC_MASK_REFINEMENT_VERSION
+        try:
+            first, second = self._run_twice_counting_worker(mutate)
+        finally:
+            semantic_masks.SEMANTIC_MASK_REFINEMENT_VERSION = original
+        self.assertEqual((1, 2), (first, second))
 
 
 class SemanticMaskPanelTests(unittest.TestCase):
@@ -276,7 +412,7 @@ class SemanticMaskPanelTests(unittest.TestCase):
                 source_path=source_path.resolve(),
                 source_size=(20, 15),
                 mask_paths={"sky": cached_mask},
-                model_id="nvidia/segformer-b0-finetuned-ade-512-512",
+                model_id="shi-labs/oneformer_ade20k_swin_tiny",
                 model_version="revision-1",
                 weights_hash="sha256:abc123",
                 cache_hit=False,
@@ -465,6 +601,16 @@ class SemanticMaskPanelTests(unittest.TestCase):
             },
         )
         panel.close()
+
+    def test_entering_masks_requests_oneformer_model_warmup(self) -> None:
+        panel = PhotoEditorPanel()
+        requested: list[str] = []
+        panel.semantic_warm_requested.connect(requested.append)
+        try:
+            panel._set_editor_page(1)
+            self.assertEqual(["model"], requested)
+        finally:
+            panel.close()
 
     def test_opening_masks_tab_starts_scene_inventory_lazily(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_semantic_lazy_") as temp_dir:

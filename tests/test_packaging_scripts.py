@@ -73,6 +73,12 @@ class PackagingScriptTests(unittest.TestCase):
         self.assertIn("birefnet_worker.py", constants)
         self.assertIn("ai_workers/birefnet_worker.py", constants)
 
+    def test_oneformer_worker_is_packaged_as_an_external_ai_script(self) -> None:
+        constants = _string_constants(_read_tree("freeze_support.py"))
+
+        self.assertIn("oneformer_worker.py", constants)
+        self.assertIn("ai_workers/oneformer_worker.py", constants)
+
 
 if __name__ == "__main__":
     unittest.main()

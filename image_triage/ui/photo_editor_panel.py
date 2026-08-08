@@ -59,6 +59,12 @@ from ..editor_copy import (
     validate_save_copy_paths,
 )
 from ..scanner import is_editor_asset_path
+from ..edit_storage import (
+    editor_session_path,
+    ensure_edit_root,
+    migrate_bundle,
+    resolve_session_for_read,
+)
 from ..semantic_masks import (
     SEMANTIC_MASK_CATEGORIES,
     SEMANTIC_MASK_INVENTORY_REQUEST,
@@ -66,6 +72,7 @@ from ..semantic_masks import (
     SemanticMaskTask,
 )
 from ..subject_masks import (
+    SUBJECT_MASK_SEMANTIC_CATEGORIES,
     SubjectMaskResult,
     SubjectMaskTask,
     combine_subject_components,
@@ -87,7 +94,6 @@ from photo_terminal.session import (  # noqa: E402
     add_space,
     asset_dir_for_session,
     copy_bitmap_asset,
-    default_session_path,
     export_xmp,
     image_dimensions,
     load_session,
@@ -106,7 +112,7 @@ from photo_terminal.masks import refine_color_range, refine_luminance_range  # n
 
 
 ADJUSTMENT_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
-    ("exposure", "Exposure", -200, 200, 100),
+    ("exposure", "Exposure", -500, 500, 100),
     ("contrast", "Contrast", -100, 100, 1),
     ("highlights", "Highlights", -100, 100, 1),
     ("shadows", "Shadows", -100, 100, 1),
@@ -783,6 +789,8 @@ class PhotoEditorPanel(QFrame):
     saved = Signal(str)
     save_copy_requested = Signal(str, str, object, object)
     status_changed = Signal(str)
+    subject_warm_requested = Signal(str)
+    semantic_warm_requested = Signal(str)
     # The on-canvas mask overlay should re-read mask_overlay_state().
     mask_overlay_changed = Signal()
 
@@ -972,7 +980,16 @@ class PhotoEditorPanel(QFrame):
             button.setChecked(button_index == index)
         self.mask_overlay_changed.emit()
         if index == 1:
+            self.subject_warm_requested.emit("model")
+            # Load the OneFormer weights ahead of inventory; the expensive
+            # torch/CUDA spin-up is already warmed on photo render.
+            self.semantic_warm_requested.emit("model")
             self._ensure_semantic_inventory()
+
+    def show_adjustments_page(self) -> None:
+        if self._mask_touchup_mask_id is not None:
+            self._finish_mask_touchup(accepted=True)
+        self._set_editor_page(0)
 
     def _section(self, title: str, parent: QWidget) -> tuple[QFrame, QVBoxLayout]:
         section = QFrame(parent)
@@ -1323,6 +1340,7 @@ class PhotoEditorPanel(QFrame):
         parent_id: str | None = None,
         combine: str = "add",
     ) -> None:
+        self.subject_warm_requested.emit("model")
         self._active_mask_edit_id = None
         self._pending_parent_id = parent_id
         self._pending_combine = "subtract" if combine == "subtract" else "add"
@@ -2525,7 +2543,8 @@ class PhotoEditorPanel(QFrame):
         self._scene_index_task = None
         self._populate_semantic_mask_buttons(())
         self._source_path = path
-        self._session_path = default_session_path(path)
+        migrate_bundle(path)
+        self._session_path = resolve_session_for_read(path)
         self._recipe = self._load_recipe_for_path(path)
         self.subtitle_label.setText(path.name)
         self._sync_rows_from_recipe()
@@ -2713,14 +2732,16 @@ class PhotoEditorPanel(QFrame):
             button = getattr(self, name, None)
             if button is not None:
                 button.setEnabled(subject_enabled)
-        people_detected = bool(
+        subject_category_detected = bool(
             result_is_current
             and self._semantic_mask_result is not None
-            and "people" in self._semantic_mask_result.detected_categories
+            and SUBJECT_MASK_SEMANTIC_CATEGORIES.intersection(
+                self._semantic_mask_result.detected_categories
+            )
         )
         if hasattr(self, "subject_mask_options"):
-            self.subject_mask_options.setVisible(people_detected)
-            self.subject_options_divider.setVisible(people_detected)
+            self.subject_mask_options.setVisible(subject_category_detected)
+            self.subject_options_divider.setVisible(subject_category_detected)
 
     def _spin(self, parent: QWidget, minimum: int, maximum: int, value: int) -> QSpinBox:
         spin = QSpinBox(parent)
@@ -2773,10 +2794,12 @@ class PhotoEditorPanel(QFrame):
         if self._mask_commit_timer.isActive():
             self._flush_mask_commit()
         if self._session_path is None:
-            self._session_path = default_session_path(self._source_path)
+            migrate_bundle(self._source_path)
+            self._session_path = resolve_session_for_read(self._source_path)
         if self._session_path.exists():
             session = load_session(self._session_path)
         else:
+            ensure_edit_root(self._source_path.parent)
             self._session_path, session = new_session(self._source_path, self._session_path)
         self._session = session
         return self._session_path, session
@@ -3050,12 +3073,15 @@ class PhotoEditorPanel(QFrame):
             ]
         masks_tab = self.editor_stack.currentIndex() == 1
         interactive = masks_tab and self._source_path is not None
-        # Scene picking is the idle behaviour of the Masks tab: it yields to
-        # any armed tool and, in the overlay, to the selected mask's handles.
-        # Clicking an idle detected region creates that semantic mask (or
-        # reselects it when it already exists), from either mask pane.
+        create_pane_active = bool(
+            hasattr(self, "mask_stack")
+            and self.mask_stack.currentIndex() == self.MASK_PANE_CREATE
+        )
+        # Scene picking belongs exclusively to New Mask. It yields to any
+        # armed tool and, in the overlay, to the selected mask's handles.
         scene_pick = (
             interactive
+            and create_pane_active
             and self._mask_create_mode is None
             and self._brush_paint_mode is None
             and self._active_mask_edit_id is None
@@ -3205,6 +3231,7 @@ class PhotoEditorPanel(QFrame):
         if self._source_path is None:
             self._set_status("Select an image first")
             return
+        self.subject_warm_requested.emit("model")
         existing_id = self._semantic_mask_id(normalized)
         if self._pending_parent_id is None and existing_id:
             self._select_mask_in_list(existing_id)
@@ -3396,7 +3423,11 @@ class PhotoEditorPanel(QFrame):
         for button in buttons.values():
             grid.removeWidget(button)
             button.hide()
-        displayed_categories = tuple(category for category in categories if category != "people")
+        displayed_categories = tuple(
+            category
+            for category in categories
+            if category not in SUBJECT_MASK_SEMANTIC_CATEGORIES
+        )
         for index, category in enumerate(displayed_categories):
             button = buttons.get(category)
             if button is None:
@@ -3468,6 +3499,9 @@ class PhotoEditorPanel(QFrame):
         normalized = category.strip().casefold()
         if normalized not in SEMANTIC_MASK_CATEGORIES:
             self._set_status(f"Unknown mask category: {category}")
+            return
+        if normalized in SUBJECT_MASK_SEMANTIC_CATEGORIES:
+            self.request_subject_mask("subject")
             return
         if self._source_path is None:
             self._set_status("Select an image first")
@@ -3587,6 +3621,8 @@ class PhotoEditorPanel(QFrame):
         self._scene_index_source = None
         self._scene_index_task = None
         self._populate_semantic_mask_buttons(result.detected_categories)
+        if SUBJECT_MASK_SEMANTIC_CATEGORIES.intersection(result.detected_categories):
+            self.subject_warm_requested.emit("model")
         refreshed_count = 0
         try:
             refreshed_count = self._refresh_existing_semantic_masks(result)
@@ -4646,7 +4682,8 @@ class PhotoEditorPanel(QFrame):
             self._set_status(f"Bitmap mask failed: {exc}")
 
     def _load_recipe_for_path(self, path: Path) -> EditRecipe:
-        session_path = default_session_path(path)
+        migrate_bundle(path)
+        session_path = resolve_session_for_read(path)
         if not session_path.exists():
             return EditRecipe()
         try:
@@ -4659,10 +4696,12 @@ class PhotoEditorPanel(QFrame):
         return recipe
 
     def _save_recipe_to_session(self, path: Path, recipe: EditRecipe) -> Path:
-        session_path = default_session_path(path)
+        migrate_bundle(path)
+        session_path = resolve_session_for_read(path)
         if session_path.exists():
             session = load_session(session_path)
         else:
+            ensure_edit_root(path.parent)
             session_path, session = new_session(path, session_path)
         gui_op_types = {op_type for op_type, _param_key in SESSION_OPS.values()} | {CURVE_OP_TYPE}
         preserved_ops = [

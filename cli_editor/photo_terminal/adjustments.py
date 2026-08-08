@@ -31,21 +31,134 @@ def _offset_channel(channel: Image.Image, offset: float) -> Image.Image:
     return channel.point(lambda pixel: _clamp_byte(pixel + offset))
 
 
-def _tone_mask(luma: Image.Image, low: int, high: int, power: float = 1.0, invert: bool = False) -> Image.Image:
-    span = max(1, high - low)
-
-    def map_pixel(pixel: int) -> int:
-        value = (pixel - low) / span
-        value = max(0.0, min(1.0, value))
-        if invert:
-            value = 1.0 - value
-        return _clamp_byte((value**power) * 255)
-
-    return luma.point(map_pixel)
-
-
 def _composite_adjusted(base: Image.Image, adjusted: Image.Image, mask: Image.Image) -> Image.Image:
     return Image.composite(adjusted.convert("RGB"), base.convert("RGB"), mask.convert("L"))
+
+
+_TONE_CURVE_INPUT = np.asarray(
+    (0.0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1.0),
+    dtype=np.float32,
+)
+
+# Endpoint curves measured from matched Photoshop Camera Raw screenshots. The
+# intermediate slider positions blend continuously with the identity curve.
+_TONE_CURVE_ENDPOINTS: dict[str, tuple[np.ndarray, np.ndarray]] = {
+    "contrast": (
+        np.asarray((0.08, 0.112, 0.221, 0.327, 0.421, 0.492, 0.545, 0.598, 0.662, 0.761, 0.902, 0.92), dtype=np.float32),
+        np.asarray((0.0, 0.008, 0.042, 0.119, 0.238, 0.369, 0.540, 0.702, 0.816, 0.912, 0.980, 1.0), dtype=np.float32),
+    ),
+    "highlights": (
+        np.asarray((0.0, 0.047, 0.122, 0.216, 0.320, 0.405, 0.467, 0.507, 0.567, 0.666, 0.804, 0.90), dtype=np.float32),
+        np.asarray((0.0, 0.050, 0.134, 0.242, 0.363, 0.488, 0.622, 0.767, 0.866, 0.940, 0.988, 1.0), dtype=np.float32),
+    ),
+    "shadows": (
+        np.asarray((0.0, 0.011, 0.066, 0.157, 0.284, 0.414, 0.520, 0.624, 0.720, 0.829, 0.942, 1.0), dtype=np.float32),
+        np.asarray((0.08, 0.137, 0.240, 0.320, 0.407, 0.485, 0.571, 0.661, 0.747, 0.844, 0.948, 1.0), dtype=np.float32),
+    ),
+    "whites": (
+        np.asarray((0.0, 0.048, 0.126, 0.222, 0.327, 0.417, 0.490, 0.557, 0.624, 0.719, 0.857, 0.92), dtype=np.float32),
+        np.asarray((0.0, 0.051, 0.146, 0.279, 0.466, 0.653, 0.789, 0.887, 0.954, 1.0, 1.0, 1.0), dtype=np.float32),
+    ),
+    "blacks": (
+        np.asarray((0.0, 0.001, 0.003, 0.021, 0.147, 0.276, 0.387, 0.528, 0.665, 0.803, 0.937, 1.0), dtype=np.float32),
+        np.asarray((0.04, 0.075, 0.190, 0.306, 0.420, 0.517, 0.597, 0.672, 0.750, 0.844, 0.947, 1.0), dtype=np.float32),
+    ),
+}
+
+_EXPOSURE_TWO_STOP_CURVES: dict[int, np.ndarray] = {
+    -1: np.asarray(
+        (0.0, 0.004, 0.007, 0.013, 0.022, 0.032, 0.043, 0.055, 0.075, 0.101, 0.149, 0.18),
+        dtype=np.float32,
+    ),
+    1: np.asarray(
+        (0.0, 0.598, 0.898, 0.970, 0.992, 0.997, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        dtype=np.float32,
+    ),
+}
+
+
+def _apply_luma_transform(
+    image: Image.Image,
+    mapper: Any,
+    *,
+    scale_chroma: bool,
+) -> Image.Image:
+    """Apply a luminance mapping in bounded-memory strips."""
+    source = image.convert("RGB")
+    result = Image.new("RGB", source.size)
+    weights = np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32)
+    for top in range(0, source.height, 128):
+        bottom = min(source.height, top + 128)
+        rgb = np.asarray(source.crop((0, top, source.width, bottom)), dtype=np.float32) / 255.0
+        luma = rgb @ weights
+        mapped = np.asarray(mapper(luma), dtype=np.float32)
+        if scale_chroma:
+            scale = np.divide(mapped, luma, out=np.ones_like(mapped), where=luma > 1e-6)
+            adjusted = rgb * scale[..., None]
+        else:
+            # Equal channel deltas behave like a luminance/chroma color space
+            # and avoid the saturation spikes caused by RGB multipliers.
+            adjusted = rgb + (mapped - luma)[..., None]
+        tile = Image.fromarray(
+            np.rint(np.clip(adjusted, 0.0, 1.0) * 255.0).astype(np.uint8),
+            mode="RGB",
+        )
+        result.paste(tile, (0, top))
+    return result
+
+
+def apply_exposure(image: Image.Image, exposure: float) -> Image.Image:
+    """Apply the measured Camera Raw exposure response over a +/-5 EV range."""
+    exposure = max(-5.0, min(5.0, float(exposure)))
+    if abs(exposure) < 1e-9:
+        return image.convert("RGB")
+    direction = -1 if exposure < 0.0 else 1
+    reference = _EXPOSURE_TWO_STOP_CURVES[direction]
+
+    def map_exposure(luma: np.ndarray) -> np.ndarray:
+        measured_stops = min(2.0, abs(exposure))
+        endpoint = np.interp(luma, _TONE_CURVE_INPUT, reference).astype(np.float32)
+        mapped = luma + (measured_stops / 2.0) * (endpoint - luma)
+        extra_stops = max(0.0, abs(exposure) - 2.0)
+        if extra_stops > 0.0:
+            factor = 2.0**extra_stops
+            mapped = mapped / factor if direction < 0 else np.clip(mapped * factor, 0.0, 1.0)
+        return mapped
+
+    # Positive exposure approaches white and loses saturation; negative
+    # exposure scales emitted light and preserves chromaticity in the shadows.
+    return _apply_luma_transform(
+        image,
+        map_exposure,
+        scale_chroma=direction < 0,
+    )
+
+
+def apply_tone_control(image: Image.Image, control: str, amount: float) -> Image.Image:
+    """Apply one Photoshop-style, monotonic tonal-range adjustment."""
+    amount = _clamp_percent(amount)
+    if abs(amount) < 1e-9:
+        return image.convert("RGB")
+    if control not in _TONE_CURVE_ENDPOINTS:
+        raise ValueError(f"unsupported tone control: {control}")
+
+    negative, positive = _TONE_CURVE_ENDPOINTS[control]
+    endpoint = negative if amount < 0.0 else positive
+    strength = abs(amount) / 100.0
+    output_curve = _TONE_CURVE_INPUT + strength * (endpoint - _TONE_CURVE_INPUT)
+
+    def map_tones(luma: np.ndarray) -> np.ndarray:
+        return np.interp(luma, _TONE_CURVE_INPUT, output_curve).astype(np.float32)
+
+    return _apply_luma_transform(
+        image,
+        map_tones,
+        scale_chroma=amount > 0.0 and control in {"shadows", "whites", "blacks"},
+    )
+
+
+def apply_contrast(image: Image.Image, amount: float) -> Image.Image:
+    return apply_tone_control(image, "contrast", amount)
 
 
 @dataclass
@@ -145,37 +258,25 @@ class EditRecipe:
             working = apply_perspective(working, self.perspective_x, self.perspective_y)
 
         if self.exposure:
-            working = ImageEnhance.Brightness(working).enhance(2.0 ** float(self.exposure))
+            working = apply_exposure(working, self.exposure)
 
         if self.temperature or self.tint:
             working = apply_white_balance(working, self.temperature, self.tint)
 
         if self.contrast:
-            working = ImageEnhance.Contrast(working).enhance(1.0 + _clamp_percent(self.contrast) / 100.0)
+            working = apply_contrast(working, self.contrast)
 
         if self.highlights:
-            amount = _clamp_percent(self.highlights) / 100.0
-            mask = _tone_mask(ImageOps.grayscale(working), 118, 255, power=1.35)
-            adjusted = ImageEnhance.Brightness(working).enhance(1.0 + amount * 0.55)
-            working = _composite_adjusted(working, adjusted, mask)
+            working = apply_tone_control(working, "highlights", self.highlights)
 
         if self.shadows:
-            amount = _clamp_percent(self.shadows) / 100.0
-            mask = _tone_mask(ImageOps.grayscale(working), 0, 165, power=1.15, invert=True)
-            adjusted = ImageEnhance.Brightness(working).enhance(1.0 + amount * 0.65)
-            working = _composite_adjusted(working, adjusted, mask)
+            working = apply_tone_control(working, "shadows", self.shadows)
 
         if self.whites:
-            amount = _clamp_percent(self.whites) / 100.0
-            mask = _tone_mask(ImageOps.grayscale(working), 185, 255, power=1.0)
-            adjusted = ImageEnhance.Brightness(working).enhance(1.0 + amount * 0.35)
-            working = _composite_adjusted(working, adjusted, mask)
+            working = apply_tone_control(working, "whites", self.whites)
 
         if self.blacks:
-            amount = _clamp_percent(self.blacks) / 100.0
-            mask = _tone_mask(ImageOps.grayscale(working), 0, 75, power=1.0, invert=True)
-            adjusted = ImageEnhance.Brightness(working).enhance(1.0 + amount * 0.45)
-            working = _composite_adjusted(working, adjusted, mask)
+            working = apply_tone_control(working, "blacks", self.blacks)
 
         if self.vibrance:
             working = ImageEnhance.Color(working).enhance(1.0 + _clamp_percent(self.vibrance) / 135.0)

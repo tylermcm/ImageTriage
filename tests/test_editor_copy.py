@@ -44,7 +44,12 @@ class EditorCopyTests(unittest.TestCase):
 
             panel.save_sidecar()
 
-            self.assertTrue((Path(temp_dir) / "photo.edit.json").exists())
+            # The session now lives in the hidden per-folder edit-storage root,
+            # not beside the original.
+            self.assertFalse((Path(temp_dir) / "photo.edit.json").exists())
+            self.assertTrue(
+                (Path(temp_dir) / ".image_triage_edits" / "photo.edit.json").exists()
+            )
             self.assertEqual("Saved edits", panel.status_message)
             panel.close()
 

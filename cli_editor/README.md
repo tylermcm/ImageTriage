@@ -85,7 +85,7 @@ photoedit spot .\photo.jpg .\photo_clean.jpg --x 840 --y 520 --radius 18 --stren
 
 Values are intentionally Camera Raw-like:
 
-- `exposure`: EV stops, usually `-2` to `2`
+- `exposure`: EV stops, `-5` to `5`
 - `contrast`, `highlights`, `shadows`, `whites`, `blacks`: `-100` to `100`
 - `temperature`, `tint`, `vibrance`, `saturation`, `clarity`, `dehaze`, `sharpen`, `denoise`, `vignette`: `-100` to `100`
 - `vignette` is `+` to darken the corners and `-` to lighten them, two stops at either end. Its shape is set by `--vignette-midpoint` and `--vignette-feather` (`0..100`, `50` neutral), `--vignette-roundness` (`-100` frame-shaped to `100` circular), and `--vignette-highlights` (`0..100`, how far bright pixels are spared)

@@ -131,3 +131,26 @@ vite.svg
 benchmarks/*.json
 # graphify knowledge-graph output (regenerated locally)
 graphify-out/
+sandboxes/__init__.py
+sandboxes/efficientvit_sam/__init__.py
+sandboxes/efficientvit_sam/cli.py
+sandboxes/efficientvit_sam/core.py
+sandboxes/efficientvit_sam/README.md
+sandboxes/efficientvit_sam/semantic.py
+sandboxes/efficientvit_sam/viewer.py
+sandboxes/grounded_sam/__init__.py
+sandboxes/grounded_sam/bootstrap.py
+sandboxes/grounded_sam/cli.py
+sandboxes/grounded_sam/core.py
+sandboxes/grounded_sam/models.py
+sandboxes/grounded_sam/README.md
+sandboxes/grounded_sam/reporting.py
+sandboxes/grounded_sam/viewer.py
+sandboxes/oneformer/__init__.py
+sandboxes/oneformer/bootstrap.py
+sandboxes/oneformer/cli.py
+sandboxes/oneformer/core.py
+sandboxes/oneformer/model.py
+sandboxes/oneformer/README.md
+sandboxes/oneformer/reporting.py
+sandboxes/oneformer/viewer.py

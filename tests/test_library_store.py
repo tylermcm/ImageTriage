@@ -113,6 +113,27 @@ class LibraryStoreTests(unittest.TestCase):
         self.assertEqual([source.name], [record.name for record in store.search_catalog(root_path=str(root))])
         self.assertEqual({}, store.load_catalog_records_for_paths((str(mask),)))
 
+    def test_catalog_excludes_hidden_edit_storage_root(self) -> None:
+        root = Path(self._temp_dir.name) / "library"
+        shoot = root / "shoot"
+        edit_root = shoot / ".image_triage_edits"
+        (edit_root / "portrait.edit-assets").mkdir(parents=True)
+        source = shoot / "portrait.jpg"
+        session = edit_root / "portrait.edit.json"
+        mask = edit_root / "portrait.edit-assets" / "mask-001.png"
+        source.write_bytes(b"source")
+        session.write_bytes(b"{}")
+        mask.write_bytes(b"mask")
+
+        store = LibraryStore()
+        store.add_catalog_root(str(root))
+        summary = store.refresh_catalog((str(root),))
+
+        self.assertEqual(1, summary.folder_count)
+        self.assertEqual(1, summary.record_count)
+        self.assertEqual([source.name], [record.name for record in store.search_catalog(root_path=str(root))])
+        self.assertEqual({}, store.load_catalog_records_for_paths((str(mask),)))
+
     def test_catalog_refresh_skips_unchanged_folders_and_updates_changed_folder(self) -> None:
         root = Path(self._temp_dir.name) / "library"
         day_one = root / "day_one"

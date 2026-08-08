@@ -47,6 +47,8 @@ from .review_tools import (
     focus_assist_strength_by_id,
 )
 from .scanner import discover_edited_paths
+from .semantic_mask_service import SemanticMaskWarmTask, shutdown_oneformer_worker
+from .subject_masks import SubjectMaskWarmTask, shutdown_birefnet_worker
 
 from .editor_copy import EditorCopyService
 from .editor_render import CpuEditorRenderBackend, EditorRenderService
@@ -635,6 +637,12 @@ class FullScreenPreview(QDialog):
         self._winner_ladder_mode = False
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
+        self._subject_warm_pool = QThreadPool(self)
+        self._subject_warm_pool.setMaxThreadCount(1)
+        self._subject_import_warm_scheduled = False
+        self._semantic_warm_pool = QThreadPool(self)
+        self._semantic_warm_pool.setMaxThreadCount(1)
+        self._semantic_import_warm_scheduled = False
         self._result_queue: SimpleQueue = SimpleQueue()
         self._preview_cache: OrderedDict[tuple[object, ...], tuple[QImage, int]] = OrderedDict()
         self._preview_cache_bytes = 0
@@ -685,6 +693,11 @@ class FullScreenPreview(QDialog):
         self._editor_copy_service.saved.connect(self._handle_editor_copy_saved)
         self._editor_copy_service.failed.connect(self._handle_editor_copy_failed)
         self._theme = default_theme()
+
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(shutdown_birefnet_worker)
+            app.aboutToQuit.connect(shutdown_oneformer_worker)
 
         self.setWindowTitle("Preview")
         self.setModal(False)
@@ -1639,6 +1652,8 @@ class FullScreenPreview(QDialog):
         self.photo_editor_panel.status_changed.connect(self._handle_editor_status_changed)
         self.photo_editor_panel.saved.connect(self._handle_editor_sidecar_saved)
         self.photo_editor_panel.save_copy_requested.connect(self._handle_editor_save_copy_requested)
+        self.photo_editor_panel.subject_warm_requested.connect(self._request_subject_warm)
+        self.photo_editor_panel.semantic_warm_requested.connect(self._request_semantic_warm)
         layout.addWidget(self.photo_editor_panel, 1)
 
         # On-canvas mask editing: the overlay lives on the focused pane's image
@@ -2234,6 +2249,9 @@ class FullScreenPreview(QDialog):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         was_visible = self.isVisible()
+        if not was_visible:
+            self._subject_import_warm_scheduled = False
+            self._semantic_import_warm_scheduled = False
         self._source_entries = list(entries)
         if len(entries) < 2:
             self._winner_ladder_mode = False
@@ -2251,6 +2269,8 @@ class FullScreenPreview(QDialog):
         self._dragging = False
         self._pending_right_close = False
         self._edited_variant_index = 0
+        if not was_visible:
+            self.photo_editor_panel.show_adjustments_page()
         self._rebuild_entries()
         self._sync_editor_to_focused_entry()
         self._sync_preview_controls()
@@ -3398,6 +3418,16 @@ class FullScreenPreview(QDialog):
                 self._rendered_display_keys[slot] = display_key
             pane.scroll_area.horizontalScrollBar().setValue(0)
             pane.scroll_area.verticalScrollBar().setValue(0)
+        if slot == self._focused_slot and not self._subject_import_warm_scheduled:
+            self._subject_import_warm_scheduled = True
+            QTimer.singleShot(350, lambda: self._request_subject_warm("imports"))
+        # Warm the OneFormer worker's torch/CUDA imports in the background so the
+        # ~8 s one-time spin-up is paid while the user is on Adjust, not inline on
+        # the first scene-mask request. Staggered after BiRefNet's warm so the two
+        # subprocesses don't initialize CUDA at the same instant.
+        if slot == self._focused_slot and not self._semantic_import_warm_scheduled:
+            self._semantic_import_warm_scheduled = True
+            QTimer.singleShot(600, lambda: self._request_semantic_warm("imports"))
         if logger.enabled:
             logger.duration(
                 "preview.render_pane",
@@ -3411,6 +3441,20 @@ class FullScreenPreview(QDialog):
                 manual_zoom=self._manual_zoom,
                 focus_assist=self._focus_assist_enabled,
             )
+
+    def _request_subject_warm(self, stage: str) -> None:
+        try:
+            task = SubjectMaskWarmTask(stage)
+        except ValueError:
+            return
+        self._subject_warm_pool.start(task)
+
+    def _request_semantic_warm(self, stage: str) -> None:
+        try:
+            task = SemanticMaskWarmTask(stage)
+        except ValueError:
+            return
+        self._semantic_warm_pool.start(task)
 
     def _sync_editor_to_focused_entry(self) -> None:
         panel = getattr(self, "photo_editor_panel", None)
