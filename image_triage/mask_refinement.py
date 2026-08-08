@@ -58,12 +58,21 @@ def _scaled_radius(value: float, scale: float, *, maximum: int) -> int:
     return max(1, min(maximum, int(round(value * max(1e-6, scale)))))
 
 
-def _box_mean(values: np.ndarray, radius: int) -> np.ndarray:
-    """Return a reflected-border box mean without optional image libraries."""
+def _box_mean(
+    values: np.ndarray,
+    radius: int,
+    *,
+    border_mode: str = "reflect",
+) -> np.ndarray:
+    """Return a box mean without optional image libraries."""
     if radius <= 0:
         return np.asarray(values, dtype=np.float32).copy()
     source = np.asarray(values, dtype=np.float32)
-    padded = np.pad(source, ((radius, radius), (radius, radius)), mode="reflect")
+    padded = np.pad(
+        source,
+        ((radius, radius), (radius, radius)),
+        mode=border_mode,
+    )
     integral = np.pad(padded, ((1, 0), (1, 0)), mode="constant")
     integral = np.cumsum(integral, axis=0, dtype=np.float32)
     integral = np.cumsum(integral, axis=1, dtype=np.float32)
@@ -78,11 +87,16 @@ def _box_mean(values: np.ndarray, radius: int) -> np.ndarray:
 
 
 def _soft_box_blur(values: np.ndarray, radius: int, *, passes: int = 3) -> np.ndarray:
-    """Approximate a Gaussian blur with fast dependency-free box passes."""
+    """Approximate a Gaussian whose finite support matches ``radius`` pixels."""
     result = np.asarray(values, dtype=np.float32)
-    pass_radius = max(1, int(round(radius / max(1.0, passes**0.5))))
-    for _ in range(passes):
-        result = _box_mean(result, pass_radius)
+    active_passes = max(1, min(int(passes), int(radius)))
+    base_radius, remainder = divmod(int(radius), active_passes)
+    pass_radii = [
+        base_radius + (1 if index < remainder else 0)
+        for index in range(active_passes)
+    ]
+    for pass_radius in pass_radii:
+        result = _box_mean(result, pass_radius, border_mode="constant")
     return result
 
 
@@ -153,9 +167,9 @@ def refine_mask_array(
 
     feather_px = _scaled_radius(feather, scale, maximum=256)
     if feather_px:
-        # Feather generated selections outward: retain every existing strength
-        # value and add only the blurred falloff beyond the current boundary.
-        values = np.maximum(values, _soft_box_blur(values, feather_px))
+        # Feather the alpha boundary on both sides. Preserving the original via
+        # max() leaves a hard segmented core with only an exterior halo.
+        values = _soft_box_blur(values, feather_px)
 
     contrast = max(0.0, min(100.0, float(contrast)))
     if contrast:

@@ -17,9 +17,9 @@ DEFAULT_AI_MODEL_SIZE_MB = 1210
 DEFAULT_SEMANTIC_MODEL_REPO_ID = "openai/clip-vit-base-patch32"
 DEFAULT_SEMANTIC_MODEL_REVISION = "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268"
 DEFAULT_SEMANTIC_MODEL_SIZE_MB = 610
-DEFAULT_SEGMENTATION_MODEL_REPO_ID = "nvidia/segformer-b0-finetuned-ade-512-512"
-DEFAULT_SEGMENTATION_MODEL_REVISION = "b9175de73a0a34f7843135853d27629aa6987b2f"
-DEFAULT_SEGMENTATION_MODEL_SIZE_MB = 15
+DEFAULT_SEGMENTATION_MODEL_REPO_ID = "shi-labs/oneformer_ade20k_swin_tiny"
+DEFAULT_SEGMENTATION_MODEL_REVISION = "7fdbe8184c22b28aee60168e5635394bb556588e"
+DEFAULT_SEGMENTATION_MODEL_SIZE_MB = 196
 DEFAULT_BIREFNET_MODEL_REPO_ID = "ZhengPeng7/BiRefNet"
 DEFAULT_BIREFNET_MODEL_REVISION = "e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4"
 DEFAULT_BIREFNET_MODEL_SIZE_MB = 425
@@ -44,9 +44,13 @@ DEFAULT_SEMANTIC_MODEL_SHA256 = {
     "pytorch_model.bin": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f",
 }
 DEFAULT_SEGMENTATION_MODEL_SHA256 = {
-    "onnx/model.onnx": "f6520c8c7a414b9b17b6ccdf099fe1c357371d25fca090a021c9e6d0ce49bbed",
-    "onnx/config.json": "4a7813fc7e89fa581278e5db3ffb25967bf02b36a980f2445dc94755062031cd",
-    "onnx/preprocessor_config.json": "dbabd93c735c8a5c39ef207c6c4459bf2d261a5dcc55e1ba1c1b982e5947f518",
+    "config.json": "091cbc7c980128ae63b2a15d882923f326f85926ef163adad00c24bd90228896",
+    "merges.txt": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+    "preprocessor_config.json": "2c3c403d8414263e732996bb2ffeab80dd5ced0068ab11bfe5adf476ef75823c",
+    "pytorch_model.bin": "909b07dbf4129c2bbb8df4498e35dcd46f305e3ec45329d3ff6d4f0360de27f3",
+    "special_tokens_map.json": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac",
+    "tokenizer_config.json": "64dd88e64d791e3be4d38be62d7e77e0a24df9e79205ac740af505aa2e94c367",
+    "vocab.json": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
 }
 DEFAULT_BIREFNET_MODEL_SHA256 = {
     "model.safetensors": "9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154",
@@ -87,10 +91,17 @@ SEMANTIC_MODEL_REQUIRED_FILENAMES = (
     "special_tokens_map.json",
     "pytorch_model.bin",
 )
+# OneFormer loads offline through ``from_pretrained(<local dir>)``; the seven
+# files below land flat in the managed model directory (no Hugging Face cache
+# layout) so the semantic worker can load with ``local_files_only=True``.
 SEGMENTATION_MODEL_REQUIRED_FILENAMES = (
-    "onnx/model.onnx",
-    "onnx/config.json",
-    "onnx/preprocessor_config.json",
+    "config.json",
+    "merges.txt",
+    "preprocessor_config.json",
+    "pytorch_model.bin",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "vocab.json",
 )
 BIREFNET_MODEL_REQUIRED_FILENAMES = (
     "BiRefNet_config.py",

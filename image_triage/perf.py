@@ -193,3 +193,37 @@ def perf_logger() -> PerformanceLogger:
 
 def performance_log_dir() -> Path:
     return _default_log_dir()
+
+
+_EXECUTION_LOG_LOCK = threading.Lock()
+_EXECUTION_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def execution_log_path() -> Path:
+    """Always-on, human-readable execution log — independent of the gated perf
+    JSONL. Lives alongside the perf logs so both are found in one place."""
+    return _default_log_dir() / "execution.log"
+
+
+def write_execution_log(message: str) -> None:
+    """Append one timestamped line to the execution log. Best-effort: never
+    raises into the caller, and rolls over once when the file gets large."""
+    line = (
+        f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+        f"pid={os.getpid()} {message}\n"
+    )
+    try:
+        path = execution_log_path()
+        with _EXECUTION_LOG_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if path.exists() and path.stat().st_size > _EXECUTION_LOG_MAX_BYTES:
+                    backup = path.with_name("execution.log.1")
+                    backup.unlink(missing_ok=True)
+                    path.replace(backup)
+            except OSError:
+                pass
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+    except OSError:
+        pass

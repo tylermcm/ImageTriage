@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
+import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -11,7 +16,7 @@ from PySide6.QtGui import QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication
 
 from image_triage.ai_model import resolve_birefnet_model_installation
-from image_triage.birefnet_worker import _birefnet_rearrange
+from image_triage.birefnet_worker import _birefnet_rearrange, _emit_metric
 import image_triage.subject_masks as subject_masks
 from image_triage.semantic_masks import SemanticCategoryPresence, SemanticMaskResult
 from image_triage.subject_masks import (
@@ -24,6 +29,154 @@ from image_triage.ui.photo_editor_panel import PhotoEditorPanel
 
 
 class SubjectMaskCacheTests(unittest.TestCase):
+    def test_checkpoint_hash_cache_reuses_and_invalidates_by_file_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_subject_hash_") as temp_dir:
+            checkpoint = Path(temp_dir) / "model.safetensors"
+            checkpoint.write_bytes(b"first")
+            subject_masks._WEIGHTS_HASH_CACHE.clear()
+
+            first, first_hit = subject_masks._cached_sha256_file(checkpoint)
+            second, second_hit = subject_masks._cached_sha256_file(checkpoint)
+            checkpoint.write_bytes(b"second-version")
+            third, third_hit = subject_masks._cached_sha256_file(checkpoint)
+
+            self.assertFalse(first_hit)
+            self.assertTrue(second_hit)
+            self.assertEqual(first, second)
+            self.assertFalse(third_hit)
+            self.assertNotEqual(first, third)
+
+    def test_persistent_worker_reuses_imports_model_and_process(self) -> None:
+        commands: list[str] = []
+
+        class FakeStdout:
+            def __init__(self) -> None:
+                self.lines: list[str] = []
+
+            def readline(self) -> str:
+                return self.lines.pop(0) if self.lines else ""
+
+            def close(self) -> None:
+                pass
+
+        class FakeProcess:
+            pid = 4242
+
+            def __init__(self) -> None:
+                self.stdout = FakeStdout()
+                self.stopped = False
+                self.stdin = FakeStdin(self)
+
+            def poll(self):
+                return 0 if self.stopped else None
+
+            def wait(self, timeout=None):
+                self.stopped = True
+                return 0
+
+            def terminate(self) -> None:
+                self.stopped = True
+
+            def kill(self) -> None:
+                self.stopped = True
+
+        class FakeStdin:
+            def __init__(self, process: FakeProcess) -> None:
+                self.process = process
+
+            def write(self, raw_request: str) -> int:
+                request = json.loads(raw_request)
+                command = str(request["command"])
+                commands.append(command)
+                result: dict[str, object] = {"device": "cuda", "stage": command}
+                if command == "infer":
+                    result["components"] = [{"id": "subject-01"}]
+                response = {
+                    "id": request["id"],
+                    "ok": True,
+                    "result": result,
+                    "error": "",
+                }
+                self.process.stdout.lines.append("RESPONSE " + json.dumps(response) + "\n")
+                return len(raw_request)
+
+            def flush(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        service = subject_masks.BiRefNetWorkerService(idle_timeout_seconds=3600)
+        fake_process = FakeProcess()
+        service._process = fake_process  # type: ignore[assignment]
+        model_dir = Path("model").resolve()
+        service.warm_imports()
+        service.warm_imports()
+        service.warm_model(model_dir)
+        service.warm_model(model_dir)
+        for index in range(2):
+            device, components = service.infer(
+                model_dir=model_dir,
+                input_path=Path(f"input-{index}.png"),
+                output_path=Path(f"output-{index}.png"),
+                components_dir=Path(f"components-{index}"),
+                progress_callback=None,
+            )
+            self.assertEqual("cuda", device)
+            self.assertEqual([{"id": "subject-01"}], components)
+        service.shutdown()
+
+        self.assertEqual(
+            ["warm-imports", "load-model", "infer", "infer", "shutdown"],
+            commands,
+        )
+
+    def test_worker_metric_is_structured_and_host_records_its_duration(self) -> None:
+        previous = os.environ.get("IMAGE_TRIAGE_AI_METRICS")
+        os.environ["IMAGE_TRIAGE_AI_METRICS"] = "1"
+        output = io.StringIO()
+        try:
+            with redirect_stdout(output):
+                _emit_metric(
+                    "ai.mask.birefnet.worker.inference",
+                    time.perf_counter() - 0.01,
+                    device="cpu",
+                )
+        finally:
+            if previous is None:
+                os.environ.pop("IMAGE_TRIAGE_AI_METRICS", None)
+            else:
+                os.environ["IMAGE_TRIAGE_AI_METRICS"] = previous
+
+        line = output.getvalue().strip()
+        self.assertTrue(line.startswith("AI_METRIC "))
+        payload = json.loads(line.removeprefix("AI_METRIC "))
+        self.assertEqual("ai.mask.birefnet.worker.inference", payload["event"])
+        self.assertGreater(payload["duration_ms"], 0)
+
+        class RecordingLogger:
+            enabled = True
+
+            def __init__(self) -> None:
+                self.events: list[tuple[str, float, dict[str, object]]] = []
+
+            def duration(self, event: str, duration_ms: float, **fields: object) -> None:
+                self.events.append((event, duration_ms, fields))
+
+        logger = RecordingLogger()
+        original_perf_logger = subject_masks.perf_logger
+        subject_masks.perf_logger = lambda: logger
+        try:
+            parsed = subject_masks._parse_worker_metric(line)
+            self.assertIsNotNone(parsed)
+            subject_masks._record_worker_metric(parsed or {})
+        finally:
+            subject_masks.perf_logger = original_perf_logger
+
+        self.assertEqual("ai.mask.birefnet.worker.inference", logger.events[0][0])
+        self.assertEqual("worker", logger.events[0][2]["source"])
+        self.assertEqual("cpu", logger.events[0][2]["device"])
+
     def test_birefnet_rearrange_compatibility_covers_checkpoint_patterns(self) -> None:
         class ArrayTensor:
             def __init__(self, values: np.ndarray) -> None:
@@ -254,7 +407,7 @@ class SubjectMaskPanelTests(unittest.TestCase):
             self.assertEqual("Select background", panel.select_background_button.accessibleName())
             panel.close()
 
-    def test_people_inventory_promotes_birefnet_subject_and_background_actions(self) -> None:
+    def test_subject_inventory_promotes_birefnet_subject_and_background_actions(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_subject_roles_") as temp_dir:
             root = Path(temp_dir)
             source_path = root / "source.jpg"
@@ -270,6 +423,7 @@ class SubjectMaskPanelTests(unittest.TestCase):
                 weights_hash="sha256:scene",
                 cache_hit=True,
                 presence={
+                    "animals": SemanticCategoryPresence(True, 0.2, 0.2, 0.9, 0.8),
                     "people": SemanticCategoryPresence(True, 0.4, 0.4, 0.9, 0.8),
                     "sky": SemanticCategoryPresence(True, 0.3, 0.3, 0.9, 0.8),
                 },
@@ -280,9 +434,44 @@ class SubjectMaskPanelTests(unittest.TestCase):
             )
 
             self.assertFalse(panel.subject_mask_options.isHidden())
+            self.assertTrue(panel._semantic_mask_buttons["animals"].isHidden())
             self.assertTrue(panel._semantic_mask_buttons["people"].isHidden())
             self.assertFalse(panel._semantic_mask_buttons["sky"].isHidden())
             panel.close()
+
+    def test_subject_semantic_categories_route_to_birefnet(self) -> None:
+        panel = PhotoEditorPanel()
+        requested: list[str] = []
+        panel.request_subject_mask = requested.append  # type: ignore[assignment]
+
+        panel.handle_overlay_scene_picked("people")
+        panel.handle_overlay_scene_picked("animals")
+        panel.handle_overlay_scene_picked("sky")
+
+        self.assertEqual(["subject", "subject"], requested)
+        panel.close()
+
+    def test_masks_and_new_mask_views_request_birefnet_model_warmup(self) -> None:
+        panel = PhotoEditorPanel()
+        requested: list[str] = []
+        panel.subject_warm_requested.connect(requested.append)
+
+        panel._set_editor_page(1)
+        panel._open_mask_create_pane()
+
+        self.assertEqual(["model", "model"], requested)
+        panel.close()
+
+    def test_popout_open_reset_returns_editor_to_adjustments(self) -> None:
+        panel = PhotoEditorPanel()
+        panel._set_editor_page(1)
+
+        panel.show_adjustments_page()
+
+        self.assertEqual(0, panel.editor_stack.currentIndex())
+        self.assertTrue(panel._mode_buttons[0].isChecked())
+        self.assertFalse(panel._mode_buttons[1].isChecked())
+        panel.close()
 
     def test_multiple_subjects_require_a_choice_before_mask_registration(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_subject_choice_") as temp_dir:

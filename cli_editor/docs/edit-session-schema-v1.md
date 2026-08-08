@@ -10,6 +10,24 @@ IMG_1234.edit-assets/
 
 Originals are never written. XMP is a one-way export only and is never read back.
 
+### Storage location
+
+The `photo_terminal` CLI writes the bundle **beside the original**, as shown above.
+The Image Triage GUI instead keeps every bundle in a single hidden per-folder root,
+`.image_triage_edits/`, so shoot folders are not littered with one `.edit-assets`
+folder per photo:
+
+```text
+<shoot>/IMG_1234.CR3
+<shoot>/.image_triage_edits/IMG_1234.edit.json
+<shoot>/.image_triage_edits/IMG_1234.edit-assets/
+```
+
+This is a location change only — the schema is identical, because assets are
+referenced relative to the session file. The GUI resolves and migrates these paths
+in `image_triage/edit_storage.py`; the CLI is unchanged, and its `relink` still finds
+relocated sessions because it walks recursively (`rglob`).
+
 ## Identity
 
 `source.lastKnownPath` is a hint only. Source identity is based on:

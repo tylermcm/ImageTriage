@@ -40,6 +40,12 @@ EDIT_DIRECTORIES = {
 # ``IMG_0001.edit-assets``. They are implementation data, not library photos.
 EDITOR_ASSET_DIR_SUFFIX = ".edit-assets"
 
+# The GUI editor keeps all its sidecar bundles (``.edit.json`` + ``.edit-assets``)
+# in this single hidden per-folder root instead of scattering them beside every
+# original. It holds mask PNGs, so it must be pruned from cataloging or those
+# masks would be ingested as library photos.
+EDIT_STORAGE_ROOT_NAME = ".image_triage_edits"
+
 IGNORED_SYSTEM_DIRECTORY_NAMES = frozenset(
     {
         "$recycle.bin",
@@ -77,7 +83,11 @@ def is_ignored_system_directory(path: str | Path) -> bool:
     """Return whether a directory is OS or NAS implementation data."""
 
     name = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].casefold()
-    return name in IGNORED_SYSTEM_DIRECTORY_NAMES or name.startswith(".trash-")
+    return (
+        name in IGNORED_SYSTEM_DIRECTORY_NAMES
+        or name.startswith(".trash-")
+        or name == EDIT_STORAGE_ROOT_NAME
+    )
 
 
 @functools.lru_cache(maxsize=16384)
@@ -590,6 +600,7 @@ class FolderScanTask(QRunnable):
 
 __all__ = [
     "EDITOR_ASSET_DIR_SUFFIX",
+    "EDIT_STORAGE_ROOT_NAME",
     "IGNORED_SYSTEM_DIRECTORY_NAMES",
     "FolderScanTask",
     "discover_edited_paths",

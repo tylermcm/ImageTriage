@@ -187,6 +187,24 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual([], asset_records)
             self.assertNotIn(asset_dir.name, [record.name for record in child_folders])
 
+    def test_hidden_edit_storage_root_is_never_scanned(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            source = root / "portrait.jpg"
+            edit_root = root / ".image_triage_edits"
+            session = edit_root / "portrait.edit.json"
+            mask = edit_root / "portrait.edit-assets" / "mask-001.png"
+            _write_image(source)
+            session.parent.mkdir(parents=True, exist_ok=True)
+            session.write_text("{}")
+            _write_image(mask)
+
+            root_records = scan_folder(str(root))
+            child_folders = scan_child_folders(str(root), include_hidden=True)
+
+            self.assertEqual([source.name], [record.name for record in root_records])
+            self.assertNotIn(edit_root.name, [record.name for record in child_folders])
+
     def test_sort_records_keeps_folders_before_images(self) -> None:
         folder = ImageRecord(path="C:/sample/B", name="B", size=0, modified_ns=1, is_folder=True)
         image = ImageRecord(path="C:/sample/A.jpg", name="A.jpg", size=100, modified_ns=999)

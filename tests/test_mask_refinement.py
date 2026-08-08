@@ -41,13 +41,33 @@ class GeneratedMaskRefinementTests(unittest.TestCase):
             float(np.mean(np.abs(feathered[soft] - 0.5))),
         )
 
-    def test_generated_mask_feather_preserves_interior_and_expands_outward(self) -> None:
+    def test_generated_mask_feather_softens_inside_and_outside_the_boundary(self) -> None:
         mask = self._square_mask()
         feathered = refine_mask_array(mask, feather=4)
 
-        self.assertTrue(np.all(feathered[mask == 1.0] >= 1.0))
+        self.assertEqual(1.0, float(feathered[20, 20]))
+        self.assertLess(float(feathered[12, 20]), 1.0)
         self.assertGreater(float(feathered[11, 20]), 0.0)
         self.assertEqual(0.0, float(mask[11, 20]))
+
+    def test_feather_reach_matches_the_requested_pixel_radius(self) -> None:
+        mask = np.zeros((401, 401), dtype=np.float32)
+        mask[151:250, 151:250] = 1.0
+
+        feathered = refine_mask_array(mask, feather=30)
+
+        self.assertEqual(0.0, float(feathered[200, 120]))
+        self.assertGreater(float(feathered[200, 121]), 0.0)
+        self.assertLess(float(feathered[200, 180]), 1.0)
+        self.assertEqual(1.0, float(feathered[200, 181]))
+
+    def test_feather_does_not_reflect_the_selection_at_the_canvas_edge(self) -> None:
+        mask = np.ones((101, 101), dtype=np.float32)
+
+        feathered = refine_mask_array(mask, feather=30)
+
+        self.assertLess(float(feathered[0, 0]), float(feathered[50, 50]))
+        self.assertGreater(float(feathered[50, 50]), 0.999)
 
     def test_large_pixel_feather_has_a_materially_larger_reach(self) -> None:
         bitmap = QImage(512, 512, QImage.Format.Format_Grayscale8)
@@ -59,7 +79,10 @@ class GeneratedMaskRefinementTests(unittest.TestCase):
         feather_10 = refine_bitmap_qimage(bitmap, {"edgeFeather": 10.0})
         feather_1000 = refine_bitmap_qimage(bitmap, {"edgeFeather": 1000.0})
 
-        self.assertEqual(255, feather_1000.pixelColor(256, 256).red())
+        self.assertLess(
+            feather_1000.pixelColor(256, 256).red(),
+            feather_10.pixelColor(256, 256).red(),
+        )
         self.assertGreater(
             feather_1000.pixelColor(80, 256).red(),
             feather_10.pixelColor(80, 256).red(),

@@ -258,16 +258,17 @@ class ScenePanelWiringTests(unittest.TestCase):
         panel.editor_stack.setCurrentIndex(1)
         return panel
 
-    def test_scene_pick_runs_on_both_mask_panes(self) -> None:
+    def test_scene_pick_runs_only_on_the_new_mask_pane(self) -> None:
         panel = self._masks_tab_panel()
-        self.assertTrue(panel.mask_overlay_state()["scene_pick"])
+        self.assertFalse(panel.mask_overlay_state()["scene_pick"])
         panel._show_mask_pane(panel.MASK_PANE_CREATE)
         self.assertTrue(panel.mask_overlay_state()["scene_pick"])
         panel._show_mask_pane(panel.MASK_PANE_WORK)
-        self.assertTrue(panel.mask_overlay_state()["scene_pick"])
+        self.assertFalse(panel.mask_overlay_state()["scene_pick"])
 
     def test_an_armed_tool_disables_scene_pick(self) -> None:
         panel = self._masks_tab_panel()
+        panel._show_mask_pane(panel.MASK_PANE_CREATE)
         self.assertTrue(panel.mask_overlay_state()["scene_pick"])
         panel._mask_create_mode = "radial"
         self.assertFalse(panel.mask_overlay_state()["scene_pick"])

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -24,6 +25,11 @@ from .ai_model import (
     resolve_segmentation_model_installation,
 )
 from .imaging import load_image_for_display
+from .perf import perf_logger, write_execution_log
+from .semantic_mask_service import (
+    default_oneformer_worker_service,
+    validate_semantic_runtime,
+)
 
 
 SEMANTIC_MASK_CATEGORIES: tuple[str, ...] = (
@@ -34,23 +40,19 @@ SEMANTIC_MASK_CATEGORIES: tuple[str, ...] = (
     "mountains",
     "animals",
     "people",
+    "buildings",
 )
-SEMANTIC_MASK_LABELS: dict[str, tuple[str, ...]] = {
-    "sky": ("sky",),
-    "trees": ("tree", "palm"),
-    "foliage": ("grass", "plant", "field", "flower"),
-    "water": ("water", "sea", "river", "swimming pool", "waterfall", "lake"),
-    "mountains": ("mountain", "hill"),
-    "animals": ("animal",),
-    "people": ("person",),
-}
 SEMANTIC_MASK_MODEL_ID = DEFAULT_SEGMENTATION_MODEL_REPO_ID
 SEMANTIC_MASK_MODEL_VERSION = DEFAULT_SEGMENTATION_MODEL_REVISION
-SEMANTIC_MASK_PREVIEW_EDGE = 1280
+# OneFormer runs on a bounded preview; 1600px matches the validated sandbox.
+SEMANTIC_MASK_PREVIEW_EDGE = 1600
 SEMANTIC_MASK_INVENTORY_REQUEST = "inventory"
-SEMANTIC_MASK_REFINEMENT_VERSION = (
-    "guided-grabcut-sky-water-topology-confidence-1.6-v4"
-)
+# Bump either version to invalidate every cached semantic mask: refinement
+# covers the guided-filter/topology post-processing, mapping covers the
+# ADE20k -> application-category label table owned by the OneFormer worker.
+SEMANTIC_MASK_REFINEMENT_VERSION = "oneformer-ade-guided-1"
+SEMANTIC_MASK_MAPPING_VERSION = "ade20k-app-categories-1"
+SEMANTIC_MASK_MINIMUM_COVERAGE = 0.0005
 SEMANTIC_MASK_EDGE_GAMMA = 1.6
 SEMANTIC_SKY_REPAIR_MIN_CONFIDENT_COVERAGE = 0.10
 SEMANTIC_SKY_REPAIR_MAX_PROMOTION_COVERAGE = 0.03
@@ -66,9 +68,6 @@ SEMANTIC_PRESENCE_DEFAULT_RULE = (0.35, 8)
 ProgressCallback = Callable[[str], None]
 
 
-ort: Any | None = None
-_ORT_IMPORT_ERROR = ""
-_ORT_DLL_HANDLES: list[object] = []
 cv2: Any | None = None
 
 
@@ -109,11 +108,7 @@ class SemanticMaskResult:
         )
 
 
-_SESSION_LOCK = threading.Lock()
-_SESSION_CACHE: dict[tuple[str, int, int], Any] = {}
-
-
-def _candidate_onnxruntime_site_packages() -> tuple[Path, ...]:
+def _candidate_ai_runtime_site_packages() -> tuple[Path, ...]:
     try:
         from .ai_runtime_packages import resolve_ai_runtime_site_packages
 
@@ -122,57 +117,10 @@ def _candidate_onnxruntime_site_packages() -> tuple[Path, ...]:
         return ()
 
 
-def _register_onnxruntime_path(site_packages: Path) -> None:
-    path_text = str(site_packages)
-    if path_text not in sys.path:
-        # Keep the frozen application's bundled packages authoritative. This
-        # fallback is only for modules, such as ONNX Runtime, absent from it.
-        sys.path.append(path_text)
-    if os.name != "nt":
-        return
-    add_dll_directory = getattr(os, "add_dll_directory", None)
-    if add_dll_directory is None:
-        return
-    binary_dirs = [
-        site_packages / "onnxruntime" / "capi",
-        *site_packages.glob("*.libs"),
-    ]
-    for directory in binary_dirs:
-        if not directory.is_dir():
-            continue
-        try:
-            _ORT_DLL_HANDLES.append(add_dll_directory(str(directory)))
-        except OSError:
-            continue
-
-
-def _load_onnxruntime() -> Any | None:
-    global ort, _ORT_IMPORT_ERROR
-    if ort is not None:
-        return ort
-
-    errors: list[str] = []
-    try:
-        ort = importlib.import_module("onnxruntime")
-        _ORT_IMPORT_ERROR = ""
-        return ort
-    except Exception as exc:
-        errors.append(str(exc))
-
-    for site_packages in _candidate_onnxruntime_site_packages():
-        _register_onnxruntime_path(site_packages)
-        try:
-            ort = importlib.import_module("onnxruntime")
-            _ORT_IMPORT_ERROR = ""
-            return ort
-        except Exception as exc:
-            errors.append(f"{site_packages}: {exc}")
-
-    _ORT_IMPORT_ERROR = "; ".join(error for error in errors if error)
-    return None
-
-
 def _load_opencv() -> Any | None:
+    """OpenCV powers the optional sky/water refinements. It lives in the managed
+    AI runtime, so fall back to that site-packages set when it is not importable
+    from the GUI process directly."""
     global cv2
     if cv2 is not None:
         return cv2
@@ -182,7 +130,7 @@ def _load_opencv() -> Any | None:
     except Exception:
         pass
 
-    for site_packages in _candidate_onnxruntime_site_packages():
+    for site_packages in _candidate_ai_runtime_site_packages():
         path_text = str(site_packages)
         if path_text not in sys.path:
             sys.path.append(path_text)
@@ -223,10 +171,25 @@ def ensure_semantic_masks(
     cache_root: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> SemanticMaskResult:
+    logger = perf_logger()
+    total_started = time.perf_counter()
     source = Path(source_path).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
+    logger.log(
+        "ai.mask.oneformer.request",
+        path=source,
+        preview_edge=SEMANTIC_MASK_PREVIEW_EDGE,
+    )
+    phase_started = time.perf_counter()
     model_installation = installation or resolve_segmentation_model_installation()
+    logger.duration(
+        "ai.mask.oneformer.model_resolve",
+        _elapsed_ms(phase_started),
+        installed=model_installation.is_installed,
+        model_id=model_installation.repo_id,
+        model_revision=model_installation.revision,
+    )
     if not model_installation.is_installed:
         _progress(progress_callback, "Downloading masking model...")
 
@@ -240,20 +203,34 @@ def ensure_semantic_masks(
             else:
                 _progress(progress_callback, f"Downloading {Path(filename).name}...")
 
+        phase_started = time.perf_counter()
         download_segmentation_model(
             model_installation,
             progress_callback=download_progress,
         )
+        logger.duration(
+            "ai.mask.oneformer.download",
+            _elapsed_ms(phase_started),
+            model_id=model_installation.repo_id,
+        )
 
-    model_dir = model_installation.install_dir / "onnx"
-    model_path = model_dir / "model.onnx"
-    config_path = model_dir / "config.json"
-    processor_path = model_dir / "preprocessor_config.json"
-    for required in (model_path, config_path, processor_path):
+    # OneFormer loads offline from a flat directory of the seven required
+    # files; ``pytorch_model.bin`` is the checkpoint whose hash pins the cache.
+    model_dir = model_installation.install_dir
+    for filename in model_installation.required_filenames:
+        required = model_dir / filename
         if not required.is_file():
             raise FileNotFoundError(required)
+    weights_path = model_dir / "pytorch_model.bin"
 
-    weights_hash = _sha256_file(model_path)
+    phase_started = time.perf_counter()
+    weights_hash, weights_hash_cache_hit = _cached_sha256_file(weights_path)
+    logger.duration(
+        "ai.mask.oneformer.weights_hash",
+        _elapsed_ms(phase_started),
+        bytes=weights_path.stat().st_size,
+        cache_hit=weights_hash_cache_hit,
+    )
     stat = source.stat()
     cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns, weights_hash)
     cache_dir = Path(cache_root or default_semantic_mask_cache_root()) / cache_key
@@ -261,11 +238,15 @@ def ensure_semantic_masks(
     expected_paths = {
         category: cache_dir / f"{category}.png" for category in SEMANTIC_MASK_CATEGORIES
     }
+    cache_lookup_started = time.perf_counter()
     cached_metadata = _load_json(metadata_path)
     if (
         cached_metadata.get("sourceSizeBytes") == stat.st_size
         and cached_metadata.get("sourceMtimeNs") == stat.st_mtime_ns
         and cached_metadata.get("weightsHash") == weights_hash
+        and cached_metadata.get("modelId") == model_installation.repo_id
+        and cached_metadata.get("modelVersion") == model_installation.revision
+        and cached_metadata.get("mappingVersion") == SEMANTIC_MASK_MAPPING_VERSION
         and cached_metadata.get("refinementVersion") == SEMANTIC_MASK_REFINEMENT_VERSION
         and all(path.is_file() for path in expected_paths.values())
     ):
@@ -282,8 +263,14 @@ def ensure_semantic_masks(
                     )
                 except OSError:
                     pass
-            _progress(progress_callback, "Using cached semantic masks")
-            return SemanticMaskResult(
+            logger.duration(
+                "ai.mask.oneformer.cache_lookup",
+                _elapsed_ms(cache_lookup_started),
+                cache_hit=True,
+            )
+            total_ms = _elapsed_ms(total_started)
+            logger.duration("ai.mask.oneformer.total", total_ms, cache_hit=True)
+            result = SemanticMaskResult(
                 source_path=source,
                 source_size=(int(source_size[0]), int(source_size[1])),
                 mask_paths=expected_paths,
@@ -293,35 +280,153 @@ def ensure_semantic_masks(
                 cache_hit=True,
                 presence=presence,
             )
+            _emit_execution_summary(
+                logger,
+                progress_callback,
+                cache_hit=True,
+                total_ms=total_ms,
+                detected=result.detected_categories,
+                label=source.name,
+            )
+            return result
 
+    logger.duration(
+        "ai.mask.oneformer.cache_lookup",
+        _elapsed_ms(cache_lookup_started),
+        cache_hit=False,
+    )
+    phase_started = time.perf_counter()
+    validate_semantic_runtime()
+    logger.duration("ai.mask.oneformer.runtime_validate", _elapsed_ms(phase_started))
     _progress(progress_callback, "Decoding image...")
+    phase_started = time.perf_counter()
     rgb = _decode_rgb_preview(source, SEMANTIC_MASK_PREVIEW_EDGE)
-    _progress(progress_callback, "Finding scene regions...")
-    with config_path.open("r", encoding="utf-8") as handle:
-        model_config = json.load(handle)
-    with processor_path.open("r", encoding="utf-8") as handle:
-        processor_config = json.load(handle)
-    category_indices = _resolve_category_indices(model_config)
-    session = _model_session(model_path)
-    masks = _infer_masks(session, rgb, processor_config, category_indices)
+    decode_ms = _elapsed_ms(phase_started)
+    logger.duration(
+        "ai.mask.oneformer.decode_preview",
+        decode_ms,
+        source_bytes=stat.st_size,
+        width=int(rgb.shape[1]),
+        height=int(rgb.shape[0]),
+    )
+
+    # OneFormer runs in the managed AI runtime worker on a decoded RGB preview,
+    # keeping RAW/HEIF decoding and PyTorch out of the Qt process. The worker
+    # writes hard 0/255 category masks into a staging directory; refinement and
+    # presence measurement happen here.
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    # BMP is written/read straight through (no compression), so the preview
+    # handoff to the worker is a fast memcpy rather than a PNG encode. The file
+    # is transient — deleted in the finally below.
+    worker_input = cache_dir / "worker-input.bmp"
+    worker_masks_dir = cache_dir / "worker-masks"
+    phase_started = time.perf_counter()
+    Image.fromarray(rgb, mode="RGB").save(worker_input)
+    logger.duration(
+        "ai.mask.oneformer.worker_input_write",
+        _elapsed_ms(phase_started),
+        bytes=worker_input.stat().st_size,
+    )
+    worker_device = "unknown"
+    try:
+        _progress(progress_callback, "Finding scene regions...")
+        phase_started = time.perf_counter()
+        worker_result = _run_semantic_worker(
+            model_dir=model_dir,
+            input_path=worker_input,
+            output_dir=worker_masks_dir,
+            progress_callback=progress_callback,
+        )
+        worker_device = worker_result.device
+        worker_ms = _elapsed_ms(phase_started)
+        worker_infer_ms = float(worker_result.timings_ms.get("inference", 0.0))
+        # Wall-clock of the subprocess round-trip (includes a one-time model
+        # load on the first request of a worker session); the worker's own
+        # preprocess/inference/postprocess splits ride in as fields.
+        logger.duration(
+            "ai.mask.oneformer.worker_total",
+            worker_ms,
+            device=worker_result.device,
+            **{f"worker_{key}": value for key, value in worker_result.timings_ms.items()},
+        )
+        phase_started = time.perf_counter()
+        masks = _load_worker_masks(worker_masks_dir)
+        logger.duration(
+            "ai.mask.oneformer.mask_load",
+            _elapsed_ms(phase_started),
+            categories=len(masks),
+        )
+    finally:
+        worker_input.unlink(missing_ok=True)
+        _remove_dir_quietly(worker_masks_dir)
+    if set(masks) != set(SEMANTIC_MASK_CATEGORIES):
+        missing = ", ".join(sorted(set(SEMANTIC_MASK_CATEGORIES) - set(masks)))
+        raise RuntimeError(f"OneFormer worker did not produce masks for: {missing}")
 
     _progress(progress_callback, "Refining mask edges...")
+    refine_started = time.perf_counter()
+    # The guide-image statistics are identical for every category, so compute
+    # them once for the whole image instead of inside each guided-filter call.
+    guide_stats = _guide_stats(rgb)
     refined: dict[str, np.ndarray] = {}
+    skipped_empty = 0
     for category, mask in masks.items():
-        guided = _guided_filter(rgb, mask)
+        category_started = time.perf_counter()
+        # OneFormer emits confident, non-overlapping hard masks; the guided
+        # filter re-attaches edges to the image. No confidence-gamma tightening
+        # is applied — that only helped soft per-pixel probability masks. Absent
+        # categories are all-zero and refine to all-zero, so skip the filter and
+        # the sky/water passes entirely.
+        if not np.any(mask):
+            refined[category] = mask
+            skipped_empty += 1
+            continue
+        guided = _guided_filter(rgb, mask, stats=guide_stats)
+        extra_stage = "none"
         if category == "sky":
             guided = _repair_sky_mask_boundaries(rgb, guided)
+            extra_stage = "sky_repair"
         elif category == "water":
             guided = _refine_water_mask_topology(guided)
-        refined[category] = _tighten_mask_confidence(guided)
+            extra_stage = "water_topology"
+        refined[category] = guided
+        # Per-category so we can see whether the cost is the guided filter
+        # across all eight, or the sky-repair grabcut / water-topology extras.
+        logger.duration(
+            "ai.mask.oneformer.refine.category",
+            _elapsed_ms(category_started),
+            category=category,
+            extra_stage=extra_stage,
+        )
+    refine_ms = _elapsed_ms(refine_started)
+    logger.duration(
+        "ai.mask.oneformer.refine_total",
+        refine_ms,
+        categories=len(refined),
+        refined=len(refined) - skipped_empty,
+        skipped_empty=skipped_empty,
+        width=int(rgb.shape[1]),
+        height=int(rgb.shape[0]),
+    )
+    phase_started = time.perf_counter()
     presence = {
         category: _measure_semantic_presence(category, mask)
         for category, mask in refined.items()
     }
     presence = _resolve_semantic_presence_conflicts(refined, presence)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    logger.duration(
+        "ai.mask.oneformer.presence",
+        _elapsed_ms(phase_started),
+        categories=len(presence),
+    )
+    phase_started = time.perf_counter()
     for category, mask in refined.items():
         _save_mask(expected_paths[category], mask)
+    logger.duration(
+        "ai.mask.oneformer.mask_write",
+        _elapsed_ms(phase_started),
+        categories=len(refined),
+    )
     metadata = {
         "sourcePath": str(source),
         "sourceSizeBytes": stat.st_size,
@@ -330,12 +435,25 @@ def ensure_semantic_masks(
         "modelId": model_installation.repo_id,
         "modelVersion": model_installation.revision,
         "weightsHash": weights_hash,
+        "mappingVersion": SEMANTIC_MASK_MAPPING_VERSION,
         "refinementVersion": SEMANTIC_MASK_REFINEMENT_VERSION,
         "categories": list(SEMANTIC_MASK_CATEGORIES),
         "categoryStats": _presence_to_metadata(presence),
     }
+    phase_started = time.perf_counter()
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    return SemanticMaskResult(
+    logger.duration("ai.mask.oneformer.metadata_write", _elapsed_ms(phase_started))
+    total_ms = _elapsed_ms(total_started)
+    logger.duration(
+        "ai.mask.oneformer.total",
+        total_ms,
+        cache_hit=False,
+        device=worker_device,
+        categories=len(refined),
+        width=int(rgb.shape[1]),
+        height=int(rgb.shape[0]),
+    )
+    result = SemanticMaskResult(
         source_path=source,
         source_size=(int(rgb.shape[1]), int(rgb.shape[0])),
         mask_paths=expected_paths,
@@ -345,11 +463,128 @@ def ensure_semantic_masks(
         cache_hit=False,
         presence=presence,
     )
+    _emit_execution_summary(
+        logger,
+        progress_callback,
+        cache_hit=False,
+        total_ms=total_ms,
+        detected=result.detected_categories,
+        device=worker_device,
+        decode_ms=decode_ms,
+        worker_ms=worker_ms,
+        worker_infer_ms=worker_infer_ms,
+        refine_ms=refine_ms,
+        label=source.name,
+    )
+    return result
+
+
+def _run_semantic_worker(
+    *,
+    model_dir: Path,
+    input_path: Path,
+    output_dir: Path,
+    progress_callback: ProgressCallback | None,
+):
+    return default_oneformer_worker_service().infer(
+        model_dir=model_dir,
+        input_path=input_path,
+        output_dir=output_dir,
+        categories=SEMANTIC_MASK_CATEGORIES,
+        minimum_coverage=SEMANTIC_MASK_MINIMUM_COVERAGE,
+        progress_callback=progress_callback,
+    )
+
+
+def _remove_dir_quietly(path: Path) -> None:
+    if not path.exists():
+        return
+    for child in path.glob("*"):
+        try:
+            child.unlink()
+        except OSError:
+            pass
+    try:
+        path.rmdir()
+    except OSError:
+        pass
 
 
 def _progress(callback: ProgressCallback | None, message: str) -> None:
     if callback is not None:
         callback(message)
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0
+
+
+def _format_execution_summary(
+    *,
+    cache_hit: bool,
+    total_ms: float,
+    decode_ms: float,
+    worker_ms: float,
+    worker_infer_ms: float,
+    refine_ms: float,
+    detected: tuple[str, ...],
+    device: str,
+) -> str:
+    """One human-readable execution line for the program log + UI status."""
+    count = len(detected)
+    regions = f"{count} region{'' if count == 1 else 's'}"
+    # ASCII separators only — the line lands in the perf log and the status bar,
+    # and some log viewers/consoles mangle non-ASCII punctuation.
+    if cache_hit:
+        return f"Scene masks ready from cache in {total_ms:.0f} ms | {regions}"
+    return (
+        f"Scene masks ready in {total_ms:.0f} ms "
+        f"(decode {decode_ms:.0f} / infer {worker_infer_ms:.0f} / refine {refine_ms:.0f} ms) "
+        f"| {regions} | {device}"
+    )
+
+
+def _emit_execution_summary(
+    logger,
+    progress_callback: ProgressCallback | None,
+    *,
+    cache_hit: bool,
+    total_ms: float,
+    detected: tuple[str, ...],
+    device: str = "cache",
+    decode_ms: float = 0.0,
+    worker_ms: float = 0.0,
+    worker_infer_ms: float = 0.0,
+    refine_ms: float = 0.0,
+    label: str = "",
+) -> None:
+    summary = _format_execution_summary(
+        cache_hit=cache_hit,
+        total_ms=total_ms,
+        decode_ms=decode_ms,
+        worker_ms=worker_ms,
+        worker_infer_ms=worker_infer_ms,
+        refine_ms=refine_ms,
+        detected=detected,
+        device=device,
+    )
+    # Three sinks: (1) the gated perf JSONL as a structured event, (2) the live
+    # editor status bar, (3) the always-on execution.log so timing is captured
+    # even when Performance Logging is off.
+    logger.log(
+        "ai.mask.oneformer.summary",
+        message=summary,
+        cache_hit=cache_hit,
+        total_ms=round(total_ms, 1),
+        decode_ms=round(decode_ms, 1),
+        worker_ms=round(worker_ms, 1),
+        worker_infer_ms=round(worker_infer_ms, 1),
+        refine_ms=round(refine_ms, 1),
+        detected=list(detected),
+        device=device,
+    )
+    _progress(progress_callback, summary)
+    write_execution_log(f"{label}: {summary}" if label else summary)
 
 
 def _source_cache_key(source: Path, size: int, mtime_ns: int, weights_hash: str) -> str:
@@ -359,6 +594,9 @@ def _source_cache_key(source: Path, size: int, mtime_ns: int, weights_hash: str)
             str(size),
             str(mtime_ns),
             weights_hash,
+            SEMANTIC_MASK_MODEL_ID,
+            SEMANTIC_MASK_MODEL_VERSION,
+            SEMANTIC_MASK_MAPPING_VERSION,
             SEMANTIC_MASK_REFINEMENT_VERSION,
         )
     )
@@ -577,6 +815,29 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+_WEIGHTS_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+_WEIGHTS_HASH_LOCK = threading.Lock()
+
+
+def _cached_sha256_file(path: Path) -> tuple[str, bool]:
+    """SHA-256 the checkpoint once per (path, size, mtime); reuse thereafter.
+
+    Re-hashing the 194 MB OneFormer weights on every image cost ~140 ms; the
+    checkpoint is immutable within a session, so key on file identity like the
+    BiRefNet path does."""
+    resolved = path.resolve()
+    stat = resolved.stat()
+    key = (os.path.normcase(str(resolved)), stat.st_size, stat.st_mtime_ns)
+    with _WEIGHTS_HASH_LOCK:
+        cached = _WEIGHTS_HASH_CACHE.get(key)
+        if cached is not None:
+            return cached, True
+        digest = _sha256_file(resolved)
+        _WEIGHTS_HASH_CACHE.clear()
+        _WEIGHTS_HASH_CACHE[key] = digest
+        return digest, False
+
+
 def _decode_rgb_preview(path: Path, long_edge: int) -> np.ndarray:
     image, error = load_image_for_display(
         str(path),
@@ -593,102 +854,44 @@ def _decode_rgb_preview(path: Path, long_edge: int) -> np.ndarray:
     return buffer.reshape(height, stride)[:, : width * 3].reshape(height, width, 3).copy()
 
 
-def _model_session(model_path: Path) -> Any:
-    runtime = _load_onnxruntime()
-    if runtime is None:
-        detail = f" ({_ORT_IMPORT_ERROR})" if _ORT_IMPORT_ERROR else ""
-        raise RuntimeError(
-            "ONNX Runtime is unavailable. Install it from "
-            "AI > Runtime And Cache > Install AI Runtime."
-            f"{detail}"
-        )
-    stat = model_path.stat()
-    key = (str(model_path.resolve()), stat.st_size, stat.st_mtime_ns)
-    with _SESSION_LOCK:
-        cached = _SESSION_CACHE.get(key)
-        if cached is not None:
-            return cached
-        options = runtime.SessionOptions()
-        options.intra_op_num_threads = max(1, min(8, (os.cpu_count() or 4) // 2))
-        options.inter_op_num_threads = 1
-        options.graph_optimization_level = runtime.GraphOptimizationLevel.ORT_ENABLE_BASIC
-        session = runtime.InferenceSession(
-            str(model_path),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
-        _SESSION_CACHE.clear()
-        _SESSION_CACHE[key] = session
-        return session
+def _load_worker_masks(mask_dir: Path) -> dict[str, np.ndarray]:
+    """Read the worker's hard 0/255 category masks as float ``0.0/1.0`` arrays.
 
-
-def _preprocess(rgb: np.ndarray, config: dict[str, object]) -> np.ndarray:
-    size = config.get("size", {})
-    width = int(size.get("width", 512)) if isinstance(size, dict) else 512
-    height = int(size.get("height", 512)) if isinstance(size, dict) else 512
-    resized = np.asarray(
-        Image.fromarray(rgb, mode="RGB").resize((width, height), Image.Resampling.BILINEAR),
-        dtype=np.float32,
-    )
-    values = resized * float(config.get("rescale_factor", 1.0 / 255.0))
-    mean = np.asarray(config.get("image_mean", [0.485, 0.456, 0.406]), dtype=np.float32)
-    std = np.asarray(config.get("image_std", [0.229, 0.224, 0.225]), dtype=np.float32)
-    values = (values - mean) / std
-    return np.transpose(values, (2, 0, 1))[None, ...].astype(np.float32, copy=False)
-
-
-def _resolve_category_indices(config: dict[str, object]) -> dict[str, list[int]]:
-    raw_labels = config.get("id2label", {})
-    if not isinstance(raw_labels, dict):
-        raise ValueError("Segmentation model config is missing id2label.")
-    normalized = {
-        int(index): str(label).strip().casefold()
-        for index, label in raw_labels.items()
-    }
-    resolved: dict[str, list[int]] = {}
-    for category, labels in SEMANTIC_MASK_LABELS.items():
-        wanted = {label.casefold() for label in labels}
-        indices = [index for index, label in normalized.items() if label in wanted]
-        if not indices:
-            raise ValueError(f"Segmentation model has no labels for {category}.")
-        resolved[category] = indices
-    return resolved
-
-
-def _softmax(values: np.ndarray, axis: int) -> np.ndarray:
-    shifted = values - np.max(values, axis=axis, keepdims=True)
-    exponent = np.exp(shifted)
-    return exponent / np.sum(exponent, axis=axis, keepdims=True)
-
-
-def _infer_masks(
-    session: Any,
-    rgb: np.ndarray,
-    processor_config: dict[str, object],
-    category_indices: dict[str, list[int]],
-) -> dict[str, np.ndarray]:
-    model_input = _preprocess(rgb, processor_config)
-    logits = session.run(["logits"], {"pixel_values": model_input})[0]
-    probabilities = _softmax(logits[0], axis=0)
-    height, width = rgb.shape[:2]
+    A category the worker suppressed (blank PNG) simply loads as all-zero, which
+    the refinement and presence stages treat as "absent" without special-casing.
+    """
     masks: dict[str, np.ndarray] = {}
-    for category, indices in category_indices.items():
-        low_resolution = probabilities[indices].sum(axis=0).astype(np.float32)
-        resized = Image.fromarray(low_resolution, mode="F").resize(
-            (width, height),
-            Image.Resampling.BILINEAR,
-        )
-        masks[category] = np.clip(np.asarray(resized, dtype=np.float32), 0.0, 1.0)
+    for category in SEMANTIC_MASK_CATEGORIES:
+        path = mask_dir / f"{category}.png"
+        if not path.is_file():
+            continue
+        with Image.open(path) as image:
+            values = np.asarray(image.convert("L"), dtype=np.float32) / 255.0
+        masks[category] = values
     return masks
 
 
 def _box_mean(values: np.ndarray, radius: int) -> np.ndarray:
     if radius <= 0:
         return values.astype(np.float32, copy=True)
-    padded = np.pad(values, ((radius, radius), (radius, radius)), mode="reflect")
+    source = np.ascontiguousarray(values, dtype=np.float32)
+    kernel = radius * 2 + 1
+    # OpenCV's C++ box filter is ~10x faster than the numpy integral image and
+    # is the dominant cost of guided-filter refinement. BORDER_DEFAULT is
+    # reflect-101, matching np.pad(mode="reflect"); output is identical to the
+    # fallback within float tolerance. cv2 lives in the managed AI runtime.
+    opencv = _load_opencv()
+    if opencv is not None:
+        return opencv.boxFilter(
+            source,
+            -1,
+            (kernel, kernel),
+            normalize=True,
+            borderType=opencv.BORDER_DEFAULT,
+        )
+    padded = np.pad(source, ((radius, radius), (radius, radius)), mode="reflect")
     integral = np.pad(padded, ((1, 0), (1, 0)), mode="constant")
     integral = np.cumsum(np.cumsum(integral, axis=0, dtype=np.float32), axis=1, dtype=np.float32)
-    kernel = radius * 2 + 1
     sums = (
         integral[kernel:, kernel:]
         - integral[:-kernel, kernel:]
@@ -698,25 +901,51 @@ def _box_mean(values: np.ndarray, radius: int) -> np.ndarray:
     return sums / float(kernel * kernel)
 
 
+class _GuideStats:
+    """RGB-only guided-filter terms, shared across every category of one image.
+
+    ``mean_I`` and ``var_I`` depend only on the guide image, not the mask, so
+    computing them once instead of per category removes two of the six box-mean
+    passes each category otherwise pays.
+    """
+
+    __slots__ = ("gray", "mean_i", "variance_i", "radius", "epsilon")
+
+    def __init__(self, gray, mean_i, variance_i, radius: int, epsilon: float) -> None:
+        self.gray = gray
+        self.mean_i = mean_i
+        self.variance_i = variance_i
+        self.radius = radius
+        self.epsilon = epsilon
+
+
+def _guide_stats(guide_rgb: np.ndarray, *, radius: int = 8, epsilon: float = 1e-3) -> _GuideStats:
+    rgb = guide_rgb.astype(np.float32) / 255.0
+    gray = rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+    mean_i = _box_mean(gray, radius)
+    variance_i = _box_mean(gray * gray, radius) - mean_i * mean_i
+    return _GuideStats(gray, mean_i, variance_i, radius, epsilon)
+
+
 def _guided_filter(
     guide_rgb: np.ndarray,
     mask: np.ndarray,
     *,
     radius: int = 8,
     epsilon: float = 1e-3,
+    stats: _GuideStats | None = None,
 ) -> np.ndarray:
-    rgb = guide_rgb.astype(np.float32) / 255.0
-    gray = rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+    # Reuse precomputed guide statistics when refining many masks over one image;
+    # otherwise derive them for this single call (keeps the function standalone).
+    guide = stats if stats is not None else _guide_stats(guide_rgb, radius=radius, epsilon=epsilon)
+    gray = guide.gray
     source = mask.astype(np.float32, copy=False)
-    mean_i = _box_mean(gray, radius)
-    mean_p = _box_mean(source, radius)
-    corr_i = _box_mean(gray * gray, radius)
-    corr_ip = _box_mean(gray * source, radius)
-    variance_i = corr_i - mean_i * mean_i
-    covariance_ip = corr_ip - mean_i * mean_p
-    a = covariance_ip / (variance_i + epsilon)
-    b = mean_p - a * mean_i
-    return np.clip(_box_mean(a, radius) * gray + _box_mean(b, radius), 0.0, 1.0)
+    mean_p = _box_mean(source, guide.radius)
+    corr_ip = _box_mean(gray * source, guide.radius)
+    covariance_ip = corr_ip - guide.mean_i * mean_p
+    a = covariance_ip / (guide.variance_i + guide.epsilon)
+    b = mean_p - a * guide.mean_i
+    return np.clip(_box_mean(a, guide.radius) * gray + _box_mean(b, guide.radius), 0.0, 1.0)
 
 
 def _tighten_mask_confidence(

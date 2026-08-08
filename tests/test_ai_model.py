@@ -89,7 +89,7 @@ class AIModelTests(unittest.TestCase):
         self.assertEqual(installation.install_dir.parent.name, "models")
         self.assertEqual(installation.required_filenames, SEMANTIC_MODEL_REQUIRED_FILENAMES)
 
-    def test_default_segmentation_model_installation_uses_onnx_bundle(self) -> None:
+    def test_default_segmentation_model_installation_uses_oneformer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {"LOCALAPPDATA": temp_dir}
             with patch.dict(os.environ, env, clear=False):
@@ -97,20 +97,35 @@ class AIModelTests(unittest.TestCase):
 
         self.assertEqual(
             installation.repo_id,
-            "nvidia/segformer-b0-finetuned-ade-512-512",
+            "shi-labs/oneformer_ade20k_swin_tiny",
         )
         self.assertEqual(
             installation.install_dir.name,
-            "segformer-b0-finetuned-ade-512-512",
+            "oneformer_ade20k_swin_tiny",
         )
         self.assertEqual(
             installation.required_filenames,
             SEGMENTATION_MODEL_REQUIRED_FILENAMES,
         )
+        # OneFormer's seven files land flat in the managed directory (no onnx/).
+        self.assertIn("pytorch_model.bin", SEGMENTATION_MODEL_REQUIRED_FILENAMES)
+        self.assertNotIn("onnx/model.onnx", SEGMENTATION_MODEL_REQUIRED_FILENAMES)
         self.assertTrue(
-            installation.download_url("onnx/model.onnx").endswith(
-                "/onnx/model.onnx?download=true"
+            installation.download_url("pytorch_model.bin").endswith(
+                "/pytorch_model.bin?download=true"
             )
+        )
+
+    def test_segmentation_download_verifies_pinned_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {"LOCALAPPDATA": temp_dir}
+            with patch.dict(os.environ, env, clear=False):
+                installation = resolve_segmentation_model_installation()
+        # Default repo/revision carry the pinned checksums for offline verification.
+        self.assertIsNotNone(installation.expected_sha256)
+        self.assertEqual(
+            set(installation.expected_sha256 or {}),
+            set(SEGMENTATION_MODEL_REQUIRED_FILENAMES),
         )
 
     def test_default_birefnet_installation_is_an_optional_editor_model(self) -> None:
