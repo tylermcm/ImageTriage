@@ -323,6 +323,30 @@ class ScenePanelWiringTests(unittest.TestCase):
         panel.handle_overlay_scene_picked("sky")
         self.assertEqual(["sky"], requested)
 
+    def test_click_to_select_takes_over_scene_pick_and_normalizes_clicks(self) -> None:
+        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
+
+        panel = self._masks_tab_panel()
+        panel._show_mask_pane(panel.MASK_PANE_CREATE)
+        # Set the flag directly to avoid the warm task side effect.
+        panel._point_select_active = True
+        state = panel.mask_overlay_state()
+        self.assertTrue(state["point_pick"])
+        self.assertFalse(state["scene_pick"])  # click-select takes over
+
+        panel._mask_source_size = lambda: (200, 100)  # type: ignore[assignment]
+        started: list[list[tuple[float, float]]] = []
+        panel._start_prompt_mask_task = started.append  # type: ignore[assignment]
+        panel.handle_overlay_point_picked(100.0, 50.0)  # dead center
+        self.assertEqual([[(0.5, 0.5)]], started)
+
+        # A click with the mode off is ignored.
+        panel._point_select_active = False
+        started.clear()
+        panel.handle_overlay_point_picked(10.0, 10.0)
+        self.assertEqual([], started)
+        panel.close()
+
 
 if __name__ == "__main__":
     unittest.main()

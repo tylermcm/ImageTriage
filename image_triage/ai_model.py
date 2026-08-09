@@ -527,6 +527,84 @@ def download_birefnet_model(
     )
 
 
+# --- SAM 2.1 promptable segmentation (Editor "click to select") --------------
+# facebook/sam2.1-hiera-tiny is Apache-2.0 and loads offline via transformers
+# Sam2Model/Sam2Processor from a flat directory, exactly like OneFormer.
+DEFAULT_SAM_MODEL_REPO_ID = "facebook/sam2.1-hiera-tiny"
+DEFAULT_SAM_MODEL_REVISION = "de431c4043854a71d8101e17995dfe596bf101a5"
+DEFAULT_SAM_MODEL_SIZE_MB = 150
+SAM_MODEL_DIR_ENV = "IMAGE_TRIAGE_SAM_MODEL_DIR"
+SAM_MODEL_REPO_ENV = "IMAGE_TRIAGE_SAM_MODEL_REPO_ID"
+SAM_MODEL_REVISION_ENV = "IMAGE_TRIAGE_SAM_MODEL_REVISION"
+SAM_MODEL_REQUIRED_FILENAMES = (
+    "config.json",
+    "model.safetensors",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "video_preprocessor_config.json",
+)
+DEFAULT_SAM_MODEL_SHA256 = {
+    "config.json": "860aff9751b139d83a4ad7df1e5535416fded533e0ead02625edbefcb9953cce",
+    "model.safetensors": "48c14467e5cf9e51870511feb72c89688e82dd74523142c0538b663e193ac2a7",
+    "preprocessor_config.json": "6ebf229ee259368ce4a8d4f2fe893a72b053023710853e257253939e601f583d",
+    "processor_config.json": "f8a68e865cfad115c1c2763f3d93eca7b1c622da06da2a9273eb437fb2389b6d",
+    "video_preprocessor_config.json": "9fccfe5f464ec38c2f236d0e6a68e95511c80c22132fc2fa4b9f7b65f24fad95",
+}
+
+
+def default_sam_model_install_dir(*, repo_id: str = DEFAULT_SAM_MODEL_REPO_ID) -> Path:
+    _owner, name = _repo_path_parts(repo_id)
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "Editor" / name
+
+
+def resolve_sam_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(SAM_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_SAM_MODEL_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(SAM_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_SAM_MODEL_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(SAM_MODEL_DIR_ENV, "") or "").strip()
+        or default_sam_model_install_dir(repo_id=resolved_repo_id)
+    )
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=Path(resolved_dir_value).expanduser().resolve(),
+        required_filenames=SAM_MODEL_REQUIRED_FILENAMES,
+        expected_sha256=(
+            DEFAULT_SAM_MODEL_SHA256
+            if resolved_repo_id == DEFAULT_SAM_MODEL_REPO_ID
+            and resolved_revision == DEFAULT_SAM_MODEL_REVISION
+            else None
+        ),
+    )
+
+
+def download_sam_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_sam_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
+
+
 def download_aiculler_clip_model(
     installation: AIModelInstallation | None = None,
     *,

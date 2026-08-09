@@ -47,8 +47,9 @@ from .review_tools import (
     focus_assist_strength_by_id,
 )
 from .scanner import discover_edited_paths
-from .semantic_mask_service import SemanticMaskWarmTask, shutdown_oneformer_worker
-from .subject_masks import SubjectMaskWarmTask, shutdown_birefnet_worker
+from .mask_engine_service import shutdown_mask_engine
+from .semantic_mask_service import SemanticMaskWarmTask
+from .subject_masks import SubjectMaskWarmTask
 
 from .editor_copy import EditorCopyService
 from .editor_render import CpuEditorRenderBackend, EditorRenderService
@@ -696,8 +697,7 @@ class FullScreenPreview(QDialog):
 
         app = QApplication.instance()
         if app is not None:
-            app.aboutToQuit.connect(shutdown_birefnet_worker)
-            app.aboutToQuit.connect(shutdown_oneformer_worker)
+            app.aboutToQuit.connect(shutdown_mask_engine)
 
         self.setWindowTitle("Preview")
         self.setModal(False)
@@ -1577,6 +1577,7 @@ class FullScreenPreview(QDialog):
             state["show_overlay"] = False
             state["create_mode"] = None
             state["scene_pick"] = False
+            state["point_pick"] = False
         if 0 <= self._focused_slot < len(self._panes):
             overlay.attach_to(self._panes[self._focused_slot].image_label)
         overlay.set_state(**state)
@@ -1664,6 +1665,7 @@ class FullScreenPreview(QDialog):
         self._mask_overlay.bitmap_edited.connect(self.photo_editor_panel.handle_overlay_bitmap_edited)
         self._mask_overlay.source_clicked.connect(self.photo_editor_panel.handle_overlay_source_clicked)
         self._mask_overlay.scene_region_picked.connect(self.photo_editor_panel.handle_overlay_scene_picked)
+        self._mask_overlay.point_picked.connect(self.photo_editor_panel.handle_overlay_point_picked)
         self._mask_overlay.subject_candidate_toggled.connect(
             self.photo_editor_panel.handle_overlay_subject_candidate_toggled
         )

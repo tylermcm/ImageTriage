@@ -25,11 +25,9 @@ from .ai_model import (
     resolve_segmentation_model_installation,
 )
 from .imaging import load_image_for_display
+from .mask_engine_service import default_mask_engine_service
 from .perf import perf_logger, write_execution_log
-from .semantic_mask_service import (
-    default_oneformer_worker_service,
-    validate_semantic_runtime,
-)
+from .semantic_mask_service import validate_semantic_runtime
 
 
 SEMANTIC_MASK_CATEGORIES: tuple[str, ...] = (
@@ -486,7 +484,7 @@ def _run_semantic_worker(
     output_dir: Path,
     progress_callback: ProgressCallback | None,
 ):
-    return default_oneformer_worker_service().infer(
+    return default_mask_engine_service().infer_semantic(
         model_dir=model_dir,
         input_path=input_path,
         output_dir=output_dir,

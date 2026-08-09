@@ -396,6 +396,23 @@ class SemanticMaskCacheTests(unittest.TestCase):
         self.assertEqual((1, 2), (first, second))
 
 
+class SemanticMaskEngineRoutingTests(unittest.TestCase):
+    def test_run_semantic_worker_routes_to_the_mask_engine_host(self) -> None:
+        calls: list[str] = []
+        host = type("H", (), {"infer_semantic": lambda _s, **k: calls.append("host") or "HOST"})()
+        original = semantic_masks.default_mask_engine_service
+        semantic_masks.default_mask_engine_service = lambda: host
+        try:
+            result = semantic_masks._run_semantic_worker(
+                model_dir=Path("m"), input_path=Path("i"), output_dir=Path("o"),
+                progress_callback=None,
+            )
+        finally:
+            semantic_masks.default_mask_engine_service = original
+        self.assertEqual("HOST", result)
+        self.assertEqual(["host"], calls)
+
+
 class SemanticMaskPanelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

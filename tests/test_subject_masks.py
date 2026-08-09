@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication
 from image_triage.ai_model import resolve_birefnet_model_installation
 from image_triage.birefnet_worker import _birefnet_rearrange, _emit_metric
 import image_triage.subject_masks as subject_masks
+import image_triage.semantic_mask_service as semantic_mask_service
 from image_triage.semantic_masks import SemanticCategoryPresence, SemanticMaskResult
 from image_triage.subject_masks import (
     SubjectMaskComponent,
@@ -45,91 +46,6 @@ class SubjectMaskCacheTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertFalse(third_hit)
             self.assertNotEqual(first, third)
-
-    def test_persistent_worker_reuses_imports_model_and_process(self) -> None:
-        commands: list[str] = []
-
-        class FakeStdout:
-            def __init__(self) -> None:
-                self.lines: list[str] = []
-
-            def readline(self) -> str:
-                return self.lines.pop(0) if self.lines else ""
-
-            def close(self) -> None:
-                pass
-
-        class FakeProcess:
-            pid = 4242
-
-            def __init__(self) -> None:
-                self.stdout = FakeStdout()
-                self.stopped = False
-                self.stdin = FakeStdin(self)
-
-            def poll(self):
-                return 0 if self.stopped else None
-
-            def wait(self, timeout=None):
-                self.stopped = True
-                return 0
-
-            def terminate(self) -> None:
-                self.stopped = True
-
-            def kill(self) -> None:
-                self.stopped = True
-
-        class FakeStdin:
-            def __init__(self, process: FakeProcess) -> None:
-                self.process = process
-
-            def write(self, raw_request: str) -> int:
-                request = json.loads(raw_request)
-                command = str(request["command"])
-                commands.append(command)
-                result: dict[str, object] = {"device": "cuda", "stage": command}
-                if command == "infer":
-                    result["components"] = [{"id": "subject-01"}]
-                response = {
-                    "id": request["id"],
-                    "ok": True,
-                    "result": result,
-                    "error": "",
-                }
-                self.process.stdout.lines.append("RESPONSE " + json.dumps(response) + "\n")
-                return len(raw_request)
-
-            def flush(self) -> None:
-                pass
-
-            def close(self) -> None:
-                pass
-
-        service = subject_masks.BiRefNetWorkerService(idle_timeout_seconds=3600)
-        fake_process = FakeProcess()
-        service._process = fake_process  # type: ignore[assignment]
-        model_dir = Path("model").resolve()
-        service.warm_imports()
-        service.warm_imports()
-        service.warm_model(model_dir)
-        service.warm_model(model_dir)
-        for index in range(2):
-            device, components = service.infer(
-                model_dir=model_dir,
-                input_path=Path(f"input-{index}.png"),
-                output_path=Path(f"output-{index}.png"),
-                components_dir=Path(f"components-{index}"),
-                progress_callback=None,
-            )
-            self.assertEqual("cuda", device)
-            self.assertEqual([{"id": "subject-01"}], components)
-        service.shutdown()
-
-        self.assertEqual(
-            ["warm-imports", "load-model", "infer", "infer", "shutdown"],
-            commands,
-        )
 
     def test_worker_metric_is_structured_and_host_records_its_duration(self) -> None:
         previous = os.environ.get("IMAGE_TRIAGE_AI_METRICS")
@@ -164,14 +80,14 @@ class SubjectMaskCacheTests(unittest.TestCase):
                 self.events.append((event, duration_ms, fields))
 
         logger = RecordingLogger()
-        original_perf_logger = subject_masks.perf_logger
-        subject_masks.perf_logger = lambda: logger
+        original_perf_logger = semantic_mask_service.perf_logger
+        semantic_mask_service.perf_logger = lambda: logger
         try:
-            parsed = subject_masks._parse_worker_metric(line)
+            parsed = semantic_mask_service._parse_worker_metric(line)
             self.assertIsNotNone(parsed)
-            subject_masks._record_worker_metric(parsed or {})
+            semantic_mask_service._record_worker_metric(parsed or {})
         finally:
-            subject_masks.perf_logger = original_perf_logger
+            semantic_mask_service.perf_logger = original_perf_logger
 
         self.assertEqual("ai.mask.birefnet.worker.inference", logger.events[0][0])
         self.assertEqual("worker", logger.events[0][2]["source"])
@@ -365,6 +281,23 @@ class SubjectMaskCacheTests(unittest.TestCase):
                     np.asarray(merged.convert("L"), dtype=np.uint8),
                 )
             self.assertEqual(left_path, combine_subject_components(result, ("subject-01",)))
+
+
+class SubjectMaskEngineRoutingTests(unittest.TestCase):
+    def test_run_subject_worker_routes_to_the_mask_engine_host(self) -> None:
+        calls: list[str] = []
+        host = type("H", (), {"infer_subject": lambda _s, **k: calls.append("host") or ("cuda", [])})()
+        original = subject_masks.default_mask_engine_service
+        subject_masks.default_mask_engine_service = lambda: host
+        try:
+            result = subject_masks._run_subject_worker(
+                model_dir=Path("m"), input_path=Path("i"), output_path=Path("o"),
+                components_dir=Path("c"), progress_callback=None,
+            )
+        finally:
+            subject_masks.default_mask_engine_service = original
+        self.assertEqual(("cuda", []), result)
+        self.assertEqual(["host"], calls)
 
 
 class SubjectMaskPanelTests(unittest.TestCase):
