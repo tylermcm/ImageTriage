@@ -451,6 +451,8 @@ class MaskOverlay(QWidget):
     source_clicked = Signal(float, float)
     # A detected scene region was clicked (category name).
     scene_region_picked = Signal(str)
+    # A point was clicked in promptable click-to-select mode (source coords).
+    point_picked = Signal(float, float)
     # A BiRefNet foreground component was toggled in the subject picker.
     subject_candidate_toggled = Signal(str)
     # An edit drag ended; owners should persist the pending changes.
@@ -486,6 +488,7 @@ class MaskOverlay(QWidget):
         self._scene_index: SceneRegionIndex | None = None
         self._scene_pick = False
         self._scene_hover: str | None = None
+        self._point_pick = False
         self._subject_candidates: list[dict[str, Any]] = []
         self._subject_hover: str | None = None
         self._watched: QWidget | None = None
@@ -530,6 +533,7 @@ class MaskOverlay(QWidget):
         brush_flow: int = 100,
         scene_index: SceneRegionIndex | None = None,
         scene_pick: bool = False,
+        point_pick: bool = False,
         subject_candidates: list[dict[str, Any]] | None = None,
         overlay_mode: str = "color",
         overlay_color: QColor | str | None = None,
@@ -605,6 +609,7 @@ class MaskOverlay(QWidget):
         self._scene_pick = bool(scene_pick) and self._scene_index is not None
         if not self._scene_pick:
             self._scene_hover = None
+        self._point_pick = bool(point_pick)
         self._subject_candidates = [
             dict(candidate) for candidate in (subject_candidates or [])
         ]
@@ -621,6 +626,7 @@ class MaskOverlay(QWidget):
             )
             or (self._mask_type == "bitmap" and self._brush_mode is not None)
             or self._scene_pick
+            or self._point_pick
             or bool(self._subject_candidates)
         )
         self._set_pass_through(not accepts_mouse)
@@ -720,6 +726,8 @@ class MaskOverlay(QWidget):
         # empty canvas is the whole point of scene picking.
         if self._scene_pick and self._scene_hover:
             self._paint_scene_hover(painter)
+        if self._point_pick and self._hover_pos is not None and self._drag is None:
+            self._paint_point_pick_hint(painter)
         if self._params is None and not self._components:
             painter.end()
             return
@@ -1060,6 +1068,29 @@ class MaskOverlay(QWidget):
         painter.setPen(QPen(QColor(240, 240, 240)))
         painter.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
 
+    def _paint_point_pick_hint(self, painter: QPainter) -> None:
+        pos = self._hover_pos
+        if pos is None:
+            return
+        halo, line = self._handle_pen()
+        reach = 9.0
+        for pen in (halo, line):
+            painter.setPen(pen)
+            painter.drawLine(QPointF(pos.x() - reach, pos.y()), QPointF(pos.x() + reach, pos.y()))
+            painter.drawLine(QPointF(pos.x(), pos.y() - reach), QPointF(pos.x(), pos.y() + reach))
+        text = "click a person or object to select it"
+        metrics = QFontMetricsF(painter.font())
+        width = metrics.horizontalAdvance(text) + CHIP_PAD * 2
+        height = metrics.height() + CHIP_PAD
+        left = min(pos.x() + CHIP_GAP, self.width() - width - 2)
+        top = min(max(2.0, pos.y() - height - CHIP_GAP), self.height() - height - 2)
+        chip = QRectF(max(2.0, left), max(2.0, top), width, height)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(20, 20, 20, 225))
+        painter.drawRoundedRect(chip, 4, 4)
+        painter.setPen(QPen(QColor(240, 240, 240)))
+        painter.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
+
     def _handle_pen(self) -> tuple[QPen, QPen]:
         halo = QPen(QColor(0, 0, 0, 140), 3.0)
         line = QPen(QColor(255, 255, 255, 235), 1.4)
@@ -1323,6 +1354,11 @@ class MaskOverlay(QWidget):
             self.update()
             event.accept()
             return
+        if self._point_pick and self._create_mode is None and self._brush_mode is None:
+            src_x, src_y = self._to_source(pos)
+            self.point_picked.emit(src_x, src_y)
+            event.accept()
+            return
         category = self._scene_category_at(pos)
         if category:
             self.scene_region_picked.emit(category)
@@ -1484,7 +1520,7 @@ class MaskOverlay(QWidget):
     def _update_hover_cursor(self, pos: QPointF) -> None:
         mode = self._hit_test(pos)
         if mode is None:
-            if self._create_mode is not None:
+            if self._create_mode is not None or self._point_pick:
                 self.setCursor(Qt.CursorShape.CrossCursor)
             elif self._subject_hover:
                 self.setCursor(Qt.CursorShape.PointingHandCursor)

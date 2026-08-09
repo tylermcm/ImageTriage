@@ -77,6 +77,7 @@ from ..subject_masks import (
     SubjectMaskTask,
     combine_subject_components,
 )
+from ..prompt_masks import PromptMaskResult, PromptMaskTask, PromptMaskWarmTask
 
 
 _CLI_EDITOR_ROOT = Path(__file__).resolve().parents[2] / "cli_editor"
@@ -873,6 +874,10 @@ class PhotoEditorPanel(QFrame):
         self._subject_choice_result: SubjectMaskResult | None = None
         self._subject_choice_context: tuple[str | None, str] | None = None
         self._subject_choice_selected_ids: set[str] = set()
+        # Promptable click-to-select (SAM) state.
+        self._point_select_active = False
+        self._prompt_mask_task: object | None = None
+        self._prompt_mask_counter = 0
         # Lazily derived from the result above; keyed on it so a new analysis
         # invalidates the index without an explicit reset.
         self._scene_index: SceneRegionIndex | None = None
@@ -1749,6 +1754,17 @@ class PhotoEditorPanel(QFrame):
             button.hide()
             self._semantic_mask_buttons[category] = button
         cl.addLayout(semantic_grid)
+        # Promptable click-to-select: isolate one specific person/object (incl.
+        # one of several touching people) by clicking it.
+        self.point_select_button = self._action_button("Click to Select (AI)", content)
+        self.point_select_button.setObjectName("semanticMaskButton")
+        self.point_select_button.setCheckable(True)
+        self.point_select_button.setToolTip(
+            "Click a person or object on the photo to select just that one — "
+            "even when people overlap."
+        )
+        self.point_select_button.toggled.connect(self._set_point_select_active)
+        cl.addWidget(self.point_select_button)
         self.semantic_mask_status = QLabel("Scene analysis starts when this tab opens.", content)
         self.semantic_mask_status.setObjectName("editorHint")
         self.semantic_mask_status.setWordWrap(True)
@@ -2515,6 +2531,8 @@ class PhotoEditorPanel(QFrame):
         self._color_resample_mask_id = None
         self._semantic_mask_request_context = None
         self._subject_mask_request_context = None
+        self._point_select_active = False
+        self._prompt_mask_task = None
         self._clear_subject_choice()
         if not source_path:
             self._semantic_mask_result = None
@@ -3079,9 +3097,22 @@ class PhotoEditorPanel(QFrame):
         )
         # Scene picking belongs exclusively to New Mask. It yields to any
         # armed tool and, in the overlay, to the selected mask's handles.
+        # Promptable click-to-select: when armed on the New Mask pane, a click
+        # anywhere becomes a SAM point prompt. It takes over from scene picking.
+        point_pick = bool(
+            interactive
+            and create_pane_active
+            and getattr(self, "_point_select_active", False)
+            and self._mask_create_mode is None
+            and self._brush_paint_mode is None
+            and self._active_mask_edit_id is None
+            and self._color_resample_mask_id is None
+            and self._subject_choice_result is None
+        )
         scene_pick = (
             interactive
             and create_pane_active
+            and not point_pick
             and self._mask_create_mode is None
             and self._brush_paint_mode is None
             and self._active_mask_edit_id is None
@@ -3097,6 +3128,7 @@ class PhotoEditorPanel(QFrame):
         return {
             "scene_index": self._ensure_scene_index() if scene_pick else None,
             "scene_pick": scene_pick,
+            "point_pick": point_pick,
             "interactive": interactive,
             "show_overlay": (
                 interactive
@@ -3574,6 +3606,121 @@ class PhotoEditorPanel(QFrame):
     def handle_overlay_scene_picked(self, category: str) -> None:
         """A detected region was clicked on the photo."""
         self.request_semantic_mask(category)
+
+    # -- promptable click-to-select (SAM) ----------------------------------
+    def _set_point_select_active(self, active: bool) -> None:
+        active = bool(active)
+        self._point_select_active = active
+        button = getattr(self, "point_select_button", None)
+        if button is not None and button.isChecked() != active:
+            button.blockSignals(True)
+            button.setChecked(active)
+            button.blockSignals(False)
+        if active:
+            # Switching into click-select cancels any pending BiRefNet subject
+            # picker (its candidate pins would otherwise block point clicks).
+            self._clear_subject_choice()
+            self._request_prompt_warm()
+            self._set_status("Click a person or object on the photo to select just that one")
+        self.mask_overlay_changed.emit()
+
+    def _request_prompt_warm(self) -> None:
+        try:
+            QThreadPool.globalInstance().start(PromptMaskWarmTask("model"))
+        except Exception:
+            pass
+
+    def handle_overlay_point_picked(self, x: float, y: float) -> None:
+        """A click landed on the photo in click-to-select mode."""
+        if not self._point_select_active or self._source_path is None:
+            return
+        if self._prompt_mask_task is not None:
+            self._set_status("Still selecting — one moment")
+            return
+        source_size = self._mask_source_size()
+        if not source_size or source_size[0] < 1 or source_size[1] < 1:
+            self._set_status("Select an image first")
+            return
+        nx = max(0.0, min(1.0, float(x) / source_size[0]))
+        ny = max(0.0, min(1.0, float(y) / source_size[1]))
+        self._start_prompt_mask_task([(nx, ny)])
+
+    def _start_prompt_mask_task(self, points_norm: list[tuple[float, float]]) -> None:
+        if self._source_path is None or self._prompt_mask_task is not None:
+            return
+        self._prompt_mask_context = (self._pending_parent_id, self._pending_combine)
+        task = PromptMaskTask(self._source_path, points_norm)
+        task.signals.progress.connect(
+            self._handle_prompt_mask_progress, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.finished.connect(
+            self._handle_prompt_mask_finished, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.failed.connect(
+            self._handle_prompt_mask_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._prompt_mask_task = task
+        self.semantic_mask_status.setText("Selecting...")
+        self.semantic_mask_status.show()
+        self._set_status("Selecting...")
+        self._semantic_mask_pool.start(task)
+
+    def _handle_prompt_mask_progress(self, request_id: str, message: str) -> None:
+        if self._prompt_mask_task is None:
+            return
+        self.semantic_mask_status.setText(message)
+        self.semantic_mask_status.show()
+        self._set_status(message)
+
+    def _handle_prompt_mask_finished(
+        self, request_id: str, source_path: str, result: object
+    ) -> None:
+        self._prompt_mask_task = None
+        context = getattr(self, "_prompt_mask_context", (None, "add"))
+        self._prompt_mask_context = None
+        if self._source_path is None or Path(source_path) != self._source_path.resolve():
+            return
+        if not isinstance(result, PromptMaskResult) or not result.mask_path.is_file():
+            self._handle_prompt_mask_failed(request_id, source_path, "Selection produced no mask")
+            return
+        self._prompt_mask_counter += 1
+        category = f"Selection {self._prompt_mask_counter}"
+        parent_id, combine = context or (None, "add")
+        try:
+            mask_id = self._register_generated_bitmap_mask(
+                category=category,
+                mask_path=result.mask_path,
+                source_size=result.source_size,
+                model={
+                    "id": result.model_id,
+                    "version": result.model_version,
+                    "weightsHash": result.weights_hash,
+                    "refinementVersion": "sam2.1",
+                },
+                parent_id=parent_id,
+                combine=combine,
+                ui_style="subject-select",
+            )
+        except Exception as exc:
+            self._handle_prompt_mask_failed(request_id, source_path, str(exc))
+            return
+        self.semantic_mask_status.hide()
+        self._select_mask_in_list(mask_id)
+        self._set_status(f"Created {category} — click another to select more")
+        # Stay in click-to-select so the user can pick more objects.
+        if self._point_select_active:
+            self._show_mask_pane(self.MASK_PANE_CREATE)
+
+    def _handle_prompt_mask_failed(
+        self, request_id: str, source_path: str, message: str
+    ) -> None:
+        self._prompt_mask_task = None
+        self._prompt_mask_context = None
+        if self._source_path is not None and Path(source_path) == self._source_path.resolve():
+            text = f"Selection failed: {message}"
+            self.semantic_mask_status.setText(text)
+            self.semantic_mask_status.show()
+            self._set_status(text)
 
     def _semantic_mask_id(self, category: str) -> str | None:
         if self._session is None:

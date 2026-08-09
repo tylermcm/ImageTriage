@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import importlib
 import json
 import os
 import sys
 import time
-import traceback
 import types
 from pathlib import Path
 
@@ -391,99 +389,3 @@ def generate_subject_mask(
     if emit_result:
         print("RESULT " + json.dumps(result), flush=True)
     return result
-
-
-def _server_response(
-    request_id: object,
-    *,
-    result: dict[str, object] | None = None,
-    error: str = "",
-) -> None:
-    print(
-        "RESPONSE "
-        + json.dumps(
-            {
-                "id": request_id,
-                "ok": not error,
-                "result": result or {},
-                "error": error,
-            },
-            default=str,
-        ),
-        flush=True,
-    )
-
-
-def run_server(requested_device: str) -> int:
-    engine = _BiRefNetEngine(requested_device)
-    for raw_line in sys.stdin:
-        line = raw_line.strip()
-        if not line:
-            continue
-        request_id: object = None
-        try:
-            request = json.loads(line)
-            if not isinstance(request, dict):
-                raise ValueError("Worker request must be a JSON object.")
-            request_id = request.get("id")
-            command = str(request.get("command") or "").strip().casefold()
-            if command == "warm-imports":
-                device = engine.warm_imports()
-                _server_response(request_id, result={"device": device, "stage": "imports"})
-            elif command == "load-model":
-                model_dir = Path(str(request.get("modelDir") or "")).resolve()
-                device = engine.load_model(model_dir)
-                _server_response(request_id, result={"device": device, "stage": "model"})
-            elif command == "infer":
-                result = generate_subject_mask(
-                    model_dir=Path(str(request.get("modelDir") or "")).resolve(),
-                    input_path=Path(str(request.get("input") or "")).resolve(),
-                    output_path=Path(str(request.get("output") or "")).resolve(),
-                    components_dir=(
-                        Path(str(request["componentsDir"])).resolve()
-                        if request.get("componentsDir")
-                        else None
-                    ),
-                    requested_device=requested_device,
-                    engine=engine,
-                    emit_result=False,
-                )
-                _server_response(request_id, result=result)
-            elif command == "shutdown":
-                _server_response(request_id, result={"stage": "shutdown"})
-                return 0
-            else:
-                raise ValueError(f"Unknown worker command: {command or '<empty>'}")
-        except Exception as exc:
-            detail = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-            _server_response(request_id, error=detail or str(exc))
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate a BiRefNet subject mask.")
-    parser.add_argument("--server", action="store_true")
-    parser.add_argument("--model-dir", type=Path)
-    parser.add_argument("--input", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--components-dir", type=Path)
-    parser.add_argument("--device", default="auto")
-    args = parser.parse_args(argv)
-    if args.server:
-        return run_server(args.device)
-    if args.model_dir is None or args.input is None or args.output is None:
-        parser.error("--model-dir, --input, and --output are required outside server mode")
-    generate_subject_mask(
-        model_dir=args.model_dir.resolve(),
-        input_path=args.input.resolve(),
-        output_path=args.output.resolve(),
-        components_dir=(
-            args.components_dir.resolve() if args.components_dir is not None else None
-        ),
-        requested_device=args.device,
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
