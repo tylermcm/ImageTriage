@@ -29,6 +29,7 @@ if str(_WORKER_DIR) not in sys.path:
     sys.path.insert(0, str(_WORKER_DIR))
 
 import birefnet_worker  # noqa: E402
+import depth_worker  # noqa: E402
 import oneformer_worker  # noqa: E402
 import sam_worker  # noqa: E402
 
@@ -36,7 +37,8 @@ import sam_worker  # noqa: E402
 ENGINE_SUBJECT = "subject"
 ENGINE_SEMANTIC = "semantic"
 ENGINE_PROMPT = "prompt"
-ENGINE_NAMES = (ENGINE_SUBJECT, ENGINE_SEMANTIC, ENGINE_PROMPT)
+ENGINE_DEPTH = "depth"
+ENGINE_NAMES = (ENGINE_SUBJECT, ENGINE_SEMANTIC, ENGINE_PROMPT, ENGINE_DEPTH)
 
 
 class MaskEngineHost:
@@ -54,11 +56,13 @@ class MaskEngineHost:
         subject_engine=None,
         semantic_engine=None,
         prompt_engine=None,
+        depth_engine=None,
     ) -> None:
         self.requested_device = requested_device
         self._subject = subject_engine or birefnet_worker._BiRefNetEngine(requested_device)
         self._semantic = semantic_engine or oneformer_worker._OneFormerEngine(requested_device)
         self._prompt = prompt_engine or sam_worker._SamEngine(requested_device)
+        self._depth = depth_engine or depth_worker._DepthEngine(requested_device)
 
     def _engine(self, name: str):
         if name == ENGINE_SUBJECT:
@@ -67,6 +71,8 @@ class MaskEngineHost:
             return self._semantic
         if name == ENGINE_PROMPT:
             return self._prompt
+        if name == ENGINE_DEPTH:
+            return self._depth
         raise ValueError(f"Unknown engine: {name or '<empty>'}")
 
     def warm_imports(self, engine: str | None = None) -> str:
@@ -76,6 +82,7 @@ class MaskEngineHost:
             device = self._subject.warm_imports()
             self._semantic.warm_imports()
             self._prompt.warm_imports()
+            self._depth.warm_imports()
             return device
         return self._engine(engine).warm_imports()
 
@@ -133,6 +140,15 @@ class MaskEngineHost:
                 minimum_coverage=float(request.get("minimumCoverage") or 0.0),
                 requested_device=self.requested_device,
                 engine=self._semantic,
+                emit_result=False,
+            )
+        if engine == ENGINE_DEPTH:
+            return depth_worker.generate_depth(
+                model_dir=Path(str(request.get("modelDir") or "")).resolve(),
+                input_path=Path(str(request.get("inputPath") or "")).resolve(),
+                output_path=Path(str(request.get("outputPath") or "")).resolve(),
+                requested_device=self.requested_device,
+                engine=self._depth,
                 emit_result=False,
             )
         raise ValueError(f"Unknown engine: {engine or '<empty>'}")

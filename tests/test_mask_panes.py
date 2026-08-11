@@ -517,8 +517,9 @@ class MaskContextualSectionTests(unittest.TestCase):
         self.assertEqual(4.5, params["edgeFeather"])
         self.assertEqual(22, params["edgeContrast"])
         self.assertEqual(-15, params["edgeShift"])
+        # OK sits below the Refine Edges row and the Clear/Invert row.
         self.assertEqual(
-            5,
+            6,
             panel._mask_touchup_page.layout().indexOf(
                 panel.mask_touchup_ok_button.parentWidget()
             ),

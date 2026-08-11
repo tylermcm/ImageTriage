@@ -176,6 +176,52 @@ class GeneratedMaskRefinementTests(unittest.TestCase):
         self.assertEqual(0, cleared.pixelColor(6, 4).red())
         self.assertEqual(255, inverted.pixelColor(6, 4).red())
 
+    def test_root_clear_and_invert_act_on_the_whole_group(self) -> None:
+        """A click-to-select session is one mask built from several 'add'
+        components; the root's clear/invert must act on the finished union, not
+        just the root layer (per-component invert would flood the frame)."""
+        left = QImage(20, 10, QImage.Format.Format_Grayscale8)
+        left.fill(QColor("black"))
+        for y in range(10):
+            for x in range(0, 6):
+                left.setPixel(x, y, QColor("white").rgb())
+        right = QImage(20, 10, QImage.Format.Format_Grayscale8)
+        right.fill(QColor("black"))
+        for y in range(10):
+            for x in range(14, 20):
+                right.setPixel(x, y, QColor("white").rgb())
+
+        def group(root_params):
+            return mask_strength_qimage(
+                [
+                    ("bitmap", {"_liveBitmap": left, **root_params}, "add"),
+                    ("bitmap", {"_liveBitmap": right}, "add"),
+                ],
+                20,
+                10,
+                (20, 10),
+            )
+
+        base = group({})
+        assert base is not None
+        self.assertEqual(255, base.pixelColor(2, 5).red())   # left block in
+        self.assertEqual(255, base.pixelColor(17, 5).red())  # right block in
+        self.assertEqual(0, base.pixelColor(10, 5).red())    # gap out
+
+        inverted = group({"invert": True})
+        assert inverted is not None
+        # The whole union flips: both blocks drop out, the gap fills in.
+        self.assertEqual(0, inverted.pixelColor(2, 5).red())
+        self.assertEqual(0, inverted.pixelColor(17, 5).red())
+        self.assertEqual(255, inverted.pixelColor(10, 5).red())
+
+        cleared = group({"selectionCleared": True})
+        assert cleared is not None
+        # Clearing the root empties every component, not just the root.
+        self.assertEqual(0, cleared.pixelColor(2, 5).red())
+        self.assertEqual(0, cleared.pixelColor(17, 5).red())
+        self.assertEqual(0, cleared.pixelColor(10, 5).red())
+
     def test_subject_mask_refinement_params_are_range_validated(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_refinement_schema_") as temp_dir:
             source_path = Path(temp_dir) / "source.jpg"

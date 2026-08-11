@@ -8,7 +8,7 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
+from PySide6.QtGui import QCloseEvent, QColor, QIcon, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -553,6 +553,76 @@ class HistogramWidget(QWidget):
         painter.drawPath(_histogram_path(self._stats.histogram_blue, plot_rect, max_value))
         painter.setPen(QPen(self._theme.text_primary.qcolor(), 1.5))
         painter.drawPath(_histogram_path(self._stats.histogram_luma, plot_rect, max_value))
+
+
+class _ToolPopout(QWidget):
+    """A small frameless floating window that hosts one tool's controls, opened
+    from the studio tool rail. Draggable by its header; closes to its button."""
+
+    closed = Signal()
+    _HEADER_H = 34
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.setObjectName("toolPopout")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "#toolPopout{background:#20242b;border:1px solid rgba(255,255,255,0.10);"
+            "border-radius:12px;}"
+            "#toolPopoutHeader{background:rgba(255,255,255,0.04);"
+            "border-top-left-radius:12px;border-top-right-radius:12px;}"
+            "#toolPopoutTitle{color:#e9edf2;font-weight:600;}"
+            "#toolPopoutClose{color:#9aa4b1;border:none;background:transparent;"
+            "font-size:14px;} #toolPopoutClose:hover{color:#e9edf2;}"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        header = QWidget(self)
+        header.setObjectName("toolPopoutHeader")
+        header.setFixedHeight(self._HEADER_H)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 0, 6, 0)
+        title_label = QLabel(title, header)
+        title_label.setObjectName("toolPopoutTitle")
+        close_button = QPushButton("✕", header)
+        close_button.setObjectName("toolPopoutClose")
+        close_button.setFixedSize(24, 24)
+        close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close_button.clicked.connect(self.close)
+        header_layout.addWidget(title_label, 1)
+        header_layout.addWidget(close_button)
+        outer.addWidget(header)
+        self._content_holder = QWidget(self)
+        self._content_layout = QVBoxLayout(self._content_holder)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._content_holder, 1)
+        self.setMinimumWidth(300)
+        self._drag_offset: QPoint | None = None
+
+    def set_content(self, widget: QWidget) -> None:
+        self._content_layout.addWidget(widget)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= self._HEADER_H:
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        else:
+            self._drag_offset = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.closed.emit()
+        super().closeEvent(event)
 
 
 class FullScreenPreview(QDialog):
@@ -1578,6 +1648,7 @@ class FullScreenPreview(QDialog):
             state["create_mode"] = None
             state["scene_pick"] = False
             state["point_pick"] = False
+            state["busy_message"] = None
         if 0 <= self._focused_slot < len(self._panes):
             overlay.attach_to(self._panes[self._focused_slot].image_label)
         overlay.set_state(**state)
@@ -1611,6 +1682,26 @@ class FullScreenPreview(QDialog):
         layout.addWidget(self._studio_group_label("Edit"))
         layout.addWidget(self.next_edit_button)
         layout.addWidget(self.photoshop_button)
+        self.background_tool_button = QPushButton("  Background")
+        self.background_tool_button.setObjectName("studioToolButton")
+        self.background_tool_button.setCheckable(True)
+        self.background_tool_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.background_tool_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.background_tool_button.setToolTip("Background — blur or remove")
+        self.background_tool_button.setIcon(self._background_tool_icon())
+        self.background_tool_button.setIconSize(QSize(18, 18))
+        self.background_tool_button.clicked.connect(self._toggle_background_tool)
+        layout.addWidget(self.background_tool_button)
+        self.lens_blur_tool_button = QPushButton("  Lens Blur")
+        self.lens_blur_tool_button.setObjectName("studioToolButton")
+        self.lens_blur_tool_button.setCheckable(True)
+        self.lens_blur_tool_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.lens_blur_tool_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lens_blur_tool_button.setToolTip("Lens Blur — depth-of-field")
+        self.lens_blur_tool_button.setIcon(self._lens_blur_tool_icon())
+        self.lens_blur_tool_button.setIconSize(QSize(18, 18))
+        self.lens_blur_tool_button.clicked.connect(self._toggle_lens_blur_tool)
+        layout.addWidget(self.lens_blur_tool_button)
         layout.addWidget(self.command_palette_button)
         layout.addStretch(1)
 
@@ -1741,6 +1832,86 @@ class FullScreenPreview(QDialog):
         # Reflect initial state into the freshly-built Studio controls
         # (gray-outs, segmented selections, card summaries).
         self._sync_preview_controls()
+
+    @staticmethod
+    def _background_tool_icon() -> QIcon:
+        pixmap = QPixmap(48, 48)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        # A soft, out-of-focus backdrop bar behind a crisp subject shape.
+        painter.setBrush(QColor(120, 130, 145, 150))
+        painter.drawRoundedRect(7, 11, 34, 13, 6, 6)
+        painter.setBrush(QColor(233, 237, 242))
+        painter.drawEllipse(19, 15, 10, 10)          # head
+        painter.drawRoundedRect(15, 26, 18, 15, 7, 7)  # shoulders
+        painter.end()
+        return QIcon(pixmap)
+
+    def _toggle_background_tool(self) -> None:
+        window = self._ensure_background_tool_window()
+        if window.isVisible():
+            window.hide()
+            self.background_tool_button.setChecked(False)
+            return
+        # Drop the popout just under its toolbar button.
+        window.adjustSize()
+        button = self.background_tool_button
+        window.move(button.mapToGlobal(QPoint(0, button.height() + 6)))
+        window.show()
+        window.raise_()
+        self.background_tool_button.setChecked(True)
+
+    def _ensure_background_tool_window(self) -> QWidget:
+        window = getattr(self, "_background_tool_window", None)
+        if window is not None:
+            return window
+        window = _ToolPopout("Background", self)
+        window.closed.connect(lambda: self.background_tool_button.setChecked(False))
+        window.set_content(self.photo_editor_panel.build_background_tool(window))
+        self._background_tool_window = window
+        return window
+
+    @staticmethod
+    def _lens_blur_tool_icon() -> QIcon:
+        pixmap = QPixmap(48, 48)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        # A crisp aperture ring with a soft halo — depth-of-field shorthand.
+        painter.setBrush(QColor(120, 130, 145, 130))
+        painter.drawEllipse(6, 6, 36, 36)
+        painter.setBrush(QColor(233, 237, 242))
+        painter.drawEllipse(15, 15, 18, 18)
+        painter.setBrush(QColor(120, 130, 145, 200))
+        painter.drawEllipse(21, 21, 6, 6)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _toggle_lens_blur_tool(self) -> None:
+        window = self._ensure_lens_blur_tool_window()
+        if window.isVisible():
+            window.hide()
+            self.lens_blur_tool_button.setChecked(False)
+            return
+        window.adjustSize()
+        button = self.lens_blur_tool_button
+        window.move(button.mapToGlobal(QPoint(0, button.height() + 6)))
+        window.show()
+        window.raise_()
+        self.lens_blur_tool_button.setChecked(True)
+
+    def _ensure_lens_blur_tool_window(self) -> QWidget:
+        window = getattr(self, "_lens_blur_tool_window", None)
+        if window is not None:
+            return window
+        window = _ToolPopout("Lens Blur", self)
+        window.closed.connect(lambda: self.lens_blur_tool_button.setChecked(False))
+        window.set_content(self.photo_editor_panel.build_lens_blur_tool(window))
+        self._lens_blur_tool_window = window
+        return window
 
     def set_browse_context(
         self,
@@ -3501,8 +3672,18 @@ class FullScreenPreview(QDialog):
         base_key = self._image_cache_key(slot, image)
         source_key = (*base_key, "editor", self._editor_recipe_version)
         self._editor_render_service.request(
-            image, self._editor_recipe, masked, base_key=base_key, source_key=source_key
+            image, self._editor_recipe, masked, base_key=base_key, source_key=source_key,
+            background=self._editor_background_spec(),
+            lensblur=self._editor_lensblur_spec(),
         )
+
+    def _editor_background_spec(self) -> dict | None:
+        panel = getattr(self, "photo_editor_panel", None)
+        return panel.background_render_spec() if panel is not None else None
+
+    def _editor_lensblur_spec(self) -> dict | None:
+        panel = getattr(self, "photo_editor_panel", None)
+        return panel.lensblur_render_spec() if panel is not None else None
 
     def _on_editor_render_ready(self, seq: int, source_key: object, image: QImage) -> None:
         slot = self._focused_slot
@@ -3616,7 +3797,9 @@ class FullScreenPreview(QDialog):
             return cached
         try:
             rendered = self._editor_render_backend.render(
-                image, self._editor_recipe, masked, base_key=base_key
+                image, self._editor_recipe, masked, base_key=base_key,
+                background=self._editor_background_spec(),
+                lensblur=self._editor_lensblur_spec(),
             )
         except Exception as exc:
             self._handle_editor_status_changed(f"Preview edit failed: {exc}")

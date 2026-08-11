@@ -14,7 +14,7 @@ from pathlib import Path
 import time
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -362,8 +362,18 @@ def build_group_strength(
     sx = width / source_size[0]
     sy = height / source_size[1]
     accum: QImage | None = None
-    for component in components:
+    # The group root (first component) carries the whole mask's invert / clear.
+    # These must act on the finished union, not per-component: inverting each
+    # add layer and then max-unioning gives 1−min(A,B), never 1−max(A,B), which
+    # is why per-component invert of a multi-part selection floods the frame.
+    group_invert = False
+    group_cleared = False
+    for index, component in enumerate(components):
         mask_type, params, combine = _component_parts(component)
+        if index == 0:
+            group_invert = bool(params.get("invert", False))
+            group_cleared = bool(params.get("selectionCleared", False))
+            params = {**params, "invert": False, "selectionCleared": False}
         if accum is None:
             if combine == "subtract":
                 continue  # nothing to carve from yet
@@ -413,6 +423,14 @@ def build_group_strength(
         painter.setCompositionMode(mode)
         painter.drawImage(0, 0, layer)
         painter.end()
+    if accum is not None:
+        # Apply the group-level clear / invert to the finished union, in that
+        # order (clearing empties the selection, inverting then floods it) to
+        # match the per-component ordering this replaces.
+        if group_cleared:
+            accum.fill(Qt.GlobalColor.black)
+        if group_invert:
+            accum.invertPixels()
     return accum
 
 
@@ -492,7 +510,19 @@ class MaskOverlay(QWidget):
         self._subject_candidates: list[dict[str, Any]] = []
         self._subject_hover: str | None = None
         self._watched: QWidget | None = None
+        # A centered "working…" card shown while AI analysis runs, so the New
+        # Mask pane doesn't read as a frozen window. Animated by its own timer so
+        # the spinner keeps turning without state pushes.
+        self._busy_message: str | None = None
+        self._busy_angle = 0
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setInterval(60)
+        self._busy_timer.timeout.connect(self._advance_busy)
         self._set_pass_through(True)
+
+    def _advance_busy(self) -> None:
+        self._busy_angle = (self._busy_angle + 24) % 360
+        self.update()
 
     # -- attachment ---------------------------------------------------------
     def attach_to(self, label: QWidget) -> None:
@@ -538,6 +568,7 @@ class MaskOverlay(QWidget):
         overlay_mode: str = "color",
         overlay_color: QColor | str | None = None,
         show_tools: bool = True,
+        busy_message: str | None = None,
     ) -> None:
         """``mask_type``/``params`` describe the selected component (handles,
         hit-testing); ``components`` is the whole mask group whose union the
@@ -632,6 +663,14 @@ class MaskOverlay(QWidget):
         self._set_pass_through(not accepts_mouse)
         if not accepts_mouse:
             self._drag = None
+        message = busy_message or None
+        if message != self._busy_message:
+            self._busy_message = message
+            if message and not self._busy_timer.isActive():
+                self._busy_angle = 0
+                self._busy_timer.start()
+            elif not message and self._busy_timer.isActive():
+                self._busy_timer.stop()
         self.update()
 
     def _set_pass_through(self, on: bool) -> None:
@@ -716,6 +755,11 @@ class MaskOverlay(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         if self._scales() is None:
+            if self._busy_message and self.width() > 2 and self.height() > 2:
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                self._paint_busy(painter)
+                painter.end()
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -729,6 +773,8 @@ class MaskOverlay(QWidget):
         if self._point_pick and self._hover_pos is not None and self._drag is None:
             self._paint_point_pick_hint(painter)
         if self._params is None and not self._components:
+            if self._busy_message:
+                self._paint_busy(painter)
             painter.end()
             return
         if self._show_overlay:
@@ -742,6 +788,8 @@ class MaskOverlay(QWidget):
                 self._paint_linear_handles(painter)
             elif self._mask_type == "bitmap" and self._brush_mode is not None:
                 self._paint_brush_cursor(painter)
+        if self._busy_message:
+            self._paint_busy(painter)
         painter.end()
 
     def _display_base_image(self, width: int, height: int) -> QImage | None:
@@ -1090,6 +1138,53 @@ class MaskOverlay(QWidget):
         painter.drawRoundedRect(chip, 4, 4)
         painter.setPen(QPen(QColor(240, 240, 240)))
         painter.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _paint_busy(self, painter: QPainter) -> None:
+        """A centered card with a turning spinner and a status line, so AI
+        analysis reads as 'working', not a frozen window."""
+        message = self._busy_message
+        if not message:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        metrics = QFontMetricsF(painter.font())
+        spinner = 26.0
+        pad = 18.0
+        gap = 12.0
+        text_w = metrics.horizontalAdvance(message)
+        card_w = max(text_w, spinner) + pad * 2
+        card_h = spinner + gap + metrics.height() + pad * 2
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        card = QRectF(cx - card_w / 2.0, cy - card_h / 2.0, card_w, card_h)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(18, 18, 18, 220))
+        painter.drawRoundedRect(card, 10.0, 10.0)
+
+        # Spinner: a faint full ring with a brighter arc that sweeps around it.
+        sx = cx
+        sy = card.top() + pad + spinner / 2.0
+        ring = QRectF(sx - spinner / 2.0, sy - spinner / 2.0, spinner, spinner)
+        track = QPen(QColor(255, 255, 255, 60), 3.0)
+        track.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(track)
+        painter.drawEllipse(ring)
+        arc = QPen(QColor(74, 158, 255, 235), 3.0)
+        arc.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(arc)
+        # Qt angles are in 1/16 degrees, counter-clockwise; negate to spin CW.
+        painter.drawArc(ring, int(-self._busy_angle * 16), int(-100 * 16))
+
+        text_rect = QRectF(
+            card.left(),
+            sy + spinner / 2.0 + gap,
+            card_w,
+            metrics.height(),
+        )
+        painter.setPen(QPen(QColor(240, 240, 240)))
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, message)
+        painter.restore()
 
     def _handle_pen(self) -> tuple[QPen, QPen]:
         halo = QPen(QColor(0, 0, 0, 140), 3.0)

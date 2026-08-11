@@ -95,6 +95,40 @@ class SceneRegionIndexTests(unittest.TestCase):
         first = self.index.highlight("sky", 400, 200)
         self.assertIs(first, self.index.highlight("sky", 400, 200))
 
+    def test_person_instances_replace_the_merged_people_region(self) -> None:
+        # Base index with a merged people region (two blobs) + sky.
+        sky = np.zeros((100, 200), np.uint8)
+        sky[0:20, :] = 255
+        people = np.zeros((100, 200), np.uint8)
+        people[40:90, 20:60] = 255
+        people[40:90, 140:180] = 255
+        for name, arr in (("sky", sky), ("people", people)):
+            Image.fromarray(arr, "L").save(self.dir / f"{name}.png")
+        paths = {"sky": self.dir / "sky.png", "people": self.dir / "people.png"}
+        base = SceneRegionIndex.from_mask_paths(SOURCE_SIZE, paths, ("sky", "people"))
+        assert base is not None
+        self.assertEqual("people", base.category_at(40, 65))
+
+        left = np.zeros((100, 200), bool)
+        left[40:90, 20:60] = True
+        right = np.zeros((100, 200), bool)
+        right[40:90, 140:180] = True
+        combined = base.with_person_instances(
+            [(left, (0.20, 0.65)), (right, (0.80, 0.65))]
+        )
+        self.assertNotIn("people", combined.categories)
+        self.assertIn("person:0", combined.categories)
+        self.assertIn("person:1", combined.categories)
+        self.assertEqual("person:0", combined.category_at(40, 65))
+        self.assertEqual("person:1", combined.category_at(160, 65))
+        self.assertEqual("Person", combined.label_for("person:0"))
+        self.assertEqual((0.80, 0.65), combined.seed_for("person:1"))
+        self.assertTrue(SceneRegionIndex.is_person("person:0"))
+        self.assertFalse(SceneRegionIndex.is_person("sky"))
+        self.assertEqual("sky", combined.category_at(5, 10))  # other regions kept
+        # No instances -> unchanged index.
+        self.assertIs(base, base.with_person_instances([]))
+
 
 class SceneHoverOverlayTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -323,6 +357,61 @@ class ScenePanelWiringTests(unittest.TestCase):
         panel.handle_overlay_scene_picked("sky")
         self.assertEqual(["sky"], requested)
 
+    def test_analysis_shows_a_busy_message_on_the_new_mask_pane(self) -> None:
+        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
+
+        panel = PhotoEditorPanel()
+        panel._source_path = Path("photo.jpg")
+        panel.editor_stack.setCurrentIndex(1)
+        panel._show_mask_pane(panel.MASK_PANE_CREATE)
+        self.assertIsNone(panel.mask_overlay_state()["busy_message"])
+
+        panel._semantic_mask_task = object()  # analysis running
+        self.assertEqual(
+            "Analyzing photo...", panel.mask_overlay_state()["busy_message"]
+        )
+        panel._semantic_mask_task = None
+        panel._people_instance_task = object()  # splitting people
+        self.assertEqual(
+            "Finding people...", panel.mask_overlay_state()["busy_message"]
+        )
+        # A click-to-select session owns the canvas — no analysis spinner then.
+        panel._prompt_session_active = True
+        self.assertIsNone(panel.mask_overlay_state()["busy_message"])
+        panel._prompt_session_active = False
+        panel._people_instance_task = None
+        self.assertIsNone(panel.mask_overlay_state()["busy_message"])
+        panel.close()
+
+    def test_picking_a_person_instance_routes_to_click_to_select(self) -> None:
+        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
+        from image_triage.ui.scene_regions import SceneRegionIndex
+
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            people = np.zeros((100, 200), np.uint8)
+            people[40:90, 140:180] = 255
+            Image.fromarray(people, "L").save(directory / "people.png")
+            base = SceneRegionIndex.from_mask_paths(
+                SOURCE_SIZE, {"people": directory / "people.png"}, ("people",)
+            )
+            assert base is not None
+            blob = np.zeros((100, 200), bool)
+            blob[40:90, 140:180] = True
+            index = base.with_person_instances([(blob, (0.80, 0.65))])
+
+            panel = PhotoEditorPanel()
+            panel._source_path = Path("photo.jpg")
+            panel._scene_index = index
+            started: list[tuple[list, dict]] = []
+            panel._start_prompt_mask_task = lambda pts, **kw: started.append((pts, kw))  # type: ignore[assignment]
+            panel.handle_overlay_scene_picked("person:0")
+            self.assertEqual(1, len(started))
+            points, kwargs = started[0]
+            self.assertEqual([(0.80, 0.65)], points)
+            self.assertTrue(kwargs["refine"])  # people get BiRefNet edge refine
+            panel.close()
+
     def test_click_to_select_takes_over_scene_pick_and_normalizes_clicks(self) -> None:
         from image_triage.ui.photo_editor_panel import PhotoEditorPanel
 
@@ -336,7 +425,7 @@ class ScenePanelWiringTests(unittest.TestCase):
 
         panel._mask_source_size = lambda: (200, 100)  # type: ignore[assignment]
         started: list[list[tuple[float, float]]] = []
-        panel._start_prompt_mask_task = started.append  # type: ignore[assignment]
+        panel._start_prompt_mask_task = lambda pts, **kw: started.append(pts)  # type: ignore[assignment]
         panel.handle_overlay_point_picked(100.0, 50.0)  # dead center
         self.assertEqual([[(0.5, 0.5)]], started)
 
@@ -346,6 +435,116 @@ class ScenePanelWiringTests(unittest.TestCase):
         panel.handle_overlay_point_picked(10.0, 10.0)
         self.assertEqual([], started)
         panel.close()
+
+    def test_click_to_select_session_builds_one_mask_from_many_clicks(self) -> None:
+        """The 'Click to Select (AI)' button opens the touch-up window and each
+        click adds an 'add' component to the SAME mask; OK returns to Work."""
+        from image_triage import prompt_masks
+        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
+
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            photo = directory / "photo.png"
+            Image.new("RGB", SOURCE_SIZE, "gray").save(photo)
+
+            def _fake_ensure(source_path, points_norm, labels=None, refine=False, **kw):
+                mask_png = directory / f"m{len(list(directory.glob('m*.png')))}.png"
+                Image.new("L", SOURCE_SIZE, 255).save(mask_png)
+                return prompt_masks.PromptMaskResult(
+                    source_path=Path(source_path),
+                    source_size=SOURCE_SIZE,
+                    mask_path=mask_png,
+                    bounds=(0, 0, *SOURCE_SIZE),
+                    coverage=0.5,
+                    model_id="facebook/sam2.1-hiera-tiny",
+                    model_version="1",
+                    weights_hash="abc",
+                )
+
+            original = prompt_masks.ensure_prompt_mask
+            prompt_masks.ensure_prompt_mask = _fake_ensure
+            try:
+                panel = PhotoEditorPanel()
+                panel.set_image(photo)
+                panel.editor_stack.setCurrentIndex(1)
+                panel._show_mask_pane(panel.MASK_PANE_CREATE)
+                panel._mask_source_size = lambda: SOURCE_SIZE
+
+                # Enter the session via the button toggle.
+                panel._set_point_select_active(True)
+                self.assertTrue(panel._prompt_session_active)
+                self.assertFalse(panel._mask_touchup_page.isHidden())
+                self.assertTrue(panel.editor_stack.isHidden())
+                # point_pick stays live even though the New Mask pane is hidden.
+                self.assertTrue(panel.mask_overlay_state()["point_pick"])
+
+                def _click(x, y, on_person):
+                    panel._click_is_on_person = lambda nx, ny: on_person
+                    panel.handle_overlay_point_picked(x, y)
+                    self.assertIsNotNone(panel._prompt_mask_task)
+                    panel._semantic_mask_pool.waitForDone(5000)
+                    QApplication.instance().processEvents()
+
+                # First click makes the root mask; the touch-up targets it.
+                _click(100.0, 50.0, on_person=False)
+                root = panel._prompt_session_root_id
+                self.assertIsNotNone(root)
+                self.assertEqual(panel._mask_touchup_mask_id, root)
+                self.assertFalse(panel._prompt_meta[root]["refined"])
+
+                # A person click adds a child to the SAME group, auto-refined.
+                _click(50.0, 25.0, on_person=True)
+                members = panel._group_members(root)
+                self.assertEqual(len(members), 2)
+                child = next(m for m in members if m.get("id") != root)
+                self.assertEqual(child.get("parentId"), root)
+                self.assertTrue(panel._prompt_meta[child["id"]]["refined"])
+                self.assertEqual(panel._mask_touchup_mask_id, root)
+
+                # Clear deletes the whole selection (not a hide) and resets the
+                # session; a later click starts fresh instead of resurfacing it.
+                panel._toggle_mask_touchup_clear()
+                subject_selects = [
+                    m for m in panel._session.get("masks", [])
+                    if m.get("type") == "subject-select"
+                ]
+                self.assertEqual(subject_selects, [])
+                self.assertIsNone(panel._prompt_session_root_id)
+                self.assertEqual(panel._prompt_meta, {})
+                self.assertFalse(panel.mask_touchup_clear_button.isEnabled())
+                self.assertTrue(panel._prompt_session_active)
+                _click(150.0, 75.0, on_person=False)
+                self.assertEqual(
+                    len([
+                        m for m in panel._session.get("masks", [])
+                        if m.get("type") == "subject-select"
+                    ]),
+                    1,
+                )
+                root = panel._prompt_session_root_id
+                self.assertIsNotNone(root)
+
+                # Refine Edges is offered for the un-refined root, then clears it.
+                self.assertTrue(panel.mask_touchup_refine_button.isEnabled())
+                panel._refine_touchup_session()
+                for _ in range(10):
+                    if panel._refine_active_task is None and not panel._refine_queue:
+                        break
+                    panel._semantic_mask_pool.waitForDone(5000)
+                    QApplication.instance().processEvents()
+                self.assertTrue(panel._prompt_meta[root]["refined"])
+                self.assertFalse(panel.mask_touchup_refine_button.isEnabled())
+
+                # OK tears the session down and returns to the Work pane.
+                panel._finish_mask_touchup(accepted=True)
+                self.assertFalse(panel._prompt_session_active)
+                self.assertIsNone(panel._prompt_session_root_id)
+                self.assertFalse(panel._point_select_active)
+                self.assertEqual(panel.mask_stack.currentIndex(), panel.MASK_PANE_WORK)
+                self.assertFalse(panel.point_select_button.isChecked())
+                panel.close()
+            finally:
+                prompt_masks.ensure_prompt_mask = original
 
 
 if __name__ == "__main__":
