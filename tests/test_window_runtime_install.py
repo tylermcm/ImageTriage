@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from image_triage.window import AIRuntimeInstallTask
+from image_triage.window import AIRuntimeInstallTask, AISetupSelection, MainWindow
 
 
 class _FakeStdout:
@@ -75,6 +75,69 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         self.assertEqual(failed, [])
         self.assertIn("creationflags", captured_kwargs)
         self.assertIn("startupinfo", captured_kwargs)
+
+    def test_combined_ai_setup_uses_base_runtime_and_skips_dino(self) -> None:
+        calls: list[tuple[tuple, dict]] = []
+
+        class _SetupStub:
+            def _start_ai_runtime_install(self, *args, **kwargs) -> None:
+                calls.append((args, kwargs))
+
+        selection = AISetupSelection(
+            install_runtime=True,
+            runtime_variant="gpu",
+            include_dino_runtime=True,
+            download_aiculler_clip_model=True,
+            download_aiculler_topiq_model=True,
+            download_aiculler_face_model=True,
+            download_dino_model=True,
+            download_semantic_model=False,
+        )
+
+        started = MainWindow._start_ai_setup_selection(
+            _SetupStub(),
+            selection,
+            force_runtime=False,
+        )
+
+        self.assertTrue(started)
+        self.assertEqual(1, len(calls))
+        _args, kwargs = calls[0]
+        self.assertFalse(kwargs["include_dino"])
+        self.assertFalse(kwargs["download_dino_model_after"])
+        self.assertTrue(kwargs["download_aiculler_clip_after"])
+        self.assertTrue(kwargs["download_aiculler_topiq_after"])
+        self.assertTrue(kwargs["download_aiculler_face_after"])
+
+    def test_runtime_progress_hides_package_details(self) -> None:
+        messages: list[str | None] = []
+
+        class _ProgressStub:
+            def _set_ai_setup_busy(self, message: str | None) -> None:
+                messages.append(message)
+
+        MainWindow._handle_ai_runtime_install_progress(
+            _ProgressStub(),
+            "Downloading torch-2.8.0-cp313-win_amd64.whl",
+        )
+
+        self.assertEqual(messages, ["Installing AI runtime..."])
+
+    def test_model_progress_hides_file_details(self) -> None:
+        messages: list[str | None] = []
+
+        class _ProgressStub:
+            def _set_ai_setup_busy(self, message: str | None) -> None:
+                messages.append(message)
+
+        MainWindow._handle_ai_model_download_progress(
+            _ProgressStub(),
+            "model.safetensors",
+            50,
+            100,
+        )
+
+        self.assertEqual(messages, ["Downloading AI culling models..."])
 
 
 if __name__ == "__main__":

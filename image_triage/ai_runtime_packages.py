@@ -82,6 +82,16 @@ AI_RUNTIME_ESTIMATED_INSTALLED_MB = {
     AI_RUNTIME_CPU_VARIANT: 4300,
     AI_RUNTIME_GPU_VARIANT: 9300,
 }
+# The active CLI-Culler workflow is ONNX-based and does not need the legacy
+# PyTorch/DINO stack. These estimates cover the compact base runtime only.
+AI_RUNTIME_BASE_ESTIMATED_DOWNLOAD_MB = {
+    AI_RUNTIME_CPU_VARIANT: 350,
+    AI_RUNTIME_GPU_VARIANT: 650,
+}
+AI_RUNTIME_BASE_ESTIMATED_INSTALLED_MB = {
+    AI_RUNTIME_CPU_VARIANT: 1050,
+    AI_RUNTIME_GPU_VARIANT: 1750,
+}
 
 PipRunner = Callable[[list[str], Path], int]
 
@@ -140,18 +150,36 @@ def ai_runtime_variant_label(variant: str) -> str:
     return "CPU Only"
 
 
-def estimate_ai_runtime_download_size_mb(variant_choice: str) -> int:
+def estimate_ai_runtime_download_size_mb(
+    variant_choice: str,
+    *,
+    include_dino: bool = True,
+) -> int:
     normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
+    estimates = (
+        AI_RUNTIME_ESTIMATED_DOWNLOAD_MB
+        if include_dino
+        else AI_RUNTIME_BASE_ESTIMATED_DOWNLOAD_MB
+    )
     if normalized_choice == AI_RUNTIME_BOTH_VARIANT:
-        return sum(AI_RUNTIME_ESTIMATED_DOWNLOAD_MB.values())
-    return AI_RUNTIME_ESTIMATED_DOWNLOAD_MB[normalize_ai_runtime_variant(normalized_choice)]
+        return sum(estimates.values())
+    return estimates[normalize_ai_runtime_variant(normalized_choice)]
 
 
-def estimate_ai_runtime_installed_size_mb(variant_choice: str) -> int:
+def estimate_ai_runtime_installed_size_mb(
+    variant_choice: str,
+    *,
+    include_dino: bool = True,
+) -> int:
     normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
+    estimates = (
+        AI_RUNTIME_ESTIMATED_INSTALLED_MB
+        if include_dino
+        else AI_RUNTIME_BASE_ESTIMATED_INSTALLED_MB
+    )
     if normalized_choice == AI_RUNTIME_BOTH_VARIANT:
-        return sum(AI_RUNTIME_ESTIMATED_INSTALLED_MB.values())
-    return AI_RUNTIME_ESTIMATED_INSTALLED_MB[normalize_ai_runtime_variant(normalized_choice)]
+        return sum(estimates.values())
+    return estimates[normalize_ai_runtime_variant(normalized_choice)]
 
 
 def directory_size_bytes(path: str | Path) -> int:

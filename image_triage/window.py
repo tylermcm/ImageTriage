@@ -32,6 +32,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, Q
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -53,6 +54,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QProgressDialog,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
@@ -169,6 +171,7 @@ from .aiculler_workflow import (
     AICullerGlobalAdapterTask,
     AICullerRunTask,
     DINOPrefilterRunTask,
+    WINNER_SCORE_FALLBACK_MODEL_VERSION,
     aiculler_db_path,
     aiculler_rerank_readiness,
     aiculler_runtime_available,
@@ -354,6 +357,7 @@ from .ui import (
     save_window_layout,
     show_paged_help,
 )
+from .ui.busy_overlay import BusyOverlay
 from .ui.help_topics import library_help_pages, settings_help_pages
 from .ui.menus import add_ai_results_actions
 from .ui.prototype_style import FolderTreeView
@@ -2541,7 +2545,6 @@ class MainWindow(QMainWindow):
             "sort_ai_semantic_folders",
             "reset_ai_review_cache",
             "ai_results",
-            "dispute_current_ai_result",
             "review",
             "view",
             "selection_count",
@@ -2583,8 +2586,6 @@ class MainWindow(QMainWindow):
         "next_ai_pick",
         "next_unreviewed_ai_pick",
         "compare_ai_group",
-        "dispute_current_ai_result",
-        "review_ai_disagreements",
         "performance_logging",
         "open_performance_logs",
     )
@@ -2679,9 +2680,6 @@ class MainWindow(QMainWindow):
             "next_ai_pick",
             "next_unreviewed_ai_pick",
             "compare_ai_group",
-            "dispute_current_ai_result",
-            "review_ai_disagreements",
-            "taste_calibration",
             "open_folder",
             "refresh_folder",
             "undo",
@@ -3077,8 +3075,6 @@ class MainWindow(QMainWindow):
         self._catalog_progress_dialog: QProgressDialog | None = None
         self._job_controllers: dict[str, JobController] = {}
         self._archive_job_key = "archive:create"
-        self._ai_runtime_job_key = "ai:runtime"
-        self._ai_model_job_key = "ai:model"
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_aiculler_face_download_after_runtime = False
@@ -3795,6 +3791,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.app_top_bar, 0)
         layout.addWidget(self.workspace_docks.shell, 1)
         self.setCentralWidget(container)
+        self._ai_setup_overlay = BusyOverlay(container)
+        self._ai_setup_overlay.attach_to(container)
         self.zen_hint_overlay = QLabel("Zen Mode  |  F11 or Esc to exit", container)
         self.zen_hint_overlay.setObjectName("zenHintOverlay")
         self.zen_hint_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3818,17 +3816,12 @@ class MainWindow(QMainWindow):
         self.cache_pipeline_label = QLabel("")
         self.cache_pipeline_label.setObjectName("filterSummaryLabel")
         self.cache_pipeline_label.setMaximumWidth(340)
-        self.adapter_status_label = QLabel("Adapter: —")
-        self.adapter_status_label.setObjectName("filterSummaryLabel")
-        self.adapter_status_label.setMaximumWidth(360)
-        self.adapter_status_label.setToolTip("Adapter status will appear after the first AI Culler run.")
         self.clear_filters_button = QToolButton()
         self.clear_filters_button.setObjectName("statusFilterClearButton")
         self.clear_filters_button.setAutoRaise(True)
         self.clear_filters_button.setDefaultAction(self.actions.clear_filters)
         status.addPermanentWidget(self.catalog_status_label)
         status.addPermanentWidget(self.cache_pipeline_label)
-        status.addPermanentWidget(self.adapter_status_label)
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
         self._refresh_catalog_status_indicator()
@@ -5709,15 +5702,6 @@ class MainWindow(QMainWindow):
                 ai_items.insert(insert_at, "sort_ai_semantic_folders")
             else:
                 ai_items.insert(0, "sort_ai_semantic_folders")
-        if "dispute_current_ai_result" not in ai_items:
-            if "ai_results" in ai_items:
-                insert_at = ai_items.index("ai_results") + 1
-                ai_items.insert(insert_at, "dispute_current_ai_result")
-            elif "compare_ai_group" in ai_items:
-                insert_at = ai_items.index("compare_ai_group") + 1
-                ai_items.insert(insert_at, "dispute_current_ai_result")
-            else:
-                ai_items.insert(0, "dispute_current_ai_result")
         layouts["ai"] = self._normalize_workspace_toolbar_items("ai", ai_items)
 
     def _normalize_workspace_toolbar_items(self, mode: str, raw_items: list[object] | tuple[object, ...]) -> list[str]:
@@ -7649,8 +7633,7 @@ class MainWindow(QMainWindow):
             add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
             add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
             add_action_command("search.clear_filters", self.actions.clear_filters, section="Search", keywords=("reset filters", "clear search"))
-            add_action_command("ai.install_runtime", self.actions.install_ai_runtime, section="AI", keywords=("runtime", "dependencies", "install ai", "pytorch", "onnxruntime"))
-            add_action_command("ai.download_models", self.actions.download_ai_model, section="AI", keywords=("download models", "hugging face", "clip", "topiq", "dino"))
+            add_action_command("ai.setup", self.actions.install_ai_runtime, section="AI", keywords=("runtime", "dependencies", "install ai", "pytorch", "models", "clip", "topiq", "dino"))
             add_action_command("ai.workflow_center", self.actions.open_ai_workflow_center, section="AI", keywords=("workflow center", "ai workflow", "guide", "steps", "wizard"))
             add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run ai culler", "rank images"))
             add_action_command("ai.quick_rerank", self.actions.quick_rerank_ai_culling, section="AI", keywords=("quick rerank", "rerank", "re-rank", "rerun rank", "fast rerank", "rerank only"))
@@ -7662,11 +7645,6 @@ class MainWindow(QMainWindow):
             add_action_command("ai.clear_results", self.actions.clear_ai_results, section="AI", keywords=("remove ai results",))
             add_action_command("ai.open_report", self.actions.open_ai_report, section="AI", keywords=("html report",))
             add_action_command("ai.tag_legend", self.actions.ai_review_tag_legend, section="AI", keywords=("ai tags", "tag legend", "ai badges", "what do the ai tags mean"))
-            add_action_command("ai.export_adapter_ratings", self.actions.open_ai_data_selection, section="Adapter", keywords=("prepare labels", "adapter labels", "training labels", "bucket labels"))
-            add_action_command("ai.review_adapter_labels", self.actions.review_ai_adapter_labels, section="Adapter", keywords=("review labels", "adapter review", "label adapter"))
-            add_action_command("ai.train_adapter", self.actions.train_ai_ranker, section="Adapter", keywords=("train adapter", "train model", "personal model", "preference model"))
-            add_action_command("ai.evaluate_adapter", self.actions.evaluate_ai_ranker, section="Adapter", keywords=("evaluate adapter", "holdout", "metrics", "adapter metrics", "validation"))
-            add_action_command("ai.rank_adapter", self.actions.score_ai_with_trained_ranker, section="Adapter", keywords=("rank with adapter", "adapter ranking", "rank current folder", "refresh ai report"))
             add_action_command("ai.next_top_pick", self.actions.next_ai_pick, section="AI", keywords=("next ai pick", "jump ai"))
             add_action_command("ai.next_unreviewed_top_pick", self.actions.next_unreviewed_ai_pick, section="AI", keywords=("unreviewed ai pick",))
             add_action_command("ai.compare_group", self.actions.compare_ai_group, section="AI", keywords=("compare ai cluster", "group compare"))
@@ -8524,7 +8502,9 @@ class MainWindow(QMainWindow):
     def _load_dino_prefilter_settings(self) -> DINOPrefilterSettings:
         defaults = default_dino_prefilter_settings()
         return DINOPrefilterSettings(
-            enabled=self._settings.value(self.DINO_PREFILTER_ENABLED_KEY, defaults.enabled, bool),
+            # DINO was removed from the active culling workflow. Keep reading
+            # the remaining legacy values so old settings files stay valid.
+            enabled=False,
             aggressiveness_percent=self._normalize_dino_prefilter_aggressiveness(
                 self._settings.value(
                     self.DINO_PREFILTER_AGGRESSIVENESS_KEY,
@@ -8845,6 +8825,223 @@ class MainWindow(QMainWindow):
         default_download_dino_model: bool,
         default_download_semantic_model: bool,
     ) -> AISetupSelection | None:
+        """One compact setup flow for the runtime and current culling model set."""
+        del (
+            title,
+            prompt_text,
+            allow_runtime,
+            allow_model,
+            default_install_runtime,
+            default_include_dino_runtime,
+            default_download_aiculler_clip_model,
+            default_download_aiculler_topiq_model,
+            default_download_aiculler_face_model,
+            default_download_dino_model,
+            default_download_semantic_model,
+        )
+
+        runtime_status = self._managed_ai_runtime_status()
+        clip_missing = not self._aiculler_clip_model_available()
+        topiq_missing = not self._aiculler_topiq_model_available()
+        face_missing = not self._aiculler_face_model_available()
+        semantic_missing = (
+            self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
+        )
+        model_specs = [
+            ("CLIP", DEFAULT_AICULLER_CLIP_SIZE_MB, clip_missing),
+            ("TOPIQ", DEFAULT_AICULLER_TOPIQ_SIZE_MB, topiq_missing),
+            ("InsightFace", DEFAULT_AICULLER_FACE_SIZE_MB, face_missing),
+        ]
+        if self._ai_semantic_sidecar_enabled:
+            model_specs.append(
+                ("Semantic CLIP", DEFAULT_SEMANTIC_MODEL_SIZE_MB, semantic_missing)
+            )
+        missing_model_mb = sum(size for _name, size, missing in model_specs if missing)
+
+        dialog = QDialog(self)
+        dialog.setObjectName("aiSetupDialog")
+        dialog.setWindowTitle("Set Up AI")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(680)
+        dialog.resize(720, 500)
+        dialog.setStyleSheet(
+            """
+            QDialog#aiSetupDialog { background: palette(window); }
+            QFrame#aiSetupHero, QFrame#aiSetupModelCard, QFrame#aiSetupProfileCard {
+                background: palette(base);
+                border: 1px solid palette(mid);
+                border-radius: 12px;
+            }
+            QLabel#aiSetupTitle { font-size: 22px; font-weight: 700; }
+            QLabel#aiSetupSectionTitle { font-size: 14px; font-weight: 650; }
+            QLabel#aiSetupProfileTitle { font-size: 15px; font-weight: 650; }
+            QLabel#aiSetupMuted { color: palette(mid); }
+            QRadioButton { spacing: 8px; }
+            QRadioButton::indicator { width: 18px; height: 18px; }
+            """
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(22, 22, 22, 18)
+        layout.setSpacing(14)
+
+        hero = QFrame(dialog)
+        hero.setObjectName("aiSetupHero")
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(18, 16, 18, 16)
+        hero_layout.setSpacing(5)
+        heading = QLabel("Set up AI", hero)
+        heading.setObjectName("aiSetupTitle")
+        hero_layout.addWidget(heading)
+        subheading = QLabel(
+            "Choose a runtime. Image Triage installs the matching packages and AI culling models together.",
+            hero,
+        )
+        subheading.setWordWrap(True)
+        subheading.setObjectName("aiSetupMuted")
+        hero_layout.addWidget(subheading)
+        layout.addWidget(hero)
+
+        profile_heading = QLabel("Runtime", dialog)
+        profile_heading.setObjectName("aiSetupSectionTitle")
+        layout.addWidget(profile_heading)
+
+        profile_row = QHBoxLayout()
+        profile_row.setSpacing(12)
+
+        def build_profile_card(
+            variant: str,
+            label: str,
+            detail: str,
+        ) -> tuple[QFrame, QRadioButton]:
+            card = QFrame(dialog)
+            card.setObjectName("aiSetupProfileCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(16, 14, 16, 14)
+            card_layout.setSpacing(5)
+            radio = QRadioButton(label, card)
+            radio.setObjectName(f"aiSetupProfile_{variant}")
+            card_layout.addWidget(radio)
+            detail_label = QLabel(detail, card)
+            detail_label.setObjectName("aiSetupMuted")
+            detail_label.setWordWrap(True)
+            card_layout.addWidget(detail_label)
+            download_mb = estimate_ai_runtime_download_size_mb(
+                variant, include_dino=False
+            )
+            installed_mb = estimate_ai_runtime_installed_size_mb(
+                variant, include_dino=False
+            )
+            sizes = QLabel(
+                f"{download_mb / 1024:.1f} GB download  ·  {installed_mb / 1024:.1f} GB on disk",
+                card,
+            )
+            sizes.setObjectName("aiSetupProfileTitle")
+            card_layout.addWidget(sizes)
+            if variant in runtime_status.installed_variants:
+                installed = QLabel("Installed", card)
+                installed.setObjectName("aiSetupMuted")
+                card_layout.addWidget(installed)
+            card_layout.addStretch(1)
+            return card, radio
+
+        gpu_card, gpu_radio = build_profile_card(
+            AI_RUNTIME_GPU_VARIANT,
+            "GPU acceleration",
+            "For NVIDIA graphics cards.",
+        )
+        cpu_card, cpu_radio = build_profile_card(
+            AI_RUNTIME_CPU_VARIANT,
+            "CPU",
+            "Works on any supported computer.",
+        )
+        profile_row.addWidget(gpu_card, 1)
+        profile_row.addWidget(cpu_card, 1)
+        layout.addLayout(profile_row)
+
+        profile_group = QButtonGroup(dialog)
+        profile_group.setExclusive(True)
+        profile_group.addButton(gpu_radio)
+        profile_group.addButton(cpu_radio)
+
+        preferred_variant = runtime_status.preferred_variant
+        if preferred_variant == AI_RUNTIME_CPU_VARIANT:
+            cpu_radio.setChecked(True)
+        else:
+            gpu_radio.setChecked(True)
+
+        model_card = QFrame(dialog)
+        model_card.setObjectName("aiSetupModelCard")
+        model_layout = QVBoxLayout(model_card)
+        model_layout.setContentsMargins(16, 13, 16, 13)
+        model_layout.setSpacing(5)
+        model_title = QLabel("AI culling models", model_card)
+        model_title.setObjectName("aiSetupSectionTitle")
+        model_layout.addWidget(model_title)
+        model_names = QLabel("  ·  ".join(name for name, _size, _missing in model_specs), model_card)
+        model_names.setWordWrap(True)
+        model_layout.addWidget(model_names)
+        if missing_model_mb:
+            model_size = QLabel(
+                f"Included automatically  ·  {missing_model_mb / 1024:.1f} GB remaining download",
+                model_card,
+            )
+        else:
+            model_size = QLabel("All culling models are installed", model_card)
+        model_size.setObjectName("aiSetupMuted")
+        model_layout.addWidget(model_size)
+        layout.addWidget(model_card)
+        layout.addStretch(1)
+
+        button_box = QDialogButtonBox(dialog)
+        start_button = button_box.addButton(
+            "Continue" if automatic else "Install AI",
+            QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        start_button.setObjectName("editorPrimaryButton")
+        button_box.addButton(
+            "Later" if automatic else "Cancel",
+            QDialogButtonBox.ButtonRole.RejectRole,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+
+        runtime_variant = (
+            AI_RUNTIME_CPU_VARIANT if cpu_radio.isChecked() else AI_RUNTIME_GPU_VARIANT
+        )
+        runtime_ready = (
+            runtime_variant in runtime_status.installed_variants
+        )
+        return AISetupSelection(
+            install_runtime=not runtime_ready,
+            runtime_variant=runtime_variant,
+            include_dino_runtime=False,
+            download_aiculler_clip_model=clip_missing,
+            download_aiculler_topiq_model=topiq_missing,
+            download_aiculler_face_model=face_missing,
+            download_dino_model=False,
+            download_semantic_model=semantic_missing,
+        )
+
+    def _show_legacy_ai_setup_dialog(
+        self,
+        *,
+        automatic: bool,
+        title: str,
+        prompt_text: str,
+        allow_runtime: bool,
+        allow_model: bool,
+        default_install_runtime: bool,
+        default_include_dino_runtime: bool,
+        default_download_aiculler_clip_model: bool,
+        default_download_aiculler_topiq_model: bool,
+        default_download_aiculler_face_model: bool,
+        default_download_dino_model: bool,
+        default_download_semantic_model: bool,
+    ) -> AISetupSelection | None:
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setModal(True)
@@ -8995,20 +9192,13 @@ class MainWindow(QMainWindow):
         )
 
     def _ensure_ai_runtime_available(self, *, title: str) -> bool:
+        del title
         if self._ai_runtime_available():
             return True
         if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
             self.statusBar().showMessage("An AI component install is already running.")
             return False
-        prompt = QMessageBox.question(
-            self,
-            title,
-            self._ai_runtime_explanation_text() + "\n\nInstall the AI runtime now?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if prompt == QMessageBox.StandardButton.Yes:
-            self._install_ai_runtime()
+        self._install_ai_runtime()
         return False
 
     def _ensure_ai_model_available(self, *, title: str) -> bool:
@@ -9037,14 +9227,12 @@ class MainWindow(QMainWindow):
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
         aiculler_face_missing = not self._aiculler_face_model_available()
-        dino_model_missing = self._ai_runtime.model_installation is not None and not self._ai_model_available()
         semantic_model_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
         if (
             not runtime_missing
             and not aiculler_clip_missing
             and not aiculler_topiq_missing
             and not aiculler_face_missing
-            and not dino_model_missing
             and not semantic_model_missing
         ):
             return
@@ -9065,54 +9253,68 @@ class MainWindow(QMainWindow):
                 aiculler_clip_missing
                 or aiculler_topiq_missing
                 or aiculler_face_missing
-                or dino_model_missing
                 or semantic_model_missing
             ),
             default_install_runtime=runtime_missing,
-            default_include_dino_runtime=dino_model_missing or self._dino_prefilter_settings.enabled,
+            default_include_dino_runtime=False,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_dino_model=dino_model_missing,
+            default_download_dino_model=False,
             default_download_semantic_model=semantic_model_missing,
         )
         if selection is None:
             self.statusBar().showMessage("AI setup skipped for now.")
             return
+        self._start_ai_setup_selection(selection, force_runtime=False)
+
+    def _start_ai_setup_selection(
+        self,
+        selection: AISetupSelection,
+        *,
+        force_runtime: bool,
+    ) -> bool:
+        """Run the combined setup as one runtime-then-model sequence."""
         if selection.install_runtime:
             self._start_ai_runtime_install(
                 selection.runtime_variant,
-                force=False,
-                include_dino=selection.include_dino_runtime,
-                download_aiculler_clip_after=selection.download_aiculler_clip_model and aiculler_clip_missing,
-                download_aiculler_topiq_after=selection.download_aiculler_topiq_model and aiculler_topiq_missing,
-                download_aiculler_face_after=selection.download_aiculler_face_model and aiculler_face_missing,
-                download_dino_model_after=selection.download_dino_model and dino_model_missing,
-                download_semantic_model_after=selection.download_semantic_model and semantic_model_missing,
+                force=force_runtime,
+                include_dino=False,
+                download_aiculler_clip_after=selection.download_aiculler_clip_model,
+                download_aiculler_topiq_after=selection.download_aiculler_topiq_model,
+                download_aiculler_face_after=selection.download_aiculler_face_model,
+                download_dino_model_after=False,
+                download_semantic_model_after=selection.download_semantic_model,
             )
-            return
+            return True
         if selection.download_model:
             self._start_ai_model_download(
-                download_aiculler_clip=selection.download_aiculler_clip_model and aiculler_clip_missing,
-                download_aiculler_topiq=selection.download_aiculler_topiq_model and aiculler_topiq_missing,
-                download_aiculler_face=selection.download_aiculler_face_model and aiculler_face_missing,
-                download_dino=selection.download_dino_model and dino_model_missing,
-                download_semantic=selection.download_semantic_model and semantic_model_missing,
+                download_aiculler_clip=selection.download_aiculler_clip_model,
+                download_aiculler_topiq=selection.download_aiculler_topiq_model,
+                download_aiculler_face=selection.download_aiculler_face_model,
+                download_dino=False,
+                download_semantic=selection.download_semantic_model,
                 force=False,
             )
-            return
-        self.statusBar().showMessage("AI setup skipped for now.")
+            return True
+        self.statusBar().showMessage("AI is already set up for this profile.")
+        return False
+
+    def _set_ai_setup_busy(self, message: str | None) -> None:
+        """Show AI setup state inside the main window instead of a dialog."""
+        overlay = getattr(self, "_ai_setup_overlay", None)
+        if overlay is not None:
+            overlay.set_message(message)
 
     def _prompt_for_ai_model_install(self, *, automatic: bool) -> None:
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
         aiculler_face_missing = not self._aiculler_face_model_available()
-        dino_missing = not self._ai_model_available()
         semantic_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
         selection = self._show_ai_setup_dialog(
             automatic=automatic,
-            title="Install AI Model",
-            prompt_text="Choose which AI models to download.",
+            title="Set Up AI",
+            prompt_text="Choose an AI runtime profile.",
             allow_runtime=False,
             allow_model=True,
             default_install_runtime=False,
@@ -9120,23 +9322,15 @@ class MainWindow(QMainWindow):
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_dino_model=dino_missing,
+            default_download_dino_model=False,
             default_download_semantic_model=semantic_missing,
         )
-        if selection is None or not selection.download_model:
-            self.statusBar().showMessage("AI model download skipped for now.")
+        if selection is None:
+            self.statusBar().showMessage("AI setup skipped for now.")
             return
-        self._start_ai_model_download(
-            download_aiculler_clip=selection.download_aiculler_clip_model,
-            download_aiculler_topiq=selection.download_aiculler_topiq_model,
-            download_aiculler_face=selection.download_aiculler_face_model,
-            download_dino=selection.download_dino_model,
-            download_semantic=selection.download_semantic_model,
-            force_aiculler_clip=self._managed_aiculler_clip_model_installation().is_installed,
-            force_aiculler_topiq=self._managed_aiculler_topiq_model_installation().is_installed,
-            force_aiculler_face=self._managed_aiculler_face_model_installation().is_installed,
-            force_dino=self._managed_ai_model_installation().is_installed,
-            force_semantic=self._managed_semantic_model_installation().is_installed,
+        self._start_ai_setup_selection(
+            selection,
+            force_runtime=self._ai_runtime_available(),
         )
 
     def _install_ai_runtime(self) -> None:
@@ -9145,30 +9339,24 @@ class MainWindow(QMainWindow):
             return
         selection = self._show_ai_setup_dialog(
             automatic=False,
-            title="Install AI Runtime",
-            prompt_text="Choose which AI runtime profile to install.",
+            title="Set Up AI",
+            prompt_text="Choose an AI runtime profile.",
             allow_runtime=True,
             allow_model=False,
             default_install_runtime=True,
-            default_include_dino_runtime=self._dino_prefilter_settings.enabled,
+            default_include_dino_runtime=False,
             default_download_aiculler_clip_model=False,
             default_download_aiculler_topiq_model=False,
             default_download_aiculler_face_model=False,
             default_download_dino_model=False,
             default_download_semantic_model=False,
         )
-        if selection is None or not selection.install_runtime:
-            self.statusBar().showMessage("AI runtime install skipped for now.")
+        if selection is None:
+            self.statusBar().showMessage("AI setup skipped for now.")
             return
-        self._start_ai_runtime_install(
-            selection.runtime_variant,
-            force=self._ai_runtime_available(),
-            include_dino=selection.include_dino_runtime,
-            download_aiculler_clip_after=False,
-            download_aiculler_topiq_after=False,
-            download_aiculler_face_after=False,
-            download_dino_model_after=False,
-            download_semantic_model_after=False,
+        self._start_ai_setup_selection(
+            selection,
+            force_runtime=self._ai_runtime_available(),
         )
 
     def _start_ai_runtime_install(
@@ -9219,70 +9407,24 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_face_download_after_runtime = bool(download_aiculler_face_after)
         self._pending_ai_dino_model_download_after_runtime = bool(download_dino_model_after)
         self._pending_ai_semantic_model_download_after_runtime = bool(download_semantic_model_after)
-        controller = self._show_job_progress_dialog(
-            key=self._ai_runtime_job_key,
-            total_steps=1,
-            spec=JobSpec(
-                title="Installing AI Runtime",
-                preparing_label="Preparing AI runtime install...",
-                running_label="Installing AI runtime...",
-                indeterminate_label="Installing AI runtime...",
-                fixed_width=760,
-            ),
-        )
-        controller.setRange(0, 0)
-        controller.setValue(0)
+        self._set_ai_setup_busy("Installing AI runtime...")
         self._update_action_states()
         self._update_ai_toolbar_state()
         self.statusBar().showMessage("Starting AI runtime install...")
         self._ai_model_pool.start(task)
 
     def _handle_ai_runtime_install_started(self, install_root: str, variant_choice: str) -> None:
-        controller = self._show_job_progress_dialog(
-            key=self._ai_runtime_job_key,
-            total_steps=1,
-            spec=JobSpec(
-                title="Installing AI Runtime",
-                preparing_label="Preparing AI runtime install...",
-                running_label="Installing AI runtime...",
-                indeterminate_label="Installing AI runtime...",
-                fixed_width=760,
-            ),
-        )
-        controller.setRange(0, 0)
-        controller.setValue(0)
-        controller.setLabelText(
-            f"Installing {ai_runtime_variant_label(variant_choice)} AI runtime to\n{install_root}"
-        )
+        del install_root, variant_choice
+        self._set_ai_setup_busy("Installing AI runtime...")
         self.statusBar().showMessage("Installing AI runtime...")
 
     def _handle_ai_runtime_install_progress(self, message: str) -> None:
-        controller = self._show_job_progress_dialog(
-            key=self._ai_runtime_job_key,
-            total_steps=1,
-            spec=JobSpec(
-                title="Installing AI Runtime",
-                preparing_label="Preparing AI runtime install...",
-                running_label="Installing AI runtime...",
-                indeterminate_label="Installing AI runtime...",
-                fixed_width=760,
-            ),
-        )
-        parsed = _parse_pip_raw_progress(message)
-        if parsed is not None:
-            current, total = parsed
-            controller.setRange(0, total)
-            controller.setValue(min(current, total))
-            controller.setLabelText(f"Downloading AI runtime packages ({_format_bytes(current)} / {_format_bytes(total)})")
-        else:
-            controller.setRange(0, 0)
-            controller.setValue(0)
-            controller.setLabelText(message)
+        del message
+        self._set_ai_setup_busy("Installing AI runtime...")
 
     def _handle_ai_runtime_install_finished(self, install_root: str, variant_choice: str) -> None:
         self._active_ai_runtime_task = None
         self._invalidate_ai_runtime_status_cache()
-        self._close_job_progress_dialog(self._ai_runtime_job_key)
         self._refresh_ai_runtime_preferences()
         self._update_action_states()
         self._update_ai_toolbar_state()
@@ -9323,10 +9465,11 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
+        self._set_ai_setup_busy(None)
         QMessageBox.information(
             self,
-            "AI Runtime Installed",
-            f"The {ai_runtime_variant_label(variant_choice)} runtime is ready.\n\nInstalled to:\n{install_root}",
+            "AI Setup Complete",
+            f"The {ai_runtime_variant_label(variant_choice)} AI runtime is ready.",
         )
 
     def _handle_ai_runtime_install_failed(self, message: str) -> None:
@@ -9336,7 +9479,7 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
-        self._close_job_progress_dialog(self._ai_runtime_job_key)
+        self._set_ai_setup_busy(None)
         self._update_action_states()
         self._update_ai_toolbar_state()
         QMessageBox.warning(self, "AI Runtime Install", message)
@@ -9590,81 +9733,38 @@ class MainWindow(QMainWindow):
         task.signals.finished.connect(self._handle_ai_model_download_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_ai_model_download_failed, Qt.ConnectionType.QueuedConnection)
         self._active_ai_model_task = task
-        controller = self._show_job_progress_dialog(
-            key=self._ai_model_job_key,
-            total_steps=1,
-            spec=JobSpec(
-                title="Downloading AI Model",
-                preparing_label="Preparing AI model download...",
-                running_label="Downloading AI model...",
-                indeterminate_label="Downloading AI model...",
-                fixed_width=760,
-            ),
-        )
-        controller.setRange(0, 0)
-        controller.setValue(0)
+        self._set_ai_setup_busy("Downloading AI culling models...")
         self._update_action_states()
         self._update_ai_toolbar_state()
         self.statusBar().showMessage("Starting AI model download...")
         self._ai_model_pool.start(task)
 
     def _handle_ai_model_download_started(self, install_dir: str) -> None:
-        controller = self._show_job_progress_dialog(
-            key=self._ai_model_job_key,
-            total_steps=1,
-            spec=JobSpec(
-                title="Downloading AI Model",
-                preparing_label="Preparing AI model download...",
-                running_label="Downloading AI model...",
-                indeterminate_label="Downloading AI model...",
-                fixed_width=760,
-            ),
-        )
-        controller.setRange(0, 0)
-        controller.setValue(0)
-        controller.setLabelText(f"Downloading AI model:\n{install_dir}")
-        self.statusBar().showMessage("Downloading AI model...")
+        del install_dir
+        self._set_ai_setup_busy("Downloading AI culling models...")
+        self.statusBar().showMessage("Downloading AI culling models...")
 
     def _handle_ai_model_download_progress(self, filename: str, current: int, total: int) -> None:
-        controller = self._show_job_progress_dialog(
-            key=self._ai_model_job_key,
-            total_steps=max(1, total if total > 0 else 1),
-            spec=JobSpec(
-                title="Downloading AI Model",
-                preparing_label="Preparing AI model download...",
-                running_label="Downloading AI model...",
-                indeterminate_label="Downloading AI model...",
-                fixed_width=760,
-            ),
-        )
-        if total > 0:
-            controller.setRange(0, total)
-            controller.setValue(min(current, total))
-            size_mb = total / (1024 * 1024)
-            downloaded_mb = current / (1024 * 1024)
-            controller.setLabelText(f"Downloading {filename} ({downloaded_mb:.1f} / {size_mb:.1f} MB)")
-        else:
-            controller.setRange(0, 0)
-            controller.setValue(0)
-            controller.setLabelText(f"Downloading {filename}...")
+        del filename, current, total
+        self._set_ai_setup_busy("Downloading AI culling models...")
 
     def _handle_ai_model_download_finished(self, install_dir: str) -> None:
         self._active_ai_model_task = None
         self._invalidate_ai_runtime_status_cache()
-        self._close_job_progress_dialog(self._ai_model_job_key)
+        self._set_ai_setup_busy(None)
         self._refresh_ai_runtime_preferences()
         self._update_action_states()
         self._update_ai_toolbar_state()
-        self.statusBar().showMessage("AI model download finished.")
+        self.statusBar().showMessage("AI setup complete.")
         QMessageBox.information(
             self,
-            "AI Model Downloaded",
-            f"The selected AI model download is ready.\n\nInstalled to:\n{install_dir}",
+            "AI Setup Complete",
+            "The AI runtime and culling models are ready.",
         )
 
     def _handle_ai_model_download_failed(self, message: str) -> None:
         self._active_ai_model_task = None
-        self._close_job_progress_dialog(self._ai_model_job_key)
+        self._set_ai_setup_busy(None)
         self._refresh_ai_runtime_preferences()
         self._update_action_states()
         self._update_ai_toolbar_state()
@@ -13572,6 +13672,12 @@ class MainWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
 
+    def _open_current_ai_review(self) -> None:
+        if self._ai_bundle is None and not self._load_hidden_ai_results_for_current_folder(show_message=True):
+            self.statusBar().showMessage("Run Cull & Score before opening AI Review.")
+            return
+        self._set_ui_mode("ai")
+
     def _open_guided_ai_cull_preferences(self) -> None:
         dialog = getattr(self, "_guided_ai_cull_preferences_dialog", None)
         if dialog is not None and dialog.isVisible():
@@ -13579,22 +13685,13 @@ class MainWindow(QMainWindow):
             dialog.activateWindow()
             return
 
-        try:
-            runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
-            face_quality_available = bool(getattr(runtime, "face_quality_enabled", False))
-        except Exception:
-            face_quality_available = False
-
         image_count = sum(1 for record in self._all_records if not record.is_folder)
         dialog = GuidedAICullPreferencesDialog(
             folder_name=self._scope_display_label(),
             image_count=image_count,
             keep_top_percent=self._ai_keep_top_percent_setting,
             review_band_percent=self._ai_review_band_percent_setting,
-            base_score_weight_percent=self._ai_base_score_weight_percent_setting,
-            dino_prefilter_settings=self._dino_prefilter_settings,
             phash_prefilter_settings=self._phash_prefilter_settings,
-            face_quality_available=face_quality_available,
             parent=self,
         )
         self._guided_ai_cull_preferences_dialog = dialog
@@ -13624,18 +13721,10 @@ class MainWindow(QMainWindow):
             self._ai_review_band_percent_setting = new_review_band
             self._apply_cull_thresholds_to_classifier()
 
-        new_base_weight = self._normalize_ai_base_score_weight_percent(preferences.base_score_weight_percent)
-        if new_base_weight != self._ai_base_score_weight_percent_setting:
-            self._ai_base_score_weight_percent_setting = new_base_weight
-            self._apply_base_score_blend_to_workflow()
-
-        self._dino_prefilter_settings = preferences.dino_prefilter_settings.normalized()
         self._phash_prefilter_settings = preferences.phash_prefilter_settings.normalized()
 
         self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
         self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
-        self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
-        self._save_dino_prefilter_settings(self._dino_prefilter_settings)
         self._save_phash_prefilter_settings(self._phash_prefilter_settings)
         self._update_ai_toolbar_state()
         self.statusBar().showMessage("Guided AI Cull preferences saved.")
@@ -17995,7 +18084,10 @@ class MainWindow(QMainWindow):
             return False
         db_path = aiculler_db_path(paths)
         try:
-            bundle = load_latest_winner_scores(db_path)
+            bundle = load_latest_winner_scores(
+                db_path,
+                model_version=WINNER_SCORE_FALLBACK_MODEL_VERSION,
+            )
         except Exception:
             self._winner_scores_by_path = {}
             self._winner_scores_model_version = ""
@@ -18522,7 +18614,6 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         menu.addAction(self.actions.install_ai_runtime)
-        menu.addAction(self.actions.download_ai_model)
         menu.addSeparator()
         run_action = menu.addAction(self.actions.run_ai_culling)
         apply_action = menu.addAction(self.actions.apply_ai_culling)
@@ -18537,7 +18628,6 @@ class MainWindow(QMainWindow):
         next_pick_action = menu.addAction(self.actions.next_ai_pick)
         next_unreviewed_pick_action = menu.addAction(self.actions.next_unreviewed_ai_pick)
         compare_group_action = menu.addAction(self.actions.compare_ai_group)
-        dispute_action = menu.addAction(self.actions.dispute_current_ai_result)
         jump_group_top_action = menu.addAction("Jump To AI Top Pick In Group")
         current_index = self.grid.current_index()
         current_ai_result = self._ai_result_for_index(current_index)
@@ -19347,8 +19437,8 @@ class MainWindow(QMainWindow):
             self.ai_status_label.setText("Downloading AI model...")
         elif not ai_runtime_ready:
             self.ai_status_label.setText("AI runtime not installed")
-        elif not ai_model_ready:
-            self.ai_status_label.setText("AI model not installed")
+        elif not culler_runtime_ready:
+            self.ai_status_label.setText("AI culling models not installed")
         elif self._ai_semantic_sidecar_enabled and not semantic_model_ready:
             self.ai_status_label.setText("Semantic AI model not installed")
         elif ai_loaded and self._ai_bundle is not None:
@@ -19368,13 +19458,13 @@ class MainWindow(QMainWindow):
             f"Python: {self._ai_runtime.python_executable}",
             f"Engine: {self._ai_runtime.engine_root}",
             f"Runtime installed: {ai_runtime_ready}",
-            f"Model: {self._ai_runtime.model_name}",
-            f"Model installed: {ai_model_ready}",
             f"Semantic model: {self._ai_runtime.semantic_model_name}",
             f"Semantic model installed: {semantic_model_ready}",
             f"Checkpoint: {active_checkpoint or self._ai_runtime.checkpoint_path}",
             f"Embedding batch size: {self._ai_embed_batch_size_label()}",
             f"CLI-Culler CLIP model: {self._ai_clip_model_variant_label()}",
+            f"TOPIQ model installed: {self._aiculler_topiq_model_available()}",
+            f"InsightFace models installed: {self._aiculler_face_model_available()}",
             f"Embedding workers: {self._ai_runtime.num_workers}",
             f"Local staging: {self._ai_runtime.local_stage_mode}",
             f"Semantic sidecar: {'enabled' if self._ai_semantic_sidecar_enabled else 'disabled'}",
@@ -19385,9 +19475,15 @@ class MainWindow(QMainWindow):
             runtime_lines.append(
                 "Runtime profiles: " + ", ".join(ai_runtime_variant_label(variant) for variant in runtime_status.installed_variants)
             )
-        managed_installation = self._ai_runtime.model_installation
-        if managed_installation is not None:
-            runtime_lines.append(f"Managed model dir: {managed_installation.install_dir}")
+        runtime_lines.append(
+            f"CLIP model dir: {self._managed_aiculler_clip_model_installation().install_dir}"
+        )
+        runtime_lines.append(
+            f"TOPIQ model dir: {self._managed_aiculler_topiq_model_installation().install_dir}"
+        )
+        runtime_lines.append(
+            f"InsightFace model dir: {self._managed_aiculler_face_model_installation().install_dir}"
+        )
         runtime_lines.append(f"Managed semantic model dir: {self._managed_semantic_model_installation().install_dir}")
         if self._active_reference_bank_path:
             runtime_lines.append(f"Reference bank: {self._active_reference_bank_path}")
@@ -19484,13 +19580,8 @@ class MainWindow(QMainWindow):
                 runtime=runtime,
                 paths=paths,
                 records=tuple(record for record in self._all_records if not record.is_folder),
-                # DINO is a separate Workflow Center step. Index & Score consumes
-                # its saved decisions instead of rerunning the model.
                 run_dino_prefilter=False,
-                # When DINO is disabled there is no standalone prefilter step, so
-                # pHash still runs here. Otherwise reuse the pHash artifacts that
-                # were produced alongside the standalone DINO pass.
-                run_phash_prefilter=not self._dino_prefilter_settings.enabled,
+                run_phash_prefilter=self._phash_prefilter_settings.enabled,
                 dino_prefilter_settings=self._dino_prefilter_settings,
                 phash_prefilter_settings=self._phash_prefilter_settings,
                 dino_runtime=self._ai_runtime,
@@ -19637,7 +19728,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Quick Rerank",
-                "Run Index & Score at least once for this folder before using Quick Rerank.\n\n"
+                "Run Cull & Score at least once for this folder before using Quick Rerank.\n\n"
                 "Quick Rerank reuses the existing ingest, categories, and clusters.",
             )
             return
@@ -19731,7 +19822,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Open a source folder before applying AI decisions.")
             return
         if self._ai_bundle is None:
-            self.statusBar().showMessage("Run Index & Score or load AI results before applying AI decisions.")
+            self.statusBar().showMessage("Run Cull & Score or load AI results before applying AI decisions.")
             return
         if self._is_winners_folder() or self._is_recycle_folder():
             self.statusBar().showMessage("Apply AI Decisions only from the source folder, not from _winners or the recycle bin.")
@@ -19822,7 +19913,7 @@ class MainWindow(QMainWindow):
                     "Semantic Sort",
                     (
                         "Semantic classifications are missing or incomplete for this folder.\n\n"
-                        "Run Index & Score again now to generate the semantic classifications? "
+                        "Run Cull & Score again now to generate the semantic classifications? "
                         "Existing DINO embeddings and clusters will be reused when possible."
                     ),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -19831,7 +19922,7 @@ class MainWindow(QMainWindow):
                 if rerun == QMessageBox.StandardButton.Yes:
                     self._run_ai_pipeline()
                 return
-            self.statusBar().showMessage("Run Index & Score with Semantic sidecar enabled before sorting into semantic folders.")
+            self.statusBar().showMessage("Run Cull & Score before sorting into semantic folders.")
             return
         try:
             classifications = load_semantic_classifications(paths.semantic_export_path)
@@ -22086,22 +22177,17 @@ class MainWindow(QMainWindow):
                 f"""
                 # AI Guide
 
-                AI is a core part of Image Triage. The app supports two complementary modes:
-
-                - **AI review** — group and rank the images in a folder.
-                - **AI training** — teach the model from your own preferences.
+                AI is a core part of Image Triage. The current culling workflow groups, scores, ranks, and reviews the images in a folder.
 
                 The guiding principle is simple: **AI suggests, you stay in control.**
 
-                ## Model download
+                ## AI setup
 
                 The installer opens a first-launch setup step for the optional AI runtime and local model files.
 
-                - Keep the AI runtime install on to have the core ONNX/TOPIQ stack ready immediately.
-                - Include DINO dependencies only if you plan to use DINO Prefilter.
-                - Keep model downloads on to cache CLI-Culler CLIP, TOPIQ, and optional DINO assets locally.
-                - Turn it off if you only want the core browser for now.
-                - If you skip it, install later from **`AI > Runtime And Cache > Install AI Runtime...`** and **`AI > Runtime And Cache > Download AI Models...`**.
+                - Choose the GPU or CPU runtime profile.
+                - Setup installs the ONNX runtime and the current CLI-Culler model set: CLIP, TOPIQ, and InsightFace quality models.
+                - If you skip it, install later from **`AI > AI Setup And Cache > Set Up AI...`**.
 
                 ## What AI adds to review
 
@@ -22118,7 +22204,7 @@ class MainWindow(QMainWindow):
                 Use this when you want the app to score a folder and help you review it faster. Open **`AI > AI Workflow Center...`** and use its **`?`** button for the detailed, stage-by-stage guide.
 
                 1. Open the folder you want to review.
-                2. Open **`AI > AI Workflow Center...`** and run **Index & Score**.
+                2. Open **`AI > AI Workflow Center...`** and run **Cull & Score**.
                 3. Wait for extraction, grouping, scoring, and report export to finish.
                 4. The app loads the new results and switches into **AI Review** automatically.
                 5. Press **`Ctrl+Alt+P`** to jump to the next AI top pick.
@@ -22130,18 +22216,13 @@ class MainWindow(QMainWindow):
 
                 {self._ai_review_tags_markdown()}
 
-                ## Adapter workflow
+                ## How the cull is scored
 
-                Use this when you want CLI-Culler to learn from your own decisions.
-
-                1. Open the folder you want to train from.
-                2. Open **`AI > AI Workflow Center...`** and run **Index & Score** so the folder has a CLI-Culler database.
-                3. Mark winners or rejects in the grid, or choose **`AI > Adapter Training > Review Adapter Labels...`** to work through suggested candidates.
-                4. Choose **`AI > Adapter Training > Prepare Training Labels`** to materialize the current labels.
-                5. Choose **`AI > Adapter Training > Train Adapter...`**.
-                6. Choose **`AI > Adapter Training > Evaluate Adapter`** to check the latest adapter against stored labels.
-                7. Choose **`AI > Adapter Training > Rank Folder With Local Adapter`** to refresh the ranking.
-                8. Review the refreshed result in **AI Review**.
+                - **pHash** groups near-duplicate frames.
+                - **CLIP** scores visual content and assigns semantic categories.
+                - **TOPIQ** adds technical quality signals.
+                - **InsightFace** adds face and eye quality when faces are present.
+                - Similar-image clustering and diversity penalties keep bursts from dominating the top results.
 
                 ## Where AI files live
 
@@ -22153,17 +22234,14 @@ class MainWindow(QMainWindow):
                 ## Best practices
 
                 - Start with folders that match the kind of work you care about most.
-                - Label clear winners and clear rejects first.
-                - Use adapter label review to cover uncertain or informative cases before training.
-                - Retrain after a meaningful batch of labels, not after every small change.
-                - Evaluate a new adapter before trusting it broadly.
+                - Use the Guided AI Cull when you want a quick keeper percentage and review band.
+                - Review the uncertain middle manually before applying file moves.
 
                 ## Troubleshooting
 
-                - If rankings look stale, run **Rank Folder With Local Adapter** again.
-                - If the folder changed heavily, rerun **Index & Score** before training or ranking.
-                - If AI actions are disabled, open **`AI > Runtime And Cache > Install AI Runtime...`** or **`AI > Runtime And Cache > Download AI Models...`** and check the setup state.
-                - To review AI results only, you do **not** need the adapter steps.
+                - If rankings look stale and the folder is unchanged, use **Quick Rerank**.
+                - If images were added or removed, rerun **Cull & Score**.
+                - If AI actions are disabled, open **`AI > AI Setup And Cache > Set Up AI...`** and check the setup state.
                 """
             ),
         )
@@ -24167,17 +24245,10 @@ class MainWindow(QMainWindow):
         if not self._photoshop_executable:
             photoshop_action.setText("Open In Photoshop (Not Found)")
         ai_result = self._ai_result_for_index(index)
-        dispute_ai_action = None
         compare_ai_group_action = None
         jump_ai_pick_action = None
         if ai_result is not None:
             menu.addSeparator()
-            dispute_ai_action = menu.addAction(
-                self._menu_text_with_action_shortcut(
-                    "Dispute AI Decision...",
-                    self.actions.dispute_current_ai_result if self.actions else None,
-                )
-            )
             if ai_result.group_size > 1:
                 compare_ai_group_action = menu.addAction(
                     self._menu_text_with_action_shortcut("Compare AI Group", self.actions.compare_ai_group if self.actions else None)
@@ -24211,11 +24282,6 @@ class MainWindow(QMainWindow):
             return
         if chosen == open_action:
             open_with_default(display_path)
-            return
-        if dispute_ai_action is not None and chosen == dispute_ai_action:
-            if index != self.grid.current_index():
-                self.grid.set_current_index(index)
-            self._dispute_current_ai_result()
             return
         if compare_ai_group_action is not None and chosen == compare_ai_group_action:
             self._open_current_ai_group_compare(index)

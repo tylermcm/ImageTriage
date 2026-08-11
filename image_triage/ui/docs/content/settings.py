@@ -24,19 +24,18 @@ ARTICLES = [
 
         - **General and Interface** — overall behavior, layout, and display preferences.
         - **Library and Folders** — folder loading, catalog cache behavior, and image bundle handling.
-        - **AI** — the main scoring system, including CLIP/TOPIQ scoring, adapter blending, and review bands. See [AI settings](doc:ai-settings).
-        - **DINO Prefilter** — the optional first pass that detects likely rejects before full scoring.
+        - **AI** — processing, keeper thresholds, and review bands for the CLIP/TOPIQ/InsightFace cull. See [AI settings](doc:ai-settings).
         - **pHash Prefilter** — duplicate and near-duplicate detection using perceptual hashing.
 
-        > **Tip:** The Settings window has its own **`?`** button for the growing AI, DINO, and pHash sections.
+        > **Tip:** The Settings window has its own **`?`** button for the AI and pHash sections.
         """,
     ),
     DocArticle(
         id="ai-settings",
         title="AI settings",
         category="settings",
-        summary="Tune scoring, adapter blending, and the prefilters safely.",
-        keywords=("ai settings", "blend", "prefilter", "dino", "phash", "threshold"),
+        summary="Tune result thresholds and duplicate grouping safely.",
+        keywords=("ai settings", "prefilter", "phash", "threshold", "review band"),
         markdown="""
         # AI settings
 
@@ -44,7 +43,7 @@ ARTICLES = [
 
         ## Prefilters run first — change them carefully
 
-        DINO and pHash settings decide which images even reach the main scoring stage. Because they run *before* the AI ranking, changing them too aggressively can hide useful images from later steps. **Start conservative.** See [Prefilters: DINO & pHash](doc:prefilters).
+        pHash settings decide which near-duplicates reach the main scoring stage. Because the prefilter runs *before* the AI ranking, change it conservatively. See [pHash prefilter](doc:prefilters).
 
         ## Check your changes
 
@@ -52,14 +51,13 @@ ARTICLES = [
 
         - AI Ingested
         - AI Prefilter Dumped
-        - DINO Removed
         - AI Top Picks
 
         These views confirm the AI is filtering the right images before you rely on it for a full pass.
 
-        ## Adapter blending
+        ## Result thresholds
 
-        Adapter blending controls how strongly your trained [adapter](doc:what-adapters-are) influences the final score versus the base CLIP/TOPIQ models. Heavier blending makes the ranking more personal; lighter blending keeps it closer to general quality.
+        **Keep top** controls how much of the ranked folder enters the keeper range. **Review band** holds the next slice for human review instead of treating it as a clear reject. These settings divide the finished ranking; they do not retrain or blend another model.
         """,
     ),
 ]
