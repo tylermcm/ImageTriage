@@ -77,6 +77,8 @@ from ..subject_masks import (
     SubjectMaskTask,
     combine_subject_components,
 )
+from ..depth_maps import DepthMapResult, DepthMapTask, DepthWarmTask
+from ..people_instances import PeopleInstanceTask, PersonInstance
 from ..prompt_masks import PromptMaskResult, PromptMaskTask, PromptMaskWarmTask
 
 
@@ -828,6 +830,15 @@ class PhotoEditorPanel(QFrame):
         self._session_path: Path | None = None
         self._session: dict[str, Any] | None = None
         self._recipe = EditRecipe()
+        # AI Background tool: the BiRefNet matte (resolved on demand from the
+        # subject-mask cache) that separates foreground from the blur/replace.
+        self._background_matte_path: str | None = None
+        self._background_matte_task: object | None = None
+        self._background_tool_panel: QWidget | None = None
+        # Depth-aware Lens Blur: the depth map (resolved on demand + cached).
+        self._depth_map_path: str | None = None
+        self._depth_map_task: object | None = None
+        self._lens_blur_tool_panel: QWidget | None = None
         self._status_message = ""
         self._rows: dict[str, _AdjustmentRow] = {}
         self._mask_create_mode: str | None = None
@@ -874,15 +885,34 @@ class PhotoEditorPanel(QFrame):
         self._subject_choice_result: SubjectMaskResult | None = None
         self._subject_choice_context: tuple[str | None, str] | None = None
         self._subject_choice_selected_ids: set[str] = set()
-        # Promptable click-to-select (SAM) state.
+        # Promptable click-to-select (SAM) state. A session builds ONE mask:
+        # each click adds an "add" component to the same group, edited/refined
+        # together in the touchup window, committed on OK.
         self._point_select_active = False
         self._prompt_mask_task: object | None = None
+        self._prompt_mask_context: dict[str, Any] | None = None
         self._prompt_mask_counter = 0
+        self._prompt_session_active = False
+        self._prompt_session_root_id: str | None = None
+        self._prompt_session_label: str | None = None
+        # How each click-to-select component was made: {mask_id: {"points",
+        # "refined"}}. Kept in memory (the session schema drops unknown mask
+        # keys) so "Refine Edges" can re-run the SAM prompt; mask ids survive the
+        # save/reload round-trip, so keying on them is stable.
+        self._prompt_meta: dict[str, dict[str, Any]] = {}
+        self._refine_queue: list[str] = []
+        self._refine_active_task: object | None = None
         # Lazily derived from the result above; keyed on it so a new analysis
         # invalidates the index without an explicit reset.
         self._scene_index: SceneRegionIndex | None = None
+        self._scene_index_base: SceneRegionIndex | None = None
         self._scene_index_source: Path | None = None
         self._scene_index_task: SceneIndexTask | None = None
+        # SAM-split individual people, folded into the scene index so hovering
+        # lights up one person instead of the whole crowd.
+        self._people_instances: list[PersonInstance] | None = None
+        self._people_instances_source: Path | None = None
+        self._people_instance_task: PeopleInstanceTask | None = None
         self._semantic_mask_pool = QThreadPool(self)
         self._semantic_mask_pool.setMaxThreadCount(1)
         self._mask_commit_timer = QTimer(self)
@@ -1286,6 +1316,65 @@ class PhotoEditorPanel(QFrame):
         scroll.setWidget(body)
         return scroll
 
+    def build_background_tool(self, parent: QWidget | None = None) -> QWidget:
+        """The Background tool as a standalone panel (hosted in a popout window
+        off the tool rail). Built once and reused so its controls stay valid."""
+        existing = getattr(self, "_background_tool_panel", None)
+        if existing is not None:
+            return existing
+        panel = QWidget(parent)
+        panel.setObjectName("backgroundToolPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(12)
+
+        hint = QLabel(
+            "Keep the subject sharp — blur what's behind it, or remove it and "
+            "leave a transparent background. The cut-out is found automatically.",
+            panel,
+        )
+        hint.setObjectName("editorHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # Blur is the primary control: one always-visible strength slider,
+        # 0 = off, so it never reads as an all-or-nothing toggle.
+        blur_row = QHBoxLayout()
+        blur_row.setContentsMargins(0, 2, 0, 0)
+        blur_row.setSpacing(8)
+        blur_label = QLabel("Blur", panel)
+        blur_label.setObjectName("editorControlLabel")
+        blur_label.setFixedWidth(46)
+        self.background_blur_slider = QSlider(Qt.Orientation.Horizontal, panel)
+        self.background_blur_slider.setRange(0, 100)
+        self.background_blur_slider.setValue(0)
+        self.background_blur_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.background_blur_slider.valueChanged.connect(self._set_background_blur)
+        self.background_blur_value = QLabel("0", panel)
+        self.background_blur_value.setObjectName("editorControlLabel")
+        self.background_blur_value.setFixedWidth(28)
+        self.background_blur_value.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        blur_row.addWidget(blur_label)
+        blur_row.addWidget(self.background_blur_slider, 1)
+        blur_row.addWidget(self.background_blur_value)
+        layout.addLayout(blur_row)
+
+        # Remove: knock the background out to a transparent (checkerboard) field.
+        self.background_remove_button = QPushButton("Remove background", panel)
+        self.background_remove_button.setObjectName("backgroundRemoveButton")
+        self.background_remove_button.setCheckable(True)
+        self.background_remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.background_remove_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.background_remove_button.toggled.connect(self._toggle_background_remove)
+        layout.addWidget(self.background_remove_button)
+        layout.addStretch(1)
+
+        self._background_tool_panel = panel
+        self._sync_background_controls()
+        return panel
+
     def _mask_pane(self) -> tuple[QScrollArea, QWidget, QVBoxLayout]:
         """A scrollable pane for the Masks stack."""
         scroll = QScrollArea(self)
@@ -1687,20 +1776,46 @@ class PhotoEditorPanel(QFrame):
         cl.setContentsMargins(11, 8, 11, 8)
         cl.setSpacing(8)
 
+        # One instruction for the whole pill group: hovering the photo lights up
+        # the person or region under the cursor; the pills are explicit choices.
+        self._scene_hint = QLabel(
+            "Point at the photo — the person or region under the cursor lights up. "
+            "Click to mask it.",
+            content,
+        )
+        self._scene_hint.setObjectName("editorHint")
+        self._scene_hint.setWordWrap(True)
+        cl.addWidget(self._scene_hint)
+
         self.subject_mask_options = QWidget(content)
         subject_layout = QVBoxLayout(self.subject_mask_options)
         subject_layout.setContentsMargins(0, 0, 0, 0)
         subject_layout.setSpacing(6)
-        self.select_subject_button = self._mask_tool_row("scene", "Select subject")
-        self.select_background_button = self._mask_tool_row("scene", "Select background")
+        # Subject / background come from BiRefNet, the scene pills from
+        # OneFormer, but they're all "let the model pick a region" — so they wear
+        # the same pill styling and sit in a matching two-column row.
+        self.select_subject_button = self._action_button(
+            "Select subject", self.subject_mask_options
+        )
+        self.select_subject_button.setObjectName("semanticMaskButton")
+        self.select_subject_button.setAccessibleName("Select subject")
+        self.select_background_button = self._action_button(
+            "Select background", self.subject_mask_options
+        )
+        self.select_background_button.setObjectName("semanticMaskButton")
+        self.select_background_button.setAccessibleName("Select background")
         self.select_subject_button.clicked.connect(
             lambda: self.request_subject_mask("subject")
         )
         self.select_background_button.clicked.connect(
             lambda: self.request_subject_mask("background")
         )
-        subject_layout.addWidget(self.select_subject_button)
-        subject_layout.addWidget(self.select_background_button)
+        subject_buttons_row = QHBoxLayout()
+        subject_buttons_row.setContentsMargins(0, 0, 0, 0)
+        subject_buttons_row.setSpacing(6)
+        subject_buttons_row.addWidget(self.select_subject_button)
+        subject_buttons_row.addWidget(self.select_background_button)
+        subject_layout.addLayout(subject_buttons_row)
         self.subject_choice_panel = QFrame(self.subject_mask_options)
         self.subject_choice_panel.setObjectName("subjectChoicePanel")
         choice_layout = QVBoxLayout(self.subject_choice_panel)
@@ -1727,18 +1842,9 @@ class PhotoEditorPanel(QFrame):
         subject_layout.addWidget(self.subject_choice_panel)
         self.subject_mask_options.hide()
         cl.addWidget(self.subject_mask_options)
-        self.subject_options_divider = self._mask_hairline(content)
-        self.subject_options_divider.hide()
-        cl.addWidget(self.subject_options_divider)
 
-        # Scene: point at the photo, or use whichever categories the model found.
-        self._scene_hint = QLabel(
-            "Point at the photo — the region under the cursor lights up. Click to mask it.",
-            content,
-        )
-        self._scene_hint.setObjectName("editorHint")
-        self._scene_hint.setWordWrap(True)
-        cl.addWidget(self._scene_hint)
+        # Scene category pills flow straight on from the subject pills — same
+        # styling, no divider — so the whole set reads as one group.
         semantic_grid = QGridLayout()
         semantic_grid.setContentsMargins(0, 0, 0, 0)
         semantic_grid.setHorizontalSpacing(6)
@@ -2294,6 +2400,19 @@ class PhotoEditorPanel(QFrame):
         refinement_layout.insertWidget(1, feather_row)
         root.addWidget(refinement_section)
 
+        refine_holder = QWidget(page)
+        refine_layout = QHBoxLayout(refine_holder)
+        refine_layout.setContentsMargins(12, 8, 12, 0)
+        self.mask_touchup_refine_button = QPushButton("Refine Edges", refine_holder)
+        self.mask_touchup_refine_button.setObjectName("maskTouchupSecondaryButton")
+        self.mask_touchup_refine_button.setToolTip(
+            "Clean up soft edges (hair, fur) with BiRefNet on any selections that "
+            "haven't been refined yet. People and animals are refined automatically."
+        )
+        self.mask_touchup_refine_button.clicked.connect(self._refine_touchup_session)
+        refine_layout.addWidget(self.mask_touchup_refine_button)
+        root.addWidget(refine_holder)
+
         touchup_actions = QWidget(page)
         touchup_actions_layout = QHBoxLayout(touchup_actions)
         touchup_actions_layout.setContentsMargins(12, 8, 12, 0)
@@ -2340,7 +2459,28 @@ class PhotoEditorPanel(QFrame):
             return None
         if self._mask_touchup_mask_id is not None and self._mask_touchup_mask_id != mask_id:
             self._finish_mask_touchup(accepted=False)
+        self._prompt_session_active = False   # a direct touch-up, not a click-select session
+        self._bind_touchup_to_mask(mask_id)
+        self.touchup_overlay_check.setChecked(self.overlay_check.isChecked())
+        self._enter_touchup_view()
+        return self._mask_touchup_page
 
+    def _enter_touchup_view(self) -> None:
+        for widget in (
+            self._editor_tab_bar,
+            self._editor_doc_bar,
+            self.editor_stack,
+            self._editor_footer,
+        ):
+            widget.hide()
+        self._mask_touchup_page.show()
+        self._mask_touchup_page.setFocus()
+
+    def _bind_touchup_to_mask(self, mask_id: str) -> None:
+        """Point the touch-up controls at a mask (its edge params, subtitle)."""
+        mask = self._mask_by_id(mask_id)
+        if mask is None:
+            return
         self._select_mask_in_list(mask_id)
         params = mask.setdefault("params", {})
         self._mask_touchup_mask_id = mask_id
@@ -2368,22 +2508,12 @@ class PhotoEditorPanel(QFrame):
         self.mask_touchup_clear_button.setText(
             "Restore Selection" if cleared else "Clear Selection"
         )
+        self.mask_touchup_clear_button.setEnabled(True)
         with QSignalBlocker(self.mask_touchup_invert_button):
-            self.mask_touchup_invert_button.setChecked(
-                bool(params.get("invert", False))
-            )
+            self.mask_touchup_invert_button.setChecked(bool(params.get("invert", False)))
+        self.mask_touchup_invert_button.setEnabled(True)
+        self.mask_touchup_refine_button.setEnabled(True)
         self.mask_touchup_subtitle.setText(_friendly_mask_label(mask))
-        self.touchup_overlay_check.setChecked(self.overlay_check.isChecked())
-        for widget in (
-            self._editor_tab_bar,
-            self._editor_doc_bar,
-            self.editor_stack,
-            self._editor_footer,
-        ):
-            widget.hide()
-        self._mask_touchup_page.show()
-        self._mask_touchup_page.setFocus()
-        return self._mask_touchup_page
 
     def _apply_mask_touchup_values(self, *_args: object) -> None:
         target = self._mask_by_id(self._mask_touchup_mask_id)
@@ -2408,6 +2538,12 @@ class PhotoEditorPanel(QFrame):
             self.recipe_changed.emit(self._recipe)
 
     def _toggle_mask_touchup_clear(self) -> None:
+        # In a click-to-select session Clear means "start this selection over":
+        # delete every component built so far rather than just hiding them (a
+        # hide would resurface them the moment the next click re-unions).
+        if self._prompt_session_active:
+            self._clear_prompt_session()
+            return
         target = self._mask_by_id(self._mask_touchup_mask_id)
         if target is None:
             return
@@ -2420,6 +2556,43 @@ class PhotoEditorPanel(QFrame):
         self.mask_overlay_changed.emit()
         if self._mask_has_local_adjustments(target):
             self.recipe_changed.emit(self._recipe)
+
+    def _clear_prompt_session(self) -> None:
+        """Delete every selection made in the current click-to-select session
+        and reset it to empty, ready for fresh clicks."""
+        root_id = self._prompt_session_root_id
+        if root_id is not None:
+            try:
+                _path, session = self._ensure_session()
+                members = [str(m.get("id")) for m in self._group_members(root_id)]
+                doomed = set(members)
+                session["operations"] = [
+                    op
+                    for op in session.get("operations", [])
+                    if op.get("maskId") not in doomed
+                ]
+                for member_id in [m for m in members if m != root_id] + [root_id]:
+                    remove_mask(session, member_id, force=True)
+                for member_id in members:
+                    self._prompt_meta.pop(member_id, None)
+                self._write_session(session, "Cleared selection")
+            except Exception as exc:
+                self._set_status(f"Clear failed: {exc}")
+                return
+        self._prompt_session_root_id = None
+        self._prompt_session_label = None
+        self._mask_touchup_mask_id = None
+        self._mask_touchup_original_present = set()
+        self._mask_touchup_original_values = {}
+        self._reset_touchup_controls()
+        self.mask_touchup_subtitle.setText(
+            "Click a person or object to start — each click adds to one selection"
+        )
+        self.mask_touchup_clear_button.setEnabled(False)
+        self.mask_touchup_invert_button.setEnabled(False)
+        self.mask_touchup_refine_button.setEnabled(False)
+        self._set_status("Selection cleared — click to start again")
+        self.mask_overlay_changed.emit()
 
     def _toggle_mask_touchup_invert(self, checked: bool) -> None:
         target = self._mask_by_id(self._mask_touchup_mask_id)
@@ -2458,6 +2631,18 @@ class PhotoEditorPanel(QFrame):
             self._editor_footer,
         ):
             widget.show()
+        # Tear down any click-to-select session and drop the user back on the
+        # mask adjustment (Work) pane with the button released.
+        was_session = self._prompt_session_active
+        self._prompt_session_active = False
+        self._prompt_session_root_id = None
+        self._prompt_session_label = None
+        self._point_select_active = False
+        self._refine_queue = []
+        self._sync_point_select_button(False)
+        if was_session:
+            self._show_mask_pane(self.MASK_PANE_WORK)
+        self.mask_overlay_changed.emit()
 
     def _resize_mask_list(self) -> None:
         list_widget = getattr(self, "masks_list", None)
@@ -2514,7 +2699,7 @@ class PhotoEditorPanel(QFrame):
         return scroll
 
     def set_image(self, source_path: str | Path | None) -> None:
-        if self._mask_touchup_mask_id is not None:
+        if self._mask_touchup_mask_id is not None or self._prompt_session_active:
             self._finish_mask_touchup(accepted=True)
         rejected_editor_asset = bool(source_path and is_editor_asset_path(source_path))
         if rejected_editor_asset:
@@ -2533,6 +2718,11 @@ class PhotoEditorPanel(QFrame):
         self._subject_mask_request_context = None
         self._point_select_active = False
         self._prompt_mask_task = None
+        self._prompt_meta = {}
+        self._background_matte_path = None
+        self._background_matte_task = None
+        self._depth_map_path = None
+        self._depth_map_task = None
         self._clear_subject_choice()
         if not source_path:
             self._semantic_mask_result = None
@@ -2556,9 +2746,7 @@ class PhotoEditorPanel(QFrame):
         if self._source_path is not None and path == self._source_path:
             return
         self._semantic_mask_result = None
-        self._scene_index = None
-        self._scene_index_source = None
-        self._scene_index_task = None
+        self._reset_scene_regions()
         self._populate_semantic_mask_buttons(())
         self._source_path = path
         migrate_bundle(path)
@@ -2703,6 +2891,7 @@ class PhotoEditorPanel(QFrame):
         if any(data.get(key) != defaults[key] for key in VIGNETTE_OPTION_KEYS):
             self._rows["vignette"].set_expanded(True)
         self._sync_curves_from_recipe()
+        self._sync_background_controls()
 
     def _sync_enabled(self) -> None:
         enabled = self._source_path is not None
@@ -2759,7 +2948,6 @@ class PhotoEditorPanel(QFrame):
         )
         if hasattr(self, "subject_mask_options"):
             self.subject_mask_options.setVisible(subject_category_detected)
-            self.subject_options_divider.setVisible(subject_category_detected)
 
     def _spin(self, parent: QWidget, minimum: int, maximum: int, value: int) -> QSpinBox:
         spin = QSpinBox(parent)
@@ -3099,9 +3287,12 @@ class PhotoEditorPanel(QFrame):
         # armed tool and, in the overlay, to the selected mask's handles.
         # Promptable click-to-select: when armed on the New Mask pane, a click
         # anywhere becomes a SAM point prompt. It takes over from scene picking.
+        # Click-to-select stays live during its touch-up session even though the
+        # New Mask pane is hidden behind the touch-up page, so the user can keep
+        # adding to the same mask.
         point_pick = bool(
             interactive
-            and create_pane_active
+            and (create_pane_active or getattr(self, "_prompt_session_active", False))
             and getattr(self, "_point_select_active", False)
             and self._mask_create_mode is None
             and self._brush_paint_mode is None
@@ -3125,11 +3316,23 @@ class PhotoEditorPanel(QFrame):
             and hasattr(self, "show_luminance_map_check")
             and self.show_luminance_map_check.isChecked()
         )
+        scene_index_value = self._ensure_scene_index() if scene_pick else None
+        # A centered "working…" spinner while New Mask analysis runs, so the pane
+        # never reads as frozen. Ordered by what the user is waiting on.
+        busy_message: str | None = None
+        if interactive and create_pane_active and not self._prompt_session_active:
+            if self._semantic_mask_task is not None:
+                busy_message = "Analyzing photo..."
+            elif self._people_instance_task is not None:
+                busy_message = "Finding people..."
+            elif self._scene_index_task is not None and self._scene_index is None:
+                busy_message = "Mapping regions..."
         return {
-            "scene_index": self._ensure_scene_index() if scene_pick else None,
+            "scene_index": scene_index_value,
             "scene_pick": scene_pick,
             "point_pick": point_pick,
             "interactive": interactive,
+            "busy_message": busy_message,
             "show_overlay": (
                 interactive
                 and (
@@ -3526,6 +3729,7 @@ class PhotoEditorPanel(QFrame):
         self._set_status(message)
         self._sync_semantic_mask_buttons()
         self._semantic_mask_pool.start(task)
+        self.mask_overlay_changed.emit()  # surface the "Analyzing…" spinner
 
     def request_semantic_mask(self, category: str) -> None:
         normalized = category.strip().casefold()
@@ -3578,14 +3782,23 @@ class PhotoEditorPanel(QFrame):
             return None
         if result.source_path != self._source_path.resolve():
             return None
+        self._ensure_people_instances(result)
         if self._scene_index_source == result.source_path:
             return self._scene_index
         if self._scene_index_task is None:
+            # Leave the merged people region out of the base index: people are
+            # only ever hovered as individuals (folded in once SAM splits them),
+            # so there's no "all people" flash or old-picker click in between.
+            base_categories = tuple(
+                category
+                for category in result.detected_categories
+                if category != "people"
+            )
             task = SceneIndexTask(
                 result.source_path,
                 result.source_size,
                 result.mask_paths,
-                result.detected_categories,
+                base_categories,
             )
             task.signals.ready.connect(
                 self._handle_scene_index_ready,
@@ -3599,30 +3812,418 @@ class PhotoEditorPanel(QFrame):
         self._scene_index_task = None
         if self._source_path is None or Path(source_path) != self._source_path.resolve():
             return
-        self._scene_index = index if isinstance(index, SceneRegionIndex) else None
+        self._scene_index_base = index if isinstance(index, SceneRegionIndex) else None
+        self._scene_index = self._compose_scene_index(Path(source_path))
         self._scene_index_source = Path(source_path)
         self.mask_overlay_changed.emit()
 
+    def _reset_scene_regions(self) -> None:
+        self._scene_index = None
+        self._scene_index_base = None
+        self._scene_index_source = None
+        self._scene_index_task = None
+        self._people_instances = None
+        self._people_instances_source = None
+        self._people_instance_task = None
+
+    def _ensure_people_instances(self, result: SemanticMaskResult) -> None:
+        """Kick off the one-time SAM split of the people region into individuals."""
+        if "people" not in result.detected_categories:
+            return
+        if self._people_instances_source == result.source_path:
+            return
+        if self._people_instance_task is not None:
+            return
+        people_path = result.mask_paths.get("people")
+        if not people_path or not Path(people_path).is_file():
+            return
+        task = PeopleInstanceTask(result.source_path, people_path)
+        task.signals.ready.connect(
+            self._handle_people_instances_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._people_instance_task = task
+        # People discovery embeds the image in SAM — later manual clicks reuse it.
+        self._request_prompt_warm()
+        # Run on the global pool, not the single-thread semantic pool: instance
+        # discovery takes seconds and must not stall the fast category hover
+        # index or a manual click-to-select queued behind it.
+        # (Callers emit mask_overlay_changed after this — including during a
+        # mask_overlay_state build — so no emit here, which would re-enter it.)
+        QThreadPool.globalInstance().start(task)
+
+    def _handle_people_instances_ready(self, source_path: str, instances: object) -> None:
+        self._people_instance_task = None
+        if self._source_path is None or Path(source_path) != self._source_path.resolve():
+            return
+        self._people_instances = instances if isinstance(instances, list) else None
+        self._people_instances_source = Path(source_path)
+        if self._scene_index_base is not None:
+            self._scene_index = self._compose_scene_index(Path(source_path))
+            self.mask_overlay_changed.emit()
+
+    def _compose_scene_index(self, source_path: Path) -> SceneRegionIndex | None:
+        """Fold discovered person instances into the base category index."""
+        base = self._scene_index_base
+        if base is None:
+            return None
+        if (
+            self._people_instances
+            and self._people_instances_source == source_path
+        ):
+            return base.with_person_instances(
+                [(inst.mask, inst.seed_norm) for inst in self._people_instances]
+            )
+        return base
+
+    # -- AI Background (blur / replace) ------------------------------------
+    def background_render_spec(self) -> dict | None:
+        """Resolved background compositing spec for the render backend, or None
+        when the tool is off or the BiRefNet matte isn't ready yet. Kicks the
+        matte computation on demand so simply turning the tool on triggers it."""
+        mode = getattr(self._recipe, "background_mode", "off")
+        if mode not in self._BACKGROUND_MATTE_MODES:
+            return None
+        matte = self._background_matte_path
+        if not matte or not Path(matte).is_file():
+            self._ensure_background_matte()
+            return None
+        return {
+            "mode": mode,
+            "amount": float(getattr(self._recipe, "background_amount", 60.0)),
+            "color": str(getattr(self._recipe, "background_color", "#000000")),
+            "matte_path": matte,
+        }
+
+    def _ensure_background_matte(self) -> None:
+        """Compute the foreground matte (BiRefNet) that separates the subject
+        from the blur/replace. Resolved from the subject-mask cache, so a reload
+        is a cache hit."""
+        if self._source_path is None or self._background_matte_task is not None:
+            return
+        if self._background_matte_path and Path(self._background_matte_path).is_file():
+            return
+        self.subject_warm_requested.emit("model")
+        task = SubjectMaskTask(self._source_path, "subject")
+        task.signals.finished.connect(
+            self._handle_background_matte_finished, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.failed.connect(
+            self._handle_background_matte_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._background_matte_task = task
+        self._set_status("Separating subject from background...")
+        self._semantic_mask_pool.start(task)
+
+    def _handle_background_matte_finished(
+        self, request: str, source_path: str, result: object
+    ) -> None:
+        self._background_matte_task = None
+        if self._source_path is None or Path(source_path) != self._source_path.resolve():
+            return
+        matte = None
+        if isinstance(result, SubjectMaskResult):
+            matte = result.mask_paths.get("subject")
+        if not matte or not Path(matte).is_file():
+            self._handle_background_matte_failed(request, source_path, "no matte produced")
+            return
+        self._background_matte_path = str(matte)
+        self._set_status("Background ready")
+        # Version bumps on this emit, so the preview re-renders with the matte.
+        self.recipe_changed.emit(self._recipe)
+
+    def _handle_background_matte_failed(
+        self, request: str, source_path: str, message: str
+    ) -> None:
+        self._background_matte_task = None
+        if self._source_path is not None and Path(source_path) == self._source_path.resolve():
+            self._set_status(f"Background separation failed: {message}")
+
+    def _update_recipe_field(self, key: str, value: object) -> None:
+        data = asdict(self._recipe)
+        data[key] = value
+        self._recipe = EditRecipe.from_dict(data)
+
+    _BACKGROUND_MATTE_MODES = ("blur", "color", "remove")
+
+    def _apply_background_settings(self, *, mode: str, amount: float) -> None:
+        data = asdict(self._recipe)
+        data["background_mode"] = mode
+        data["background_amount"] = float(amount)
+        self._recipe = EditRecipe.from_dict(data)
+        self._sync_background_controls()
+        if mode in self._BACKGROUND_MATTE_MODES:
+            self._ensure_background_matte()
+        self.recipe_changed.emit(self._recipe)
+
+    def _set_background_blur(self, value: int) -> None:
+        # Dragging blur means "blur", so a background removal, if on, yields.
+        button = getattr(self, "background_remove_button", None)
+        if button is not None and button.isChecked():
+            with QSignalBlocker(button):
+                button.setChecked(False)
+        self._apply_background_settings(
+            mode="blur" if value > 0 else "off", amount=float(value)
+        )
+
+    def _toggle_background_remove(self, checked: bool) -> None:
+        amount = float(getattr(self._recipe, "background_amount", 0.0))
+        if checked:
+            self._apply_background_settings(mode="remove", amount=amount)
+        else:
+            self._apply_background_settings(
+                mode="blur" if amount > 0 else "off", amount=amount
+            )
+
+    def _sync_background_controls(self) -> None:
+        slider = getattr(self, "background_blur_slider", None)
+        if slider is None:
+            return
+        mode = getattr(self._recipe, "background_mode", "off")
+        amount = int(getattr(self._recipe, "background_amount", 0.0))
+        with QSignalBlocker(slider):
+            slider.setValue(amount)
+        self.background_blur_value.setText(str(amount))
+        button = getattr(self, "background_remove_button", None)
+        if button is not None:
+            with QSignalBlocker(button):
+                button.setChecked(mode == "remove")
+
+    # -- AI Lens Blur (depth-aware depth-of-field) -------------------------
+    def lensblur_render_spec(self) -> dict | None:
+        """Resolved lens-blur spec for the render backend, or None when off or
+        the depth map isn't ready. Kicks the depth estimate on demand."""
+        amount = float(getattr(self._recipe, "lensblur_amount", 0.0))
+        if amount <= 0.0:
+            return None
+        depth = self._depth_map_path
+        if not depth or not Path(depth).is_file():
+            self._ensure_depth_map()
+            return None
+        return {
+            "amount": amount,
+            "focus": float(getattr(self._recipe, "lensblur_focus", 0.7)),
+            "depth_path": depth,
+        }
+
+    def _ensure_depth_map(self) -> None:
+        if self._source_path is None or self._depth_map_task is not None:
+            return
+        if self._depth_map_path and Path(self._depth_map_path).is_file():
+            return
+        try:
+            QThreadPool.globalInstance().start(DepthWarmTask("model"))
+        except Exception:
+            pass
+        task = DepthMapTask(self._source_path)
+        task.signals.finished.connect(
+            self._handle_depth_map_finished, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.failed.connect(
+            self._handle_depth_map_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._depth_map_task = task
+        self._set_status("Estimating depth...")
+        QThreadPool.globalInstance().start(task)
+
+    def _handle_depth_map_finished(
+        self, request: str, source_path: str, result: object
+    ) -> None:
+        self._depth_map_task = None
+        if self._source_path is None or Path(source_path) != self._source_path.resolve():
+            return
+        depth = result.depth_path if isinstance(result, DepthMapResult) else None
+        if not depth or not Path(depth).is_file():
+            self._handle_depth_map_failed(request, source_path, "no depth map")
+            return
+        self._depth_map_path = str(depth)
+        self._set_status("Lens blur ready")
+        self.recipe_changed.emit(self._recipe)
+
+    def _handle_depth_map_failed(
+        self, request: str, source_path: str, message: str
+    ) -> None:
+        self._depth_map_task = None
+        if self._source_path is not None and Path(source_path) == self._source_path.resolve():
+            self._set_status(f"Depth estimate failed: {message}")
+
+    def _set_lensblur_amount(self, value: int) -> None:
+        self._update_recipe_field("lensblur_amount", float(value))
+        self._sync_lensblur_controls()
+        if value > 0:
+            self._ensure_depth_map()
+        self.recipe_changed.emit(self._recipe)
+
+    def _set_lensblur_focus(self, value: int) -> None:
+        # Slider 0..100 (far..near) → focal depth 0..1.
+        self._update_recipe_field("lensblur_focus", float(value) / 100.0)
+        self._sync_lensblur_controls()
+        self.recipe_changed.emit(self._recipe)
+
+    def _sync_lensblur_controls(self) -> None:
+        slider = getattr(self, "lensblur_amount_slider", None)
+        if slider is None:
+            return
+        amount = int(getattr(self._recipe, "lensblur_amount", 0.0))
+        focus = int(round(float(getattr(self._recipe, "lensblur_focus", 0.7)) * 100.0))
+        with QSignalBlocker(slider):
+            slider.setValue(amount)
+        self.lensblur_amount_value.setText(str(amount))
+        with QSignalBlocker(self.lensblur_focus_slider):
+            self.lensblur_focus_slider.setValue(focus)
+
+    def build_lens_blur_tool(self, parent: QWidget | None = None) -> QWidget:
+        """The Lens Blur tool as a standalone popout panel (built once)."""
+        existing = getattr(self, "_lens_blur_tool_panel", None)
+        if existing is not None:
+            return existing
+        panel = QWidget(parent)
+        panel.setObjectName("backgroundToolPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(12)
+        hint = QLabel(
+            "Depth-of-field blur that grows with distance. Set the strength, then "
+            "slide Focus from far to near to place the sharp plane.",
+            panel,
+        )
+        hint.setObjectName("editorHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        amount_row = QHBoxLayout()
+        amount_row.setContentsMargins(0, 2, 0, 0)
+        amount_row.setSpacing(8)
+        amount_label = QLabel("Amount", panel)
+        amount_label.setObjectName("editorControlLabel")
+        amount_label.setFixedWidth(46)
+        self.lensblur_amount_slider = QSlider(Qt.Orientation.Horizontal, panel)
+        self.lensblur_amount_slider.setRange(0, 100)
+        self.lensblur_amount_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.lensblur_amount_slider.valueChanged.connect(self._set_lensblur_amount)
+        self.lensblur_amount_value = QLabel("0", panel)
+        self.lensblur_amount_value.setObjectName("editorControlLabel")
+        self.lensblur_amount_value.setFixedWidth(28)
+        self.lensblur_amount_value.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        amount_row.addWidget(amount_label)
+        amount_row.addWidget(self.lensblur_amount_slider, 1)
+        amount_row.addWidget(self.lensblur_amount_value)
+        layout.addLayout(amount_row)
+
+        focus_row = QHBoxLayout()
+        focus_row.setContentsMargins(0, 2, 0, 0)
+        focus_row.setSpacing(8)
+        focus_label = QLabel("Focus", panel)
+        focus_label.setObjectName("editorControlLabel")
+        focus_label.setFixedWidth(46)
+        self.lensblur_focus_slider = QSlider(Qt.Orientation.Horizontal, panel)
+        self.lensblur_focus_slider.setRange(0, 100)
+        self.lensblur_focus_slider.setValue(70)
+        self.lensblur_focus_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.lensblur_focus_slider.valueChanged.connect(self._set_lensblur_focus)
+        focus_hint = QLabel("far → near", panel)
+        focus_hint.setObjectName("editorControlLabel")
+        focus_hint.setFixedWidth(56)
+        focus_hint.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        focus_row.addWidget(focus_label)
+        focus_row.addWidget(self.lensblur_focus_slider, 1)
+        focus_row.addWidget(focus_hint)
+        layout.addLayout(focus_row)
+        layout.addStretch(1)
+
+        self._lens_blur_tool_panel = panel
+        self._sync_lensblur_controls()
+        return panel
+
     def handle_overlay_scene_picked(self, category: str) -> None:
         """A detected region was clicked on the photo."""
+        if SceneRegionIndex.is_person(category):
+            index = self._scene_index
+            seed = index.seed_for(category) if index is not None else None
+            if seed is None:
+                self._set_status("Couldn't pin that person — try clicking again")
+                return
+            # Route through the same SAM + BiRefNet-refine path a manual
+            # click-to-select uses, so the person comes out matte-clean.
+            self._request_prompt_warm()
+            self._start_prompt_mask_task(
+                [seed],
+                refine=True,
+                parent_id=self._pending_parent_id,
+                combine=self._pending_combine,
+            )
+            return
         self.request_semantic_mask(category)
 
     # -- promptable click-to-select (SAM) ----------------------------------
     def _set_point_select_active(self, active: bool) -> None:
+        """The 'Click to Select (AI)' button toggled. Entering opens the
+        touch-up window as a session that builds ONE mask from repeated clicks;
+        the user leaves it with OK (see ``_finish_mask_touchup``)."""
         active = bool(active)
-        self._point_select_active = active
+        if active and not self._prompt_session_active:
+            self._enter_prompt_select_session()
+        elif not active and self._prompt_session_active:
+            # Rare — the button was unchecked while a session was live; treat it
+            # like OK so we never strand the user on the touch-up page.
+            self._finish_mask_touchup(accepted=True)
+
+    def _sync_point_select_button(self, checked: bool) -> None:
         button = getattr(self, "point_select_button", None)
-        if button is not None and button.isChecked() != active:
+        if button is not None and button.isChecked() != checked:
             button.blockSignals(True)
-            button.setChecked(active)
+            button.setChecked(checked)
             button.blockSignals(False)
-        if active:
-            # Switching into click-select cancels any pending BiRefNet subject
-            # picker (its candidate pins would otherwise block point clicks).
-            self._clear_subject_choice()
-            self._request_prompt_warm()
-            self._set_status("Click a person or object on the photo to select just that one")
+
+    def _enter_prompt_select_session(self) -> None:
+        """Route into the touch-up window to build one click-to-select mask."""
+        if self._source_path is None:
+            self._set_status("Select an image first")
+            self._sync_point_select_button(False)
+            return
+        # A live touch-up or subject picker would fight for the canvas/clicks.
+        if self._mask_touchup_mask_id is not None or self._prompt_session_active:
+            self._finish_mask_touchup(accepted=True)
+        self._clear_subject_choice()
+        self._point_select_active = True
+        self._prompt_session_active = True
+        self._prompt_session_root_id = None
+        self._prompt_session_label = None
+        self._mask_touchup_mask_id = None
+        self._mask_touchup_original_present = set()
+        self._mask_touchup_original_values = {}
+        self._sync_point_select_button(True)
+        self._reset_touchup_controls()
+        self.mask_touchup_subtitle.setText(
+            "Click a person or object to start — each click adds to one selection"
+        )
+        self.mask_touchup_clear_button.setEnabled(False)
+        self.mask_touchup_invert_button.setEnabled(False)
+        self.mask_touchup_refine_button.setEnabled(False)
+        self.touchup_overlay_check.setChecked(self.overlay_check.isChecked())
+        self._request_prompt_warm()
+        self._enter_touchup_view()
+        self._set_status("Click a person or object — each click adds to one selection")
         self.mask_overlay_changed.emit()
+
+    def _reset_touchup_controls(self) -> None:
+        defaults = {
+            "edgeDetectionRadius": 0.0,
+            "edgeSmooth": 0,
+            "edgeFeather": 0.0,
+            "edgeContrast": 0,
+            "edgeShift": 0,
+        }
+        for key, spin in self._mask_touchup_spins.items():
+            with QSignalBlocker(spin):
+                spin.setValue(defaults[key])
+        with QSignalBlocker(self.mask_touchup_feather_slider):
+            self.mask_touchup_feather_slider.setValue(self._feather_pixels_to_slider(0.0))
+        with QSignalBlocker(self.mask_touchup_invert_button):
+            self.mask_touchup_invert_button.setChecked(False)
+        self.mask_touchup_clear_button.setText("Clear Selection")
 
     def _request_prompt_warm(self) -> None:
         try:
@@ -3634,8 +4235,8 @@ class PhotoEditorPanel(QFrame):
         """A click landed on the photo in click-to-select mode."""
         if not self._point_select_active or self._source_path is None:
             return
-        if self._prompt_mask_task is not None:
-            self._set_status("Still selecting — one moment")
+        if self._prompt_mask_task is not None or self._refine_active_task is not None:
+            self._set_status("Still working — one moment")
             return
         source_size = self._mask_source_size()
         if not source_size or source_size[0] < 1 or source_size[1] < 1:
@@ -3643,13 +4244,59 @@ class PhotoEditorPanel(QFrame):
             return
         nx = max(0.0, min(1.0, float(x) / source_size[0]))
         ny = max(0.0, min(1.0, float(y) / source_size[1]))
-        self._start_prompt_mask_task([(nx, ny)])
+        # People/animals get an automatic BiRefNet edge refine so a selection
+        # comes out matte-clean the first time (SAM picks who, BiRefNet the edge).
+        refine = self._click_is_on_person(nx, ny)
+        if self._prompt_session_active:
+            # Every click in the session adds to the same mask.
+            parent_id: str | None = self._prompt_session_root_id
+            combine = "add"
+        else:
+            parent_id, combine = self._pending_parent_id, self._pending_combine
+        self._start_prompt_mask_task(
+            [(nx, ny)], refine=refine, parent_id=parent_id, combine=combine
+        )
 
-    def _start_prompt_mask_task(self, points_norm: list[tuple[float, float]]) -> None:
+    def _click_is_on_person(self, nx: float, ny: float) -> bool:
+        """Whether the click landed in OneFormer's people/animals region."""
+        result = self._semantic_mask_result
+        if result is None or self._source_path is None:
+            return False
+        if result.source_path != self._source_path.resolve():
+            return False
+        for category in ("people", "animals"):
+            path = result.mask_paths.get(category)
+            if not path or not path.is_file():
+                continue
+            try:
+                with Image.open(path) as image:
+                    gray = image.convert("L")
+                    width, height = gray.size
+                    px = min(width - 1, max(0, int(nx * width)))
+                    py = min(height - 1, max(0, int(ny * height)))
+                    if gray.getpixel((px, py)) >= 96:
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _start_prompt_mask_task(
+        self,
+        points_norm: list[tuple[float, float]],
+        *,
+        refine: bool = False,
+        parent_id: str | None = None,
+        combine: str = "add",
+    ) -> None:
         if self._source_path is None or self._prompt_mask_task is not None:
             return
-        self._prompt_mask_context = (self._pending_parent_id, self._pending_combine)
-        task = PromptMaskTask(self._source_path, points_norm)
+        self._prompt_mask_context = {
+            "parent_id": parent_id,
+            "combine": combine,
+            "refine": bool(refine),
+            "points": [(float(px), float(py)) for px, py in points_norm],
+        }
+        task = PromptMaskTask(self._source_path, points_norm, refine=refine)
         task.signals.progress.connect(
             self._handle_prompt_mask_progress, Qt.ConnectionType.QueuedConnection
         )
@@ -3676,16 +4323,28 @@ class PhotoEditorPanel(QFrame):
         self, request_id: str, source_path: str, result: object
     ) -> None:
         self._prompt_mask_task = None
-        context = getattr(self, "_prompt_mask_context", (None, "add"))
+        context = self._prompt_mask_context or {}
         self._prompt_mask_context = None
         if self._source_path is None or Path(source_path) != self._source_path.resolve():
             return
         if not isinstance(result, PromptMaskResult) or not result.mask_path.is_file():
             self._handle_prompt_mask_failed(request_id, source_path, "Selection produced no mask")
             return
-        self._prompt_mask_counter += 1
-        category = f"Selection {self._prompt_mask_counter}"
-        parent_id, combine = context or (None, "add")
+        parent_id = context.get("parent_id")
+        combine = str(context.get("combine", "add"))
+        refine = bool(context.get("refine"))
+        points = context.get("points") or []
+        session_mode = self._prompt_session_active
+        # In a session the whole group shares one label (it's a single mask);
+        # a bare click (no session) still names each selection distinctly.
+        if session_mode and self._prompt_session_root_id is None:
+            self._prompt_mask_counter += 1
+            self._prompt_session_label = f"Selection {self._prompt_mask_counter}"
+        if session_mode:
+            category = self._prompt_session_label or f"Selection {self._prompt_mask_counter}"
+        else:
+            self._prompt_mask_counter += 1
+            category = f"Selection {self._prompt_mask_counter}"
         try:
             mask_id = self._register_generated_bitmap_mask(
                 category=category,
@@ -3704,12 +4363,49 @@ class PhotoEditorPanel(QFrame):
         except Exception as exc:
             self._handle_prompt_mask_failed(request_id, source_path, str(exc))
             return
+        # Remember how this component was made so "Refine Edges" can re-run the
+        # same SAM point prompt with BiRefNet applied.
+        self._prompt_meta[mask_id] = {
+            "points": [(float(px), float(py)) for px, py in points],
+            "refined": refine,
+        }
         self.semantic_mask_status.hide()
-        self._select_mask_in_list(mask_id)
-        self._set_status(f"Created {category} — click another to select more")
-        # Stay in click-to-select so the user can pick more objects.
-        if self._point_select_active:
-            self._show_mask_pane(self.MASK_PANE_CREATE)
+        if session_mode:
+            if self._prompt_session_root_id is None:
+                self._prompt_session_root_id = mask_id
+                self._bind_touchup_to_mask(mask_id)
+            else:
+                # Keep the whole-group mask (the root) as the adjustment target.
+                self._select_mask_in_list(self._prompt_session_root_id)
+            self._update_prompt_session_subtitle()
+            self._set_status("Added to your selection — click more, refine, or press OK")
+        else:
+            self._select_mask_in_list(mask_id)
+            self._set_status(f"Created {category} — click another to select more")
+            if self._point_select_active:
+                self._show_mask_pane(self.MASK_PANE_CREATE)
+
+    def _prompt_component_unrefined(self, mask: dict[str, Any]) -> bool:
+        """A click-to-select component that can still be edge-refined."""
+        meta = self._prompt_meta.get(str(mask.get("id")))
+        return bool(meta and meta.get("points") and not meta.get("refined"))
+
+    def _update_prompt_session_subtitle(self) -> None:
+        root_id = self._prompt_session_root_id
+        if root_id is None:
+            return
+        members = self._group_members(root_id)
+        count = len(members)
+        label = self._prompt_session_label or "Selection"
+        unrefined = sum(1 for m in members if self._prompt_component_unrefined(m))
+        noun = "click" if count == 1 else "clicks"
+        text = f"{label} • {count} {noun}"
+        if unrefined:
+            text += " • edges not refined"
+        self.mask_touchup_subtitle.setText(text)
+        self.mask_touchup_clear_button.setEnabled(True)
+        self.mask_touchup_invert_button.setEnabled(True)
+        self.mask_touchup_refine_button.setEnabled(unrefined > 0)
 
     def _handle_prompt_mask_failed(
         self, request_id: str, source_path: str, message: str
@@ -3721,6 +4417,99 @@ class PhotoEditorPanel(QFrame):
             self.semantic_mask_status.setText(text)
             self.semantic_mask_status.show()
             self._set_status(text)
+
+    # -- manual "Refine Edges" (touch-up session) --------------------------
+    def _refine_touchup_session(self) -> None:
+        """Refine every un-refined click-to-select component in this session's
+        mask with BiRefNet (people/animals were already refined on creation)."""
+        root_id = self._mask_touchup_mask_id
+        if root_id is None:
+            self._set_status("Nothing to refine yet")
+            return
+        if self._refine_active_task is not None or self._prompt_mask_task is not None:
+            self._set_status("Still working — one moment")
+            return
+        self._refine_queue = [
+            str(m.get("id"))
+            for m in self._group_members(root_id)
+            if self._prompt_component_unrefined(m)
+        ]
+        if not self._refine_queue:
+            self._set_status("Edges already refined")
+            return
+        self.mask_touchup_refine_button.setEnabled(False)
+        self._refine_next()
+
+    def _refine_next(self) -> None:
+        if not self._refine_queue:
+            self._refine_active_task = None
+            self.semantic_mask_status.hide()
+            if self._prompt_session_active and self._prompt_session_root_id is not None:
+                self._update_prompt_session_subtitle()
+            else:
+                self.mask_touchup_refine_button.setEnabled(True)
+            self._set_status("Edges refined")
+            self.mask_overlay_changed.emit()
+            return
+        mask_id = self._refine_queue.pop(0)
+        mask = self._mask_by_id(mask_id)
+        meta = self._prompt_meta.get(mask_id, {})
+        points = [(float(p[0]), float(p[1])) for p in meta.get("points", [])]
+        if mask is None or self._source_path is None or not points:
+            self._refine_next()
+            return
+        task = PromptMaskTask(self._source_path, points, refine=True)
+        task.signals.finished.connect(
+            lambda rid, sp, res, mid=mask_id: self._handle_refine_finished(mid, sp, res),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            lambda rid, sp, msg, mid=mask_id: self._handle_refine_failed(mid, msg),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._refine_active_task = task
+        self.semantic_mask_status.setText("Refining edges...")
+        self.semantic_mask_status.show()
+        self._set_status("Refining edges...")
+        self._semantic_mask_pool.start(task)
+
+    def _handle_refine_finished(
+        self, mask_id: str, source_path: str, result: object
+    ) -> None:
+        self._refine_active_task = None
+        mask = self._mask_by_id(mask_id)
+        if (
+            mask is not None
+            and isinstance(result, PromptMaskResult)
+            and result.mask_path.is_file()
+            and self._source_path is not None
+            and Path(source_path) == self._source_path.resolve()
+        ):
+            self._update_bitmap_mask_asset(mask, result.mask_path)
+            self._prompt_meta.setdefault(mask_id, {})["refined"] = True
+        self._refine_next()
+
+    def _handle_refine_failed(self, mask_id: str, message: str) -> None:
+        self._refine_active_task = None
+        self._set_status(f"Refine failed: {message}")
+        self._refine_next()
+
+    def _update_bitmap_mask_asset(self, mask: dict[str, Any], mask_path: Path) -> None:
+        """Overwrite a bitmap mask's cached asset in place (keeps its id)."""
+        if self._session is None or self._session_path is None:
+            return
+        cache_asset_id = str(mask.get("cacheAssetId") or mask.get("assetId") or "")
+        space_id = str(mask.get("coordinateSpaceId") or "")
+        if not cache_asset_id or not space_id:
+            return
+        copy_bitmap_asset(
+            self._session_path,
+            self._session,
+            cache_asset_id,
+            space_id,
+            mask_path,
+        )
+        self.mask_overlay_changed.emit()
 
     def _semantic_mask_id(self, category: str) -> str | None:
         if self._session is None:
@@ -3764,12 +4553,14 @@ class PhotoEditorPanel(QFrame):
             self._handle_semantic_mask_failed(request, source_path, "Invalid mask result")
             return
         self._semantic_mask_result = result
-        self._scene_index = None
-        self._scene_index_source = None
-        self._scene_index_task = None
+        self._reset_scene_regions()
         self._populate_semantic_mask_buttons(result.detected_categories)
         if SUBJECT_MASK_SEMANTIC_CATEGORIES.intersection(result.detected_categories):
             self.subject_warm_requested.emit("model")
+        if "people" in result.detected_categories:
+            # Split the people region into individuals now, in the background,
+            # so pointing at a person lights up just them with no on-hover stall.
+            self._ensure_people_instances(result)
         refreshed_count = 0
         try:
             refreshed_count = self._refresh_existing_semantic_masks(result)

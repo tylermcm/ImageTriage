@@ -39,6 +39,7 @@ ProgressCallback = Callable[[str], None]
 ENGINE_SUBJECT = "subject"
 ENGINE_SEMANTIC = "semantic"
 ENGINE_PROMPT = "prompt"
+ENGINE_DEPTH = "depth"
 
 
 def _elapsed_ms(started: float) -> float:
@@ -160,6 +161,27 @@ class MaskEngineService:
             category_stats=raw_stats if isinstance(raw_stats, dict) else {},
             timings_ms=timings,
         )
+
+    def infer_depth(
+        self,
+        *,
+        model_dir: Path,
+        input_path: Path,
+        output_path: Path,
+        progress_callback: ProgressCallback | None,
+    ) -> dict[str, object]:
+        """Estimate a relative-depth map (PNG, 255 = nearest). One-shot like the
+        subject/semantic engines."""
+        result = self.infer(
+            ENGINE_DEPTH,
+            model_dir,
+            {
+                "inputPath": str(input_path.resolve()),
+                "outputPath": str(output_path.resolve()),
+            },
+            progress_callback,
+        )
+        return result
 
     def infer_subject(
         self,

@@ -213,6 +213,17 @@ class EditRecipe:
     perspective_y: float = 0.0
     rotate: float = 0.0
     crop: Optional[Tuple[int, int, int, int]] = None
+    # AI background tool (blur / replace) — a compositing pass driven by a
+    # BiRefNet matte, applied by the editor render backend (not apply() below,
+    # which has no access to the matte). Only the settings persist; the matte
+    # itself is resolved on demand from the subject-mask cache, keyed by source.
+    background_mode: str = "off"          # off | blur | color (derived from the UI)
+    background_amount: float = 0.0        # blur strength, 0..100 (0 = off)
+    background_color: str = "#000000"
+    # Depth-aware Lens Blur (Depth Anything map): blur grows with distance from
+    # the focal plane. Applied by the render backend, not apply() below.
+    lensblur_amount: float = 0.0          # 0 = off
+    lensblur_focus: float = 0.7           # focal depth, 0 = far … 1 = near
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EditRecipe":

@@ -10,14 +10,19 @@ to name and becomes a region you point at.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QObject, QRunnable, Qt, Signal
 from PySide6.QtGui import QColor, QImage
+
+# Region key prefix for an individual person instance (SAM-split from the merged
+# people region). The panel routes these clicks into click-to-select instead of
+# a whole-category mask.
+PERSON_REGION_PREFIX = "person:"
 
 # Deliberately not OVERLAY_RED: red means "this is a mask you own", blue means
 # "this is a candidate you could pick".
@@ -34,26 +39,34 @@ def _category_label(category: str) -> str:
 
 @dataclass
 class SceneRegionIndex:
-    """Winner-takes-all label map over the detected category masks."""
+    """Winner-takes-all label map over the detected regions.
+
+    A region is usually a whole category ("sky"), but the merged people region
+    can be swapped for individual ``person:N`` instances (see
+    :meth:`with_person_instances`); each region carries its own display label and
+    an optional normalized seed point (for instances, the point that produced
+    it, so a click can re-run SAM there)."""
 
     source_size: tuple[int, int]
-    categories: tuple[str, ...]
+    categories: tuple[str, ...]    # region keys, in winner-priority order
     _labels: np.ndarray            # uint8 (h, w); 0 = no region, else index + 1
-    _masks: dict[str, np.ndarray]  # category -> uint8 (h, w) coverage
+    _masks: dict[str, np.ndarray]  # region key -> uint8 (h, w) coverage
+    _display: dict[str, str] = field(default_factory=dict)
+    _seeds: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._highlight_cache: dict[tuple[str, int, int], QImage] = {}
 
     # -- construction ---------------------------------------------------------
     @classmethod
-    def from_mask_paths(
+    def _compose(
         cls,
         source_size: tuple[int, int],
-        mask_paths: Mapping[str, Path],
-        categories: Iterable[str],
+        regions: Sequence[tuple[str, np.ndarray, str, tuple[float, float] | None]],
         *,
         max_edge: int = INDEX_MAX_EDGE,
     ) -> "SceneRegionIndex | None":
+        """Build the label map from (key, full-res plane, label, seed) regions."""
         source_width, source_height = (int(source_size[0]), int(source_size[1]))
         if source_width < 1 or source_height < 1:
             return None
@@ -63,22 +76,24 @@ class SceneRegionIndex:
 
         names: list[str] = []
         planes: list[np.ndarray] = []
-        for category in categories:
-            path = mask_paths.get(category)
-            if path is None or not Path(path).is_file():
-                continue
-            try:
-                with Image.open(path) as handle:
-                    resized = handle.convert("L").resize(
+        display: dict[str, str] = {}
+        seeds: dict[str, tuple[float, float]] = {}
+        for key, plane, label, seed in regions:
+            plane = np.asarray(plane, dtype=np.uint8)
+            if plane.shape != (height, width):
+                plane = np.asarray(
+                    Image.fromarray(plane, mode="L").resize(
                         (width, height), Image.Resampling.BILINEAR
-                    )
-            except (OSError, ValueError):
-                continue
-            plane = np.asarray(resized, dtype=np.uint8)
+                    ),
+                    dtype=np.uint8,
+                )
             if not plane.any():
                 continue
-            names.append(category)
+            names.append(key)
             planes.append(plane)
+            display[key] = label
+            if seed is not None:
+                seeds[key] = (float(seed[0]), float(seed[1]))
 
         if not planes:
             return None
@@ -93,7 +108,55 @@ class SceneRegionIndex:
             categories=tuple(names),
             _labels=labels,
             _masks={name: plane for name, plane in zip(names, planes)},
+            _display=display,
+            _seeds=seeds,
         )
+
+    @classmethod
+    def from_mask_paths(
+        cls,
+        source_size: tuple[int, int],
+        mask_paths: Mapping[str, Path],
+        categories: Iterable[str],
+        *,
+        max_edge: int = INDEX_MAX_EDGE,
+    ) -> "SceneRegionIndex | None":
+        regions: list[tuple[str, np.ndarray, str, tuple[float, float] | None]] = []
+        for category in categories:
+            path = mask_paths.get(category)
+            if path is None or not Path(path).is_file():
+                continue
+            try:
+                with Image.open(path) as handle:
+                    plane = np.asarray(handle.convert("L"), dtype=np.uint8)
+            except (OSError, ValueError):
+                continue
+            regions.append((category, plane, _category_label(category), None))
+        return cls._compose(source_size, regions, max_edge=max_edge)
+
+    def with_person_instances(
+        self,
+        instances: Sequence[tuple[np.ndarray, tuple[float, float]]],
+        *,
+        max_edge: int = INDEX_MAX_EDGE,
+    ) -> "SceneRegionIndex":
+        """A copy with the merged ``people`` region replaced by individual
+        ``person:N`` instances. ``instances`` is (preview-res mask, seed_norm),
+        largest-first. Falls back to ``self`` when there are no instances."""
+        if not instances:
+            return self
+        regions: list[tuple[str, np.ndarray, str, tuple[float, float] | None]] = []
+        for key in self.categories:
+            if key == "people":
+                continue  # replaced by the instances below
+            regions.append(
+                (key, self._masks[key], self._display.get(key, _category_label(key)), self._seeds.get(key))
+            )
+        for order, (mask, seed) in enumerate(instances):
+            plane = (np.asarray(mask).astype(np.uint8) * 255)
+            regions.append((f"{PERSON_REGION_PREFIX}{order}", plane, "Person", seed))
+        composed = self._compose(self.source_size, regions, max_edge=max_edge)
+        return composed if composed is not None else self
 
     # -- lookup ---------------------------------------------------------------
     def category_at(
@@ -124,7 +187,15 @@ class SceneRegionIndex:
         return self.categories[index - 1]
 
     def label_for(self, category: str) -> str:
-        return _category_label(category)
+        return self._display.get(category) or _category_label(category)
+
+    def seed_for(self, category: str) -> tuple[float, float] | None:
+        """Normalized seed point for an instance region, else ``None``."""
+        return self._seeds.get(category)
+
+    @staticmethod
+    def is_person(category: str | None) -> bool:
+        return bool(category) and str(category).startswith(PERSON_REGION_PREFIX)
 
     # -- painting -------------------------------------------------------------
     def highlight(self, category: str, width: int, height: int) -> QImage | None:

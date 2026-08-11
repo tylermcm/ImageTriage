@@ -605,6 +605,68 @@ def download_sam_model(
     )
 
 
+DEFAULT_DEPTH_MODEL_REPO_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+# Apache-2.0 (the Small variant only; Base/Large are CC-BY-NC).
+DEFAULT_DEPTH_MODEL_REVISION = "main"
+DEFAULT_DEPTH_MODEL_SIZE_MB = 100
+DEPTH_MODEL_DIR_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_DIR"
+DEPTH_MODEL_REPO_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_REPO_ID"
+DEPTH_MODEL_REVISION_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_REVISION"
+DEPTH_MODEL_REQUIRED_FILENAMES = (
+    "config.json",
+    "model.safetensors",
+    "preprocessor_config.json",
+)
+
+
+def default_depth_model_install_dir(*, repo_id: str = DEFAULT_DEPTH_MODEL_REPO_ID) -> Path:
+    _owner, name = _repo_path_parts(repo_id)
+    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "Editor" / name
+
+
+def resolve_depth_model_installation(
+    *,
+    install_dir: str | Path | None = None,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> AIModelInstallation:
+    resolved_repo_id = (
+        repo_id
+        or (os.environ.get(DEPTH_MODEL_REPO_ENV, "") or "").strip()
+        or DEFAULT_DEPTH_MODEL_REPO_ID
+    )
+    resolved_revision = (
+        revision
+        or (os.environ.get(DEPTH_MODEL_REVISION_ENV, "") or "").strip()
+        or DEFAULT_DEPTH_MODEL_REVISION
+    )
+    resolved_dir_value = (
+        install_dir
+        or (os.environ.get(DEPTH_MODEL_DIR_ENV, "") or "").strip()
+        or default_depth_model_install_dir(repo_id=resolved_repo_id)
+    )
+    return AIModelInstallation(
+        repo_id=resolved_repo_id,
+        revision=resolved_revision,
+        install_dir=Path(resolved_dir_value).expanduser().resolve(),
+        required_filenames=DEPTH_MODEL_REQUIRED_FILENAMES,
+        expected_sha256=None,  # TODO: pin a revision + hashes once validated.
+    )
+
+
+def download_depth_model(
+    installation: AIModelInstallation | None = None,
+    *,
+    force: bool = False,
+    progress_callback: AIModelProgressCallback | None = None,
+) -> AIModelInstallation:
+    return download_ai_model(
+        installation or resolve_depth_model_installation(),
+        force=force,
+        progress_callback=progress_callback,
+    )
+
+
 def download_aiculler_clip_model(
     installation: AIModelInstallation | None = None,
     *,

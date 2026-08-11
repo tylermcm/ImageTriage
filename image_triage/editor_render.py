@@ -29,6 +29,10 @@ from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal
 from PySide6.QtGui import QImage
 from PIL import Image as PILImage
 
+import numpy as np
+
+from .background_ops import composite_background
+from .depth_effects import composite_lens_blur
 from .image_resize import _pillow_from_qimage, _qimage_from_pillow
 from .perf import perf_logger
 from .ui.mask_overlay import mask_strength_qimage
@@ -71,6 +75,8 @@ class EditorRenderBackend(Protocol):
         masked: list[MaskedAdjustment],
         *,
         base_key: tuple | None = None,
+        background: dict | None = None,
+        lensblur: dict | None = None,
     ) -> QImage:
         ...
 
@@ -91,12 +97,103 @@ class CpuEditorRenderBackend:
         self._base_pil: PILImage.Image | None = None
         self._strength_cache: dict[tuple, PILImage.Image] = {}
         self._max_strength_entries = max_strength_entries
+        # The background matte + depth map stay constant during a drag; cache the
+        # decoded grayscale keyed by path + mtime so a slider tick doesn't re-read.
+        self._matte_cache_key: tuple | None = None
+        self._matte_cache: PILImage.Image | None = None
+        self._depth_cache_key: tuple | None = None
+        self._depth_cache: PILImage.Image | None = None
 
     def invalidate(self) -> None:
         with self._lock:
             self._base_key = None
             self._base_pil = None
             self._strength_cache.clear()
+            self._matte_cache_key = None
+            self._matte_cache = None
+            self._depth_cache_key = None
+            self._depth_cache = None
+
+    def _background_matte(self, path: str) -> PILImage.Image | None:
+        try:
+            stat = Path(path).stat()
+        except OSError:
+            return None
+        key = (path, stat.st_mtime_ns, stat.st_size)
+        with self._lock:
+            if key == self._matte_cache_key and self._matte_cache is not None:
+                return self._matte_cache
+        try:
+            matte = PILImage.open(path).convert("L")
+            matte.load()
+        except (OSError, ValueError):
+            return None
+        with self._lock:
+            self._matte_cache_key = key
+            self._matte_cache = matte
+        return matte
+
+    def _depth_map(self, path: str) -> PILImage.Image | None:
+        try:
+            stat = Path(path).stat()
+        except OSError:
+            return None
+        key = (path, stat.st_mtime_ns, stat.st_size)
+        with self._lock:
+            if key == self._depth_cache_key and self._depth_cache is not None:
+                return self._depth_cache
+        try:
+            depth = PILImage.open(path).convert("L")
+            depth.load()
+        except (OSError, ValueError):
+            return None
+        with self._lock:
+            self._depth_cache_key = key
+            self._depth_cache = depth
+        return depth
+
+    def _apply_lens_blur(
+        self, image: PILImage.Image, lensblur: dict, logger
+    ) -> PILImage.Image:
+        amount = float(lensblur.get("amount", 0.0))
+        depth_path = lensblur.get("depth_path")
+        if amount <= 0.0 or not depth_path:
+            return image
+        depth = self._depth_map(str(depth_path))
+        if depth is None:
+            return image
+        with logger.span("editslider.lens_blur"):
+            if depth.size != image.size:
+                depth = depth.resize(image.size, PILImage.Resampling.BILINEAR)
+            composited = composite_lens_blur(
+                np.asarray(image.convert("RGB"), dtype=np.uint8),
+                np.asarray(depth, dtype=np.uint8),
+                amount=amount,
+                focus=float(lensblur.get("focus", 0.7)),
+            )
+            return PILImage.fromarray(composited, mode="RGB")
+
+    def _apply_background(
+        self, image: PILImage.Image, background: dict, logger
+    ) -> PILImage.Image:
+        mode = str(background.get("mode") or "off")
+        matte_path = background.get("matte_path")
+        if mode == "off" or not matte_path:
+            return image
+        matte = self._background_matte(str(matte_path))
+        if matte is None:
+            return image
+        with logger.span("editslider.background", mode=mode):
+            if matte.size != image.size:
+                matte = matte.resize(image.size, PILImage.Resampling.BILINEAR)
+            composited = composite_background(
+                np.asarray(image.convert("RGB"), dtype=np.uint8),
+                np.asarray(matte, dtype=np.uint8),
+                mode=mode,
+                amount=float(background.get("amount", 60.0)),
+                color=str(background.get("color", "#000000")),
+            )
+            return PILImage.fromarray(composited, mode="RGB")
 
     def render(
         self,
@@ -105,6 +202,8 @@ class CpuEditorRenderBackend:
         masked: list[MaskedAdjustment],
         *,
         base_key: tuple | None = None,
+        background: dict | None = None,
+        lensblur: dict | None = None,
     ) -> QImage:
         logger = perf_logger()
         with logger.span(
@@ -144,6 +243,13 @@ class CpuEditorRenderBackend:
                     local = mask_recipe.apply(adjusted)
                 with logger.span("editslider.mask_composite", group=group_index):
                     adjusted = PILImage.composite(local, adjusted, strength)
+            # Depth/matte compositing passes run last, over the fully graded
+            # image (after global tone and every local mask). Lens blur first so
+            # a background cut, if also set, lands on top of it.
+            if lensblur:
+                adjusted = self._apply_lens_blur(adjusted, lensblur, logger)
+            if background:
+                adjusted = self._apply_background(adjusted, background, logger)
             with logger.span("editslider.pil_to_qimage", w=adjusted.width, h=adjusted.height):
                 return _qimage_from_pillow(adjusted, target_size=QSize())
 
@@ -246,6 +352,8 @@ class EditorRenderService(QObject):
         *,
         base_key: tuple,
         source_key: tuple,
+        background: dict | None = None,
+        lensblur: dict | None = None,
     ) -> None:
         self._seq += 1
         self._latest_seq = self._seq
@@ -256,6 +364,8 @@ class EditorRenderService(QObject):
             "masked": masked,
             "base_key": base_key,
             "source_key": source_key,
+            "background": background,
+            "lensblur": lensblur,
         }
         logger = perf_logger()
         if self._active_seq is None:
@@ -281,7 +391,12 @@ class EditorRenderService(QObject):
     def _run_on_worker(self, request: dict) -> None:  # worker thread
         try:
             image = self._backend.render(
-                request["base"], request["recipe"], request["masked"], base_key=request["base_key"]
+                request["base"],
+                request["recipe"],
+                request["masked"],
+                base_key=request["base_key"],
+                background=request.get("background"),
+                lensblur=request.get("lensblur"),
             )
         except Exception as exc:  # noqa: BLE001 - surfaced as a null result
             perf_logger().log("editslider.render_failed", seq=request["seq"], error=str(exc))

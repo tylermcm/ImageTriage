@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 from PySide6.QtGui import QImage
 
@@ -29,7 +29,9 @@ from .ai_model import (
     AIModelInstallation,
     DEFAULT_SAM_MODEL_REPO_ID,
     DEFAULT_SAM_MODEL_REVISION,
+    download_birefnet_model,
     download_sam_model,
+    resolve_birefnet_model_installation,
     resolve_sam_model_installation,
 )
 from .imaging import load_image_for_display
@@ -87,11 +89,71 @@ def _source_cache_key(source: Path, size: int, mtime_ns: int) -> str:
     return hashlib.sha256(identity.encode("utf-8", errors="surrogatepass")).hexdigest()[:24]
 
 
+PROMPT_MASK_REFINE_DILATION = 25   # px halo kept around SAM's mask for the matte
+
+
+def _refine_with_birefnet(
+    preview_rgb: np.ndarray,
+    sam_mask: np.ndarray,
+    cache_dir: Path,
+    progress_callback: ProgressCallback | None,
+) -> np.ndarray | None:
+    """Polish a SAM mask's edges with BiRefNet on a suppressed crop.
+
+    SAM reliably picks *which* object; BiRefNet gives matte-quality edges. To
+    stop BiRefNet re-merging a touching neighbour, everything outside a dilated
+    copy of SAM's mask is greyed out before matting, and the result is clamped
+    back to that dilated region. Reuses the host's BiRefNet engine — no new
+    model, no extra process."""
+    height, width = sam_mask.shape[:2]
+    ys, xs = np.where(sam_mask)
+    if len(xs) == 0:
+        return None
+    pad = 40
+    x0, x1 = max(0, int(xs.min()) - pad), min(width, int(xs.max()) + pad + 1)
+    y0, y1 = max(0, int(ys.min()) - pad), min(height, int(ys.max()) + pad + 1)
+    dilated = np.asarray(
+        Image.fromarray((sam_mask * 255).astype(np.uint8), mode="L").filter(
+            ImageFilter.MaxFilter(PROMPT_MASK_REFINE_DILATION)
+        ),
+        dtype=np.uint8,
+    ) > 0
+    crop = preview_rgb[y0:y1, x0:x1]
+    dilated_crop = dilated[y0:y1, x0:x1]
+    suppressed = np.where(dilated_crop[..., None], crop, 128).astype(np.uint8)
+
+    installation = resolve_birefnet_model_installation()
+    if not installation.is_installed:
+        _progress(progress_callback, "Downloading edge model...")
+        download_birefnet_model(installation)
+
+    _progress(progress_callback, "Refining edges...")
+    suppressed_path = cache_dir / "refine-input.png"
+    matte_path = cache_dir / "refine-matte.png"
+    Image.fromarray(suppressed, mode="RGB").save(suppressed_path)
+    try:
+        default_mask_engine_service().infer_subject(
+            model_dir=installation.install_dir,
+            input_path=suppressed_path,
+            output_path=matte_path,
+            components_dir=cache_dir / "refine-components",
+            progress_callback=progress_callback,
+        )
+        matte = np.asarray(Image.open(matte_path).convert("L"), dtype=np.float32) / 255.0
+    finally:
+        suppressed_path.unlink(missing_ok=True)
+    matte = matte * dilated_crop.astype(np.float32)  # never exceed SAM's region
+    refined = np.zeros((height, width), dtype=np.float32)
+    refined[y0:y1, x0:x1] = matte
+    return refined
+
+
 def ensure_prompt_mask(
     source_path: str | Path,
     *,
     points_norm: list[tuple[float, float]],
     labels: list[int] | None = None,
+    refine: bool = False,
     installation: AIModelInstallation | None = None,
     cache_root: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -163,12 +225,40 @@ def ensure_prompt_mask(
     )
     raw_bounds = result.get("bounds")
     bounds = tuple(int(v) for v in raw_bounds) if isinstance(raw_bounds, list) and len(raw_bounds) == 4 else (0, 0, 0, 0)
+    coverage = float(result.get("coverage") or 0.0)
+
+    if refine and output_path.is_file():
+        # Polish the SAM selection's edges with BiRefNet (best on people/animals).
+        refine_started = time.perf_counter()
+        try:
+            sam_mask = np.asarray(Image.open(output_path).convert("L"), dtype=np.uint8) > 127
+            preview_rgb = np.asarray(Image.open(preview_path).convert("RGB"), dtype=np.uint8)
+            refined = _refine_with_birefnet(preview_rgb, sam_mask, cache_dir, progress_callback)
+        except Exception as exc:  # noqa: BLE001
+            perf_logger().log("ai.mask.prompt.refine_failed", error=str(exc))
+            refined = None
+        if refined is not None and float((refined >= 0.5).mean()) > 0.0:
+            Image.fromarray(
+                np.clip(refined * 255.0, 0, 255).astype(np.uint8), mode="L"
+            ).save(output_path)
+            binary = refined >= 0.5
+            rows, cols = np.any(binary, axis=1), np.any(binary, axis=0)
+            y0, y1 = np.where(rows)[0][[0, -1]]
+            x0, x1 = np.where(cols)[0][[0, -1]]
+            bounds = (int(x0), int(y0), int(x1) + 1, int(y1) + 1)
+            coverage = float(binary.mean())
+            perf_logger().duration(
+                "ai.mask.prompt.refine",
+                (time.perf_counter() - refine_started) * 1000.0,
+                coverage=coverage,
+            )
+
     return PromptMaskResult(
         source_path=source,
         source_size=(preview_width, preview_height),
         mask_path=output_path,
         bounds=bounds,
-        coverage=float(result.get("coverage") or 0.0),
+        coverage=coverage,
         model_id=model_installation.repo_id,
         model_version=model_installation.revision,
         weights_hash=f"rev:{model_installation.revision}",
@@ -226,6 +316,7 @@ class PromptMaskTask(QRunnable):
         points_norm: list[tuple[float, float]],
         *,
         labels: list[int] | None = None,
+        refine: bool = False,
         request_id: str = "",
         installation: AIModelInstallation | None = None,
         cache_root: str | Path | None = None,
@@ -234,6 +325,7 @@ class PromptMaskTask(QRunnable):
         self.source_path = Path(source_path).expanduser().resolve()
         self.points_norm = list(points_norm)
         self.labels = list(labels) if labels else None
+        self.refine = bool(refine)
         self.request_id = request_id or uuid.uuid4().hex[:8]
         self.installation = installation
         self.cache_root = cache_root
@@ -247,6 +339,7 @@ class PromptMaskTask(QRunnable):
                 self.source_path,
                 points_norm=self.points_norm,
                 labels=self.labels,
+                refine=self.refine,
                 installation=self.installation,
                 cache_root=self.cache_root,
                 progress_callback=lambda message: self.signals.progress.emit(self.request_id, message),
