@@ -370,6 +370,12 @@ class ScenePanelWiringTests(unittest.TestCase):
         self.assertEqual(
             "Analyzing photo...", panel.mask_overlay_state()["busy_message"]
         )
+        panel._mask_models_download_task = object()  # model download running
+        self.assertEqual(
+            "Downloading AI masking tools...",
+            panel.mask_overlay_state()["busy_message"],
+        )
+        panel._mask_models_download_task = None
         panel._semantic_mask_task = None
         panel._people_instance_task = object()  # splitting people
         self.assertEqual(

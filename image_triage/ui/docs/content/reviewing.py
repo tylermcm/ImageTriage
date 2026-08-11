@@ -153,7 +153,7 @@ ARTICLES = [
 
         **`View > Burst Stacks`** adds a stacked, stack-style burst visual and lets you cycle through a burst in the main viewer with `[` and `]`. It is the fastest way to step through a sequence and keep only the best frame.
 
-        > **Note:** Burst grouping is based on capture timing and similarity. The AI's perceptual-hash prefilter handles tighter near-duplicate detection during scoring — see [Prefilters: DINO & pHash](doc:prefilters).
+        > **Note:** Burst grouping is based on capture timing and similarity. The AI's perceptual-hash prefilter handles tighter near-duplicate detection during scoring — see [pHash prefilter](doc:prefilters).
         """,
     ),
 ]

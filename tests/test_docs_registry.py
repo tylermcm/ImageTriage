@@ -39,18 +39,18 @@ class DocsRegistryTests(unittest.TestCase):
         self.assertIsNotNone(self.registry.article(home))
 
     def test_search_ranks_title_matches_first(self) -> None:
-        hits = self.registry.search("adapter")
+        hits = self.registry.search("Cull Score")
         self.assertTrue(hits)
-        # The dedicated adapter overview should rank at or near the top.
+        # The current culling-pass article should rank at or near the top.
         top_ids = [hit.article.id for hit in hits[:3]]
-        self.assertIn("what-adapters-are", top_ids)
+        self.assertIn("index-score", top_ids)
 
     def test_search_requires_all_terms(self) -> None:
         hits = self.registry.search("burst zzzznotaword")
         self.assertEqual(hits, [])
 
     def test_search_returns_snippets(self) -> None:
-        hits = self.registry.search("dispute")
+        hits = self.registry.search("duplicate")
         self.assertTrue(hits)
         self.assertTrue(any(hit.snippet for hit in hits))
 

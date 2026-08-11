@@ -386,6 +386,7 @@ class SubjectMaskPanelTests(unittest.TestCase):
 
     def test_masks_and_new_mask_views_request_birefnet_model_warmup(self) -> None:
         panel = PhotoEditorPanel()
+        panel._mask_models_are_installed = lambda: True
         requested: list[str] = []
         panel.subject_warm_requested.connect(requested.append)
 

@@ -621,6 +621,7 @@ class SemanticMaskPanelTests(unittest.TestCase):
 
     def test_entering_masks_requests_oneformer_model_warmup(self) -> None:
         panel = PhotoEditorPanel()
+        panel._mask_models_are_installed = lambda: True
         requested: list[str] = []
         panel.semantic_warm_requested.connect(requested.append)
         try:
@@ -634,6 +635,7 @@ class SemanticMaskPanelTests(unittest.TestCase):
             source_path = Path(temp_dir) / "source.jpg"
             Image.new("RGB", (40, 30), (30, 90, 150)).save(source_path)
             panel = PhotoEditorPanel()
+            panel._mask_models_are_installed = lambda: True
             requests: list[str] = []
             original_start = panel._start_semantic_mask_task
             panel._start_semantic_mask_task = requests.append
@@ -645,6 +647,38 @@ class SemanticMaskPanelTests(unittest.TestCase):
             finally:
                 panel._start_semantic_mask_task = original_start
                 panel.close()
+
+    def test_missing_mask_models_replace_click_selection_with_download(self) -> None:
+        panel = PhotoEditorPanel()
+        panel._mask_models_are_installed = lambda: False
+        try:
+            panel._sync_mask_model_controls()
+            self.assertTrue(panel.point_select_button.isHidden())
+            self.assertFalse(panel.download_mask_models_button.isHidden())
+            self.assertEqual(
+                "Download AI Masking Tools",
+                panel.download_mask_models_button.text(),
+            )
+
+            panel._mask_models_are_installed = lambda: True
+            panel._sync_mask_model_controls()
+            self.assertFalse(panel.point_select_button.isHidden())
+            self.assertTrue(panel.download_mask_models_button.isHidden())
+        finally:
+            panel.close()
+
+    def test_missing_mask_models_do_not_start_scene_analysis(self) -> None:
+        panel = PhotoEditorPanel()
+        panel._source_path = Path("photo.jpg")
+        panel._mask_models_are_installed = lambda: False
+        requests: list[str] = []
+        panel._start_semantic_mask_task = requests.append
+        try:
+            panel._ensure_semantic_inventory()
+            self.assertEqual([], requests)
+            self.assertIn("Download AI masking tools", panel.semantic_mask_status.text())
+        finally:
+            panel.close()
 
 
 if __name__ == "__main__":

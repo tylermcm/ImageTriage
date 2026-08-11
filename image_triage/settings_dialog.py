@@ -533,9 +533,6 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
         self._add_form_row(ai_layout, "Cull breakdown", self.ai_cull_summary_label)
-        self._add_form_row(ai_layout, "Base score influence", self.ai_base_score_weight_spin)
-        self._add_form_row(ai_layout, "Dispute label weight", self.ai_dispute_weight_spin)
-        self._add_form_row(ai_layout, "Legacy duplicate threshold", self.ai_label_near_duplicate_slider)
         ai_layout.addStretch(1)
         self._update_ai_cull_summary()
         self._add_settings_page("AI", ai_page)
@@ -635,12 +632,16 @@ class WorkflowSettingsDialog(QDialog):
         self._update_ai_dino_worker_summary()
         self.dino_prefilter_enabled_checkbox.toggled.connect(self._set_dino_prefilter_controls_enabled)
         self._set_dino_prefilter_controls_enabled(self.dino_prefilter_enabled_checkbox.isChecked())
-        self._add_settings_page("DINO Prefilter", dino_page)
+        # Retain the legacy values for older settings files, but DINO is no
+        # longer part of the current AI workflow or exposed as a settings page.
+        dino_page.setParent(self)
+        dino_page.hide()
+        self._legacy_dino_page = dino_page
 
         self.phash_prefilter_enabled_checkbox = QCheckBox("Enable pHash Prefilter")
         self.phash_prefilter_enabled_checkbox.setChecked(phash_settings.enabled)
         self.phash_prefilter_enabled_checkbox.setToolTip(_settings_tooltip(
-            "Runs a perceptual hash duplicate pass independent of DINO. "
+            "Runs a perceptual hash duplicate pass before AI scoring. "
             "This catches tight visual repeats and near-identical frames. "
             "Manual winners are always preserved and preferred as group representatives."
         ))
@@ -1109,7 +1110,7 @@ class WorkflowSettingsDialog(QDialog):
             ai_base_score_weight_percent=max(0, min(100, int(self.ai_base_score_weight_spin.value()))),
             ai_label_near_duplicate_threshold=max(0.500, min(0.995, int(self.ai_label_near_duplicate_slider.value()) / 1000.0)),
             dino_prefilter_settings=DINOPrefilterSettings(
-                enabled=self.dino_prefilter_enabled_checkbox.isChecked(),
+                enabled=False,
                 aggressiveness_percent=int(self.dino_prefilter_aggressiveness_spin.value()),
                 technical_trash_enabled=self.dino_technical_trash_checkbox.isChecked(),
                 duplicate_trash_enabled=self.dino_duplicate_trash_checkbox.isChecked(),

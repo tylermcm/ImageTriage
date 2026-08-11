@@ -11,17 +11,6 @@ from .actions import MainWindowActions
 from .theme import appearance_profile_modes
 
 
-def add_ai_adapter_actions(menu: QMenu, actions: MainWindowActions) -> None:
-    menu.addAction(actions.review_ai_adapter_labels)
-    menu.addAction(actions.open_ai_data_selection)
-    menu.addSeparator()
-    menu.addAction(actions.train_ai_ranker)
-    menu.addAction(actions.train_ai_ranker_from_global)
-    menu.addSeparator()
-    menu.addAction(actions.evaluate_ai_ranker)
-    menu.addAction(actions.score_ai_with_trained_ranker)
-
-
 def add_ai_results_actions(menu: QMenu, actions: MainWindowActions) -> None:
     result_buckets_menu = menu.addMenu("Pick / Review / Reject")
     for mode in (
@@ -207,9 +196,6 @@ def build_main_menu_bar(
     run_menu.addAction(actions.apply_ai_culling)
     run_menu.addAction(actions.sort_ai_semantic_folders)
 
-    training_menu = ai_menu.addMenu("Adapter Training")
-    add_ai_adapter_actions(training_menu, actions)
-
     results_menu = ai_menu.addMenu("Results And Filters")
     add_ai_results_actions(results_menu, actions)
 
@@ -217,13 +203,10 @@ def build_main_menu_bar(
     review_tools_menu.addAction(actions.next_ai_pick)
     review_tools_menu.addAction(actions.next_unreviewed_ai_pick)
     review_tools_menu.addAction(actions.compare_ai_group)
-    review_tools_menu.addAction(actions.dispute_current_ai_result)
-    review_tools_menu.addAction(actions.review_ai_disagreements)
 
     ai_menu.addSeparator()
-    setup_menu = ai_menu.addMenu("Runtime And Cache")
+    setup_menu = ai_menu.addMenu("AI Setup And Cache")
     setup_menu.addAction(actions.install_ai_runtime)
-    setup_menu.addAction(actions.download_ai_model)
     setup_menu.addAction(actions.uninstall_ai_components)
     setup_menu.addSeparator()
     setup_menu.addAction(actions.reset_ai_review_cache)
