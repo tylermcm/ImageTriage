@@ -13,6 +13,23 @@ from .metadata import CaptureMetadata
 from .people_search import image_ids_matching_people
 
 
+# Prompt ensembling templates. A bare noun ("sunrise") is a weak, ambiguous
+# CLIP text query that drifts toward loosely related images ("sun"). Averaging
+# the text embedding over several natural caption templates — the recipe OpenAI
+# ships with CLIP — produces a sharper query vector and markedly fewer
+# outright-wrong matches. ``{}`` is filled with the cleaned query text.
+SEARCH_QUERY_TEMPLATES: tuple[str, ...] = (
+    "a photo of {}.",
+    "a photo of a {}.",
+    "a photo of the {}.",
+    "a close-up photo of {}.",
+    "a bright, well-lit photo of {}.",
+    "a good photo of {}.",
+    "a photo showing {}.",
+    "{}",
+)
+
+
 class TextEncoder(Protocol):
     def encode(self, prompt: str) -> np.ndarray:
         ...
@@ -87,9 +104,38 @@ class SemanticVectorIndex:
 class FeatureStoreSemanticSearch:
     AUTO_CONFIDENCE_BAND = 0.04
 
-    def __init__(self, store, text_encoder: TextEncoder | None):
+    def __init__(
+        self,
+        store,
+        text_encoder: TextEncoder | None,
+        *,
+        query_templates: Sequence[str] = ("{}",),
+    ):
         self.store = store
         self.text_encoder = text_encoder
+        # Keep only templates with a substitution slot; fall back to identity so
+        # the library default stays a plain single-prompt encode.
+        self.query_templates = tuple(
+            template for template in query_templates if "{}" in template
+        ) or ("{}",)
+
+    def _encode_query(self, text: str) -> np.ndarray:
+        if self.text_encoder is None:
+            raise ValueError("CLIP text encoder is required for semantic search terms")
+        vectors: list[np.ndarray] = []
+        for template in self.query_templates:
+            prompt = template.format(text).strip()
+            if not prompt:
+                continue
+            vector = np.asarray(self.text_encoder.encode(prompt), dtype=np.float32).reshape(-1)
+            norm = float(np.linalg.norm(vector))
+            if norm > 0.0:
+                vector = vector / norm
+            vectors.append(vector)
+        if not vectors:
+            return np.asarray(self.text_encoder.encode(text), dtype=np.float32).reshape(-1)
+        # SemanticVectorIndex re-normalizes the query, so the mean is enough here.
+        return np.mean(np.vstack(vectors), axis=0)
 
     def search(
         self,
@@ -142,7 +188,7 @@ class FeatureStoreSemanticSearch:
             index = SemanticVectorIndex(image_ids, paths, embeddings)
             confidence_floor = filters.min_confidence if filters.min_confidence > 0.0 else -1.0
             semantic_hits = index.search(
-                self.text_encoder.encode(parsed.semantic_text),
+                self._encode_query(parsed.semantic_text),
                 limit=None,
                 min_confidence=confidence_floor,
             )

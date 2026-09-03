@@ -479,7 +479,11 @@ class UnifiedSearchTask(QRunnable):
 
             from aiculler.storage import SQLiteFeatureStore
             from .people_search import list_person_clusters
-            from .semantic_search import FeatureStoreSemanticSearch, parse_search_query
+            from .semantic_search import (
+                SEARCH_QUERY_TEMPLATES,
+                FeatureStoreSemanticSearch,
+                parse_search_query,
+            )
 
             store = SQLiteFeatureStore(self.db_path)
             try:
@@ -505,7 +509,11 @@ class UnifiedSearchTask(QRunnable):
                         fallback_text_model,
                         device=str(getattr(self.runtime, "device", "auto")),
                     )
-                service = FeatureStoreSemanticSearch(store, text_encoder)
+                service = FeatureStoreSemanticSearch(
+                    store,
+                    text_encoder,
+                    query_templates=SEARCH_QUERY_TEMPLATES,
+                )
                 hits = service.search(
                     query_text,
                     known_people=known_people,
