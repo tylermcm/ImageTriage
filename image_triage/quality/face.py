@@ -42,6 +42,8 @@ class FaceRecord:
     gender: str | None = None  # "M"/"F" estimate (noisy — display as estimate)
     age: int | None = None     # estimate
     blink: bool | None = None  # deferred until EAR calibration
+    identity_embedding: tuple[float, ...] = ()
+    identity_model: str = ""
 
 
 # -- Pure, tested helpers ---------------------------------------------------
@@ -123,12 +125,14 @@ class FaceQualityAnalyzer:
         det_size: int = 640,
         ctx_id: int = -1,
         providers: Sequence[str] | None = None,
+        enable_identity: bool = False,
     ) -> None:
         """``root`` is the model directory containing ``models/<name>/`` (the app's
         local model store from ai_model.download_aiculler_face_model). Defaults to
         that download location, falling back to InsightFace's own cache."""
         self.available = False
         self._app = None
+        self._identity_model = f"insightface:{name}"
         if root is None:
             try:
                 from ..ai_model import aiculler_face_model_root
@@ -141,9 +145,12 @@ class FaceQualityAnalyzer:
         try:
             from insightface.app import FaceAnalysis  # type: ignore
 
+            allowed_modules = ["detection", "landmark_2d_106", "genderage"]
+            if enable_identity:
+                allowed_modules.append("recognition")
             kwargs = {
                 "name": name,
-                "allowed_modules": ["detection", "landmark_2d_106", "genderage"],
+                "allowed_modules": allowed_modules,
             }
             if providers:
                 kwargs["providers"] = list(providers)
@@ -182,6 +189,7 @@ class FaceQualityAnalyzer:
             eye_sharpness = (
                 _eye_sharpness_from_keypoints(image_bgr, kps) if kps.shape[0] >= 2 else None
             )
+            identity_embedding = self._identity_embedding(face)
             records.append(
                 FaceRecord(
                     bbox=tuple(float(v) for v in getattr(face, "bbox", (0, 0, 0, 0))),
@@ -190,6 +198,8 @@ class FaceQualityAnalyzer:
                     gender=self._gender(face),
                     age=self._age(face),
                     blink=None,  # deferred until EAR calibration
+                    identity_embedding=identity_embedding,
+                    identity_model=self._identity_model if identity_embedding else "",
                 )
             )
 
@@ -216,3 +226,18 @@ class FaceQualityAnalyzer:
     def _age(face) -> int | None:
         age = getattr(face, "age", None)
         return int(age) if age is not None else None
+
+    @staticmethod
+    def _identity_embedding(face) -> tuple[float, ...]:
+        embedding = getattr(face, "normed_embedding", None)
+        if embedding is None:
+            embedding = getattr(face, "embedding", None)
+        if embedding is None:
+            return ()
+        values = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if values.size == 0:
+            return ()
+        norm = float(np.linalg.norm(values))
+        if norm > 0.0:
+            values = values / norm
+        return tuple(float(value) for value in values)

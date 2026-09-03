@@ -61,6 +61,8 @@ def preflight_onnx_session(
     *,
     input_name: str,
     input_shape: Sequence[int] | None = None,
+    feed_builder: Callable[[Any, str, np.ndarray], dict[str, np.ndarray]] | None = None,
+    output_names: Sequence[str] | None = None,
     allow_cpu_fallback: bool = True,
 ) -> Any:
     """Keep CUDA only when the exact model can complete a representative run."""
@@ -78,8 +80,10 @@ def preflight_onnx_session(
         "tensor(int64)": np.int64,
         "tensor(int32)": np.int32,
     }.get(str(input_meta.type), np.float32)
+    sample = np.zeros(shape, dtype=dtype)
+    feeds = feed_builder(session, input_name, sample) if feed_builder is not None else {input_name: sample}
     try:
-        session.run(None, {input_name: np.zeros(shape, dtype=dtype)})
+        session.run(None if output_names is None else list(output_names), feeds)
         return session
     except Exception:
         if not allow_cpu_fallback:
@@ -100,6 +104,8 @@ def create_preflight_session_with_model_fallback(
     providers: Sequence[str] | None,
     select_input_name: Callable[[Any], str],
     input_shape: Callable[[Any], Sequence[int]],
+    feed_builder: Callable[[Any, str, np.ndarray], dict[str, np.ndarray]] | None = None,
+    select_output_names: Callable[[Any], Sequence[str] | None] | None = None,
 ) -> OnnxSessionSelection:
     """Try the primary precision before the fallback on each viable provider."""
     selected = list(providers) if providers else preferred_onnx_providers(ort)
@@ -135,6 +141,8 @@ def create_preflight_session_with_model_fallback(
                     options,
                     input_name=name,
                     input_shape=input_shape(session),
+                    feed_builder=feed_builder,
+                    output_names=(select_output_names(session) if select_output_names is not None else None),
                     allow_cpu_fallback=False,
                 )
                 return OnnxSessionSelection(

@@ -51,6 +51,7 @@ class HeadlessFeatureExtractor:
         clip_fallback_onnx_path: str | Path | None = None,
         providers: list[str] | None = None,
         enable_face_quality: bool = False,
+        enable_face_identity: bool = False,
         intra_op_num_threads: int | None = None,
         allow_spinning: bool | None = None,
     ):
@@ -87,6 +88,8 @@ class HeadlessFeatureExtractor:
                 self._select_spatial_size(session, default=224),
                 self._select_spatial_size(session, default=224),
             ),
+            feed_builder=self._build_clip_image_feeds,
+            select_output_names=lambda session: [self._select_embedding_output(session)],
         )
         self.clip_session = clip_selection.session
         self.clip_model_path = clip_selection.model_path
@@ -124,8 +127,9 @@ class HeadlessFeatureExtractor:
             FaceQualityAnalyzer(
                 ctx_id=0 if "CUDAExecutionProvider" in active_providers else -1,
                 providers=active_providers,
+                enable_identity=enable_face_identity,
             )
-            if enable_face_quality
+            if enable_face_quality or enable_face_identity
             else None
         )
         self._face_lock = threading.Lock()
@@ -181,17 +185,18 @@ class HeadlessFeatureExtractor:
         ]
         if not image_inputs:
             raise ValueError("ONNX model does not expose a 4D image/pixel input")
-        extra_required = [input_meta.name for input_meta in inputs if input_meta.name != image_inputs[0].name]
-        if extra_required:
-            raise ValueError(
-                "Use a vision-only ONNX model for image extraction; "
-                f"this model also requires: {', '.join(extra_required)}"
-            )
         return image_inputs[0].name
 
     @staticmethod
     def _select_embedding_output(session) -> str | None:
         outputs = session.get_outputs()
+        for output_meta in outputs:
+            if output_meta.name.casefold() == "image_embeds":
+                return output_meta.name
+        for output_meta in outputs:
+            name = output_meta.name.casefold()
+            if "image" in name and "embed" in name:
+                return output_meta.name
         for output_meta in outputs:
             if "embed" in output_meta.name.lower():
                 return output_meta.name
@@ -202,12 +207,30 @@ class HeadlessFeatureExtractor:
 
     @staticmethod
     def _select_spatial_size(session, *, default: int) -> int:
-        image_input = session.get_inputs()[0]
+        image_name = HeadlessFeatureExtractor._select_image_input(session)
+        image_input = next(meta for meta in session.get_inputs() if meta.name == image_name)
         if len(image_input.shape) >= 4:
             height, width = image_input.shape[-2:]
             if isinstance(height, int) and isinstance(width, int) and height == width:
                 return height
         return default
+
+    @staticmethod
+    def _build_clip_image_feeds(session, input_name: str, pixel_values: np.ndarray) -> dict[str, np.ndarray]:
+        feeds = {input_name: pixel_values}
+        for input_meta in session.get_inputs():
+            if input_meta.name == input_name:
+                continue
+            name = input_meta.name.casefold()
+            if name == "input_ids":
+                length = input_meta.shape[-1] if isinstance(input_meta.shape[-1], int) else 77
+                feeds[input_meta.name] = np.zeros((1, length), dtype=np.int64)
+            elif name == "attention_mask":
+                length = input_meta.shape[-1] if isinstance(input_meta.shape[-1], int) else 77
+                feeds[input_meta.name] = np.ones((1, length), dtype=np.int64)
+            else:
+                raise ValueError(f"Unsupported companion input for CLIP image inference: {input_meta.name}")
+        return feeds
 
     def extract_features(self, image_path: str | Path) -> dict[str, object]:
         timings: dict[str, float] = {}
@@ -244,7 +267,10 @@ class HeadlessFeatureExtractor:
         clip_input = self._preprocess_for_clip(img)
         timings["clip_preprocess"] = time.perf_counter() - phase_started_at
         phase_started_at = time.perf_counter()
-        clip_outputs = self.clip_session.run([self.clip_output_name], {self.clip_input_name: clip_input})
+        clip_outputs = self.clip_session.run(
+            [self.clip_output_name],
+            self._build_clip_image_feeds(self.clip_session, self.clip_input_name, clip_input),
+        )
         timings["clip_inference"] = time.perf_counter() - phase_started_at
         clip_embed = clip_outputs[0]
         if self.topiq_session is not None and self.topiq_input_name is not None:

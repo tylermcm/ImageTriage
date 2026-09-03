@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
@@ -63,11 +64,13 @@ class OrientationFilter(str, Enum):
 class RecordFilterQuery:
     quick_filter: FilterMode = FilterMode.ALL
     search_text: str = ""
+    min_search_confidence: float = 0.0
     file_type: FileTypeFilter = FileTypeFilter.ALL
     review_state: ReviewStateFilter = ReviewStateFilter.ALL
     ai_state: AIStateFilter = AIStateFilter.ALL
     ai_cull_bucket: AICullBucket | None = None
     ai_workflow_tag: str = ""
+    folder_text: str = ""
     camera_text: str = ""
     lens_text: str = ""
     tag_text: str = ""
@@ -117,6 +120,10 @@ def active_filter_labels(query: RecordFilterQuery) -> list[str]:
         labels.append(query.quick_filter.value)
     if query.normalized_search_text:
         labels.append(f'Search "{query.search_text.strip()}"')
+    if query.min_search_confidence > 0.0:
+        labels.append(f"Confidence >= {query.min_search_confidence:.2f}")
+    if query.folder_text.strip():
+        labels.append(f'Folder "{query.folder_text.strip()}"')
     if query.file_type != FileTypeFilter.ALL:
         labels.append(query.file_type.value)
     if query.review_state != ReviewStateFilter.ALL:
@@ -134,6 +141,8 @@ def active_filter_labels(query: RecordFilterQuery) -> list[str]:
         labels.append(f'Lens "{query.lens_text.strip()}"')
     if query.tag_text.strip():
         labels.append(f'Tag "{query.tag_text.strip()}"')
+    if query.min_rating > 0:
+        labels.append(f"Rating >= {query.min_rating}")
     if query.orientation != OrientationFilter.ALL:
         labels.append(query.orientation.value)
     if query.captured_after is not None:
@@ -159,6 +168,7 @@ def matches_record_query(
     is_disputed: bool = False,
     dino_decision: "DINOPrefilterDecision | None" = None,
     ai_ingested: bool = False,
+    search_match_paths: set[str] | frozenset[str] | None = None,
 ) -> bool:
     resolved_annotation = annotation if annotation is not None else SessionAnnotation()
     return (
@@ -173,9 +183,11 @@ def matches_record_query(
             dino_decision=dino_decision,
             ai_ingested=ai_ingested,
         )
-        and _matches_search(record, query)
+        and _matches_search(record, query, search_match_paths=search_match_paths)
+        and _matches_folder(record, query.folder_text)
         and _matches_file_type(record, query.file_type)
         and _matches_review_state(query.review_state, resolved_annotation)
+        and _matches_min_rating(query.min_rating, resolved_annotation)
         and _matches_ai_state(query.ai_state, resolved_annotation, ai_result, workflow_insight)
         and _matches_ai_cull_bucket(query.ai_cull_bucket, ai_result)
         and _matches_ai_workflow_tag(query.ai_workflow_tag, workflow_insight)
@@ -230,14 +242,38 @@ def _matches_quick_filter(
     return True
 
 
-def _matches_search(record: ImageRecord, query: RecordFilterQuery) -> bool:
+def _search_path_key(path: str) -> str:
+    return os.path.normpath(os.path.abspath(path)).casefold()
+
+
+def _matches_search(
+    record: ImageRecord,
+    query: RecordFilterQuery,
+    *,
+    search_match_paths: set[str] | frozenset[str] | None = None,
+) -> bool:
     needle = query.normalized_search_text
     if not needle:
         return True
+    if search_match_paths:
+        for path in record.stack_paths:
+            if _search_path_key(path) in search_match_paths:
+                return True
     for path in record.stack_paths:
         if needle in Path(path).name.casefold():
             return True
     return needle in record.name.casefold()
+
+
+def _matches_folder(record: ImageRecord, folder_text: str) -> bool:
+    needle = folder_text.strip().casefold()
+    if not needle:
+        return True
+    for path in record.stack_paths:
+        parent = str(Path(path).parent).casefold()
+        if needle in parent:
+            return True
+    return False
 
 
 def _matches_file_type(record: ImageRecord, file_type: FileTypeFilter) -> bool:
@@ -294,6 +330,10 @@ def _matches_review_state(review_state: ReviewStateFilter, annotation: SessionAn
     if review_state == ReviewStateFilter.UNREVIEWED:
         return not annotation.winner and not annotation.reject
     return True
+
+
+def _matches_min_rating(min_rating: int, annotation: SessionAnnotation) -> bool:
+    return int(annotation.rating or 0) >= int(min_rating or 0)
 
 
 def _matches_ai_state(
@@ -429,11 +469,13 @@ def serialize_filter_query(query: RecordFilterQuery) -> dict[str, object]:
     return {
         "quick_filter": query.quick_filter.value,
         "search_text": query.search_text,
+        "min_search_confidence": query.min_search_confidence,
         "file_type": query.file_type.value,
         "review_state": query.review_state.value,
         "ai_state": query.ai_state.value,
         "ai_cull_bucket": query.ai_cull_bucket.value if query.ai_cull_bucket is not None else "",
         "ai_workflow_tag": query.ai_workflow_tag,
+        "folder_text": query.folder_text,
         "camera_text": query.camera_text,
         "lens_text": query.lens_text,
         "tag_text": query.tag_text,
@@ -454,11 +496,13 @@ def deserialize_filter_query(payload: dict[str, object] | None) -> RecordFilterQ
     return RecordFilterQuery(
         quick_filter=_enum_from_value(FilterMode, payload.get("quick_filter"), FilterMode.ALL),
         search_text=_string_value(payload.get("search_text")),
+        min_search_confidence=_float_value(payload.get("min_search_confidence")),
         file_type=_enum_from_value(FileTypeFilter, payload.get("file_type"), FileTypeFilter.ALL),
         review_state=_enum_from_value(ReviewStateFilter, payload.get("review_state"), ReviewStateFilter.ALL),
         ai_state=_enum_from_value(AIStateFilter, payload.get("ai_state"), AIStateFilter.ALL),
         ai_cull_bucket=_enum_from_value(AICullBucket, payload.get("ai_cull_bucket"), None),
         ai_workflow_tag=_string_value(payload.get("ai_workflow_tag")),
+        folder_text=_string_value(payload.get("folder_text")),
         camera_text=_string_value(payload.get("camera_text")),
         lens_text=_string_value(payload.get("lens_text")),
         tag_text=_string_value(payload.get("tag_text")),
