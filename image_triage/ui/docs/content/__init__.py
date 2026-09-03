@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from ..model import DocArticle, DocCategory
 from . import (
-    adapters,
     ai_culling,
     export,
     getting_started,
@@ -23,7 +22,6 @@ _MODULES = [
     getting_started,
     reviewing,
     ai_culling,
-    adapters,
     library,
     export,
     settings,

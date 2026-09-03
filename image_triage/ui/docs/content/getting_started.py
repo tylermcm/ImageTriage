@@ -67,7 +67,7 @@ ARTICLES = [
         - **View** — appearance, layout, sorting, filters, and burst views.
         - **Review** — culling, preview, and selection tools.
         - **Library / Workflow** — collections, the catalog, and export recipes.
-        - **AI** — the AI Workflow Center, adapter training, and result filters.
+        - **AI** — guided culling, the AI Workflow Center, and result filters.
         - **Tools** — batch rename, resize, convert, and archive.
         - **Help** — this documentation, guides, and updates.
 

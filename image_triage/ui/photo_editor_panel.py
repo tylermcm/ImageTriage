@@ -10,7 +10,7 @@ from typing import Any
 
 import math
 
-from PySide6.QtCore import QPointF, QRectF, QSize, QSettings, Qt, QSignalBlocker, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QSize, QSettings, Qt, QSignalBlocker, QThreadPool, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -50,6 +50,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PIL import Image
+
+from ..ai_model import (
+    AIModelInstallation,
+    download_ai_model,
+    resolve_birefnet_model_installation,
+    resolve_sam_model_installation,
+    resolve_segmentation_model_installation,
+)
 
 from ..editor_copy import (
     SAVE_COPY_FILTER_TEXT,
@@ -112,6 +120,43 @@ from photo_terminal.session import (  # noqa: E402
 from .scene_regions import SceneIndexTask, SceneRegionIndex  # noqa: E402
 from photo_terminal.io import open_image  # noqa: E402
 from photo_terminal.masks import refine_color_range, refine_luminance_range  # noqa: E402
+
+
+class _MaskModelDownloadSignals(QObject):
+    progress = Signal(str)
+    finished = Signal()
+    failed = Signal(str)
+
+
+class _MaskModelDownloadTask(QRunnable):
+    """Fetch the editor's local masking models without blocking the viewer."""
+
+    def __init__(self, installations: tuple[tuple[str, AIModelInstallation], ...]) -> None:
+        super().__init__()
+        self.installations = installations
+        self.signals = _MaskModelDownloadSignals()
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            for label, installation in self.installations:
+                self.signals.progress.emit(f"Downloading {label}...")
+
+                def report(filename: str, current: int, total: int) -> None:
+                    name = Path(filename).name
+                    if total > 0:
+                        downloaded = current / (1024 * 1024)
+                        size = total / (1024 * 1024)
+                        self.signals.progress.emit(
+                            f"Downloading {name}: {downloaded:.1f} / {size:.1f} MB"
+                        )
+                    else:
+                        self.signals.progress.emit(f"Downloading {name}...")
+
+                download_ai_model(installation, progress_callback=report)
+            self.signals.finished.emit()
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
 
 
 ADJUSTMENT_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
@@ -878,6 +923,7 @@ class PhotoEditorPanel(QFrame):
         self._source_size_cache: tuple[Path, tuple[int, int]] | None = None
         self._copy_save_busy = False
         self._semantic_mask_task: SemanticMaskTask | None = None
+        self._mask_models_download_task: _MaskModelDownloadTask | None = None
         self._semantic_mask_request_context: tuple[str | None, str] | None = None
         self._semantic_mask_result: SemanticMaskResult | None = None
         self._subject_mask_task: SubjectMaskTask | None = None
@@ -1015,11 +1061,13 @@ class PhotoEditorPanel(QFrame):
             button.setChecked(button_index == index)
         self.mask_overlay_changed.emit()
         if index == 1:
-            self.subject_warm_requested.emit("model")
-            # Load the OneFormer weights ahead of inventory; the expensive
-            # torch/CUDA spin-up is already warmed on photo render.
-            self.semantic_warm_requested.emit("model")
-            self._ensure_semantic_inventory()
+            self._sync_mask_model_controls()
+            if self._mask_models_are_installed():
+                self.subject_warm_requested.emit("model")
+                # Load the OneFormer weights ahead of inventory; the expensive
+                # torch/CUDA spin-up is already warmed on photo render.
+                self.semantic_warm_requested.emit("model")
+                self._ensure_semantic_inventory()
 
     def show_adjustments_page(self) -> None:
         if self._mask_touchup_mask_id is not None:
@@ -1434,7 +1482,9 @@ class PhotoEditorPanel(QFrame):
         parent_id: str | None = None,
         combine: str = "add",
     ) -> None:
-        self.subject_warm_requested.emit("model")
+        self._sync_mask_model_controls()
+        if self._mask_models_are_installed():
+            self.subject_warm_requested.emit("model")
         self._active_mask_edit_id = None
         self._pending_parent_id = parent_id
         self._pending_combine = "subtract" if combine == "subtract" else "add"
@@ -1461,6 +1511,94 @@ class PhotoEditorPanel(QFrame):
         button = getattr(self, "new_mask_button", None)
         if button is not None:
             button.setEnabled(self._source_path is not None)
+
+    @staticmethod
+    def _mask_model_installations() -> tuple[tuple[str, AIModelInstallation], ...]:
+        return (
+            ("scene selection tools", resolve_segmentation_model_installation()),
+            ("subject selection tools", resolve_birefnet_model_installation()),
+            ("click selection tools", resolve_sam_model_installation()),
+        )
+
+    def _mask_models_are_installed(self) -> bool:
+        return all(
+            installation.is_installed
+            for _label, installation in self._mask_model_installations()
+        )
+
+    def _sync_mask_model_controls(self) -> None:
+        point_button = getattr(self, "point_select_button", None)
+        download_button = getattr(self, "download_mask_models_button", None)
+        if point_button is None or download_button is None:
+            return
+        downloading = self._mask_models_download_task is not None
+        installed = self._mask_models_are_installed()
+        point_button.setVisible(installed and not downloading)
+        download_button.setVisible(not installed or downloading)
+        download_button.setEnabled(not installed and not downloading)
+        download_button.setText(
+            "Downloading AI Masking Tools..." if downloading else "Download AI Masking Tools"
+        )
+
+    def _download_mask_models(self) -> None:
+        if self._mask_models_download_task is not None:
+            return
+        missing = tuple(
+            (label, installation)
+            for label, installation in self._mask_model_installations()
+            if not installation.is_installed
+        )
+        if not missing:
+            self._sync_mask_model_controls()
+            return
+        task = _MaskModelDownloadTask(missing)
+        task.signals.progress.connect(
+            self._handle_mask_model_download_progress,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.finished.connect(
+            self._handle_mask_model_download_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            self._handle_mask_model_download_failed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._mask_models_download_task = task
+        self.semantic_mask_status.setText("Downloading AI masking tools...")
+        self.semantic_mask_status.show()
+        self._set_status("Downloading AI masking tools...")
+        self._sync_mask_model_controls()
+        self.mask_overlay_changed.emit()
+        self._semantic_mask_pool.start(task)
+
+    def _handle_mask_model_download_progress(self, message: str) -> None:
+        if self._mask_models_download_task is None:
+            return
+        self.semantic_mask_status.setText(message)
+        self.semantic_mask_status.show()
+        self._set_status(message)
+
+    def _handle_mask_model_download_finished(self) -> None:
+        self._mask_models_download_task = None
+        self._sync_mask_model_controls()
+        self.semantic_mask_status.setText("AI masking tools are ready.")
+        self.semantic_mask_status.show()
+        self._set_status("AI masking tools are ready")
+        self.mask_overlay_changed.emit()
+        if self.editor_stack.currentIndex() == 1:
+            self.subject_warm_requested.emit("model")
+            self.semantic_warm_requested.emit("model")
+            QTimer.singleShot(0, self._ensure_semantic_inventory)
+
+    def _handle_mask_model_download_failed(self, message: str) -> None:
+        self._mask_models_download_task = None
+        self._sync_mask_model_controls()
+        text = f"Could not download AI masking tools: {message}"
+        self.semantic_mask_status.setText(text)
+        self.semantic_mask_status.show()
+        self._set_status(text)
+        self.mask_overlay_changed.emit()
 
     # -- mask type glyphs -----------------------------------------------------
     def _mask_glyph(self, kind: str) -> QIcon:
@@ -1871,10 +2009,21 @@ class PhotoEditorPanel(QFrame):
         )
         self.point_select_button.toggled.connect(self._set_point_select_active)
         cl.addWidget(self.point_select_button)
+        self.download_mask_models_button = self._action_button(
+            "Download AI Masking Tools", content
+        )
+        self.download_mask_models_button.setObjectName("semanticMaskButton")
+        self.download_mask_models_button.setToolTip(
+            "Download the local AI tools used for automatic photo selections."
+        )
+        self.download_mask_models_button.clicked.connect(self._download_mask_models)
+        self.download_mask_models_button.hide()
+        cl.addWidget(self.download_mask_models_button)
         self.semantic_mask_status = QLabel("Scene analysis starts when this tab opens.", content)
         self.semantic_mask_status.setObjectName("editorHint")
         self.semantic_mask_status.setWordWrap(True)
         cl.addWidget(self.semantic_mask_status)
+        self._sync_mask_model_controls()
 
         cl.addWidget(self._mask_hairline(content))
 
@@ -3321,7 +3470,9 @@ class PhotoEditorPanel(QFrame):
         # never reads as frozen. Ordered by what the user is waiting on.
         busy_message: str | None = None
         if interactive and create_pane_active and not self._prompt_session_active:
-            if self._semantic_mask_task is not None:
+            if self._mask_models_download_task is not None:
+                busy_message = "Downloading AI masking tools..."
+            elif self._semantic_mask_task is not None:
                 busy_message = "Analyzing photo..."
             elif self._people_instance_task is not None:
                 busy_message = "Finding people..."
@@ -3683,6 +3834,15 @@ class PhotoEditorPanel(QFrame):
         self._sync_semantic_mask_buttons()
 
     def _ensure_semantic_inventory(self) -> None:
+        self._sync_mask_model_controls()
+        if not self._mask_models_are_installed():
+            self._populate_semantic_mask_buttons(())
+            if self._mask_models_download_task is None:
+                self.semantic_mask_status.setText(
+                    "Download AI masking tools to enable automatic selections."
+                )
+                self.semantic_mask_status.show()
+            return
         if self._source_path is None:
             self._populate_semantic_mask_buttons(())
             return

@@ -152,7 +152,7 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(0.940, result.ai_label_near_duplicate_threshold)
         dialog.deleteLater()
 
-    def test_dino_prefilter_defaults_off_and_has_settings_page(self) -> None:
+    def test_dino_prefilter_is_not_exposed_in_current_settings(self) -> None:
         dialog = WorkflowSettingsDialog(
             sessions=["Default"],
             current_session="Default",
@@ -163,7 +163,7 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         pages = [dialog.section_list.item(index).text() for index in range(dialog.section_list.count())]
         result = dialog.result_settings()
 
-        self.assertIn("DINO Prefilter", pages)
+        self.assertNotIn("DINO Prefilter", pages)
         self.assertFalse(result.dino_prefilter_settings.enabled)
         dialog.deleteLater()
 
@@ -185,7 +185,7 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
 
         result = dialog.result_settings().dino_prefilter_settings
 
-        self.assertTrue(result.enabled)
+        self.assertFalse(result.enabled)
         self.assertEqual(92, result.aggressiveness_percent)
         self.assertFalse(result.technical_trash_enabled)
         self.assertTrue(result.low_information_enabled)

@@ -192,6 +192,20 @@ class AIRuntimePackageTests(unittest.TestCase):
     def test_runtime_size_estimates_are_available_for_setup_copy(self) -> None:
         self.assertGreater(estimate_ai_runtime_download_size_mb(AI_RUNTIME_GPU_VARIANT), 3000)
         self.assertGreater(estimate_ai_runtime_installed_size_mb(AI_RUNTIME_GPU_VARIANT), 5000)
+        self.assertLess(
+            estimate_ai_runtime_download_size_mb(
+                AI_RUNTIME_GPU_VARIANT,
+                include_dino=False,
+            ),
+            estimate_ai_runtime_download_size_mb(AI_RUNTIME_GPU_VARIANT),
+        )
+        self.assertLess(
+            estimate_ai_runtime_installed_size_mb(
+                AI_RUNTIME_CPU_VARIANT,
+                include_dino=False,
+            ),
+            estimate_ai_runtime_installed_size_mb(AI_RUNTIME_CPU_VARIANT),
+        )
 
     def test_runtime_install_root_uses_local_appdata_without_home_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

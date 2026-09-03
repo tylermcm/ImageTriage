@@ -15,7 +15,7 @@ ARTICLES = [
         id="how-ai-works",
         title="How AI culling works",
         category="ai-culling",
-        summary="The big picture: score, group, rank, review, and (optionally) learn.",
+        summary="The big picture: group duplicates, score quality and content, rank, and review.",
         keywords=("ai", "concept", "overview", "clip", "topiq", "pipeline", "score"),
         markdown="""
         # How AI culling works
@@ -26,17 +26,16 @@ ARTICLES = [
 
         ## The pipeline
 
-        1. **Prefilter (optional)** — quick checks flag obvious problems before full scoring. See [Prefilters: DINO & pHash](doc:prefilters).
-        2. **Index & Score** — the main CLIP/TOPIQ models analyze each image for quality and content. See [Index & Score](doc:index-score).
+        1. **Duplicate prefilter (optional)** — pHash catches near-identical frames before full scoring. See [pHash prefilter](doc:prefilters).
+        2. **Cull & Score** — CLIP, TOPIQ, and InsightFace analyze each image for content and technical quality. See [Cull & Score](doc:index-score).
         3. **Group & rank** — similar shots are grouped, and every image gets a score and a position in the ranking.
         4. **Review** — you check the results, compare groups, and make the final calls. See [Reviewing AI results](doc:ai-review).
-        5. **Learn (optional)** — train an adapter from your labels so the ranking matches *your* taste. See [What adapters are](doc:what-adapters-are).
 
         ## What you need first
 
-        AI features require the AI runtime and model files. The installer offers to set these up on first launch; you can also install them later from **`AI > Runtime And Cache`**. See [Where AI files live](doc:where-files-live).
+        AI features require the AI runtime and model files. The installer offers to set these up on first launch; you can also install them later from **`AI > AI Setup And Cache`**. See [Where AI files live](doc:where-files-live).
 
-        > **Note:** You never have to use the adapter steps. Scoring and review work on their own — adapters simply make the ranking personal.
+        The supported workflow uses the base-model ranking directly; there is no adapter training step.
         """,
     ),
     DocArticle(
@@ -48,23 +47,19 @@ ARTICLES = [
         markdown="""
         # The AI Workflow Center
 
-        Open it from **`AI > AI Workflow Center...`**. It is the control panel for a folder's AI sorting: it shows what has run, what to do next, and how your trained models performed.
+        Open it from **`AI > AI Workflow Center...`**. It is the control panel for a folder's AI sorting: it shows what has run and what to do next.
 
         ## Layout
 
         - **Left** — the workflow steps, in order.
         - **Center** — an explanation of the step you select.
-        - **Right** — trained adapters and their Score Fit results.
 
         ## The steps
 
-        1. **Setup** — install the AI runtime and model files.
-        2. **DINO Prefilter** — flag likely rejects before scoring (optional).
-        3. **Index & Score** — run the main CLIP/TOPIQ scoring pass.
-        4. **Review Labels** — confirm or correct example images.
-        5. **Train Adapter** — build a preference model from your labels.
-        6. **Evaluate** — measure how well the adapter performs.
-        7. **Rank & Apply** — apply the final ranking to the folder.
+        1. **Setup** — choose CPU or GPU and install the runtime with CLIP, TOPIQ, and InsightFace.
+        2. **Cull & Score** — run duplicate grouping, CLIP scoring and categorization, TOPIQ/InsightFace quality analysis, clustering, and ranking.
+        3. **Review Results** — inspect the resulting buckets and comparisons.
+        4. **Apply Decisions** — organize the clearest picks, rejects, or semantic categories.
 
         Each step explains its own prerequisites, so the window always points you at the next useful action.
 
@@ -73,21 +68,19 @@ ARTICLES = [
     ),
     DocArticle(
         id="index-score",
-        title="Index & Score",
+        title="Cull & Score",
         category="ai-culling",
         summary="The main scoring pass that powers AI review.",
         keywords=("index", "score", "scoring", "clip", "topiq", "rank", "extract"),
         markdown="""
-        # Index & Score
+        # Cull & Score
 
-        **Index & Score** is the core AI pass. It extracts features from every image, groups similar shots, scores them with the CLIP/TOPIQ models, and exports a report.
-
-        When DINO Prefilter is enabled, run it first. Index & Score reuses the saved DINO and pHash decisions; it does not rerun DINO.
+        **Cull & Score** is the core AI pass. It groups near duplicates with pHash, extracts CLIP features, adds TOPIQ and InsightFace quality signals, clusters similar shots, and exports a diversified ranking.
 
         ## Running it
 
         1. Open the folder you want to review.
-        2. Open **`AI > AI Workflow Center...`** and run **Index & Score**.
+        2. Open **`AI > AI Workflow Center...`** and run **Cull & Score**.
         3. Wait for extraction, grouping, scoring, and report export to finish.
         4. The app loads the new results and switches into **AI Review** automatically.
 
@@ -99,7 +92,7 @@ ARTICLES = [
 
         ## When to re-run it
 
-        Re-run Index & Score if the folder changes substantially — images added or removed — before training or ranking again. For a stale ranking on an unchanged folder, re-ranking with your adapter is usually enough; see [Ranking with your adapter](doc:evaluating).
+        Re-run Cull & Score if images were added or removed. For an unchanged folder, **Quick Rerank** reuses the existing ingest, categories, and clusters and recalculates the base ranking.
 
         > **Tip:** Already scored a folder once? Use **`AI > Load Saved AI For Folder`** to reopen cached results without rerunning the models.
         """,
@@ -133,41 +126,34 @@ ARTICLES = [
 
         ## Inspecting what the AI did
 
-        Use the result filters to audit the pipeline — **AI Ingested**, **AI Prefilter Dumped**, **DINO Removed**, and **AI Top Picks**. See [Prefilters: DINO & pHash](doc:prefilters).
+        Use the result filters to audit the pipeline — **AI Ingested**, **AI Prefilter Dumped**, and **AI Top Picks**. See [pHash prefilter](doc:prefilters).
 
-        When the AI gets a specific image wrong, you can correct it — see [Disputing AI decisions](doc:disputing).
+        When the AI gets a specific image wrong, keep the final decision under manual review rather than applying that bucket automatically.
         """,
     ),
     DocArticle(
         id="prefilters",
-        title="Prefilters: DINO & pHash",
+        title="pHash prefilter",
         category="ai-culling",
         summary="Optional early checks that reduce what reaches full scoring.",
-        keywords=("prefilter", "dino", "phash", "duplicate", "pool"),
+        keywords=("prefilter", "phash", "duplicate", "pool"),
         markdown="""
-        # Prefilters: DINO & pHash
+        # pHash prefilter
 
         Prefilters are optional early checks that reduce how many images reach the full CLIP/TOPIQ scoring stage.
 
-        ## DINO Prefilter
-
-        DINO examines each image and flags those that are likely bad, unwanted, or not worth scoring further.
-
-        ## pHash Prefilter
-
-        pHash detects very similar images, such as tight near-duplicates, using perceptual hashing. It works independently of DINO.
+        pHash detects very similar images, such as tight near-duplicates, using perceptual hashing.
 
         ## Pool Removal
 
-        DINO and pHash keep flagged images out of the main scoring stage. This saves processing time without hiding or deleting those images. They remain available for manual review, and images already marked as winners are protected from removal.
+        pHash keeps duplicate candidates out of the main scoring stage. This saves processing time without hiding or deleting those images. They remain available for manual review, and images already marked as winners are protected from removal.
 
         ## Checking the results
 
         After changing prefilter behavior, audit it with these filters:
 
         - **AI Ingested** — images that reached the main scoring step.
-        - **AI Prefilter Dumped** — images removed from AI scoring by DINO or pHash.
-        - **DINO Removed** — images DINO removed from the scoring pool.
+        - **AI Prefilter Dumped** — images removed from AI scoring by pHash.
         - **AI Top Picks** — the strongest current keep candidates.
 
         Configure prefilters in Settings — see [AI settings](doc:ai-settings).
@@ -192,10 +178,10 @@ ARTICLES = [
 
         ## Suggested flow
 
-        1. Run [Index & Score](doc:index-score).
+        1. Run [Cull & Score](doc:index-score).
         2. Skim the results in [AI Review](doc:ai-review) to sanity-check the ranking.
         3. Apply AI decisions to clear the obvious in and out.
-        4. Review what remains, then refine with an [adapter](doc:what-adapters-are) if you want the ranking to match your taste more closely.
+        4. Review the uncertain middle manually and make the final calls.
         """,
     ),
 ]

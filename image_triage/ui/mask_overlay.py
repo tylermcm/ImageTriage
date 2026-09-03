@@ -30,6 +30,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..mask_refinement import has_mask_refinements, refine_bitmap_qimage
 from ..perf import perf_logger
+from .busy_overlay import paint_busy_card
 from .scene_regions import SceneRegionIndex
 
 MAX_ALPHA = 128          # overlay opacity at full mask strength / 100 density
@@ -1142,49 +1143,13 @@ class MaskOverlay(QWidget):
     def _paint_busy(self, painter: QPainter) -> None:
         """A centered card with a turning spinner and a status line, so AI
         analysis reads as 'working', not a frozen window."""
-        message = self._busy_message
-        if not message:
-            return
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        metrics = QFontMetricsF(painter.font())
-        spinner = 26.0
-        pad = 18.0
-        gap = 12.0
-        text_w = metrics.horizontalAdvance(message)
-        card_w = max(text_w, spinner) + pad * 2
-        card_h = spinner + gap + metrics.height() + pad * 2
-        cx = self.width() / 2.0
-        cy = self.height() / 2.0
-        card = QRectF(cx - card_w / 2.0, cy - card_h / 2.0, card_w, card_h)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(18, 18, 18, 220))
-        painter.drawRoundedRect(card, 10.0, 10.0)
-
-        # Spinner: a faint full ring with a brighter arc that sweeps around it.
-        sx = cx
-        sy = card.top() + pad + spinner / 2.0
-        ring = QRectF(sx - spinner / 2.0, sy - spinner / 2.0, spinner, spinner)
-        track = QPen(QColor(255, 255, 255, 60), 3.0)
-        track.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(track)
-        painter.drawEllipse(ring)
-        arc = QPen(QColor(74, 158, 255, 235), 3.0)
-        arc.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(arc)
-        # Qt angles are in 1/16 degrees, counter-clockwise; negate to spin CW.
-        painter.drawArc(ring, int(-self._busy_angle * 16), int(-100 * 16))
-
-        text_rect = QRectF(
-            card.left(),
-            sy + spinner / 2.0 + gap,
-            card_w,
-            metrics.height(),
+        paint_busy_card(
+            painter,
+            width=self.width(),
+            height=self.height(),
+            message=self._busy_message,
+            angle=self._busy_angle,
         )
-        painter.setPen(QPen(QColor(240, 240, 240)))
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, message)
-        painter.restore()
 
     def _handle_pen(self) -> tuple[QPen, QPen]:
         halo = QPen(QColor(0, 0, 0, 140), 3.0)
