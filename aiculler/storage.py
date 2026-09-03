@@ -166,6 +166,16 @@ class SQLiteFeatureStore:
                     metrics_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS semantic_index_state (
+                    image_id INTEGER PRIMARY KEY,
+                    model_identity TEXT NOT NULL,
+                    source_signature TEXT NOT NULL,
+                    embedding_dim INTEGER NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+                );
                 """
             )
             self._ensure_column("images", "prompt_score", "REAL")
@@ -310,6 +320,144 @@ class SQLiteFeatureStore:
                 ),
             )
             self.connection.commit()
+
+    def ensure_image(self, source_path: str | Path) -> int:
+        """Return the image id for ``source_path``, inserting a pending row if new.
+
+        Unlike :meth:`upsert_image`, an existing row is left untouched so a
+        semantic-only reindex never downgrades a fully scored image's status,
+        scores, or metadata.
+        """
+        source = str(Path(source_path))
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT id FROM images WHERE source_path = ?",
+                (source,),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
+            cur = self.connection.execute(
+                "INSERT INTO images (source_path, status) VALUES (?, 'pending') RETURNING id",
+                (source,),
+            )
+            image_id = int(cur.fetchone()["id"])
+            self.connection.commit()
+            return image_id
+
+    def save_semantic_embedding(
+        self,
+        image_id: int,
+        embedding: Sequence[float] | np.ndarray,
+        *,
+        commit: bool = True,
+    ) -> None:
+        """Persist only the image embedding, leaving scores and status alone."""
+        vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        with self.lock:
+            self.connection.execute(
+                """
+                INSERT INTO embeddings (image_id, embedding, dim, dtype)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(image_id) DO UPDATE SET
+                    embedding = excluded.embedding,
+                    dim = excluded.dim,
+                    dtype = excluded.dtype
+                """,
+                (int(image_id), vector.tobytes(), int(vector.size), str(vector.dtype)),
+            )
+            if commit:
+                self.connection.commit()
+
+    def get_embedding_dim(self, image_id: int) -> int | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT dim FROM embeddings WHERE image_id = ?",
+                (int(image_id),),
+            ).fetchone()
+        return None if row is None else int(row["dim"])
+
+    def get_semantic_index_state(self, image_id: int) -> sqlite3.Row | None:
+        with self.lock:
+            return self.connection.execute(
+                "SELECT * FROM semantic_index_state WHERE image_id = ?",
+                (int(image_id),),
+            ).fetchone()
+
+    def set_semantic_index_state(
+        self,
+        image_id: int,
+        *,
+        model_identity: str,
+        source_signature: str,
+        embedding_dim: int,
+        schema_version: int,
+        commit: bool = True,
+    ) -> None:
+        with self.lock:
+            self.connection.execute(
+                """
+                INSERT INTO semantic_index_state (
+                    image_id, model_identity, source_signature, embedding_dim, schema_version
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(image_id) DO UPDATE SET
+                    model_identity = excluded.model_identity,
+                    source_signature = excluded.source_signature,
+                    embedding_dim = excluded.embedding_dim,
+                    schema_version = excluded.schema_version,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    int(image_id),
+                    str(model_identity),
+                    str(source_signature),
+                    int(embedding_dim),
+                    int(schema_version),
+                ),
+            )
+            if commit:
+                self.connection.commit()
+
+    def semantic_index_snapshot(self) -> dict[str, dict[str, object]]:
+        """Return per-source-path indexing state used to plan incremental work.
+
+        Keyed by ``source_path``; each value carries the image id, the stored
+        embedding dimension (``None`` when no embedding exists), the semantic
+        index-state columns, and the image ``metadata_json`` so the planner can
+        reuse a full-workflow embedding without recomputing it.
+        """
+        query = """
+            SELECT
+                images.id AS image_id,
+                images.source_path AS source_path,
+                images.metadata_json AS metadata_json,
+                embeddings.dim AS embedding_dim,
+                state.model_identity AS state_model_identity,
+                state.source_signature AS state_source_signature,
+                state.embedding_dim AS state_embedding_dim,
+                state.schema_version AS state_schema_version
+            FROM images
+            LEFT JOIN embeddings ON embeddings.image_id = images.id
+            LEFT JOIN semantic_index_state AS state ON state.image_id = images.id
+        """
+        snapshot: dict[str, dict[str, object]] = {}
+        with self.lock:
+            rows = self.connection.execute(query).fetchall()
+        for row in rows:
+            snapshot[str(row["source_path"])] = {
+                "image_id": int(row["image_id"]),
+                "metadata_json": row["metadata_json"],
+                "embedding_dim": None if row["embedding_dim"] is None else int(row["embedding_dim"]),
+                "state_model_identity": row["state_model_identity"],
+                "state_source_signature": row["state_source_signature"],
+                "state_embedding_dim": (
+                    None if row["state_embedding_dim"] is None else int(row["state_embedding_dim"])
+                ),
+                "state_schema_version": (
+                    None if row["state_schema_version"] is None else int(row["state_schema_version"])
+                ),
+            }
+        return snapshot
 
     def get_technical_metrics_cache(self, path_key: str) -> sqlite3.Row | None:
         with self.lock:

@@ -294,7 +294,12 @@ class HeadlessFeatureExtractor:
         }
 
     def _preprocess_for_clip(self, img: Image.Image) -> np.ndarray:
-        resized = img.resize((self.clip_input_size, self.clip_input_size), Image.Resampling.BILINEAR)
+        return self.preprocess_clip_pixels(img, self.clip_input_size)
+
+    @staticmethod
+    def preprocess_clip_pixels(img: Image.Image, input_size: int) -> np.ndarray:
+        """Resize + CLIP-normalize an RGB image into an NCHW float32 tensor."""
+        resized = img.resize((input_size, input_size), Image.Resampling.BILINEAR)
         arr = np.array(resized).astype(np.float32) / 255.0
         mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
         std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
@@ -305,6 +310,93 @@ class HeadlessFeatureExtractor:
         resized = img.resize((self.topiq_input_size, self.topiq_input_size), Image.Resampling.BILINEAR)
         arr = np.array(resized).astype(np.float32) / 255.0
         return np.expand_dims(arr.transpose(2, 0, 1), axis=0).astype(np.float32)
+
+
+class SemanticEmbeddingExtractor:
+    """Lightweight TinyCLIP image-embedding encoder for semantic search.
+
+    Unlike :class:`HeadlessFeatureExtractor` this loads only the CLIP graph and
+    requests only the ``image_embeds`` output. It performs no technical
+    analysis, TOPIQ scoring, or face detection, so it can index a folder for
+    semantic search without invoking the full culling pipeline.
+    """
+
+    def __init__(
+        self,
+        clip_onnx_path: str | Path,
+        *,
+        clip_fallback_onnx_path: str | Path | None = None,
+        providers: list[str] | None = None,
+        intra_op_num_threads: int | None = None,
+        allow_spinning: bool | None = None,
+    ):
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            raise RuntimeError("onnxruntime is required for ONNX feature extraction") from exc
+
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        active_python_threads = threading.active_count()
+        selected_intra_threads = (
+            max(1, int(intra_op_num_threads))
+            if intra_op_num_threads is not None
+            else max(1, min(8, active_python_threads or 1))
+        )
+        opts.intra_op_num_threads = selected_intra_threads
+        if allow_spinning is not None:
+            spinning_value = "1" if allow_spinning else "0"
+            opts.add_session_config_entry("session.intra_op.allow_spinning", spinning_value)
+            opts.add_session_config_entry("session.inter_op.allow_spinning", spinning_value)
+        providers = providers or preferred_onnx_providers(ort)
+        clip_selection = create_preflight_session_with_model_fallback(
+            ort,
+            clip_onnx_path,
+            clip_fallback_onnx_path,
+            opts,
+            providers=providers,
+            select_input_name=HeadlessFeatureExtractor._select_image_input,
+            input_shape=lambda session: (
+                1,
+                3,
+                HeadlessFeatureExtractor._select_spatial_size(session, default=224),
+                HeadlessFeatureExtractor._select_spatial_size(session, default=224),
+            ),
+            feed_builder=HeadlessFeatureExtractor._build_clip_image_feeds,
+            select_output_names=lambda session: [
+                HeadlessFeatureExtractor._select_embedding_output(session)
+            ],
+        )
+        self.clip_session = clip_selection.session
+        self.clip_model_path = clip_selection.model_path
+        self.clip_fallback_used = clip_selection.fallback_used
+        self.clip_input_name = HeadlessFeatureExtractor._select_image_input(self.clip_session)
+        self.clip_input_size = HeadlessFeatureExtractor._select_spatial_size(self.clip_session, default=224)
+        self.clip_output_name = HeadlessFeatureExtractor._select_embedding_output(self.clip_session)
+        output_meta = next(
+            (meta for meta in self.clip_session.get_outputs() if meta.name == self.clip_output_name),
+            None,
+        )
+        self.embedding_dim = (
+            int(output_meta.shape[-1])
+            if output_meta is not None
+            and output_meta.shape
+            and isinstance(output_meta.shape[-1], int)
+            else None
+        )
+
+    def encode_image(self, image_path: str | Path) -> np.ndarray:
+        with Image.open(image_path) as opened:
+            img = opened.convert("RGB")
+        pixel_values = HeadlessFeatureExtractor.preprocess_clip_pixels(img, self.clip_input_size)
+        outputs = self.clip_session.run(
+            [self.clip_output_name],
+            HeadlessFeatureExtractor._build_clip_image_feeds(
+                self.clip_session, self.clip_input_name, pixel_values
+            ),
+        )
+        return np.asarray(outputs[0], dtype=np.float32).reshape(-1)
 
 
 class HeuristicTechnicalScorer:
