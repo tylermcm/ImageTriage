@@ -299,6 +299,11 @@ from .review_workflows import (
 from .scanner import FolderScanTask, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
 from .semantic_search import SearchFilters
+from .semantic_index import (
+    SEMANTIC_EMBEDDING_DIM,
+    SemanticFolderIndexTask,
+    compute_semantic_model_identity,
+)
 from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
 from .thumbnails import ThumbnailManager
@@ -3148,6 +3153,17 @@ class MainWindow(QMainWindow):
         self._annotation_hydration_pool.setMaxThreadCount(1)
         self._unified_search_pool = QThreadPool(self)
         self._unified_search_pool.setMaxThreadCount(1)
+        # Semantic auto-indexing runs at low concurrency so opening a large
+        # folder keeps browsing responsive while embeddings build up.
+        self._semantic_index_pool = QThreadPool(self)
+        self._semantic_index_pool.setMaxThreadCount(1)
+        self._active_semantic_index_task: SemanticFolderIndexTask | None = None
+        self._semantic_index_token = 0
+        self._semantic_index_scope_key = ""
+        self._semantic_index_signature: tuple[object, ...] = ()
+        self._semantic_index_completed = 0
+        self._semantic_index_total = 0
+        self._semantic_index_active = False
         self._drive_type_cache: dict[str, int] = {}
         self._scan_token = 0
         self._scan_showed_cached = False
@@ -9994,6 +10010,8 @@ class MainWindow(QMainWindow):
         if self._folder_watcher.directories():
             self._folder_watcher.removePaths(list(self._folder_watcher.directories()))
         self._annotation_persistence_queue.flush_blocking()
+        if self._active_semantic_index_task is not None:
+            self._active_semantic_index_task.cancel()
         self._flush_aiculler_internal_label_cache()
         self._flush_aiculler_global_label_queue()
         self._shutdown_aiculler_telemetry_logger()
@@ -11980,6 +11998,17 @@ class MainWindow(QMainWindow):
         self._unified_search_path_keys = frozenset()
         self._unified_search_rank_by_path = {}
 
+    def _reset_semantic_index_state(self) -> None:
+        self._semantic_index_token += 1
+        if self._active_semantic_index_task is not None:
+            self._active_semantic_index_task.cancel()
+            self._active_semantic_index_task = None
+        self._semantic_index_scope_key = ""
+        self._semantic_index_signature = ()
+        self._semantic_index_completed = 0
+        self._semantic_index_total = 0
+        self._semantic_index_active = False
+
     def _schedule_unified_search_for_current_filter(self) -> str:
         signature = self._unified_search_current_signature()
         if signature != self._unified_search_signature:
@@ -12003,9 +12032,11 @@ class MainWindow(QMainWindow):
             return "Indexed search is unavailable for this folder."
         db_path = aiculler_db_path(paths)
         if not db_path.exists():
+            if self._semantic_index_active:
+                return self._semantic_index_status_text()
             return (
-                "Filename search only. Run AI > AI Workflow Center > Index & Score "
-                "to enable object and people search."
+                "Filename search only. Object and people search becomes available "
+                "as the folder finishes indexing."
             )
         try:
             runtime = self._configured_aiculler_runtime(workers=1)
@@ -12053,9 +12084,13 @@ class MainWindow(QMainWindow):
         if query_text:
             if hit_count:
                 self.statusBar().showMessage(f"Indexed search found {hit_count} image(s)")
+            elif self._semantic_index_active:
+                self.statusBar().showMessage(
+                    f"{self._semantic_index_status_text()} Results will refresh as photos finish indexing."
+                )
             else:
                 self.statusBar().showMessage(
-                    "No indexed matches. Re-run Index & Score if this folder changed, or lower the confidence filter."
+                    "No matches. Lower the confidence filter, or wait for indexing to finish if the folder changed."
                 )
 
     def _handle_unified_search_failed(self, folder: str, token: int, message: str) -> None:
@@ -12067,6 +12102,137 @@ class MainWindow(QMainWindow):
         self._unified_search_rank_by_path = {}
         if self._filter_query.search_text.strip():
             self.statusBar().showMessage(f"Indexed search unavailable: {message}")
+
+    def _semantic_index_status_text(self) -> str:
+        total = self._semantic_index_total
+        if total <= 0:
+            return "Preparing semantic search..."
+        completed = min(self._semantic_index_completed, total)
+        return f"Preparing semantic search: {completed:,} / {total:,}"
+
+    def _maybe_start_semantic_index(self, records: list[ImageRecord]) -> None:
+        """Kick off background semantic-only embedding for the current folder.
+
+        This is decoupled from Index & Score: it builds TinyCLIP image
+        embeddings so natural-language search becomes available without running
+        technical scoring, TOPIQ, face detection, clustering, or ranking. It is
+        best-effort — if the AI runtime or CLIP model is not installed we stay
+        quiet and leave filename search as the fallback.
+        """
+        if self._scope_kind != "folder" or not self._current_folder:
+            return
+        if not records:
+            return
+        if not (self._ai_runtime_available() and self._aiculler_clip_model_available()):
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return
+        try:
+            runtime = self._configured_aiculler_runtime(workers=1)
+        except Exception:
+            return
+        clip_vision_model = getattr(runtime, "clip_vision_model", None)
+        if clip_vision_model is None or not Path(clip_vision_model).exists():
+            return
+        clip_fallback = getattr(runtime, "clip_fallback_vision_model", None)
+        try:
+            model_identity = compute_semantic_model_identity(
+                clip_vision_model,
+                embedding_dim=SEMANTIC_EMBEDDING_DIM,
+                fallback_model=clip_fallback,
+            )
+        except Exception:
+            return
+
+        scope_key = normalized_path_key(self._current_folder)
+        signature = (scope_key, model_identity, len(records))
+        if (
+            self._active_semantic_index_task is not None
+            and self._semantic_index_scope_key == scope_key
+            and self._semantic_index_signature == signature
+        ):
+            return
+        if self._active_semantic_index_task is not None:
+            self._active_semantic_index_task.cancel()
+            self._active_semantic_index_task = None
+
+        self._semantic_index_token += 1
+        token = self._semantic_index_token
+        self._semantic_index_scope_key = scope_key
+        self._semantic_index_signature = signature
+        self._semantic_index_completed = 0
+        self._semantic_index_total = 0
+        self._semantic_index_active = True
+        task = SemanticFolderIndexTask(
+            folder=self._current_folder,
+            token=token,
+            records=tuple(records),
+            db_path=aiculler_db_path(paths),
+            clip_vision_model=clip_vision_model,
+            clip_fallback_model=clip_fallback,
+            model_identity=model_identity,
+            device=str(getattr(runtime, "device", "auto")),
+            expected_dim=SEMANTIC_EMBEDDING_DIM,
+        )
+        task.signals.progress.connect(self._handle_semantic_index_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.batch_ready.connect(self._handle_semantic_index_batch_ready, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_semantic_index_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_semantic_index_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_semantic_index_task = task
+        self._semantic_index_pool.start(task)
+
+    def _semantic_index_event_is_current(self, folder: str, token: int) -> bool:
+        return (
+            token == self._semantic_index_token
+            and normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        )
+
+    def _handle_semantic_index_progress(self, folder: str, token: int, completed: int, total: int) -> None:
+        if not self._semantic_index_event_is_current(folder, token):
+            return
+        self._semantic_index_completed = int(completed)
+        self._semantic_index_total = int(total)
+        # Restrained: only surface progress while the user is waiting on a query.
+        if self._filter_query.search_text.strip():
+            self.statusBar().showMessage(self._semantic_index_status_text())
+
+    def _handle_semantic_index_batch_ready(self, folder: str, token: int) -> None:
+        if not self._semantic_index_event_is_current(folder, token):
+            return
+        self._refresh_pending_unified_search()
+
+    def _handle_semantic_index_finished(self, folder: str, token: int, indexed: int, ready_total: int) -> None:
+        if not self._semantic_index_event_is_current(folder, token):
+            return
+        self._active_semantic_index_task = None
+        self._semantic_index_active = False
+        if self._filter_query.search_text.strip():
+            self._refresh_pending_unified_search()
+            self.statusBar().showMessage("Semantic search ready")
+
+    def _handle_semantic_index_failed(self, folder: str, token: int, message: str) -> None:
+        if not self._semantic_index_event_is_current(folder, token):
+            return
+        self._active_semantic_index_task = None
+        self._semantic_index_active = False
+        if self._filter_query.search_text.strip():
+            self.statusBar().showMessage(f"Semantic search indexing failed: {message}")
+
+    def _refresh_pending_unified_search(self) -> None:
+        """Re-run the active search so newly indexed photos surface as they land."""
+        if not self._filter_query.search_text.strip():
+            return
+        if self._scope_kind != "folder" or not self._current_folder:
+            return
+        # Force a re-run even though the query signature is unchanged.
+        self._unified_search_completed_signature = ()
+        if self._active_unified_search_task is not None:
+            self._active_unified_search_task.cancel()
+            self._active_unified_search_task = None
+        notice = self._schedule_unified_search_for_current_filter()
+        if notice:
+            self.statusBar().showMessage(notice)
 
     def _set_file_type_filter(self, mode: FileTypeFilter) -> None:
         if self._filter_query.file_type == mode:
@@ -17388,6 +17554,7 @@ class MainWindow(QMainWindow):
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
         self._reset_unified_search_state()
+        self._reset_semantic_index_state()
         if self._active_review_intelligence_task is not None:
             self._active_review_intelligence_task.cancel()
             self._active_review_intelligence_task = None
@@ -17483,6 +17650,7 @@ class MainWindow(QMainWindow):
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
         self._reset_unified_search_state()
+        self._reset_semantic_index_state()
         if self._active_review_intelligence_task is not None:
             self._active_review_intelligence_task.cancel()
             self._active_review_intelligence_task = None
@@ -18785,6 +18953,7 @@ class MainWindow(QMainWindow):
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
             self._pending_folder_focus_path = ""
+            self._maybe_start_semantic_index(records)
             if logger.enabled:
                 logger.duration("scan.finished_confirmed_cache", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records))
             return
@@ -18806,6 +18975,7 @@ class MainWindow(QMainWindow):
         if self._folder_watch_refresh_pending:
             self._folder_watch_refresh_timer.start(250)
         self._pending_folder_focus_path = ""
+        self._maybe_start_semantic_index(records)
         if logger.enabled:
             logger.duration("scan.finished_applied", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records), chunked=chunked_view)
 
@@ -18843,6 +19013,7 @@ class MainWindow(QMainWindow):
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
         self._reset_unified_search_state()
+        self._reset_semantic_index_state()
         self._all_records = []
         self._all_records_by_path = {}
         self._folder_records = []
