@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import closing
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Mapping, Sequence
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .ai_model import AICULLER_FACE_MODEL_REQUIRED_FILENAMES
+from .ai_model import AICULLER_FACE_MODEL_REQUIRED_FILENAMES, DEFAULT_AICULLER_CLIP_REPO_ID
 from .ai_runtime_packages import resolve_ai_runtime_site_packages
 from .ai_workflow import (
     AI_METRICS_ENV_VAR,
@@ -1435,7 +1436,7 @@ class AICullerRunTask(QRunnable):
         return ("--topiq", str(self.runtime.topiq_model))
 
     def _face_quality_args(self) -> tuple[str, ...]:
-        return ("--face-quality",) if self.runtime.face_quality_enabled else ()
+        return ("--face-quality", "--face-identity") if self.runtime.face_quality_enabled else ()
 
     def _category_args(self) -> tuple[str, ...]:
         if self.runtime.categories_csv is None:
@@ -2283,12 +2284,9 @@ def default_aiculler_runtime(
         os.environ.get("IMAGE_TRIAGE_AICULLER_CLI", "")
         or _default_aiculler_cli(root)
     ).expanduser().resolve()
-    clip_root = model_root / "Clip" / "clip-vit-large-patch14"
-    # Precision is a runtime recovery policy, not a user preference: always
-    # attempt FP32 first and keep the paired FP16 export ready as fallback.
+    clip_root = model_root / "Clip" / DEFAULT_AICULLER_CLIP_REPO_ID.rsplit("/", 1)[-1]
     resolved_clip_variant = DEFAULT_CLIP_MODEL_VARIANT
     default_clip_vision, default_clip_text = _clip_model_paths_for_variant(clip_root, "fp32")
-    fallback_clip_vision, fallback_clip_text = _clip_model_paths_for_variant(clip_root, "fp16")
     configured_topiq = os.environ.get("IMAGE_TRIAGE_AICULLER_TOPIQ", "").strip()
     topiq_path = Path(configured_topiq or model_root / "TOPIQ" / "topiq_nr.onnx")
     face_pack_dir = model_root / "insightface" / "models" / "buffalo_l"
@@ -2325,14 +2323,16 @@ def default_aiculler_runtime(
             os.environ.get("IMAGE_TRIAGE_AICULLER_TOKENIZER", "")
             or clip_root / "tokenizer.json"
         ).expanduser().resolve(),
-        clip_fallback_vision_model=Path(
-            os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_VISION_FALLBACK", "")
-            or fallback_clip_vision
-        ).expanduser().resolve(),
-        clip_fallback_text_model=Path(
-            os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_TEXT_FALLBACK", "")
-            or fallback_clip_text
-        ).expanduser().resolve(),
+        clip_fallback_vision_model=(
+            Path(os.environ["IMAGE_TRIAGE_AICULLER_CLIP_VISION_FALLBACK"]).expanduser().resolve()
+            if os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_VISION_FALLBACK", "").strip()
+            else None
+        ),
+        clip_fallback_text_model=(
+            Path(os.environ["IMAGE_TRIAGE_AICULLER_CLIP_TEXT_FALLBACK"]).expanduser().resolve()
+            if os.environ.get("IMAGE_TRIAGE_AICULLER_CLIP_TEXT_FALLBACK", "").strip()
+            else None
+        ),
         clip_model_variant=resolved_clip_variant,
         topiq_model=(
             topiq_path.expanduser().resolve()
@@ -2354,8 +2354,9 @@ def _clip_model_paths_for_variant(clip_root: Path, variant: str) -> tuple[Path, 
     if normalized not in {"fp32", "fp16"}:
         normalized = "fp32"
     onnx_root = clip_root / "onnx"
-    suffix = "" if normalized == "fp32" else f"_{normalized}"
-    return onnx_root / f"vision_model{suffix}.onnx", onnx_root / f"text_model{suffix}.onnx"
+    filename = "model.onnx" if normalized == "fp32" else f"model_{normalized}.onnx"
+    model_path = onnx_root / filename
+    return model_path, model_path
 
 
 def _default_aiculler_python(root: Path) -> Path:
@@ -2540,7 +2541,7 @@ def latest_adapter_model_version(db_path: str | Path) -> str:
     if not path.exists():
         return ""
     try:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             row = connection.execute(
                 """
                 SELECT model_version
@@ -2595,7 +2596,7 @@ def compute_and_store_winner_scores(
         }
     resolved_version = str(model_version or latest_adapter_model_version(path) or WINNER_SCORE_FALLBACK_MODEL_VERSION)
     source_counts: dict[str, int] = {}
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         ensure_winner_scores_table(connection)
         try:
             labeled_emb, labels, all_ids, all_emb, global_scores = load_winner_inputs(
@@ -2677,7 +2678,7 @@ def load_latest_winner_scores(db_path: str | Path, *, model_version: str = "") -
             "scored_count": 0,
             "scores_by_path": {},
         }
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         connection.row_factory = sqlite3.Row
         ensure_winner_scores_table(connection)
         resolved_version = str(model_version or "")
@@ -2738,7 +2739,7 @@ def load_face_records_by_path(db_path: str | Path) -> dict[str, dict[str, object
     if not path.exists():
         return {}
     try:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             connection.row_factory = sqlite3.Row
             ensure_faces_table(connection)
             rows = connection.execute(
@@ -2790,7 +2791,7 @@ def load_image_categories_by_path(db_path: str | Path) -> dict[str, dict[str, ob
     if not path.exists():
         return {}
     try:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             connection.row_factory = sqlite3.Row
             table_row = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'image_categories'"
@@ -2954,7 +2955,7 @@ def aiculler_rerank_readiness(db_path: str | Path) -> dict[str, object]:
     if not path.exists():
         return info
     info["db_exists"] = True
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         ready_row = connection.execute(
             "SELECT COUNT(*) FROM images WHERE status = 'ready'"
         ).fetchone()
@@ -2998,7 +2999,7 @@ def load_adapter_status_summary(db_path: str | Path) -> dict[str, object]:
     if not path.exists():
         return summary
     summary["db_exists"] = True
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         rating_row = connection.execute("SELECT COUNT(*) FROM ratings").fetchone()
         summary["rating_count"] = int(rating_row[0]) if rating_row else 0
         model_row = connection.execute(
@@ -3707,7 +3708,7 @@ def set_base_score_blend_weight(weight: float) -> None:
 def _load_adapter_gui_rows(db_path: Path, model_version: str) -> list[dict[str, object]]:
     base_weight = _BASE_SCORE_BLEND_WEIGHT
     adapter_weight = 1.0 - base_weight
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         image_rows = connection.execute(
             f"""

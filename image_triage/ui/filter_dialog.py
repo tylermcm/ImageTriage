@@ -60,6 +60,16 @@ class AdvancedFilterDialog(QDialog):
         self.tag_field.setPlaceholderText("portrait, product, wedding...")
         form_layout.addRow("Tags", self.tag_field)
 
+        self.folder_field = QLineEdit()
+        self.folder_field.setPlaceholderText("restaurant, beach, set-b...")
+        form_layout.addRow("Folder", self.folder_field)
+
+        self.min_search_confidence = self._build_score_spinbox()
+        form_layout.addRow("Min Confidence", self.min_search_confidence)
+
+        self.min_rating = self._build_int_spinbox(0, 5)
+        form_layout.addRow("Min Rating", self.min_rating)
+
         self.orientation_combo = QComboBox()
         for mode in OrientationFilter:
             self.orientation_combo.addItem(mode.value, mode)
@@ -120,15 +130,17 @@ class AdvancedFilterDialog(QDialog):
         return RecordFilterQuery(
             quick_filter=self._source_query.quick_filter,
             search_text=self._source_query.search_text,
+            min_search_confidence=self.min_search_confidence.value(),
             file_type=self._source_query.file_type,
             review_state=self._source_query.review_state,
             ai_state=self._source_query.ai_state,
             ai_cull_bucket=self._source_query.ai_cull_bucket,
             ai_workflow_tag=self._source_query.ai_workflow_tag,
+            folder_text=self.folder_field.text().strip(),
             camera_text=self.camera_field.text().strip(),
             lens_text=self.lens_field.text().strip(),
             tag_text=self.tag_field.text().strip(),
-            min_rating=0,
+            min_rating=self.min_rating.value(),
             orientation=self._selected_orientation(),
             captured_after=self._date_from_edit(self.after_date),
             captured_before=self._date_from_edit(self.before_date),
@@ -142,6 +154,9 @@ class AdvancedFilterDialog(QDialog):
         self.camera_field.setText(query.camera_text)
         self.lens_field.setText(query.lens_text)
         self.tag_field.setText(query.tag_text)
+        self.folder_field.setText(query.folder_text)
+        self.min_search_confidence.setValue(query.min_search_confidence)
+        self.min_rating.setValue(query.min_rating)
 
         orientation_index = self.orientation_combo.findData(query.orientation)
         if orientation_index >= 0:
@@ -158,6 +173,9 @@ class AdvancedFilterDialog(QDialog):
         self.camera_field.clear()
         self.lens_field.clear()
         self.tag_field.clear()
+        self.folder_field.clear()
+        self.min_search_confidence.setValue(0.0)
+        self.min_rating.setValue(0)
         self.orientation_combo.setCurrentIndex(0)
         self._set_date_edit(self.after_date, None)
         self._set_date_edit(self.before_date, None)
@@ -194,6 +212,16 @@ class AdvancedFilterDialog(QDialog):
         widget.setSpecialValueText("Any")
         widget.setValue(0.0)
         widget.setSuffix(" mm")
+        return widget
+
+    @staticmethod
+    def _build_score_spinbox() -> QDoubleSpinBox:
+        widget = QDoubleSpinBox()
+        widget.setRange(0.0, 1.0)
+        widget.setDecimals(2)
+        widget.setSingleStep(0.05)
+        widget.setSpecialValueText("Auto")
+        widget.setValue(0.0)
         return widget
 
     def _selected_orientation(self) -> OrientationFilter:

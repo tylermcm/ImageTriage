@@ -5,8 +5,9 @@ import unittest
 import os
 from pathlib import Path
 
+import image_triage.scanner as scanner_module
 from image_triage.models import ImageRecord, SortMode, sort_records
-from image_triage.scanner import discover_edited_paths, scan_child_folders, scan_folder
+from image_triage.scanner import discover_edited_paths, format_scan_error, scan_child_folders, scan_folder
 
 
 def _write_image(path: Path) -> None:
@@ -138,6 +139,56 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(["Alpha", "Beta"], [record.name for record in records])
             self.assertTrue(all(record.is_folder for record in records))
             self.assertEqual(_path_set((alpha, beta)), _path_set(record.path for record in records))
+
+    def test_scan_folder_does_not_open_unrelated_protected_child_directories(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            photo = root / "photo.jpg"
+            protected = root / "Recovery"
+            _write_image(photo)
+            protected.mkdir()
+            real_scandir = os.scandir
+
+            def guarded_scandir(path):
+                if _path_key(path) == _path_key(protected):
+                    raise PermissionError(13, "Access is denied", str(protected))
+                return real_scandir(path)
+
+            scanner_module.os.scandir = guarded_scandir
+            try:
+                records = scan_folder(str(root))
+            finally:
+                scanner_module.os.scandir = real_scandir
+
+            self.assertEqual([photo.name], [record.name for record in records])
+
+    def test_scan_folder_skips_inaccessible_optional_companion_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            photo = root / "photo.jpg"
+            companion_dir = root / "jpeg"
+            _write_image(photo)
+            companion_dir.mkdir()
+            real_scandir = os.scandir
+
+            def guarded_scandir(path):
+                if _path_key(path) == _path_key(companion_dir):
+                    raise PermissionError(13, "Access is denied", str(companion_dir))
+                return real_scandir(path)
+
+            scanner_module.os.scandir = guarded_scandir
+            try:
+                records = scan_folder(str(root))
+            finally:
+                scanner_module.os.scandir = real_scandir
+
+            self.assertEqual([photo.name], [record.name for record in records])
+
+    def test_scan_errors_are_human_readable(self) -> None:
+        message = format_scan_error(PermissionError(13, "Access is denied", r"K:\Recovery"))
+
+        self.assertEqual("Access to this folder is denied.", message)
+        self.assertNotIn("WinError", message)
 
     def test_scan_child_folders_hides_dot_folders_by_default(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:

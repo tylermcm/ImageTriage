@@ -1,0 +1,122 @@
+{
+  "system": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "unknown",
+    "python": "3.13.14",
+    "onnxruntime": "1.26.0"
+  },
+  "settings": {
+    "samples": 24,
+    "repetitions": 3,
+    "threads": 4,
+    "provider": "CPUExecutionProvider",
+    "random_seed": 20260902
+  },
+  "tinyclip_export": {
+    "model_id": "wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M",
+    "revision": "a2a8c6eaa2549ad66eb7c31b85022bf58273a26c",
+    "image_size": 224,
+    "sequence_length": 77,
+    "projection_dimension": 512
+  },
+  "tinyclip_export_validation": {
+    "image_max_absolute_error": 1.7881393432617188e-06,
+    "image_minimum_cosine": 1.0,
+    "text_max_absolute_error": 1.9073486328125e-06,
+    "text_minimum_cosine": 0.9999999403953552
+  },
+  "results": [
+    {
+      "model": "Current CLIP ViT-L/14",
+      "root": "C:\\Users\\tylle\\AppData\\Local\\image_triage_ai_cache\\models\\CLI-Culler\\Clip\\clip-vit-large-patch14",
+      "provider": "CPUExecutionProvider",
+      "threads": 4,
+      "model_bytes": 1713609925,
+      "model_megabytes": 1634.23,
+      "session_load_seconds": 1.586035,
+      "rss_increase_megabytes": 1659.43,
+      "peak_rss_megabytes": 1961.02,
+      "embedding_dimension": 768,
+      "image_throughput": {
+        "1": {
+          "median_seconds": 6.665663,
+          "images_per_second": 3.601,
+          "runs_seconds": [
+            6.650056,
+            6.665663,
+            6.666504
+          ]
+        },
+        "4": {
+          "median_seconds": 6.643085,
+          "images_per_second": 3.613,
+          "runs_seconds": [
+            6.651653,
+            6.643085,
+            6.642345
+          ]
+        },
+        "8": {
+          "median_seconds": 6.584368,
+          "images_per_second": 3.645,
+          "runs_seconds": [
+            6.579428,
+            6.588906,
+            6.584368
+          ]
+        }
+      },
+      "text_query_ms": {
+        "median": 27.752,
+        "p95": 29.118,
+        "samples": 24
+      }
+    },
+    {
+      "model": "TinyCLIP ViT-8M/16 Text-3M",
+      "root": "C:\\Users\\tylle\\OneDrive\\Documents\\Playground\\sandboxes\\tinyclip_benchmark\\models\\tinyclip-vit-8m-16-text-3m",
+      "provider": "CPUExecutionProvider",
+      "threads": 4,
+      "model_bytes": 97637598,
+      "model_megabytes": 93.11,
+      "session_load_seconds": 0.149014,
+      "rss_increase_megabytes": 106.84,
+      "peak_rss_megabytes": 248.3,
+      "embedding_dimension": 512,
+      "image_throughput": {
+        "1": {
+          "median_seconds": 0.223495,
+          "images_per_second": 107.385,
+          "runs_seconds": [
+            0.233914,
+            0.223495,
+            0.223399
+          ]
+        },
+        "4": {
+          "median_seconds": 0.179941,
+          "images_per_second": 133.377,
+          "runs_seconds": [
+            0.179315,
+            0.181459,
+            0.179941
+          ]
+        },
+        "8": {
+          "median_seconds": 0.172354,
+          "images_per_second": 139.249,
+          "runs_seconds": [
+            0.175067,
+            0.172354,
+            0.17163
+          ]
+        }
+      },
+      "text_query_ms": {
+        "median": 1.439,
+        "p95": 1.77,
+        "samples": 24
+      }
+    }
+  ]
+}

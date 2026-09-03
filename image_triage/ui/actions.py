@@ -87,6 +87,7 @@ class MainWindowActions:
     load_ai_results: QAction
     clear_ai_results: QAction
     open_ai_report: QAction
+    manage_people: QAction
     show_ai_review_summary: QAction
     review_ai_adapter_labels: QAction
     open_ai_data_selection: QAction
@@ -400,6 +401,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         load_ai_results=_create_action(window, "Load AI Results...", slot=window._choose_ai_results),
         clear_ai_results=_create_action(window, "Clear AI Results", slot=window._clear_ai_results),
         open_ai_report=_create_action(window, "Open AI Report", slot=window._open_ai_report),
+        manage_people=_create_action(window, "People...", slot=window._open_people_search_dialog),
         show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._show_last_ai_review_summary),
         review_ai_adapter_labels=_create_action(
             window,

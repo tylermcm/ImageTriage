@@ -23,10 +23,9 @@ DEFAULT_SEGMENTATION_MODEL_SIZE_MB = 196
 DEFAULT_BIREFNET_MODEL_REPO_ID = "ZhengPeng7/BiRefNet"
 DEFAULT_BIREFNET_MODEL_REVISION = "e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4"
 DEFAULT_BIREFNET_MODEL_SIZE_MB = 425
-DEFAULT_AICULLER_CLIP_REPO_ID = "Xenova/clip-vit-large-patch14"
-DEFAULT_AICULLER_CLIP_REVISION = "c307790166907339eed5a9a53a249af534102536"
-# The automatic install contains FP32 primary models and FP16 fallback models.
-DEFAULT_AICULLER_CLIP_SIZE_MB = 2572
+DEFAULT_AICULLER_CLIP_REPO_ID = "onnx-community/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX"
+DEFAULT_AICULLER_CLIP_REVISION = "9463a9c508a344c837ffefe9d724f3827bf2dc79"
+DEFAULT_AICULLER_CLIP_SIZE_MB = 98
 DEFAULT_AICULLER_TOPIQ_REPO_ID = "Skulleton12/TOPIQ"
 DEFAULT_AICULLER_TOPIQ_REVISION = "56526fd721537c9abd4ec41b10b2ffcad5166c46"
 DEFAULT_AICULLER_TOPIQ_SIZE_MB = 185
@@ -56,10 +55,8 @@ DEFAULT_BIREFNET_MODEL_SHA256 = {
     "model.safetensors": "9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154",
 }
 DEFAULT_AICULLER_CLIP_MODEL_SHA256 = {
-    "onnx/vision_model.onnx": "ff49f8aa57c7abfd26e382eb083e4dbf988505223a9bd3767dbfd4e729206709",
-    "onnx/text_model.onnx": "a86051a90491b97e2ea1d0351ef664926735bca7536034384f901915ee91fd69",
-    "onnx/vision_model_fp16.onnx": "6e6b9e280b73bdc432b6c3b1c05f33596bbe5570f6825f1174eaa207fc1d22dc",
-    "onnx/text_model_fp16.onnx": "643d385d6adbc4b9067f3f94384cc63a8409accb1bfd414496d17df84b161032",
+    "tokenizer.json": "6d9109cc838977f3ca94a379eec36aecc7c807e1785cd729660ca2fc0171fb35",
+    "onnx/model.onnx": "31d28cb07209533d10fc4fef73ac324ce17de6741a2372e7e1531a4ac8fdaeb2",
 }
 DEFAULT_AICULLER_TOPIQ_MODEL_SHA256: dict[str, str] = {}
 AI_MODEL_DIR_ENV = "AICULLING_MODEL_DIR"
@@ -115,36 +112,35 @@ AICULLER_CLIP_TOKENIZER_FILENAME = "tokenizer.json"
 
 
 def aiculler_clip_variant_filenames(variant: str | None) -> tuple[str, ...]:
-    """Return one precision pair for diagnostics and compatibility tests."""
+    """Return one combined TinyCLIP graph and its tokenizer."""
     normalized = str(variant or "").strip().lower() or DEFAULT_AICULLER_CLIP_VARIANT
     if normalized not in AICULLER_CLIP_VARIANT_KEYS:
         normalized = DEFAULT_AICULLER_CLIP_VARIANT
-    suffix = "" if normalized == "fp32" else f"_{normalized}"
-    vision = f"onnx/vision_model{suffix}.onnx"
-    text = f"onnx/text_model{suffix}.onnx"
-    return (AICULLER_CLIP_TOKENIZER_FILENAME, vision, text)
+    model = "onnx/model.onnx" if normalized == "fp32" else "onnx/model_fp16.onnx"
+    return (AICULLER_CLIP_TOKENIZER_FILENAME, model)
 
 
 AICULLER_CLIP_MODEL_REQUIRED_FILENAMES = (
     AICULLER_CLIP_TOKENIZER_FILENAME,
-    "onnx/vision_model.onnx",
-    "onnx/text_model.onnx",
-    "onnx/vision_model_fp16.onnx",
-    "onnx/text_model_fp16.onnx",
+    "onnx/model.onnx",
 )
 AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES = ("topiq_nr.onnx",)
-# Face-quality models (InsightFace buffalo_l): detection + landmarks + gender/age.
-# Recognition (w600k_r50.onnx) is intentionally EXCLUDED here — the face-sort /
-# "who is in this photo" workflow ships on its own separate download path.
+# Face and people-search models (InsightFace buffalo_l): detection, landmarks,
+# gender/age, and recognition embeddings.
 DEFAULT_AICULLER_FACE_REPO_ID = "Skulleton12/insightface"
 DEFAULT_AICULLER_FACE_REVISION = "df17665542088a2ba27cd6e534f7608e98fd9ea0"
-DEFAULT_AICULLER_FACE_SIZE_MB = 23
+DEFAULT_AICULLER_FACE_SIZE_MB = 190
 DEFAULT_AICULLER_FACE_MODEL_SHA256: dict[str, str] = {}
 AICULLER_FACE_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_DIR"
 AICULLER_FACE_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REPO_ID"
 AICULLER_FACE_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REVISION"
 INSIGHTFACE_PACK_NAME = "buffalo_l"
-AICULLER_FACE_MODEL_REQUIRED_FILENAMES = ("det_10g.onnx", "2d106det.onnx", "genderage.onnx")
+AICULLER_FACE_MODEL_REQUIRED_FILENAMES = (
+    "det_10g.onnx",
+    "2d106det.onnx",
+    "genderage.onnx",
+    "w600k_r50.onnx",
+)
 AI_MODEL_USER_AGENT = "ImageTriage/0.1"
 
 AIModelProgressCallback = Callable[[str, int, int], None]
@@ -416,13 +412,14 @@ def default_birefnet_model_install_dir(
 
 
 def default_aiculler_clip_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_CLIP_REPO_ID) -> Path:
+    _owner, name = _repo_path_parts(repo_id)
     return (
         _default_user_cache_root()
         / "image_triage_ai_cache"
         / "models"
         / "CLI-Culler"
         / "Clip"
-        / "clip-vit-large-patch14"
+        / name
     )
 
 

@@ -38,6 +38,7 @@ def add_ai_results_actions(menu: QMenu, actions: MainWindowActions) -> None:
     ):
         prefilter_menu.addAction(actions.filter_actions[mode])
     menu.addSeparator()
+    menu.addAction(actions.manage_people)
     menu.addAction(actions.open_ai_report)
     menu.addAction(actions.show_ai_review_summary)
     menu.addAction(actions.ai_review_tag_legend)

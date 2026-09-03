@@ -11,6 +11,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+import numpy as np
+
 from .face import FaceRecord
 from .model import DimensionScores
 
@@ -61,14 +63,48 @@ def ensure_faces_table(connection: sqlite3.Connection) -> None:
             gender TEXT,
             age INTEGER,
             blink INTEGER,
+            identity_embedding BLOB,
+            identity_dim INTEGER,
+            identity_dtype TEXT,
+            identity_model TEXT,
+            cluster_id INTEGER,
             computed_at TEXT NOT NULL,
             PRIMARY KEY(image_id, face_index)
         )
         """
     )
+    _ensure_column(connection, "image_faces", "identity_embedding", "BLOB")
+    _ensure_column(connection, "image_faces", "identity_dim", "INTEGER")
+    _ensure_column(connection, "image_faces", "identity_dtype", "TEXT")
+    _ensure_column(connection, "image_faces", "identity_model", "TEXT")
+    _ensure_column(connection, "image_faces", "cluster_id", "INTEGER")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_image_faces_image ON image_faces(image_id)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_image_faces_cluster ON image_faces(cluster_id)"
+    )
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    previous_factory = connection.row_factory
+    connection.row_factory = sqlite3.Row
+    try:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+    finally:
+        connection.row_factory = previous_factory
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _embedding_to_db(values: tuple[float, ...]) -> tuple[bytes | None, int | None, str | None]:
+    if not values:
+        return None, None, None
+    vector = np.asarray(values, dtype=np.float32).reshape(-1)
+    return vector.tobytes(), int(vector.size), str(vector.dtype)
 
 
 def _bool_to_db(value: bool | None) -> int | None:
@@ -120,6 +156,7 @@ def upsert_faces(
     rows = []
     for index, face in enumerate(faces):
         x1, y1, x2, y2 = face.bbox
+        embedding_blob, embedding_dim, embedding_dtype = _embedding_to_db(face.identity_embedding)
         rows.append(
             (
                 int(image_id),
@@ -133,6 +170,10 @@ def upsert_faces(
                 face.gender,
                 None if face.age is None else int(face.age),
                 _bool_to_db(face.blink),
+                embedding_blob,
+                embedding_dim,
+                embedding_dtype,
+                face.identity_model or None,
                 stamp,
             )
         )
@@ -141,9 +182,10 @@ def upsert_faces(
             """
             INSERT INTO image_faces (
                 image_id, face_index, x1, y1, x2, y2, det_score, eye_sharpness,
-                gender, age, blink, computed_at
+                gender, age, blink, identity_embedding, identity_dim, identity_dtype,
+                identity_model, computed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -191,7 +233,18 @@ def _row_to_face(row: sqlite3.Row) -> FaceRecord:
         gender=None if row["gender"] is None else str(row["gender"]),
         age=None if row["age"] is None else int(row["age"]),
         blink=_bool_from_db(row["blink"]),
+        identity_embedding=_identity_embedding_from_row(row),
+        identity_model="" if row["identity_model"] is None else str(row["identity_model"]),
     )
+
+
+def _identity_embedding_from_row(row: sqlite3.Row) -> tuple[float, ...]:
+    blob = row["identity_embedding"]
+    if blob is None:
+        return ()
+    dtype = np.dtype(row["identity_dtype"] or "float32")
+    values = np.frombuffer(blob, dtype=dtype).astype(np.float32, copy=True)
+    return tuple(float(value) for value in values)
 
 
 def fetch_faces(connection: sqlite3.Connection, image_id: int) -> tuple[FaceRecord, ...]:

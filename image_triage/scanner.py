@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import functools
 import os
 import re
@@ -146,6 +147,23 @@ def scan_folder_quick(folder: str) -> list[ImageRecord]:
     return _scan_folder_impl(folder, include_stat=False)
 
 
+def format_scan_error(error: BaseException) -> str:
+    """Return a stable, user-facing explanation without OS error codes."""
+    winerror = getattr(error, "winerror", None)
+    error_number = getattr(error, "errno", None)
+    if isinstance(error, PermissionError) or winerror == 5 or error_number in {errno.EACCES, errno.EPERM}:
+        return "Access to this folder is denied."
+    if isinstance(error, NotADirectoryError):
+        return "This location is not a folder."
+    if isinstance(error, FileNotFoundError) or winerror in {2, 3, 53, 67}:
+        return "This folder is unavailable or no longer exists."
+    if winerror == 21:
+        return "This drive is not ready."
+    if isinstance(error, OSError):
+        return "This folder could not be opened."
+    return "The folder scan could not be completed."
+
+
 def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[ImageRecord]:
     folder = normalize_filesystem_path(folder)
     records: list[ImageRecord] = []
@@ -202,27 +220,42 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     with os.scandir(folder) as entries:
         for entry in entries:
             if is_image_file_candidate(entry.name):
-                scanned = to_scanned_file(entry, IMAGE_SUFFIXES, include_stat=include_stat, parent_folder=folder)
+                try:
+                    scanned = to_scanned_file(entry, IMAGE_SUFFIXES, include_stat=include_stat, parent_folder=folder)
+                except OSError:
+                    continue
                 if scanned is not None:
                     root_files.append(scanned)
                 continue
-            if not entry.is_dir(follow_symlinks=False):
+            try:
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if not is_directory:
                 continue
             if is_ignored_system_directory(entry.name):
                 continue
 
+            child_kind = entry.name.lower()
+            if child_kind not in JPEG_PAIR_DIRECTORIES and child_kind not in EDIT_DIRECTORIES:
+                continue
             child_folder = os.path.normpath(os.path.join(folder, entry.name))
-            with os.scandir(entry.path) as child_entries:
-                for child in child_entries:
-                    if entry.name.lower() in JPEG_PAIR_DIRECTORIES:
-                        scanned = to_scanned_file(child, JPEG_SUFFIXES, include_stat=include_stat, parent_folder=child_folder)
-                        if scanned is not None:
-                            paired_jpegs.setdefault(scanned.stem_key, []).append(scanned)
-                        continue
-                    if entry.name.lower() in EDIT_DIRECTORIES:
-                        scanned = to_scanned_file(child, EDIT_SUFFIXES, include_stat=include_stat, parent_folder=child_folder)
-                        if scanned is not None:
-                            nested_edit_files.append(scanned)
+            try:
+                with os.scandir(entry.path) as child_entries:
+                    for child in child_entries:
+                        if child_kind in JPEG_PAIR_DIRECTORIES:
+                            scanned = to_scanned_file(child, JPEG_SUFFIXES, include_stat=include_stat, parent_folder=child_folder)
+                            if scanned is not None:
+                                paired_jpegs.setdefault(scanned.stem_key, []).append(scanned)
+                            continue
+                        if child_kind in EDIT_DIRECTORIES:
+                            scanned = to_scanned_file(child, EDIT_SUFFIXES, include_stat=include_stat, parent_folder=child_folder)
+                            if scanned is not None:
+                                nested_edit_files.append(scanned)
+            except OSError:
+                # Companion/edit directories are optional. An inaccessible one
+                # must not prevent photos in the parent folder from loading.
+                continue
 
     raws_by_stem: dict[str, list[ScannedFile]] = {}
     root_jpegs_by_stem: dict[str, list[ScannedFile]] = {}
@@ -487,6 +520,7 @@ def to_scanned_file(
 
 
 class FolderScanSignals(QObject):
+    children = Signal(str, int, object)
     cached = Signal(str, int, object, str)
     finished = Signal(str, int, object, str)
     failed = Signal(str, int, str)
@@ -527,6 +561,7 @@ class FolderScanTask(QRunnable):
         prefer_cached_only: bool = False,
         use_catalog_cache: bool = True,
         read_cached_records: bool = True,
+        include_hidden_folders: bool = False,
     ) -> None:
         super().__init__()
         self.folder = normalize_filesystem_path(folder)
@@ -535,6 +570,7 @@ class FolderScanTask(QRunnable):
         self.prefer_cached_only = prefer_cached_only
         self.use_catalog_cache = use_catalog_cache
         self.read_cached_records = read_cached_records
+        self.include_hidden_folders = include_hidden_folders
         self.signals = FolderScanSignals()
         # Keep the runnable alive until the window releases it after the final signal.
         self.setAutoDelete(False)
@@ -543,6 +579,19 @@ class FolderScanTask(QRunnable):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         try:
+            child_start = time.perf_counter() if logger.enabled else 0.0
+            child_records = scan_child_folders(
+                self.folder,
+                include_hidden=self.include_hidden_folders,
+            )
+            self.signals.children.emit(self.folder, self.token, child_records)
+            if logger.enabled:
+                logger.duration(
+                    "folder_scan.child_folders",
+                    (time.perf_counter() - child_start) * 1000.0,
+                    folder=self.folder,
+                    record_count=len(child_records),
+                )
             cached_records, cache_source = self._load_cached_records()
             if logger.enabled:
                 logger.duration(
@@ -581,7 +630,7 @@ class FolderScanTask(QRunnable):
         except Exception as exc:  # pragma: no cover - legacy UI error path
             if logger.enabled:
                 logger.duration("folder_scan.failed", (time.perf_counter() - start) * 1000.0, folder=self.folder, error=str(exc))
-            self.signals.failed.emit(self.folder, self.token, str(exc))
+            self.signals.failed.emit(self.folder, self.token, format_scan_error(exc))
             return
 
         if logger.enabled:
@@ -604,6 +653,7 @@ __all__ = [
     "IGNORED_SYSTEM_DIRECTORY_NAMES",
     "FolderScanTask",
     "discover_edited_paths",
+    "format_scan_error",
     "ImageRecord",
     "is_editor_asset_path",
     "is_ignored_system_directory",

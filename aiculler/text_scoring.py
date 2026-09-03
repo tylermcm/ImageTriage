@@ -55,6 +55,8 @@ class CLIPTextEncoder:
             providers=providers,
             select_input_name=self._select_input_name,
             input_shape=lambda _session: (1, self.sequence_length),
+            feed_builder=self._build_clip_text_feeds,
+            select_output_names=lambda session: [self._select_output_name(session)],
         )
         self.session = selection.session
         self.model_path = selection.model_path
@@ -88,15 +90,59 @@ class CLIPTextEncoder:
     @staticmethod
     def _select_output_name(session) -> str:
         for output_meta in session.get_outputs():
+            if output_meta.name.casefold() == "text_embeds":
+                return output_meta.name
+        for output_meta in session.get_outputs():
+            name = output_meta.name.casefold()
+            if "text" in name and "embed" in name:
+                return output_meta.name
+        for output_meta in session.get_outputs():
             if "embed" in output_meta.name.lower():
                 return output_meta.name
         return session.get_outputs()[0].name
+
+    @staticmethod
+    def _build_clip_text_feeds(
+        session,
+        input_name: str,
+        input_ids: np.ndarray,
+        *,
+        attention_mask: np.ndarray | None = None,
+    ) -> dict[str, np.ndarray]:
+        feeds = {input_name: input_ids}
+        for input_meta in session.get_inputs():
+            if input_meta.name == input_name:
+                continue
+            name = input_meta.name.casefold()
+            if name == "attention_mask":
+                feeds[input_meta.name] = (
+                    np.asarray(attention_mask, dtype=np.int64)
+                    if attention_mask is not None
+                    else np.ones_like(input_ids, dtype=np.int64)
+                )
+            elif name == "pixel_values":
+                height = input_meta.shape[-2] if isinstance(input_meta.shape[-2], int) else 224
+                width = input_meta.shape[-1] if isinstance(input_meta.shape[-1], int) else 224
+                feeds[input_meta.name] = np.zeros((1, 3, height, width), dtype=np.float32)
+            else:
+                raise ValueError(f"Unsupported companion input for CLIP text inference: {input_meta.name}")
+        return feeds
 
     def encode(self, prompt: str) -> np.ndarray:
         encoding = self.tokenizer.encode(prompt)
         ids = encoding if isinstance(encoding, list) else encoding.ids
         input_ids = np.asarray([ids], dtype=np.int64)
-        output = self.session.run([self.output_name], {self.input_name: input_ids})[0]
+        mask_values = None if isinstance(encoding, list) else getattr(encoding, "attention_mask", None)
+        attention_mask = None if mask_values is None else np.asarray([mask_values], dtype=np.int64)
+        output = self.session.run(
+            [self.output_name],
+            self._build_clip_text_feeds(
+                self.session,
+                self.input_name,
+                input_ids,
+                attention_mask=attention_mask,
+            ),
+        )[0]
         return np.asarray(output, dtype=np.float32).reshape(-1)
 
 

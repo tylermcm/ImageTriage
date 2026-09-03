@@ -1749,6 +1749,7 @@ def _build_extractor(args):
         args.topiq,
         clip_fallback_onnx_path=getattr(args, "clip_fallback", None),
         enable_face_quality=bool(getattr(args, "face_quality", False)),
+        enable_face_identity=bool(getattr(args, "face_identity", False)),
     )
 
 
@@ -1962,6 +1963,7 @@ def _feature_cache_identity(
         "clip": _file_identity(active_clip_path or getattr(args, "clip", None)),
         "topiq": _file_identity(active_topiq_path or getattr(args, "topiq", None)),
         "face_quality": bool(getattr(args, "face_quality", False)),
+        "face_identity": bool(getattr(args, "face_identity", False)),
     }
 
 
@@ -2088,6 +2090,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--clip-fallback", type=Path, help="Fallback CLIP ONNX model path")
     ingest.add_argument("--topiq", type=Path, help="TOPIQ ONNX model path; non-ONNX files fall back to heuristic scoring")
     ingest.add_argument("--face-quality", action="store_true", help="Run InsightFace face-quality analysis when models are installed")
+    ingest.add_argument("--face-identity", action="store_true", help="Store local InsightFace identity vectors for people search")
     ingest.add_argument("--workers", type=int, default=4)
     ingest.add_argument("--no-recursive", action="store_true")
     ingest.add_argument("--no-features", action="store_true", help="Only extract/cache previews")
@@ -2193,12 +2196,12 @@ def build_parser() -> argparse.ArgumentParser:
     rank.add_argument("--tag-config", default=Path("tag_penalties.csv"), type=Path)
     rank.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/onnx/model.onnx"),
         type=Path,
     )
     rank.add_argument(
         "--tokenizer",
-        default=Path("models/Clip/clip-vit-large-patch14/tokenizer.json"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/tokenizer.json"),
         type=Path,
     )
     rank.add_argument("--technical-weight", type=float)
@@ -2237,7 +2240,7 @@ def build_parser() -> argparse.ArgumentParser:
     assign_categories = subparsers.add_parser("assign-categories", help="Assign one primary semantic category per image")
     assign_categories.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/onnx/model.onnx"),
         type=Path,
         help="CLIP text ONNX model path",
     )
@@ -2248,7 +2251,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     assign_categories.add_argument(
         "--tokenizer",
-        default=Path("models/Clip/clip-vit-large-patch14/tokenizer.json"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/tokenizer.json"),
         type=Path,
         help="CLIP tokenizer.json path",
     )
@@ -2337,13 +2340,13 @@ def build_parser() -> argparse.ArgumentParser:
     score_text.add_argument("--prompt", required=True, help="Prompt describing what should be prioritized")
     score_text.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/onnx/model.onnx"),
         type=Path,
         help="CLIP text ONNX model path",
     )
     score_text.add_argument(
         "--tokenizer",
-        default=Path("models/Clip/clip-vit-large-patch14/tokenizer.json"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/tokenizer.json"),
         type=Path,
         help="CLIP tokenizer.json path",
     )
@@ -2360,13 +2363,13 @@ def build_parser() -> argparse.ArgumentParser:
     score_profile.add_argument("--list-profiles", action="store_true")
     score_profile.add_argument(
         "--text-model",
-        default=Path("models/Clip/clip-vit-large-patch14/onnx/text_model.onnx"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/onnx/model.onnx"),
         type=Path,
         help="CLIP text ONNX model path",
     )
     score_profile.add_argument(
         "--tokenizer",
-        default=Path("models/Clip/clip-vit-large-patch14/tokenizer.json"),
+        default=Path("models/Clip/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M-ONNX/tokenizer.json"),
         type=Path,
         help="CLIP tokenizer.json path",
     )

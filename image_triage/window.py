@@ -19,6 +19,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, replace
@@ -95,6 +96,7 @@ from .ai_runtime_packages import (
     estimate_ai_runtime_download_size_mb,
     estimate_ai_runtime_installed_size_mb,
     load_ai_runtime_installation_status,
+    resolve_ai_runtime_site_packages,
     uninstall_ai_runtime,
 )
 from .archive_ops import (
@@ -293,6 +295,7 @@ from .review_workflows import (
 )
 from .scanner import FolderScanTask, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
+from .semantic_search import SearchFilters
 from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
 from .thumbnails import ThumbnailManager
@@ -325,6 +328,7 @@ from .ui import (
     KeyboardShortcutDialog,
     MainWindowActions,
     PaletteCommand,
+    PeopleSearchDialog,
     PrepareTrainingSourcesDialog,
     ReviewControlsContext,
     ReviewControlsPanel,
@@ -414,6 +418,194 @@ class InspectorStatsTask(QRunnable):
                 height=self.request.image.height() if hasattr(self.request.image, "height") else 0,
             )
         self.result_queue.put(("ready", self.request.cache_key, stats))
+
+
+class UnifiedSearchSignals(QObject):
+    finished = Signal(str, int, object)
+    failed = Signal(str, int, str)
+
+
+class UnifiedSearchTask(QRunnable):
+    """Runs CLIP/person search off the UI thread for the current search box."""
+
+    _text_encoder_cache: dict[tuple[str, str, str], object] = {}
+    _text_encoder_cache_lock = threading.Lock()
+
+    def __init__(
+        self,
+        *,
+        folder: str,
+        token: int,
+        db_path: Path,
+        runtime: object,
+        query_text: str,
+        min_confidence: float,
+        limit: int = 500,
+    ) -> None:
+        super().__init__()
+        self.folder = folder
+        self.token = token
+        self.db_path = Path(db_path)
+        self.runtime = runtime
+        self.query_text = query_text
+        self.min_confidence = float(min_confidence)
+        self.limit = int(limit)
+        self.signals = UnifiedSearchSignals()
+        self._cancelled = False
+        self.setAutoDelete(True)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        if self._cancelled:
+            return
+        try:
+            query_text = self.query_text.strip()
+            if not query_text or not self.db_path.exists():
+                self.signals.finished.emit(self.folder, self.token, self._empty_result(query_text))
+                return
+
+            from aiculler.storage import SQLiteFeatureStore
+            from .people_search import list_person_clusters
+            from .semantic_search import FeatureStoreSemanticSearch, parse_search_query
+
+            store = SQLiteFeatureStore(self.db_path)
+            try:
+                known_people = tuple(
+                    cluster.name
+                    for cluster in list_person_clusters(store.connection)
+                    if cluster.name.strip()
+                )
+                if self._cancelled:
+                    return
+                parsed = parse_search_query(query_text, known_people=known_people)
+                text_encoder = None
+                if parsed.semantic_text:
+                    text_model = Path(getattr(self.runtime, "clip_text_model", ""))
+                    tokenizer = Path(getattr(self.runtime, "tokenizer", ""))
+                    fallback_text_model = getattr(self.runtime, "clip_fallback_text_model", None)
+                    for label, path in (("CLIP text model", text_model), ("CLIP tokenizer", tokenizer)):
+                        if not path.exists():
+                            raise FileNotFoundError(f"{label} is missing: {path}")
+                    text_encoder = self._cached_text_encoder(
+                        text_model,
+                        tokenizer,
+                        fallback_text_model,
+                        device=str(getattr(self.runtime, "device", "auto")),
+                    )
+                service = FeatureStoreSemanticSearch(store, text_encoder)
+                hits = service.search(
+                    query_text,
+                    known_people=known_people,
+                    filters=SearchFilters(min_confidence=self.min_confidence),
+                    limit=self.limit,
+                )
+            finally:
+                store.close()
+
+            if self._cancelled:
+                return
+            path_keys: list[str] = []
+            rank_by_path: dict[str, float] = {}
+            for hit in hits:
+                key = _search_match_path_key(hit.source_path)
+                if not key:
+                    continue
+                path_keys.append(key)
+                rank_by_path[key] = max(rank_by_path.get(key, 0.0), float(hit.confidence))
+            result = {
+                "query": query_text,
+                "path_keys": tuple(path_keys),
+                "rank_by_path": rank_by_path,
+                "hit_count": len(path_keys),
+                "known_people": known_people,
+            }
+            if logger.enabled:
+                logger.duration(
+                    "unified_search",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    hits=len(path_keys),
+                    people=len(known_people),
+                )
+            self.signals.finished.emit(self.folder, self.token, result)
+        except Exception as exc:
+            if logger.enabled:
+                logger.duration(
+                    "unified_search.failed",
+                    (time.perf_counter() - start) * 1000.0,
+                    folder=self.folder,
+                    error=str(exc),
+                )
+            self.signals.failed.emit(self.folder, self.token, str(exc))
+
+    @classmethod
+    def _cached_text_encoder(
+        cls,
+        text_model: Path,
+        tokenizer: Path,
+        fallback_text_model: object,
+        *,
+        device: str = "auto",
+    ):
+        cls._ensure_text_search_runtime(device=device)
+        from aiculler.text_scoring import CLIPTextEncoder
+
+        fallback_path = Path(fallback_text_model) if fallback_text_model else None
+        key = (
+            str(text_model.resolve()),
+            str(tokenizer.resolve()),
+            str(fallback_path.resolve()) if fallback_path is not None else "",
+        )
+        with cls._text_encoder_cache_lock:
+            cached = cls._text_encoder_cache.get(key)
+            if cached is not None:
+                return cached
+            encoder = CLIPTextEncoder(
+                text_model,
+                tokenizer,
+                fallback_text_onnx_path=fallback_path,
+            )
+            cls._text_encoder_cache.clear()
+            cls._text_encoder_cache[key] = encoder
+            return encoder
+
+    @staticmethod
+    def _ensure_text_search_runtime(*, device: str) -> None:
+        try:
+            import onnxruntime  # noqa: F401
+
+            return
+        except ImportError:
+            pass
+
+        for site_packages in resolve_ai_runtime_site_packages(device=device):
+            path_text = str(site_packages)
+            if path_text not in sys.path:
+                # Keep the GUI's own packages authoritative while making the
+                # separately installed AI dependencies available on demand.
+                sys.path.append(path_text)
+
+        try:
+            import onnxruntime  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "ONNX Runtime is unavailable. Run AI > Runtime And Cache > "
+                "Install AI Runtime, then retry the search."
+            ) from exc
+
+    @staticmethod
+    def _empty_result(query_text: str) -> dict[str, object]:
+        return {
+            "query": query_text,
+            "path_keys": (),
+            "rank_by_path": {},
+            "hit_count": 0,
+            "known_people": (),
+        }
 
 
 @dataclass(slots=True)
@@ -530,6 +722,13 @@ def _path_parent_stem_key(path: str) -> str:
     except (OSError, ValueError):
         return ""
     return f"{parent}|{stem}" if parent and stem else ""
+
+
+def _search_match_path_key(path: str | Path) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    return os.path.normpath(os.path.abspath(text)).casefold()
 
 
 def _is_unc_path(path: str | None) -> bool:
@@ -794,7 +993,7 @@ class ToolbarCustomizerDialog(QDialog):
             field = QLineEdit(parent)
             field.setObjectName("workspaceSearchField")
             field.setClearButtonEnabled(True)
-            field.setPlaceholderText("Search filenames")
+            field.setPlaceholderText("Search photos, filenames, or people")
             field.setMinimumWidth(140)
             field.setMaximumWidth(320)
             field.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
@@ -2487,6 +2686,7 @@ class MainWindow(QMainWindow):
     DETAILS_PREVIEW_ON_HOVER_KEY = "view/details_preview_on_hover"
     DETAILS_ROW_DENSITY_KEY = "view/details_row_density"
     DETAILS_SPLITTER_STATE_KEY = "view/details_splitter_state"
+    UNIFIED_SEARCH_MIN_CONFIDENCE = 0.0
     DETAILS_HEADER_STATE_KEY = "view/details_header_state"
     DETAILS_SORT_COLUMN_KEY = "view/details_sort_column"
     DETAILS_SORT_ORDER_KEY = "view/details_sort_order"
@@ -2948,6 +3148,8 @@ class MainWindow(QMainWindow):
         self._scope_enrichment_pool.setMaxThreadCount(1)
         self._annotation_hydration_pool = QThreadPool(self)
         self._annotation_hydration_pool.setMaxThreadCount(1)
+        self._unified_search_pool = QThreadPool(self)
+        self._unified_search_pool.setMaxThreadCount(1)
         self._drive_type_cache: dict[str, int] = {}
         self._scan_token = 0
         self._scan_showed_cached = False
@@ -2975,6 +3177,12 @@ class MainWindow(QMainWindow):
         self._annotation_reapply_timer.setSingleShot(True)
         self._annotation_reapply_timer.setInterval(90)
         self._annotation_reapply_timer.timeout.connect(self._flush_annotation_hydration_updates)
+        self._active_unified_search_task: UnifiedSearchTask | None = None
+        self._unified_search_token = 0
+        self._unified_search_signature: tuple[object, ...] = ()
+        self._unified_search_completed_signature: tuple[object, ...] = ()
+        self._unified_search_path_keys: frozenset[str] = frozenset()
+        self._unified_search_rank_by_path: dict[str, float] = {}
         self._deferred_enrichment_pending = False
         self._deferred_enrichment_scheduled = False
         self._deferred_enrichment_scope_key = ""
@@ -4019,7 +4227,11 @@ class MainWindow(QMainWindow):
         field = QLineEdit()
         field.setObjectName("workspaceSearchField")
         field.setClearButtonEnabled(True)
-        field.setPlaceholderText("Search filenames")
+        field.setPlaceholderText("Search photos, filenames, or people")
+        field.setToolTip(
+            "Search naturally, for example: red car, dog on a beach, or mountains at sunset. "
+            "Object and people search use the current folder's AI index."
+        )
         field.setMinimumWidth(140)
         field.setMaximumWidth(320)
         field.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
@@ -7670,6 +7882,7 @@ class MainWindow(QMainWindow):
             add_action_command("ai.next_top_pick", self.actions.next_ai_pick, section="AI", keywords=("next ai pick", "jump ai"))
             add_action_command("ai.next_unreviewed_top_pick", self.actions.next_unreviewed_ai_pick, section="AI", keywords=("unreviewed ai pick",))
             add_action_command("ai.compare_group", self.actions.compare_ai_group, section="AI", keywords=("compare ai cluster", "group compare"))
+            add_action_command("ai.people", self.actions.manage_people, section="AI", keywords=("people", "faces", "person names", "face search"))
             add_action_command("window.customize_toolbar", self.actions.customize_workspace_toolbar, section="Workspace", keywords=("customize toolbar", "edit toolbar", "ui edit mode"))
             add_action_command("window.reset_layout", self.actions.reset_layout, section="Workspace", keywords=("restore layout", "default workspace"))
             add_action_command("help.keyboard_help", self.actions.keyboard_help, section="Help", keywords=("quick help", "shortcuts", "help"))
@@ -8095,11 +8308,13 @@ class MainWindow(QMainWindow):
         return RecordFilterQuery(
             quick_filter=query.quick_filter,
             search_text=query.search_text,
+            min_search_confidence=query.min_search_confidence,
             file_type=query.file_type,
             review_state=query.review_state,
             ai_state=query.ai_state,
             ai_cull_bucket=query.ai_cull_bucket,
             ai_workflow_tag=query.ai_workflow_tag,
+            folder_text=query.folder_text,
             camera_text=query.camera_text,
             lens_text=query.lens_text,
             tag_text=query.tag_text,
@@ -8823,7 +9038,7 @@ class MainWindow(QMainWindow):
             installed_line = f"\nCurrent face-model cache: {_format_bytes(installed_size)}"
         return (
             "CLI-Culler uses these InsightFace models for face quality, eye sharpness, "
-            "and estimated gender/age in the inspector. Face recognition is not included.\n\n"
+            "estimated gender/age, and local people-search identity vectors. Face data stays local.\n\n"
             f"Download size: about {DEFAULT_AICULLER_FACE_SIZE_MB} MB\n"
             f"Install location:\n{installation.install_dir}"
             f"{installed_line}"
@@ -8931,7 +9146,7 @@ class MainWindow(QMainWindow):
             aiculler_topiq_checkbox.toggled.connect(aiculler_topiq_details.setEnabled)
             layout.addWidget(aiculler_topiq_details)
 
-            aiculler_face_checkbox = QCheckBox(f"InsightFace quality models ({face_status})", dialog)
+            aiculler_face_checkbox = QCheckBox(f"InsightFace face and people models ({face_status})", dialog)
             aiculler_face_checkbox.setChecked(default_download_aiculler_face_model)
             layout.addWidget(aiculler_face_checkbox)
 
@@ -9823,8 +10038,14 @@ class MainWindow(QMainWindow):
         root = Path(app_data) if app_data else Path.home() / ".image-triage"
         return root / "safe-trash"
 
-    def _refresh_recycle_button(self) -> None:
+    def _refresh_recycle_button(self, *, update_action_states: bool = True) -> None:
         if self.actions is None:
+            return
+        if self._scan_in_progress:
+            self.actions.empty_recycle_bin.setEnabled(False)
+            self.actions.empty_recycle_bin.setToolTip("Available after the folder finishes loading.")
+            if update_action_states:
+                self._update_action_states()
             return
         if self._is_temporary_storage_folder():
             recycle_root = self._recycle_root_for_folder()
@@ -9833,13 +10054,15 @@ class MainWindow(QMainWindow):
             self.actions.empty_recycle_bin.setToolTip(
                 "Permanently delete everything in this folder's local recycle bin."
             )
-            self._update_action_states()
+            if update_action_states:
+                self._update_action_states()
             return
         self.actions.empty_recycle_bin.setEnabled(False)
         self.actions.empty_recycle_bin.setToolTip(
             "Available when browsing a removable drive with items in its Image Triage recycle folder."
         )
-        self._update_action_states()
+        if update_action_states:
+            self._update_action_states()
 
     def _choose_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose Folder", self._current_folder or QDir.homePath())
@@ -11621,10 +11844,13 @@ class MainWindow(QMainWindow):
 
     def _handle_search_text_changed(self, text: str, *, source: str) -> None:
         self._pending_search_text = text
-        other = self.ai_search_field if source == "manual" else self.manual_search_field
-        if other.text() != text:
-            with QSignalBlocker(other):
-                other.setText(text)
+        for field_name in ("manual_search_field", "ai_search_field", "topbar_search_field"):
+            if field_name.startswith(source):
+                continue
+            field = getattr(self, field_name, None)
+            if field is not None and field.text() != text:
+                with QSignalBlocker(field):
+                    field.setText(text)
         self._search_apply_timer.start()
 
     def _commit_search_text_filter(self) -> None:
@@ -11635,6 +11861,112 @@ class MainWindow(QMainWindow):
             return
         self._filter_query.search_text = text
         self._apply_filter_query_change()
+
+    def _unified_search_current_signature(self) -> tuple[object, ...]:
+        query = self._filter_query
+        return (
+            normalized_path_key(self._current_folder) if self._current_folder else "",
+            query.search_text.strip(),
+            round(float(query.min_search_confidence or 0.0), 4),
+        )
+
+    def _reset_unified_search_state(self) -> None:
+        self._unified_search_token += 1
+        if self._active_unified_search_task is not None:
+            self._active_unified_search_task.cancel()
+            self._active_unified_search_task = None
+        self._unified_search_signature = ()
+        self._unified_search_completed_signature = ()
+        self._unified_search_path_keys = frozenset()
+        self._unified_search_rank_by_path = {}
+
+    def _schedule_unified_search_for_current_filter(self) -> str:
+        signature = self._unified_search_current_signature()
+        if signature != self._unified_search_signature:
+            self._unified_search_signature = signature
+            self._unified_search_completed_signature = ()
+            self._unified_search_path_keys = frozenset()
+            self._unified_search_rank_by_path = {}
+            if self._active_unified_search_task is not None:
+                self._active_unified_search_task.cancel()
+                self._active_unified_search_task = None
+
+        query_text = self._filter_query.search_text.strip()
+        if not query_text:
+            return ""
+        if self._scope_kind != "folder" or not self._current_folder:
+            return "Object and people search requires an opened folder."
+        if self._active_unified_search_task is not None or self._unified_search_completed_signature == signature:
+            return ""
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            return "Indexed search is unavailable for this folder."
+        db_path = aiculler_db_path(paths)
+        if not db_path.exists():
+            return (
+                "Filename search only. Run AI > AI Workflow Center > Index & Score "
+                "to enable object and people search."
+            )
+        try:
+            runtime = self._configured_aiculler_runtime(workers=1)
+        except Exception as exc:
+            return f"Indexed search unavailable: {exc}"
+
+        self._unified_search_token += 1
+        token = self._unified_search_token
+        task = UnifiedSearchTask(
+            folder=self._current_folder,
+            token=token,
+            db_path=db_path,
+            runtime=runtime,
+            query_text=query_text,
+            min_confidence=float(self._filter_query.min_search_confidence),
+        )
+        task.signals.finished.connect(self._handle_unified_search_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_unified_search_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_unified_search_task = task
+        self._unified_search_pool.start(task)
+        return f'Searching indexed photos for "{query_text}"...'
+
+    def _handle_unified_search_finished(self, folder: str, token: int, result: object) -> None:
+        if token != self._unified_search_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
+            return
+        self._active_unified_search_task = None
+        if not isinstance(result, dict):
+            return
+        query_text = str(result.get("query", ""))
+        if query_text != self._filter_query.search_text.strip():
+            return
+        path_keys = frozenset(str(path) for path in result.get("path_keys", ()) if str(path))
+        rank_by_path = result.get("rank_by_path", {})
+        self._unified_search_completed_signature = self._unified_search_current_signature()
+        self._unified_search_path_keys = path_keys
+        self._unified_search_rank_by_path = (
+            {str(path): float(score) for path, score in rank_by_path.items()}
+            if isinstance(rank_by_path, dict)
+            else {}
+        )
+        current_path = self._current_visible_record_path()
+        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
+        self._apply_records_view(current_path=current_path)
+        hit_count = int(result.get("hit_count") or 0)
+        if query_text:
+            if hit_count:
+                self.statusBar().showMessage(f"Indexed search found {hit_count} image(s)")
+            else:
+                self.statusBar().showMessage(
+                    "No indexed matches. Re-run Index & Score if this folder changed, or lower the confidence filter."
+                )
+
+    def _handle_unified_search_failed(self, folder: str, token: int, message: str) -> None:
+        if token != self._unified_search_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
+            return
+        self._active_unified_search_task = None
+        self._unified_search_completed_signature = self._unified_search_current_signature()
+        self._unified_search_path_keys = frozenset()
+        self._unified_search_rank_by_path = {}
+        if self._filter_query.search_text.strip():
+            self.statusBar().showMessage(f"Indexed search unavailable: {message}")
 
     def _set_file_type_filter(self, mode: FileTypeFilter) -> None:
         if self._filter_query.file_type == mode:
@@ -11670,6 +12002,7 @@ class MainWindow(QMainWindow):
             return
         self._filter_query = RecordFilterQuery()
         self._pending_search_text = ""
+        self._reset_unified_search_state()
         self._sync_record_filter_controls()
         self._apply_filter_query_change()
         self.statusBar().showMessage("Cleared filters")
@@ -11677,6 +12010,7 @@ class MainWindow(QMainWindow):
     def _apply_filter_query_change(self) -> None:
         current_path = self._current_visible_record_path()
         self._sync_record_filter_controls()
+        search_notice = self._schedule_unified_search_for_current_filter()
         self._ensure_filter_metadata_index()
         self._refresh_filter_toolbar_menu()
         if (
@@ -11688,6 +12022,8 @@ class MainWindow(QMainWindow):
             self._start_review_intelligence_analysis(force=True)
         self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
         self._apply_records_view(current_path=current_path)
+        if search_notice:
+            self.statusBar().showMessage(search_notice)
         if not self._records:
             return
         if current_path and current_path in self._record_index_by_path:
@@ -11696,7 +12032,9 @@ class MainWindow(QMainWindow):
 
     def _sync_record_filter_controls(self) -> None:
         search_text = self._filter_query.search_text
-        for field in (self.manual_search_field, self.ai_search_field):
+        for field in (self.manual_search_field, self.ai_search_field, getattr(self, "topbar_search_field", None)):
+            if field is None:
+                continue
             if field.text() != search_text:
                 with QSignalBlocker(field):
                     field.setText(search_text)
@@ -12154,11 +12492,13 @@ class MainWindow(QMainWindow):
                 return mode
         return None
 
-    def _update_action_states(self) -> None:
+    def _update_action_states(self, *, probe_folder_ai: bool | None = None) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         if self.actions is None:
             return
+        if probe_folder_ai is None:
+            probe_folder_ai = not self._scan_in_progress
 
         current_index = self.grid.current_index()
         selected_records = self._selected_records_for_context(current_index) if current_index >= 0 else []
@@ -12249,8 +12589,8 @@ class MainWindow(QMainWindow):
         has_convertible_records = self._records_have_convertible
         self.actions.batch_convert_selection.setEnabled(bool(self._current_folder and has_convertible_records) and not in_recycle_folder)
         self.actions.extract_archive.setEnabled(bool(self._current_folder))
-        culler_runtime_ready = aiculler_runtime_available()
-        culler_paths = self._aiculler_paths_for_current_folder()
+        culler_runtime_ready = aiculler_runtime_available() if probe_folder_ai else False
+        culler_paths = self._aiculler_paths_for_current_folder() if probe_folder_ai else None
         culler_model_version = latest_adapter_model_version(aiculler_db_path(culler_paths)) if culler_paths is not None else ""
         training_busy = (
             self._active_ai_training_task is not None
@@ -13571,6 +13911,25 @@ class MainWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _open_people_search_dialog(self) -> None:
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            self.statusBar().showMessage("Choose a folder before managing people.")
+            return
+        db_path = aiculler_db_path(paths)
+        if not db_path.exists():
+            self.statusBar().showMessage("Run Index & Score before managing people.")
+            return
+        dialog = PeopleSearchDialog(db_path, self)
+        if self._exec_dialog_with_geometry(dialog, "people_search") == dialog.DialogCode.Accepted:
+            self._unified_search_completed_signature = ()
+            self._unified_search_path_keys = frozenset()
+            self._unified_search_rank_by_path = {}
+            self._schedule_unified_search_for_current_filter()
+            self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
+            self._apply_records_view(current_path=self._current_visible_record_path())
+            self.statusBar().showMessage("Updated people names")
 
     def _open_guided_ai_cull_preferences(self) -> None:
         dialog = getattr(self, "_guided_ai_cull_preferences_dialog", None)
@@ -16940,6 +17299,7 @@ class MainWindow(QMainWindow):
         self._review_intelligence_token += 1
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
+        self._reset_unified_search_state()
         if self._active_review_intelligence_task is not None:
             self._active_review_intelligence_task.cancel()
             self._active_review_intelligence_task = None
@@ -16959,16 +17319,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Scanning {folder}...")
         self._all_records = []
         self._all_records_by_path = {}
-        child_start = time.perf_counter() if logger.enabled else 0.0
-        self._folder_records = scan_child_folders(folder, include_hidden=self._show_hidden_folders)
+        self._folder_records = []
         self._refresh_directory_navigation_buttons()
-        if logger.enabled:
-            logger.duration(
-                "folder.load.child_folders",
-                (time.perf_counter() - child_start) * 1000.0,
-                folder=folder,
-                child_folders=len(self._folder_records),
-            )
         self._records = []
         self._last_view_record_paths = ()
         self._record_index_by_path = {}
@@ -17006,8 +17358,10 @@ class MainWindow(QMainWindow):
             prefer_cached_only=(not force_refresh and self._is_slow_source_folder(folder)),
             use_catalog_cache=self._catalog_cache_reads_enabled(),
             read_cached_records=not bypass_catalog_cache,
+            include_hidden_folders=self._show_hidden_folders,
         )
         self._active_scan_tasks[token] = task
+        task.signals.children.connect(self._handle_scan_children, Qt.ConnectionType.QueuedConnection)
         task.signals.cached.connect(self._handle_scan_cached, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(self._handle_scan_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_scan_failed, Qt.ConnectionType.QueuedConnection)
@@ -17040,6 +17394,7 @@ class MainWindow(QMainWindow):
         self._review_intelligence_token += 1
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
+        self._reset_unified_search_state()
         if self._active_review_intelligence_task is not None:
             self._active_review_intelligence_task.cancel()
             self._active_review_intelligence_task = None
@@ -17844,6 +18199,7 @@ class MainWindow(QMainWindow):
             review_insight=review_insight,
             workflow_insight=workflow_insight,
             is_disputed=is_disputed,
+            search_match_paths=self._unified_search_path_keys,
         )
         new_match = matches_record_query(
             record,
@@ -17854,6 +18210,7 @@ class MainWindow(QMainWindow):
             review_insight=review_insight,
             workflow_insight=workflow_insight,
             is_disputed=is_disputed,
+            search_match_paths=self._unified_search_path_keys,
         )
         return old_match != new_match
 
@@ -18332,6 +18689,7 @@ class MainWindow(QMainWindow):
             self._refresh_catalog_status_indicator()
             self._schedule_loaded_records_enrichment()
             self._schedule_hidden_ai_results_load()
+            self._refresh_recycle_button()
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
@@ -18351,6 +18709,7 @@ class MainWindow(QMainWindow):
             self._catalog_load_detail = "Loaded directly from a live folder scan."
         self._refresh_catalog_status_indicator()
         self._schedule_hidden_ai_results_load()
+        self._refresh_recycle_button()
         if self._scan_showed_cached:
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
         if self._folder_watch_refresh_pending:
@@ -18358,6 +18717,16 @@ class MainWindow(QMainWindow):
         self._pending_folder_focus_path = ""
         if logger.enabled:
             logger.duration("scan.finished_applied", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records), chunked=chunked_view)
+
+    def _handle_scan_children(self, folder: str, token: int, records: object) -> None:
+        if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
+            return
+        if not isinstance(records, list):
+            return
+        self._folder_records = [record for record in records if isinstance(record, ImageRecord)]
+        self._refresh_directory_navigation_buttons()
+        self._records_view_cache.mark(ViewInvalidationReason.LOAD_CHANGED)
+        self._apply_records_view(current_path=self._pending_folder_focus_path or None)
 
     def _handle_scan_failed(self, folder: str, token: int, message: str) -> None:
         perf_logger().log("scan.failed", folder=folder, token=token, message=message)
@@ -18382,6 +18751,7 @@ class MainWindow(QMainWindow):
         self._pending_folder_focus_path = ""
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
+        self._reset_unified_search_state()
         self._all_records = []
         self._all_records_by_path = {}
         self._folder_records = []
@@ -18412,11 +18782,12 @@ class MainWindow(QMainWindow):
         self._filter_metadata_queue_keys = set()
         self._metadata_membership_dirty_paths = set()
         self._metadata_scroll_prefetch_timer.stop()
-        self.grid.set_empty_message("Could not scan this folder.")
+        self.grid.set_empty_message(f"Could not scan this folder.\n\n{message}")
         self.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
         self.details_view.set_records([])
-        self._refresh_recycle_button()
-        self._update_action_states()
+        self.actions.empty_recycle_bin.setEnabled(False)
+        self.actions.empty_recycle_bin.setToolTip("Unavailable because this folder could not be scanned.")
+        self._update_action_states(probe_folder_ai=False)
         self._catalog_load_source = "failed"
         self._catalog_load_detail = message
         self._refresh_catalog_status_indicator()
@@ -18533,6 +18904,7 @@ class MainWindow(QMainWindow):
         clear_action = menu.addAction(self.actions.clear_ai_results)
         report_action = menu.addAction(self.actions.open_ai_report)
         tag_legend_action = menu.addAction(self.actions.ai_review_tag_legend)
+        menu.addAction(self.actions.manage_people)
         menu.addSeparator()
         next_pick_action = menu.addAction(self.actions.next_ai_pick)
         next_unreviewed_pick_action = menu.addAction(self.actions.next_unreviewed_ai_pick)
@@ -19298,6 +19670,7 @@ class MainWindow(QMainWindow):
                 and not self._is_recycle_folder()
             )
             self.actions.open_ai_data_selection.setEnabled(can_open_training_commands)
+            self.actions.manage_people.setEnabled(can_open_training_commands and bool(ai_probe["adapter_db_exists"]))
             self.actions.review_ai_adapter_labels.setEnabled(can_open_training_commands and bool(ai_probe["adapter_db_exists"]))
             self.actions.train_ai_ranker.setEnabled(can_open_training_commands)
             self.actions.evaluate_ai_ranker.setEnabled(can_open_training_commands and bool(adapter_version))
@@ -20761,9 +21134,12 @@ class MainWindow(QMainWindow):
         count += int(self._filter_query.ai_state != AIStateFilter.ALL)
         count += int(self._filter_query.ai_cull_bucket is not None)
         count += int(bool(self._filter_query.ai_workflow_tag.strip()))
+        count += int(bool(self._filter_query.folder_text.strip()))
+        count += int(self._filter_query.min_search_confidence > 0.0)
         count += int(bool(self._filter_query.camera_text.strip()))
         count += int(bool(self._filter_query.lens_text.strip()))
         count += int(bool(self._filter_query.tag_text.strip()))
+        count += int(self._filter_query.min_rating > 0)
         count += int(self._filter_query.orientation != OrientationFilter.ALL)
         count += int(self._filter_query.captured_after is not None)
         count += int(self._filter_query.captured_before is not None)
@@ -24619,6 +24995,27 @@ class MainWindow(QMainWindow):
 
         return sorted(records, key=key)
 
+    def _rank_records_for_unified_search(self, records: list[ImageRecord]) -> list[ImageRecord]:
+        if not self._filter_query.search_text.strip() or not self._unified_search_rank_by_path:
+            return records
+
+        def record_score(record: ImageRecord) -> float | None:
+            scores = [
+                self._unified_search_rank_by_path[key]
+                for key in (_search_match_path_key(path) for path in record.stack_paths)
+                if key in self._unified_search_rank_by_path
+            ]
+            return max(scores) if scores else None
+
+        def key(item: tuple[int, ImageRecord]) -> tuple[object, ...]:
+            index, record = item
+            score = record_score(record)
+            if score is None:
+                return (1, index)
+            return (0, -score, index)
+
+        return [record for _, record in sorted(enumerate(records), key=key)]
+
     def _apply_records_view(
         self,
         current_path: str | None = None,
@@ -24642,6 +25039,7 @@ class MainWindow(QMainWindow):
             )
 
         sorted_records = self._sort_records_for_active_context(list(self._all_records))
+        sorted_records = self._rank_records_for_unified_search(sorted_records)
         visible_folder_records = (
             self._sort_records_for_active_context(list(self._folder_records))
             if self._scope_kind == "folder" and not self._filter_query.has_active_filters
@@ -24690,6 +25088,7 @@ class MainWindow(QMainWindow):
                     is_disputed=is_disputed,
                     dino_decision=dino_decision,
                     ai_ingested=ai_ingested,
+                    search_match_paths=self._unified_search_path_keys,
                 ):
                     records.append(record)
 
