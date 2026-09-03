@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..dino_prefilter import DINOPrefilterSettings
 from ..phash_prefilter import PHashPrefilterSettings
 
 
@@ -30,38 +28,28 @@ class GuidedCullPreset:
     keep_top_percent: int
     review_band_percent: int
     detect_duplicates: bool = True
-    detect_highlights: bool = True
-    detect_blurry: bool = True
-    detect_closed_eyes: bool = True
-    dino_aggressiveness_percent: int = 85
 
 
 @dataclass(slots=True, frozen=True)
 class GuidedCullPreferences:
-    category_key: str
     keep_top_percent: int
     review_band_percent: int
-    base_score_weight_percent: int
-    dino_prefilter_settings: DINOPrefilterSettings
     phash_prefilter_settings: PHashPrefilterSettings
-    detect_highlights: bool
-    detect_blurry: bool
-    detect_closed_eyes: bool
 
 
 GUIDED_CULL_PRESETS: tuple[GuidedCullPreset, ...] = (
-    GuidedCullPreset("general", "Something Else", 10, 10, dino_aggressiveness_percent=88),
-    GuidedCullPreset("weddings", "Weddings & Engagements", 18, 12, dino_aggressiveness_percent=92),
-    GuidedCullPreset("portrait", "Portrait & Headshots", 14, 12, dino_aggressiveness_percent=90),
-    GuidedCullPreset("family", "Family Portraits", 18, 12, dino_aggressiveness_percent=90),
-    GuidedCullPreset("boudoir", "Boudoir Photography", 14, 12, dino_aggressiveness_percent=92),
-    GuidedCullPreset("sports", "Sports Photography", 12, 10, dino_aggressiveness_percent=86),
-    GuidedCullPreset("school_portrait", "School Portrait", 10, 8, dino_aggressiveness_percent=92),
-    GuidedCullPreset("school_events", "School Events", 16, 12, dino_aggressiveness_percent=88),
-    GuidedCullPreset("newborn", "Newborn Photography", 18, 12, dino_aggressiveness_percent=92),
-    GuidedCullPreset("wildlife", "Wildlife & Action", 10, 10, dino_aggressiveness_percent=86),
-    GuidedCullPreset("landscape", "Landscape & Travel", 12, 12, detect_closed_eyes=False, dino_aggressiveness_percent=90),
-    GuidedCullPreset("architecture", "Architecture & Interiors", 12, 10, detect_closed_eyes=False, dino_aggressiveness_percent=90),
+    GuidedCullPreset("general", "Something Else", 10, 10),
+    GuidedCullPreset("weddings", "Weddings & Engagements", 18, 12),
+    GuidedCullPreset("portrait", "Portrait & Headshots", 14, 12),
+    GuidedCullPreset("family", "Family Portraits", 18, 12),
+    GuidedCullPreset("boudoir", "Boudoir Photography", 14, 12),
+    GuidedCullPreset("sports", "Sports Photography", 12, 10),
+    GuidedCullPreset("school_portrait", "School Portrait", 10, 8),
+    GuidedCullPreset("school_events", "School Events", 16, 12),
+    GuidedCullPreset("newborn", "Newborn Photography", 18, 12),
+    GuidedCullPreset("wildlife", "Wildlife & Action", 10, 10),
+    GuidedCullPreset("landscape", "Landscape & Travel", 12, 12),
+    GuidedCullPreset("architecture", "Architecture & Interiors", 12, 10),
 )
 
 
@@ -73,10 +61,7 @@ class GuidedAICullPreferencesDialog(QDialog):
         image_count: int,
         keep_top_percent: int,
         review_band_percent: int,
-        base_score_weight_percent: int,
-        dino_prefilter_settings: DINOPrefilterSettings,
         phash_prefilter_settings: PHashPrefilterSettings,
-        face_quality_available: bool,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -85,10 +70,7 @@ class GuidedAICullPreferencesDialog(QDialog):
         self.setModal(False)
         self.resize(520, 600)
         self._image_count = max(0, int(image_count))
-        self._base_score_weight_percent = max(0, min(100, int(base_score_weight_percent)))
-        self._initial_dino_settings = dino_prefilter_settings.normalized()
         self._initial_phash_settings = phash_prefilter_settings.normalized()
-        self._face_quality_available = bool(face_quality_available)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
@@ -110,6 +92,9 @@ class GuidedAICullPreferencesDialog(QDialog):
             folder_label.setWordWrap(True)
             root.addWidget(folder_label)
 
+        preset_label = QLabel("Starting preset", self)
+        preset_label.setObjectName("dialogTitle")
+        root.addWidget(preset_label)
         self.category_combo = QComboBox(self)
         for preset in GUIDED_CULL_PRESETS:
             self.category_combo.addItem(preset.label, preset.key)
@@ -144,52 +129,45 @@ class GuidedAICullPreferencesDialog(QDialog):
             scale_row.addWidget(scale, 1)
         keep_layout.addLayout(scale_row)
 
+        review_card = self._card(root)
+        review_layout = QVBoxLayout(review_card)
+        review_layout.setContentsMargins(12, 10, 12, 12)
+        review_layout.setSpacing(8)
+        self.review_value_label = QLabel("", review_card)
+        self.review_value_label.setObjectName("dialogTitle")
+        review_layout.addWidget(self.review_value_label)
+        self.review_slider = QSlider(Qt.Orientation.Horizontal, review_card)
+        self.review_slider.setRange(0, 30)
+        self.review_slider.setSingleStep(1)
+        self.review_slider.setPageStep(5)
+        self.review_slider.setValue(max(0, min(30, int(review_band_percent))))
+        review_layout.addWidget(self.review_slider)
+        review_note = QLabel(
+            "Photos just below the keeper cutoff are held for your review instead of rejected.",
+            review_card,
+        )
+        review_note.setObjectName("mutedText")
+        review_note.setWordWrap(True)
+        review_layout.addWidget(review_note)
+
         customize_card = self._card(root)
         customize_layout = QVBoxLayout(customize_card)
         customize_layout.setContentsMargins(12, 10, 12, 12)
         customize_layout.setSpacing(10)
-        customize_title = QLabel("Customize", customize_card)
+        customize_title = QLabel("Included in every cull", customize_card)
         customize_title.setObjectName("dialogTitle")
         customize_layout.addWidget(customize_title)
 
-        self.detect_duplicates_checkbox = self._checkbox("Detect Duplicates", customize_card)
-        self.detect_highlights_checkbox = self._checkbox("Detect Highlights", customize_card)
-        self.detect_blurry_checkbox = self._checkbox("Detect Blurry Photos", customize_card)
-        self.detect_closed_eyes_checkbox = self._checkbox("Detect Closed Eyes / Face Issues", customize_card)
-        self.detect_closed_eyes_checkbox.setEnabled(False)
-        self.closed_eyes_note = QLabel(
-            "InsightFace models are installed." if self._face_quality_available else "Install InsightFace models to enable face issue checks.",
+        quality_note = QLabel(
+            "CLIP ranks visual relevance and composition. TOPIQ checks technical quality, "
+            "and InsightFace adds face and eye quality when faces are present.",
             customize_card,
         )
-        self.closed_eyes_note.setObjectName("mutedText")
-
+        quality_note.setObjectName("mutedText")
+        quality_note.setWordWrap(True)
+        customize_layout.addWidget(quality_note)
+        self.detect_duplicates_checkbox = self._checkbox("Group near-duplicate photos", customize_card)
         customize_layout.addWidget(self.detect_duplicates_checkbox)
-        customize_layout.addWidget(self.detect_highlights_checkbox)
-        customize_layout.addWidget(self.detect_blurry_checkbox)
-        customize_layout.addWidget(self.detect_closed_eyes_checkbox)
-        customize_layout.addWidget(self.closed_eyes_note)
-
-        blur_row = QGridLayout()
-        blur_row.setContentsMargins(0, 4, 0, 0)
-        blur_row.setHorizontalSpacing(10)
-        self.blur_slider = QSlider(Qt.Orientation.Horizontal, customize_card)
-        self.blur_slider.setRange(60, 98)
-        self.blur_slider.setSingleStep(1)
-        self.blur_slider.setPageStep(4)
-        self.blur_slider.setValue(max(60, min(98, int(self._initial_dino_settings.aggressiveness_percent))))
-        blur_row.addWidget(self.blur_slider, 0, 0, 1, 3)
-        for column, label in enumerate(("LENIENT", "MODERATE", "STRICT")):
-            text = QLabel(label, customize_card)
-            text.setObjectName("mutedText")
-            alignment = Qt.AlignmentFlag.AlignLeft if column == 0 else Qt.AlignmentFlag.AlignCenter if column == 1 else Qt.AlignmentFlag.AlignRight
-            text.setAlignment(alignment)
-            blur_row.addWidget(text, 1, column)
-        customize_layout.addLayout(blur_row)
-
-        self.ratings_checkbox = self._checkbox("Use current AI Review buckets", customize_card)
-        self.ratings_checkbox.setChecked(True)
-        self.ratings_checkbox.setEnabled(False)
-        customize_layout.addWidget(self.ratings_checkbox)
 
         root.addStretch(1)
 
@@ -205,77 +183,44 @@ class GuidedAICullPreferencesDialog(QDialog):
 
         self.category_combo.currentIndexChanged.connect(self._apply_selected_preset)
         self.keep_slider.valueChanged.connect(self._update_keep_summary)
-        self.blur_slider.valueChanged.connect(self._update_blur_enabled)
-        self.detect_blurry_checkbox.toggled.connect(self._update_blur_enabled)
+        self.review_slider.valueChanged.connect(self._update_review_summary)
         self._apply_initial_values(keep_top_percent=keep_top_percent, review_band_percent=review_band_percent)
         self._update_start_state()
 
     def result_preferences(self) -> GuidedCullPreferences:
         keep = max(1, min(50, int(self.keep_slider.value())))
-        review = self._review_band_for_current_preset()
+        review = max(0, min(30, int(self.review_slider.value())))
         duplicates = self.detect_duplicates_checkbox.isChecked()
-        highlights = self.detect_highlights_checkbox.isChecked()
-        blurry = self.detect_blurry_checkbox.isChecked()
-        closed_eyes = self.detect_closed_eyes_checkbox.isChecked() and self._face_quality_available
-
-        dino_enabled = blurry
-        dino_settings = DINOPrefilterSettings(
-            enabled=dino_enabled,
-            aggressiveness_percent=max(1, min(100, int(self.blur_slider.value()))),
-            technical_trash_enabled=blurry,
-            duplicate_trash_enabled=False,
-            low_information_enabled=False,
-            diagnostics_enabled=True,
-        ).normalized()
         phash_settings = PHashPrefilterSettings(
             enabled=duplicates,
             hamming_threshold=self._initial_phash_settings.hamming_threshold,
             cache_enabled=self._initial_phash_settings.cache_enabled,
             diagnostics_enabled=True,
         ).normalized()
-        base_score_weight = 65 if (highlights or blurry or closed_eyes) else 40
         return GuidedCullPreferences(
-            category_key=str(self.category_combo.currentData() or "general"),
             keep_top_percent=keep,
             review_band_percent=review,
-            base_score_weight_percent=base_score_weight,
-            dino_prefilter_settings=dino_settings,
             phash_prefilter_settings=phash_settings,
-            detect_highlights=highlights,
-            detect_blurry=blurry,
-            detect_closed_eyes=closed_eyes,
         )
 
     def _apply_initial_values(self, *, keep_top_percent: int, review_band_percent: int) -> None:
         self.keep_slider.setValue(max(1, min(50, int(keep_top_percent))))
+        self.review_slider.setValue(max(0, min(30, int(review_band_percent))))
         self.detect_duplicates_checkbox.setChecked(self._initial_phash_settings.enabled)
-        self.detect_highlights_checkbox.setChecked(self._base_score_weight_percent >= 50)
-        self.detect_blurry_checkbox.setChecked(
-            self._initial_dino_settings.enabled and self._initial_dino_settings.technical_trash_enabled
-        )
-        self.detect_closed_eyes_checkbox.setChecked(self._face_quality_available)
-        self._manual_review_band_percent = max(0, min(30, int(review_band_percent)))
         self._update_keep_summary()
-        self._update_blur_enabled()
+        self._update_review_summary()
 
     def _apply_selected_preset(self) -> None:
         preset = self._current_preset()
         self.keep_slider.setValue(preset.keep_top_percent)
-        self._manual_review_band_percent = preset.review_band_percent
+        self.review_slider.setValue(preset.review_band_percent)
         self.detect_duplicates_checkbox.setChecked(preset.detect_duplicates)
-        self.detect_highlights_checkbox.setChecked(preset.detect_highlights)
-        self.detect_blurry_checkbox.setChecked(preset.detect_blurry)
-        self.detect_closed_eyes_checkbox.setChecked(preset.detect_closed_eyes and self._face_quality_available)
-        self.blur_slider.setValue(preset.dino_aggressiveness_percent)
         self._update_keep_summary()
-        self._update_blur_enabled()
+        self._update_review_summary()
 
     def _current_preset(self) -> GuidedCullPreset:
         key = str(self.category_combo.currentData() or "general")
         return next((preset for preset in GUIDED_CULL_PRESETS if preset.key == key), GUIDED_CULL_PRESETS[0])
-
-    def _review_band_for_current_preset(self) -> int:
-        return max(0, min(30, int(getattr(self, "_manual_review_band_percent", self._current_preset().review_band_percent))))
 
     def _update_keep_summary(self) -> None:
         keep = max(1, min(50, int(self.keep_slider.value())))
@@ -283,9 +228,9 @@ class GuidedAICullPreferencesDialog(QDialog):
         estimated = round(self._image_count * keep / 100.0)
         self.keep_count_label.setText(f"about {estimated} of {self._image_count}" if self._image_count else "")
 
-    def _update_blur_enabled(self) -> None:
-        enabled = self.detect_blurry_checkbox.isChecked()
-        self.blur_slider.setEnabled(enabled)
+    def _update_review_summary(self) -> None:
+        review = max(0, min(30, int(self.review_slider.value())))
+        self.review_value_label.setText(f"{review}% Needs Review band")
 
     def _update_start_state(self) -> None:
         self.start_button.setEnabled(self._image_count > 0)

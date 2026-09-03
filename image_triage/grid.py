@@ -184,10 +184,6 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._action_mode = "normal"
         self._show_ai_annotations = False
         self._compact_card_mode = False
-        # AI dispute chord state: when the user presses D in AI Review mode we
-        # set this to time.time() + 2.0, so the next 1-5 keypress within the
-        # window counts as a dispute (with the chosen corrective label).
-        self._awaiting_dispute_until: float = 0.0
         self._disputed_paths: set[str] = set()
         self._adapter_review_mode = False
         self._adapter_review_paths: set[str] = set()
@@ -1632,30 +1628,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                 Qt.Key.Key_4: "weak",
                 Qt.Key.Key_5: "reject",
             }
-            # Dispute chord: D was pressed within the last 2s and we're in AI
-            # Review mode. Consume the 1-5 as an AI dispute label.
-            if (
-                self._show_ai_annotations
-                and Qt.Key.Key_1 <= key <= Qt.Key.Key_5
-                and self._awaiting_dispute_until > 0.0
-                and time.time() <= self._awaiting_dispute_until
-            ):
-                self._awaiting_dispute_until = 0.0
-                self.dispute_label_requested.emit(self._items[index].path, label_map[key])
-                return
             if self._adapter_review_mode and Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
                 if not self._adapter_review_label_controls_enabled:
                     return
                 self._set_adapter_label_for_index(index, label_map[key], emit=True)
                 return
-        if key == Qt.Key.Key_D and self._show_ai_annotations and review_shortcut_allowed:
-            # Start the dispute chord. The next 1-5 key within 2s will be
-            # treated as a dispute label for the current card.
-            if self._items[index].is_folder:
-                return
-            self._awaiting_dispute_until = time.time() + 2.0
-            self.dispute_chord_started.emit()
-            return
         if key == Qt.Key.Key_T and review_shortcut_allowed:
             if self._items[index].is_folder:
                 return

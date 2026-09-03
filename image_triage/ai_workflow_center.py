@@ -584,6 +584,10 @@ class AIWorkflowCenterDialog(QDialog):
         detail_scroll.setWidget(detail_container)
         adapter_layout.addWidget(detail_scroll, 1)
         root.addWidget(adapter_panel, 0)
+        # Adapter training is no longer part of the supported culling workflow.
+        # Keep the legacy widgets alive for old databases, but do not surface
+        # them in the current Workflow Center.
+        adapter_panel.hide()
 
         self._step_keys: list[str] = []
         self._page_widgets: dict[str, _StepPage] = {}
@@ -626,12 +630,9 @@ class AIWorkflowCenterDialog(QDialog):
     def _build_pages(self) -> None:
         for key, label in (
             ("setup", "1. Setup"),
-            ("dino", "2. DINO Prefilter"),
-            ("index", "3. Index & Score"),
-            ("label", "4. Review Labels"),
-            ("train", "5. Train Adapter"),
-            ("evaluate", "6. Evaluate"),
-            ("apply", "7. Rank & Apply"),
+            ("index", "2. Cull & Score"),
+            ("review", "3. Review Results"),
+            ("apply", "4. Apply Decisions"),
         ):
             self._step_keys.append(key)
             item = QListWidgetItem(label)
@@ -679,7 +680,6 @@ class AIWorkflowCenterDialog(QDialog):
         snapshot = self._capture_snapshot()
         folder_text = snapshot.folder_path or "(no folder open)"
         self._sidebar_subtitle.setText(f"Folder:\n{folder_text}")
-        self._populate_adapter_history(snapshot.adapter_models, snapshot.global_adapter_models)
 
         steps = self._build_steps(snapshot)
         for key, step in steps.items():
@@ -1037,12 +1037,11 @@ class AIWorkflowCenterDialog(QDialog):
 
         steps["setup"] = StepSpec(
             key="setup",
-            title="Setup",
-            subtitle="Confirm the CLI-Culler runtime, models, and category prompts.",
+            title="AI setup",
+            subtitle="Runtime and the current AI culling model set in one workflow.",
             description=(
-                "Image Triage drives an external CLI-Culler runtime. This step lets "
-                "you verify the runtime is reachable and tweak the semantic category "
-                "prompts that classify your images."
+                "Choose GPU or CPU once. Image Triage installs the runtime together "
+                "with CLIP, TOPIQ, and InsightFace quality models."
             ),
             status=STATUS_DONE if snap.runtime_ready else STATUS_BLOCKED,
             metrics=[
@@ -1050,18 +1049,14 @@ class AIWorkflowCenterDialog(QDialog):
                 ("Culler source", snap.runtime_source or "—"),
                 ("Model root", snap.model_root or "—"),
                 ("CLIP model", snap.clip_model_label),
+                ("Culling models", "CLIP · TOPIQ · InsightFace"),
                 ("Current folder", snap.folder_path or "(none)"),
             ] + ([("Note", snap.runtime_note)] if snap.runtime_note else []),
             actions=[
                 ActionSpec(
-                    label="Install AI Runtime",
+                    label="Set Up AI",
                     callback=lambda: self._invoke("_install_ai_runtime"),
                     primary=not snap.runtime_ready,
-                    enabled=True,
-                ),
-                ActionSpec(
-                    label="Download AI Models",
-                    callback=lambda: self._invoke("_download_ai_model"),
                     enabled=True,
                 ),
                 ActionSpec(
@@ -1165,13 +1160,7 @@ class AIWorkflowCenterDialog(QDialog):
         )
 
         index_status = STATUS_BLOCKED
-        dino_required = snap.dino_enabled
-        dino_ready_for_index = (not dino_required) or (
-            snap.dino_report_exists and snap.dino_rows_exists and snap.dino_scanned_count > 0
-        )
         if not snap.runtime_ready or not snap.folder_open:
-            index_status = STATUS_BLOCKED
-        elif not dino_ready_for_index:
             index_status = STATUS_BLOCKED
         elif snap.db_exists and snap.indexed_count > 0 and snap.cluster_run_id:
             index_status = STATUS_DONE
@@ -1184,37 +1173,30 @@ class AIWorkflowCenterDialog(QDialog):
         ]
         if snap.db_exists and snap.indexed_count != snap.file_count and snap.file_count:
             index_metrics.append(("Note", "Folder file count differs from indexed count — re-run AI Culler to catch up."))
-        if not dino_ready_for_index:
-            index_metrics.append(("Waiting on", "Run and review DINO Prefilter first."))
         steps["index"] = StepSpec(
             key="index",
-            title="Index & Score",
-            subtitle="Ingest the folder, assign categories, cluster, and rank.",
+            title="Cull & Score",
+            subtitle="Run the current CLIP, TOPIQ, InsightFace, and duplicate-grouping pipeline.",
             description=(
-                "This is the full pipeline: ingest each image, assign semantic "
-                "categories, cluster within each category, and produce the base "
-                "ranking with technical penalties applied."
+                "This is the complete culling pass. It groups near duplicates with pHash, "
+                "uses CLIP for visual scoring and categories, adds TOPIQ and InsightFace "
+                "quality signals, clusters similar work, and produces a diversified ranking."
             ),
             status=index_status,
             metrics=index_metrics,
             actions=[
                 ActionSpec(
-                    label="Run Index & Score",
+                    label="Run Cull & Score",
                     callback=lambda: self._invoke("_run_ai_pipeline"),
                     primary=True,
-                    enabled=snap.runtime_ready and snap.folder_open and dino_ready_for_index,
-                    tooltip=(
-                        "Run DINO Prefilter first, then review its marks before indexing and scoring."
-                        if not dino_ready_for_index
-                        else ""
-                    ),
+                    enabled=snap.runtime_ready and snap.folder_open,
                 ),
                 ActionSpec(
                     label="Quick Rerank",
                     callback=lambda: self._invoke("_rerank_ai_pipeline"),
                     enabled=snap.can_rerank,
                     tooltip=(
-                        "Skips ingest and clustering. Available after Index & Score has populated this folder."
+                        "Reuses the existing ingest, categories, and clusters and recalculates the base ranking."
                         if not snap.can_rerank
                         else ""
                     ),
@@ -1222,6 +1204,66 @@ class AIWorkflowCenterDialog(QDialog):
             ],
         )
 
+        results_ready = bool(snap.can_rerank and snap.indexed_count)
+        steps["review"] = StepSpec(
+            key="review",
+            title="Review Results",
+            subtitle="Inspect the ranked cull in AI Review.",
+            description=(
+                "Review AI Pick, Keeper, Needs Review, and Reject buckets. The ranking "
+                "comes directly from the current base-model pipeline and requires no "
+                "training pass."
+            ),
+            status=STATUS_DONE if results_ready else STATUS_BLOCKED,
+            metrics=[
+                ("Ranked images", str(snap.indexed_count) if results_ready else "—"),
+                ("Categories", "CLIP semantic categories"),
+                ("Quality", "TOPIQ · InsightFace"),
+                ("Duplicate handling", "pHash grouping and diversity penalties"),
+            ],
+            actions=[
+                ActionSpec(
+                    label="Open AI Review",
+                    callback=lambda: self._invoke("_open_current_ai_review"),
+                    primary=True,
+                    enabled=results_ready,
+                    tooltip="Run Cull & Score first." if not results_ready else "",
+                ),
+            ],
+        )
+
+        steps["apply"] = StepSpec(
+            key="apply",
+            title="Apply Decisions",
+            subtitle="Use the reviewed ranking to organize the folder.",
+            description=(
+                "Move AI Picks to the winners folder, send clear rejects to the app recycle "
+                "bin, or organize photos by the semantic categories created during the cull."
+            ),
+            status=STATUS_READY if results_ready else STATUS_BLOCKED,
+            metrics=[
+                ("Results", "Ready" if results_ready else "Run Cull & Score first"),
+                ("Source", "Current base-model ranking"),
+            ],
+            actions=[
+                ActionSpec(
+                    label="Apply AI Decisions",
+                    callback=lambda: self._invoke("_apply_ai_culling"),
+                    primary=True,
+                    enabled=results_ready,
+                ),
+                ActionSpec(
+                    label="Sort Into Categories",
+                    callback=lambda: self._invoke("_sort_images_into_semantic_folders"),
+                    enabled=results_ready,
+                ),
+            ],
+        )
+        steps.pop("dino", None)
+        return steps
+
+        # Legacy adapter workflow retained below for database compatibility only.
+        # It is intentionally unreachable from the current Workflow Center.
         # Label step is "done" if any usable folder/global training labels exist.
         # The DB ratings table is only populated after successful training, so
         # saved labels outside that table need to count here too.

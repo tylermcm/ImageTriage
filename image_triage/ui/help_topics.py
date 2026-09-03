@@ -10,20 +10,18 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
             """
             # AI Workflow Center
 
-            The AI Workflow Center is the control panel for this folder's AI sorting. It shows what has run, what to do next, and how your trained models performed.
+            The AI Workflow Center is the control panel for this folder's AI sorting. It shows what has run, what to do next, and which current models power the result.
 
             Use it to see:
 
             - Which AI steps are available
             - Which steps have already run
             - What each step does, and the next useful action
-            - Which trained preference models exist, and how well they scored
 
             ## Layout
 
             - **Left** — the main workflow steps, in order.
             - **Center** — an explanation of the step you select.
-            - **Right** — trained adapters and their Score Fit results.
             """,
         ),
         HelpPage(
@@ -33,18 +31,10 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 
             The AI workflow runs in this order:
 
-            1. **Setup** — install the AI runtime and model files.
-            2. **DINO Prefilter** — flag likely rejects before scoring (optional).
-            3. **Index & Score** — run the main CLIP/TOPIQ scoring pass.
-            4. **Review Labels** — confirm or correct example images.
-            5. **Train Adapter** — build a preference model from your labels.
-            6. **Evaluate** — measure how well the adapter performs.
-            7. **Rank & Apply** — apply the final ranking to the folder.
-
-            When DINO or pHash prefiltering is enabled, it runs before the main CLIP/TOPIQ scoring step.
-            Index & Score then reuses those saved prefilter decisions instead of rerunning DINO.
-
-            Prefilters only remove or flag obvious problem images early. The main AI culler still makes the final ranking decisions.
+            1. **Setup** — choose CPU or GPU and install the runtime with CLIP, TOPIQ, and InsightFace.
+            2. **Cull & Score** — group duplicates, analyze quality and content, cluster similar work, and rank the folder.
+            3. **Review Results** — inspect the AI Pick, Keeper, Needs Review, and Reject buckets.
+            4. **Apply Decisions** — organize the clearest picks, rejects, or semantic categories.
             """,
         ),
         HelpPage(
@@ -54,13 +44,9 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 
             Prefilters are optional early checks that reduce how many images reach the full AI scoring stage.
 
-            ## DINO Prefilter
-
-            Examines each image and flags those that are likely bad, unwanted, or not worth scoring further.
-
             ## pHash Prefilter
 
-            Detects very similar images, such as tight near-duplicates. It works independently of DINO.
+            Detects very similar images, such as tight near-duplicates.
 
             ## Pool Removal
 
@@ -68,51 +54,19 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
             """,
         ),
         HelpPage(
-            "Adapters",
+            "How Scoring Works",
             """
-            # Adapters
+            # How scoring works
 
-            An adapter is a small preference model trained from the labels you save in a folder. It teaches the AI what you consider good or bad for that specific set of images.
+            The current cull uses one base-model pipeline. It does not need a training or adapter step.
 
-            ## Score Fit
+            - **pHash** groups near-duplicate frames.
+            - **CLIP** scores visual relevance and composition and assigns semantic categories.
+            - **TOPIQ** contributes technical image-quality signals.
+            - **InsightFace** contributes face and eye quality when faces are present.
+            - Category clustering and diversity penalties prevent a burst of similar frames from dominating the top results.
 
-            Score Fit shows how closely an adapter's scores matched your saved labels during testing. It is a score-regression fit metric, not a full measure of culling accuracy.
-
-            ## Before you train
-
-            - Label enough clear examples across at least two label types, such as keep and reject.
-            - Train the adapter only once you have that spread of examples.
-            - Run an evaluation before relying on a new adapter.
-            """,
-        ),
-        HelpPage(
-            "Disputing AI Decisions",
-            """
-            # Disputing AI decisions
-
-            A dispute is a correction you save when the AI clearly gets a specific image wrong — for example, marking a keeper as a reject, or promoting an image you would reject.
-
-            ## How to dispute
-
-            With an image selected in **AI Review**, do any of the following:
-
-            - Click **Dispute AI** in the AI Review toolbar.
-            - Right-click the image and choose **Dispute AI Decision**.
-            - Press `D`, then a label key from `1` to `5`.
-
-            The label keys mean:
-
-            1. Best
-            2. Strong
-            3. Maybe
-            4. Weak
-            5. Reject
-
-            ## Why disputes matter
-
-            Disputes are saved as adapter training labels with extra weight, so they teach the adapter more strongly than a normal label.
-
-            Use disputes for meaningful corrections, not every small preference. A focused set of clear disputes helps the adapter learn quickly, while noisy disputes can make the next adapter less stable.
+            Keep and review percentages divide the finished ranking into actionable buckets; they do not retrain the models.
             """,
         ),
         HelpPage(
@@ -123,8 +77,7 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
             These filters let you inspect what the AI did:
 
             - **AI Ingested** — images that reached the main CLIP/TOPIQ scoring step.
-            - **AI Prefilter Dumped** — images removed from AI scoring by DINO or pHash.
-            - **DINO Removed** — images DINO removed from the scoring pool.
+            - **AI Prefilter Dumped** — images removed from AI scoring by the duplicate prefilter.
             - **AI Top Picks** — the strongest current AI keep candidates.
 
             Use these views to confirm the prefilters are helping. Removed images remain visible and can still be kept during manual review.
@@ -397,11 +350,7 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
 
             ## AI
 
-            The main AI scoring system, including CLIP/TOPIQ scoring, adapter blending, and review bands.
-
-            ## DINO Prefilter
-
-            The optional DINO first pass that detects likely rejects before full scoring.
+            The main CLIP/TOPIQ/InsightFace scoring workflow, keeper thresholds, and review bands.
 
             ## pHash Prefilter
 
@@ -415,13 +364,12 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
 
             Core AI settings affect how images are scored, ranked, grouped, and reviewed.
 
-            DINO and pHash settings affect which images reach the main scoring stage. Because they run before the main AI ranking, changing them too aggressively can hide useful images from later steps — so start conservative.
+            pHash settings affect which near-duplicates reach the main scoring stage. Because the prefilter runs before the main AI ranking, change it conservatively.
 
             After changing prefilter settings, check the results with these filters:
 
             - AI Ingested
             - AI Prefilter Dumped
-            - DINO Removed
             - AI Top Picks
 
             These views confirm whether the AI is filtering the right images before you rely on it for a full triage pass.

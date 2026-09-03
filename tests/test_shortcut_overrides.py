@@ -62,7 +62,7 @@ class ShortcutOverrideHelpersTests(unittest.TestCase):
     def test_registry_has_unique_attrs_and_includes_known_actions(self) -> None:
         attr_names = [row[0] for row in SHORTCUT_REGISTRY]
         self.assertEqual(len(attr_names), len(set(attr_names)), "Duplicate attr_name in registry")
-        self.assertIn("open_ai_data_selection", attr_names)
+        self.assertIn("quick_rerank_ai_culling", attr_names)
         self.assertIn("workflow_settings", attr_names)
         self.assertIn("undo", attr_names)
 
@@ -73,14 +73,14 @@ class ShortcutOverrideHelpersTests(unittest.TestCase):
     def test_load_returns_only_non_default_entries(self) -> None:
         settings = _FakeSettings(
             {
-                "shortcuts/open_ai_data_selection": "Ctrl+Shift+L",  # matches default
+                "shortcuts/quick_rerank_ai_culling": "Ctrl+Shift+Y",  # matches default
                 "shortcuts/workflow_settings": "Ctrl+P",  # custom
             }
         )
 
         result = load_shortcut_overrides(settings=settings)
 
-        self.assertNotIn("open_ai_data_selection", result)
+        self.assertNotIn("quick_rerank_ai_culling", result)
         self.assertEqual(result.get("workflow_settings"), "Ctrl+P")
 
     def test_save_writes_overrides_and_wipes_un_overridden_attrs(self) -> None:
@@ -92,12 +92,12 @@ class ShortcutOverrideHelpersTests(unittest.TestCase):
         )
 
         save_shortcut_overrides(
-            {"open_ai_data_selection": "Ctrl+Alt+S", "workflow_settings": ""},
+            {"quick_rerank_ai_culling": "Ctrl+Alt+S", "workflow_settings": ""},
             settings=settings,
         )
 
         self.assertEqual(
-            settings._store.get("shortcuts/open_ai_data_selection"),
+            settings._store.get("shortcuts/quick_rerank_ai_culling"),
             "Ctrl+Alt+S",
         )
         # Empty value clears the override.
@@ -107,49 +107,49 @@ class ShortcutOverrideHelpersTests(unittest.TestCase):
 
     def test_apply_sets_default_when_no_override(self) -> None:
         actions = SimpleNamespace(
-            open_ai_data_selection=_FakeAction(),
+            quick_rerank_ai_culling=_FakeAction(),
             workflow_settings=_FakeAction(),
         )
 
         apply_shortcut_overrides(actions, overrides={})
 
-        self.assertEqual(actions.open_ai_data_selection.shortcut_sequences, ["Ctrl+Shift+L"])
+        self.assertEqual(actions.quick_rerank_ai_culling.shortcut_sequences, ["Ctrl+Shift+Y"])
         self.assertEqual(actions.workflow_settings.shortcut_sequences, ["Ctrl+,"])
 
     def test_apply_uses_override_when_provided(self) -> None:
         actions = SimpleNamespace(
-            open_ai_data_selection=_FakeAction(),
+            quick_rerank_ai_culling=_FakeAction(),
             workflow_settings=_FakeAction(),
         )
 
         apply_shortcut_overrides(
             actions,
-            overrides={"open_ai_data_selection": "Ctrl+Alt+S"},
+            overrides={"quick_rerank_ai_culling": "Ctrl+Alt+S"},
         )
 
-        self.assertEqual(actions.open_ai_data_selection.shortcut_sequences, ["Ctrl+Alt+S"])
+        self.assertEqual(actions.quick_rerank_ai_culling.shortcut_sequences, ["Ctrl+Alt+S"])
         # workflow_settings still gets its registered default.
         self.assertEqual(actions.workflow_settings.shortcut_sequences, ["Ctrl+,"])
 
     def test_apply_skips_missing_actions(self) -> None:
-        # Only open_ai_data_selection is present; every other registry entry
+        # Only quick_rerank_ai_culling is present; every other registry entry
         # is missing on this fake namespace. Must not raise.
-        actions = SimpleNamespace(open_ai_data_selection=_FakeAction())
+        actions = SimpleNamespace(quick_rerank_ai_culling=_FakeAction())
 
         apply_shortcut_overrides(actions, overrides={})
 
-        self.assertEqual(actions.open_ai_data_selection.shortcut_sequences, ["Ctrl+Shift+L"])
+        self.assertEqual(actions.quick_rerank_ai_culling.shortcut_sequences, ["Ctrl+Shift+Y"])
 
     def test_load_then_save_then_load_round_trips_correctly(self) -> None:
         settings = _FakeSettings()
 
         save_shortcut_overrides(
-            {"open_ai_data_selection": "Ctrl+Alt+L"},
+            {"quick_rerank_ai_culling": "Ctrl+Alt+L"},
             settings=settings,
         )
         loaded = load_shortcut_overrides(settings=settings)
 
-        self.assertEqual(loaded, {"open_ai_data_selection": "Ctrl+Alt+L"})
+        self.assertEqual(loaded, {"quick_rerank_ai_culling": "Ctrl+Alt+L"})
 
 
 if __name__ == "__main__":

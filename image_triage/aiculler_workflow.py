@@ -13,6 +13,7 @@ import tempfile
 import time
 from contextlib import closing
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -488,7 +489,10 @@ class AICullerRunTask(QRunnable):
                     html_report_exists=self.paths.html_report_path.exists(),
                 )
             winner_start = time.perf_counter() if logger.enabled else 0.0
-            compute_and_store_winner_scores(db_path)
+            compute_and_store_winner_scores(
+                db_path,
+                model_version=WINNER_SCORE_FALLBACK_MODEL_VERSION,
+            )
             if logger.enabled:
                 logger.duration(
                     "ai.workflow.stage",

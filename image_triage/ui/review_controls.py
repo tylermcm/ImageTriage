@@ -107,17 +107,8 @@ class ReviewControlsPanel(QFrame):
         self._bind_action(next_ai_button, actions.next_ai_pick)
         queue_grid.addWidget(next_ai_button, 0, 1)
 
-        self.next_disagreement_button = self._command_button("Disagree")
-        self.next_disagreement_button.setToolTip("Jump to the next AI disagreement")
-        self.next_disagreement_button.clicked.connect(self.next_disagreement_requested.emit)
-        self._follow_action_enabled(
-            self.next_disagreement_button,
-            actions.review_ai_disagreements,
-        )
-        queue_grid.addWidget(self.next_disagreement_button, 0, 2)
         queue_grid.setColumnStretch(0, 1)
         queue_grid.setColumnStretch(1, 1)
-        queue_grid.setColumnStretch(2, 1)
         layout.addLayout(queue_grid)
 
         self.group_section = QWidget(self)

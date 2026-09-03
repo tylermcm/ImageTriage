@@ -59,7 +59,6 @@ ARTICLES = [
         | --- | --- |
         | `Ctrl+Alt+P` | Next AI top pick |
         | `Ctrl+Alt+G` | Compare current AI group |
-        | `D`, then `1`–`5` | Dispute the AI decision |
 
         See [Working keyboard-first](doc:keyboard-first) for how to put these together.
         """,
@@ -73,19 +72,11 @@ ARTICLES = [
         markdown="""
         # Glossary
 
-        **Adapter** — a small preference model trained from your own labels in a folder. It personalizes the AI ranking. See [What adapters are](doc:what-adapters-are).
-
-        **CLIP / TOPIQ** — the base AI models that score images for content and technical quality during [Index & Score](doc:index-score).
-
-        **DINO** — an optional prefilter that flags likely rejects before full scoring. See [Prefilters: DINO & pHash](doc:prefilters).
-
-        **Dispute** — a weighted correction saved when the AI clearly gets an image wrong. See [Disputing AI decisions](doc:disputing).
+        **CLIP / TOPIQ / InsightFace** — the current models that score image content, technical quality, and face quality during [Cull & Score](doc:index-score).
 
         **pHash (perceptual hash)** — a fingerprint of an image's appearance, used to detect near-duplicates.
 
         **Pool Removal** — prefilter behavior that excludes flagged images from AI scoring while leaving them available for manual review.
-
-        **Score Fit** — a score-regression metric showing how closely an adapter matched your labels in testing. See [Evaluating an adapter](doc:evaluating).
 
         **Virtual collection** — a saved set of image references that does not move or copy files. See [Virtual collections](doc:collections).
         """,
@@ -110,7 +101,7 @@ ARTICLES = [
 
         ## Runtime and models
 
-        The AI runtime and downloaded model files are installed once for the app, not per folder. Manage them from **`AI > Runtime And Cache > Install AI Runtime...`** and **`AI > Runtime And Cache > Download AI Models...`**.
+        The AI runtime and culling models are installed together once for the app, not per folder. Manage them from **`AI > AI Setup And Cache > Set Up AI...`**.
         """,
     ),
     DocArticle(
@@ -124,19 +115,15 @@ ARTICLES = [
 
         ## AI actions are greyed out
 
-        The AI runtime or models may not be installed. Open **`AI > Runtime And Cache > Install AI Runtime...`** or **`Download AI Models...`** and check the setup state. See [Where AI files live](doc:where-files-live).
+        The AI runtime or culling models may not be installed. Open **`AI > AI Setup And Cache > Set Up AI...`** and check the setup state. See [Where AI files live](doc:where-files-live).
 
         ## The ranking looks stale
 
-        Re-rank with **`AI > Adapter Training > Rank Folder With Local Adapter`**. If the folder changed a lot (images added or removed), rerun [Index & Score](doc:index-score) first.
+        Use **Quick Rerank** if the folder is unchanged. If images were added or removed, rerun [Cull & Score](doc:index-score).
 
-        ## I only want to review AI results, not train
+        ## I only want to review AI results
 
-        You do not need the adapter steps at all. Run [Index & Score](doc:index-score), then review in [AI Review](doc:ai-review). Adapters are optional.
-
-        ## My adapter does not match my taste
-
-        It may need more — or more balanced — labels. Make sure you are labeling clear keeps *and* rejects, cover the uncertain middle with [guided review](doc:review-labels), and [evaluate](doc:evaluating) after each batch.
+        Run [Cull & Score](doc:index-score), then inspect the base-model ranking in [AI Review](doc:ai-review). No training step is required.
 
         ## Did I lose my originals?
 
