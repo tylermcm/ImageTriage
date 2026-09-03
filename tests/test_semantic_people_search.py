@@ -34,6 +34,46 @@ class _TextEncoder:
         return np.asarray(self.vectors[prompt], dtype=np.float32)
 
 
+class _RecordingEncoder:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def encode(self, prompt: str) -> np.ndarray:
+        self.prompts.append(prompt)
+        # Templated captions point one way, the bare term the other, so the
+        # averaged query vector must land between them.
+        if prompt.startswith("a photo"):
+            return np.asarray([1.0, 0.0], dtype=np.float32)
+        return np.asarray([0.0, 1.0], dtype=np.float32)
+
+
+class QueryTemplateTests(unittest.TestCase):
+    def test_default_templates_encode_the_bare_query_once(self) -> None:
+        encoder = _RecordingEncoder()
+        service = FeatureStoreSemanticSearch(None, encoder)
+        vector = service._encode_query("cat")
+
+        self.assertEqual(["cat"], encoder.prompts)
+        np.testing.assert_allclose(vector, [0.0, 1.0])
+
+    def test_ensembling_averages_normalized_template_embeddings(self) -> None:
+        encoder = _RecordingEncoder()
+        service = FeatureStoreSemanticSearch(
+            None,
+            encoder,
+            query_templates=("a photo of {}.", "{}"),
+        )
+        vector = service._encode_query("sunrise")
+
+        self.assertEqual(["a photo of sunrise.", "sunrise"], encoder.prompts)
+        np.testing.assert_allclose(vector, [0.5, 0.5])
+
+    def test_templates_without_slot_fall_back_to_identity(self) -> None:
+        encoder = _RecordingEncoder()
+        service = FeatureStoreSemanticSearch(None, encoder, query_templates=("no slot here",))
+        self.assertEqual(("{}",), service.query_templates)
+
+
 class SemanticPeopleSearchTests(unittest.TestCase):
     def test_vector_index_ranks_by_cosine_and_applies_confidence_floor(self) -> None:
         index = SemanticVectorIndex(
