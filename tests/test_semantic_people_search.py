@@ -14,6 +14,7 @@ from image_triage.people_search import (
     assign_person_name,
     cluster_face_identities,
     image_ids_matching_people,
+    list_person_clusters,
 )
 from image_triage.quality.face import FaceRecord
 from image_triage.quality.store import fetch_faces, upsert_faces
@@ -74,6 +75,48 @@ class QueryTemplateTests(unittest.TestCase):
         self.assertEqual(("{}",), service.query_templates)
 
 
+class RecognizerMigrationTests(unittest.TestCase):
+    def test_clustering_scopes_to_active_identity_model(self) -> None:
+        # A DB written across a recognizer change holds vectors from a prior
+        # 512-d model plus current AuraFace (512-d) vectors. Scoping to the
+        # active model must ignore the stale ones so the two incompatible
+        # embedding spaces are never clustered together.
+        with tempfile.TemporaryDirectory(prefix="recognizer_mig_") as temp_dir:
+            store = SQLiteFeatureStore(Path(temp_dir) / "features.sqlite")
+            try:
+                old = store.upsert_image(Path(temp_dir) / "old.jpg", status="ready")
+                new_a = store.upsert_image(Path(temp_dir) / "new_a.jpg", status="ready")
+                new_b = store.upsert_image(Path(temp_dir) / "new_b.jpg", status="ready")
+                upsert_faces(
+                    store.connection,
+                    old,
+                    [FaceRecord((0, 0, 10, 10), 0.95, identity_embedding=(1.0, 0.0), identity_model="insightface:legacy")],
+                )
+                upsert_faces(
+                    store.connection,
+                    new_a,
+                    [FaceRecord((0, 0, 10, 10), 0.95, identity_embedding=(0.0, 1.0), identity_model="insightface:auraface")],
+                )
+                upsert_faces(
+                    store.connection,
+                    new_b,
+                    [FaceRecord((0, 0, 10, 10), 0.95, identity_embedding=(0.02, 0.99), identity_model="insightface:auraface")],
+                )
+                store.connection.commit()
+
+                clusters = cluster_face_identities(
+                    store.connection,
+                    threshold=0.5,
+                    identity_model="insightface:auraface",
+                )
+
+                total_faces = sum(cluster.face_count for cluster in clusters)
+                self.assertEqual(2, total_faces)  # only the two AuraFace faces
+                self.assertEqual(1, len(clusters))  # and they cluster together
+            finally:
+                store.close()
+
+
 class SemanticPeopleSearchTests(unittest.TestCase):
     def test_vector_index_ranks_by_cosine_and_applies_confidence_floor(self) -> None:
         index = SemanticVectorIndex(
@@ -130,6 +173,26 @@ class SemanticPeopleSearchTests(unittest.TestCase):
                 self.assertEqual(1, len(named))
                 self.assertEqual(2, named[0].face_count)
                 self.assertEqual({claire_a, claire_b}, image_ids_matching_people(store.connection, ("Claire",)))
+            finally:
+                store.close()
+
+    def test_rebuild_prunes_clusters_after_faces_are_removed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="people_search_") as temp_dir:
+            store = SQLiteFeatureStore(Path(temp_dir) / "features.sqlite")
+            try:
+                image_id = store.upsert_image(Path(temp_dir) / "animal.jpg", status="ready")
+                upsert_faces(
+                    store.connection,
+                    image_id,
+                    [FaceRecord((0, 0, 10, 10), 0.8, identity_embedding=(1.0, 0.0))],
+                )
+                store.connection.commit()
+                self.assertEqual(1, len(cluster_face_identities(store.connection)))
+
+                upsert_faces(store.connection, image_id, [])
+                store.connection.commit()
+                self.assertEqual([], cluster_face_identities(store.connection))
+                self.assertEqual([], list_person_clusters(store.connection))
             finally:
                 store.close()
 

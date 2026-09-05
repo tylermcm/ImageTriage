@@ -37,7 +37,7 @@ AI_RUNTIME_BASE_PIP_REQUIREMENTS = (
     "scikit-learn>=1.5",
     "tqdm>=4.66",
     "PyYAML>=6.0",
-    # Face-quality pass (detection + landmarks + gender/age via buffalo_l ONNX).
+    # Face-quality pass (detection + landmarks + gender/age via the AuraFace ONNX pack).
     # Recognition/face-sort is a separate, opt-in path and not pulled here.
     "insightface>=0.7",
 )

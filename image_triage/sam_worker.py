@@ -153,6 +153,24 @@ class _SamEngine:
         minimum_area: float = 0.0,
         image_key: str | None = None,
     ) -> dict[str, object]:
+        return self.segment_many(
+            point_groups=[points],
+            label_groups=[labels],
+            output_paths=[output_path],
+            minimum_area=minimum_area,
+            image_key=image_key,
+        )[0]
+
+    def segment_many(
+        self,
+        *,
+        point_groups: list[list[tuple[float, float]]],
+        label_groups: list[list[int]],
+        output_paths: list[Path],
+        minimum_area: float = 0.0,
+        image_key: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Evaluate independent prompt objects in one SAM forward pass."""
         if self._image is None:
             raise RuntimeError("SAM has no embedded image; call embed first.")
         if image_key is not None and self._image_key is not None and image_key != self._image_key:
@@ -161,14 +179,20 @@ class _SamEngine:
         np = self.np
         assert torch is not None and np is not None
         assert self.model is not None and self.processor is not None
-        if not points:
-            raise ValueError("At least one point is required.")
+        if not point_groups or any(not points for points in point_groups):
+            raise ValueError("At least one non-empty point group is required.")
+        if len(point_groups) != len(label_groups) or len(point_groups) != len(output_paths):
+            raise ValueError("Point groups, label groups, and output paths must have equal lengths.")
+        if any(len(points) != len(labels) for points, labels in zip(point_groups, label_groups)):
+            raise ValueError("Each point group must have the same number of labels.")
 
         phase_started = time.perf_counter()
         # transformers SAM2 point nesting: [batch, object, point, xy] and
         # [batch, object, point] for labels.
-        input_points = [[[[float(x), float(y)] for (x, y) in points]]]
-        input_labels = [[[int(v) for v in labels]]]
+        input_points = [
+            [[[float(x), float(y)] for (x, y) in points] for points in point_groups]
+        ]
+        input_labels = [[[int(v) for v in labels] for labels in label_groups]]
         inputs = self.processor(
             images=self._image,
             input_points=input_points,
@@ -180,47 +204,51 @@ class _SamEngine:
         if self.device.startswith("cuda"):
             torch.cuda.synchronize()
         masks = self.processor.post_process_masks(outputs.pred_masks, inputs["original_sizes"])[0]
-        candidates = np.asarray(masks[0].detach().cpu().numpy())  # (num_masks, H, W)
-        binary = candidates > 0.5
-        height, width = binary.shape[-2:]
-        areas = binary.reshape(binary.shape[0], -1).sum(axis=1).astype(np.int64)
-        frame = int(height * width)
-        chosen = _choose_mask_index([int(a) for a in areas.tolist()], frame)
-        mask = binary[chosen].astype(np.uint8) * 255
-
+        object_candidates = np.asarray(masks.detach().cpu().numpy())
         iou_scores = getattr(outputs, "iou_scores", None)
-        iou = (
-            float(np.asarray(iou_scores.detach().cpu().numpy()).reshape(-1)[chosen])
+        object_ious = (
+            np.asarray(iou_scores.detach().cpu().numpy())[0]
             if iou_scores is not None
-            else 0.0
+            else None
         )
-        rows = np.any(binary[chosen], axis=1)
-        cols = np.any(binary[chosen], axis=0)
-        if rows.any() and cols.any():
-            y0, y1 = np.where(rows)[0][[0, -1]]
-            x0, x1 = np.where(cols)[0][[0, -1]]
-            bounds = [int(x0), int(y0), int(x1) + 1, int(y1) + 1]
-        else:
-            bounds = [0, 0, 0, 0]
-
-        coverage = float(areas[chosen]) / frame if frame else 0.0
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.Image.fromarray(mask, mode="L").save(output_path)
+        results: list[dict[str, object]] = []
+        for object_index, (candidates, output_path) in enumerate(zip(object_candidates, output_paths)):
+            binary = np.asarray(candidates) > 0.5
+            height, width = binary.shape[-2:]
+            areas = binary.reshape(binary.shape[0], -1).sum(axis=1).astype(np.int64)
+            frame = int(height * width)
+            chosen = _choose_mask_index([int(a) for a in areas.tolist()], frame)
+            chosen_binary = binary[chosen]
+            mask = chosen_binary.astype(np.uint8) * 255
+            iou = float(object_ious[object_index][chosen]) if object_ious is not None else 0.0
+            rows = np.any(chosen_binary, axis=1)
+            cols = np.any(chosen_binary, axis=0)
+            if rows.any() and cols.any():
+                y0, y1 = np.where(rows)[0][[0, -1]]
+                x0, x1 = np.where(cols)[0][[0, -1]]
+                bounds = [int(x0), int(y0), int(x1) + 1, int(y1) + 1]
+            else:
+                bounds = [0, 0, 0, 0]
+            coverage = float(areas[chosen]) / frame if frame else 0.0
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.Image.fromarray(mask, mode="L").save(output_path)
+            results.append(
+                {
+                    "device": self.device,
+                    "maskPath": str(output_path),
+                    "sourceSize": [width, height],
+                    "bounds": bounds,
+                    "coverage": coverage,
+                    "iou": iou,
+                    "chosenMask": chosen,
+                    "suppressed": coverage < max(0.0, float(minimum_area)),
+                }
+            )
         _emit_metric(
             "ai.mask.sam.worker.segment",
             phase_started,
             device=self.device,
-            points=len(points),
-            chosen=chosen,
-            coverage=round(coverage, 4),
+            objects=len(point_groups),
+            points=sum(len(points) for points in point_groups),
         )
-        return {
-            "device": self.device,
-            "maskPath": str(output_path),
-            "sourceSize": [width, height],
-            "bounds": bounds,
-            "coverage": coverage,
-            "iou": iou,
-            "chosenMask": chosen,
-            "suppressed": coverage < max(0.0, float(minimum_area)),
-        }
+        return results

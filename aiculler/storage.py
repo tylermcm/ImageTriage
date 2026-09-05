@@ -11,6 +11,9 @@ import numpy as np
 from aiculler.telemetry import ensure_user_overrides_schema
 
 
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+
 class SQLiteFeatureStore:
     """Thread-safe SQLite contract for image metadata, embeddings, and feedback."""
 
@@ -22,8 +25,13 @@ class SQLiteFeatureStore:
         else:
             self.path = Path(path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.connection = sqlite3.connect(self.path, check_same_thread=False)
+            self.connection = sqlite3.connect(
+                self.path,
+                check_same_thread=False,
+                timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+            )
         self.connection.row_factory = sqlite3.Row
+        self.connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         self._ensure_schema()
 
     def close(self) -> None:
@@ -172,6 +180,17 @@ class SQLiteFeatureStore:
                     model_identity TEXT NOT NULL,
                     source_signature TEXT NOT NULL,
                     embedding_dim INTEGER NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS face_index_state (
+                    image_id INTEGER PRIMARY KEY,
+                    model_identity TEXT NOT NULL,
+                    source_signature TEXT NOT NULL,
+                    person_prob REAL NOT NULL,
+                    face_count INTEGER NOT NULL,
                     schema_version INTEGER NOT NULL,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
@@ -458,6 +477,52 @@ class SQLiteFeatureStore:
                 ),
             }
         return snapshot
+
+    def get_face_index_state(self, image_id: int) -> sqlite3.Row | None:
+        with self.lock:
+            return self.connection.execute(
+                "SELECT * FROM face_index_state WHERE image_id = ?",
+                (int(image_id),),
+            ).fetchone()
+
+    def set_face_index_state(
+        self,
+        image_id: int,
+        *,
+        model_identity: str,
+        source_signature: str,
+        person_prob: float,
+        face_count: int,
+        schema_version: int,
+        commit: bool = True,
+    ) -> None:
+        with self.lock:
+            self.connection.execute(
+                """
+                INSERT INTO face_index_state (
+                    image_id, model_identity, source_signature, person_prob,
+                    face_count, schema_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(image_id) DO UPDATE SET
+                    model_identity = excluded.model_identity,
+                    source_signature = excluded.source_signature,
+                    person_prob = excluded.person_prob,
+                    face_count = excluded.face_count,
+                    schema_version = excluded.schema_version,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    int(image_id),
+                    str(model_identity),
+                    str(source_signature),
+                    float(person_prob),
+                    int(face_count),
+                    int(schema_version),
+                ),
+            )
+            if commit:
+                self.connection.commit()
 
     def get_technical_metrics_cache(self, path_key: str) -> sqlite3.Row | None:
         with self.lock:

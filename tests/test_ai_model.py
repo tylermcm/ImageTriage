@@ -422,8 +422,8 @@ class AIModelTests(unittest.TestCase):
     def test_download_aiculler_face_model_fetches_quality_models_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             installation = resolve_aiculler_face_model_installation(
-                install_dir=Path(temp_dir) / "insightface" / "models" / "buffalo_l",
-                repo_id="owner/insightface",
+                install_dir=Path(temp_dir) / "faces" / "models" / "auraface",
+                repo_id="owner/auraface",
                 revision="main",
             )
             payloads = {filename: filename.encode("utf-8") for filename in AICULLER_FACE_MODEL_REQUIRED_FILENAMES}
@@ -440,7 +440,7 @@ class AIModelTests(unittest.TestCase):
 
             self.assertTrue(installation.is_installed)
             self.assertEqual(tuple(seen), AICULLER_FACE_MODEL_REQUIRED_FILENAMES)
-            self.assertIn("w600k_r50.onnx", seen)
+            self.assertIn("glintr100.onnx", seen)
 
 
 if __name__ == "__main__":
