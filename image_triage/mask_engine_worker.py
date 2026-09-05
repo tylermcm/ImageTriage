@@ -113,6 +113,31 @@ class MaskEngineHost:
             image_key=str(request.get("imageKey") or "") or None,
         )
 
+    def segment_many(self, request: dict[str, object]) -> dict[str, object]:
+        from pathlib import Path as _Path
+
+        raw_groups = request.get("pointGroups") or []
+        point_groups = [
+            [(float(point[0]), float(point[1])) for point in group if len(point) == 2]
+            for group in raw_groups
+        ]
+        raw_label_groups = request.get("labelGroups") or []
+        label_groups = [
+            [int(value) for value in labels]
+            for labels in raw_label_groups
+        ]
+        output_paths = [
+            _Path(str(path)).resolve() for path in (request.get("outputPaths") or [])
+        ]
+        results = self._prompt.segment_many(
+            point_groups=point_groups,
+            label_groups=label_groups,
+            output_paths=output_paths,
+            minimum_area=float(request.get("minimumArea") or 0.0),
+            image_key=str(request.get("imageKey") or "") or None,
+        )
+        return {"device": self._prompt.device, "results": results}
+
     def load_model(self, engine: str, model_dir: Path) -> str:
         return self._engine(engine).load_model(model_dir)
 
@@ -211,6 +236,8 @@ def run_server(requested_device: str, *, host: MaskEngineHost | None = None) -> 
                 _server_response(request_id, result=host.embed(request))
             elif command == "segment":
                 _server_response(request_id, result=host.segment(request))
+            elif command == "segment-many":
+                _server_response(request_id, result=host.segment_many(request))
             elif command == "shutdown":
                 _server_response(request_id, result={"stage": "shutdown"})
                 return 0

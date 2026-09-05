@@ -25,7 +25,13 @@ class _FakeEngine:
 
 def _host() -> tuple[meng.MaskEngineHost, _FakeEngine, _FakeEngine]:
     subject, semantic = _FakeEngine(), _FakeEngine()
-    host = meng.MaskEngineHost("cuda", subject_engine=subject, semantic_engine=semantic)
+    host = meng.MaskEngineHost(
+        "cuda",
+        subject_engine=subject,
+        semantic_engine=semantic,
+        prompt_engine=_FakeEngine(),
+        depth_engine=_FakeEngine(),
+    )
     return host, subject, semantic
 
 
@@ -116,12 +122,25 @@ class _FakeSam:
         return {"device": self.device, "maskPath": str(output_path), "sourceSize": [8, 6],
                 "bounds": [0, 0, 4, 4], "coverage": 0.1, "iou": 0.9, "chosenMask": 0, "suppressed": False}
 
+    def segment_many(self, *, point_groups, label_groups, output_paths, minimum_area, image_key=None):
+        self.segments.append((point_groups, label_groups, image_key))
+        return [
+            {"device": self.device, "maskPath": str(path), "sourceSize": [8, 6],
+             "bounds": [0, 0, 4, 4], "coverage": 0.1, "iou": 0.9,
+             "chosenMask": 0, "suppressed": False}
+            for path in output_paths
+        ]
+
 
 class MaskEnginePromptEngineTests(unittest.TestCase):
     def _host(self):
         sam = _FakeSam()
         host = meng.MaskEngineHost(
-            "cuda", subject_engine=_FakeEngine(), semantic_engine=_FakeEngine(), prompt_engine=sam
+            "cuda",
+            subject_engine=_FakeEngine(),
+            semantic_engine=_FakeEngine(),
+            prompt_engine=sam,
+            depth_engine=_FakeEngine(),
         )
         return host, sam
 
@@ -141,6 +160,17 @@ class MaskEnginePromptEngineTests(unittest.TestCase):
         host, sam = self._host()
         host.segment({"points": [[1, 2], [3, 4]], "outputPath": "m.png"})
         self.assertEqual([1, 1], sam.segments[0][1])
+
+    def test_segment_many_routes_independent_prompt_groups(self) -> None:
+        host, sam = self._host()
+        result = host.segment_many({
+            "pointGroups": [[[1, 2]], [[3, 4]]],
+            "labelGroups": [[1], [1]],
+            "outputPaths": ["one.png", "two.png"],
+            "imageKey": "k1",
+        })
+        self.assertEqual(2, len(result["results"]))
+        self.assertEqual([[(1.0, 2.0)], [(3.0, 4.0)]], sam.segments[0][0])
 
     def test_warm_imports_without_engine_warms_prompt_too(self) -> None:
         host, sam = self._host()

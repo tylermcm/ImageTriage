@@ -51,12 +51,27 @@ def ensure_people_search_schema(connection: sqlite3.Connection) -> None:
 def cluster_face_identities(
     connection: sqlite3.Connection,
     *,
-    threshold: float = 0.62,
+    threshold: float = 0.40,
     min_face_confidence: float = 0.0,
+    identity_model: str | None = None,
 ) -> list[PersonCluster]:
+    # 0.40 is calibrated for AuraFace (glintr100) embeddings; their same-person
+    # cosine similarities run tighter than a typical ArcFace-r50 default (~0.62).
+    # Validated on a real library: 0.40 kept the largest person cluster intact
+    # while ~0.45+ began over-splitting one person into several clusters.
+    #
+    # ``identity_model`` scopes clustering to one recognizer's embeddings so
+    # vectors written by a different recognizer never mix into the same space.
     ensure_people_search_schema(connection)
-    faces = list_face_identities(connection, min_face_confidence=min_face_confidence)
+    faces = list_face_identities(
+        connection,
+        min_face_confidence=min_face_confidence,
+        identity_model=identity_model,
+    )
     if not faces:
+        with connection:
+            connection.execute("UPDATE image_faces SET cluster_id = NULL")
+            connection.execute("DELETE FROM face_identity_clusters")
         return []
 
     previous = _load_existing_clusters(connection)
@@ -121,16 +136,32 @@ def cluster_face_identities(
                     centroid=tuple(float(value) for value in centroid),
                 )
             )
+        connection.execute(
+            """
+            DELETE FROM face_identity_clusters
+            WHERE cluster_id NOT IN (
+                SELECT DISTINCT cluster_id FROM image_faces WHERE cluster_id IS NOT NULL
+            )
+            """
+        )
     return clusters
 
 
 def assign_person_name(connection: sqlite3.Connection, cluster_id: int, name: str) -> None:
+    assign_person_names(connection, (cluster_id,), name)
+
+
+def assign_person_names(connection: sqlite3.Connection, cluster_ids, name: str) -> None:
     ensure_people_search_schema(connection)
     clean_name = " ".join(str(name or "").split())
+    ids = tuple(int(cluster_id) for cluster_id in cluster_ids)
+    if not ids:
+        return
+    stamp = datetime.now(timezone.utc).isoformat()
     with connection:
-        connection.execute(
+        connection.executemany(
             "UPDATE face_identity_clusters SET name = ?, updated_at = ? WHERE cluster_id = ?",
-            (clean_name, datetime.now(timezone.utc).isoformat(), int(cluster_id)),
+            [(clean_name, stamp, cluster_id) for cluster_id in ids],
         )
 
 
@@ -163,13 +194,21 @@ def list_face_identities(
     connection: sqlite3.Connection,
     *,
     min_face_confidence: float = 0.0,
+    identity_model: str | None = None,
 ) -> list[FaceIdentity]:
+    """List stored face identity vectors.
+
+    ``identity_model`` scopes the result to a single recognizer's embeddings.
+    This is required when the recognizer changes between app versions: different
+    recognizers can both produce 512-d vectors, so without this filter stale
+    vectors from a prior model would be clustered together with the current
+    ones — cosine across two different embedding spaces is meaningless.
+    """
     ensure_people_search_schema(connection)
     previous_factory = connection.row_factory
     connection.row_factory = sqlite3.Row
     try:
-        rows = connection.execute(
-            """
+        query = """
             SELECT image_faces.image_id, image_faces.face_index, image_faces.det_score,
                    image_faces.identity_embedding, image_faces.identity_dtype,
                    image_faces.cluster_id, images.source_path
@@ -177,10 +216,13 @@ def list_face_identities(
             LEFT JOIN images ON images.id = image_faces.image_id
             WHERE image_faces.identity_embedding IS NOT NULL
               AND image_faces.det_score >= ?
-            ORDER BY image_faces.image_id ASC, image_faces.face_index ASC
-            """,
-            (float(min_face_confidence),),
-        ).fetchall()
+        """
+        params: list[object] = [float(min_face_confidence)]
+        if identity_model is not None:
+            query += " AND image_faces.identity_model = ?"
+            params.append(identity_model)
+        query += " ORDER BY image_faces.image_id ASC, image_faces.face_index ASC"
+        rows = connection.execute(query, params).fetchall()
     finally:
         connection.row_factory = previous_factory
     identities: list[FaceIdentity] = []

@@ -70,11 +70,11 @@ The existing adapter is the global side — leave it. When ≥3 culled folders e
 
 ---
 
-## 6. Face pass (InsightFace buffalo_l) — built + validated, one UI hook left for Codex
+## 6. Face pass (AuraFace pack) — built + validated, one UI hook left for Codex
 
-A reject-side dimension for people genres + the data for a face zoom/inspector UI. **Recognition/face-sort is intentionally NOT here** — it gets its own separate download path later.
+A reject-side dimension for people genres + the data for a face zoom/inspector UI. (Recognition embeddings ship in the same pack and are used by the separate people-tagging feature.)
 
-**Model download (done, in `ai_model.py`):** `download_aiculler_face_model()` mirrors the CLIP/TOPIQ pattern. Repo `Skulleton12/insightface` @ `df17665…`, files `det_10g.onnx` + `2d106det.onnx` + `genderage.onnx` (~23 MB; `w600k_r50.onnx` recognition **excluded**). Lays them out as `<cache>/…/CLI-Culler/insightface/models/buffalo_l/` so `FaceQualityAnalyzer` loads via `aiculler_face_model_root()`. **Verified end to end** — the three files download and load.
+**Model download (done, in `ai_model.py`):** `download_aiculler_face_model()` mirrors the CLIP/TOPIQ pattern. Repo `fal/AuraFace-v1` (Apache-2.0) @ `af6d057…`, files `scrfd_10g_bnkps.onnx` + `2d106det.onnx` + `genderage.onnx` + `glintr100.onnx` (~285 MB). Lays them out as `<cache>/…/CLI-Culler/faces/models/auraface/` so `FaceQualityAnalyzer` loads via `aiculler_face_model_root()`. **Verified end to end** — the files download and load. (Replaced the earlier non-commercial InsightFace pack.)
 
 **Analyzer (`quality/face.py`):** `FaceQualityAnalyzer.analyze(bgr)` returns aggregate `face_quality` (0.7·min+0.3·avg det conf), `eye_sharpness` (Laplacian on crops around the detector eye **keypoints** — no brittle landmark indices), `face_count`, and a per-face `faces: list[FaceRecord]` (bbox, det_score, eye_sharpness, gender, age) for the **zoom pane + inspector**. Lazy + graceful (no models → all `None`). **Validated on real China portraits:** detection works (det 0.74–0.79), gender/age stable (M, 31 across two shots), eye_sharpness sensible (~8.1), bboxes correct.
 

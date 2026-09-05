@@ -69,7 +69,7 @@ The **old adapter is not removed — it *becomes* the global learner.**
 | Aesthetic | **TOPIQ via `pyiqa`** (primary) + CLIP/SigLIP text-projection axis (supplementary) | pyiqa, open-clip-torch |
 | Composition | rule-of-thirds power points + leading lines (Canny + Hough) on detected subject | OpenCV |
 | Subject saliency | `cv2.saliency.StaticSaliencySpectralResidual` + Otsu; Canny-edge fallback | OpenCV |
-| Face quality | InsightFace **buffalo_l** detection confidence, `0.7·min + 0.3·avg` | insightface + onnxruntime |
+| Face quality | **AuraFace** pack (SCRFD) detection confidence, `0.7·min + 0.3·avg` | insightface + onnxruntime |
 | Eye sharpness | Laplacian variance on eye-region crop, normalized by mean intensity | OpenCV + InsightFace landmarks |
 | Blink / eyes-closed | Eye Aspect Ratio from 106-pt landmarks, threshold `0.21`, head-pose gated (`|yaw|,|pitch| > 35°` ignore) | InsightFace + NumPy |
 | Duplicate context | perceptual hash groups (already in pipeline) | imagehash |
@@ -100,7 +100,7 @@ The **old adapter is not removed — it *becomes* the global learner.**
 
 ### Phase 2 — Pretrained specialists
 - [x] Aesthetic: CLIP/SigLIP text-projection axis built (`aesthetic.py`) — validated weak (0.074) on Canada, supplementary only. (TOPIQ already in pipeline as `technical_score`.)
-- [x] Face/eye: InsightFace `buffalo_l` → model download (`ai_model.download_aiculler_face_model`, ~23 MB) + `face.py` analyzer (face quality, eye sharpness via keypoints, gender/age, per-face records for zoom/inspector). Validated on China portraits. **Blink deferred** (needs eye-contour index calibration). Recognition/face-sort excluded (own path). UI/pipeline hooks → handoff §6.
+- [x] Face/eye: **AuraFace** pack (Apache-2.0) → model download (`ai_model.download_aiculler_face_model`, ~285 MB) + `face.py` analyzer (face quality, eye sharpness via keypoints, gender/age, per-face records for zoom/inspector). Validated on China portraits. **Blink deferred** (needs eye-contour index calibration). Recognition embeddings (glintr100) ship in the pack and drive people tagging. UI/pipeline hooks → handoff §6.
 - [ ] Composition/saliency: OpenCV spectral-residual saliency + rule-of-thirds + leading lines.
 - [ ] Integrate duplicate context from existing pHash groups.
 - [ ] Tests + integration into the pipeline.

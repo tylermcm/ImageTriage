@@ -13,6 +13,7 @@ incremental-embedding logic can be unit tested without Qt or a real model.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from aiculler.features import IMAGE_EXTENSIONS, SemanticEmbeddingExtractor, _fil
 from aiculler.storage import SQLiteFeatureStore
 from .ai_model import DEFAULT_AICULLER_CLIP_REVISION
 from .ai_runtime_packages import resolve_ai_runtime_site_packages
+from .perf import write_execution_log
 
 # Bump when the cache identity or embedding contract changes so previously
 # indexed folders are transparently re-embedded.
@@ -34,6 +36,9 @@ SEMANTIC_INDEX_SCHEMA_VERSION = 1
 # TinyCLIP (onnx-community/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M) image_embeds dim.
 SEMANTIC_EMBEDDING_DIM = 512
 SEMANTIC_INDEX_COMMIT_BATCH = 32
+
+_RUNTIME_DLL_HANDLES: list[object] = []
+_RUNTIME_DLL_PATHS: set[str] = set()
 
 
 def _source_signature(path: Path) -> dict[str, object]:
@@ -192,24 +197,53 @@ def _full_workflow_signature_matches(metadata_json: object, signature: dict[str,
 
 
 def ensure_semantic_onnx_runtime(*, device: str = "auto") -> None:
-    """Make the separately installed ONNX Runtime importable if needed."""
-    try:
-        import onnxruntime  # noqa: F401
+    """Expose the selected managed runtime before importing ONNX Runtime.
 
-        return
-    except ImportError:
-        pass
-    for site_packages in resolve_ai_runtime_site_packages(device=device):
+    The frozen GUI bundles a CPU ONNX Runtime for baseline features, while the
+    managed GPU profile contains CUDA ONNX Runtime plus optional packages such
+    as InsightFace. Importing the bundled copy first permanently pins the
+    process to CPU and also leaves InsightFace undiscoverable. Prefer the
+    managed profile on frozen builds before the first import; source builds keep
+    their active environment authoritative and use the managed profile only as
+    a fallback.
+    """
+    frozen = bool(getattr(sys, "frozen", False))
+    already_loaded = "onnxruntime" in sys.modules
+    site_directories = tuple(resolve_ai_runtime_site_packages(device=device))
+    for site_packages in site_directories:
         path_text = str(site_packages)
-        if path_text not in sys.path:
+        if frozen and not already_loaded:
+            if path_text in sys.path:
+                sys.path.remove(path_text)
+            sys.path.insert(0, path_text)
+        elif path_text not in sys.path:
             sys.path.append(path_text)
+        if os.name == "nt":
+            add_dll_directory = getattr(os, "add_dll_directory", None)
+            if add_dll_directory is not None:
+                for directory in (site_packages / "torch" / "lib", *site_packages.glob("*.libs")):
+                    if not directory.is_dir():
+                        continue
+                    directory_text = str(directory)
+                    if directory_text in _RUNTIME_DLL_PATHS:
+                        continue
+                    try:
+                        _RUNTIME_DLL_HANDLES.append(add_dll_directory(directory_text))
+                        _RUNTIME_DLL_PATHS.add(directory_text)
+                    except OSError:
+                        pass
     try:
-        import onnxruntime  # noqa: F401
+        import onnxruntime
     except ImportError as exc:
         raise RuntimeError(
             "ONNX Runtime is unavailable. Run AI > Runtime And Cache > "
             "Install AI Runtime to enable semantic search."
         ) from exc
+    providers = tuple(onnxruntime.get_available_providers())
+    write_execution_log(
+        f"onnx-runtime: version={onnxruntime.__version__}, providers={providers}, "
+        f"requested_device={device}, loaded_before_activation={already_loaded}"
+    )
 
 
 class SemanticIndexSignals(QObject):
@@ -276,9 +310,15 @@ class SemanticFolderIndexTask(QRunnable):
         if self.clip_vision_model is None:
             raise RuntimeError("No TinyCLIP model configured for semantic indexing")
         ensure_semantic_onnx_runtime(device=self.device)
+        # Only an explicit "cpu" device pins CPU providers; "auto"/"cuda" pass
+        # None so the extractor keeps its GPU-preferred default. (Without an
+        # explicit list it defaults to preferred_onnx_providers() = CUDA-if-
+        # available, so a bare device string alone would not force CPU.)
+        providers = ["CPUExecutionProvider"] if self.device.startswith("cpu") else None
         return SemanticEmbeddingExtractor(
             self.clip_vision_model,
             clip_fallback_onnx_path=self.clip_fallback_model,
+            providers=providers,
             intra_op_num_threads=self.intra_op_num_threads,
         )
 

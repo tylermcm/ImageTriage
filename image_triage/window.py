@@ -98,7 +98,6 @@ from .ai_runtime_packages import (
     estimate_ai_runtime_download_size_mb,
     estimate_ai_runtime_installed_size_mb,
     load_ai_runtime_installation_status,
-    resolve_ai_runtime_site_packages,
     uninstall_ai_runtime,
 )
 from .archive_ops import (
@@ -250,7 +249,7 @@ from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoo
 from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
 from .models import DeleteMode, FilterMode, ImageRecord, ImageVariant, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
 from .perceptual_hash import hamming_distance_int
-from .perf import perf_logger, performance_log_dir
+from .perf import perf_logger, performance_log_dir, write_execution_log
 from .preview import FullScreenPreview, PreviewEntry
 from .ui import preview_studio
 from .workflows import (
@@ -303,7 +302,9 @@ from .semantic_index import (
     SEMANTIC_EMBEDDING_DIM,
     SemanticFolderIndexTask,
     compute_semantic_model_identity,
+    ensure_semantic_onnx_runtime,
 )
+from .face_index import FaceFolderIndexTask
 from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
 from .thumbnails import ThumbnailManager
@@ -592,27 +593,7 @@ class UnifiedSearchTask(QRunnable):
 
     @staticmethod
     def _ensure_text_search_runtime(*, device: str) -> None:
-        try:
-            import onnxruntime  # noqa: F401
-
-            return
-        except ImportError:
-            pass
-
-        for site_packages in resolve_ai_runtime_site_packages(device=device):
-            path_text = str(site_packages)
-            if path_text not in sys.path:
-                # Keep the GUI's own packages authoritative while making the
-                # separately installed AI dependencies available on demand.
-                sys.path.append(path_text)
-
-        try:
-            import onnxruntime  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError(
-                "ONNX Runtime is unavailable. Run AI > Runtime And Cache > "
-                "Install AI Runtime, then retry the search."
-            ) from exc
+        ensure_semantic_onnx_runtime(device=device)
 
     @staticmethod
     def _empty_result(query_text: str) -> dict[str, object]:
@@ -3172,6 +3153,23 @@ class MainWindow(QMainWindow):
         self._semantic_index_completed = 0
         self._semantic_index_total = 0
         self._semantic_index_active = False
+        # Person-filtered face pass (people tagging), layered on the semantic index.
+        self._face_index_pool = QThreadPool(self)
+        self._face_index_pool.setMaxThreadCount(1)
+        self._active_face_index_task: FaceFolderIndexTask | None = None
+        self._face_index_token = 0
+        self._face_index_scope_key = ""
+        self._face_index_signature: tuple[object, ...] = ()
+        self._face_index_active = False
+        self._face_index_people_count = 0
+        self._face_index_completed = 0
+        self._face_index_total = 0
+        # Background GPU indexing yields the GPU to the interactive editor: it is
+        # suspended (tasks cancelled) while the full-screen preview/editor is open
+        # and resumed on close. _background_index_records holds the last folder's
+        # records so the incremental passes can be restarted on resume.
+        self._background_indexing_suspended = False
+        self._background_index_records: list[ImageRecord] = []
         self._drive_type_cache: dict[str, int] = {}
         self._scan_token = 0
         self._scan_showed_cached = False
@@ -4218,6 +4216,8 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.actions.burst_groups)
         menu.addAction(self.actions.burst_stacks)
+        menu.addSeparator()
+        menu.addAction(self.actions.manage_people)
         return menu
 
     def _build_view_toolbar_menu(self) -> QMenu:
@@ -8560,6 +8560,30 @@ class MainWindow(QMainWindow):
         self._remember_current_folder_view_state()
         self._save_window_state()
         self._settings.sync()
+
+        # Free everything holding the GPU BEFORE the replacement launches, or the
+        # two instances fight over CUDA (the replacement's mask/index work then
+        # queues for tens of seconds). Cancelling the index tasks also unblocks
+        # shutdown: their QThreadPools waitForDone() on teardown, so a running
+        # AuraFace/TinyCLIP pass would otherwise keep this process (and its GPU
+        # session) alive for minutes — the "reload leaves a zombie" bug.
+        try:
+            self._suspend_background_indexing()
+        except Exception:
+            pass
+        try:
+            # Kill the mask_engine_worker child directly rather than via
+            # service.shutdown(): shutdown() takes the service lock, which would
+            # deadlock if a mask op is currently wedged holding it. We are exiting
+            # anyway, so a lock-free kill is correct and can't hang.
+            from .mask_engine_service import default_mask_engine_service
+
+            worker = getattr(default_mask_engine_service(), "_process", None)
+            if worker is not None and worker.poll() is None:
+                worker.kill()
+        except Exception:
+            pass
+
         args = [sys.executable, "-m", "image_triage", *sys.argv[1:]]
         cwd = Path(__file__).resolve().parent.parent
         creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -8574,7 +8598,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Restart Failed", f"Could not restart Image Triage.\n\n{exc}")
             self.statusBar().showMessage("Restart failed.")
             return
+        # Guarantee this instance actually exits. close() alone is unreliable
+        # here — a running background task, the mask worker, or a closeEvent
+        # prompt can keep the event loop (and the GPU) alive. State is already
+        # saved and the worker shut down, so a hard exit is safe for a dev reload.
         self.close()
+        os._exit(0)
 
     def _restore_details_view_state(self) -> None:
         splitter_state = self._settings.value(self.DETAILS_SPLITTER_STATE_KEY, QByteArray())
@@ -10020,6 +10049,8 @@ class MainWindow(QMainWindow):
         self._annotation_persistence_queue.flush_blocking()
         if self._active_semantic_index_task is not None:
             self._active_semantic_index_task.cancel()
+        if self._active_face_index_task is not None:
+            self._active_face_index_task.cancel()
         self._flush_aiculler_internal_label_cache()
         self._flush_aiculler_global_label_queue()
         self._shutdown_aiculler_telemetry_logger()
@@ -12016,6 +12047,17 @@ class MainWindow(QMainWindow):
         self._semantic_index_completed = 0
         self._semantic_index_total = 0
         self._semantic_index_active = False
+        self._reset_face_index_state()
+
+    def _reset_face_index_state(self) -> None:
+        self._face_index_token += 1
+        if self._active_face_index_task is not None:
+            self._active_face_index_task.cancel()
+            self._active_face_index_task = None
+        self._face_index_scope_key = ""
+        self._face_index_signature = ()
+        self._face_index_active = False
+        self._face_index_people_count = 0
 
     def _schedule_unified_search_for_current_filter(self) -> str:
         signature = self._unified_search_current_signature()
@@ -12035,16 +12077,22 @@ class MainWindow(QMainWindow):
             return "Object and people search requires an opened folder."
         if self._active_unified_search_task is not None or self._unified_search_completed_signature == signature:
             return ""
+        # Hold the search until background indexing for this folder finishes, so
+        # results arrive as one complete set instead of trickling in as each
+        # batch of embeddings lands. The search is re-triggered on completion.
+        if (
+            self._semantic_index_active
+            and normalized_path_key(self._current_folder) == self._semantic_index_scope_key
+        ):
+            return self._semantic_index_status_text()
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
             return "Indexed search is unavailable for this folder."
         db_path = aiculler_db_path(paths)
         if not db_path.exists():
-            if self._semantic_index_active:
-                return self._semantic_index_status_text()
             return (
                 "Filename search only. Object and people search becomes available "
-                "as the folder finishes indexing."
+                "once the folder has been indexed."
             )
         try:
             runtime = self._configured_aiculler_runtime(workers=1)
@@ -12092,13 +12140,9 @@ class MainWindow(QMainWindow):
         if query_text:
             if hit_count:
                 self.statusBar().showMessage(f"Indexed search found {hit_count} image(s)")
-            elif self._semantic_index_active:
-                self.statusBar().showMessage(
-                    f"{self._semantic_index_status_text()} Results will refresh as photos finish indexing."
-                )
             else:
                 self.statusBar().showMessage(
-                    "No matches. Lower the confidence filter, or wait for indexing to finish if the folder changed."
+                    "No matches. Try different words, or lower the Min Confidence filter."
                 )
 
     def _handle_unified_search_failed(self, folder: str, token: int, message: str) -> None:
@@ -12131,6 +12175,11 @@ class MainWindow(QMainWindow):
             return
         if not records:
             return
+        # Remember the records so background indexing can be restarted after the
+        # editor closes (see _resume_background_indexing).
+        self._background_index_records = list(records)
+        if self._background_indexing_suspended:
+            return  # editor owns the GPU; resume kicks this off again on close
         if not (self._ai_runtime_available() and self._aiculler_clip_model_available()):
             return
         paths = self._aiculler_paths_for_current_folder()
@@ -12184,7 +12233,6 @@ class MainWindow(QMainWindow):
             expected_dim=SEMANTIC_EMBEDDING_DIM,
         )
         task.signals.progress.connect(self._handle_semantic_index_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.batch_ready.connect(self._handle_semantic_index_batch_ready, Qt.ConnectionType.QueuedConnection)
         task.signals.finished.connect(self._handle_semantic_index_finished, Qt.ConnectionType.QueuedConnection)
         task.signals.failed.connect(self._handle_semantic_index_failed, Qt.ConnectionType.QueuedConnection)
         self._active_semantic_index_task = task
@@ -12205,19 +12253,26 @@ class MainWindow(QMainWindow):
         if self._filter_query.search_text.strip():
             self.statusBar().showMessage(self._semantic_index_status_text())
 
-    def _handle_semantic_index_batch_ready(self, folder: str, token: int) -> None:
-        if not self._semantic_index_event_is_current(folder, token):
-            return
-        self._refresh_pending_unified_search()
-
     def _handle_semantic_index_finished(self, folder: str, token: int, indexed: int, ready_total: int) -> None:
         if not self._semantic_index_event_is_current(folder, token):
+            write_execution_log(
+                f"face-index: semantic finished but STALE (token {token} != {self._semantic_index_token}); "
+                f"not chaining face pass"
+            )
             return
         self._active_semantic_index_task = None
         self._semantic_index_active = False
+        write_execution_log(
+            f"face-index: semantic index finished (indexed={indexed}, ready_total={ready_total}) "
+            f"-> chaining face pass"
+        )
+        # Now that the whole folder is indexed, run any query the user was
+        # waiting on once, over the complete set.
         if self._filter_query.search_text.strip():
-            self._refresh_pending_unified_search()
             self.statusBar().showMessage("Semantic search ready")
+            self._run_deferred_unified_search()
+        # The face pass reuses the embeddings just produced, so start it now.
+        self._maybe_start_face_index()
 
     def _handle_semantic_index_failed(self, folder: str, token: int, message: str) -> None:
         if not self._semantic_index_event_is_current(folder, token):
@@ -12226,14 +12281,16 @@ class MainWindow(QMainWindow):
         self._semantic_index_active = False
         if self._filter_query.search_text.strip():
             self.statusBar().showMessage(f"Semantic search indexing failed: {message}")
+            # Fall back to whatever was indexed (plus filename matches) so the
+            # search box is not left hanging on the deferred state.
+            self._run_deferred_unified_search()
 
-    def _refresh_pending_unified_search(self) -> None:
-        """Re-run the active search so newly indexed photos surface as they land."""
+    def _run_deferred_unified_search(self) -> None:
+        """Run the query held back during indexing, as a single complete pass."""
         if not self._filter_query.search_text.strip():
             return
         if self._scope_kind != "folder" or not self._current_folder:
             return
-        # Force a re-run even though the query signature is unchanged.
         self._unified_search_completed_signature = ()
         if self._active_unified_search_task is not None:
             self._active_unified_search_task.cancel()
@@ -12241,6 +12298,151 @@ class MainWindow(QMainWindow):
         notice = self._schedule_unified_search_for_current_filter()
         if notice:
             self.statusBar().showMessage(notice)
+
+    def _maybe_start_face_index(self) -> None:
+        """Kick off the person-filtered face pass for the current folder.
+
+        Best-effort and layered on the semantic index: it reuses the stored
+        TinyCLIP embeddings for a cheap person pre-filter and runs AuraFace only
+        on the flagged subset. Requires the AI runtime and the AuraFace face
+        model to be installed; otherwise it stays quiet (people tagging simply
+        does not populate until the face model is installed).
+        """
+        if self._scope_kind != "folder" or not self._current_folder:
+            write_execution_log("face-index: skip (not a folder scope)")
+            return
+        if self._background_indexing_suspended:
+            write_execution_log("face-index: skip (background indexing suspended — editor open)")
+            return  # editor owns the GPU; resume kicks this off again on close
+        if not (self._ai_runtime_available() and self._aiculler_face_model_available()):
+            write_execution_log(
+                f"face-index: skip (runtime_available={self._ai_runtime_available()}, "
+                f"face_model_available={self._aiculler_face_model_available()})"
+            )
+            return
+        paths = self._aiculler_paths_for_current_folder()
+        if paths is None:
+            write_execution_log("face-index: skip (no aiculler paths)")
+            return
+        db_path = aiculler_db_path(paths)
+        if not db_path.exists():
+            write_execution_log(f"face-index: skip (db missing: {db_path})")
+            return
+        try:
+            runtime = self._configured_aiculler_runtime(workers=1)
+        except Exception as exc:
+            write_execution_log(f"face-index: skip (runtime config failed: {exc})")
+            return
+        text_model = getattr(runtime, "clip_text_model", None)
+        tokenizer = getattr(runtime, "tokenizer", None)
+        if text_model is None or tokenizer is None or not Path(text_model).exists() or not Path(tokenizer).exists():
+            write_execution_log(
+                f"face-index: skip (clip text model/tokenizer missing: text={text_model}, tok={tokenizer})"
+            )
+            return
+
+        scope_key = normalized_path_key(self._current_folder)
+        signature = (scope_key, str(text_model))
+        if (
+            self._active_face_index_task is not None
+            and self._face_index_scope_key == scope_key
+            and self._face_index_signature == signature
+        ):
+            write_execution_log("face-index: skip (already running for this folder)")
+            return
+        if self._active_face_index_task is not None:
+            self._active_face_index_task.cancel()
+            self._active_face_index_task = None
+        write_execution_log(f"face-index: STARTING pass for {self._current_folder} (device={getattr(runtime,'device','?')})")
+
+        self._face_index_token += 1
+        token = self._face_index_token
+        self._face_index_scope_key = scope_key
+        self._face_index_signature = signature
+        self._face_index_active = True
+        task = FaceFolderIndexTask(
+            folder=self._current_folder,
+            token=token,
+            db_path=db_path,
+            clip_text_model=text_model,
+            clip_tokenizer=tokenizer,
+            clip_fallback_text_model=getattr(runtime, "clip_fallback_text_model", None),
+            device=str(getattr(runtime, "device", "auto")),
+        )
+        task.signals.progress.connect(self._handle_face_index_progress, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(self._handle_face_index_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(self._handle_face_index_failed, Qt.ConnectionType.QueuedConnection)
+        self._active_face_index_task = task
+        self._face_index_pool.start(task)
+
+    def _suspend_background_indexing(self) -> None:
+        """Hand the GPU to the interactive editor: cancel the background semantic
+        and face index passes so they stop submitting GPU work, freeing the device
+        for the mask engine (SAM / OneFormer / BiRefNet). Cancellation is checked
+        between images, so any in-flight single inference finishes (<~1s) and then
+        the task returns, releasing its onnxruntime session. The passes are
+        incremental, so no progress is lost — resume picks up where they stopped."""
+        if self._background_indexing_suspended:
+            write_execution_log("gpu-arbitration: suspend requested but already suspended")
+            return
+        sem_active = self._active_semantic_index_task is not None
+        face_active = self._active_face_index_task is not None
+        write_execution_log(
+            f"gpu-arbitration: editor opened -> suspend indexing "
+            f"(semantic_task={sem_active}, face_task={face_active})"
+        )
+        self._background_indexing_suspended = True
+        if self._active_semantic_index_task is not None:
+            self._active_semantic_index_task.cancel()
+            self._active_semantic_index_task = None
+            self._semantic_index_active = False
+        if self._active_face_index_task is not None:
+            self._active_face_index_task.cancel()
+            self._active_face_index_task = None
+            self._face_index_active = False
+
+    def _resume_background_indexing(self) -> None:
+        """Editor closed: resume background indexing on the GPU where it left off.
+        The semantic pass is incremental and chains into the face pass on finish,
+        so restarting it is enough to continue both."""
+        if not self._background_indexing_suspended:
+            return
+        write_execution_log(
+            f"gpu-arbitration: editor closed -> resume indexing "
+            f"(records={len(self._background_index_records)})"
+        )
+        self._background_indexing_suspended = False
+        if self._background_index_records:
+            self._maybe_start_semantic_index(self._background_index_records)
+
+    def _face_index_event_is_current(self, folder: str, token: int) -> bool:
+        return (
+            token == self._face_index_token
+            and normalized_path_key(folder) == normalized_path_key(self._current_folder)
+        )
+
+    def _handle_face_index_progress(self, folder: str, token: int, completed: int, total: int) -> None:
+        if not self._face_index_event_is_current(folder, token):
+            return
+        # Restrained: no chrome yet (People panel lands in Phase 3). Keep it quiet
+        # unless diagnostics want it; progress is tracked for that panel to read.
+        self._face_index_completed = int(completed)
+        self._face_index_total = int(total)
+
+    def _handle_face_index_finished(self, folder: str, token: int, faces_indexed: int, people_count: int) -> None:
+        if not self._face_index_event_is_current(folder, token):
+            return
+        self._active_face_index_task = None
+        self._face_index_active = False
+        self._face_index_people_count = int(people_count)
+
+    def _handle_face_index_failed(self, folder: str, token: int, message: str) -> None:
+        if not self._face_index_event_is_current(folder, token):
+            return
+        self._active_face_index_task = None
+        self._face_index_active = False
+        perf_logger().log("face_index.failed", folder=folder, message=message)
+        self.statusBar().showMessage(f"People indexing failed: {message}")
 
     def _set_file_type_filter(self, mode: FileTypeFilter) -> None:
         if self._filter_query.file_type == mode:
@@ -14193,10 +14395,20 @@ class MainWindow(QMainWindow):
             return
         db_path = aiculler_db_path(paths)
         if not db_path.exists():
-            self.statusBar().showMessage("Run Index & Score before managing people.")
+            self.statusBar().showMessage("People are found automatically once this folder finishes indexing.")
             return
+        # Retry a previously failed or interrupted face pass and let the modal
+        # dialog observe its progressive commits through its refresh timer.
+        if not self._semantic_index_active:
+            self._maybe_start_face_index()
         dialog = PeopleSearchDialog(db_path, self)
-        if self._exec_dialog_with_geometry(dialog, "people_search") == dialog.DialogCode.Accepted:
+        # Always open at the dialog's own 3x3 default (do not restore a saved
+        # geometry, which could reopen at a cramped 2-column size), centered on
+        # the main window.
+        frame = dialog.frameGeometry()
+        frame.moveCenter(self.frameGeometry().center())
+        dialog.move(frame.topLeft())
+        if dialog.exec() == dialog.DialogCode.Accepted:
             self._unified_search_completed_signature = ()
             self._unified_search_path_keys = frozenset()
             self._unified_search_rank_by_path = {}
@@ -17245,6 +17457,8 @@ class MainWindow(QMainWindow):
         self._show_winner_ladder_state()
 
     def _handle_preview_closed(self) -> None:
+        # Editor closed — resume background GPU indexing where it left off.
+        self._resume_background_indexing()
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
         if not self._preview_navigation_dirty:
@@ -23881,6 +24095,9 @@ class MainWindow(QMainWindow):
                 (time.perf_counter() - controls_start) * 1000.0,
                 compare=self._compare_enabled,
             )
+        # The full-screen editor needs the GPU for masking (SAM / OneFormer /
+        # BiRefNet); pause background indexing so it isn't fighting for CUDA.
+        self._suspend_background_indexing()
         self.preview.show_entries(entries)
         self._sync_preview_browse_context(anchor_index if anchor_index >= 0 else index)
         self._schedule_preview_preload(anchor_index if anchor_index >= 0 else index)

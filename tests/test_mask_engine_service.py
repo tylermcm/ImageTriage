@@ -43,6 +43,16 @@ class _FakeStdin:
             result = {"device": "cuda", "maskPath": "m.png", "sourceSize": [8, 6],
                       "bounds": [1, 2, 3, 4], "coverage": 0.1, "iou": 0.9,
                       "chosenMask": 0, "suppressed": False}
+        elif command == "segment-many":
+            result = {
+                "device": "cuda",
+                "results": [
+                    {"device": "cuda", "maskPath": path, "sourceSize": [8, 6],
+                     "bounds": [1, 2, 3, 4], "coverage": 0.1, "iou": 0.9,
+                     "chosenMask": 0, "suppressed": False}
+                    for path in request["outputPaths"]
+                ],
+            }
         elif command == "shutdown":
             result = {"stage": "shutdown"}
         else:
@@ -157,6 +167,24 @@ class MaskEngineServiceTests(unittest.TestCase):
                 ("segment", "prompt"),
                 ("shutdown", None),
             ],
+            process.commands,
+        )
+
+    def test_prompt_batch_uses_one_segment_command_for_independent_objects(self) -> None:
+        service, process = self._service()
+        results = service.infer_prompt_many(
+            model_dir=Path("m/sam").resolve(),
+            input_path=Path("prev.png"),
+            output_paths=[Path("one.png"), Path("two.png")],
+            point_groups=[[(5.0, 5.0)], [(7.0, 8.0)]],
+            label_groups=[[1], [1]],
+            image_key="imgA",
+        )
+
+        self.assertEqual(2, len(results))
+        self.assertEqual(
+            [("warm-imports", None), ("load-model", "prompt"),
+             ("embed", "prompt"), ("segment-many", "prompt")],
             process.commands,
         )
 

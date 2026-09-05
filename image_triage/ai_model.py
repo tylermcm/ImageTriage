@@ -125,21 +125,26 @@ AICULLER_CLIP_MODEL_REQUIRED_FILENAMES = (
     "onnx/model.onnx",
 )
 AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES = ("topiq_nr.onnx",)
-# Face and people-search models (InsightFace buffalo_l): detection, landmarks,
-# gender/age, and recognition embeddings.
-DEFAULT_AICULLER_FACE_REPO_ID = "Skulleton12/insightface"
-DEFAULT_AICULLER_FACE_REVISION = "df17665542088a2ba27cd6e534f7608e98fd9ea0"
-DEFAULT_AICULLER_FACE_SIZE_MB = 190
+# Face and people-search models (AuraFace, Apache-2.0): detection (SCRFD),
+# landmarks, gender/age, and ArcFace-style recognition embeddings. AuraFace is a
+# commercially-licensable InsightFace FaceAnalysis pack, loaded via
+# FaceAnalysis(name="auraface").
+DEFAULT_AICULLER_FACE_REPO_ID = "fal/AuraFace-v1"
+DEFAULT_AICULLER_FACE_REVISION = "af6d057c9b0ec4071d4c49c80e3539258798b609"
+DEFAULT_AICULLER_FACE_SIZE_MB = 285
 DEFAULT_AICULLER_FACE_MODEL_SHA256: dict[str, str] = {}
 AICULLER_FACE_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_DIR"
 AICULLER_FACE_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REPO_ID"
 AICULLER_FACE_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REVISION"
-INSIGHTFACE_PACK_NAME = "buffalo_l"
+AICULLER_FACE_PACK_NAME = "auraface"
+# The recognition embedding model within the pack (used to identify the
+# identity_model tag stored with each face embedding).
+AICULLER_FACE_RECOGNITION_MODEL = "glintr100.onnx"
 AICULLER_FACE_MODEL_REQUIRED_FILENAMES = (
-    "det_10g.onnx",
+    "scrfd_10g_bnkps.onnx",
     "2d106det.onnx",
     "genderage.onnx",
-    "w600k_r50.onnx",
+    "glintr100.onnx",
 )
 AI_MODEL_USER_AGENT = "ImageTriage/0.1"
 
@@ -428,17 +433,27 @@ def default_aiculler_topiq_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_
 
 
 def default_aiculler_face_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_FACE_REPO_ID) -> Path:
-    # Laid out so InsightFace FaceAnalysis(name="buffalo_l", root=<.../insightface>)
-    # finds the ONNX at <root>/models/buffalo_l/<file>.onnx.
+    # Laid out so InsightFace FaceAnalysis(name=<pack>, root=<.../faces>)
+    # finds the ONNX at <root>/models/<pack>/<file>.onnx.
     return (
         _default_user_cache_root()
         / "image_triage_ai_cache"
         / "models"
         / "CLI-Culler"
-        / "insightface"
+        / "faces"
         / "models"
-        / INSIGHTFACE_PACK_NAME
+        / AICULLER_FACE_PACK_NAME
     )
+
+
+def active_face_identity_model() -> str:
+    """The ``identity_model`` tag stored with face embeddings from the active pack.
+
+    Must match ``FaceQualityAnalyzer._identity_model`` (``f"insightface:{name}"``).
+    Use it to scope clustering to the current recognizer so embeddings written by
+    a different (e.g. older) recognizer are never mixed into the same 512-d space.
+    """
+    return f"insightface:{AICULLER_FACE_PACK_NAME}"
 
 
 def aiculler_face_model_root(*, install_dir: str | Path | None = None) -> Path:

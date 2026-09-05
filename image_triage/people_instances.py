@@ -56,6 +56,7 @@ INSTANCE_MERGE_X_OVERLAP = 0.70
 INSTANCE_MERGE_Y_GAP = 0.03   # fraction of frame height
 # Cap the SAM calls so a dense crowd can't stall the first hover.
 MAX_INSTANCE_SEEDS = 40
+INSTANCE_SEED_BATCH_SIZE = 8
 
 
 @dataclass(frozen=True)
@@ -195,12 +196,15 @@ def segment_people_instances(
     if not people_path.is_file():
         return []
 
+    write_execution_log(f"people-instances: START {source.name}")
     phase = time.perf_counter()
     model_installation = installation or resolve_sam_model_installation()
     if not model_installation.is_installed:
+        write_execution_log("people-instances: SAM model not installed -> downloading")
         _progress(progress_callback, "Downloading selection model...")
         download_sam_model(model_installation)
     validate_semantic_runtime()
+    write_execution_log(f"people-instances: setup done in {_ms_since(phase):.0f} ms")
     logger.duration("ai.mask.people_instances.setup", _ms_since(phase))
 
     phase = time.perf_counter()
@@ -244,6 +248,9 @@ def segment_people_instances(
     logger.duration(
         "ai.mask.people_instances.seeds", _ms_since(phase), seed_candidates=len(seeds)
     )
+    write_execution_log(
+        f"people-instances: {len(seeds)} seed candidates, preview={preview_width}x{preview_height}"
+    )
     if not seeds:
         return []
 
@@ -256,87 +263,111 @@ def segment_people_instances(
     segment_ms_total = 0.0
     first_call_ms = 0.0
 
-    for (sy, sx) in seeds:
-        if claimed[sy, sx]:
-            skipped_claimed += 1
-            continue  # already inside a discovered person
-        if calls >= max_seeds:
-            break
-        calls += 1
+    seed_cursor = 0
+    batch_number = 0
+    while seed_cursor < len(seeds) and calls < max_seeds:
+        batch: list[tuple[int, int]] = []
+        while seed_cursor < len(seeds) and len(batch) < INSTANCE_SEED_BATCH_SIZE and calls + len(batch) < max_seeds:
+            sy, sx = seeds[seed_cursor]
+            seed_cursor += 1
+            if claimed[sy, sx]:
+                skipped_claimed += 1
+                continue
+            batch.append((sy, sx))
+        if not batch:
+            continue
+        batch_number += 1
+        calls += len(batch)
         _progress(progress_callback, f"Finding people... ({len(instances)} so far)")
-        output_path = cache_dir / f"instance-{uuid.uuid4().hex[:10]}.png"
+        output_paths = [cache_dir / f"instance-{uuid.uuid4().hex[:10]}.png" for _ in batch]
         call_started = time.perf_counter()
+        write_execution_log(
+            f"people-instances: SAM batch {batch_number} start ({len(batch)} seeds)"
+        )
         try:
-            infer_result = service.infer_prompt(
+            infer_results = service.infer_prompt_many(
                 model_dir=model_installation.install_dir,
                 input_path=preview_path,
-                output_path=output_path,
-                points=[(float(sx), float(sy))],
-                labels=[1],
+                output_paths=output_paths,
+                point_groups=[[(float(sx), float(sy))] for sy, sx in batch],
+                label_groups=[[1] for _ in batch],
                 image_key=cache_key,
                 minimum_area=PROMPT_MASK_MINIMUM_AREA,
                 progress_callback=None,
             )
             call_ms = _ms_since(call_started)
             segment_ms_total += call_ms
-            if calls == 1:
+            if batch_number == 1:
                 first_call_ms = call_ms
+            write_execution_log(
+                f"people-instances: SAM batch {batch_number} done in {call_ms:.0f} ms "
+                f"({len(batch)} seeds, device={str(infer_results[0].get('device') if infer_results else 'unknown')})"
+            )
             logger.duration(
                 "ai.mask.people_instances.segment",
                 call_ms,
-                seed=calls,
-                device=str(infer_result.get("device") or "unknown"),
-                first=calls == 1,
+                batch=batch_number,
+                seeds=len(batch),
+                device=str(infer_results[0].get("device") if infer_results else "unknown"),
+                first=batch_number == 1,
             )
-            mask = np.asarray(Image.open(output_path).convert("L"), dtype=np.uint8) > 127
         except Exception as exc:  # noqa: BLE001
+            write_execution_log(
+                f"people-instances: SAM batch {batch_number} FAILED in {_ms_since(call_started):.0f} ms: {exc}"
+            )
             logger.log(
                 "ai.mask.people_instances.seed_failed",
                 error=str(exc),
-                seed=calls,
+                batch=batch_number,
                 elapsed_ms=round(_ms_since(call_started), 1),
             )
+            for output_path in output_paths:
+                output_path.unlink(missing_ok=True)
             continue
-        finally:
-            output_path.unlink(missing_ok=True)
 
-        area = int(mask.sum())
-        if area == 0:
-            continue
-        claimed |= mask  # even rejects suppress their seeds so we don't re-probe
-        frac = area / frame_area
-        if frac < INSTANCE_MIN_AREA or frac > INSTANCE_MAX_AREA:
-            continue
-        overlap = int(np.logical_and(mask, people).sum()) / area
-        if overlap < INSTANCE_MIN_PEOPLE_OVERLAP:
-            continue
-        if any(
-            _iou(mask, inst.mask) > INSTANCE_DEDUPE_IOU
-            or _containment(mask, inst.mask, area, inst.area) > INSTANCE_DEDUPE_CONTAINMENT
-            for inst in instances
-        ):
-            continue
-        instances.append(
-            PersonInstance(
-                mask=mask,
-                seed_norm=(
-                    (sx + 0.5) / preview_width,
-                    (sy + 0.5) / preview_height,
-                ),
-                bounds=_bounds(mask),
-                area=area,
-            )
-        )
+        for (sy, sx), output_path in zip(batch, output_paths):
+            try:
+                if claimed[sy, sx]:
+                    skipped_claimed += 1
+                    continue
+                mask = np.asarray(Image.open(output_path).convert("L"), dtype=np.uint8) > 127
+                area = int(mask.sum())
+                if area == 0:
+                    continue
+                claimed |= mask
+                frac = area / frame_area
+                if frac < INSTANCE_MIN_AREA or frac > INSTANCE_MAX_AREA:
+                    continue
+                overlap = int(np.logical_and(mask, people).sum()) / area
+                if overlap < INSTANCE_MIN_PEOPLE_OVERLAP:
+                    continue
+                if any(
+                    _iou(mask, inst.mask) > INSTANCE_DEDUPE_IOU
+                    or _containment(mask, inst.mask, area, inst.area) > INSTANCE_DEDUPE_CONTAINMENT
+                    for inst in instances
+                ):
+                    continue
+                instances.append(
+                    PersonInstance(
+                        mask=mask,
+                        seed_norm=((sx + 0.5) / preview_width, (sy + 0.5) / preview_height),
+                        bounds=_bounds(mask),
+                        area=area,
+                    )
+                )
+            finally:
+                output_path.unlink(missing_ok=True)
 
     loop_ms = _ms_since(started)
     instances = _merge_body_parts(instances, preview_height)
     total_ms = _ms_since(overall_started)
     other_seg_ms = segment_ms_total - first_call_ms
-    rest_calls = max(0, calls - 1)
+    rest_calls = max(0, batch_number - 1)
     logger.duration(
         "ai.mask.people_instances.total",
         total_ms,
         seeds=calls,
+        batches=batch_number,
         skipped=skipped_claimed,
         instances=len(instances),
         segment_ms=round(segment_ms_total, 1),
@@ -349,9 +380,9 @@ def segment_people_instances(
     write_execution_log(
         "people-instances: "
         f"{len(instances)} people in {total_ms / 1000.0:.1f}s "
-        f"({calls} SAM calls, {skipped_claimed} skipped; "
-        f"first-call {first_call_ms / 1000.0:.1f}s, "
-        f"rest {other_seg_ms / 1000.0:.1f}s over {rest_calls} calls) "
+        f"({calls} seeds in {batch_number} SAM batches, {skipped_claimed} skipped; "
+        f"first-batch {first_call_ms / 1000.0:.1f}s, "
+        f"rest {other_seg_ms / 1000.0:.1f}s over {rest_calls} batches) "
         f"preview={preview_width}x{preview_height}"
     )
     return instances

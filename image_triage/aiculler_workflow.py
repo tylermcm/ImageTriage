@@ -20,7 +20,11 @@ from typing import Mapping, Sequence
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .ai_model import AICULLER_FACE_MODEL_REQUIRED_FILENAMES, DEFAULT_AICULLER_CLIP_REPO_ID
+from .ai_model import (
+    AICULLER_FACE_MODEL_REQUIRED_FILENAMES,
+    DEFAULT_AICULLER_CLIP_REPO_ID,
+    AICULLER_FACE_PACK_NAME,
+)
 from .ai_runtime_packages import resolve_ai_runtime_site_packages
 from .ai_workflow import (
     AI_METRICS_ENV_VAR,
@@ -2293,7 +2297,7 @@ def default_aiculler_runtime(
     default_clip_vision, default_clip_text = _clip_model_paths_for_variant(clip_root, "fp32")
     configured_topiq = os.environ.get("IMAGE_TRIAGE_AICULLER_TOPIQ", "").strip()
     topiq_path = Path(configured_topiq or model_root / "TOPIQ" / "topiq_nr.onnx")
-    face_pack_dir = model_root / "insightface" / "models" / "buffalo_l"
+    face_pack_dir = model_root / "faces" / "models" / AICULLER_FACE_PACK_NAME
     face_quality_enabled = all((face_pack_dir / filename).exists() for filename in AICULLER_FACE_MODEL_REQUIRED_FILENAMES)
     categories_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_CATEGORIES", "") or _default_aiculler_config_path(root, "categories.csv"))
     tag_penalties_path = Path(os.environ.get("IMAGE_TRIAGE_AICULLER_TAG_PENALTIES", "") or _default_aiculler_config_path(root, "tag_penalties.csv"))

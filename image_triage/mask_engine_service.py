@@ -25,7 +25,7 @@ from .ai_workflow import (
     default_ai_workflow_runtime,
     resolve_ai_python_script_command,
 )
-from .perf import perf_logger
+from .perf import perf_logger, write_execution_log
 from .semantic_mask_service import (
     SemanticWorkerResult,
     _parse_worker_metric,
@@ -263,6 +263,71 @@ class MaskEngineService:
             self._schedule_idle_locked()
             raise last_error or RuntimeError("MaskEngine prompt failed.")
 
+    def infer_prompt_many(
+        self,
+        *,
+        model_dir: Path,
+        input_path: Path,
+        output_paths: list[Path],
+        point_groups: list[list[tuple[float, float]]],
+        label_groups: list[list[int]],
+        image_key: str,
+        minimum_area: float = 0.0,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[dict[str, object]]:
+        """Run independent prompt objects together in one SAM forward pass."""
+        if not output_paths:
+            return []
+        resolved_model_dir = model_dir.resolve()
+        with self._lock:
+            self._cancel_idle_locked()
+            last_error: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    self.warm_model(ENGINE_PROMPT, resolved_model_dir, progress_callback)
+                    if self._embedded_image_key != image_key:
+                        self._send_command_locked(
+                            {
+                                "command": "embed",
+                                "engine": ENGINE_PROMPT,
+                                "inputPath": str(input_path.resolve()),
+                                "imageKey": image_key,
+                            },
+                            progress_callback=progress_callback,
+                        )
+                        self._embedded_image_key = image_key
+                    result = self._send_command_locked(
+                        {
+                            "command": "segment-many",
+                            "engine": ENGINE_PROMPT,
+                            "pointGroups": [
+                                [[float(x), float(y)] for x, y in points]
+                                for points in point_groups
+                            ],
+                            "labelGroups": [[int(value) for value in labels] for labels in label_groups],
+                            "outputPaths": [str(path.resolve()) for path in output_paths],
+                            "minimumArea": float(minimum_area),
+                            "imageKey": image_key,
+                        },
+                        progress_callback=progress_callback,
+                    )
+                    self._device = str(result.get("device") or self._device)
+                    raw_results = result.get("results")
+                    if not isinstance(raw_results, list):
+                        raise RuntimeError("MaskEngine batch prompt returned invalid results.")
+                    if len(raw_results) != len(output_paths):
+                        raise RuntimeError(
+                            "MaskEngine batch prompt returned an unexpected number of masks."
+                        )
+                    self._schedule_idle_locked()
+                    return [item for item in raw_results if isinstance(item, dict)]
+                except _WorkerTransportError as exc:
+                    last_error = exc
+                    self._clear_process_locked()
+                    self._ensure_process_locked()
+            self._schedule_idle_locked()
+            raise last_error or RuntimeError("MaskEngine batch prompt failed.")
+
     def shutdown(self) -> None:
         with self._lock:
             self._cancel_idle_locked()
@@ -377,6 +442,9 @@ class MaskEngineService:
             self._clear_process_locked()
             raise _WorkerTransportError("MaskEngine host command pipe closed.") from exc
 
+        write_execution_log(
+            f"mask-engine: cmd={command_name} sent (pid={process.pid}), awaiting response..."
+        )
         recent_lines: list[str] = []
         while True:
             raw_line = process.stdout.readline()
@@ -384,6 +452,10 @@ class MaskEngineService:
                 return_code = process.poll()
                 self._clear_process_locked()
                 detail = "\n".join(recent_lines[-20:])
+                write_execution_log(
+                    f"mask-engine: cmd={command_name} worker EXITED ({return_code}) "
+                    f"after {_elapsed_ms(started):.0f} ms"
+                )
                 raise _WorkerTransportError(
                     f"MaskEngine host exited unexpectedly ({return_code})."
                     + (f"\n{detail}" if detail else "")
@@ -417,6 +489,10 @@ class MaskEngineService:
                 engine=str(payload.get("engine") or ""),
                 worker_pid=process.pid,
                 ok=bool(response.get("ok")),
+            )
+            write_execution_log(
+                f"mask-engine: cmd={command_name} done in {_elapsed_ms(started):.0f} ms "
+                f"(ok={bool(response.get('ok'))})"
             )
             if not response.get("ok"):
                 raise RuntimeError(str(response.get("error") or "MaskEngine host command failed."))

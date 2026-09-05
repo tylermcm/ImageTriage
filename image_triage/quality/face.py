@@ -1,4 +1,4 @@
-"""Face / eye / gender-age dimensions (InsightFace buffalo_l, detection + landmarks + genderage).
+"""Face / eye / gender-age dimensions (AuraFace pack via InsightFace FaceAnalysis: detection + landmarks + genderage).
 
 A **reject-side** signal for people genres (soft-focus faces) plus the data the
 inspector/zoom UI needs (per-face boxes, gender/age). It does NOT move the
@@ -15,7 +15,7 @@ Design choices, validated on real portraits:
   false rejects).
 
 The math is pure and tested here. The InsightFace wiring is lazy and degrades
-gracefully: if `insightface`/`buffalo_l` are unavailable, dims stay `None`.
+gracefully: if `insightface`/the AuraFace pack are unavailable, dims stay `None`.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ def _eye_sharpness_from_keypoints(image_bgr: np.ndarray, kps: np.ndarray) -> flo
 class FaceQualityAnalyzer:
     """Lazy InsightFace wrapper. Construct once; call `analyze(bgr)` per image.
 
-    Loads detection + landmark + genderage. If insightface or the buffalo_l models
+    Loads detection + landmark + genderage. If insightface or the AuraFace models
     are unavailable, `available` is False and `analyze` returns all-None dims.
     """
 
@@ -121,7 +121,7 @@ class FaceQualityAnalyzer:
         self,
         *,
         root: str | None = None,
-        name: str = "buffalo_l",
+        name: str = "auraface",
         det_size: int = 640,
         ctx_id: int = -1,
         providers: Sequence[str] | None = None,
@@ -131,6 +131,7 @@ class FaceQualityAnalyzer:
         local model store from ai_model.download_aiculler_face_model). Defaults to
         that download location, falling back to InsightFace's own cache."""
         self.available = False
+        self.initialization_error = ""
         self._app = None
         self._identity_model = f"insightface:{name}"
         if root is None:
@@ -160,7 +161,8 @@ class FaceQualityAnalyzer:
             app.prepare(ctx_id=ctx_id, det_size=(det_size, det_size))
             self._app = app
             self.available = True
-        except Exception:
+        except Exception as exc:
+            self.initialization_error = f"{type(exc).__name__}: {exc}"
             self.available = False
 
     def analyze(self, image_bgr: np.ndarray) -> dict[str, object]:
