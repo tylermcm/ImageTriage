@@ -17,7 +17,14 @@ from .catalog_dialog import CatalogSearchDialog
 from .collection_dialog import CollectionEditDialog
 from .command_palette import CommandPaletteDialog, PaletteCommand
 from .convert_dialog import ConvertDialog
-from .docks import InspectorPanel, WorkspaceDocks, build_workspace_docks
+from .docks import (
+    InspectorPanel,
+    InspectorPropertyRow,
+    InspectorSection,
+    InspectorSeverity,
+    WorkspaceDocks,
+    build_workspace_docks,
+)
 from .filter_dialog import AdvancedFilterDialog
 from .file_associations_dialog import FileAssociationsDialog
 from .handoff_dialog import HandoffBuilderDialog
@@ -69,6 +76,9 @@ __all__ = [
     "HelpMarkdownDialog",
     "HelpPage",
     "InspectorPanel",
+    "InspectorPropertyRow",
+    "InspectorSection",
+    "InspectorSeverity",
     "KeyboardShortcutDialog",
     "MainWindowActions",
     "SHORTCUT_REGISTRY",

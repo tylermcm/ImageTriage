@@ -58,6 +58,7 @@ class SectionHeader(QWidget):
         trailing: QWidget | None = None,
         expanded: bool = True,
         collapsible: bool = True,
+        chevron_on_right: bool = False,
         icon_size: int = 14,
         parent: QWidget | None = None,
     ) -> None:
@@ -77,7 +78,8 @@ class SectionHeader(QWidget):
 
         self.chevron = _Chevron(self)
         self.chevron.setVisible(collapsible)
-        layout.addWidget(self.chevron, 0)
+        if not chevron_on_right:
+            layout.addWidget(self.chevron, 0)
 
         self.glyph = QLabel(self)
         self.glyph.setObjectName("navSectionGlyph")
@@ -94,6 +96,8 @@ class SectionHeader(QWidget):
         if trailing is not None:
             trailing.setParent(self)
             layout.addWidget(trailing, 0)
+        if chevron_on_right:
+            layout.addWidget(self.chevron, 0)
         self._trailing = trailing
 
         self._sync()

@@ -1112,6 +1112,14 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QWidget#inspectorSectionHeader {{
             background-color: transparent;
+            border: none;
+            border-radius: 4px;
+            color: {theme.text_muted.css};
+            padding: 0px;
+        }}
+        QWidget#inspectorSectionHeader:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
         }}
         QLabel#inspectorSectionTitle {{
             color: {theme.text_secondary.css};
@@ -1135,11 +1143,39 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLabel#inspectorKey {{
             color: {theme.text_muted.css};
             font-size: 11px;
-            min-width: 64px;
+            min-width: 96px;
+            max-width: 96px;
         }}
         QLabel#inspectorValue {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 500;
+            padding: 0px;
+        }}
+        QLabel#inspectorValue[severity="muted"] {{
+            color: {theme.text_muted.css};
+            font-weight: 400;
+        }}
+        QLabel#inspectorValue[severity="warning"],
+        QLabel#inspectorSeverityIcon[severity="warning"] {{
+            color: {theme.warning.css};
+        }}
+        QLabel#inspectorValue[severity="critical"],
+        QLabel#inspectorSeverityIcon[severity="critical"] {{
+            color: {theme.danger.css};
+        }}
+        QLabel#inspectorValue[emphasis="strong"] {{
+            color: {theme.text_primary.css};
+            font-weight: 600;
+        }}
+        QLabel#inspectorValue[emphasis="secondary"] {{
             color: {theme.text_secondary.css};
+            font-weight: 450;
+        }}
+        QLabel#inspectorEmptyState {{
+            color: {theme.text_muted.css};
             font-size: 11px;
+            padding: 1px 2px 3px 2px;
         }}
         QPushButton#inspectorActionButton {{
             background-color: {theme.input_bg.css};
@@ -1641,7 +1677,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};
             font-size: 12px;
-            padding: 0 2px;
+            font-weight: 500;
+            padding: 0px;
         }}
         QLabel#inspectorHint {{
             color: {theme.text_muted.css};
