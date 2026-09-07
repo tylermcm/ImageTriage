@@ -13,6 +13,7 @@ class PersonCluster:
     name: str
     face_count: int
     centroid: tuple[float, ...]
+    ignored: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,11 @@ def ensure_people_search_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(face_identity_clusters)")}
+    if "ignored" not in columns:
+        connection.execute(
+            "ALTER TABLE face_identity_clusters ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0"
+        )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_face_identity_clusters_name ON face_identity_clusters(name)"
     )
@@ -99,7 +105,9 @@ def cluster_face_identities(
     with connection:
         connection.execute("UPDATE image_faces SET cluster_id = NULL")
         for group, centroid in zip(groups, centroids):
-            cluster_id, name = _reuse_cluster(previous, used_previous, centroid, threshold=threshold)
+            cluster_id, name, ignored = _reuse_cluster(
+                previous, used_previous, centroid, threshold=threshold
+            )
             blob, dim, dtype = _vector_to_db(centroid)
             if cluster_id is None:
                 cursor = connection.execute(
@@ -111,6 +119,7 @@ def cluster_face_identities(
                 )
                 cluster_id = int(cursor.lastrowid)
                 name = ""
+                ignored = False
             else:
                 connection.execute(
                     """
@@ -134,6 +143,7 @@ def cluster_face_identities(
                     name=name,
                     face_count=len(group),
                     centroid=tuple(float(value) for value in centroid),
+                    ignored=ignored,
                 )
             )
         connection.execute(
@@ -165,15 +175,19 @@ def assign_person_names(connection: sqlite3.Connection, cluster_ids, name: str) 
         )
 
 
-def list_person_clusters(connection: sqlite3.Connection) -> list[PersonCluster]:
+def list_person_clusters(
+    connection: sqlite3.Connection, *, include_ignored: bool = False
+) -> list[PersonCluster]:
     ensure_people_search_schema(connection)
     previous_factory = connection.row_factory
     connection.row_factory = sqlite3.Row
+    where = "" if include_ignored else "WHERE ignored = 0"
     try:
         rows = connection.execute(
-            """
-            SELECT cluster_id, name, face_count, centroid, dtype
+            f"""
+            SELECT cluster_id, name, face_count, centroid, dtype, ignored
             FROM face_identity_clusters
+            {where}
             ORDER BY CASE WHEN name = '' THEN 1 ELSE 0 END, name COLLATE NOCASE, face_count DESC
             """
         ).fetchall()
@@ -185,9 +199,23 @@ def list_person_clusters(connection: sqlite3.Connection) -> list[PersonCluster]:
             name=str(row["name"] or ""),
             face_count=int(row["face_count"] or 0),
             centroid=_tuple_from_blob(row["centroid"], row["dtype"]),
+            ignored=bool(row["ignored"]),
         )
         for row in rows
     ]
+
+
+def set_clusters_ignored(connection: sqlite3.Connection, cluster_ids, ignored: bool) -> None:
+    """Hide (or restore) face clusters that are not a person worth tagging."""
+    ids = [int(cluster_id) for cluster_id in cluster_ids]
+    if not ids:
+        return
+    ensure_people_search_schema(connection)
+    placeholders = ",".join("?" for _ in ids)
+    connection.execute(
+        f"UPDATE face_identity_clusters SET ignored = ? WHERE cluster_id IN ({placeholders})",
+        (1 if ignored else 0, *ids),
+    )
 
 
 def list_face_identities(
@@ -253,7 +281,7 @@ def named_people_by_image_id(connection: sqlite3.Connection) -> dict[int, set[st
             FROM image_faces
             INNER JOIN face_identity_clusters
               ON face_identity_clusters.cluster_id = image_faces.cluster_id
-            WHERE face_identity_clusters.name != ''
+            WHERE face_identity_clusters.name != '' AND face_identity_clusters.ignored = 0
             """
         ).fetchall()
     finally:
@@ -304,7 +332,7 @@ def _load_existing_clusters(connection: sqlite3.Connection) -> list[PersonCluste
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute(
-            "SELECT cluster_id, name, face_count, centroid, dtype FROM face_identity_clusters"
+            "SELECT cluster_id, name, face_count, centroid, dtype, ignored FROM face_identity_clusters"
         ).fetchall()
     finally:
         connection.row_factory = previous_factory
@@ -314,6 +342,7 @@ def _load_existing_clusters(connection: sqlite3.Connection) -> list[PersonCluste
             name=str(row["name"] or ""),
             face_count=int(row["face_count"] or 0),
             centroid=_tuple_from_blob(row["centroid"], row["dtype"]),
+            ignored=bool(row["ignored"]),
         )
         for row in rows
     ]
@@ -325,7 +354,7 @@ def _reuse_cluster(
     centroid: np.ndarray,
     *,
     threshold: float,
-) -> tuple[int | None, str]:
+) -> tuple[int | None, str, bool]:
     best: PersonCluster | None = None
     best_score = -1.0
     for candidate in previous:
@@ -336,9 +365,9 @@ def _reuse_cluster(
             best = candidate
             best_score = score
     if best is None or best_score < threshold:
-        return None, ""
+        return None, "", False
     used_previous.add(best.cluster_id)
-    return best.cluster_id, best.name
+    return best.cluster_id, best.name, best.ignored
 
 
 def _centroid(vectors: list[tuple[float, ...]]) -> np.ndarray:

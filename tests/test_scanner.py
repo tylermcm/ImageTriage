@@ -6,8 +6,14 @@ import os
 from pathlib import Path
 
 import image_triage.scanner as scanner_module
-from image_triage.models import ImageRecord, SortMode, sort_records
-from image_triage.scanner import discover_edited_paths, format_scan_error, scan_child_folders, scan_folder
+from image_triage.models import ImageRecord, ImageVariant, SortMode, sort_records
+from image_triage.scanner import (
+    _cached_records_need_raw_pair_refresh,
+    discover_edited_paths,
+    format_scan_error,
+    scan_child_folders,
+    scan_folder,
+)
 
 
 def _write_image(path: Path) -> None:
@@ -48,10 +54,80 @@ class ScannerTests(unittest.TestCase):
                 _path_set((root_edit, nested_edit)),
                 _path_set(record.edited_paths),
             )
-            variant_paths = {variant.path for variant in record.variants}
-            self.assertIn(_path_key(root_companion), _path_set(variant_paths))
+            variant_paths = {variant.path for variant in record.display_variants}
+            self.assertEqual(_path_key(raw_path), _path_key(record.display_variants[0].path))
+            self.assertEqual(raw_path.name, record.display_variants[0].name)
+            self.assertNotIn(_path_key(root_companion), _path_set(variant_paths))
             self.assertIn(_path_key(root_edit), _path_set(variant_paths))
             self.assertIn(_path_key(nested_edit), _path_set(variant_paths))
+
+    def test_scan_folder_exposes_raw_instead_of_jpeg_companion(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            raw_path = root / "IMG_0010.NEF"
+            jpeg_path = root / "IMG_0010.JPG"
+            for path in (raw_path, jpeg_path):
+                _write_image(path)
+
+            record = scan_folder(str(root))[0]
+
+            self.assertEqual(_path_key(raw_path), _path_key(record.display_variants[0].path))
+            self.assertEqual(raw_path.name, record.display_variants[0].name)
+            self.assertFalse(record.has_variant_stack)
+
+    def test_legacy_jpeg_first_stack_is_exposed_as_raw_first(self) -> None:
+        raw = r"C:\shoot\IMG_0011.CR3"
+        jpeg = r"C:\shoot\IMG_0011.JPG"
+        edit = r"C:\shoot\IMG_0011_1.jpg"
+        record = ImageRecord(
+            path=raw,
+            name="IMG_0011.CR3",
+            size=30_000,
+            modified_ns=10,
+            companion_paths=(jpeg,),
+            edited_paths=(edit,),
+            variants=(
+                ImageVariant(jpeg, "IMG_0011.JPG", 5_000, 9),
+                ImageVariant(edit, "IMG_0011_1.jpg", 6_000, 11),
+            ),
+        )
+
+        self.assertEqual([raw, edit], [variant.path for variant in record.display_variants])
+        self.assertEqual("IMG_0011.CR3", record.display_variants[0].name)
+
+    def test_jpeg_folder_pairs_matching_raw_from_sibling_raw_files_folder(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            jpeg_folder = root / "jpg"
+            raw_folder = root / "Raw Files"
+            jpeg = jpeg_folder / "IMG_0020.JPG"
+            raw = raw_folder / "IMG_0020.NEF"
+            unmatched = jpeg_folder / "IMG_0021.JPG"
+            unmatched_raw = raw_folder / "IMG_0099.NEF"
+            for path in (jpeg, raw, unmatched, unmatched_raw):
+                _write_image(path)
+
+            records = scan_folder(str(jpeg_folder))
+            by_name = {record.name: record for record in records}
+
+            self.assertEqual({"IMG_0020.NEF", "IMG_0021.JPG"}, set(by_name))
+            self.assertEqual(str(raw.resolve()), by_name["IMG_0020.NEF"].path)
+            self.assertEqual((str(jpeg.resolve()),), by_name["IMG_0020.NEF"].companion_paths)
+
+    def test_jpeg_only_cache_refreshes_once_when_sibling_raws_exist(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:
+            root = Path(temp_dir)
+            jpeg_folder = root / "jpg"
+            raw_folder = root / "Raw Files"
+            jpeg = jpeg_folder / "IMG_0030.JPG"
+            raw = raw_folder / "IMG_0030.NEF"
+            for path in (jpeg, raw):
+                _write_image(path)
+            stale = [ImageRecord(str(jpeg), jpeg.name, 10, 1)]
+            refreshed = [ImageRecord(str(raw), raw.name, 20, 2, companion_paths=(str(jpeg),))]
+
+            self.assertTrue(_cached_records_need_raw_pair_refresh(str(jpeg_folder), stale))
+            self.assertFalse(_cached_records_need_raw_pair_refresh(str(jpeg_folder), refreshed))
 
     def test_scan_folder_prefers_base_file_as_family_primary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_scanner_") as temp_dir:

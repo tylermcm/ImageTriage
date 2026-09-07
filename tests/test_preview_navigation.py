@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from image_triage.models import ImageRecord
 from image_triage.window import MainWindow
 
 
@@ -45,6 +46,18 @@ def test_popout_navigation_uses_logical_grid_selection() -> None:
     assert grid.notified_updates == []
     assert open_calls == [(2, True)]
     assert window._preview_navigation_dirty
+
+
+def test_popout_uses_raw_source_for_raw_jpeg_bundle() -> None:
+    record = ImageRecord(
+        path=r"C:\shoot\IMG_0001.CR3",
+        name="IMG_0001.CR3",
+        size=100,
+        modified_ns=1,
+        companion_paths=(r"C:\shoot\IMG_0001.JPG",),
+    )
+
+    assert MainWindow._preview_source_path(SimpleNamespace(), record) == record.path
 
 
 def test_closing_popout_runs_one_notified_grid_sync() -> None:

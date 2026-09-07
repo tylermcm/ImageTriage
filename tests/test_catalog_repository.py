@@ -42,7 +42,7 @@ class CatalogRepositoryTests(unittest.TestCase):
                     companion_paths=(f"{folder}/IMG_0001.JPG",),
                     edited_paths=(f"{folder}/edit/IMG_0001_1.jpg",),
                     variants=(
-                        ImageVariant(path=f"{folder}/IMG_0001.JPG", name="IMG_0001.JPG", size=2_000, modified_ns=100),
+                        ImageVariant(path=f"{folder}/IMG_0001.CR3", name="IMG_0001.CR3", size=7_845, modified_ns=101),
                         ImageVariant(path=f"{folder}/edit/IMG_0001_1.jpg", name="IMG_0001_1.jpg", size=2_500, modified_ns=102),
                     ),
                 ),

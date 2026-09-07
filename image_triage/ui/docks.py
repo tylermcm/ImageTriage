@@ -1632,7 +1632,7 @@ class InspectorPanel(QWidget):
             ("Group Size", "Rank", "Best Candidate", "Similar Files", "Duplicate Risk", "Why"),
         )
         self.edit_rows = self._make_section(layout, "Edit Potential", ("Worth Editing", "Main Issue", "Fixes Needed", "Effort", "Notes"))
-        # Quick Actions now live in the left "Review Controls" pane.
+        # Quick Actions were removed: every button duplicated the toolbar.
         self.quick_action_buttons: dict[str, QPushButton] = {}
         scroll.setWidget(content)
         QTimer.singleShot(0, self._sync_preview_card_aspect)

@@ -34,12 +34,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -105,7 +105,6 @@ from photo_terminal.session import (  # noqa: E402
     add_space,
     asset_dir_for_session,
     copy_bitmap_asset,
-    export_xmp,
     image_dimensions,
     load_session,
     mask_ids,
@@ -194,6 +193,89 @@ VIGNETTE_OPTION_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
 )
 VIGNETTE_OPTION_KEYS: frozenset[str] = frozenset(spec[0] for spec in VIGNETTE_OPTION_SPECS)
 
+BUILTIN_PHOTO_PRESETS: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    (
+        "clean",
+        "Clean",
+        {
+            "contrast": 6,
+            "highlights": -18,
+            "shadows": 14,
+            "whites": 8,
+            "blacks": -6,
+            "vibrance": 8,
+            "sharpen": 12,
+        },
+    ),
+    (
+        "portrait",
+        "Portrait",
+        {
+            "contrast": -4,
+            "highlights": -24,
+            "shadows": 18,
+            "vibrance": 8,
+            "saturation": -3,
+            "clarity": -8,
+            "sharpen": 10,
+            "vignette": -8,
+            "vignette_feather": 70,
+            "vignette_highlights": 35,
+        },
+    ),
+    (
+        "landscape",
+        "Landscape",
+        {
+            "contrast": 14,
+            "highlights": -28,
+            "shadows": 18,
+            "whites": 12,
+            "blacks": -14,
+            "vibrance": 24,
+            "clarity": 18,
+            "dehaze": 12,
+            "sharpen": 22,
+        },
+    ),
+    (
+        "vivid",
+        "Vivid",
+        {
+            "contrast": 12,
+            "whites": 8,
+            "blacks": -8,
+            "vibrance": 30,
+            "saturation": 8,
+            "clarity": 10,
+        },
+    ),
+    (
+        "warm",
+        "Warm",
+        {
+            "temperature": 18,
+            "tint": 3,
+            "highlights": -12,
+            "shadows": 10,
+            "vibrance": 14,
+        },
+    ),
+    (
+        "monochrome",
+        "Monochrome",
+        {
+            "contrast": 18,
+            "highlights": -20,
+            "shadows": 16,
+            "whites": 10,
+            "blacks": -16,
+            "saturation": -100,
+            "clarity": 12,
+        },
+    ),
+)
+
 # Local (per-mask) adjustments: everything except vignette, which is
 # inherently a whole-frame effect.
 MASK_ADJUSTMENT_KEYS: tuple[str, ...] = tuple(
@@ -220,6 +302,12 @@ CURVE_RECIPE_KEYS: dict[str, str] = {
     "green": "curve_green",
     "blue": "curve_blue",
 }
+
+PRESET_RECIPE_KEYS: tuple[str, ...] = (
+    *(spec[0] for spec in ADJUSTMENT_SPECS),
+    *(spec[0] for spec in VIGNETTE_OPTION_SPECS),
+    *CURVE_RECIPE_KEYS.values(),
+)
 
 SESSION_OPS: dict[str, tuple[str, str]] = {
     "exposure": ("adjust.exposure", "exposure"),
@@ -254,8 +342,60 @@ def _next_id(existing: set[str], prefix: str) -> str:
         index += 1
 
 
-def _format_json(data: Any) -> str:
-    return json.dumps(data, indent=2, sort_keys=False)
+def _preset_values_from_recipe(recipe: EditRecipe) -> dict[str, Any]:
+    data = asdict(recipe)
+    return {key: deepcopy(data[key]) for key in PRESET_RECIPE_KEYS}
+
+
+def _recipe_with_preset(
+    recipe: EditRecipe,
+    values: dict[str, Any],
+    *,
+    keys: tuple[str, ...] = PRESET_RECIPE_KEYS,
+) -> EditRecipe:
+    data = asdict(recipe)
+    defaults = asdict(EditRecipe())
+    for key in keys:
+        data[key] = deepcopy(defaults[key])
+    normalized = EditRecipe.from_dict(values)
+    normalized_data = asdict(normalized)
+    for key in keys:
+        if key in values:
+            data[key] = deepcopy(normalized_data[key])
+    return EditRecipe.from_dict(data)
+
+
+def _load_custom_photo_presets(raw: str) -> list[dict[str, Any]]:
+    try:
+        decoded = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    presets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in decoded:
+        if not isinstance(item, dict) or not isinstance(item.get("values"), dict):
+            continue
+        name = " ".join(str(item.get("name") or "").split())
+        normalized_name = name.casefold()
+        if not name or normalized_name in seen:
+            continue
+        seen.add(normalized_name)
+        normalized = _preset_values_from_recipe(EditRecipe.from_dict(item["values"]))
+        presets.append({"name": name, "values": normalized})
+    return presets
+
+
+def _preset_adjustment_summary(values: dict[str, Any]) -> str:
+    labels = {spec[0]: spec[1] for spec in (*ADJUSTMENT_SPECS, *VIGNETTE_OPTION_SPECS)}
+    defaults = asdict(EditRecipe())
+    parts = [
+        f"{labels[key]} {value:+g}"
+        for key, value in values.items()
+        if key in labels and value != defaults[key]
+    ]
+    return ", ".join(parts)
 
 
 def _friendly_mask_label(mask: dict[str, Any]) -> str:
@@ -858,6 +998,7 @@ class PhotoEditorPanel(QFrame):
     OVERLAY_COLOR_KEY = "preview/mask_overlay_color"
     OVERLAY_AUTO_TOGGLE_KEY = "preview/mask_overlay_auto_toggle"
     OVERLAY_SHOW_TOOLS_KEY = "preview/mask_overlay_show_tools"
+    CUSTOM_PRESETS_KEY = "editor/custom_photo_presets"
     _MASK_IDLE_HINT = (
         "Pick a tool, then drag on the photo. Drag the handles to reshape, the "
         "inner ring to feather, the top knob to rotate. Click a mask to move it."
@@ -900,6 +1041,9 @@ class PhotoEditorPanel(QFrame):
         self._mask_touchup_original_values: dict[str, Any] = {}
         self._mask_touchup_spins: dict[str, QSpinBox | QDoubleSpinBox] = {}
         self._settings = QSettings()
+        self._custom_photo_presets = _load_custom_photo_presets(
+            self._settings.value(self.CUSTOM_PRESETS_KEY, "", str)
+        )
         stored_mode = self._settings.value(self.OVERLAY_MODE_KEY, "color", str)
         supported_modes = {mode for mode, _label in self.OVERLAY_MODE_OPTIONS}
         self._overlay_mode = stored_mode if stored_mode in supported_modes else "color"
@@ -993,7 +1137,7 @@ class PhotoEditorPanel(QFrame):
         self.editor_stack.setObjectName("photoEditorStack")
         self.editor_stack.addWidget(self._build_adjust_tab())
         self.editor_stack.addWidget(self._build_masks_tab())
-        self.editor_stack.addWidget(self._build_session_tab())
+        self.editor_stack.addWidget(self._build_presets_tab())
         root.addWidget(self.editor_stack, 1)
 
         footer = QFrame(self)
@@ -1038,7 +1182,7 @@ class PhotoEditorPanel(QFrame):
         tabs = (
             ("Adjust", "Tone, color and effects", 0),
             ("Masks", "Local adjustments", 1),
-            ("Session", "Sidecar session", 2),
+            ("Presets", "Saved editing looks", 2),
         )
         for text, tooltip, index in tabs:
             button = QToolButton(bar)
@@ -1068,6 +1212,8 @@ class PhotoEditorPanel(QFrame):
                 # torch/CUDA spin-up is already warmed on photo render.
                 self.semantic_warm_requested.emit("model")
                 self._ensure_semantic_inventory()
+        elif index == 2:
+            self._refresh_preset_targets()
 
     def show_adjustments_page(self) -> None:
         if self._mask_touchup_mask_id is not None:
@@ -2812,7 +2958,7 @@ class PhotoEditorPanel(QFrame):
         line.setFixedHeight(1)
         return line
 
-    def _build_session_tab(self) -> QWidget:
+    def _build_presets_tab(self) -> QWidget:
         scroll = QScrollArea(self)
         scroll.setObjectName("photoEditorScrollArea")
         scroll.setWidgetResizable(True)
@@ -2823,29 +2969,205 @@ class PhotoEditorPanel(QFrame):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        session_section, session_layout = self._section("Session", tab)
-        self.session_summary = QPlainTextEdit(session_section)
-        self.session_summary.setObjectName("editorText")
-        self.session_summary.setReadOnly(True)
-        session_layout.addWidget(self.session_summary)
-        row = QHBoxLayout()
-        self.create_session_button = QPushButton("Create", session_section)
-        self.validate_button = QPushButton("Validate", session_section)
-        self.export_xmp_button = QPushButton("Export XMP", session_section)
-        self.reload_session_button = QPushButton("Reload", session_section)
-        self.create_session_button.clicked.connect(self.create_session)
-        self.validate_button.clicked.connect(self.validate_current_session)
-        self.export_xmp_button.clicked.connect(self.export_current_xmp)
-        self.reload_session_button.clicked.connect(self.reload_session)
-        row.addWidget(self.create_session_button)
-        row.addWidget(self.validate_button)
-        row.addWidget(self.export_xmp_button)
-        row.addWidget(self.reload_session_button)
-        session_layout.addLayout(row)
-        layout.addWidget(session_section)
+
+        target_section, target_layout = self._section("Apply To", tab)
+        target_row = QHBoxLayout()
+        target_label = QLabel("Target", target_section)
+        target_label.setObjectName("editorControlLabel")
+        self.preset_target_combo = QComboBox(target_section)
+        self.preset_target_combo.currentIndexChanged.connect(
+            lambda _index: self._sync_preset_buttons()
+        )
+        target_row.addWidget(target_label)
+        target_row.addWidget(self.preset_target_combo, 1)
+        target_layout.addLayout(target_row)
+        layout.addWidget(target_section)
+
+        built_in_section, built_in_layout = self._section("Built-in", tab)
+        self.builtin_preset_list = QListWidget(built_in_section)
+        self.builtin_preset_list.setObjectName("editorPresetList")
+        self.builtin_preset_list.setMinimumHeight(190)
+        for key, name, values in BUILTIN_PHOTO_PRESETS:
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setToolTip(_preset_adjustment_summary(values))
+            self.builtin_preset_list.addItem(item)
+        self.builtin_preset_list.setCurrentRow(0)
+        self.builtin_preset_list.itemClicked.connect(
+            lambda _item: self._apply_selected_builtin_preset()
+        )
+        built_in_layout.addWidget(self.builtin_preset_list)
+        self.apply_builtin_preset_button = QPushButton("Apply", built_in_section)
+        self.apply_builtin_preset_button.setObjectName("editorPrimaryButton")
+        self.apply_builtin_preset_button.clicked.connect(self._apply_selected_builtin_preset)
+        built_in_layout.addWidget(self.apply_builtin_preset_button)
+        layout.addWidget(built_in_section)
+
+        custom_section, custom_layout = self._section("My Presets", tab)
+        self.custom_preset_list = QListWidget(custom_section)
+        self.custom_preset_list.setObjectName("editorPresetList")
+        self.custom_preset_list.setMinimumHeight(110)
+        self.custom_preset_list.itemDoubleClicked.connect(
+            lambda _item: self._apply_selected_custom_preset()
+        )
+        self.custom_preset_list.currentItemChanged.connect(
+            lambda _current, _previous: self._sync_preset_buttons()
+        )
+        custom_layout.addWidget(self.custom_preset_list)
+        custom_row = QHBoxLayout()
+        self.save_custom_preset_button = QPushButton("Save Current", custom_section)
+        self.apply_custom_preset_button = QPushButton("Apply", custom_section)
+        self.delete_custom_preset_button = QPushButton("Delete", custom_section)
+        self.save_custom_preset_button.clicked.connect(self._save_current_as_preset)
+        self.apply_custom_preset_button.clicked.connect(self._apply_selected_custom_preset)
+        self.delete_custom_preset_button.clicked.connect(self._delete_selected_custom_preset)
+        custom_row.addWidget(self.save_custom_preset_button)
+        custom_row.addWidget(self.apply_custom_preset_button)
+        custom_row.addWidget(self.delete_custom_preset_button)
+        custom_layout.addLayout(custom_row)
+        layout.addWidget(custom_section)
+        self._refresh_preset_targets()
+        self._refresh_custom_preset_list()
         layout.addStretch(1)
         scroll.setWidget(tab)
         return scroll
+
+    def _apply_selected_builtin_preset(self) -> None:
+        item = self.builtin_preset_list.currentItem()
+        if item is None:
+            return
+        preset_key = item.data(Qt.ItemDataRole.UserRole)
+        for key, name, values in BUILTIN_PHOTO_PRESETS:
+            if key == preset_key:
+                self._apply_preset(name, values)
+                return
+
+    def _apply_selected_custom_preset(self) -> None:
+        row = self.custom_preset_list.currentRow()
+        if not 0 <= row < len(self._custom_photo_presets):
+            return
+        preset = self._custom_photo_presets[row]
+        self._apply_preset(str(preset["name"]), preset["values"])
+
+    def _apply_preset(self, name: str, values: dict[str, Any]) -> None:
+        if self._source_path is None:
+            return
+        target = self._preset_target_mask()
+        if self.preset_target_combo.currentData() == "photo":
+            self._recipe = _recipe_with_preset(self._recipe, values)
+            self._sync_rows_from_recipe()
+            self.recipe_changed.emit(self._recipe)
+            self._set_status(f"Applied {name} to photo")
+            return
+        if target is None or self._session is None:
+            self._set_status("Select a preset target")
+            return
+        root_id = str(self._mask_root(target).get("id"))
+        current = recipe_for_mask(self._session, root_id)
+        local_recipe = _recipe_with_preset(current, values, keys=MASK_ADJUSTMENT_KEYS)
+        replace_mask_operations(self._session, root_id, local_recipe)
+        self._sync_mask_controls(self._selected_mask_dict())
+        self.recipe_changed.emit(self._recipe)
+        self._mask_commit_timer.start()
+        self._set_status(f"Applied {name} to {_friendly_mask_label(target)}")
+
+    def _save_current_as_preset(self) -> None:
+        if self._source_path is None:
+            return
+        name, accepted = QInputDialog.getText(self, "Save Preset", "Preset name")
+        name = " ".join(name.split())
+        if not accepted or not name:
+            return
+        target = self._preset_target_mask()
+        if self.preset_target_combo.currentData() == "photo":
+            source_recipe = self._recipe
+        elif target is not None and self._session is not None:
+            source_recipe = recipe_for_mask(self._session, str(self._mask_root(target).get("id")))
+        else:
+            self._set_status("Select a preset target")
+            return
+        values = _preset_values_from_recipe(source_recipe)
+        existing_row = next(
+            (
+                index
+                for index, preset in enumerate(self._custom_photo_presets)
+                if str(preset["name"]).casefold() == name.casefold()
+            ),
+            -1,
+        )
+        preset = {"name": name, "values": values}
+        if existing_row >= 0:
+            self._custom_photo_presets[existing_row] = preset
+            selected_row = existing_row
+            message = f"Updated preset {name}"
+        else:
+            self._custom_photo_presets.append(preset)
+            selected_row = len(self._custom_photo_presets) - 1
+            message = f"Saved preset {name}"
+        self._store_custom_photo_presets()
+        self._refresh_custom_preset_list(selected_row)
+        self._set_status(message)
+
+    def _delete_selected_custom_preset(self) -> None:
+        row = self.custom_preset_list.currentRow()
+        if not 0 <= row < len(self._custom_photo_presets):
+            return
+        name = str(self._custom_photo_presets[row]["name"])
+        del self._custom_photo_presets[row]
+        self._store_custom_photo_presets()
+        self._refresh_custom_preset_list(min(row, len(self._custom_photo_presets) - 1))
+        self._set_status(f"Deleted preset {name}")
+
+    def _store_custom_photo_presets(self) -> None:
+        self._settings.setValue(self.CUSTOM_PRESETS_KEY, json.dumps(self._custom_photo_presets))
+
+    def _refresh_custom_preset_list(self, selected_row: int = -1) -> None:
+        with QSignalBlocker(self.custom_preset_list):
+            self.custom_preset_list.clear()
+            for preset in self._custom_photo_presets:
+                item = QListWidgetItem(str(preset["name"]))
+                item.setToolTip(_preset_adjustment_summary(preset["values"]))
+                self.custom_preset_list.addItem(item)
+            if self._custom_photo_presets:
+                self.custom_preset_list.setCurrentRow(max(0, selected_row))
+        self._sync_preset_buttons()
+
+    def _sync_preset_buttons(self) -> None:
+        image_selected = self._source_path is not None
+        custom_selected = self.custom_preset_list.currentItem() is not None
+        target_selected = self.preset_target_combo.currentIndex() >= 0
+        can_apply = image_selected and target_selected
+        self.apply_builtin_preset_button.setEnabled(can_apply)
+        self.save_custom_preset_button.setEnabled(can_apply)
+        self.apply_custom_preset_button.setEnabled(can_apply and custom_selected)
+        self.delete_custom_preset_button.setEnabled(custom_selected)
+
+    def _preset_target_mask(self) -> dict[str, Any] | None:
+        target_id = self.preset_target_combo.currentData()
+        if not target_id or target_id == "photo":
+            return None
+        return self._mask_by_id(str(target_id))
+
+    def _refresh_preset_targets(self) -> None:
+        if not hasattr(self, "preset_target_combo"):
+            return
+        current = self.preset_target_combo.currentData()
+        with QSignalBlocker(self.preset_target_combo):
+            self.preset_target_combo.clear()
+            self.preset_target_combo.addItem("Photo", "photo")
+            if self._session is not None:
+                for mask in self._session.get("masks", []):
+                    if mask.get("parentId"):
+                        continue
+                    mask_id = str(mask.get("id") or "")
+                    if mask_id:
+                        self.preset_target_combo.addItem(
+                            f"Mask: {_friendly_mask_label(mask)}",
+                            mask_id,
+                        )
+            restored = self.preset_target_combo.findData(current)
+            self.preset_target_combo.setCurrentIndex(max(0, restored))
+        self._sync_preset_buttons()
 
     def set_image(self, source_path: str | Path | None) -> None:
         if self._mask_touchup_mask_id is not None or self._prompt_session_active:
@@ -2898,6 +3220,10 @@ class PhotoEditorPanel(QFrame):
         self._reset_scene_regions()
         self._populate_semantic_mask_buttons(())
         self._source_path = path
+        # The prior image's mask bundle must never survive while the new
+        # sidecar is being resolved. In particular, a photo with no sidecar
+        # otherwise inherited the previous photo's in-memory bitmap masks.
+        self._session = None
         migrate_bundle(path)
         self._session_path = resolve_session_for_read(path)
         self._recipe = self._load_recipe_for_path(path)
@@ -3051,12 +3377,9 @@ class PhotoEditorPanel(QFrame):
         self.save_copy_button.setEnabled(enabled and not self._copy_save_busy)
         self._sync_semantic_mask_buttons()
         self._sync_mask_pane_enabled()
+        self._sync_preset_buttons()
         for widget_name in (
             "editor_stack",
-            "create_session_button",
-            "validate_button",
-            "export_xmp_button",
-            "reload_session_button",
             "add_space_button",
             "radial_tool_button",
             "linear_tool_button",
@@ -3187,13 +3510,15 @@ class PhotoEditorPanel(QFrame):
         # emits a spurious sliderReleased. Block the list's signals across the
         # rebuild; the explicit _sync_mask_controls at the end does the sync.
         list_blocker = QSignalBlocker(self.masks_list)
+        self._session = None
         session = None
         if self._session_path is not None and self._session_path.exists():
             try:
                 session = self._load_session()
             except Exception as exc:
-                self.session_summary.setPlainText(f"Sidecar load failed:\n{exc}")
+                self._set_status(f"Saved edits could not be loaded: {exc}")
                 self.masks_list.clear()
+                self._refresh_preset_targets()
                 list_blocker.unblock()
                 self._sync_mask_controls(None)
                 self.mask_overlay_changed.emit()
@@ -3201,7 +3526,7 @@ class PhotoEditorPanel(QFrame):
         self.masks_list.clear()
         self._refresh_reference_combos(session)
         if session is None:
-            self.session_summary.setPlainText("No sidecar for this image.")
+            self._refresh_preset_targets()
             list_blocker.unblock()
             self._sync_mask_controls(None)
             self.mask_overlay_changed.emit()
@@ -3257,16 +3582,7 @@ class PhotoEditorPanel(QFrame):
             if selected_mask_id and mask.get("id") == selected_mask_id:
                 self.masks_list.setCurrentItem(item)
         list_blocker.unblock()
-        source = session.get("source", {})
-        summary = {
-            "session": str(self._session_path),
-            "source": source.get("lastKnownPath") or source.get("fileName"),
-            "coordinateSpaces": session.get("coordinateSpaces", []),
-            "masks": session.get("masks", []),
-            "operations": session.get("operations", []),
-            "pipeline": session.get("pipeline"),
-        }
-        self.session_summary.setPlainText(_format_json(summary))
+        self._refresh_preset_targets()
         self._sync_space_defaults(session)
         self._sync_mask_row_selection()
         self._sync_mask_controls(self._selected_mask_dict())
@@ -3313,41 +3629,6 @@ class PhotoEditorPanel(QFrame):
         if not value:
             raise SessionError("coordinate space is required")
         return str(value)
-
-    def create_session(self) -> None:
-        try:
-            session_path, _session = self._ensure_session()
-            self._refresh_session_views()
-        except Exception as exc:
-            self._set_status(f"Create failed: {exc}")
-            return
-        self._set_status(f"Created {session_path.name}")
-
-    def reload_session(self) -> None:
-        if self._source_path is None:
-            return
-        self._recipe = self._load_recipe_for_path(self._source_path)
-        self._sync_rows_from_recipe()
-        self._refresh_session_views()
-        self.recipe_changed.emit(self._recipe)
-
-    def validate_current_session(self) -> None:
-        try:
-            path, session = self._ensure_session()
-            validate_session(session, session_path=path, strict=True)
-        except Exception as exc:
-            self._set_status(f"Invalid: {exc}")
-            return
-        self._set_status("Session valid")
-
-    def export_current_xmp(self) -> None:
-        try:
-            path, _session = self._ensure_session()
-            xmp_path = export_xmp(path, None)
-        except Exception as exc:
-            self._set_status(f"XMP export failed: {exc}")
-            return
-        self._set_status(f"Exported {Path(xmp_path).name}")
 
     def add_coordinate_space(self) -> None:
         try:

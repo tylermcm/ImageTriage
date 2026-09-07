@@ -29,7 +29,6 @@ from .menus import build_main_menu_bar
 from .people_dialog import PeopleSearchDialog
 from .photo_editor_panel import PhotoEditorPanel
 from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, TrainingSourcesDialog
-from .review_controls import ReviewControlsContext, ReviewControlsPanel
 from .resize_dialog import ResizeDialog
 from .train_ranker_dialog import TrainRankerDialog
 from .theme import (
@@ -84,8 +83,6 @@ __all__ = [
     "PhotoEditorPanel",
     "PrepareTrainingSourcesDialog",
     "ResizeDialog",
-    "ReviewControlsContext",
-    "ReviewControlsPanel",
     "ThemePalette",
     "TrainRankerDialog",
     "TrainingSourcesDialog",

@@ -62,12 +62,12 @@ class WorkflowSettingsResult:
     session_id: str
     winner_mode: WinnerMode
     delete_mode: DeleteMode
-    toolbar_style: str = "icons"
     loupe_card_style: str = "detailed"
     ui_gamma: float = 1.0
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
+    single_drive_expansion_enabled: bool = True
     auto_advance_enabled: bool = True
     burst_groups_enabled: bool = False
     burst_stacks_enabled: bool = False
@@ -132,13 +132,13 @@ class WorkflowSettingsDialog(QDialog):
         current_session: str,
         winner_mode: WinnerMode,
         delete_mode: DeleteMode,
-        toolbar_style: str = "icons",
         loupe_card_style: str = "detailed",
         allowed_card_styles: "tuple[str, ...] | None" = None,
         ui_gamma: float = 1.0,
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
+        single_drive_expansion_enabled: bool = True,
         auto_advance_enabled: bool = True,
         burst_groups_enabled: bool = False,
         burst_stacks_enabled: bool = False,
@@ -255,18 +255,6 @@ class WorkflowSettingsDialog(QDialog):
             "Checks the configured GitHub release feed when Image Triage starts. If a newer MSI is available, the top-right download button lights up."
         ))
 
-        self.toolbar_style_combo = QComboBox()
-        self.toolbar_style_combo.setMinimumWidth(180)
-        self.toolbar_style_combo.addItem("Icons", "icons")
-        self.toolbar_style_combo.addItem("Large icons", "large_icons")
-        self.toolbar_style_combo.addItem("Icons & Labels", "icon_text")
-        self.toolbar_style_combo.addItem("Text", "text")
-        toolbar_index = self.toolbar_style_combo.findData(toolbar_style)
-        self.toolbar_style_combo.setCurrentIndex(max(0, toolbar_index))
-        self.toolbar_style_combo.setToolTip(_settings_tooltip(
-            "Choose whether toolbar buttons show text, icons, larger icons, or icons with labels."
-        ))
-
         session_row = QWidget()
         session_row.setToolTip(_settings_tooltip(
             "Choose or name the settings preset used for this review session."
@@ -369,6 +357,15 @@ class WorkflowSettingsDialog(QDialog):
             "Shows dot folders and hidden folders in the folder browser."
         ))
 
+        self.single_drive_expansion_checkbox = QCheckBox(
+            "Keep only one branch expanded per level"
+        )
+        self.single_drive_expansion_checkbox.setChecked(single_drive_expansion_enabled)
+        self.single_drive_expansion_checkbox.setToolTip(_settings_tooltip(
+            "Opening a drive or folder collapses its expanded siblings at the same level. "
+            "The active path remains open while you browse deeper."
+        ))
+
         self.auto_advance_checkbox = QCheckBox("Advance after Accept or Reject")
         self.auto_advance_checkbox.setChecked(auto_advance_enabled)
         self.auto_advance_checkbox.setToolTip(_settings_tooltip(
@@ -388,7 +385,6 @@ class WorkflowSettingsDialog(QDialog):
         ))
 
         interface_page, interface_layout = self._build_settings_page("Interface")
-        self._add_form_row(interface_layout, "Toolbar", self.toolbar_style_combo)
         self._add_form_row(interface_layout, "Card style", self.loupe_card_style_combo)
         self._add_form_row(interface_layout, "UI gamma", self.ui_gamma_row)
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
@@ -420,6 +416,9 @@ class WorkflowSettingsDialog(QDialog):
             "Current catalog cache status and indexed-file summary."
         ))
         folders_page, folders_layout = self._build_settings_page("Library & Folders")
+        self._add_checkbox_row(
+            folders_layout, "Folder tree", self.single_drive_expansion_checkbox
+        )
         self._add_checkbox_row(folders_layout, "Catalog cache", self.catalog_cache_checkbox)
         self._add_checkbox_row(folders_layout, "Watch folder", self.watch_current_folder_checkbox)
         self._add_text_row(folders_layout, "Catalog", self.catalog_summary_label)
@@ -1085,12 +1084,12 @@ class WorkflowSettingsDialog(QDialog):
             session_id=session_id or "Default",
             winner_mode=winner_mode,
             delete_mode=delete_mode,
-            toolbar_style=str(self.toolbar_style_combo.currentData() or "text"),
             loupe_card_style=str(self.loupe_card_style_combo.currentData() or "detailed"),
             ui_gamma=self.ui_gamma_slider.value() / 100.0,
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
+            single_drive_expansion_enabled=self.single_drive_expansion_checkbox.isChecked(),
             auto_advance_enabled=self.auto_advance_checkbox.isChecked(),
             burst_groups_enabled=self.burst_groups_checkbox.isChecked(),
             burst_stacks_enabled=self.burst_stacks_checkbox.isChecked(),

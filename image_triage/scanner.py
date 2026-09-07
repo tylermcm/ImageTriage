@@ -32,6 +32,13 @@ JPEG_PAIR_DIRECTORIES = {
     "jpg",
 }
 
+RAW_PAIR_DIRECTORIES = {
+    "raw",
+    "raw files",
+    "raws",
+    "raw_files",
+}
+
 EDIT_DIRECTORIES = {
     "edit",
     "edits",
@@ -257,6 +264,16 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 # must not prevent photos in the parent folder from loading.
                 continue
 
+    # Export layouts commonly place JPEGs and camera originals in sibling
+    # folders (for example ``jpg`` and ``Raw Files``). Treat matching sibling
+    # RAWs as the canonical records when the JPEG folder itself is opened.
+    jpeg_stems = {item.stem_key for item in root_files if item.suffix in JPEG_SUFFIXES}
+    root_files.extend(
+        item
+        for item in _scan_sibling_raw_files(folder, include_stat=include_stat)
+        if item.stem_key in jpeg_stems
+    )
+
     raws_by_stem: dict[str, list[ScannedFile]] = {}
     root_jpegs_by_stem: dict[str, list[ScannedFile]] = {}
     root_files_by_family: dict[str, list[ScannedFile]] = {}
@@ -387,6 +404,72 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
     return records
 
 
+def _sibling_raw_directories(folder: str) -> list[str]:
+    if Path(folder).name.casefold() not in JPEG_PAIR_DIRECTORIES:
+        return []
+    parent = os.path.dirname(folder)
+    directories: list[str] = []
+    try:
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                if entry.name.casefold() not in RAW_PAIR_DIRECTORIES:
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        directories.append(os.path.normpath(entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return directories
+
+
+def _scan_sibling_raw_files(folder: str, *, include_stat: bool) -> list[ScannedFile]:
+    raws: list[ScannedFile] = []
+    for raw_folder in _sibling_raw_directories(folder):
+        try:
+            with os.scandir(raw_folder) as entries:
+                for entry in entries:
+                    try:
+                        scanned = to_scanned_file(
+                            entry,
+                            RAW_SUFFIXES,
+                            include_stat=include_stat,
+                            parent_folder=raw_folder,
+                        )
+                    except OSError:
+                        continue
+                    if scanned is not None:
+                        raws.append(scanned)
+        except OSError:
+            continue
+    return dedupe_scanned(raws)
+
+
+def _cached_records_need_raw_pair_refresh(folder: str, records: list[ImageRecord]) -> bool:
+    if not records:
+        return False
+    jpeg_stems = {
+        Path(record.path).stem.casefold()
+        for record in records
+        if not record.is_folder and suffix_for_path(record.path) in JPEG_SUFFIXES
+    }
+    if not jpeg_stems:
+        return False
+    for raw_folder in _sibling_raw_directories(folder):
+        try:
+            with os.scandir(raw_folder) as entries:
+                if any(
+                    suffix_for_path(entry.name) in RAW_SUFFIXES
+                    and Path(entry.name).stem.casefold() in jpeg_stems
+                    for entry in entries
+                ):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
     primary = Path(normalize_filesystem_path(record.path))
     folder = primary.parent
@@ -482,10 +565,7 @@ def dedupe_scanned(items: list[ScannedFile]) -> list[ScannedFile]:
     return ordered
 
 
-def preferred_stack_base(primary: ScannedFile, companions: list[ScannedFile]) -> ScannedFile:
-    for item in companions:
-        if item.suffix in JPEG_SUFFIXES:
-            return item
+def preferred_stack_base(primary: ScannedFile, _companions: list[ScannedFile]) -> ScannedFile:
     return primary
 
 
@@ -644,6 +724,8 @@ class FolderScanTask(QRunnable):
         if catalog_cache_enabled(self.use_catalog_cache):
             cached_records = CatalogRepository().load_folder_records(self.folder)
             if cached_records is not None:
+                if _cached_records_need_raw_pair_refresh(self.folder, cached_records):
+                    return None, ""
                 return cached_records, "catalog"
         return None, ""
 

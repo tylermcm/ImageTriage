@@ -1,21 +1,50 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 import sqlite3
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPoint, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QObject,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    QRunnable,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QButtonGroup,
-    QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QProgressBar,
     QProgressDialog,
     QPushButton,
@@ -33,17 +62,41 @@ from ..people_search import (
     ensure_people_search_schema,
     list_face_identities,
     list_person_clusters,
+    set_clusters_ignored,
 )
 from ..quality.store import ensure_faces_table
+from .icons import build_symbol_icon
 from aiculler.storage import SQLITE_BUSY_TIMEOUT_MS
 
-# A "single-photo face" is a cluster with just one face — hidden by default.
-_SINGLE_PHOTO = 1
-_THUMB_PX = 128
+_THUMB_PX = 224  # crop resolution; displayed size follows card width
 _HOVER_PX = 84
 _CARD_W = 196
 _TARGET_COL_W = _CARD_W + 18  # card + grid gap, for responsive column count
 _MAX_HOVER_FACES = 4
+_SWITCH_TRACK = QColor("#575b6c")
+_SWITCH_KNOB = QColor("#92abe4")
+_DONE_BLUE = "#085dae"
+_HEADER_CONTROL_H = 34
+_NAME_EDIT_H = 26
+_SEGMENT_W = 224
+_MIN_THUMB_PX = 96
+# U+21B6, matching image_triage/window.py's top-bar undo button.
+_UNDO_GLYPH = "\u21b6"
+
+
+def _elide(text: str, limit: int) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+_REP_CACHE_MAX = 600
+_BODY_MARGIN = 24
+_SCROLLBAR_W = 8
+_DEFAULT_W = 888
+_DEFAULT_H = 1046
+_SEGMENT_H = 36
+# Track height less its 1px border and the 3px track margins on each side.
+# Qt drops border-radius entirely once it exceeds half the widget height,
+# so the segment radius must be derived from this, never guessed.
+_SEGMENT_BTN_H = _SEGMENT_H - 2 * 1 - 2 * 3
 _NAME_WRITE_POOL: QThreadPool | None = None
 
 
@@ -80,6 +133,239 @@ def _blend(a: QColor, b: QColor, t: float) -> QColor:
         round(a.green() * (1 - t) + b.green() * t),
         round(a.blue() * (1 - t) + b.blue() * t),
     )
+
+
+# --------------------------------------------------------------------------
+# Icon painting
+# --------------------------------------------------------------------------
+def _stroke(color: QColor, width: float) -> QPen:
+    pen = QPen(color, width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    return pen
+
+
+def _icon_canvas(px: int) -> tuple[QPixmap, QPainter]:
+    pixmap = QPixmap(px, px)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    return pixmap, painter
+
+
+def _icon_search(color: QColor, px: int = 16) -> QIcon:
+    pixmap, painter = _icon_canvas(px)
+    painter.setPen(_stroke(color, 1.5))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    radius = px * 0.26
+    centre = QPointF(px * 0.42, px * 0.42)
+    painter.drawEllipse(centre, radius, radius)
+    tail = radius * 0.72
+    painter.drawLine(QPointF(centre.x() + tail, centre.y() + tail), QPointF(px * 0.85, px * 0.85))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _icon_scan(color: QColor, px: int = 22) -> QIcon:
+    """Face-recognition mark: scan brackets around two eyes and a mouth.
+
+    Drawn on a larger canvas than the other glyphs and kept well inside it -
+    at 16px the three face marks crowd into a single blob.
+    """
+    pixmap, painter = _icon_canvas(px)
+    painter.setPen(_stroke(color, 1.6))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    inset, arm = px * 0.14, px * 0.17
+    for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+        x = inset if sx > 0 else px - inset
+        y = inset if sy > 0 else px - inset
+        painter.drawLine(QPointF(x, y), QPointF(x + arm * sx, y))
+        painter.drawLine(QPointF(x, y), QPointF(x, y + arm * sy))
+    for ex in (px * 0.39, px * 0.61):
+        painter.drawLine(QPointF(ex, px * 0.36), QPointF(ex, px * 0.45))
+    mouth = QPainterPath()
+    mouth.moveTo(px * 0.36, px * 0.60)
+    mouth.quadTo(px * 0.5, px * 0.70, px * 0.64, px * 0.60)
+    painter.drawPath(mouth)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _icon_merge(color: QColor, px: int = 16) -> QIcon:
+    """Two paths converging into one - deliberately not a modifier-key glyph."""
+    pixmap, painter = _icon_canvas(px)
+    painter.setPen(_stroke(color, 1.6))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    mid = px * 0.5
+    painter.drawLine(QPointF(px * 0.18, px * 0.16), QPointF(mid, px * 0.48))
+    painter.drawLine(QPointF(px * 0.82, px * 0.16), QPointF(mid, px * 0.48))
+    painter.drawLine(QPointF(mid, px * 0.48), QPointF(mid, px * 0.84))
+    painter.drawLine(QPointF(mid - px * 0.15, px * 0.68), QPointF(mid, px * 0.85))
+    painter.drawLine(QPointF(mid + px * 0.15, px * 0.68), QPointF(mid, px * 0.85))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _icon_ignore(color: QColor, px: int = 16) -> QIcon:
+    """Circle-slash: this cluster is not a person worth tagging."""
+    pixmap, painter = _icon_canvas(px)
+    painter.setPen(_stroke(color, 1.5))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    radius = px * 0.36
+    centre = QPointF(px * 0.5, px * 0.5)
+    painter.drawEllipse(centre, radius, radius)
+    offset = radius * 0.7071
+    painter.drawLine(
+        QPointF(centre.x() - offset, centre.y() + offset),
+        QPointF(centre.x() + offset, centre.y() - offset),
+    )
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _icon_clear(color: QColor, px: int = 16) -> QIcon:
+    pixmap, painter = _icon_canvas(px)
+    painter.setPen(_stroke(color, 1.6))
+    low, high = px * 0.26, px * 0.74
+    painter.drawLine(QPointF(low, low), QPointF(high, high))
+    painter.drawLine(QPointF(high, low), QPointF(low, high))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _icon_pencil(color: QColor, px: int = 14) -> QIcon:
+    pixmap, painter = _icon_canvas(px)
+    painter.setPen(_stroke(color, 1.4))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(px * 0.22, px * 0.78), QPointF(px * 0.70, px * 0.28))
+    painter.drawLine(QPointF(px * 0.70, px * 0.28), QPointF(px * 0.84, px * 0.42))
+    painter.drawLine(QPointF(px * 0.84, px * 0.42), QPointF(px * 0.36, px * 0.90))
+    painter.drawLine(QPointF(px * 0.36, px * 0.90), QPointF(px * 0.16, px * 0.94))
+    painter.drawLine(QPointF(px * 0.16, px * 0.94), QPointF(px * 0.22, px * 0.78))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _draw_count_bars(painter: QPainter, left: float, baseline: float, color: QColor) -> None:
+    """The little ascending bar chart that precedes a person's photo count."""
+    painter.save()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(color))
+    for index, height in enumerate((4.0, 7.0, 10.0)):
+        painter.drawRoundedRect(QRectF(left + index * 3.6, baseline - height, 2.4, height), 1.0, 1.0)
+    painter.restore()
+
+
+_VERIFIED_ASSET = Path(__file__).resolve().parent / "assets" / "verified.png"
+
+
+@lru_cache(maxsize=8)
+def _verified_pixmap(edge: int) -> QPixmap:
+    """The verified mark at one device-pixel size, or a null pixmap if missing."""
+    source = QPixmap(str(_VERIFIED_ASSET))
+    if source.isNull():
+        return QPixmap()
+    return source.scaled(
+        edge,
+        edge,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+class _VerifiedBadge(QWidget):
+    """Marks a person whose name a human typed, rather than one the clusterer guessed."""
+
+    def __init__(self, size: int, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setToolTip("Name confirmed by you")
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        # Rendered at device resolution so the mark stays crisp on a HiDPI screen.
+        ratio = self.devicePixelRatioF()
+        pixmap = _verified_pixmap(max(1, round(self.width() * ratio)))
+        if pixmap.isNull():
+            return
+        pixmap.setDevicePixelRatio(ratio)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+
+class _ToggleSwitch(QAbstractButton):
+    """iOS-style switch; replaces the tick box on "Include single-photo faces"."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(38, 21)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._travel = 0.0
+        # One oval colour in both states: the knob's position carries on/off.
+        self._track_off = QColor("#575b6c")
+        self._track_on = QColor("#575b6c")
+        self._knob = QColor("#92abe4")
+        self._animation = QPropertyAnimation(self, b"travel", self)
+        self._animation.setDuration(150)
+        self._animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.toggled.connect(self._animate)
+
+    def set_colors(self, track_off: QColor, track_on: QColor, knob: QColor) -> None:
+        self._track_off, self._track_on, self._knob = track_off, track_on, knob
+        self.update()
+
+    def _animate(self, checked: bool) -> None:
+        target = 1.0 if checked else 0.0
+        self._animation.stop()
+        # Toggled before the dialog is on screen (restoring a saved filter, say):
+        # there is no frame to animate into, so snap or the knob paints the lie.
+        if not self.isVisible():
+            self._set_travel(target)
+            return
+        self._animation.setStartValue(self._travel)
+        self._animation.setEndValue(target)
+        self._animation.start()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._set_travel(1.0 if self.isChecked() else 0.0)
+
+    def _get_travel(self) -> float:
+        return self._travel
+
+    def _set_travel(self, value: float) -> None:
+        self._travel = float(value)
+        self.update()
+
+    travel = Property(float, _get_travel, _set_travel)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        radius = self.height() / 2
+        # The oval is an outline, not a fill: bluegray ring, transparent inside.
+        ring = _blend(self._track_off, self._track_on, self._travel)
+        pen_w = 1.6
+        painter.setPen(_stroke(ring, pen_w))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        half = pen_w / 2.0
+        painter.drawRoundedRect(
+            QRectF(half, half, self.width() - pen_w, self.height() - pen_w),
+            radius - half,
+            radius - half,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        inset = 4.0
+        knob_r = radius - inset
+        span = self.width() - 2 * (knob_r + inset)
+        centre = QPointF(inset + knob_r + span * self._travel, radius)
+        painter.setBrush(QBrush(self._knob))
+        painter.drawEllipse(centre, knob_r, knob_r)
+        painter.end()
 
 
 Bbox = tuple[float, float, float, float]
@@ -316,6 +602,11 @@ class _HoverPreview(QFrame):
 class _NameEdit(QLineEdit):
     escaped = Signal()
     submitted = Signal()
+    focused = Signal()
+
+    def focusInEvent(self, event) -> None:  # type: ignore[override]
+        super().focusInEvent(event)
+        self.focused.emit()
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         if event.key() == Qt.Key.Key_Escape:
@@ -329,11 +620,33 @@ class _NameEdit(QLineEdit):
         super().keyPressEvent(event)
 
 
+class _BarsGlyph(QWidget):
+    """The ascending-bars mark that sits before a person's photo count."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(12, 14)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._color = QColor("#8e8e93")
+
+    def set_color(self, color: QColor) -> None:
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        _draw_count_bars(painter, 0.5, self.height() - 2.0, self._color)
+        painter.end()
+
+
 class _PersonCard(QFrame):
     select_requested = Signal(object, object)  # card, modifiers
     name_committed = Signal(object, str, bool)  # card, text, via_enter
     edit_started = Signal(object)
     hover_changed = Signal(object, bool)  # card, entered
+    metrics_changed = Signal()  # the card's preferred height changed
+    context_menu_requested = Signal(object, object)  # card, global position
 
     def __init__(self, person: _Person, parent=None) -> None:
         super().__init__(parent)
@@ -351,54 +664,110 @@ class _PersonCard(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 14, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 14, 12, 14)
+        layout.setSpacing(9)
 
         self.thumb = QLabel(self)
-        self.thumb.setFixedSize(_THUMB_PX, _THUMB_PX)
+        self._thumb_image: QImage | None = None
+        self._thumb_px = _MIN_THUMB_PX
+        self._thumb_bg = "#48484a"
+        self._thumb_fg = "#8e8e93"
+        self.thumb.setFixedSize(self._thumb_px, self._thumb_px)
         self.thumb.setObjectName("personThumb")
         self.thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb.setText(person.name.strip()[:1].upper() if person.named else "")
         layout.addWidget(self.thumb, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        # Name control: a flat button that swaps to an inline edit on click.
+        # Name control. A named person reads as plain text plus a confirmed
+        # badge; an unnamed one shows the input up front, so the whole grid can
+        # be filled in without a click per card.
         self._name_stack = QStackedLayout()
         self._name_stack.setContentsMargins(0, 0, 0, 0)
-        self.name_button = QPushButton(self)
+
+        named_row = QWidget(self)
+        named_layout = QHBoxLayout(named_row)
+        named_layout.setContentsMargins(0, 0, 0, 0)
+        named_layout.setSpacing(5)
+        named_layout.addStretch(1)
+        self.name_button = QPushButton(named_row)
         self.name_button.setObjectName("nameButton")
         self.name_button.setFlat(True)
         self.name_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.name_button.clicked.connect(self.begin_edit)
+        named_layout.addWidget(self.name_button)
+        self.badge = _VerifiedBadge(15, named_row)
+        named_layout.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        named_layout.addStretch(1)
+
         self.name_edit = _NameEdit(self)
         self.name_edit.setObjectName("nameEdit")
-        self.name_edit.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.name_edit.setPlaceholderText("Name this person...")
+        self.name_edit.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.name_edit.setClearButtonEnabled(False)
+        self._pencil_action = self.name_edit.addAction(
+            QIcon(), QLineEdit.ActionPosition.TrailingPosition
+        )
+        self._pencil_action.triggered.connect(self.begin_edit)
         self.name_edit.submitted.connect(lambda: self._commit(via_enter=True))
         self.name_edit.editingFinished.connect(lambda: self._commit(via_enter=False))
         self.name_edit.escaped.connect(self._cancel_edit)
+        self.name_edit.focused.connect(self._on_edit_focused)
+        # A floor, not a fixed size: at larger fonts or DPI a hard height
+        # clips the input's bottom border.
+        self.name_edit.setMinimumHeight(_NAME_EDIT_H)
+
+        # Inset the input a few px so it does not run the full card width.
+        edit_row = QWidget(self)
+        edit_layout = QHBoxLayout(edit_row)
+        edit_layout.setContentsMargins(7, 0, 7, 0)
+        edit_layout.setSpacing(0)
+        edit_layout.addWidget(self.name_edit)
+
         name_host = QWidget(self)
-        self._name_stack.addWidget(self.name_button)
-        self._name_stack.addWidget(self.name_edit)
+        self._name_stack.addWidget(named_row)
+        self._name_stack.addWidget(edit_row)
         name_host.setLayout(self._name_stack)
         layout.addWidget(name_host)
 
-        self.count_label = QLabel(self)
+        count_row = QWidget(self)
+        count_layout = QHBoxLayout(count_row)
+        count_layout.setContentsMargins(0, 0, 0, 0)
+        count_layout.setSpacing(6)
+        count_layout.addStretch(1)
+        self.bars = _BarsGlyph(count_row)
+        count_layout.addWidget(self.bars, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.count_label = QLabel(count_row)
         self.count_label.setObjectName("personCount")
-        self.count_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(self.count_label)
+        count_layout.addWidget(self.count_label)
+        count_layout.addStretch(1)
+        layout.addWidget(count_row)
 
         self._editing = False
         self._refresh_name()
 
+    def set_chrome_colors(self, *, muted: QColor, thumb_bg: QColor) -> None:
+        self.bars.set_color(muted)
+        self._pencil_action.setIcon(_icon_pencil(muted))
+        self._thumb_bg = thumb_bg.name()
+        self._thumb_fg = muted.name()
+        self._apply_thumb_style()
+
+    def _apply_thumb_style(self) -> None:
+        self.thumb.setStyleSheet(
+            f"background: {self._thumb_bg}; border-radius: {self._thumb_px // 2}px;"
+            f" color: {self._thumb_fg}; font-size: 30px; font-weight: 600;"
+        )
+
     # -- name control ------------------------------------------------------
     def _refresh_name(self) -> None:
-        if self.person.named:
+        named = self.person.named
+        if named:
             self.name_button.setText(self.person.name)
-            self.name_button.setProperty("state", "named")
-        else:
-            self.name_button.setText("+ Add name")
-            self.name_button.setProperty("state", "unnamed")
-        self.name_button.style().unpolish(self.name_button)
-        self.name_button.style().polish(self.name_button)
+            self._name_stack.setCurrentIndex(0)
+        elif not self._editing:
+            self.name_edit.setText("")
+            self._name_stack.setCurrentIndex(1)
+        self.badge.setVisible(named)
         merged = len(self.person.cluster_ids)
         word = "photo" if self.person.face_count == 1 else "photos"
         self.count_label.setText(f"{self.person.face_count} {word}")
@@ -410,25 +779,34 @@ class _PersonCard(QFrame):
     def begin_edit(self) -> None:
         self._editing = True
         self.name_edit.setText(self.person.name)
-        self._name_stack.setCurrentWidget(self.name_edit)
+        self._name_stack.setCurrentIndex(1)
         self.name_edit.setFocus()
         self.name_edit.selectAll()
         self.edit_started.emit(self)
+
+    def _on_edit_focused(self) -> None:
+        # An unnamed card shows its input permanently, so "editing" has to mean
+        # "the input holds focus" - otherwise the dialog's refresh timer, which
+        # pauses during edits, would never run again.
+        if not self._editing:
+            self._editing = True
+            self.edit_started.emit(self)
 
     def _commit(self, *, via_enter: bool) -> None:
         if not self._editing:
             return
         self._editing = False
         text = self.name_edit.text().strip()
-        self._name_stack.setCurrentWidget(self.name_button)
         if text != self.person.original_name:
             self.name_committed.emit(self, text, via_enter)
-        elif via_enter:
-            self.name_committed.emit(self, text, True)  # allow advance even with no change
+        else:
+            self._refresh_name()
+            if via_enter:
+                self.name_committed.emit(self, text, True)  # allow advance even with no change
 
     def _cancel_edit(self) -> None:
         self._editing = False
-        self._name_stack.setCurrentWidget(self.name_button)
+        self._refresh_name()
         self.setFocus()
 
     def apply_name(self, name: str) -> None:
@@ -457,8 +835,49 @@ class _PersonCard(QFrame):
         self.update()
 
     def set_thumbnail(self, image: QImage) -> None:
+        self._thumb_image = image
         self.thumb.setText("")
-        self.thumb.setPixmap(_circular_pixmap(image, _THUMB_PX))
+        self.thumb.setPixmap(_circular_pixmap(image, self._thumb_px))
+
+    # -- square tiles ------------------------------------------------------
+    def _chrome_height(self) -> int:
+        """Everything in the card that is not the face."""
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        rows = margins.top() + margins.bottom() + 2 * layout.spacing()
+        for index in (1, 2):
+            item = layout.itemAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                rows += widget.sizeHint().height()
+        return rows
+
+    def _fit_thumb(self) -> None:
+        """Size the face so the card comes out square at whatever width it got.
+
+        The chrome below the photo is a fixed height, so letting the face take
+        the remainder keeps every card square and the side margins constant,
+        at three columns or five.
+        """
+        # The frame border sits outside the layout, and it is thicker when the
+        # card is selected - subtract the real thing so the outer box stays
+        # square either way, instead of jumping 2px on selection.
+        border = max(0, self.height() - self.contentsRect().height())
+        side = max(_MIN_THUMB_PX, self.width() - self._chrome_height() - border)
+        if side == self._thumb_px:
+            return
+        self._thumb_px = side
+        self.thumb.setFixedSize(side, side)
+        self._apply_thumb_style()
+        if self._thumb_image is not None:
+            self.thumb.setPixmap(_circular_pixmap(self._thumb_image, side))
+        # The card is now taller, so the scroll area has to be told again how
+        # much room the grid needs - otherwise it squeezes the rows back down.
+        self.metrics_changed.emit()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._fit_thumb()
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         super().paintEvent(event)
@@ -486,6 +905,12 @@ class _PersonCard(QFrame):
         self.hover_changed.emit(self, False)
         super().leaveEvent(event)
 
+    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        # The name input keeps its own editing menu; everywhere else on the
+        # card opens the person menu.
+        self.context_menu_requested.emit(self, event.globalPos())
+        event.accept()
+
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         # Clicks on the thumbnail (not the name control) select the card.
         if self.thumb.geometry().contains(event.position().toPoint()):
@@ -501,10 +926,16 @@ class PeopleSearchDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Tag People")
         self.setModal(True)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMinMaxButtonsHint)
         # Sized so the default 3-column grid shows three full rows without
-        # scrolling (card ~207px high + 18px gaps + header/filter/footer chrome).
-        self.resize(732, 840)
-        self.setMinimumSize(560, 480)
+        # scrolling: square 265px cards + 18px gaps + header/filter/footer chrome.
+        # Clamped to the screen so this does not overflow a 1080p display.
+        target_height = _DEFAULT_H
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            target_height = min(target_height, int(screen.availableGeometry().height() * 0.96))
+        self.resize(_DEFAULT_W, target_height)
+        self.setMinimumSize(620, 560)
         self._db_path = Path(db_path)
         self._connection: sqlite3.Connection | None = sqlite3.connect(
             self._db_path,
@@ -525,6 +956,8 @@ class PeopleSearchDialog(QDialog):
         self._hover_pool = QThreadPool(self)
         self._hover_pool.setMaxThreadCount(1)
         self._hover_cache: dict[int, list[QImage]] = {}
+        # Decoded representative faces, so re-showing a person never re-decodes.
+        self._rep_cache: dict[int, QImage] = {}
         self._active_crop_task: _CropTask | None = None
         self._pending_rep_people: dict[int, _Person] = {}
         self._active_hover_task: _CropTask | None = None
@@ -537,59 +970,109 @@ class PeopleSearchDialog(QDialog):
         self._focus_index = -1
         self._current_cols = 3
         self._hover_card: _PersonCard | None = None
+        self._ignored_undo: list[int] = []
+        # Set when the user asks to see one person's photos. The caller reads
+        # these after exec() and filters the grid by the cluster's own paths -
+        # by path, not by name, so unnamed faces work too.
+        self.requested_person_label: str = ""
+        self.requested_person_paths: tuple[str, ...] = ()
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # -- header: title + stats + scan control --------------------------
+        # Everything above the docked footer band lives in this inset column.
+        content = QWidget(self)
+        body = QVBoxLayout(content)
+        body.setContentsMargins(_BODY_MARGIN, 20, _BODY_MARGIN, 14)
+        self._body_layout = body
+        body.setSpacing(12)
+        root.addWidget(content, 1)
+
+        # -- header: title + stats, search, scan control --------------------
         header = QHBoxLayout()
         header.setSpacing(12)
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
-        self.title_label = QLabel("Tag People", self)
+        self.title_label = QLabel("Tag People", content)
         self.title_label.setObjectName("peopleTitle")
         title_col.addWidget(self.title_label)
-        self.stats_label = QLabel("", self)
+        self.stats_label = QLabel("", content)
         self.stats_label.setObjectName("peopleStats")
         title_col.addWidget(self.stats_label)
-        self.progress = QProgressBar(self)
+        self.progress = QProgressBar(content)
         self.progress.setObjectName("scanProgress")
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(3)
         self.progress.setVisible(False)
         title_col.addWidget(self.progress)
+        title_col.addStretch(1)
         header.addLayout(title_col, 1)
-        self.scan_button = QPushButton("Rescan Faces", self)
+
+        self.search_edit = QLineEdit(content)
+        self.search_edit.setObjectName("searchEdit")
+        self.search_edit.setPlaceholderText("Search")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setFixedWidth(240)
+        self._search_action = self.search_edit.addAction(
+            QIcon(), QLineEdit.ActionPosition.LeadingPosition
+        )
+        self.search_edit.textChanged.connect(self._on_search_changed)
+
+        self.scan_button = QPushButton("Rescan Faces", content)
         self.scan_button.setObjectName("scanButton")
         self.scan_button.clicked.connect(self._rescan)
-        header.addWidget(self.scan_button, 0, Qt.AlignmentFlag.AlignTop)
+
+        # Both controls live in a host whose top margin is set from the title's
+        # font metrics, so their top edges line up with the title's capitals
+        # rather than with the invisible top of its text box.
+        controls_host = QWidget(content)
+        self._controls_layout = QHBoxLayout(controls_host)
+        self._controls_layout.setContentsMargins(0, 0, 0, 0)
+        self._controls_layout.setSpacing(12)
+        self._controls_layout.addWidget(self.search_edit)
+        self._controls_layout.addWidget(self.scan_button)
+        header.addWidget(controls_host, 0, Qt.AlignmentFlag.AlignTop)
+        self._header_controls = (self.search_edit, self.scan_button)
         self._header_row = header
-        root.addLayout(header)
+        body.addLayout(header)
 
         # -- filter row ----------------------------------------------------
         filters = QHBoxLayout()
-        filters.setSpacing(8)
+        filters.setSpacing(10)
+        self.segment_track = QFrame(content)
+        self.segment_track.setObjectName("segTrack")
+        track_layout = QHBoxLayout(self.segment_track)
+        track_layout.setContentsMargins(3, 3, 3, 3)
+        track_layout.setSpacing(0)
         self.filter_group = QButtonGroup(self)
-        self.filter_all = QPushButton("All", self)
-        self.filter_unnamed = QPushButton("Unnamed", self)
+        self.filter_all = QPushButton("All", self.segment_track)
+        self.filter_unnamed = QPushButton("Unnamed", self.segment_track)
         for i, btn in enumerate((self.filter_all, self.filter_unnamed)):
             btn.setObjectName("segButton")
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(_SEGMENT_BTN_H)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self.filter_group.addButton(btn, i)
-            filters.addWidget(btn)
+            track_layout.addWidget(btn, 1)
         self.filter_all.setChecked(True)
         self.filter_group.idClicked.connect(lambda _id: self._reload())
+        self.segment_track.setFixedHeight(_SEGMENT_H)
+        self.segment_track.setFixedWidth(_SEGMENT_W)
+        filters.addWidget(self.segment_track, 0, Qt.AlignmentFlag.AlignLeft)
         filters.addStretch(1)
-        self.include_singles = QCheckBox("Include single-photo faces", self)
+        self.include_singles = _ToggleSwitch(content)
         self.include_singles.toggled.connect(self._reload)
-        filters.addWidget(self.include_singles)
+        filters.addWidget(self.include_singles, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.singles_label = QLabel("Include single-photo faces", content)
+        self.singles_label.setObjectName("switchLabel")
+        filters.addWidget(self.singles_label, 0, Qt.AlignmentFlag.AlignVCenter)
         self._filter_row = filters
-        root.addLayout(filters)
+        body.addLayout(filters)
 
         # -- grid (responsive, centred) -----------------------------------
-        self.scroll = QScrollArea(self)
+        self.scroll = QScrollArea(content)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -602,7 +1085,7 @@ class PeopleSearchDialog(QDialog):
         outer.setSpacing(0)
         # The grid fills the full viewport width; equal column stretch (set in
         # _relayout_grid) justifies the cards edge-to-edge so both the left and
-        # right edges line up with the header, filter and footer rows.
+        # right edges line up with the header and filter rows.
         self._grid = QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setHorizontalSpacing(18)
@@ -610,46 +1093,80 @@ class PeopleSearchDialog(QDialog):
         outer.addLayout(self._grid)
         outer.addStretch(1)
         self.scroll.setWidget(self._grid_host)
-        root.addWidget(self.scroll, 1)
+        body.addWidget(self.scroll, 1)
 
-        self.empty_label = QLabel("", self)
+        self.empty_label = QLabel("", content)
         self.empty_label.setObjectName("peopleEmpty")
         self.empty_label.setWordWrap(True)
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setVisible(False)
-        root.addWidget(self.empty_label, 1)
+        body.addWidget(self.empty_label, 1)
 
-        # -- contextual selection bar (only when >=1 selected) -------------
-        self.selection_bar = QFrame(self)
-        self.selection_bar.setObjectName("selectionBar")
-        self.selection_bar.setVisible(False)
-        sel = QHBoxLayout(self.selection_bar)
-        sel.setContentsMargins(14, 10, 14, 10)
-        sel.setSpacing(12)
-        self.selection_label = QLabel("", self.selection_bar)
-        self.selection_label.setObjectName("selectionLabel")
-        sel.addWidget(self.selection_label)
-        sel.addStretch(1)
-        self.clear_button = QPushButton("Clear", self.selection_bar)
-        self.clear_button.clicked.connect(self._clear_selection)
-        sel.addWidget(self.clear_button)
-        self.merge_button = QPushButton("Merge as Same Person", self.selection_bar)
-        self.merge_button.setObjectName("mergeButton")
+        # -- docked footer band --------------------------------------------
+        self.footer_band = QFrame(self)
+        self.footer_band.setObjectName("footerBand")
+        band = QVBoxLayout(self.footer_band)
+        band.setContentsMargins(24, 12, 24, 16)
+        band.setSpacing(10)
+
+        # Contextual actions, shown only while at least one person is selected.
+        self.action_row = QWidget(self.footer_band)
+        actions = QHBoxLayout(self.action_row)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(10)
+        actions.addStretch(1)
+        self.merge_button = QPushButton("Merge Selected", self.action_row)
+        self.merge_button.setObjectName("actionButton")
         self.merge_button.clicked.connect(self._merge_selected)
-        sel.addWidget(self.merge_button)
-        root.addWidget(self.selection_bar)
+        actions.addWidget(self.merge_button)
+        self.ignore_button = QPushButton("Ignore Selected", self.action_row)
+        self.ignore_button.setObjectName("actionButton")
+        self.ignore_button.clicked.connect(self._ignore_selected)
+        actions.addWidget(self.ignore_button)
+        self.clear_button = QPushButton("Clear Selected", self.action_row)
+        self.clear_button.setObjectName("actionButton")
+        self.clear_button.clicked.connect(self._clear_selection)
+        actions.addWidget(self.clear_button)
+        actions.addStretch(1)
+        self.action_row.setVisible(False)
+        band.addWidget(self.action_row)
 
-        # -- footer --------------------------------------------------------
-        footer = QHBoxLayout()
-        footer.addStretch(1)
-        self.done_button = QPushButton("Done", self)
+        # Ignoring is reversible, but only if the way back is offered here --
+        # an ignored cluster is otherwise gone from every view in the dialog.
+        self.undo_row = QWidget(self.footer_band)
+        undo_layout = QHBoxLayout(self.undo_row)
+        undo_layout.setContentsMargins(0, 0, 0, 0)
+        undo_layout.setSpacing(10)
+        undo_layout.addStretch(1)
+        self.undo_label = QLabel("", self.undo_row)
+        self.undo_label.setObjectName("undoLabel")
+        undo_layout.addWidget(self.undo_label)
+        self.undo_button = QPushButton("Undo", self.undo_row)
+        self.undo_button.setObjectName("actionButton")
+        self.undo_button.clicked.connect(self._undo_ignore)
+        undo_layout.addWidget(self.undo_button)
+        undo_layout.addStretch(1)
+        self.undo_row.setVisible(False)
+        band.addWidget(self.undo_row)
+
+        self.done_button = QPushButton("DONE", self.footer_band)
         self.done_button.setObjectName("doneButton")
         self.done_button.setDefault(False)
         self.done_button.setAutoDefault(False)
+        self.done_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.done_button.clicked.connect(self.accept)
-        footer.addWidget(self.done_button)
-        self._footer_row = footer
-        root.addLayout(footer)
+        done_row = QHBoxLayout()
+        done_row.setContentsMargins(0, 0, 0, 0)
+        done_row.addStretch(1)
+        done_row.addWidget(self.done_button)
+        done_row.addStretch(1)
+        band.addLayout(done_row)
+        root.addWidget(self.footer_band)
+
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(180)
+        self._search_timer.timeout.connect(self._populate_cards)
 
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
@@ -666,6 +1183,8 @@ class PeopleSearchDialog(QDialog):
         self._refresh_timer.timeout.connect(self._refresh_if_database_changed)
 
         self.setStyleSheet(self._stylesheet())
+        self._apply_chrome_icons()
+        self._sync_header_control_heights()
         self._reload()
         self._database_revision = self._read_database_revision()
         self._refresh_timer.start()
@@ -674,6 +1193,7 @@ class PeopleSearchDialog(QDialog):
     def _stylesheet(self) -> str:
         pal = self.palette()
         base = pal.color(QPalette.ColorRole.Base)
+        window = pal.color(QPalette.ColorRole.Window)
         text = pal.color(QPalette.ColorRole.Text)
         mid = pal.color(QPalette.ColorRole.Mid)
         hl = pal.color(QPalette.ColorRole.Highlight)
@@ -682,45 +1202,148 @@ class PeopleSearchDialog(QDialog):
         subtle = _blend(base, text, 0.10).name()  # faint normal border
         tint = QColor(hl.red(), hl.green(), hl.blue(), 28).name(QColor.NameFormat.HexArgb)
         accent = hl.name()
-        radius = _THUMB_PX // 2
+        # Each card carries a soft top-left-to-bottom-right sheen so the grid
+        # reads as a set of lit surfaces rather than flat rectangles.
+        card_top = _blend(base, text, 0.055).name()
+        card_bottom = _blend(base, window, 0.55).name()
+        card_gradient = (
+            f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {card_top}, stop:1 {card_bottom})"
+        )
+        card_hover_top = _blend(base, text, 0.10).name()
+        card_hover_gradient = (
+            f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {card_hover_top}, stop:1 {card_bottom})"
+        )
+        band = _blend(window, QColor(0, 0, 0), 0.22).name()
+        # Translucent so the bar reads as a hint rather than a fixture.
+        handle = QColor(text.red(), text.green(), text.blue(), 48).name(QColor.NameFormat.HexArgb)
+        handle_hover = QColor(text.red(), text.green(), text.blue(), 96).name(
+            QColor.NameFormat.HexArgb
+        )
+        field = _blend(base, text, 0.07).name()
         return f"""
-            QLabel#peopleTitle {{ color: {text.name()}; font-size: 17px; font-weight: 600; }}
+            QLabel#peopleTitle {{ color: {text.name()}; font-size: 20px; font-weight: 700; }}
             QLabel#peopleStats {{ color: {muted}; font-size: 12px; }}
             QLabel#peopleEmpty {{ color: {muted}; font-size: 13px; }}
+            QLabel#switchLabel {{ color: {text.name()}; font-size: 12px; }}
             QProgressBar#scanProgress {{ background: {mid.name()}; border: none; border-radius: 1px; }}
             QProgressBar#scanProgress::chunk {{ background: {accent}; border-radius: 1px; }}
 
-            QPushButton#segButton {{
-                padding: 5px 14px; border-radius: 7px; border: 1px solid {subtle};
-                background: transparent; color: {muted}; font-size: 12px;
+            QLineEdit#searchEdit {{
+                background: {field}; border: 1px solid {subtle}; border-radius: 9px;
+                padding: 0px 10px; color: {text.name()}; font-size: 14px;
             }}
-            QPushButton#segButton:hover {{ border-color: {accent}; }}
-            QPushButton#segButton:checked {{ color: {text.name()}; border-color: {accent}; background: {tint}; }}
+            QLineEdit#searchEdit:focus {{ border-color: {accent}; }}
 
-            QFrame#personCard {{ background: {base.name()}; border: 1px solid {subtle}; border-radius: 14px; }}
-            QFrame#personCard:hover {{ border-color: {_blend(base, hl, 0.5).name()}; }}
+            QFrame#segTrack {{ background: {field}; border: 1px solid {subtle}; border-radius: 18px; }}
+            QPushButton#segButton {{
+                padding: 6px 18px; border: 1px solid transparent;
+                border-radius: {_SEGMENT_BTN_H // 2}px;
+                background-color: transparent; color: {muted}; font-size: 12px; min-width: 0px;
+            }}
+            QPushButton#segButton:hover {{ color: {text.name()}; }}
+            QPushButton#segButton:checked {{
+                color: {text.name()}; font-weight: 600;
+                border: 1px solid transparent;
+                border-radius: {_SEGMENT_BTN_H // 2}px;
+                background-color: {_blend(base, text, 0.16).name()};
+            }}
+
+            QFrame#personCard {{
+                background: {card_gradient}; border: 1px solid {subtle}; border-radius: 14px;
+            }}
+            QFrame#personCard:hover {{
+                background: {card_hover_gradient}; border-color: {_blend(base, hl, 0.5).name()};
+            }}
             QFrame#personCard[focused="true"] {{ border: 1px dashed {accent}; }}
-            QFrame#personCard[selected="true"] {{ border: 2px solid {accent}; background: {tint}; }}
-            QLabel#personThumb {{ background: {mid.name()}; border-radius: {radius}px; color: {muted};
-                font-size: 30px; font-weight: 600; }}
-            QPushButton#nameButton {{ border: none; background: transparent; padding: 2px 4px; font-size: 15px; }}
-            QPushButton#nameButton[state="named"] {{ color: {text.name()}; font-weight: 600; }}
-            QPushButton#nameButton[state="unnamed"] {{ color: {accent}; font-weight: 600; }}
-            QLineEdit#nameEdit {{ border: none; border-bottom: 1px solid {accent}; background: transparent;
-                color: {text.name()}; font-size: 15px; padding: 2px; }}
+            QFrame#personCard[selected="true"] {{ border: 2px solid {accent}; }}
+            QPushButton#nameButton {{ border: none; background: transparent; padding: 2px 2px;
+                font-size: 15px; font-weight: 600; color: {text.name()}; min-width: 0px; text-align: center; }}
+            QLineEdit#nameEdit {{
+                background: {field}; border: 1px solid {subtle}; border-radius: 7px;
+                color: {text.name()}; font-size: 12px; padding: 2px 8px;
+            }}
+            QLineEdit#nameEdit:focus {{ border-color: {accent}; }}
             QLabel#personCount {{ color: {muted}; font-size: 12px; }}
 
-            QFrame#selectionBar {{ background: {tint}; border: 1px solid {accent}; border-radius: 10px; }}
-            QLabel#selectionLabel {{ color: {text.name()}; font-size: 13px; font-weight: 500; }}
             QFrame#hoverPreview {{ background: {base.name()}; border: 1px solid {accent}; border-radius: 12px; }}
+
+            QFrame#footerBand {{ background: {band}; border: none;
+                border-top: 1px solid {subtle}; }}
+            QLabel#undoLabel {{ color: {muted}; font-size: 12px; }}
 
             QPushButton {{ padding: 8px 18px; min-width: 92px; border-radius: 8px;
                 border: 1px solid {mid.name()}; background: transparent; color: {text.name()}; font-size: 13px; }}
             QPushButton:hover {{ border-color: {accent}; }}
-            QPushButton#doneButton, QPushButton#mergeButton {{
-                background: {accent}; color: {on_hl}; border: none; font-weight: 600; }}
+            QPushButton:disabled {{ color: {muted}; border-color: {subtle}; }}
+            QPushButton#actionButton {{
+                background: {field}; border: 1px solid {subtle}; padding: 8px 16px; font-size: 13px;
+            }}
+            QPushButton#actionButton:hover {{ border-color: {accent}; }}
+            QPushButton#doneButton {{
+                background: {_DONE_BLUE}; color: #ffffff; border: none; font-weight: 700;
+                font-size: 13px; letter-spacing: 1px; padding: 9px 18px; border-radius: 9px;
+                min-width: 150px; max-width: 150px;
+            }}
+            QPushButton#doneButton:hover {{
+                background: {_blend(QColor(_DONE_BLUE), QColor("#ffffff"), 0.14).name()};
+            }}
             QPushButton#scanButton {{ padding: 7px 14px; }}
+
+            QScrollArea {{ background: transparent; }}
+            QScrollBar:vertical {{
+                background: transparent; width: {_SCROLLBAR_W}px; margin: 0px; border: none;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {handle}; border: none;
+                border-radius: {_SCROLLBAR_W // 2}px; min-height: 40px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background-color: {handle_hover}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
         """
+
+    def _sync_header_control_heights(self) -> None:
+        """Match the search field to the Rescan button exactly.
+
+        Taken from whichever control naturally wants more room once the
+        stylesheet is applied, so the pair stays identical at any font or DPI
+        instead of both being squeezed to a hard-coded number.
+        """
+        height = max(w.sizeHint().height() for w in self._header_controls)
+        height = max(height, _HEADER_CONTROL_H)
+        for widget in self._header_controls:
+            widget.setFixedHeight(height)
+        # A label's box starts above its capitals by the font's ascent-to-cap
+        # gap; drop the controls by exactly that so the two tops agree.
+        # Polish first: before that the label still reports the inherited app
+        # font, not the larger one the stylesheet gives it.
+        self.title_label.ensurePolished()
+        metrics = QFontMetrics(self.title_label.font())
+        cap_gap = max(0, metrics.ascent() - metrics.capHeight())
+        self._controls_layout.setContentsMargins(0, cap_gap, 0, 0)
+
+    def _apply_chrome_icons(self) -> None:
+        pal = self.palette()
+        text = pal.color(QPalette.ColorRole.Text)
+        muted = pal.color(QPalette.ColorRole.PlaceholderText)
+        self._search_action.setIcon(_icon_search(muted, 18))
+        self.scan_button.setIcon(_icon_scan(text))
+        self.scan_button.setIconSize(QSize(20, 20))
+        self.merge_button.setIcon(_icon_merge(text))
+        self.ignore_button.setIcon(_icon_ignore(text))
+        self.clear_button.setIcon(_icon_clear(text))
+        # The same glyph the main window's top-bar undo button uses.
+        self.undo_button.setIcon(build_symbol_icon(_UNDO_GLYPH, text, pixel_size=20, font_size=16))
+        self.undo_button.setIconSize(QSize(20, 20))
+        self.include_singles.set_colors(_SWITCH_TRACK, _SWITCH_TRACK, _SWITCH_KNOB)
+
+    def _card_chrome(self, card: _PersonCard) -> None:
+        pal = self.palette()
+        card.set_chrome_colors(
+            muted=pal.color(QPalette.ColorRole.PlaceholderText),
+            thumb_bg=pal.color(QPalette.ColorRole.Mid),
+        )
+
 
     # -- lifecycle ---------------------------------------------------------
     def closeEvent(self, event) -> None:  # type: ignore[override]
@@ -882,12 +1505,16 @@ class PeopleSearchDialog(QDialog):
                 card._refresh_name()
                 continue
             card = _PersonCard(person, self._grid_host)
+            self._card_chrome(card)
             card.select_requested.connect(self._on_select_requested)
             card.name_committed.connect(self._on_name_committed)
             card.edit_started.connect(self._on_edit_started)
             card.hover_changed.connect(self._on_hover_changed)
+            card.metrics_changed.connect(self._schedule_grid_host_sync)
+            card.context_menu_requested.connect(self._show_person_menu)
             self._cards.append(card)
             self._card_by_key[person.rep_key] = card
+            self._paint_cached_thumb(card)
             new_people.append(person)
             changed_layout = True
 
@@ -907,16 +1534,21 @@ class PeopleSearchDialog(QDialog):
         named = sum(1 for p in self._people if p.named)
         unnamed = len(self._people) - named
         photos = sum(p.face_count for p in self._people)
-        self.stats_label.setText(f"{named} named · {unnamed} unnamed · {photos} photos")
+        self.stats_label.setText(f"{named} Named / {unnamed} Unnamed / {photos} Total")
 
     def _visible_people(self) -> list[_Person]:
         show_singles = self.include_singles.isChecked()
         only_unnamed = self.filter_unnamed.isChecked()
+        needle = self.search_edit.text().strip().casefold()
         result = []
         for person in self._people:
+            # A "single-photo face" is a cluster with just one face - hidden by default.
             if not show_singles and person.face_count < 2:
                 continue
             if only_unnamed and person.named:
+                continue
+            # Searching is a name lookup, so an unnamed person can never match.
+            if needle and needle not in person.name.casefold():
                 continue
             result.append(person)
         return result
@@ -934,12 +1566,16 @@ class PeopleSearchDialog(QDialog):
         visible = self._visible_people()
         for person in visible:
             card = _PersonCard(person, self._grid_host)
+            self._card_chrome(card)
             card.select_requested.connect(self._on_select_requested)
             card.name_committed.connect(self._on_name_committed)
             card.edit_started.connect(self._on_edit_started)
             card.hover_changed.connect(self._on_hover_changed)
+            card.metrics_changed.connect(self._schedule_grid_host_sync)
+            card.context_menu_requested.connect(self._show_person_menu)
             self._cards.append(card)
             self._card_by_key[person.rep_key] = card
+            self._paint_cached_thumb(card)
 
         has_cards = bool(visible)
         self.scroll.setVisible(has_cards)
@@ -949,7 +1585,7 @@ class PeopleSearchDialog(QDialog):
 
         self._relayout_grid()
         self._update_selection_ui()
-        self._start_rep_crops(visible)
+        self._start_rep_crops(visible, restart=True)
         # Scrollbar visibility only settles after the layout pass; sync then.
         self._schedule_gutter_sync()
 
@@ -973,6 +1609,23 @@ class PeopleSearchDialog(QDialog):
         max_cols = max(cols, self._grid.columnCount())
         for col in range(max_cols):
             self._grid.setColumnStretch(col, 1 if col < cols else 0)
+        self._sync_grid_host_height()
+
+    def _schedule_grid_host_sync(self) -> None:
+        # Coalesce the many per-card signals one resize produces into one pass.
+        QTimer.singleShot(0, self._sync_grid_host_height)
+
+    def _sync_grid_host_height(self) -> None:
+        """Make the grid host insist on the height its rows actually need.
+
+        A resizable QScrollArea sizes its widget to the viewport unless the
+        widget asks for more, and it does not re-ask when only the row count
+        changes. Without this the grid quietly squeezes every card below its
+        minimum height as soon as a filter or an undo brings more people back.
+        """
+        layout = self._grid_host.layout()
+        layout.activate()
+        self._grid_host.setMinimumHeight(layout.minimumSize().height())
 
     def _schedule_gutter_sync(self) -> None:
         # Defer one event-loop hop so the viewport width reflects the scrollbar
@@ -980,15 +1633,22 @@ class PeopleSearchDialog(QDialog):
         QTimer.singleShot(0, self._sync_scrollbar_gutter)
 
     def _sync_scrollbar_gutter(self) -> None:
-        """Reserve the same right-hand gutter on the header/filter/footer rows as
-        the scroll area's vertical scrollbar takes, so the grid's right edge lines
-        up with them whether or not the scrollbar is showing."""
+        """Keep the cards the same distance from both window edges.
+
+        The scrollbar eats into the viewport, so a plain equal margin leaves the
+        grid sitting a scrollbar-width further from the right edge than the left.
+        The scroll area is therefore allowed to reach into the right margin by
+        exactly that width, and the header and filter rows take the width back as
+        their own right inset so they stay flush with the cards.
+        """
         # The reserved scrollbar space is exactly how much narrower the viewport
         # is than the scroll area itself (NoFrame, so no border to subtract).
         gutter = max(0, self.scroll.width() - self.scroll.viewport().width())
-        for row in (self._header_row, self._filter_row, self._footer_row):
-            left, top, _right, bottom = row.getContentsMargins()
-            row.setContentsMargins(left, top, gutter, bottom)
+        left, top, _right, bottom = self._body_layout.getContentsMargins()
+        self._body_layout.setContentsMargins(left, top, max(0, _BODY_MARGIN - gutter), bottom)
+        for row in (self._header_row, self._filter_row):
+            row_left, row_top, _row_right, row_bottom = row.getContentsMargins()
+            row.setContentsMargins(row_left, row_top, gutter, row_bottom)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -1012,27 +1672,68 @@ class PeopleSearchDialog(QDialog):
         return f"{len(identities)} face(s) found.\n\nClick “Rescan Faces” to group them into people."
 
     # -- crops -------------------------------------------------------------
-    def _start_rep_crops(self, people: list[_Person]) -> None:
-        jobs = [(p.rep_key, 0, p.rep_face[0], p.rep_face[1]) for p in people if p.rep_face]
+    def _start_rep_crops(self, people: list[_Person], *, restart: bool = False) -> None:
+        """Queue representative crops, painting anything already decoded at once.
+
+        ``restart`` means the visible set was rebuilt (a filter, the singles
+        switch, a search) and whatever is in flight is now for the wrong people:
+        cancel it so this pass starts now. Without that, flipping the singles
+        switch left a several-hundred-image pass running on the single crop
+        thread and every new card sat blank until it drained.
+        """
+        if restart:
+            if self._active_crop_task is not None:
+                self._active_crop_task.cancel()
+                self._active_crop_task = None
+            self._pending_rep_people.clear()
+
+        jobs = [
+            (p.rep_key, 0, p.rep_face[0], p.rep_face[1])
+            for p in people
+            if p.rep_face and p.rep_key not in self._rep_cache
+        ]
         if not jobs:
             return
         if self._active_crop_task is not None:
-            self._pending_rep_people.update((person.rep_key, person) for person in people if person.rep_face)
+            self._pending_rep_people.update(
+                (person.rep_key, person)
+                for person in people
+                if person.rep_face and person.rep_key not in self._rep_cache
+            )
             return
         task = _CropTask(jobs, _THUMB_PX, self._crop_cache_dir)
         task.signals.loaded.connect(self._on_rep_crop, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._on_rep_crops_finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.finished.connect(
+            lambda finished=task: self._on_rep_crops_finished(finished),
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._active_crop_task = task
         self._crop_pool.start(task)
 
-    def _on_rep_crops_finished(self) -> None:
+    def _on_rep_crops_finished(self, task: _CropTask) -> None:
+        # A cancelled pass still reports in; ignore it if a newer one took over.
+        if self._active_crop_task is not task:
+            return
         self._active_crop_task = None
         if self._pending_rep_people:
             pending = list(self._pending_rep_people.values())
             self._pending_rep_people.clear()
             self._start_rep_crops(pending)
 
+    def _cache_rep(self, key: int, image: QImage) -> None:
+        # Bounded so a very large library cannot grow this without limit.
+        if len(self._rep_cache) >= _REP_CACHE_MAX:
+            for oldest in list(self._rep_cache)[: len(self._rep_cache) - _REP_CACHE_MAX + 1]:
+                self._rep_cache.pop(oldest, None)
+        self._rep_cache[key] = image
+
+    def _paint_cached_thumb(self, card: _PersonCard) -> None:
+        cached = self._rep_cache.get(card.person.rep_key)
+        if cached is not None:
+            card.set_thumbnail(cached)
+
     def _on_rep_crop(self, key: int, _slot: int, image: QImage) -> None:
+        self._cache_rep(key, image)
         card = self._card_by_key.get(key)
         if card is not None:
             card.set_thumbnail(image)
@@ -1119,9 +1820,138 @@ class PeopleSearchDialog(QDialog):
         selected = self._selected_cards()
         count = len(selected)
         photos = sum(c.person.face_count for c in selected)
-        self.selection_bar.setVisible(count > 0)
-        self.selection_label.setText(f"{count} selected · {photos} photos" if count else "")
-        self.merge_button.setVisible(count >= 2)
+        self.action_row.setVisible(count > 0)
+        # Merging needs two people to merge; ignoring and clearing need one.
+        self.merge_button.setEnabled(count >= 2)
+        self.merge_button.setToolTip(
+            "" if count >= 2 else "Select two or more people to merge them"
+        )
+        self.ignore_button.setToolTip(
+            f"Hide {count} selected · {photos} photos from this dialog and from people search"
+            if count
+            else ""
+        )
+        if count:
+            self._hide_undo()
+
+    # -- person menu -------------------------------------------------------
+    def _show_person_menu(self, card: _PersonCard, position) -> None:
+        self._focus_card_for_menu(card)
+        self._build_person_menu(card).exec(position)
+
+    def _focus_card_for_menu(self, card: _PersonCard) -> None:
+        """Right-clicking an unselected card acts on that card alone.
+
+        That is what every file manager does, and it keeps the menu's actions
+        unambiguous when several people are already selected.
+        """
+        if card.is_selected():
+            return
+        self._clear_selection()
+        card.set_selected(True)
+        self._update_selection_ui()
+
+    def _build_person_menu(self, card: _PersonCard) -> QMenu:
+        person = card.person
+        named = person.named
+        selected = self._selected_cards()
+        menu = QMenu(self)
+
+        rename = menu.addAction("Rename" if named else "Name this person")
+        rename.triggered.connect(card.begin_edit)
+
+        clear = menu.addAction("Clear name")
+        clear.setEnabled(named)
+        clear.triggered.connect(lambda: self._on_name_committed(card, "", False))
+
+        menu.addSeparator()
+
+        target = _elide(person.name, 28) if named else "this person"
+        show = menu.addAction(
+            f"Show the only photo of {target}"
+            if person.face_count == 1
+            else f"Show all {person.face_count} photos of {target}"
+        )
+        show.triggered.connect(lambda: self._request_person_filter(card))
+
+        if len(selected) >= 2:
+            merge = menu.addAction(f"Merge {len(selected)} selected people")
+            merge.triggered.connect(self._merge_selected)
+
+        menu.addSeparator()
+        word = "photo" if person.face_count == 1 else "photos"
+        ignore = menu.addAction(f"Ignore this person ({person.face_count} {word})")
+        ignore.triggered.connect(lambda: self._ignore_cards([card]))
+        return menu
+
+    def _person_photo_paths(self, person: _Person) -> list[str]:
+        """Every source image this person's face was found in."""
+        if self._connection is None or not person.cluster_ids:
+            return []
+        placeholders = ",".join("?" for _ in person.cluster_ids)
+        rows = self._connection.execute(
+            f"""
+            SELECT DISTINCT images.source_path
+            FROM image_faces
+            JOIN images ON images.id = image_faces.image_id
+            WHERE image_faces.cluster_id IN ({placeholders})
+            """,
+            tuple(int(cid) for cid in person.cluster_ids),
+        ).fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+
+    def _request_person_filter(self, card: _PersonCard) -> None:
+        """Hand the person's photos to the caller and close, so the grid filters."""
+        person = card.person
+        paths = self._person_photo_paths(person)
+        if not paths:
+            return
+        word = "photo" if person.face_count == 1 else "photos"
+        self.requested_person_label = (
+            person.name.strip()
+            if person.named
+            else f"Unnamed face ({person.face_count} {word})"
+        )
+        self.requested_person_paths = tuple(paths)
+        self.accept()
+
+    # -- search ------------------------------------------------------------
+    def _on_search_changed(self, _text: str) -> None:
+        self._search_timer.start()
+
+    # -- ignore ------------------------------------------------------------
+    def _ignore_selected(self) -> None:
+        self._ignore_cards(self._selected_cards())
+
+    def _ignore_cards(self, cards: list[_PersonCard]) -> None:
+        if self._connection is None:
+            return
+        selected = list(cards)
+        if not selected:
+            return
+        cluster_ids = [cid for card in selected for cid in card.person.cluster_ids]
+        set_clusters_ignored(self._connection, cluster_ids, True)
+        self._connection.commit()
+        self._ignored_undo = cluster_ids
+        self._clear_selection()
+        self._reload()
+        self._database_revision = self._read_database_revision()
+        people = "person" if len(selected) == 1 else "people"
+        self.undo_label.setText(f"{len(selected)} {people} ignored")
+        self.undo_row.setVisible(True)
+
+    def _undo_ignore(self) -> None:
+        if self._connection is None or not self._ignored_undo:
+            return
+        set_clusters_ignored(self._connection, self._ignored_undo, False)
+        self._connection.commit()
+        self._ignored_undo = []
+        self._hide_undo()
+        self._reload()
+        self._database_revision = self._read_database_revision()
+
+    def _hide_undo(self) -> None:
+        self.undo_row.setVisible(False)
 
     def _merge_selected(self) -> None:
         if self._connection is None:

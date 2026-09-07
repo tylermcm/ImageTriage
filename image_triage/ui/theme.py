@@ -700,12 +700,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QWidget#appTopBar {{
             background-color: {theme.toolbar_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 10px;
+            border: none;
+            border-radius: 0px;
         }}
         QToolButton#appTopBarButton {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border_muted.css};
+            background-color: transparent;
+            border: 1px solid transparent;
             border-radius: 7px;
             padding: 0px;
             color: {theme.text_secondary.css};
@@ -713,16 +713,16 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#appTopBarButton:hover {{
             background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
+            border-color: transparent;
             color: {theme.text_primary.css};
         }}
         QToolButton#appTopBarButton:checked {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
+            background-color: {theme.accent_soft.css};
+            border-color: transparent;
             color: {theme.text_primary.css};
         }}
         QToolButton#appTopBarButton:disabled {{
-            background-color: {theme.panel_alt_bg.css};
+            background-color: transparent;
             color: {theme.text_disabled.css};
         }}
         QToolButton#appTopBarButton::menu-indicator {{
@@ -763,8 +763,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QWidget#appTopBar QToolButton#appTopBarActionButton,
         QWidget#appTopBar QToolButton#workspacePresetsButton {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border_muted.css};
+            background-color: transparent;
+            border: 1px solid transparent;
             border-radius: 7px;
             color: {theme.text_secondary.css};
             padding: 4px 10px;
@@ -772,18 +772,47 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-weight: 600;
         }}
         QWidget#appTopBar QToolButton#appTopBarIconButton {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border_muted.css};
+            background-color: transparent;
+            border: none;
             border-radius: 7px;
-            color: {theme.text_secondary.css};
             padding: 0px;
+        }}
+        QWidget#appTopBar QWidget#appTopBarButtonContent,
+        QWidget#appTopBar QToolButton#appTopBarGlyph {{
+            background-color: transparent;
+            border: none;
+            padding: 0px;
+        }}
+        QWidget#appTopBar QLabel#appTopBarButtonCaption {{
+            background-color: transparent;
+            color: {theme.text_primary.css};
+            font-size: 10px;
+            font-weight: 600;
+            padding: 0px;
+        }}
+        QWidget#appTopBar QLabel#appTopBarButtonCaption:disabled {{
+            color: {theme.text_disabled.css};
         }}
         QWidget#appTopBar QToolButton#appTopBarActionButton:hover,
         QWidget#appTopBar QToolButton#workspacePresetsButton:hover,
         QWidget#appTopBar QToolButton#appTopBarIconButton:hover {{
             background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
+            border-color: transparent;
             color: {theme.text_primary.css};
+        }}
+        QWidget#appTopBar QToolButton#appTopBarActionButton:checked,
+        QWidget#appTopBar QToolButton#workspacePresetsButton:checked,
+        QWidget#appTopBar QToolButton#appTopBarIconButton:checked {{
+            background-color: {theme.accent_soft.css};
+            border-color: transparent;
+            color: {theme.text_primary.css};
+        }}
+        QWidget#appTopBar QToolButton#appTopBarActionButton:disabled,
+        QWidget#appTopBar QToolButton#workspacePresetsButton:disabled,
+        QWidget#appTopBar QToolButton#appTopBarIconButton:disabled {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.text_disabled.css};
         }}
         QWidget#appTopBar QToolButton#appTopBarActionButton::menu-indicator,
         QWidget#appTopBar QToolButton#workspacePresetsButton::menu-indicator,
@@ -793,20 +822,26 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QTabBar#leftModeTabs {{
             qproperty-drawBase: 0;
+            background-color: transparent;
+            border-top: 1px solid {theme.border_muted.css};
+            border-bottom: 1px solid {theme.border_muted.css};
+            qproperty-iconSize: 20px 20px;
         }}
         QTabBar#leftModeTabs::tab {{
             background-color: transparent;
             border: none;
-            border-bottom: 2px solid transparent;
+            border-bottom: 3px solid transparent;
             color: {theme.text_muted.css};
-            padding: 6px 12px;
-            margin-right: 4px;
-            font-size: 12px;
-            font-weight: 650;
+            min-height: 21px;
+            padding: 9px 10px;
+            margin: 0px;
+            font-size: 14px;
+            font-weight: 550;
         }}
         QTabBar#leftModeTabs::tab:selected {{
             color: {theme.text_primary.css};
-            border-bottom: 2px solid {theme.accent.css};
+            border-bottom: 3px solid {theme.accent.css};
+            font-weight: 700;
         }}
         QTabBar#leftModeTabs::tab:hover:!selected {{
             color: {theme.text_secondary.css};
@@ -840,6 +875,16 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
         }}
+        QWidget#libraryPanelContent,
+        QWidget#libraryPanelContent QLabel,
+        QWidget#libraryPanelContent QLineEdit,
+        QWidget#libraryPanelContent QListWidget,
+        QWidget#libraryPanelContent QTreeView,
+        QWidget#libraryPanelContent QTabBar,
+        QWidget#libraryPanelContent QToolButton {{
+            font-family: "Segoe UI", "Segoe UI Variable Text";
+            letter-spacing: 0px;
+        }}
         QWidget#generatedLeftTaskRail {{
             background-color: {theme.chrome_bg.css};
             border-right: 1px solid {theme.border_muted.css};
@@ -859,7 +904,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#libraryStack {{
             background-color: transparent;
             border: none;
-            padding: 8px;
+            padding: 10px;
         }}
         QFrame#leftQuickActionsPanel, QFrame#reviewWorkflowPanel {{
             background-color: transparent;
@@ -958,7 +1003,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.text_muted.css};
         }}
         QFrame#leftSettingsBar {{
-            background-color: {theme.panel_bg.css};
+            background-color: transparent;
             border: none;
             border-top: 1px solid {theme.border.css};
             border-bottom-right-radius: 8px;
@@ -1117,17 +1162,27 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border: none;
             show-decoration-selected: 1;
         }}
-        QTreeView::item, QListWidget::item {{
-            min-height: 22px;
+        QTreeView#folderTree {{
+            font-size: 13px;
+            outline: none;
+        }}
+        QTreeView#folderTree QScrollBar:vertical {{
+            width: 8px;
+        }}
+        QTreeView#folderTree::item, QListWidget#favoritesList::item {{
+            min-height: 25px;
             padding: 2px 7px;
-            border-radius: 5px;
+            border-radius: 6px;
             margin: 1px 0px;
         }}
-        QTreeView::item:selected, QListWidget::item:selected {{
+        QTreeView#folderTree::item:selected, QListWidget#favoritesList::item:selected {{
             background-color: {theme.input_hover_bg.css};
             color: {theme.text_primary.css};
         }}
         QTreeView::branch {{
+            background: transparent;
+        }}
+        QTreeView#folderTree::branch:selected {{
             background: transparent;
         }}
         QTableView#detailsTableView {{
@@ -1230,6 +1285,57 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: rgba(0, 0, 0, 132);
             border: 1px solid {theme.accent_soft.css};
             border-radius: 12px;
+        }}
+        QFrame#toolbarEditHud {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.accent_soft.css};
+            border-radius: 9px;
+        }}
+        QFrame#toolbarEditHudMarker {{
+            background-color: {theme.accent.css};
+            border: none;
+            border-radius: 2px;
+        }}
+        QLabel#toolbarEditHudHint {{
+            color: {theme.text_primary.css};
+            font-family: "Segoe UI", "Segoe UI Variable Text";
+            font-size: 13px;
+            font-weight: 700;
+            padding-right: 8px;
+        }}
+        QFrame#toolbarEditHud QPushButton {{
+            border: 1px solid {theme.border.css};
+            border-radius: 6px;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 650;
+            min-height: 28px;
+            padding: 2px 13px;
+        }}
+        QPushButton#toolbarEditHudAdd {{
+            background-color: {theme.panel_alt_bg.css};
+            border-color: {theme.accent_soft.css};
+            color: {theme.accent.css};
+        }}
+        QPushButton#toolbarEditHudAdd:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.accent.css};
+        }}
+        QPushButton#toolbarEditHudReset {{
+            background-color: {theme.panel_alt_bg.css};
+        }}
+        QPushButton#toolbarEditHudReset:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.text_muted.css};
+        }}
+        QPushButton#toolbarEditHudDone {{
+            background-color: {theme.accent.css};
+            border-color: {theme.accent.css};
+            color: {theme.window_bg.css};
+        }}
+        QPushButton#toolbarEditHudDone:hover {{
+            background-color: {theme.accent_hover.css};
+            border-color: {theme.accent_hover.css};
         }}
         QDialog#toolbarCustomizerDialog {{
             background-color: {theme.window_bg.css};
@@ -1420,10 +1526,68 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border-color: {theme.danger.css};
             color: {theme.text_primary.css};
         }}
+        QWidget#navSectionHeader {{
+            background-color: transparent;
+            border: none;
+            min-height: 40px;
+            padding: 0px 8px;
+        }}
+        QWidget#navSectionHeader[sectionRole="projects"] {{
+            border-top: 1px solid {theme.border_muted.css};
+            min-height: 48px;
+            padding-top: 4px;
+        }}
+        QWidget#navSectionHeader:hover QLabel#navSectionTitle {{
+            color: {theme.text_primary.css};
+        }}
+        /* Match the mode tabs while retaining enough weight to outrank rows. */
+        QLabel#navSectionTitle {{
+            color: {theme.text_primary.css};
+            font-size: 14px;
+            font-weight: 600;
+        }}
+        /* Rows hug their 34px portrait; the custom widget owns the columns for
+           the name, count, and trailing navigation chevron. */
+        QListWidget#faceGroupsList::item {{
+            min-height: 38px;
+            padding: 0px;
+            margin: 0px;
+            border-radius: 6px;
+        }}
+        QListWidget#projectsList::item {{
+            min-height: 32px;
+            padding: 1px 10px 1px 38px;
+            margin: 0px;
+        }}
+        QListWidget#faceGroupsList, QListWidget#projectsList {{
+            background-color: transparent;
+            border: none;
+            outline: none;
+            font-size: 14px;
+        }}
+        QListWidget#faceGroupsList::item:selected,
+        QListWidget#faceGroupsList::item:hover,
+        QListWidget#projectsList::item:selected,
+        QListWidget#projectsList::item:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QLineEdit#faceGroupsSearch {{
+            background-color: {theme.input_hover_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 7px;
+            color: {theme.text_primary.css};
+            font-size: 13px;
+            min-height: 34px;
+            padding: 0px 8px;
+        }}
+        QLineEdit#faceGroupsSearch:focus {{
+            border-color: {theme.accent.css};
+        }}
         QLabel#sectionLabel {{
             color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 600;
+            font-size: 13px;
+            font-weight: 500;
             padding: 0 2px;
         }}
         QListWidget#settingsSectionList {{
@@ -1606,10 +1770,17 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#commandPaletteOverlay {{
             background-color: rgba(0, 0, 0, 0.22);
         }}
+        QWidget#commandPaletteOverlay[anchored="true"] {{
+            background-color: transparent;
+        }}
         QFrame#commandPaletteCard {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 18px;
+        }}
+        QWidget#commandPaletteOverlay[anchored="true"] QFrame#commandPaletteCard {{
+            border-color: {theme.accent_soft.css};
+            border-radius: 9px;
         }}
         QListWidget#commandPaletteList {{
             background-color: transparent;
@@ -1622,6 +1793,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
             margin: 2px 0;
+        }}
+        QWidget#commandPaletteOverlay[compactRows="true"] QListWidget#commandPaletteList {{
+            border-radius: 9px;
+            padding: 3px;
+        }}
+        QWidget#commandPaletteOverlay[compactRows="true"] QListWidget#commandPaletteList::item {{
+            margin: 0;
         }}
         QListWidget#commandPaletteList::item:selected {{
             background-color: {theme.selection_fill.css};
@@ -1636,11 +1814,19 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             padding: 0 0 2px 0;
             margin: 0;
         }}
+        QWidget#commandPaletteOverlay[compactRows="true"] QLabel#commandPaletteTitle {{
+            font-size: 12px;
+            min-height: 15px;
+            padding: 0;
+        }}
         QLabel#commandPaletteSubtitle {{
             color: {theme.text_muted.css};
             font-size: 11px;
             padding: 0;
             margin: 0;
+        }}
+        QWidget#commandPaletteOverlay[compactRows="true"] QLabel#commandPaletteSubtitle {{
+            font-size: 10px;
         }}
         QLabel#commandPaletteShortcut {{
             color: {theme.text_muted.css};

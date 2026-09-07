@@ -98,6 +98,38 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertTrue(result.check_updates_on_startup)
         dialog.deleteLater()
 
+    def test_single_drive_expansion_defaults_on_and_returns_the_choice(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+        )
+
+        self.assertEqual(
+            dialog.single_drive_expansion_checkbox.text(),
+            "Keep only one branch expanded per level",
+        )
+        self.assertTrue(dialog.result_settings().single_drive_expansion_enabled)
+        dialog.single_drive_expansion_checkbox.setChecked(False)
+        self.assertFalse(dialog.result_settings().single_drive_expansion_enabled)
+        dialog.deleteLater()
+
+    def test_toolbar_presentation_is_not_exposed_in_settings(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+        )
+
+        labels = {label.text() for label in dialog.findChildren(QLabel)}
+
+        self.assertFalse(hasattr(dialog, "toolbar_style_combo"))
+        self.assertNotIn("Toolbar", labels)
+        self.assertFalse(hasattr(dialog.result_settings(), "toolbar_style"))
+        dialog.deleteLater()
+
     def test_settings_tooltip_wraps_long_lines(self) -> None:
         tooltip = _settings_tooltip(
             "Weight of the tag-penalty-aware base score vs. the trained adapter when blending the final ranking.",

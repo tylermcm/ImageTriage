@@ -64,6 +64,10 @@ class OrientationFilter(str, Enum):
 class RecordFilterQuery:
     quick_filter: FilterMode = FilterMode.ALL
     search_text: str = ""
+    # A face cluster chosen in Tag People. The label is only for display and
+    # activation; the matching paths are resolved by the window, exactly as the
+    # unified search's own path set is.
+    person_label: str = ""
     min_search_confidence: float = 0.0
     file_type: FileTypeFilter = FileTypeFilter.ALL
     review_state: ReviewStateFilter = ReviewStateFilter.ALL
@@ -120,6 +124,8 @@ def active_filter_labels(query: RecordFilterQuery) -> list[str]:
         labels.append(query.quick_filter.value)
     if query.normalized_search_text:
         labels.append(f'Search "{query.search_text.strip()}"')
+    if query.person_label.strip():
+        labels.append(f'People "{query.person_label.strip()}"')
     if query.min_search_confidence > 0.0:
         labels.append(f"Confidence >= {query.min_search_confidence:.2f}")
     if query.folder_text.strip():
@@ -169,6 +175,7 @@ def matches_record_query(
     dino_decision: "DINOPrefilterDecision | None" = None,
     ai_ingested: bool = False,
     search_match_paths: set[str] | frozenset[str] | None = None,
+    person_match_paths: set[str] | frozenset[str] | None = None,
 ) -> bool:
     resolved_annotation = annotation if annotation is not None else SessionAnnotation()
     return (
@@ -184,6 +191,7 @@ def matches_record_query(
             ai_ingested=ai_ingested,
         )
         and _matches_search(record, query, search_match_paths=search_match_paths)
+        and _matches_person(record, query, person_match_paths=person_match_paths)
         and _matches_folder(record, query.folder_text)
         and _matches_file_type(record, query.file_type)
         and _matches_review_state(query.review_state, resolved_annotation)
@@ -263,6 +271,25 @@ def _matches_search(
         if needle in Path(path).name.casefold():
             return True
     return needle in record.name.casefold()
+
+
+def _matches_person(
+    record: ImageRecord,
+    query: RecordFilterQuery,
+    *,
+    person_match_paths: set[str] | frozenset[str] | None = None,
+) -> bool:
+    """Restrict to the photos a chosen face appears in.
+
+    Unlike the text search this is not name-based, so it works for clusters
+    nobody has named yet. An active filter with nothing resolved matches
+    nothing, rather than silently falling back to showing everything.
+    """
+    if not query.person_label.strip():
+        return True
+    if not person_match_paths:
+        return False
+    return any(_search_path_key(path) in person_match_paths for path in record.stack_paths)
 
 
 def _matches_folder(record: ImageRecord, folder_text: str) -> bool:

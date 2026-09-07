@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QSignalBlocker, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSignalBlocker, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -61,6 +61,11 @@ class CommandPaletteDialog(QWidget):
         self._card_height = 520
         self._card_size = card_size
         self._prominent = False
+        self._accept_on_click = False
+        self._compact_rows = False
+        self._anchor_widget: QWidget | None = None
+        self._finishing = False
+        self._presented = False
         self._debug_hook = debug_hook
 
         if parent is not None:
@@ -78,27 +83,28 @@ class CommandPaletteDialog(QWidget):
         self._root_layout.addWidget(self.card, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self._root_layout.addStretch(1)
 
-        card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(16, 16, 16, 16)
-        card_layout.setSpacing(10)
+        self._card_layout = QVBoxLayout(self.card)
+        self._card_layout.setContentsMargins(16, 16, 16, 16)
+        self._card_layout.setSpacing(10)
 
         self.search_field = QLineEdit(self)
         self.search_field.setPlaceholderText(placeholder)
         self.search_field.textChanged.connect(self._refresh_results)
         self.search_field.installEventFilter(self)
-        card_layout.addWidget(self.search_field)
+        self._card_layout.addWidget(self.search_field)
 
         self.result_list = QListWidget(self)
         self.result_list.setObjectName("commandPaletteList")
         self.result_list.setUniformItemSizes(True)
         self.result_list.installEventFilter(self)
         self.result_list.viewport().installEventFilter(self)
+        self.result_list.itemClicked.connect(self._handle_item_clicked)
         self.result_list.itemActivated.connect(self._accept_selected_item)
-        card_layout.addWidget(self.result_list, 1)
+        self._card_layout.addWidget(self.result_list, 1)
 
         self.hint_label = QLabel(hint)
         self.hint_label.setObjectName("mutedText")
-        card_layout.addWidget(self.hint_label)
+        self._card_layout.addWidget(self.hint_label)
 
         self._refresh_results("")
         self._focus_search_field()
@@ -116,11 +122,27 @@ class CommandPaletteDialog(QWidget):
         placeholder: str | None = None,
         hint: str | None = None,
         card_size: QSize | None = None,
+        accept_on_click: bool | None = None,
+        compact_rows: bool | None = None,
+        anchor_widget: QWidget | None = None,
     ) -> None:
         self._commands = commands
         self._recent_command_ids = recent_command_ids
         self._selected_command = None
         self._card_size = card_size
+        if accept_on_click is not None:
+            self._accept_on_click = bool(accept_on_click)
+        if compact_rows is not None:
+            self._compact_rows = bool(compact_rows)
+        self._anchor_widget = anchor_widget
+        self.setProperty("anchored", anchor_widget is not None)
+        self.setProperty("compactRows", self._compact_rows)
+        if anchor_widget is not None:
+            self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self._card_layout.setContentsMargins(*(12, 12, 12, 12) if self._compact_rows else (16, 16, 16, 16))
+        self._card_layout.setSpacing(7 if self._compact_rows else 10)
+        self.style().unpolish(self)
+        self.style().polish(self)
         self.setWindowTitle(title)
         search_blocker = QSignalBlocker(self.search_field)
         self.search_field.clear()
@@ -130,6 +152,10 @@ class CommandPaletteDialog(QWidget):
         if hint is not None:
             self.hint_label.setText(hint)
         self._refresh_results("")
+
+    def sync_geometry(self) -> None:
+        """Reposition the overlay card after its parent or anchor moves."""
+        self._sync_overlay_geometry()
 
     def set_prominent(self, prominent: bool) -> None:
         self._prominent = bool(prominent)
@@ -144,6 +170,7 @@ class CommandPaletteDialog(QWidget):
         self._selected_command = None
         self._sync_overlay_geometry()
         self._debug("present show")
+        self._presented = True
         self.show()
         self.raise_()
         QTimer.singleShot(0, self._focus_search_field)
@@ -173,7 +200,7 @@ class CommandPaletteDialog(QWidget):
         if self.isVisible() and event.type() == QEvent.Type.ShortcutOverride and self._is_command_palette_shortcut(event):
             event.accept()
             return True
-        if watched is self.search_field and event.type() == QEvent.Type.KeyPress:
+        if watched is getattr(self, "search_field", None) and event.type() == QEvent.Type.KeyPress:
             key = event.key()
             if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
                 self.result_list.setFocus()
@@ -208,14 +235,18 @@ class CommandPaletteDialog(QWidget):
 
             for command in self._visible_commands:
                 item = QListWidgetItem(self.result_list)
-                item.setSizeHint(command_palette_item_size_hint())
+                item.setSizeHint(command_palette_item_size_hint(compact=self._compact_rows))
                 item.setData(Qt.ItemDataRole.UserRole, command.id)
                 self.result_list.addItem(item)
-                self.result_list.setItemWidget(item, _CommandRow(command))
+                self.result_list.setItemWidget(item, _CommandRow(command, compact=self._compact_rows))
 
             self.result_list.setCurrentRow(0)
         finally:
             self.result_list.setUpdatesEnabled(True)
+
+    def _handle_item_clicked(self, item: QListWidgetItem) -> None:
+        if self._accept_on_click:
+            self._accept_selected_item(item)
 
     def _accept_selected_item(self, item: QListWidgetItem | None) -> None:
         if item is None:
@@ -238,8 +269,21 @@ class CommandPaletteDialog(QWidget):
     def done(self, result: int) -> None:
         self._result_code = result
         self._debug(f"done result={result}")
-        self.hide()
+        self._presented = False
+        self._finishing = True
+        try:
+            self.hide()
+        finally:
+            self._finishing = False
         self.finished.emit(result)
+
+    def hideEvent(self, event) -> None:
+        was_presented = self._presented
+        super().hideEvent(event)
+        if self._anchor_widget is not None and was_presented and not self._finishing:
+            self._presented = False
+            self._result_code = self.DialogCode.Rejected
+            self.finished.emit(self.DialogCode.Rejected)
 
     def _focus_search_field(self) -> None:
         self.search_field.setFocus()
@@ -249,7 +293,25 @@ class CommandPaletteDialog(QWidget):
         parent = self.parentWidget()
         if parent is None:
             return
+        if self._anchor_widget is not None:
+            width = min(520, max(420, parent.width() - 32))
+            height = min(420, max(320, parent.height() - 32))
+            self.card.setFixedSize(QSize(width, height))
+            anchor_top_left = self._anchor_widget.mapToGlobal(QPoint(0, 0))
+            available = self._anchor_widget.screen().availableGeometry()
+            x = anchor_top_left.x() + (self._anchor_widget.width() - width) // 2
+            y = anchor_top_left.y() + self._anchor_widget.height() + 4
+            x = max(available.left() + 8, min(available.right() - width - 7, x))
+            if y + height > available.bottom() - 7:
+                y = anchor_top_left.y() - height - 4
+            y = max(available.top() + 8, min(available.bottom() - height - 7, y))
+            self.setGeometry(x, y, width, height)
+            self._root_layout.setContentsMargins(0, 0, 0, 0)
+            self._root_layout.setAlignment(self.card, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            self._root_layout.activate()
+            return
         self.setGeometry(parent.rect())
+        self._root_layout.setContentsMargins(24, 28, 24, 24)
         max_width = 940 if self._prominent else 760
         max_height = 680 if self._prominent else 560
         margin_w = 180 if self._prominent else 120
@@ -277,18 +339,18 @@ class CommandPaletteDialog(QWidget):
 
 
 class _CommandRow(QWidget):
-    def __init__(self, command: PaletteCommand, parent=None) -> None:
+    def __init__(self, command: PaletteCommand, parent=None, *, compact: bool = False) -> None:
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 7, 8, 7)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 3 if compact else 7, 8, 3 if compact else 7)
+        layout.setSpacing(8 if compact else 10)
 
         text_container = QWidget(self)
         text_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         text_column = QVBoxLayout(text_container)
         text_column.setContentsMargins(0, 0, 0, 0)
-        text_column.setSpacing(2)
+        text_column.setSpacing(0 if compact else 2)
 
         title_label = QLabel(command.title, text_container)
         title_label.setObjectName("commandPaletteTitle")
@@ -315,10 +377,10 @@ class _CommandRow(QWidget):
             layout.addWidget(shortcut_label)
 
 
-def command_palette_item_size_hint():
+def command_palette_item_size_hint(*, compact: bool = False):
     from PySide6.QtCore import QSize
 
-    return QSize(0, 62)
+    return QSize(0, 40 if compact else 62)
 
 
 def _rank_commands(

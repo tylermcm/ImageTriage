@@ -33,6 +33,32 @@ class ImageRecord:
 
     @property
     def display_variants(self) -> tuple[ImageVariant, ...]:
+        if suffix_for_path(self.path) in RAW_SUFFIXES:
+            primary_key = os.path.normcase(os.path.normpath(self.path))
+            stored_primary = next(
+                (
+                    variant
+                    for variant in self.variants
+                    if os.path.normcase(os.path.normpath(variant.path)) == primary_key
+                ),
+                None,
+            )
+            primary = ImageVariant(
+                path=self.path,
+                name=self.name,
+                size=stored_primary.size if stored_primary is not None else self.size,
+                modified_ns=stored_primary.modified_ns if stored_primary is not None else self.modified_ns,
+            )
+            if not self.variants:
+                return (primary,)
+            hidden_companions = {os.path.normcase(os.path.normpath(path)) for path in self.companion_paths}
+            visible = [primary]
+            for variant in self.variants:
+                key = os.path.normcase(os.path.normpath(variant.path))
+                if key == primary_key or key in hidden_companions:
+                    continue
+                visible.append(variant)
+            return tuple(visible)
         if self.variants:
             return self.variants
         return (

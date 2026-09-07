@@ -89,6 +89,7 @@ class MainWindowActions:
     open_ai_report: QAction
     manage_people: QAction
     show_ai_review_summary: QAction
+    taste_calibration: QAction
     review_ai_adapter_labels: QAction
     open_ai_data_selection: QAction
     train_ai_ranker: QAction
@@ -403,6 +404,11 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         open_ai_report=_create_action(window, "Open AI Report", slot=window._open_ai_report),
         manage_people=_create_action(window, "People...", slot=window._open_people_search_dialog),
         show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._show_last_ai_review_summary),
+        taste_calibration=_create_action(
+            window,
+            "Taste Calibration...",
+            slot=window._open_taste_calibration_wizard,
+        ),
         review_ai_adapter_labels=_create_action(
             window,
             "Review Adapter Labels...",

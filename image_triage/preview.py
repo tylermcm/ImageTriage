@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QIcon, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -189,6 +189,43 @@ class PreviewTask(QRunnable):
                 )
 
 
+class PreviewImageLabel(QLabel):
+    """Paint only the exposed source region when the image is zoomed."""
+
+    def __init__(self, parent=None, *, alignment=Qt.AlignmentFlag.AlignCenter) -> None:
+        super().__init__(parent, alignment=alignment)
+        self._viewport_scaled_paint = False
+        self._pan_active = False
+
+    def set_viewport_scaled_paint(self, enabled: bool) -> None:
+        if self._viewport_scaled_paint == enabled:
+            return
+        self._viewport_scaled_paint = enabled
+        if not enabled:
+            self._pan_active = False
+        self.update()
+
+    def set_pan_active(self, active: bool) -> None:
+        if self._pan_active == active:
+            return
+        self._pan_active = active
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        pixmap = self.pixmap()
+        if not self._viewport_scaled_paint or pixmap is None or pixmap.isNull():
+            super().paintEvent(event)
+            return
+
+        exposed = event.rect().intersected(self.rect())
+        if exposed.isEmpty():
+            return
+        source_rect = _source_rect_for_scaled_view(exposed, pixmap.size(), self.size())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, not self._pan_active)
+        painter.drawPixmap(QRectF(exposed), pixmap, source_rect)
+
+
 class PreviewPane(QWidget):
     HEART_SYMBOL = "\u2665"
     HEART_OUTLINE_SYMBOL = "\u2661"
@@ -219,7 +256,7 @@ class PreviewPane(QWidget):
         self.scroll_area.horizontalScrollBar().setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.scroll_area.verticalScrollBar().setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        self.image_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.image_label = PreviewImageLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background-color: #111;")
         self.image_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.image_label.setMouseTracking(True)
@@ -3383,8 +3420,6 @@ class FullScreenPreview(QDialog):
     def _render_all(self) -> None:
         for slot in range(len(self._entries)):
             self._render_pane(slot)
-        if self._manual_zoom:
-            self._apply_zoom_to_all()
         self._update_focus_styles()
         self._update_cursor()
         self._schedule_analysis_panel_update()
@@ -3489,6 +3524,7 @@ class FullScreenPreview(QDialog):
         pane.reject_button.setText(pane.REJECT_SYMBOL)
 
         if display_image.isNull():
+            pane.image_label.set_viewport_scaled_paint(False)
             pane.image_label.setScaledContents(False)
             pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -3524,6 +3560,7 @@ class FullScreenPreview(QDialog):
         of _render_pane so the async render delivery can present a freshly
         rendered image without recomputing the pipeline."""
         if self._manual_zoom:
+            viewport_center = self._pane_viewport_center(pane)
             pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             scaled_size = QSize(
@@ -3531,7 +3568,8 @@ class FullScreenPreview(QDialog):
                 max(1, int(round(display_image.height() * self._zoom_scale))),
             )
             pane.image_label.setText("")
-            pane.image_label.setScaledContents(True)
+            pane.image_label.setScaledContents(False)
+            pane.image_label.set_viewport_scaled_paint(True)
             display_key = self._display_render_key(slot, display_image)
             if (
                 slot >= len(self._rendered_display_keys)
@@ -3543,7 +3581,9 @@ class FullScreenPreview(QDialog):
                 if slot < len(self._rendered_display_keys):
                     self._rendered_display_keys[slot] = display_key
             pane.image_label.resize(scaled_size)
+            self._restore_pane_viewport_center(pane, viewport_center)
         else:
+            pane.image_label.set_viewport_scaled_paint(False)
             pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pane.image_label.setScaledContents(False)
@@ -3986,6 +4026,7 @@ class FullScreenPreview(QDialog):
         if not 0 <= slot < len(self._entries):
             return
         pane = self._panes[slot]
+        pane.image_label.set_viewport_scaled_paint(False)
         pane.image_label.setScaledContents(False)
         pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -4269,6 +4310,8 @@ class FullScreenPreview(QDialog):
         if not self._manual_zoom:
             return False
         self._dragging = True
+        for pane in self._panes[: len(self._entries)]:
+            pane.image_label.set_pan_active(True)
         self._hide_all_loupes()
         self._drag_start_global_pos = event.globalPosition().toPoint()
         self._drag_start_scrolls = [
@@ -4291,6 +4334,8 @@ class FullScreenPreview(QDialog):
         if not self._dragging:
             return False
         self._dragging = False
+        for pane in self._panes[: len(self._entries)]:
+            pane.image_label.set_pan_active(False)
         self._update_cursor()
         return True
 
@@ -4389,14 +4434,37 @@ class FullScreenPreview(QDialog):
             pane.loupe_overlay.hide()
         self._loupe_slot = -1
 
-    def _apply_zoom_to_all(self) -> None:
-        for pane in self._panes[: len(self._entries)]:
-            viewport = pane.scroll_area.viewport().size()
-            image_size = pane.image_label.size()
-            max_x = max(0, image_size.width() - viewport.width())
-            max_y = max(0, image_size.height() - viewport.height())
-            pane.scroll_area.horizontalScrollBar().setValue(max_x // 2)
-            pane.scroll_area.verticalScrollBar().setValue(max_y // 2)
+    @staticmethod
+    def _pane_viewport_center(pane: PreviewPane) -> tuple[float, float]:
+        viewport = pane.scroll_area.viewport().size()
+        image_size = pane.image_label.size()
+        horizontal = pane.scroll_area.horizontalScrollBar()
+        vertical = pane.scroll_area.verticalScrollBar()
+        return (
+            _normalized_viewport_center(
+                horizontal.value(),
+                image_size.width(),
+                viewport.width(),
+                horizontal.maximum(),
+            ),
+            _normalized_viewport_center(
+                vertical.value(),
+                image_size.height(),
+                viewport.height(),
+                vertical.maximum(),
+            ),
+        )
+
+    @staticmethod
+    def _restore_pane_viewport_center(pane: PreviewPane, center: tuple[float, float]) -> None:
+        viewport = pane.scroll_area.viewport().size()
+        image_size = pane.image_label.size()
+        pane.scroll_area.horizontalScrollBar().setValue(
+            _scroll_value_for_viewport_center(center[0], image_size.width(), viewport.width())
+        )
+        pane.scroll_area.verticalScrollBar().setValue(
+            _scroll_value_for_viewport_center(center[1], image_size.height(), viewport.height())
+        )
 
     def _update_cursor(self) -> None:
         cursor = None
@@ -4719,6 +4787,34 @@ def _record_path_signature(record: ImageRecord, path: str) -> tuple[int, int] | 
 
 def _normalized_path_key(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
+
+
+def _normalized_viewport_center(
+    scroll_value: int,
+    image_extent: int,
+    viewport_extent: int,
+    scroll_maximum: int,
+) -> float:
+    """Image-relative point currently centered in one viewport axis."""
+    if image_extent <= 0 or scroll_maximum <= 0:
+        return 0.5
+    return max(0.0, min(1.0, (scroll_value + viewport_extent / 2.0) / image_extent))
+
+
+def _scroll_value_for_viewport_center(center: float, image_extent: int, viewport_extent: int) -> int:
+    return int(round(max(0.0, min(1.0, center)) * image_extent - viewport_extent / 2.0))
+
+
+def _source_rect_for_scaled_view(exposed: QRect, source_size: QSize, target_size: QSize) -> QRectF:
+    """Map an exposed rectangle on a scaled label to source-pixmap coordinates."""
+    scale_x = source_size.width() / max(1, target_size.width())
+    scale_y = source_size.height() / max(1, target_size.height())
+    return QRectF(
+        exposed.x() * scale_x,
+        exposed.y() * scale_y,
+        exposed.width() * scale_x,
+        exposed.height() * scale_y,
+    )
 
 
 def _format_ai_metadata(ai_result: AIImageResult | None) -> str:
