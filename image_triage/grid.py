@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QMimeData, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal, QSignalBlocker
-from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QImage, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
+from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, QDrag, QFont, QFontMetrics, QImage, QKeyEvent, QKeySequence, QLinearGradient, QMouseEvent, QPainter, QPaintEvent, QPainterPath, QPalette, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton, QWidget
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
@@ -22,12 +22,21 @@ from .thumbnails import ThumbnailManager
 from .ui.grid_card_renderer import (
     COMPACT_COLUMN_THRESHOLD,
     PLAIN_PHOTO_COLUMN_THRESHOLD,
+    THUMBNAIL_HOVER_OUTLINE_ALPHA,
+    THUMBNAIL_SELECTION_TINT_ALPHA,
     GridCardData,
+    GridCardHitRects,
+    GridCardInteractionColors,
+    expanded_action_hit_rects,
     grid_card_action_rects,
+    grid_card_action_hit_rects,
     grid_card_corner_radius,
+    grid_card_filename_is_elided,
     grid_card_height_for_width,
+    gallery_card_filename_is_elided,
     gallery_card_height_for_width,
     grid_gallery_action_rects,
+    grid_gallery_action_hit_rects,
     paint_gallery_card,
     load_action_icon,
     paint_grid_card,
@@ -292,6 +301,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._hovered_burst_left_index = -1
         self._hovered_burst_right_index = -1
         self._hovered_checkbox_index = -1
+        self._hovered_index = -1
+        self._winner_shortcut = QKeySequence("W")
+        self._reject_shortcut = QKeySequence("X")
         self._press_pos: QPoint | None = None
         self._press_index = -1
         self._press_on_interactive_control = False
@@ -334,8 +346,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._recalculate_metrics()
 
     def apply_theme(self, theme: ThemePalette) -> None:
-        self._border_active = QColor("#6090ff")
-        self._border_selected = QColor("#78a0fa")
+        self._border_active = theme.accent.qcolor()
+        self._border_selected = theme.selection_outline.qcolor()
         self._border_idle = theme.border.qcolor()
         self._background_active = theme.raised_bg.qcolor()
         self._background_selected = theme.panel_bg.qcolor()
@@ -348,6 +360,13 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._placeholder_color = theme.input_hover_bg.qcolor()
         self._placeholder_text_color = theme.text_secondary.qcolor()
         self._failed_text_color = theme.danger.qcolor()
+        self._card_interaction_colors = GridCardInteractionColors(
+            active_outline=theme.accent.qcolor(),
+            selection_outline=theme.selection_outline.qcolor(),
+            selection_fill=theme.selection_fill.with_alpha(THUMBNAIL_SELECTION_TINT_ALPHA).qcolor(),
+            hover_outline=theme.accent_hover.with_alpha(THUMBNAIL_HOVER_OUTLINE_ALPHA).qcolor(),
+            contrast_outline=theme.image_bg.with_alpha(230).qcolor(),
+        )
         self._badge_background = theme.badge_bg.qcolor()
         self._badge_text_color = theme.badge_text.qcolor()
         self._winner_color = theme.success.qcolor()
@@ -404,6 +423,45 @@ class ThumbnailGridView(QAbstractScrollArea):
         palette.setColor(QPalette.ColorRole.Mid, theme.border.qcolor())
         self.setPalette(palette)
         self.viewport().update()
+
+    def set_review_action_shortcuts(
+        self,
+        winner: QKeySequence | str,
+        reject: QKeySequence | str,
+    ) -> None:
+        self._winner_shortcut = QKeySequence(winner)
+        self._reject_shortcut = QKeySequence(reject)
+
+    @staticmethod
+    def _matches_shortcut(event: QKeyEvent, shortcut: QKeySequence) -> bool:
+        if shortcut.isEmpty():
+            return False
+        event_sequence = QKeySequence(event.keyCombination())
+        return event_sequence.matches(shortcut) == QKeySequence.SequenceMatch.ExactMatch
+
+    @staticmethod
+    def _action_tooltip(label: str, shortcut: QKeySequence) -> str:
+        shortcut_text = shortcut.toString(QKeySequence.SequenceFormat.NativeText)
+        return f"{label}\nShortcut: {shortcut_text}" if shortcut_text else label
+
+    def _filename_tooltip(self, index: int, rect: QRect) -> str:
+        data = self._grid_card_data(index)
+        if self._use_new_grid_card() and self._loupe_card_style == "gallery":
+            is_elided = gallery_card_filename_is_elided(rect, data)
+        elif self._use_new_grid_card():
+            is_elided = grid_card_filename_is_elided(
+                rect,
+                data,
+                compact=self._use_compact_grid_card(),
+                compact_actions="right",
+                compact_filename=True,
+                compact_overlay=self._grid_card_overlay(),
+                immersive=self._loupe_card_style == "immersive",
+            )
+        else:
+            title_rect = self._title_rect(rect)
+            is_elided = QFontMetrics(self._title_font).horizontalAdvance(data.filename) > title_rect.width()
+        return data.filename if is_elided else ""
 
     def set_items(
         self,
@@ -464,6 +522,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._selected_indexes = {0} if items else set()
         self._selection_anchor = self._current_index
         self._reset_pointer_interaction(clear_marquee=True)
+        self._hovered_index = -1
+        self._hovered_winner_index = -1
+        self._hovered_reject_index = -1
+        self.viewport().setToolTip("")
         self._rebuild_visible_items()
         self._refresh_layout_after_visible_items_changed()
         self._prime_visible_text_caches()
@@ -1236,7 +1298,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._press_on_interactive_control = True
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 return
-            if not self._items[index].is_folder and self._winner_button_rect(rect).contains(point):
+            if not self._items[index].is_folder and self._winner_button_hit_rect(rect).contains(point):
                 if self._tool_checkbox_mode:
                     self._set_current_index(index)
                 else:
@@ -1245,7 +1307,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 self._press_on_interactive_control = True
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 return
-            if not self._items[index].is_folder and self._reject_button_rect(rect).contains(point):
+            if not self._items[index].is_folder and self._reject_button_hit_rect(rect).contains(point):
                 if self._tool_checkbox_mode:
                     self._set_current_index(index)
                 else:
@@ -1393,13 +1455,15 @@ class ThumbnailGridView(QAbstractScrollArea):
         hovered_burst_left = -1
         hovered_burst_right = -1
         hovered_checkbox = -1
+        hovered_index = index
+        tooltip = ""
         if index >= 0:
             rect = self._item_rect(index)
             if self._tool_checkbox_mode and self._checkbox_rect(rect).contains(point):
                 hovered_checkbox = index
-            if self._winner_button_rect(rect).contains(point):
+            if not self._items[index].is_folder and self._winner_button_hit_rect(rect).contains(point):
                 hovered_winner = index
-            if self._reject_button_rect(rect).contains(point):
+            if not self._items[index].is_folder and self._reject_button_hit_rect(rect).contains(point):
                 hovered_reject = index
             if self._left_arrow_rect(rect, self._items[index]).contains(point):
                 hovered_left_arrow = index
@@ -1409,8 +1473,17 @@ class ThumbnailGridView(QAbstractScrollArea):
                 hovered_burst_left = index
             if not self._tool_checkbox_mode and self._burst_right_arrow_rect(rect, index).contains(point):
                 hovered_burst_right = index
+            if hovered_winner >= 0:
+                tooltip = self._action_tooltip("Mark Winner", self._winner_shortcut)
+            elif hovered_reject >= 0:
+                tooltip = self._action_tooltip("Reject Selection", self._reject_shortcut)
+            else:
+                tooltip = self._filename_tooltip(index, rect)
+        self.viewport().setToolTip(tooltip)
 
         if (
+            hovered_index != self._hovered_index
+            or
             hovered_winner != self._hovered_winner_index
             or hovered_reject != self._hovered_reject_index
             or hovered_left_arrow != self._hovered_left_arrow_index
@@ -1419,6 +1492,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             or hovered_burst_right != self._hovered_burst_right_index
             or hovered_checkbox != self._hovered_checkbox_index
         ):
+            previous_index = self._hovered_index
             previous_winner = self._hovered_winner_index
             previous_reject = self._hovered_reject_index
             previous_left_arrow = self._hovered_left_arrow_index
@@ -1426,6 +1500,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             previous_burst_left = self._hovered_burst_left_index
             previous_burst_right = self._hovered_burst_right_index
             previous_checkbox = self._hovered_checkbox_index
+            self._hovered_index = hovered_index
             self._hovered_winner_index = hovered_winner
             self._hovered_reject_index = hovered_reject
             self._hovered_left_arrow_index = hovered_left_arrow
@@ -1443,7 +1518,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 or hovered_checkbox >= 0
             )
             self.viewport().setCursor(QCursor(Qt.CursorShape.PointingHandCursor) if pointer else QCursor(Qt.CursorShape.ArrowCursor))
-            for tile_index in {
+            self._update_selection_tiles({
                 previous_winner,
                 previous_reject,
                 previous_left_arrow,
@@ -1451,6 +1526,8 @@ class ThumbnailGridView(QAbstractScrollArea):
                 previous_burst_left,
                 previous_burst_right,
                 previous_checkbox,
+                previous_index,
+                hovered_index,
                 hovered_winner,
                 hovered_reject,
                 hovered_left_arrow,
@@ -1458,12 +1535,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                 hovered_burst_left,
                 hovered_burst_right,
                 hovered_checkbox,
-            }:
-                if tile_index >= 0:
-                    self.viewport().update(self._item_rect(tile_index))
+            })
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:
+        previous_index = self._hovered_index
         previous_winner = self._hovered_winner_index
         previous_reject = self._hovered_reject_index
         previous_left_arrow = self._hovered_left_arrow_index
@@ -1471,6 +1547,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         previous_burst_left = self._hovered_burst_left_index
         previous_burst_right = self._hovered_burst_right_index
         previous_checkbox = self._hovered_checkbox_index
+        self._hovered_index = -1
         self._hovered_winner_index = -1
         self._hovered_reject_index = -1
         self._hovered_left_arrow_index = -1
@@ -1480,7 +1557,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._hovered_checkbox_index = -1
         if not self._autoscroll_active:
             self.viewport().unsetCursor()
-        for tile_index in {
+        self.viewport().setToolTip("")
+        self._update_selection_tiles({
+            previous_index,
             previous_winner,
             previous_reject,
             previous_left_arrow,
@@ -1488,9 +1567,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             previous_burst_left,
             previous_burst_right,
             previous_checkbox,
-        }:
-            if tile_index >= 0:
-                self.viewport().update(self._item_rect(tile_index))
+        })
         super().leaveEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -1532,34 +1609,22 @@ class ThumbnailGridView(QAbstractScrollArea):
         if key == Qt.Key.Key_Left:
             next_slot = max(0, current_slot - 1)
             next_index = self._visible_item_indexes[next_slot]
-            if self._tool_checkbox_mode:
-                self._set_current_index(next_index)
-            else:
-                self._set_single_selection(next_index)
+            self._navigate_selection(next_index, extend=bool(modifiers & Qt.KeyboardModifier.ShiftModifier))
             return
         if key == Qt.Key.Key_Right:
             next_slot = min(len(self._visible_item_indexes) - 1, current_slot + 1)
             next_index = self._visible_item_indexes[next_slot]
-            if self._tool_checkbox_mode:
-                self._set_current_index(next_index)
-            else:
-                self._set_single_selection(next_index)
+            self._navigate_selection(next_index, extend=bool(modifiers & Qt.KeyboardModifier.ShiftModifier))
             return
         if key == Qt.Key.Key_Up:
             next_slot = max(0, current_slot - self._columns)
             next_index = self._visible_item_indexes[next_slot]
-            if self._tool_checkbox_mode:
-                self._set_current_index(next_index)
-            else:
-                self._set_single_selection(next_index)
+            self._navigate_selection(next_index, extend=bool(modifiers & Qt.KeyboardModifier.ShiftModifier))
             return
         if key == Qt.Key.Key_Down:
             next_slot = min(len(self._visible_item_indexes) - 1, current_slot + self._columns)
             next_index = self._visible_item_indexes[next_slot]
-            if self._tool_checkbox_mode:
-                self._set_current_index(next_index)
-            else:
-                self._set_single_selection(next_index)
+            self._navigate_selection(next_index, extend=bool(modifiers & Qt.KeyboardModifier.ShiftModifier))
             return
         if key == Qt.Key.Key_Home:
             next_index = self._visible_item_indexes[0]
@@ -1638,12 +1703,12 @@ class ThumbnailGridView(QAbstractScrollArea):
                 return
             self.tag_requested.emit(index)
             return
-        if key == Qt.Key.Key_W and review_shortcut_allowed:
+        if self._matches_shortcut(event, self._winner_shortcut):
             if self._items[index].is_folder:
                 return
             self.winner_requested.emit(index)
             return
-        if key == Qt.Key.Key_X and review_shortcut_allowed:
+        if self._matches_shortcut(event, self._reject_shortcut):
             if self._items[index].is_folder:
                 return
             self.reject_requested.emit(index)
@@ -1827,6 +1892,66 @@ class ThumbnailGridView(QAbstractScrollArea):
         painter.setFont(self._empty_font)
         painter.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter, self._empty_message)
 
+    def _grid_card_data(self, index: int) -> GridCardData:
+        record = self._items[index]
+        variant = self._current_variant(record)
+        annotation = self._annotations.get(record.path)
+        is_current = index == self._current_index
+        is_selected = index in self._selected_indexes
+        common = {
+            "active": is_current,
+            "selected": is_selected,
+            "hovered": index == self._hovered_index,
+        }
+        if record.is_folder:
+            folder_date = ""
+            if record.modified_ns > 0:
+                folder_date = datetime.fromtimestamp(record.modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M")
+            return GridCardData(
+                tags=(),
+                filename=record.name,
+                exif_text="Folder",
+                meta_text=folder_date,
+                duplicate_text="",
+                ai_text="",
+                position_text="",
+                status_text="",
+                status_kind="",
+                duplicate_visible=False,
+                ai_visible=False,
+                favorite=False,
+                rejected=False,
+                hover_favorite=False,
+                hover_reject=False,
+                immersive=self._loupe_card_style == "immersive",
+                is_folder=True,
+                show_actions=False,
+                **common,
+            )
+
+        ai_result = self._ai_result_for(record, variant)
+        status_text = self._review_keeper_label(ai_result, self._workflow_insight_for(record))
+        ai_text = self._review_ai_badge_label(ai_result)
+        return GridCardData(
+            tags=self._review_workflow_tags(record),
+            filename=variant.name if record.has_variant_stack else record.name,
+            exif_text=self._review_capture_text(record),
+            meta_text=self._review_passive_meta_text(record, variant),
+            duplicate_text="",
+            ai_text=ai_text,
+            position_text=self._review_position_text(index),
+            status_text=status_text,
+            status_kind=status_text.casefold(),
+            duplicate_visible=False,
+            ai_visible=bool(ai_text),
+            favorite=bool(annotation and annotation.winner),
+            rejected=bool(annotation and annotation.reject),
+            hover_favorite=index == self._hovered_winner_index,
+            hover_reject=index == self._hovered_reject_index,
+            immersive=self._loupe_card_style == "immersive",
+            **common,
+        )
+
     def _paint_tile(self, painter: QPainter, index: int, rect: QRect, record: ImageRecord, pixmap: QPixmap | None) -> None:
         is_current = index == self._current_index
         is_selected = index in self._selected_indexes
@@ -1861,59 +1986,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if use_new_grid_card:
             if burst_info is not None and self._burst_stack_mode:
                 self._paint_burst_stack_layers(painter, image_rect, highlighted=is_current or is_selected)
-            if record.is_folder:
-                # Folder tile in the shared card design: folder glyph in the
-                # photo pane, no cull actions or AI chrome — just the name,
-                # the type, and the modified time.
-                folder_date = ""
-                if record.modified_ns > 0:
-                    folder_date = datetime.fromtimestamp(record.modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M")
-                card_data = GridCardData(
-                    tags=(),
-                    filename=record.name,
-                    exif_text="Folder",
-                    meta_text=folder_date,
-                    duplicate_text="",
-                    ai_text="",
-                    position_text="",
-                    status_text="",
-                    status_kind="",
-                    duplicate_visible=False,
-                    ai_visible=False,
-                    selected=is_current or is_selected,
-                    favorite=False,
-                    rejected=False,
-                    hover_favorite=False,
-                    hover_reject=False,
-                    immersive=self._loupe_card_style == "immersive",
-                    is_folder=True,
-                    show_actions=False,
-                )
-            else:
-                status_text = self._review_keeper_label(ai_result, self._workflow_insight_for(record))
-                # Near Duplicate is data-only now (filterable, never a card
-                # badge), so the top-left group chip stays hidden. The grouping
-                # itself still drives navigation and the duplicate filter.
-                ai_text = self._review_ai_badge_label(ai_result)
-                card_data = GridCardData(
-                    tags=self._review_workflow_tags(record),
-                    filename=variant.name if record.has_variant_stack else record.name,
-                    exif_text=self._review_capture_text(record),
-                    meta_text=self._review_passive_meta_text(record, variant),
-                    duplicate_text="",
-                    ai_text=ai_text,
-                    position_text=self._review_position_text(index),
-                    status_text=status_text,
-                    status_kind=status_text.casefold(),
-                    duplicate_visible=False,
-                    ai_visible=bool(ai_text),
-                    selected=is_current or is_selected,
-                    favorite=is_winner,
-                    rejected=is_rejected,
-                    hover_favorite=index == self._hovered_winner_index,
-                    hover_reject=index == self._hovered_reject_index,
-                    immersive=self._loupe_card_style == "immersive",
-                )
+            card_data = self._grid_card_data(index)
             if self._loupe_card_style == "gallery":
                 paint_gallery_card(
                     painter,
@@ -1928,6 +2001,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                     action_hover_border=self._gallery_action_hover_border,
                     action_icon_color=self._gallery_action_icon,
                     action_hover_icon_color=self._gallery_action_hover_icon,
+                    interaction_colors=self._card_interaction_colors,
                 )
             else:
                 paint_grid_card(
@@ -1941,6 +2015,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                     compact_badge_text=self._grid_card_badge_text(),
                     compact_overlay=self._grid_card_overlay(),
                     corner_radius=card_corner_radius,
+                    interaction_colors=self._card_interaction_colors,
                 )
             if variant.path in self._failed_paths:
                 painter.setPen(self._failed_text_color)
@@ -1970,7 +2045,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                         border_color = self._border_selected
                         background_color = self._background_selected
                     else:
-                        border_color = self._border_idle
+                        border_color = (
+                            self._card_interaction_colors.hover_outline
+                            if index == self._hovered_index
+                            else self._border_idle
+                        )
                         background_color = self._background_idle
                 painter.setPen(QPen(border_color, 1.4 if is_current or is_selected else 1.0))
                 painter.setBrush(background_color)
@@ -2043,7 +2122,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 if is_current or is_selected:
                     accent = QColor(self._border_active if is_current else self._border_selected)
-                    painter.setPen(QPen(QColor(0, 0, 0, 140), 1.0))
+                    painter.setPen(QPen(self._card_interaction_colors.contrast_outline, 1.0))
                     painter.drawRoundedRect(
                         ring_rect.adjusted(2.0, 2.0, -2.0, -2.0),
                         max(0.0, card_corner_radius - 1),
@@ -2052,6 +2131,20 @@ class ThumbnailGridView(QAbstractScrollArea):
                     painter.setPen(QPen(accent, 2.0 if is_current else 1.4))
                     painter.drawRoundedRect(
                         ring_rect.adjusted(0.5, 0.5, -0.5, -0.5), card_corner_radius, card_corner_radius
+                    )
+                elif index == self._hovered_index:
+                    hover_rect = ring_rect.adjusted(1.0, 1.0, -1.0, -1.0)
+                    painter.setPen(QPen(self._card_interaction_colors.contrast_outline, 3.0))
+                    painter.drawRoundedRect(
+                        hover_rect,
+                        max(0.0, card_corner_radius - 1),
+                        max(0.0, card_corner_radius - 1),
+                    )
+                    painter.setPen(QPen(self._card_interaction_colors.hover_outline, 1.0))
+                    painter.drawRoundedRect(
+                        hover_rect,
+                        max(0.0, card_corner_radius - 1),
+                        max(0.0, card_corner_radius - 1),
                     )
                 else:
                     painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
@@ -2218,9 +2311,9 @@ class ThumbnailGridView(QAbstractScrollArea):
 
             painter.setPen(self._title_color)
             painter.setFont(self._title_font)
-            title_option = QTextOption(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            title_option.setWrapMode(QTextOption.WrapMode.WordWrap)
-            painter.drawText(QRectF(title_text_rect), variant.name if record.has_variant_stack else record.name, title_option)
+            title = variant.name if record.has_variant_stack else record.name
+            title = painter.fontMetrics().elidedText(title, Qt.TextElideMode.ElideRight, title_text_rect.width())
+            painter.drawText(title_text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
 
             if not record.is_folder and not self._adapter_review_mode:
                 self._paint_winner_button(
@@ -3228,6 +3321,32 @@ class ThumbnailGridView(QAbstractScrollArea):
         rect.moveTop(action_rect.top() + max(0, (action_rect.height() - rect.height()) // 2))
         return rect
 
+    def _action_button_hit_rects(self, tile_rect: QRect) -> GridCardHitRects:
+        if self._use_new_grid_card() and self._loupe_card_style == "gallery":
+            return grid_gallery_action_hit_rects(tile_rect)
+        if self._use_new_grid_card():
+            return grid_card_action_hit_rects(
+                tile_rect,
+                compact=self._use_compact_grid_card(),
+                compact_actions="right",
+                compact_overlay=self._grid_card_overlay(),
+            )
+        visual = GridCardHitRects(
+            self._winner_button_rect(tile_rect),
+            self._reject_button_rect(tile_rect),
+        )
+        return expanded_action_hit_rects(tile_rect, visual)
+
+    def _winner_button_hit_rect(self, tile_rect: QRect) -> QRect:
+        if self._action_mode in {"rejected_only", "recycle_only"}:
+            return QRect()
+        return self._action_button_hit_rects(tile_rect).favorite
+
+    def _reject_button_hit_rect(self, tile_rect: QRect) -> QRect:
+        if self._action_mode in {"accepted_only", "recycle_only"}:
+            return QRect()
+        return self._action_button_hit_rects(tile_rect).reject
+
     def _reject_button_rect(self, tile_rect: QRect) -> QRect:
         if self._action_mode in {"accepted_only", "recycle_only"}:
             return QRect()
@@ -3899,6 +4018,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._current_index < 0:
             return 0
         return self._visible_slot_by_item_index.get(self._displayed_index_for_slot(self._current_index), 0)
+
+    def _navigate_selection(self, index: int, *, extend: bool) -> None:
+        if extend:
+            self._select_range(index)
+        elif self._tool_checkbox_mode:
+            self._set_current_index(index)
+        else:
+            self._set_single_selection(index)
 
     def _set_single_selection(self, index: int) -> None:
         index = self._normalize_index_for_display(index)

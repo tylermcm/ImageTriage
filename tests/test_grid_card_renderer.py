@@ -10,11 +10,18 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from image_triage.ui.grid_card_renderer import (
+    DETAILED_CARD_MAX_CHROME_SCALE,
     DETAILED_CARD_REFERENCE_HEIGHT,
     DETAILED_CARD_REFERENCE_WIDTH,
     GridCardData,
+    GridCardInteractionColors,
+    THUMBNAIL_SELECTION_TINT_ALPHA,
     grid_card_action_rects,
+    grid_card_action_hit_rects,
+    grid_card_filename_is_elided,
     grid_card_height_for_width,
+    gallery_card_filename_is_elided,
+    grid_gallery_action_hit_rects,
     paint_grid_card,
     render_grid_card_pixmap,
     _metadata_text_top,
@@ -113,10 +120,7 @@ class GridCardRendererTests(unittest.TestCase):
             width = round(DETAILED_CARD_REFERENCE_WIDTH * factor)
             rect = QRect(17, 29, width, grid_card_height_for_width(width))
             hits = grid_card_action_rects(rect)
-            effective_scale = min(
-                rect.width() / reference.width(),
-                rect.height() / reference.height(),
-            )
+            effective_scale = min(rect.width() / reference.width(), DETAILED_CARD_MAX_CHROME_SCALE)
             for source, scaled in (
                 (reference_hits.favorite, hits.favorite),
                 (reference_hits.reject, hits.reject),
@@ -124,9 +128,35 @@ class GridCardRendererTests(unittest.TestCase):
                 with self.subTest(factor=factor, button=source):
                     self.assertAlmostEqual(scaled.width(), source.width() * effective_scale, delta=1.0)
                     self.assertAlmostEqual(scaled.height(), source.height() * effective_scale, delta=1.0)
-                    reference_offset_x = source.center().x() - reference.center().x()
-                    actual_offset_x = scaled.center().x() - rect.center().x()
-                    self.assertAlmostEqual(actual_offset_x, reference_offset_x * effective_scale, delta=1.5)
+                    reference_right_inset = reference.right() - source.right()
+                    actual_right_inset = rect.right() - scaled.right()
+                    self.assertAlmostEqual(actual_right_inset, reference_right_inset * effective_scale, delta=1.5)
+
+    def test_logical_action_targets_are_30px_and_visual_rects_are_unchanged(self) -> None:
+        for rect, compact in (
+            (QRect(0, 0, 560, 407), False),
+            (QRect(0, 0, 180, 120), True),
+        ):
+            visual = grid_card_action_rects(rect, compact=compact, compact_actions="right")
+            logical = grid_card_action_hit_rects(rect, compact=compact, compact_actions="right")
+            for name in ("favorite", "reject"):
+                painted = getattr(visual, name)
+                target = getattr(logical, name)
+                with self.subTest(compact=compact, action=name):
+                    self.assertTrue(target.contains(painted))
+                    self.assertGreaterEqual(target.width(), painted.width())
+                    self.assertGreaterEqual(target.height(), 30)
+                    self.assertTrue(rect.contains(target))
+                    if not compact:
+                        self.assertGreaterEqual(target.width(), 30)
+            self.assertFalse(logical.favorite.intersects(logical.reject))
+
+    def test_gallery_logical_targets_are_30px_and_do_not_overlap(self) -> None:
+        rect = QRect(0, 0, 356, 277)
+        logical = grid_gallery_action_hit_rects(rect)
+        self.assertEqual(logical.favorite.size(), QSize(30, 30))
+        self.assertEqual(logical.reject.size(), QSize(30, 30))
+        self.assertFalse(logical.favorite.intersects(logical.reject))
 
     def test_detailed_card_renders_at_reference_and_scaled_sizes(self) -> None:
         source = QPixmap(QSize(1200, 800))
@@ -165,6 +195,74 @@ class GridCardRendererTests(unittest.TestCase):
         filename_baseline = _metadata_text_top(rect, scale) + QFontMetrics(name_font).ascent()
         position_baseline = position_top + QFontMetrics(position_font).ascent()
         self.assertEqual(position_baseline, filename_baseline)
+
+    def test_filename_elision_helpers_only_flag_truncated_names(self) -> None:
+        rect = QRect(0, 0, DETAILED_CARD_REFERENCE_WIDTH, DETAILED_CARD_REFERENCE_HEIGHT)
+        self.assertFalse(grid_card_filename_is_elided(rect, GridCardData(filename="IMG_001.jpg")))
+        self.assertTrue(
+            grid_card_filename_is_elided(
+                rect,
+                GridCardData(filename="a_very_long_filename_that_cannot_fit_in_the_available_footer_space.jpg"),
+            )
+        )
+        gallery_rect = QRect(0, 0, 356, 277)
+        self.assertFalse(gallery_card_filename_is_elided(gallery_rect, GridCardData(filename="IMG_001.jpg")))
+        self.assertTrue(
+            gallery_card_filename_is_elided(
+                gallery_rect,
+                GridCardData(filename="a_very_long_filename_that_cannot_fit_in_the_gallery_footer.jpg"),
+            )
+        )
+
+    def test_active_outline_is_preserved_over_selected_and_decision_states(self) -> None:
+        source = QPixmap(QSize(1200, 800))
+        source.fill(QColor(120, 130, 140))
+        active = QColor(14, 240, 86)
+        colors = GridCardInteractionColors(
+            active_outline=active,
+            selection_outline=QColor(230, 30, 200),
+            selection_fill=QColor(230, 30, 200, 50),
+            hover_outline=QColor(240, 220, 20),
+            contrast_outline=QColor(0, 0, 0),
+        )
+        image = render_grid_card_pixmap(
+            QSize(DETAILED_CARD_REFERENCE_WIDTH, DETAILED_CARD_REFERENCE_HEIGHT),
+            source,
+            GridCardData(active=True, selected=True, hovered=True, favorite=True, rejected=True),
+            interaction_colors=colors,
+        ).toImage()
+        matching_pixels = 0
+        for y in range(image.height()):
+            for x in range(image.width()):
+                color = image.pixelColor(x, y)
+                if color.green() > 210 and color.red() < 70 and color.blue() < 130:
+                    matching_pixels += 1
+        self.assertGreater(matching_pixels, 250)
+
+    def test_hover_boundary_remains_visible_on_a_bright_photo(self) -> None:
+        source = QPixmap(QSize(1200, 800))
+        source.fill(QColor(245, 245, 245))
+        size = QSize(DETAILED_CARD_REFERENCE_WIDTH, DETAILED_CARD_REFERENCE_HEIGHT)
+        normal = render_grid_card_pixmap(
+            size,
+            source,
+            GridCardData(duplicate_visible=False, ai_visible=False),
+            corner_radius=8,
+        ).toImage()
+        hovered = render_grid_card_pixmap(
+            size,
+            source,
+            GridCardData(hovered=True, duplicate_visible=False, ai_visible=False),
+            corner_radius=8,
+        ).toImage()
+
+        edge_y = 100
+        self.assertGreater(
+            _luminance(normal.pixelColor(0, edge_y)) - _luminance(hovered.pixelColor(0, edge_y)),
+            100,
+        )
+        self.assertEqual(normal.pixelColor(10, edge_y), hovered.pixelColor(10, edge_y))
+        self.assertEqual(THUMBNAIL_SELECTION_TINT_ALPHA, 16)
 
 
 if __name__ == "__main__":

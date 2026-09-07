@@ -118,6 +118,11 @@ DETAILED_CARD_MAX_CHROME_SCALE = 1.15
 # a live-pixel value unless the caller supplies a column-aware override.
 IMAGE_CORNER_RADIUS = 8.0
 
+# Interaction opacity controls shared by every thumbnail-card style.
+THUMBNAIL_SELECTION_TINT_ALPHA = 16
+THUMBNAIL_HOVER_OUTLINE_ALPHA = 210
+THUMBNAIL_HOVER_CONTRAST_ALPHA = 180
+
 # Photo corner rounding scales with the grid column count: wide single-column
 # cards get the most rounding, dense eight-column cards the least, linearly
 # between. Endpoints are the design values; the per-column step is
@@ -158,7 +163,9 @@ class GridCardData:
     # (text, kind) pairs where kind picks the accent color (e.g. "best_frame",
     # "round", "disputed", "needs_review", "ai_miss", "edited").
     tags: tuple[tuple[str, str], ...] = ()
+    active: bool = False
     selected: bool = False
+    hovered: bool = False
     favorite: bool = False
     rejected: bool = False
     hover_favorite: bool = False
@@ -179,6 +186,69 @@ class GridCardHitRects:
     reject: QRect
 
 
+@dataclass(frozen=True, slots=True)
+class GridCardInteractionColors:
+    active_outline: QColor
+    selection_outline: QColor
+    selection_fill: QColor
+    hover_outline: QColor
+    contrast_outline: QColor
+
+
+def default_grid_card_interaction_colors() -> GridCardInteractionColors:
+    return GridCardInteractionColors(
+        active_outline=QColor(80, 140, 255),
+        selection_outline=QColor(120, 160, 250),
+        selection_fill=QColor(80, 140, 255, THUMBNAIL_SELECTION_TINT_ALPHA),
+        hover_outline=QColor(255, 255, 255, THUMBNAIL_HOVER_OUTLINE_ALPHA),
+        contrast_outline=QColor(0, 0, 0, 190),
+    )
+
+
+def _paint_interaction_fill(
+    painter: QPainter,
+    rect: QRectF,
+    radius: float,
+    data: GridCardData,
+    colors: GridCardInteractionColors,
+) -> None:
+    if not data.selected:
+        return
+    painter.save()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(colors.selection_fill)
+    painter.drawRoundedRect(rect.adjusted(1.0, 1.0, -1.0, -1.0), max(2.0, radius - 1.0), max(2.0, radius - 1.0))
+    painter.restore()
+
+
+def _paint_interaction_outlines(
+    painter: QPainter,
+    outer: QRectF,
+    radius: float,
+    data: GridCardData,
+    colors: GridCardInteractionColors,
+) -> None:
+    painter.save()
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    if data.hovered:
+        hover_rect = outer.adjusted(1.0, 1.0, -1.0, -1.0)
+        hover_radius = max(2.0, radius - 1.0)
+        contrast = QColor(colors.contrast_outline)
+        contrast.setAlpha(THUMBNAIL_HOVER_CONTRAST_ALPHA)
+        painter.setPen(QPen(contrast, 3.0))
+        painter.drawRoundedRect(hover_rect, hover_radius, hover_radius)
+        painter.setPen(QPen(colors.hover_outline, 1.0))
+        painter.drawRoundedRect(hover_rect, hover_radius, hover_radius)
+    if data.active or data.selected:
+        outline = colors.active_outline if data.active else colors.selection_outline
+        inner_radius = max(2.0, radius - 1.0)
+        painter.setPen(QPen(colors.contrast_outline, 1.0))
+        painter.drawRoundedRect(outer.adjusted(2.0, 2.0, -2.0, -2.0), inner_radius, inner_radius)
+        painter.setPen(QPen(outline, 1.6))
+        painter.drawRoundedRect(outer, radius, radius)
+    painter.restore()
+
+
 def render_grid_card_pixmap(
     size: QSize,
     source_pixmap: QPixmap | None,
@@ -190,6 +260,7 @@ def render_grid_card_pixmap(
     compact_badge_text: bool = False,
     compact_overlay: bool = True,
     corner_radius: float | None = None,
+    interaction_colors: GridCardInteractionColors | None = None,
 ) -> QPixmap:
     """Render a single card into a transparent pixmap."""
 
@@ -209,6 +280,7 @@ def render_grid_card_pixmap(
         compact_badge_text=compact_badge_text,
         compact_overlay=compact_overlay,
         corner_radius=corner_radius,
+        interaction_colors=interaction_colors,
     )
     painter.end()
     return output
@@ -226,8 +298,9 @@ def paint_grid_card(
     compact_badge_text: bool = False,
     compact_overlay: bool = True,
     corner_radius: float | None = None,
+    interaction_colors: GridCardInteractionColors | None = None,
 ) -> GridCardHitRects:
-    """Paint one card and return action hit rectangles in viewport space."""
+    """Paint one card and return its visual action rectangles."""
 
     if not compact and not data.immersive:
         return _paint_scaled_detailed_card(
@@ -240,6 +313,7 @@ def paint_grid_card(
             compact_badge_text=compact_badge_text,
             compact_overlay=compact_overlay,
             corner_radius=corner_radius,
+            interaction_colors=interaction_colors,
         )
     return _paint_grid_card_native(
         painter,
@@ -252,6 +326,7 @@ def paint_grid_card(
         compact_badge_text=compact_badge_text,
         compact_overlay=compact_overlay,
         corner_radius=corner_radius,
+        interaction_colors=interaction_colors,
     )
 
 
@@ -267,6 +342,7 @@ def _paint_grid_card_native(
     compact_badge_text: bool = False,
     compact_overlay: bool = True,
     corner_radius: float | None = None,
+    interaction_colors: GridCardInteractionColors | None = None,
 ) -> GridCardHitRects:
     """Paint one main viewport card and return action hit rectangles.
 
@@ -332,6 +408,8 @@ def _paint_grid_card_native(
         round_photo=round_photo,
         folder=data.is_folder,
     )
+    state_colors = interaction_colors or default_grid_card_interaction_colors()
+    _paint_interaction_fill(painter, QRectF(rect), image_radius, data, state_colors)
     if not compact:
         # The footer text block overlaps the photo's lower edge on grid
         # tiles, so both full styles scrim it for guaranteed contrast:
@@ -358,16 +436,7 @@ def _paint_grid_card_native(
         _paint_badges(painter, rect, content_rect, data, scale)
         favorite_rect, reject_rect = _paint_bottom_overlay(painter, rect, content_rect, data, scale)
 
-    if data.selected:
-        # Selection ring on the content itself (no card frame to carry it);
-        # a thin dark contrast line inside the accent keeps it readable over
-        # bright photo edges — same treatment as the single-column loupe.
-        ring_radius = max(3.0, image_radius - 1.0)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor(0, 0, 0, 140), 1.0))
-        painter.drawRoundedRect(QRectF(rect).adjusted(2.0, 2.0, -2.0, -2.0), ring_radius, ring_radius)
-        painter.setPen(QPen(QColor(80, 140, 255), 1.6))
-        painter.drawRoundedRect(outer, image_radius, image_radius)
+    _paint_interaction_outlines(painter, outer, image_radius, data, state_colors)
 
     painter.restore()
     return GridCardHitRects(favorite_rect, reject_rect)
@@ -436,6 +505,7 @@ def _paint_scaled_detailed_card(
     compact_badge_text: bool,
     compact_overlay: bool,
     corner_radius: float | None,
+    interaction_colors: GridCardInteractionColors | None,
 ) -> GridCardHitRects:
     if rect.width() <= 8 or rect.height() <= 8:
         return GridCardHitRects(QRect(), QRect())
@@ -467,6 +537,8 @@ def _paint_scaled_detailed_card(
         round_photo=round_photo,
         folder=data.is_folder,
     )
+    state_colors = interaction_colors or default_grid_card_interaction_colors()
+    _paint_interaction_fill(painter, QRectF(rect), image_radius, data, state_colors)
 
     # Layers 2+ (scrim, badges, footer text/buttons): composed once at the
     # reference metrics and drawn through a single uniform transform so every
@@ -484,14 +556,13 @@ def _paint_scaled_detailed_card(
     )
     painter.restore()
 
-    if data.selected:
-        outer = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
-        ring_radius = max(3.0, image_radius - 1.0)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor(0, 0, 0, 140), 1.0))
-        painter.drawRoundedRect(QRectF(rect).adjusted(2.0, 2.0, -2.0, -2.0), ring_radius, ring_radius)
-        painter.setPen(QPen(QColor(80, 140, 255), 1.6))
-        painter.drawRoundedRect(outer, image_radius, image_radius)
+    _paint_interaction_outlines(
+        painter,
+        QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5),
+        image_radius,
+        data,
+        state_colors,
+    )
 
     painter.restore()
 
@@ -578,7 +649,7 @@ def _gallery_metrics(rect: QRect) -> tuple[float, int, int, int, int, int]:
 
 
 def grid_gallery_action_rects(rect: QRect) -> GridCardHitRects:
-    """Heart/reject hit rects for the gallery card: right-aligned in the strip
+    """Heart/reject visual rects for the gallery card: right-aligned in the strip
     beneath the photo. Kept in sync with ``paint_gallery_card``."""
     if rect.width() <= 8 or rect.height() <= 8:
         return GridCardHitRects(QRect(), QRect())
@@ -588,6 +659,11 @@ def grid_gallery_action_rects(rect: QRect) -> GridCardHitRects:
     reject = QRect(rect.right() - edge - button, top, button, button)
     favorite = QRect(reject.left() - gap - button, top, button, button)
     return GridCardHitRects(favorite, reject)
+
+
+def grid_gallery_action_hit_rects(rect: QRect) -> GridCardHitRects:
+    """Logical 30px action targets without changing gallery button artwork."""
+    return expanded_action_hit_rects(rect, grid_gallery_action_rects(rect))
 
 
 def paint_gallery_card(
@@ -604,6 +680,7 @@ def paint_gallery_card(
     action_hover_border: QColor | None = None,
     action_icon_color: QColor | None = None,
     action_hover_icon_color: QColor | None = None,
+    interaction_colors: GridCardInteractionColors | None = None,
 ) -> GridCardHitRects:
     """Paint the gallery card: a rounded 3:2 photo with the filename and the
     heart/reject actions on the transparent strip below it."""
@@ -629,13 +706,8 @@ def paint_gallery_card(
         round_photo=round_photo,
         folder=data.is_folder,
     )
-    if data.selected:
-        ring_radius = max(3.0, image_radius - 1.0)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor(0, 0, 0, 140), 1.0))
-        painter.drawRoundedRect(QRectF(photo_rect).adjusted(1.5, 1.5, -1.5, -1.5), ring_radius, ring_radius)
-        painter.setPen(QPen(QColor(80, 140, 255), 1.6))
-        painter.drawRoundedRect(QRectF(photo_rect).adjusted(0.5, 0.5, -0.5, -0.5), image_radius, image_radius)
+    state_colors = interaction_colors or default_grid_card_interaction_colors()
+    _paint_interaction_fill(painter, QRectF(photo_rect), image_radius, data, state_colors)
 
     hits = grid_gallery_action_rects(rect)
     favorite_rect = QRect(hits.favorite)
@@ -673,6 +745,14 @@ def paint_gallery_card(
     name_rect = QRect(name_left, strip_top, max(1, name_right_limit - name_left), strip)
     _draw_elided_text(painter, name_rect, data.filename, name_font, filename_color or QColor(154, 160, 166))
 
+    _paint_interaction_outlines(
+        painter,
+        QRectF(photo_rect).adjusted(0.5, 0.5, -0.5, -0.5),
+        image_radius,
+        data,
+        state_colors,
+    )
+
     painter.restore()
     return GridCardHitRects(favorite_rect, reject_rect)
 
@@ -708,7 +788,7 @@ def _chrome_size_width(card_rect: QRect, chrome_width: int | None) -> int:
 def grid_card_action_rects(
     rect: QRect, *, compact: bool = False, compact_actions: str = "corners", compact_overlay: bool = True
 ) -> GridCardHitRects:
-    """Favorite/reject hit rectangles for a card painted by paint_grid_card.
+    """Favorite/reject visual rectangles for a card painted by paint_grid_card.
 
     Kept in sync with _paint_bottom_overlay / _paint_compact_overlay (which
     use the same internal helpers) so grid hit-testing can ask for the
@@ -739,6 +819,137 @@ def grid_card_action_rects(
         max(1, rect.height() - pad * 2),
     )
     return _compact_action_button_rects(rect, content_rect, scale, compact_actions)
+
+
+def grid_card_action_hit_rects(
+    rect: QRect,
+    *,
+    compact: bool = False,
+    compact_actions: str = "corners",
+    compact_overlay: bool = True,
+) -> GridCardHitRects:
+    """Logical 30px action targets without changing the painted glyphs."""
+    visual = grid_card_action_rects(
+        rect,
+        compact=compact,
+        compact_actions=compact_actions,
+        compact_overlay=compact_overlay,
+    )
+    return expanded_action_hit_rects(rect, visual)
+
+
+def expanded_action_hit_rects(
+    card_rect: QRect,
+    visual: GridCardHitRects,
+    *,
+    minimum_size: int = 30,
+) -> GridCardHitRects:
+    def expand(button: QRect) -> QRect:
+        if button.isEmpty():
+            return QRect()
+        expanded = QRect(
+            0,
+            0,
+            min(card_rect.width(), max(minimum_size, button.width())),
+            min(card_rect.height(), max(minimum_size, button.height())),
+        )
+        expanded.moveCenter(button.center())
+        if expanded.left() < card_rect.left():
+            expanded.moveLeft(card_rect.left())
+        if expanded.right() > card_rect.right():
+            expanded.moveRight(card_rect.right())
+        if expanded.top() < card_rect.top():
+            expanded.moveTop(card_rect.top())
+        if expanded.bottom() > card_rect.bottom():
+            expanded.moveBottom(card_rect.bottom())
+        return expanded
+
+    favorite = expand(visual.favorite)
+    reject = expand(visual.reject)
+    if favorite.isEmpty() or reject.isEmpty() or not favorite.intersects(reject):
+        return GridCardHitRects(favorite, reject)
+
+    if favorite.center().x() <= reject.center().x():
+        split = (visual.favorite.right() + visual.reject.left()) // 2
+        favorite.setRight(min(favorite.right(), split))
+        reject.setLeft(max(reject.left(), split + 1))
+    else:
+        split = (visual.reject.right() + visual.favorite.left()) // 2
+        reject.setRight(min(reject.right(), split))
+        favorite.setLeft(max(favorite.left(), split + 1))
+    return GridCardHitRects(favorite, reject)
+
+
+def grid_card_filename_is_elided(
+    rect: QRect,
+    data: GridCardData,
+    *,
+    compact: bool = False,
+    compact_actions: str = "corners",
+    compact_filename: bool = False,
+    compact_overlay: bool = True,
+    immersive: bool = False,
+) -> bool:
+    """Return whether the filename rendered by a grid card is shortened."""
+    filename = data.filename
+    if not filename or rect.width() <= 8 or rect.height() <= 8:
+        return False
+    if compact:
+        if not compact_overlay or not compact_filename or compact_actions != "right":
+            return False
+        scale = _scale_for(rect, True)
+        hits = grid_card_action_rects(
+            rect,
+            compact=True,
+            compact_actions=compact_actions,
+            compact_overlay=compact_overlay,
+        )
+        inset = _compact_corner_inset(scale)
+        font = QFont("Segoe UI", max(9, round(13 * scale)), QFont.Weight.DemiBold)
+        width = hits.favorite.left() - max(6, round(8 * scale)) - (rect.left() + inset)
+        if width < round(QFontMetrics(font).averageCharWidth() * 4.5):
+            return True
+        return QFontMetrics(font).horizontalAdvance(filename) > width
+
+    if immersive:
+        scale = _scale_for(rect, False)
+        design_rect = rect
+        chrome_width = None
+    else:
+        _, design_rect = _detailed_chrome_layout(rect)
+        scale = _detailed_reference_scale()
+        chrome_width = DETAILED_CARD_REFERENCE_WIDTH
+    hits = _action_button_rects(design_rect, design_rect, scale, chrome_width)
+    margin = max(12, round(14 * scale))
+    body_left = design_rect.left() + margin
+    meta_font = QFont("Segoe UI", max(8, round(9 * scale)))
+    status_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
+    status_text_width = max(
+        QFontMetrics(meta_font).horizontalAdvance(data.position_text),
+        QFontMetrics(status_font).horizontalAdvance(data.status_text),
+        round(62 * scale),
+    )
+    side_width = max(round(76 * scale), status_text_width + round(8 * scale))
+    side_left = design_rect.right() - margin - side_width
+    body_right = min(hits.favorite.left(), side_left) - max(12, round(17 * scale))
+    width = max(48, body_right - body_left)
+    name_font = QFont("Segoe UI", max(11, round(13 * scale)), QFont.Weight.DemiBold)
+    return QFontMetrics(name_font).horizontalAdvance(filename) > width
+
+
+def gallery_card_filename_is_elided(rect: QRect, data: GridCardData) -> bool:
+    """Return whether the filename rendered by a gallery card is shortened."""
+    filename = data.filename
+    if not filename or rect.width() <= 8 or rect.height() <= 8:
+        return False
+    chrome_scale, _, _, _, gap, edge = _gallery_metrics(rect)
+    if data.show_actions:
+        name_right_limit = grid_gallery_action_rects(rect).favorite.left() - gap
+    else:
+        name_right_limit = rect.right() - edge
+    name_left = rect.left() + max(1, round(2 * chrome_scale))
+    name_font = QFont("Segoe UI", max(11, round(12 * chrome_scale)))
+    return QFontMetrics(name_font).horizontalAdvance(filename) > max(1, name_right_limit - name_left)
 
 
 def _action_button_rects(

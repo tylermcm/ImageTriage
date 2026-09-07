@@ -7789,6 +7789,11 @@ class MainWindow(QMainWindow):
             shortcut = self._shortcut_overrides.get(binding_id, "") or target.default_shortcut
             normalized = normalize_shortcut_text(shortcut)
             target.apply(normalized)
+        if self.actions is not None and hasattr(self, "grid"):
+            self.grid.set_review_action_shortcuts(
+                self.actions.accept_selection.shortcut(),
+                self.actions.reject_selection.shortcut(),
+            )
 
     def _apply_command_palette_shortcut(self, shortcut: str) -> None:
         sequence = QKeySequence(shortcut)
