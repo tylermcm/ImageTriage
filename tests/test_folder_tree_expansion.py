@@ -6,7 +6,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtGui import QColor, QStandardItem, QStandardItemModel
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -95,6 +95,15 @@ class FolderTreeExpansionTests(unittest.TestCase):
 
         self.assertTrue(self.tree.isExpanded(photos))
         self.assertTrue(self.tree.isExpanded(other))
+
+    def test_navigation_colors_can_follow_the_active_theme(self) -> None:
+        selected = QColor(20, 80, 140, 60)
+        hovered = QColor(30, 40, 50, 90)
+
+        self.tree.set_navigation_colors(selected, hovered)
+
+        self.assertEqual(selected, self.tree._selected_row_fill)
+        self.assertEqual(hovered, self.tree._hovered_row_fill)
 
     def test_clicking_the_drive_row_expands_it_immediately(self) -> None:
         self.tree.resize(280, 180)

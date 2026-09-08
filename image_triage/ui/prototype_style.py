@@ -262,12 +262,21 @@ class FolderTreeView(QTreeView):
         self.setIconSize(QSize(20, 20))
         self.setUniformRowHeights(False)
         self.setItemDelegate(_FolderTreeDelegate(self))
+        self._selected_row_fill = QColor(SIDEBAR_ACCENT_COLOR)
+        self._selected_row_fill.setAlpha(58)
+        self._hovered_row_fill = QColor(SIDEBAR_ACCENT_COLOR)
+        self._hovered_row_fill.setAlpha(28)
         self._single_drive_expansion_enabled = True
         self._enforcing_single_expansion = False
         self.expanded.connect(self._handle_index_expanded)
 
     def single_drive_expansion_enabled(self) -> bool:
         return self._single_drive_expansion_enabled
+
+    def set_navigation_colors(self, selected_fill: QColor, hovered_fill: QColor) -> None:
+        self._selected_row_fill = QColor(selected_fill)
+        self._hovered_row_fill = QColor(hovered_fill)
+        self.viewport().update()
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         position = event.position().toPoint()
@@ -354,8 +363,7 @@ class FolderTreeView(QTreeView):
             rect = QRect(option.rect)
             rect.setLeft(self.viewport().rect().left() + 1)
             rect = rect.adjusted(0, 1, -2, -1)
-            fill = option.palette.color(QPalette.ColorRole.Highlight)
-            fill.setAlpha(92 if selected else 48)
+            fill = QColor(self._selected_row_fill if selected else self._hovered_row_fill)
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)

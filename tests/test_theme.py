@@ -59,3 +59,15 @@ def test_workspace_focus_and_selection_states_use_theme_tokens() -> None:
     assert f"background-color: {theme.selection_fill.css};" in stylesheet
     assert f"background-color: {theme.accent_soft.css};" in stylesheet
     assert f"border-color: {theme.accent.css};" in stylesheet
+
+
+def test_sidebar_navigation_selection_uses_theme_tokens() -> None:
+    theme = default_theme()
+    stylesheet = build_app_stylesheet(theme)
+
+    assert "QTabBar#leftModeTabs::tab:selected" in stylesheet
+    assert f"border-bottom: 3px solid {theme.selection_outline.css};" in stylesheet
+    assert "QTreeView#folderTree::item:selected" in stylesheet
+    assert "QListWidget#faceGroupsList::item:selected" in stylesheet
+    assert "QListWidget#projectsList::item:selected" in stylesheet
+    assert stylesheet.count(f"background-color: {theme.selection_fill.css};") >= 4

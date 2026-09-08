@@ -920,7 +920,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QTabBar#leftModeTabs::tab:selected {{
             color: {theme.text_primary.css};
-            border-bottom: 3px solid {theme.accent.css};
+            border-bottom: 3px solid {theme.selection_outline.css};
             font-weight: 700;
         }}
         QTabBar#leftModeTabs::tab:hover:!selected {{
@@ -1313,7 +1313,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             margin: 1px 0px;
         }}
         QTreeView#folderTree::item:selected, QListWidget#favoritesList::item:selected {{
-            background-color: {theme.input_hover_bg.css};
+            background-color: {theme.selection_fill.css};
             color: {theme.text_primary.css};
         }}
         QTreeView::branch {{
@@ -1702,11 +1702,21 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 14px;
         }}
         QListWidget#faceGroupsList::item:selected,
-        QListWidget#faceGroupsList::item:hover,
-        QListWidget#projectsList::item:selected,
-        QListWidget#projectsList::item:hover {{
+        QListWidget#projectsList::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QListWidget#faceGroupsList::item:hover:!selected,
+        QListWidget#projectsList::item:hover:!selected {{
             background-color: {theme.input_hover_bg.css};
             color: {theme.text_primary.css};
+        }}
+        QListWidget#faceGroupsList::item:disabled,
+        QListWidget#projectsList::item:disabled {{
+            background-color: transparent;
+            color: {theme.text_muted.css};
+            font-size: 12px;
+            padding: 3px 10px;
         }}
         QLineEdit#faceGroupsSearch {{
             background-color: {theme.input_hover_bg.css};

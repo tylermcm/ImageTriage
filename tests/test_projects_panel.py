@@ -62,7 +62,8 @@ class ProjectsPanelTests(unittest.TestCase):
         self.host._refresh_projects_panel()
         self.assertEqual(1, self.host.projects_list.count())
         item = self.host.projects_list.item(0)
-        self.assertEqual("No projects yet", item.text())
+        self.assertEqual("No projects\nin this library", item.text())
+        self.assertEqual(2, len(item.text().splitlines()))
         self.assertEqual(Qt.ItemFlag.NoItemFlags, item.flags())
         self.assertEqual("", self.host._project_id_for_item(item))
 

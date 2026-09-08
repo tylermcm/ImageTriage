@@ -734,6 +734,7 @@ def _path_parent_stem_key(path: str) -> str:
 # never crowd the folder tree out of the sidebar.
 _MAX_VISIBLE_PROJECT_ROWS = 6
 _PROJECT_ROW_PX = 34
+_PROJECT_EMPTY_ROW_PX = 42
 
 
 def _search_match_path_key(path: str | Path) -> str:
@@ -5438,7 +5439,14 @@ class MainWindow(QMainWindow):
     def _refresh_left_sidebar_icons(self) -> None:
         theme = getattr(self, "_theme", None) or default_theme()
         accent = theme.accent.qcolor()
+        selected = theme.selection_outline.qcolor()
         muted = theme.text_muted.qcolor()
+        folder_tree = getattr(self, "folder_tree", None)
+        if isinstance(folder_tree, FolderTreeView):
+            folder_tree.set_navigation_colors(
+                theme.selection_fill.qcolor(),
+                theme.input_hover_bg.qcolor(),
+            )
         face_header = getattr(self, "face_groups_header", None)
         if face_header is not None:
             face_header.set_icon(QIcon(sidebar_people_icon_pixmap(21, accent.name())))
@@ -5458,7 +5466,7 @@ class MainWindow(QMainWindow):
             search_action.setIcon(self._fluent_toolbar_icon("E721", color=muted))
         tabs = getattr(self, "left_mode_tabs", None)
         if tabs is not None and tabs.count() >= 2:
-            selected = tabs.currentIndex()
+            selected_index = tabs.currentIndex()
             if isinstance(tabs, CompactIconTabBar):
                 selected_text = theme.text_primary.qcolor()
                 hover_text = theme.text_secondary.qcolor()
@@ -5467,7 +5475,7 @@ class MainWindow(QMainWindow):
                 0,
                 self._fluent_toolbar_icon(
                     "E8B9",
-                    color=accent if selected == 0 else muted,
+                    color=selected if selected_index == 0 else muted,
                     primary_size=38,
                 ),
             )
@@ -5475,7 +5483,7 @@ class MainWindow(QMainWindow):
                 1,
                 self._fluent_toolbar_icon(
                     "E9D2",
-                    color=accent if selected == 1 else muted,
+                    color=selected if selected_index == 1 else muted,
                     primary_size=38,
                 ),
             )
@@ -8049,9 +8057,10 @@ class MainWindow(QMainWindow):
             item.setSizeHint(QSize(0, _PROJECT_ROW_PX))
             panel.addItem(item)
         if not collections:
-            empty = QListWidgetItem("No projects yet")
+            empty = QListWidgetItem("No projects\nin this library")
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
-            empty.setSizeHint(QSize(0, _PROJECT_ROW_PX))
+            empty.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            empty.setSizeHint(QSize(0, _PROJECT_EMPTY_ROW_PX))
             panel.addItem(empty)
         self._update_projects_height()
 

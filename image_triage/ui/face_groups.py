@@ -38,6 +38,7 @@ THUMB_PX = 34
 # ::item rule can all stretch a row and leave the circles floating apart.
 _ROW_GAP = 4
 _PLAIN_ROW_PX = 34
+_EMPTY_ROW_PX = 42
 # Sentinel for the row that hands off to the full Tag People dialog.
 _BROWSE_ALL = "__browse_all__"
 
@@ -342,15 +343,16 @@ class FaceGroupsPanel(QListWidget):
 
         if not self._groups:
             message = (
-                "No recurring faces yet"
+                "No recurring faces\nin this folder"
                 if self._has_index
-                else "Faces appear once this folder is indexed"
+                else "Face groups unavailable\nFolder not indexed"
             )
             if self._search_text and self._all_groups:
-                message = "No people match that search"
+                message = "No matching people\nin this folder"
             placeholder = QListWidgetItem(message)
             placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
-            placeholder.setSizeHint(QSize(0, _PLAIN_ROW_PX))
+            placeholder.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            placeholder.setSizeHint(QSize(0, _EMPTY_ROW_PX))
             self.addItem(placeholder)
             self._sync_height()
             return

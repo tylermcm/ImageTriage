@@ -144,6 +144,7 @@ class FaceGroupsPanelTests(unittest.TestCase):
     def test_indexed_but_empty_says_so_differently(self) -> None:
         self.panel.set_groups([], has_index=True)
         self.assertIn("No recurring faces", self.panel.item(0).text())
+        self.assertEqual(2, len(self.panel.item(0).text().splitlines()))
 
     def test_rows_plus_a_handoff_to_the_full_dialog(self) -> None:
         self.panel.set_groups(self._groups(3), has_index=True)
