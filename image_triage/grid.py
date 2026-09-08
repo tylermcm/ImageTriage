@@ -33,8 +33,10 @@ from .ui.grid_card_renderer import (
     grid_card_corner_radius,
     grid_card_filename_is_elided,
     grid_card_height_for_width,
+    gallery_card_filename_hit_rect,
     gallery_card_filename_is_elided,
     gallery_card_height_for_width,
+    gallery_card_photo_rect,
     grid_gallery_action_rects,
     grid_gallery_action_hit_rects,
     paint_gallery_card,
@@ -1085,6 +1087,9 @@ class ThumbnailGridView(QAbstractScrollArea):
     def selected_count(self) -> int:
         return len(self.selected_indexes())
 
+    def visible_item_count(self) -> int:
+        return len(self._visible_item_indexes)
+
     @classmethod
     def dragged_record_paths_from_mime(cls, mime_data: QMimeData | None) -> list[str]:
         if mime_data is None or not mime_data.hasFormat(cls.INTERNAL_RECORD_MIME):
@@ -1259,6 +1264,17 @@ class ThumbnailGridView(QAbstractScrollArea):
         index = self._index_at(point.x(), point.y())
         self._press_pos = point
         self._press_index = index
+        if index < 0:
+            action_index = self._gallery_action_index_at(point.x(), point.y())
+            if action_index >= 0:
+                rect = self._item_rect(action_index)
+                if self._winner_button_hit_rect(rect).contains(point):
+                    self.winner_requested.emit(action_index)
+                elif self._reject_button_hit_rect(rect).contains(point):
+                    self.reject_requested.emit(action_index)
+                self._press_on_interactive_control = True
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                return
         if index >= 0:
             rect = self._item_rect(index)
             if self._tool_checkbox_mode and self._checkbox_rect(rect).contains(point):
@@ -1377,7 +1393,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         point = event.pos()
         index = self._index_at(point.x(), point.y())
         if index < 0:
-            super().contextMenuEvent(event)
+            self.context_menu_requested.emit(-1, event.globalPos())
+            event.accept()
             return
         if self._zoom_index == index and self._zoom_factor > 1.0:
             self._reset_image_zoom()
@@ -1448,6 +1465,7 @@ class ThumbnailGridView(QAbstractScrollArea):
 
         point = event.position().toPoint()
         index = self._index_at(point.x(), point.y())
+        action_index = index if index >= 0 else self._gallery_action_index_at(point.x(), point.y())
         hovered_winner = -1
         hovered_reject = -1
         hovered_left_arrow = -1
@@ -1457,14 +1475,16 @@ class ThumbnailGridView(QAbstractScrollArea):
         hovered_checkbox = -1
         hovered_index = index
         tooltip = ""
+        if action_index >= 0:
+            rect = self._item_rect(action_index)
+            if self._tool_checkbox_mode and self._checkbox_rect(rect).contains(point):
+                hovered_checkbox = action_index
+            if not self._items[action_index].is_folder and self._winner_button_hit_rect(rect).contains(point):
+                hovered_winner = action_index
+            if not self._items[action_index].is_folder and self._reject_button_hit_rect(rect).contains(point):
+                hovered_reject = action_index
         if index >= 0:
             rect = self._item_rect(index)
-            if self._tool_checkbox_mode and self._checkbox_rect(rect).contains(point):
-                hovered_checkbox = index
-            if not self._items[index].is_folder and self._winner_button_hit_rect(rect).contains(point):
-                hovered_winner = index
-            if not self._items[index].is_folder and self._reject_button_hit_rect(rect).contains(point):
-                hovered_reject = index
             if self._left_arrow_rect(rect, self._items[index]).contains(point):
                 hovered_left_arrow = index
             if self._right_arrow_rect(rect, self._items[index]).contains(point):
@@ -1479,6 +1499,15 @@ class ThumbnailGridView(QAbstractScrollArea):
                 tooltip = self._action_tooltip("Reject Selection", self._reject_shortcut)
             else:
                 tooltip = self._filename_tooltip(index, rect)
+        elif action_index >= 0:
+            if hovered_winner >= 0:
+                tooltip = self._action_tooltip("Mark Winner", self._winner_shortcut)
+            elif hovered_reject >= 0:
+                tooltip = self._action_tooltip("Reject Selection", self._reject_shortcut)
+        else:
+            filename_index = self._gallery_filename_index_at(point.x(), point.y())
+            if filename_index >= 0:
+                tooltip = self._filename_tooltip(filename_index, self._item_rect(filename_index))
         self.viewport().setToolTip(tooltip)
 
         if (
@@ -4089,6 +4118,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         if previous_selection != self._selected_indexes:
             self.selection_changed.emit()
 
+    def select_all(self) -> None:
+        self._select_all()
+
     def _set_marquee_rect(self, rect: QRect) -> None:
         previous_rect = QRect(self._marquee_rect)
         self._marquee_rect = rect
@@ -4590,11 +4622,11 @@ class ThumbnailGridView(QAbstractScrollArea):
         rect.translate(0, -self.verticalScrollBar().value())
         return rect
 
-    def _index_at(self, x: int, y: int) -> int:
+    def _tile_at(self, x: int, y: int) -> tuple[int, QRect, QPoint]:
         content_y = y + self.verticalScrollBar().value()
         left = self._margin + self._row_x_offset
         if x < left:
-            return -1
+            return -1, QRect(), QPoint()
         tile_width = self._tile_width()
         tile_height = self._tile_height()
         column_span = tile_width + self._spacing
@@ -4603,14 +4635,56 @@ class ThumbnailGridView(QAbstractScrollArea):
         column = (x - left) // column_span
         row = (content_y - self._margin) // row_span
         if column < 0 or column >= self._columns or row < 0:
-            return -1
+            return -1, QRect(), QPoint()
 
         x_in_tile = (x - left) % column_span
         y_in_tile = (content_y - self._margin) % row_span
         if x_in_tile >= tile_width or y_in_tile >= tile_height:
-            return -1
+            return -1, QRect(), QPoint()
 
         slot = row * self._columns + column
         if slot >= len(self._visible_item_indexes):
+            return -1, QRect(), QPoint()
+        index = self._visible_item_indexes[slot]
+        tile_rect = QRect(
+            left + column * column_span,
+            self._margin + row * row_span,
+            tile_width,
+            tile_height,
+        )
+        return index, tile_rect, QPoint(x, content_y)
+
+    def _index_at(self, x: int, y: int) -> int:
+        index, tile_rect, point = self._tile_at(x, y)
+        if index < 0:
             return -1
-        return self._visible_item_indexes[slot]
+        if self._use_new_grid_card() and self._loupe_card_style == "gallery":
+            if gallery_card_photo_rect(tile_rect).contains(point):
+                return index
+            return -1
+        return index
+
+    def _gallery_action_index_at(self, x: int, y: int) -> int:
+        if not (self._use_new_grid_card() and self._loupe_card_style == "gallery"):
+            return -1
+        index, tile_rect, point = self._tile_at(x, y)
+        if index < 0 or self._items[index].is_folder:
+            return -1
+        hits = grid_gallery_action_hit_rects(tile_rect)
+        return index if hits.favorite.contains(point) or hits.reject.contains(point) else -1
+
+    def _gallery_filename_index_at(self, x: int, y: int) -> int:
+        if not (self._use_new_grid_card() and self._loupe_card_style == "gallery"):
+            return -1
+        index, tile_rect, point = self._tile_at(x, y)
+        if index < 0:
+            return -1
+        record = self._items[index]
+        variant = self._current_variant(record)
+        filename = variant.name if record.has_variant_stack else record.name
+        hit_rect = gallery_card_filename_hit_rect(
+            tile_rect,
+            filename,
+            show_actions=not record.is_folder,
+        )
+        return index if hit_rect.contains(point) else -1

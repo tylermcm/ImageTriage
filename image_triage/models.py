@@ -143,6 +143,7 @@ class SortMode(str, Enum):
     NAME = "Filename"
     DATE = "Date Modified"
     SIZE = "File Size"
+    TYPE = "File Type"
     AI_RANK = "AI Rank"
     AI_WOW = "AI Wow"
 
@@ -181,6 +182,15 @@ def sort_records(records: list[ImageRecord], sort_mode: SortMode) -> list[ImageR
         return sorted(records, key=lambda record: (folder_rank(record), -record.modified_ns, _natural_name_key(record.name)))
     if sort_mode == SortMode.SIZE:
         return sorted(records, key=lambda record: (folder_rank(record), -record.size, _natural_name_key(record.name)))
+    if sort_mode == SortMode.TYPE:
+        return sorted(
+            records,
+            key=lambda record: (
+                folder_rank(record),
+                "" if record.is_folder else suffix_for_path(record.path).casefold(),
+                _natural_name_key(record.name),
+            ),
+        )
     return sorted(records, key=lambda record: (folder_rank(record), _natural_name_key(record.name)))
 
 

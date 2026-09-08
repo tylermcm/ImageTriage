@@ -40,6 +40,20 @@ class ColorToken:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceMetrics:
+    space_4: int = 4
+    space_6: int = 6
+    space_8: int = 8
+    space_12: int = 12
+    space_16: int = 16
+    radius_4: int = 4
+    radius_7: int = 7
+
+
+WORKSPACE_METRICS = WorkspaceMetrics()
+
+
+@dataclass(frozen=True, slots=True)
 class ThemePalette:
     name: str
     is_dark: bool
@@ -396,6 +410,24 @@ def default_theme() -> ThemePalette:
     return _dark_theme()
 
 
+def contrast_ratio(foreground: ColorToken, background: ColorToken) -> float:
+    def relative_luminance(color: ColorToken) -> float:
+        channels = (color.red / 255.0, color.green / 255.0, color.blue / 255.0)
+        linear = tuple(
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        )
+        return (0.2126 * linear[0]) + (0.7152 * linear[1]) + (0.0722 * linear[2])
+
+    foreground_luminance = relative_luminance(foreground)
+    background_luminance = relative_luminance(background)
+    lighter = max(foreground_luminance, background_luminance)
+    darker = min(foreground_luminance, background_luminance)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 UI_GAMMA_MIN = 0.60
 UI_GAMMA_MAX = 1.60
 
@@ -458,6 +490,7 @@ def build_app_palette(theme: ThemePalette) -> QPalette:
 
 
 def build_app_stylesheet(theme: ThemePalette) -> str:
+    metrics = WORKSPACE_METRICS
     return f"""
         QMainWindow {{
             background-color: {theme.window_bg.css};
@@ -545,6 +578,9 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton:disabled {{
             color: {theme.text_disabled.css};
+        }}
+        QToolButton:focus {{
+            border-color: {theme.selection_outline.css};
         }}
         QToolButton::menu-indicator {{
             image: none;
@@ -706,7 +742,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#appTopBarButton {{
             background-color: transparent;
             border: 1px solid transparent;
-            border-radius: 7px;
+            border-radius: {metrics.radius_7}px;
             padding: 0px;
             color: {theme.text_secondary.css};
             font-family: "Segoe UI Symbol", "Segoe UI";
@@ -717,9 +753,15 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_primary.css};
         }}
         QToolButton#appTopBarButton:checked {{
-            background-color: {theme.accent_soft.css};
+            background-color: {theme.selection_fill.css};
             border-color: transparent;
             color: {theme.text_primary.css};
+        }}
+        QToolButton#appTopBarButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QToolButton#appTopBarButton:focus {{
+            border-color: {theme.selection_outline.css};
         }}
         QToolButton#appTopBarButton:disabled {{
             background-color: transparent;
@@ -732,9 +774,37 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLineEdit#workspaceSearchField {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border_muted.css};
-            border-radius: 7px;
-            padding: 4px 8px;
+            border-radius: {metrics.radius_7}px;
+            padding: {metrics.space_4}px {metrics.space_8}px;
             color: {theme.text_primary.css};
+        }}
+        QLineEdit#workspaceSearchField:focus {{
+            background-color: {theme.input_hover_bg.css};
+            border: 2px solid {theme.selection_outline.css};
+            padding: 3px 7px;
+        }}
+        QFrame#pathSuggestionPopup {{
+            background-color: {theme.panel_alt_bg.css};
+            border: 1px solid {theme.selection_outline.css};
+            border-radius: {metrics.radius_7}px;
+        }}
+        QListWidget#pathSuggestionList {{
+            background: transparent;
+            border: none;
+            color: {theme.text_primary.css};
+            outline: none;
+            padding: 3px;
+        }}
+        QListWidget#pathSuggestionList::item {{
+            border-radius: {metrics.radius_4}px;
+            padding: {metrics.space_4}px {metrics.space_8}px;
+        }}
+        QListWidget#pathSuggestionList::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QListWidget#pathSuggestionList::item:hover {{
+            background-color: {theme.input_hover_bg.css};
         }}
         QSlider#topbarZoomSlider::groove:horizontal {{
             height: 2px;
@@ -765,7 +835,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#appTopBar QToolButton#workspacePresetsButton {{
             background-color: transparent;
             border: 1px solid transparent;
-            border-radius: 7px;
+            border-radius: {metrics.radius_7}px;
             color: {theme.text_secondary.css};
             padding: 4px 10px;
             font-size: 12px;
@@ -773,8 +843,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QWidget#appTopBar QToolButton#appTopBarIconButton {{
             background-color: transparent;
-            border: none;
-            border-radius: 7px;
+            border: 1px solid transparent;
+            border-radius: {metrics.radius_7}px;
             padding: 0px;
         }}
         QWidget#appTopBar QWidget#appTopBarButtonContent,
@@ -803,9 +873,19 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#appTopBar QToolButton#appTopBarActionButton:checked,
         QWidget#appTopBar QToolButton#workspacePresetsButton:checked,
         QWidget#appTopBar QToolButton#appTopBarIconButton:checked {{
-            background-color: {theme.accent_soft.css};
+            background-color: {theme.selection_fill.css};
             border-color: transparent;
             color: {theme.text_primary.css};
+        }}
+        QWidget#appTopBar QToolButton#appTopBarActionButton:pressed,
+        QWidget#appTopBar QToolButton#workspacePresetsButton:pressed,
+        QWidget#appTopBar QToolButton#appTopBarIconButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QWidget#appTopBar QToolButton#appTopBarActionButton:focus,
+        QWidget#appTopBar QToolButton#workspacePresetsButton:focus,
+        QWidget#appTopBar QToolButton#appTopBarIconButton:focus {{
+            border-color: {theme.selection_outline.css};
         }}
         QWidget#appTopBar QToolButton#appTopBarActionButton:disabled,
         QWidget#appTopBar QToolButton#workspacePresetsButton:disabled,
@@ -894,12 +974,27 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#generatedLeftRailButton {{
             background-color: transparent;
             border: 1px solid transparent;
-            border-radius: 7px;
+            border-radius: {metrics.radius_7}px;
             padding: 0px;
         }}
         QToolButton#generatedLeftRailButton:hover {{
             background-color: {theme.input_hover_bg.css};
             border-color: transparent;
+        }}
+        QToolButton#generatedLeftRailButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QToolButton#generatedLeftRailButton:checked {{
+            background-color: {theme.selection_fill.css};
+            border-color: {theme.accent.css};
+        }}
+        QToolButton#generatedLeftRailButton:focus {{
+            border-color: {theme.selection_outline.css};
+        }}
+        QToolButton#generatedLeftRailButton:disabled {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.text_disabled.css};
         }}
         QWidget#libraryStack {{
             background-color: transparent;
@@ -1018,6 +1113,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#leftSettingsBarButton:hover {{
             background-color: {theme.input_hover_bg.css};
             color: {theme.text_primary.css};
+        }}
+        QToolButton#leftSettingsBarButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QToolButton#leftSettingsBarButton:focus {{
+            border-color: {theme.selection_outline.css};
         }}
         QLabel#leftPreviewTitle {{
             color: {theme.text_primary.css};
@@ -1257,21 +1358,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.selection_fill.css};
             color: {theme.text_primary.css};
         }}
-        QWidget#detailsPreviewPane {{
-            background-color: {theme.panel_alt_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 6px;
-        }}
-        QLabel#detailsPreviewImage {{
-            background-color: {theme.image_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 6px;
-            color: {theme.text_muted.css};
-        }}
-        QCheckBox#detailsPreviewToggle {{
-            color: {theme.text_secondary.css};
-            spacing: 6px;
-        }}
         QLabel#detailsStatusStrip {{
             background-color: {theme.chrome_bg.css};
             border-top: 1px solid {theme.border_muted.css};
@@ -1372,6 +1458,9 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#toolbarEditHudDone:hover {{
             background-color: {theme.accent_hover.css};
             border-color: {theme.accent_hover.css};
+        }}
+        QFrame#toolbarEditHud QPushButton:focus {{
+            border-color: {theme.selection_outline.css};
         }}
         QDialog#toolbarCustomizerDialog {{
             background-color: {theme.window_bg.css};
@@ -1490,7 +1579,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#workspacePanelButton, QToolButton#workspacePanelCloseButton {{
             background-color: transparent;
             border: 1px solid transparent;
-            border-radius: 8px;
+            border-radius: {metrics.radius_7}px;
             color: {theme.text_secondary.css};
             font-family: "Segoe UI Symbol", "Segoe UI Variable Display", "Segoe UI";
             font-size: 13px;
@@ -1501,6 +1590,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
+        }}
+        QToolButton#workspacePanelButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QToolButton#workspacePanelButton:focus,
+        QToolButton#workspacePanelCloseButton:focus {{
+            border-color: {theme.selection_outline.css};
         }}
         QToolButton#zenMenuPinButton {{
             background-color: transparent;
@@ -1561,6 +1657,10 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.danger_soft.css};
             border-color: {theme.danger.css};
             color: {theme.text_primary.css};
+        }}
+        QToolButton#workspacePanelCloseButton:pressed {{
+            background-color: {theme.danger_soft.css};
+            color: {theme.danger.css};
         }}
         QWidget#navSectionHeader {{
             background-color: transparent;
@@ -1717,6 +1817,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
+        }}
+        QToolButton#pathNavButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QToolButton#pathNavButton:focus {{
+            border-color: {theme.selection_outline.css};
         }}
         QToolButton#pathNavButton:disabled {{
             color: {theme.text_disabled.css};
@@ -1889,6 +1995,38 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#workspaceIconButton:checked {{
             background-color: {theme.accent_soft.css};
             border-color: {theme.accent.css};
+        }}
+        QToolButton#workspaceIconButton:focus {{
+            border-color: {theme.selection_outline.css};
+        }}
+        QFrame#topbarDividerLine {{
+            background-color: {theme.border_muted.css};
+            border: none;
+            border-radius: 1px;
+        }}
+        QFrame#toolbarEditCell {{
+            background-color: transparent;
+            border: 1px dashed {theme.border.css};
+            border-radius: {metrics.radius_7}px;
+        }}
+        QFrame#toolbarEditDropTarget {{
+            background-color: {theme.selection_fill.css};
+            border: 1px solid {theme.selection_outline.css};
+            border-radius: {metrics.radius_7}px;
+        }}
+        QToolButton#toolbarEditRemoveBadge[assetIcon="true"] {{
+            background-color: transparent;
+            border: none;
+            padding: 0px;
+        }}
+        QToolButton#toolbarEditRemoveBadge[assetIcon="false"] {{
+            background-color: {theme.danger.css};
+            border: 1px solid {theme.panel_bg.css};
+            border-radius: 6px;
+            color: {theme.badge_text.css};
+            font-size: 10px;
+            font-weight: 700;
+            padding: 0px;
         }}
         QToolButton#statusFilterClearButton {{
             padding: 2px 8px;

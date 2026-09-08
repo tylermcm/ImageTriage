@@ -25,6 +25,7 @@ __all__ = (
     "SHORTCUT_REGISTRY",
     "apply_shortcut_overrides",
     "build_main_window_actions",
+    "format_action_tooltip",
     "load_shortcut_overrides",
     "save_shortcut_overrides",
 )
@@ -63,8 +64,6 @@ class MainWindowActions:
     show_hidden_folders: QAction
     grid_view: QAction
     details_view: QAction
-    details_preview_pane: QAction
-    details_preview_on_hover: QAction
     details_density_compact: QAction
     details_density_comfortable: QAction
     details_next_unreviewed: QAction
@@ -142,6 +141,15 @@ class MainWindowActions:
     mode_actions: dict[str, QAction] = field(default_factory=dict)
 
 
+def format_action_tooltip(text: str, shortcut: str | QKeySequence | None = None) -> str:
+    shortcut_text = (
+        shortcut.toString(QKeySequence.SequenceFormat.NativeText)
+        if isinstance(shortcut, QKeySequence)
+        else str(shortcut or "").strip()
+    )
+    return f"{text}\nShortcut: {shortcut_text}" if shortcut_text else text
+
+
 def _create_action(
     window: "MainWindow",
     text: str,
@@ -160,7 +168,7 @@ def _create_action(
     if shortcut is not None:
         action.setShortcut(shortcut)
     shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
-    hinted_text = f"{text} ({shortcut_text})" if shortcut_text else text
+    hinted_text = format_action_tooltip(text, shortcut_text)
     action.setToolTip(hinted_text)
     action.setStatusTip(hinted_text)
     try:
@@ -295,18 +303,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=lambda _checked=False: window._set_browser_view_mode("details"),
             checkable=True,
             shortcut="Ctrl+2",
-        ),
-        details_preview_pane=_create_action(
-            window,
-            "Details Preview Pane",
-            slot=window._handle_details_preview_toggled,
-            checkable=True,
-        ),
-        details_preview_on_hover=_create_action(
-            window,
-            "Details Preview On Hover",
-            slot=window._handle_details_preview_on_hover_toggled,
-            checkable=True,
         ),
         details_density_compact=_create_action(
             window,

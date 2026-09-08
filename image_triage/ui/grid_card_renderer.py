@@ -648,6 +648,12 @@ def _gallery_metrics(rect: QRect) -> tuple[float, int, int, int, int, int]:
     return chrome_scale, photo_height, strip_top, button, gap, edge
 
 
+def gallery_card_photo_rect(rect: QRect) -> QRect:
+    """Visible photo surface for gallery painting and pointer hit-testing."""
+    _, photo_height, _, _, _, _ = _gallery_metrics(rect)
+    return QRect(rect.left(), rect.top(), rect.width(), max(1, photo_height))
+
+
 def grid_gallery_action_rects(rect: QRect) -> GridCardHitRects:
     """Heart/reject visual rects for the gallery card: right-aligned in the strip
     beneath the photo. Kept in sync with ``paint_gallery_card``."""
@@ -664,6 +670,30 @@ def grid_gallery_action_rects(rect: QRect) -> GridCardHitRects:
 def grid_gallery_action_hit_rects(rect: QRect) -> GridCardHitRects:
     """Logical 30px action targets without changing gallery button artwork."""
     return expanded_action_hit_rects(rect, grid_gallery_action_rects(rect))
+
+
+def gallery_card_filename_hit_rect(rect: QRect, filename: str, *, show_actions: bool) -> QRect:
+    """Tight pointer target around the filename rendered in the gallery strip."""
+    if not filename or rect.width() <= 8 or rect.height() <= 8:
+        return QRect()
+    chrome_scale, _, strip_top, _, gap, edge = _gallery_metrics(rect)
+    if show_actions:
+        name_right_limit = grid_gallery_action_rects(rect).favorite.left() - gap
+    else:
+        name_right_limit = rect.right() - edge
+    name_left = rect.left() + max(1, round(2 * chrome_scale))
+    available_width = max(1, name_right_limit - name_left)
+    name_font = QFont("Segoe UI", max(11, round(12 * chrome_scale)))
+    metrics = QFontMetrics(name_font)
+    rendered = metrics.elidedText(filename, Qt.TextElideMode.ElideRight, available_width)
+    rendered_width = min(available_width, metrics.horizontalAdvance(rendered))
+    strip_height = _gallery_strip_height(rect.width())
+    return QRect(
+        name_left,
+        strip_top + max(0, (strip_height - metrics.height()) // 2),
+        max(1, rendered_width),
+        min(strip_height, metrics.height()),
+    )
 
 
 def paint_gallery_card(
@@ -687,7 +717,7 @@ def paint_gallery_card(
     if rect.width() <= 8 or rect.height() <= 8:
         return GridCardHitRects(QRect(), QRect())
 
-    chrome_scale, photo_height, strip_top, button, gap, edge = _gallery_metrics(rect)
+    chrome_scale, _, strip_top, button, gap, edge = _gallery_metrics(rect)
     strip = _gallery_strip_height(rect.width())
     image_radius = IMAGE_CORNER_RADIUS if corner_radius is None else max(0.0, float(corner_radius))
     round_photo = corner_radius is not None
@@ -696,7 +726,7 @@ def paint_gallery_card(
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-    photo_rect = QRect(rect.left(), rect.top(), rect.width(), max(1, photo_height))
+    photo_rect = gallery_card_photo_rect(rect)
     _paint_image(
         painter,
         photo_rect,

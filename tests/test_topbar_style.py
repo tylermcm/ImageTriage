@@ -6,10 +6,12 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMainWindow, QToolButton, QWidget
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
+from PySide6.QtGui import QAction, QColor, QIcon, QMouseEvent, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMainWindow, QMessageBox, QToolButton, QWidget
 
+from image_triage.ui.actions import format_action_tooltip
+from image_triage.ui.theme import default_theme
 from image_triage.window import MainWindow
 
 
@@ -60,11 +62,41 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertEqual(12, caption.height())
         self.assertEqual("Review", caption.text())
         self.assertEqual("Review", button.accessibleName())
+        self.assertEqual(Qt.FocusPolicy.TabFocus, button.focusPolicy())
         button.show()
         self.app.processEvents()
         self.assertEqual(0, glyph.y())
         self.assertEqual(22, caption.y())
         button.hide()
+
+    def test_search_uses_truthful_placeholder_and_keyboard_focus(self) -> None:
+        field = MainWindow._build_search_field(SimpleNamespace())
+
+        self.assertEqual("Search by content, person, or filename...", field.placeholderText())
+        self.assertTrue(field.isClearButtonEnabled())
+
+    def test_action_tooltip_uses_live_shortcut_on_its_own_line(self) -> None:
+        action = QAction("Open Preview")
+        action.setProperty("imageTriageBaseText", "Open Preview")
+        action.setShortcut("Ctrl+Return")
+
+        MainWindow._refresh_action_shortcut_hint(SimpleNamespace(), action)
+
+        self.assertEqual(format_action_tooltip("Open Preview", action.shortcut()), action.toolTip())
+        self.assertEqual("Open Preview\nShortcut: Ctrl+Return", action.toolTip())
+
+    def test_fluent_icon_has_theme_specific_interaction_states(self) -> None:
+        host = SimpleNamespace(_theme=default_theme())
+
+        icon = MainWindow._fluent_toolbar_icon(host, "E710")
+
+        normal = icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.Off).toImage()
+        active = icon.pixmap(QSize(64, 64), QIcon.Mode.Active, QIcon.State.Off).toImage()
+        checked = icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.On).toImage()
+        disabled = icon.pixmap(QSize(64, 64), QIcon.Mode.Disabled, QIcon.State.Off).toImage()
+        self.assertNotEqual(normal.cacheKey(), active.cacheKey())
+        self.assertNotEqual(normal.cacheKey(), checked.cacheKey())
+        self.assertNotEqual(normal.cacheKey(), disabled.cacheKey())
 
     def test_legacy_toolbar_preferences_normalize_to_fixed_style(self) -> None:
         for saved_style in ("text", "icons", "large_icons", "icon_text", None):
@@ -99,6 +131,94 @@ class TopbarStyleTests(unittest.TestCase):
 
         self.assertEqual(360, hud.x())
         self.assertEqual(61, hud.y())
+
+    def test_toolbar_edit_banner_keeps_and_clamps_user_position(self) -> None:
+        parent = QWidget()
+        parent.resize(500, 300)
+        hud = QFrame(parent)
+        hud.resize(280, 44)
+        host = SimpleNamespace(
+            _toolbar_edit_hud=hud,
+            _toolbar_edit_mode=True,
+            _toolbar_edit_hud_user_position=QPoint(420, 275),
+            app_top_bar=None,
+        )
+
+        MainWindow._position_toolbar_edit_hud(host)
+
+        self.assertEqual(QPoint(212, 248), hud.pos())
+        self.assertEqual(hud.pos(), host._toolbar_edit_hud_user_position)
+
+    def test_toolbar_edit_marker_drags_banner(self) -> None:
+        parent = QWidget()
+        parent.resize(700, 400)
+        hud = QFrame(parent)
+        hud.setGeometry(100, 60, 280, 44)
+        handle = QFrame(hud)
+        handle.setGeometry(8, 10, 4, 24)
+        host = SimpleNamespace(
+            _toolbar_edit_hud=hud,
+            _toolbar_edit_hud_drag_handle=handle,
+            _toolbar_edit_hud_drag_offset=None,
+            _toolbar_edit_hud_user_position=None,
+            _toolbar_item_picker_dialog=None,
+        )
+        local = QPoint(2, 8)
+        press_global = handle.mapToGlobal(local)
+        press = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(local),
+            QPointF(press_global),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.assertTrue(MainWindow._handle_toolbar_edit_hud_drag(host, press))
+
+        offset = handle.mapTo(hud, local)
+        target = QPoint(300, 180)
+        move_global = parent.mapToGlobal(target + offset)
+        move = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(local),
+            QPointF(move_global),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.assertTrue(MainWindow._handle_toolbar_edit_hud_drag(host, move))
+        self.assertEqual(target, hud.pos())
+        self.assertEqual(target, host._toolbar_edit_hud_user_position)
+
+        release = QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            QPointF(local),
+            QPointF(move_global),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.assertTrue(MainWindow._handle_toolbar_edit_hud_drag(host, release))
+        self.assertIsNone(host._toolbar_edit_hud_drag_offset)
+
+    def test_toolbar_reset_requires_explicit_confirmation(self) -> None:
+        calls = []
+        original_warning = QMessageBox.warning
+        QMessageBox.warning = lambda *args: calls.append(args) or QMessageBox.StandardButton.Cancel
+        try:
+            host = SimpleNamespace(
+                _toolbar_edit_active_mode="manual",
+                _end_inplace_toolbar_edit=lambda: self.fail("reset continued after cancellation"),
+            )
+            MainWindow._reset_inplace_toolbar_edit(host)
+        finally:
+            QMessageBox.warning = original_warning
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual("Reset Toolbar Layout?", calls[0][1])
+        self.assertTrue(calls[0][3] & QMessageBox.StandardButton.Reset)
+        self.assertTrue(calls[0][3] & QMessageBox.StandardButton.Cancel)
+        self.assertEqual(QMessageBox.StandardButton.Cancel, calls[0][4])
 
     def test_toolbar_slot_model_uses_the_cell_previously_reserved_for_add(self) -> None:
         host = SimpleNamespace(

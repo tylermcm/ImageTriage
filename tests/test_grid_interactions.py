@@ -5,13 +5,14 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QContextMenuEvent, QKeyEvent, QKeySequence, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from image_triage.grid import ThumbnailGridView
 from image_triage.models import ImageRecord
 from image_triage.thumbnails import ThumbnailManager
+from image_triage.ui.grid_card_renderer import gallery_card_filename_hit_rect
 
 
 def _ensure_app() -> QApplication:
@@ -37,6 +38,18 @@ def _mouse_move(x: int, y: int) -> QMouseEvent:
     )
 
 
+def _mouse_press(x: int, y: int) -> QMouseEvent:
+    point = QPointF(x, y)
+    return QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        point,
+        point,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
 class GridInteractionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -56,6 +69,55 @@ class GridInteractionTests(unittest.TestCase):
             for index in range(18)
         ]
         self.grid.set_items(self.records, request_thumbnails=False)
+
+    def test_empty_space_requests_the_background_context_menu(self) -> None:
+        empty_grid = ThumbnailGridView(ThumbnailManager())
+        requested = []
+        empty_grid.context_menu_requested.connect(
+            lambda index, global_pos: requested.append((index, global_pos))
+        )
+        event = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse,
+            QPoint(20, 20),
+            QPoint(120, 120),
+        )
+
+        empty_grid.contextMenuEvent(event)
+
+        self.assertTrue(event.isAccepted())
+        self.assertEqual(-1, requested[0][0])
+
+    def test_gallery_only_ties_the_photo_surface_to_the_image(self) -> None:
+        self.grid.set_loupe_card_style("gallery")
+        tile = self.grid._item_rect(0)
+        photo = self.grid._image_rect(tile)
+        filename = gallery_card_filename_hit_rect(
+            tile,
+            self.records[0].name,
+            show_actions=True,
+        )
+        actions = self.grid._winner_button_hit_rect(tile)
+
+        self.assertEqual(0, self.grid._index_at(photo.center().x(), photo.center().y()))
+        self.assertEqual(-1, self.grid._index_at(filename.center().x(), filename.center().y()))
+        self.assertEqual(-1, self.grid._index_at(actions.center().x(), actions.center().y()))
+
+        footer_y = tile.bottom() - 2
+        blank_x = tile.center().x()
+        self.assertEqual(-1, self.grid._index_at(blank_x, footer_y))
+
+    def test_gallery_action_button_does_not_change_selection(self) -> None:
+        self.grid.set_loupe_card_style("gallery")
+        self.grid._set_single_selection(0)
+        winners: list[int] = []
+        self.grid.winner_requested.connect(winners.append)
+        winner = self.grid._winner_button_hit_rect(self.grid._item_rect(1)).center()
+
+        self.grid.mousePressEvent(_mouse_press(winner.x(), winner.y()))
+
+        self.assertEqual([1], winners)
+        self.assertEqual(0, self.grid.current_index())
+        self.assertEqual([0], self.grid.selected_indexes())
 
     def tearDown(self) -> None:
         self.grid.deleteLater()

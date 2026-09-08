@@ -344,6 +344,7 @@ from .ui import (
     TrainRankerDialog,
     EvaluationSourceDialog,
     TrainingSourcesDialog,
+    WORKSPACE_METRICS,
     WorkspaceDocks,
     apply_gamma,
     apply_shortcut_overrides,
@@ -359,6 +360,8 @@ from .ui import (
     build_pin_icon,
     build_workspace_docks,
     clear_window_layout,
+    default_theme,
+    format_action_tooltip,
     parse_appearance_mode,
     restore_window_layout,
     resolve_theme,
@@ -1201,33 +1204,6 @@ class _DirectorySuggestionController(QObject):
         self._popup.setObjectName("pathSuggestionPopup")
         self._popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self._popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._popup.setStyleSheet(
-            """
-            QFrame#pathSuggestionPopup {
-                background-color: rgba(18, 24, 34, 192);
-                border: 1px solid rgba(122, 150, 212, 0.24);
-                border-radius: 12px;
-            }
-            QListWidget#pathSuggestionList {
-                background: transparent;
-                border: none;
-                color: #e8eef8;
-                outline: none;
-                padding: 3px;
-            }
-            QListWidget#pathSuggestionList::item {
-                border-radius: 8px;
-                padding: 4px 8px;
-            }
-            QListWidget#pathSuggestionList::item:selected {
-                background-color: rgba(86, 124, 230, 0.30);
-                color: #ffffff;
-            }
-            QListWidget#pathSuggestionList::item:hover {
-                background-color: rgba(255, 255, 255, 0.06);
-            }
-            """
-        )
         popup_layout = QVBoxLayout(self._popup)
         popup_layout.setContentsMargins(0, 0, 0, 0)
         popup_layout.setSpacing(0)
@@ -2692,10 +2668,7 @@ class MainWindow(QMainWindow):
     SHOW_HIDDEN_FOLDERS_KEY = "view/show_hidden_folders"
     SINGLE_DRIVE_EXPANSION_KEY = "view/single_drive_expansion"
     BROWSER_VIEW_MODE_KEY = "view/browser_mode"
-    DETAILS_PREVIEW_PANE_KEY = "view/details_preview_pane"
-    DETAILS_PREVIEW_ON_HOVER_KEY = "view/details_preview_on_hover"
     DETAILS_ROW_DENSITY_KEY = "view/details_row_density"
-    DETAILS_SPLITTER_STATE_KEY = "view/details_splitter_state"
     UNIFIED_SEARCH_MIN_CONFIDENCE = 0.0
     DETAILS_HEADER_STATE_KEY = "view/details_header_state"
     DETAILS_SORT_COLUMN_KEY = "view/details_sort_column"
@@ -2860,7 +2833,7 @@ class MainWindow(QMainWindow):
     TOPBAR_SLOT_COUNT = 35
     TOPBAR_SLOT_CELL_MIN = 36
     TOPBAR_SLOT_BUTTON_WIDTH = 34
-    TOPBAR_SLOT_SPACING = 4
+    TOPBAR_SLOT_SPACING = WORKSPACE_METRICS.space_4
     TOPBAR_INITIAL_VISIBLE_SLOTS = 8
     # Items that may appear more than once and are exempt from de-duplication
     # (a visual divider is inert and you can drop as many as you like).
@@ -3160,6 +3133,9 @@ class MainWindow(QMainWindow):
         # (item_id, widget, frozen base position, remove badge, slot index)
         self._toolbar_edit_items: list[tuple[str, QWidget, QPoint, QWidget, int]] = []
         self._toolbar_edit_hud: QFrame | None = None
+        self._toolbar_edit_hud_drag_handle: QFrame | None = None
+        self._toolbar_edit_hud_drag_offset: QPoint | None = None
+        self._toolbar_edit_hud_user_position: QPoint | None = None
         self._toolbar_edit_shortcut: QShortcut | None = None
         self._toolbar_item_picker_dialog: CommandPaletteDialog | None = None
         self._toolbar_item_picker_slot: int | None = None
@@ -3203,10 +3179,7 @@ class MainWindow(QMainWindow):
         self._bracket_detector = BracketDetector()
         self._photoshop_executable = detect_photoshop_executable()
         self.grid = ThumbnailGridView(self.thumbnail_manager)
-        self.details_view = PhotoDetailsView(
-            self.thumbnail_manager,
-            ai_text_provider=self._details_ai_text_for_record,
-        )
+        self.details_view = PhotoDetailsView(ai_text_provider=self._details_ai_text_for_record)
         self.preview = FullScreenPreview(self)
         self.preview.navigation_requested.connect(self._navigate_preview)
         self.preview.set_photoshop_available(bool(self._photoshop_executable))
@@ -3484,8 +3457,6 @@ class MainWindow(QMainWindow):
         self._winner_ladder_state: dict[str, object] | None = None
         self._ui_mode = "manual"
         self._browser_view_mode = self._normalize_browser_view_mode(self._settings.value(self.BROWSER_VIEW_MODE_KEY, "grid", str))
-        self._details_preview_pane_enabled = self._settings.value(self.DETAILS_PREVIEW_PANE_KEY, True, bool)
-        self._details_preview_on_hover_enabled = self._settings.value(self.DETAILS_PREVIEW_ON_HOVER_KEY, False, bool)
         self._details_row_density = self._normalize_details_row_density(
             self._settings.value(self.DETAILS_ROW_DENSITY_KEY, "comfortable", str)
         )
@@ -3734,7 +3705,9 @@ class MainWindow(QMainWindow):
         self.favorites_list.viewport().setAcceptDrops(True)
         self.favorites_list.viewport().installEventFilter(self)
 
-        sidebar_accent = QColor("#5b9cff")
+        initial_sidebar_theme = getattr(self, "_theme", None) or default_theme()
+        sidebar_accent = initial_sidebar_theme.accent.qcolor()
+        sidebar_muted = initial_sidebar_theme.text_muted.qcolor()
         self.face_groups_panel = FaceGroupsPanel()
         self.face_groups_add_button = self._build_left_rail_plus_button(
             tooltip="Open people and face naming"
@@ -3828,7 +3801,7 @@ class MainWindow(QMainWindow):
         )
         self.left_mode_tabs.addTab(
             self._fluent_toolbar_icon(
-                "E9D2", color=QColor("#8390a2"), primary_size=38
+                "E9D2", color=sidebar_muted, primary_size=38
             ),
             "AI / Activity",
         )
@@ -3836,7 +3809,7 @@ class MainWindow(QMainWindow):
         self.left_mode_tabs.setExpanding(True)
         self.left_mode_tabs.setDrawBase(False)
         self.left_mode_tabs.setUsesScrollButtons(False)
-        self.left_mode_tabs.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.left_mode_tabs.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.left_mode_tabs.currentChanged.connect(self._handle_left_mode_tab_changed)
 
         # Fixed top: favorites + folders header.
@@ -4139,8 +4112,6 @@ class MainWindow(QMainWindow):
         self.browser_stack = QStackedWidget()
         self.browser_stack.addWidget(self.grid)
         self.browser_stack.addWidget(self.details_view)
-        self.details_view.set_preview_visible(self._details_preview_pane_enabled)
-        self.details_view.set_preview_on_hover_enabled(self._details_preview_on_hover_enabled)
         self.details_view.set_row_density(self._details_row_density)
         self.details_view.layout_state_changed.connect(self._save_details_view_state)
         self.browser_stack.setCurrentIndex(1 if self._browser_view_mode == "details" else 0)
@@ -4296,7 +4267,6 @@ class MainWindow(QMainWindow):
         self.details_view.tag_requested.connect(self._tag_record)
         self.details_view.winner_requested.connect(self._toggle_winner)
         self.details_view.reject_requested.connect(self._toggle_reject)
-        self.details_view.preview_toggle.toggled.connect(self._handle_details_preview_toggled)
         self.preview.compare_mode_changed.connect(self._handle_preview_compare_mode_changed)
         self.preview.auto_bracket_mode_changed.connect(self._handle_preview_auto_bracket_mode_changed)
         self.preview.compare_count_changed.connect(self._handle_preview_compare_count_changed)
@@ -4347,7 +4317,7 @@ class MainWindow(QMainWindow):
         button.setToolTip(text)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.setMenu(menu)
         return button
 
@@ -4360,7 +4330,7 @@ class MainWindow(QMainWindow):
         button.setFixedSize(48, 28)
         button.setAutoRaise(True)
         button.setCursor(Qt.CursorShape.ArrowCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.clicked.connect(self._handle_update_button_clicked)
         return button
 
@@ -4437,8 +4407,6 @@ class MainWindow(QMainWindow):
 
         menu.addAction(self.actions.grid_view)
         menu.addAction(self.actions.details_view)
-        menu.addAction(self.actions.details_preview_pane)
-        menu.addAction(self.actions.details_preview_on_hover)
         menu.addAction(self.actions.zen_mode)
         menu.addSeparator()
 
@@ -4482,7 +4450,7 @@ class MainWindow(QMainWindow):
         field = QLineEdit()
         field.setObjectName("workspaceSearchField")
         field.setClearButtonEnabled(True)
-        field.setPlaceholderText("Search photos, filenames, or people")
+        field.setPlaceholderText("Search by content, person, or filename...")
         field.setToolTip(
             "Search naturally, for example: red car, dog on a beach, or mountains at sunset. "
             "Object and people search use the current folder's AI index."
@@ -4524,11 +4492,11 @@ class MainWindow(QMainWindow):
         button.setStatusTip(tooltip)
         button.setAutoRaise(True)
         button.setCursor(Qt.CursorShape.ArrowCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.setFixedSize(38, 28)
         button.setIconSize(QSize(24, 24))
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        color = self._theme.text_muted.qcolor() if self._theme is not None else QColor(129, 135, 146)
+        color = (self._theme or default_theme()).text_muted.qcolor()
         direction = "up" if text == "\u2191" else "down"
         button.setIcon(self._directory_nav_icon(direction, color))
         self._configure_toolbar_context_target(button, mode)
@@ -4555,7 +4523,7 @@ class MainWindow(QMainWindow):
         return QIcon(pixmap)
 
     def _refresh_directory_nav_button_icons(self) -> None:
-        color = self._theme.text_muted.qcolor() if self._theme is not None else QColor(129, 135, 146)
+        color = (self._theme or default_theme()).text_muted.qcolor()
         for button in getattr(self, "_directory_up_buttons", ()):
             button.setIcon(self._directory_nav_icon("up", color))
         for button in getattr(self, "_directory_down_buttons", ()):
@@ -4569,7 +4537,7 @@ class MainWindow(QMainWindow):
         wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(WORKSPACE_METRICS.space_4)
 
         up_button = self._build_directory_nav_button("\u2191", "Open parent folder", mode=mode)
         down_button = self._build_directory_nav_button("\u2193", "Open only child folder", mode=mode)
@@ -4607,7 +4575,7 @@ class MainWindow(QMainWindow):
         bar.setObjectName("appTopBar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(8, 6, 10, 6)
-        layout.setSpacing(6)
+        layout.setSpacing(WORKSPACE_METRICS.space_6)
 
         self._topbar_nav_buttons: list[tuple[QToolButton, int]] = []
         self._topbar_labeled_nav_buttons: list[tuple[QToolButton, str]] = []
@@ -4618,7 +4586,7 @@ class MainWindow(QMainWindow):
             button.setText(glyph)
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
             button.setAutoRaise(True)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             button.setFixedSize(34, 34)
             button.setToolTip(tooltip)
             font = button.font()
@@ -4637,7 +4605,7 @@ class MainWindow(QMainWindow):
             button = QToolButton(nav_cluster)
             button.setText(label)
             button.setToolTip(tooltip)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             self._apply_topbar_button_style(button, self._topbar_nav_icon(item_id))
             self._topbar_labeled_nav_buttons.append((button, item_id))
             nav_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -4646,8 +4614,11 @@ class MainWindow(QMainWindow):
         menu_button = make_labeled_nav_button("menu", "Menu", "Menu")
         menu_button.clicked.connect(lambda _checked=False, anchor=menu_button: self._show_main_menu_popup(anchor))
 
-        open_button = make_labeled_nav_button("open", "Open", "Open folder")
+        open_button = make_labeled_nav_button("open", "Open", self.actions.open_folder.toolTip())
         open_button.clicked.connect(lambda _checked=False: self.actions.open_folder.trigger())
+        self.actions.open_folder.changed.connect(
+            lambda target=open_button, action=self.actions.open_folder: target.setToolTip(action.toolTip())
+        )
 
         self._topbar_back_button = make_labeled_nav_button("back", "Back", "Back")
         self._topbar_back_button.clicked.connect(lambda: self._navigate_history(-1))
@@ -4660,20 +4631,26 @@ class MainWindow(QMainWindow):
         self._topbar_up_button = make_labeled_nav_button("up", "Up", "Open parent folder")
         self._topbar_up_button.clicked.connect(self._navigate_to_parent_folder)
 
-        refresh_button = make_labeled_nav_button("refresh", "Refresh", "Refresh folder")
+        refresh_button = make_labeled_nav_button("refresh", "Refresh", self.actions.refresh_folder.toolTip())
         refresh_button.clicked.connect(lambda _checked=False: self.actions.refresh_folder.trigger())
+        self.actions.refresh_folder.changed.connect(
+            lambda target=refresh_button, action=self.actions.refresh_folder: target.setToolTip(action.toolTip())
+        )
 
-        undo_button = make_labeled_nav_button("undo", "Undo", "Undo")
+        undo_button = make_labeled_nav_button("undo", "Undo", self.actions.undo.toolTip())
         undo_button.clicked.connect(lambda _checked=False: self.actions.undo.trigger())
+        self.actions.undo.changed.connect(
+            lambda target=undo_button, action=self.actions.undo: target.setToolTip(action.toolTip())
+        )
 
         layout.addWidget(nav_cluster, 0, Qt.AlignmentFlag.AlignVCenter)
 
         layout.addSpacing(6)
         # Filename search takes the directory bar's old (left) position.
         self.topbar_search_field = self._build_search_field()
-        self.topbar_search_field.setMinimumWidth(200)
-        self.topbar_search_field.setMaximumWidth(360)
-        self.topbar_search_field.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.topbar_search_field.setMinimumWidth(250)
+        self.topbar_search_field.setMaximumWidth(450)
+        self.topbar_search_field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.topbar_search_field.textChanged.connect(
             lambda text: self._handle_search_text_changed(text, source="topbar")
         )
@@ -4704,7 +4681,7 @@ class MainWindow(QMainWindow):
         self.topbar_zoom_slider.setPageStep(12)
         self.topbar_zoom_slider.setTickPosition(QSlider.TickPosition.NoTicks)
         self.topbar_zoom_slider.setFixedWidth(118)
-        self.topbar_zoom_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.topbar_zoom_slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.topbar_zoom_slider.setToolTip("Thumbnail size")
         self.topbar_zoom_slider.setValue(self._initial_zoom_level())
         self.topbar_zoom_slider.valueChanged.connect(self._handle_zoom_slider_changed)
@@ -4718,12 +4695,12 @@ class MainWindow(QMainWindow):
         self.topbar_path_combo = self._build_path_combo(mode="topbar")
         self.topbar_path_combo.setMinimumWidth(220)
         self.topbar_path_combo.setMaximumWidth(460)
-        self.topbar_path_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.topbar_path_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         _topbar_path_line_edit = (
             self.topbar_path_combo.lineEdit() if hasattr(self.topbar_path_combo, "lineEdit") else None
         )
         if _topbar_path_line_edit is not None:
-            _topbar_path_line_edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+            _topbar_path_line_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         layout.addWidget(self.topbar_path_combo, 0)
         layout.addSpacing(8)
 
@@ -4801,12 +4778,13 @@ class MainWindow(QMainWindow):
             return None
         if item_id == "divider":
             return self._build_topbar_divider()
-        theme = getattr(self, "_theme", None)
-        icon_color = theme.text_primary.qcolor() if theme is not None else QColor(236, 240, 245)
+        theme = getattr(self, "_theme", None) or default_theme()
+        icon_color = theme.text_primary.qcolor()
         icon = self._trim_icon_transparency(
             self._workspace_toolbar_icon(item_id, color=icon_color)
         )
         popup_specs = self._topbar_popup_specs()
+        action: QAction | None = None
         if item_id in popup_specs:
             label, factory = popup_specs[item_id]
             button = self._build_popup_button(label, factory())
@@ -4819,7 +4797,7 @@ class MainWindow(QMainWindow):
             button.setObjectName("appTopBarActionButton")
             button.setText(text)
             button.setToolTip(action.toolTip() or text)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             button.clicked.connect(
                 lambda _checked=False, iid=item_id, src=action: self._activate_topbar_action(iid, src)
             )
@@ -4829,6 +4807,8 @@ class MainWindow(QMainWindow):
             self._sync_topbar_action_button_for(button, action, item_id)
         button.setText(self.TOPBAR_COMPACT_LABELS.get(item_id, button.text()))
         self._apply_topbar_button_style(button, icon)
+        if action is not None:
+            self._sync_topbar_action_button_for(button, action, item_id)
         button.setProperty("topbarItemId", item_id)
         return button
 
@@ -4845,7 +4825,6 @@ class MainWindow(QMainWindow):
         line.setObjectName("topbarDividerLine")
         line.setFixedWidth(2)
         line.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        line.setStyleSheet("QFrame#topbarDividerLine { background: #3a3f47; border-radius: 1px; }")
         layout.addWidget(line, 0, Qt.AlignmentFlag.AlignHCenter)
         holder.setProperty("topbarItemId", "divider")
         return holder
@@ -4884,6 +4863,11 @@ class MainWindow(QMainWindow):
             button.setCheckable(action.isCheckable())
             if action.isCheckable():
                 button.setChecked(action.isChecked())
+            button.setToolTip(action.toolTip() or self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id))
+            glyph = button.findChild(QToolButton, "appTopBarGlyph")
+            if glyph is not None:
+                glyph.setCheckable(action.isCheckable())
+                glyph.setChecked(action.isChecked() if action.isCheckable() else False)
         except RuntimeError:
             pass
 
@@ -4901,6 +4885,7 @@ class MainWindow(QMainWindow):
         button.setText("")
         button.setIcon(QIcon())
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
 
         content = QWidget(button)
         content.setObjectName("appTopBarButtonContent")
@@ -4936,8 +4921,8 @@ class MainWindow(QMainWindow):
         glyphs = self.TOPBAR_NAV_FLUENT_ICONS.get(item_id)
         if glyphs is None:
             return QIcon()
-        theme = getattr(self, "_theme", None)
-        color = theme.text_primary.qcolor() if theme is not None else QColor(236, 240, 245)
+        theme = getattr(self, "_theme", None) or default_theme()
+        color = theme.text_primary.qcolor()
         primary, secondary = glyphs
         return self._trim_icon_transparency(
             self._fluent_toolbar_icon(primary, secondary, color=color)
@@ -4993,7 +4978,7 @@ class MainWindow(QMainWindow):
         button.setObjectName("appTopBarActionButton")
         button.setText("More ▾")
         button.setToolTip("More toolbar buttons")
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         button.setMenu(QMenu(button))
         # Honor the toolbar-style preference (text label vs the "more" glyph).
@@ -5197,6 +5182,15 @@ class MainWindow(QMainWindow):
         if show_warning and display_class == "low":
             self._maybe_warn_small_display()
 
+    def _set_grid_filenames_visible(self, visible: bool) -> None:
+        target_style = "gallery" if visible else "zen"
+        if self._loupe_card_style == target_style and self._effective_loupe_card_style == target_style:
+            return
+        self._loupe_card_style = target_style
+        self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, target_style)
+        self._apply_display_style_policy(show_warning=False)
+        self.statusBar().showMessage("Filenames shown" if visible else "Filenames hidden")
+
     def _post_show_display_setup(self) -> None:
         # Runs once the window is up: warn if on a small display, and re-apply the
         # policy live when moved to another screen or the resolution changes.
@@ -5285,34 +5279,39 @@ class MainWindow(QMainWindow):
                         exterior[idx] = 1
                         stack.append((nx, ny))
 
-        # Silhouette = everything that is not exterior (ink + enclosed interior).
-        result = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
-        result.fill(0)
-        fill = QColor(color)
-        for y in range(size):
-            base = y * size
-            for x in range(size):
-                if not exterior[base + x]:
-                    result.setPixelColor(x, y, fill)
-        # Carve the original strokes back out so internal detail (lines, holes,
-        # edges) reads as negative space instead of a solid blob. Glyphs whose
-        # key features are open appendages (e.g. the search magnifier handle or
-        # the picture frame) carve poorly, so they stay as clean silhouettes.
-        if primary not in self.FILLED_ICON_SKIP_CARVE:
-            carve = QPainter(result)
-            carve.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
-            carve.drawImage(0, 0, glyph_img)
-            carve.end()
-        return QIcon(QPixmap.fromImage(result))
+        def render(fill_color: QColor) -> QPixmap:
+            # Silhouette = everything that is not exterior (ink + enclosed interior).
+            result = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+            result.fill(0)
+            fill = QColor(fill_color)
+            for y in range(size):
+                base = y * size
+                for x in range(size):
+                    if not exterior[base + x]:
+                        result.setPixelColor(x, y, fill)
+            # Carve the original strokes back out so internal detail (lines,
+            # holes, edges) reads as negative space instead of a solid blob.
+            if primary not in self.FILLED_ICON_SKIP_CARVE:
+                carve = QPainter(result)
+                carve.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
+                carve.drawImage(0, 0, glyph_img)
+                carve.end()
+            return QPixmap.fromImage(result)
+
+        theme = getattr(self, "_theme", None) or default_theme()
+        icon = QIcon(render(color))
+        icon.addPixmap(render(theme.text_primary.qcolor()), QIcon.Mode.Active, QIcon.State.Off)
+        icon.addPixmap(render(theme.accent.qcolor()), QIcon.Mode.Normal, QIcon.State.On)
+        icon.addPixmap(render(theme.accent_hover.qcolor()), QIcon.Mode.Active, QIcon.State.On)
+        icon.addPixmap(render(theme.text_disabled.qcolor()), QIcon.Mode.Disabled)
+        return icon
 
     def _chrome_icon_color(self) -> QColor:
         """Muted grey used for the left rail / settings-bar glyphs (instead of
         the bright off-white default). Falls back to a constant because the theme
         is not resolved yet when these chrome buttons are first built."""
-        theme = getattr(self, "_theme", None)
-        if theme is not None:
-            return theme.text_secondary.qcolor() if not theme.is_dark else theme.text_muted.qcolor()
-        return QColor(138, 144, 154)
+        theme = getattr(self, "_theme", None) or default_theme()
+        return theme.text_secondary.qcolor() if not theme.is_dark else theme.text_muted.qcolor()
 
     def _workspace_toolbar_icon(self, item_id: str, *, color: QColor | None = None) -> QIcon:
         glyphs = self.WORKSPACE_TOOLBAR_FLUENT_ICONS.get(item_id)
@@ -5329,15 +5328,14 @@ class MainWindow(QMainWindow):
         color: QColor | None = None,
         primary_size: int = 31,
     ) -> QIcon:
-        theme = getattr(self, "_theme", None)
+        theme = getattr(self, "_theme", None) or default_theme()
         if color is None:
-            color = theme.text_secondary.qcolor() if theme is not None else QColor(218, 226, 238)
-        accent = theme.accent.qcolor() if theme is not None else QColor(25, 195, 125)
-        disabled = (
-            theme.text_muted.qcolor()
-            if theme is not None and not theme.is_dark
-            else (theme.text_disabled.qcolor() if theme is not None else QColor(116, 124, 136))
-        )
+            color = theme.text_secondary.qcolor()
+        accent = theme.accent.qcolor()
+        active = theme.text_primary.qcolor()
+        active_accent = theme.accent_hover.qcolor()
+        selected = theme.accent.qcolor()
+        disabled = theme.text_muted.qcolor() if not theme.is_dark else theme.text_disabled.qcolor()
         # The rendered glyph depends only on (primary, secondary, color, accent) —
         # never on the owning action's enabled/checked state (Qt auto-dims the
         # disabled variant). Memoize so the per-action.changed toolbar syncs are
@@ -5350,6 +5348,9 @@ class MainWindow(QMainWindow):
             secondary,
             color.rgba(),
             accent.rgba(),
+            active.rgba(),
+            active_accent.rgba(),
+            selected.rgba(),
             disabled.rgba(),
             primary_size,
         )
@@ -5390,6 +5391,9 @@ class MainWindow(QMainWindow):
 
         pixmap = render(color, accent)
         icon = QIcon(pixmap)
+        icon.addPixmap(render(active, active_accent), QIcon.Mode.Active, QIcon.State.Off)
+        icon.addPixmap(render(selected, active_accent), QIcon.Mode.Normal, QIcon.State.On)
+        icon.addPixmap(render(active_accent, selected), QIcon.Mode.Active, QIcon.State.On)
         icon.addPixmap(render(disabled, disabled), QIcon.Mode.Disabled)
         cache[cache_key] = icon
         return icon
@@ -5432,9 +5436,9 @@ class MainWindow(QMainWindow):
             self._rebuild_topbar_action_stack()
 
     def _refresh_left_sidebar_icons(self) -> None:
-        theme = getattr(self, "_theme", None)
-        accent = theme.accent.qcolor() if theme is not None else QColor("#5b9cff")
-        muted = theme.text_muted.qcolor() if theme is not None else QColor("#8390a2")
+        theme = getattr(self, "_theme", None) or default_theme()
+        accent = theme.accent.qcolor()
+        muted = theme.text_muted.qcolor()
         face_header = getattr(self, "face_groups_header", None)
         if face_header is not None:
             face_header.set_icon(QIcon(sidebar_people_icon_pixmap(21, accent.name())))
@@ -5456,16 +5460,8 @@ class MainWindow(QMainWindow):
         if tabs is not None and tabs.count() >= 2:
             selected = tabs.currentIndex()
             if isinstance(tabs, CompactIconTabBar):
-                selected_text = (
-                    theme.text_primary.qcolor()
-                    if theme is not None
-                    else QColor("#f3f6fb")
-                )
-                hover_text = (
-                    theme.text_secondary.qcolor()
-                    if theme is not None
-                    else QColor("#b8c2d0")
-                )
+                selected_text = theme.text_primary.qcolor()
+                hover_text = theme.text_secondary.qcolor()
                 tabs.set_text_colors(muted, selected_text, hover_text)
             tabs.setTabIcon(
                 0,
@@ -5491,7 +5487,7 @@ class MainWindow(QMainWindow):
         button.setToolTip(button.toolTip() or text)
         button.setProperty("toolbarItemId", item_id)
         button.setCursor(Qt.CursorShape.ArrowCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         if style == "text":
             button.setObjectName("workspacePresetsButton")
             button.setText(text)
@@ -5522,7 +5518,7 @@ class MainWindow(QMainWindow):
         button.setToolTip(tooltip)
         button.setAutoRaise(True)
         button.setCursor(Qt.CursorShape.ArrowCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.setFixedSize(24, 24)
         return button
 
@@ -5537,7 +5533,7 @@ class MainWindow(QMainWindow):
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setToolTip(tooltip)
         button.setAutoRaise(True)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.setFixedSize(30, 30)
         return button
 
@@ -5608,7 +5604,7 @@ class MainWindow(QMainWindow):
             button.setText("")
             button.clicked.connect(lambda _checked=False, source=action: source.trigger())
             button.setAutoRaise(True)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             button.setFixedSize(30, 30)
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
@@ -5812,7 +5808,7 @@ class MainWindow(QMainWindow):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             button.setToolTip(tooltip)
             button.setAutoRaise(True)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             button.setFixedSize(34, 34)
             self._left_settings_buttons.append((button, 20))
             if handler is not None:
@@ -5851,7 +5847,7 @@ class MainWindow(QMainWindow):
             swatch.setProperty("aiColor", color_hex)
             swatch.setToolTip(f"Filter {label_text}")
             swatch.setCheckable(True)
-            swatch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            swatch.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             swatch.setFixedSize(16, 16)
             swatch.clicked.connect(lambda _checked=False, selected=tag_key: self._toggle_ai_activity_tag_filter(selected))
 
@@ -5860,7 +5856,7 @@ class MainWindow(QMainWindow):
             label.setText(label_text)
             label.setToolTip(f"Filter {label_text}")
             label.setCheckable(True)
-            label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            label.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             label.setAutoRaise(True)
             label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             label.clicked.connect(lambda _checked=False, selected=tag_key: self._toggle_ai_activity_tag_filter(selected))
@@ -6788,23 +6784,16 @@ class MainWindow(QMainWindow):
         label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
         badge.setToolTip(f"Remove {label}")
         badge.setCursor(Qt.CursorShape.PointingHandCursor)
-        badge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        badge.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         badge.setFixedSize(12, 12)
         icon = QIcon(str(self._TOOLBAR_EDIT_BADGE_ICON))
+        badge.setProperty("assetIcon", not icon.isNull())
         if icon.isNull():
             # Fallback if the asset goes missing: the old styled text badge.
             badge.setText("−")
-            badge.setStyleSheet(
-                "QToolButton#toolbarEditRemoveBadge { background: #d64545; color: #ffffff;"
-                " border: 1px solid #1b1c1e; border-radius: 6px; padding: 0px;"
-                " font-size: 10px; font-weight: 700; }"
-            )
         else:
             badge.setIcon(icon)
             badge.setIconSize(QSize(12, 12))
-            badge.setStyleSheet(
-                "QToolButton#toolbarEditRemoveBadge { background: transparent; border: none; padding: 0px; }"
-            )
         badge.clicked.connect(lambda _checked=False, s=slot_index: self._remove_toolbar_slot_inplace(s))
         self._position_toolbar_edit_badge(badge, widget)
         badge.show()
@@ -6842,10 +6831,6 @@ class MainWindow(QMainWindow):
         """A plain dashed bounding box marking one grid cell (empty or occupied)."""
         frame = QFrame(page)
         frame.setObjectName("toolbarEditCell")
-        frame.setStyleSheet(
-            "QFrame#toolbarEditCell { background: transparent;"
-            " border: 1px dashed #333842; border-radius: 8px; }"
-        )
         frame.setGeometry(self._toolbar_edit_cell_rect(slot_index, cell_w, page_h))
         frame.lower()
         frame.show()
@@ -7140,10 +7125,6 @@ class MainWindow(QMainWindow):
         if highlight is None:
             highlight = QFrame(page)
             highlight.setObjectName("toolbarEditDropTarget")
-            highlight.setStyleSheet(
-                "QFrame#toolbarEditDropTarget { background: rgba(61,124,255,45);"
-                " border: 1px solid #3d7cff; border-radius: 8px; }"
-            )
             self._toolbar_edit_drop_highlight = highlight
         elif highlight.parentWidget() is not page:
             highlight.setParent(page)
@@ -7267,24 +7248,27 @@ class MainWindow(QMainWindow):
             marker = QFrame(hud)
             marker.setObjectName("toolbarEditHudMarker")
             marker.setFixedSize(4, 24)
+            marker.setCursor(Qt.CursorShape.OpenHandCursor)
+            marker.setToolTip("Drag to move the editing toolbar")
+            marker.installEventFilter(self)
             hint = QLabel("Editing toolbar", hud)
             hint.setObjectName("toolbarEditHudHint")
             add_btn = QPushButton("Add", hud)
             add_btn.setObjectName("toolbarEditHudAdd")
             add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            add_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            add_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             add_btn.clicked.connect(
                 lambda _checked=False: self._open_toolbar_item_picker(self._toolbar_edit_active_mode)
             )
             reset_btn = QPushButton("Reset", hud)
             reset_btn.setObjectName("toolbarEditHudReset")
             reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            reset_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            reset_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             reset_btn.clicked.connect(self._reset_inplace_toolbar_edit)
             done_btn = QPushButton("Done", hud)
             done_btn.setObjectName("toolbarEditHudDone")
             done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            done_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            done_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             done_btn.clicked.connect(self._end_inplace_toolbar_edit)
             hud_layout.addWidget(marker, 0, Qt.AlignmentFlag.AlignVCenter)
             hud_layout.addWidget(hint)
@@ -7292,6 +7276,7 @@ class MainWindow(QMainWindow):
             hud_layout.addWidget(reset_btn)
             hud_layout.addWidget(done_btn)
             self._toolbar_edit_hud_add_button = add_btn
+            self._toolbar_edit_hud_drag_handle = marker
             self._toolbar_edit_hud = hud
         elif hud.parentWidget() is not parent:
             hud.setParent(parent)
@@ -7307,20 +7292,83 @@ class MainWindow(QMainWindow):
         if parent is None:
             return
         hud.adjustSize()
-        # Center the edit-mode banner directly below the top bar so the state is
-        # unmistakable without covering any editable cells.
-        top = 8
-        bar = getattr(self, "app_top_bar", None)
-        if bar is not None and bar.parentWidget() is parent:
-            top = bar.geometry().bottom() + 10
-        x = (parent.width() - hud.width()) // 2
-        hud.move(max(8, x), max(8, top))
+        position = getattr(self, "_toolbar_edit_hud_user_position", None)
+        if position is None:
+            # Center the edit-mode banner directly below the top bar until the
+            # user moves it for the first time.
+            top = 8
+            bar = getattr(self, "app_top_bar", None)
+            if bar is not None and bar.parentWidget() is parent:
+                top = bar.geometry().bottom() + 10
+            position = QPoint((parent.width() - hud.width()) // 2, top)
+        position = MainWindow._clamp_toolbar_edit_hud_position(hud, parent, position)
+        hud.move(position)
+        if getattr(self, "_toolbar_edit_hud_user_position", None) is not None:
+            self._toolbar_edit_hud_user_position = QPoint(position)
         hud.raise_()
         picker = getattr(self, "_toolbar_item_picker_dialog", None)
         if picker is not None and picker.isVisible():
             picker.sync_geometry()
 
+    @staticmethod
+    def _clamp_toolbar_edit_hud_position(
+        hud: QWidget,
+        parent: QWidget,
+        position: QPoint,
+    ) -> QPoint:
+        margin = 8
+        max_x = max(margin, parent.width() - hud.width() - margin)
+        max_y = max(margin, parent.height() - hud.height() - margin)
+        return QPoint(
+            max(margin, min(position.x(), max_x)),
+            max(margin, min(position.y(), max_y)),
+        )
+
+    def _handle_toolbar_edit_hud_drag(self, event) -> bool:
+        hud = self._toolbar_edit_hud
+        handle = self._toolbar_edit_hud_drag_handle
+        if hud is None or handle is None:
+            return False
+        event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            local_position = event.position().toPoint()
+            self._toolbar_edit_hud_drag_offset = handle.mapTo(hud, local_position)
+            handle.setCursor(Qt.CursorShape.ClosedHandCursor)
+            hud.raise_()
+            return True
+        if (
+            event_type == QEvent.Type.MouseMove
+            and self._toolbar_edit_hud_drag_offset is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            parent = hud.parentWidget()
+            if parent is None:
+                return True
+            parent_position = parent.mapFromGlobal(event.globalPosition().toPoint())
+            candidate = parent_position - self._toolbar_edit_hud_drag_offset
+            position = MainWindow._clamp_toolbar_edit_hud_position(hud, parent, candidate)
+            hud.move(position)
+            self._toolbar_edit_hud_user_position = QPoint(position)
+            picker = getattr(self, "_toolbar_item_picker_dialog", None)
+            if picker is not None and picker.isVisible():
+                picker.sync_geometry()
+            return True
+        if event_type == QEvent.Type.MouseButtonRelease and self._toolbar_edit_hud_drag_offset is not None:
+            self._toolbar_edit_hud_drag_offset = None
+            handle.setCursor(Qt.CursorShape.OpenHandCursor)
+            return True
+        return False
+
     def _reset_inplace_toolbar_edit(self) -> None:
+        confirmation = QMessageBox.warning(
+            self,
+            "Reset Toolbar Layout?",
+            "This will replace your customized toolbar buttons and positions with the defaults.",
+            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirmation != QMessageBox.StandardButton.Reset:
+            return
         mode = self._toolbar_edit_active_mode or "manual"
         self._end_inplace_toolbar_edit()
         per_mode = {
@@ -7347,6 +7395,9 @@ class MainWindow(QMainWindow):
         self._toolbar_edit_drag_widget = None
         self._toolbar_edit_drag_start = None
         self._toolbar_edit_dragging = False
+        self._toolbar_edit_hud_drag_offset = None
+        if self._toolbar_edit_hud_drag_handle is not None:
+            self._toolbar_edit_hud_drag_handle.setCursor(Qt.CursorShape.OpenHandCursor)
         self._toolbar_edit_target_slot = -1
         self._toolbar_edit_drag_slot = -1
         self._toolbar_edit_visible_cell_count = 0
@@ -7708,7 +7759,7 @@ class MainWindow(QMainWindow):
         if not isinstance(base_text, str) or not base_text:
             base_text = action.text().replace("&", "")
         shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
-        hinted_text = f"{base_text} ({shortcut_text})" if shortcut_text else base_text
+        hinted_text = format_action_tooltip(base_text, shortcut_text)
         action.setToolTip(hinted_text)
         action.setStatusTip(hinted_text)
 
@@ -7751,7 +7802,6 @@ class MainWindow(QMainWindow):
         register_action("review.delete_selection", self.actions.delete_selection, label="Delete Selection", section="Review")
         register_action("view.grid_view", self.actions.grid_view, label="Grid View", section="View")
         register_action("view.details_view", self.actions.details_view, label="Details View", section="View")
-        register_action("view.details_preview_pane", self.actions.details_preview_pane, label="Details Preview Pane", section="View")
         register_action("view.zen_mode", self.actions.zen_mode, label="Zen Mode", section="View")
         register_action("view.ui_prototype", self.actions.open_ui_prototype, label="Open UI Prototype", section="View")
         register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
@@ -8237,8 +8287,6 @@ class MainWindow(QMainWindow):
             add_action_command("review.auto_advance", self.actions.auto_advance, section="Review", subtitle=self._toggle_state_text(self._auto_advance_enabled), keywords=("toggle auto advance",))
             add_action_command("view.grid_view", self.actions.grid_view, section="View", subtitle="Current view" if self._browser_view_mode == "grid" else "", keywords=("grid", "thumbnail grid", "tiles"))
             add_action_command("view.details_view", self.actions.details_view, section="View", subtitle="Current view" if self._browser_view_mode == "details" else "", keywords=("details", "list view", "file explorer"))
-            add_action_command("view.details_preview_pane", self.actions.details_preview_pane, section="View", subtitle=self._toggle_state_text(self._details_preview_pane_enabled), keywords=("preview pane", "details preview"))
-            add_action_command("view.details_preview_on_hover", self.actions.details_preview_on_hover, section="View", subtitle=self._toggle_state_text(self._details_preview_on_hover_enabled), keywords=("preview on hover", "details hover preview"))
             add_action_command("view.details_density_compact", self.actions.details_density_compact, section="View", subtitle="Current density" if self._details_row_density == "compact" else "", keywords=("details density", "compact rows", "row density"))
             add_action_command("view.details_density_comfortable", self.actions.details_density_comfortable, section="View", subtitle="Current density" if self._details_row_density == "comfortable" else "", keywords=("details density", "comfortable rows", "row density"))
             add_action_command("view.details_next_unreviewed", self.actions.details_next_unreviewed, section="View", keywords=("details next unreviewed", "jump unreviewed"))
@@ -8990,9 +9038,6 @@ class MainWindow(QMainWindow):
         os._exit(0)
 
     def _restore_details_view_state(self) -> None:
-        splitter_state = self._settings.value(self.DETAILS_SPLITTER_STATE_KEY, QByteArray())
-        if isinstance(splitter_state, QByteArray):
-            self.details_view.restore_splitter_state(splitter_state)
         header_state = self._settings.value(self.DETAILS_HEADER_STATE_KEY, QByteArray())
         if isinstance(header_state, QByteArray):
             self.details_view.restore_header_state(header_state)
@@ -9007,7 +9052,6 @@ class MainWindow(QMainWindow):
     def _save_details_view_state(self) -> None:
         if getattr(self, "details_view", None) is None:
             return
-        self._settings.setValue(self.DETAILS_SPLITTER_STATE_KEY, self.details_view.save_splitter_state())
         self._settings.setValue(self.DETAILS_HEADER_STATE_KEY, self.details_view.save_header_state())
         sort_column, sort_order = self.details_view.sort_state()
         self._settings.setValue(self.DETAILS_SORT_COLUMN_KEY, sort_column)
@@ -10704,6 +10748,12 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         try:
+            if (
+                self._toolbar_edit_mode
+                and watched is getattr(self, "_toolbar_edit_hud_drag_handle", None)
+                and self._handle_toolbar_edit_hud_drag(event)
+            ):
+                return True
             # In-place edit mode: mouse presses/moves on lifted items drive the
             # drag-to-reorder; everything else that would trigger the item's
             # normal action is swallowed while the user is arranging the bar.
@@ -13021,20 +13071,6 @@ class MainWindow(QMainWindow):
             self.grid.schedule_visible_thumbnail_requests()
         self._update_action_states()
 
-    def _handle_details_preview_toggled(self, checked: bool) -> None:
-        self._details_preview_pane_enabled = bool(checked)
-        self._settings.setValue(self.DETAILS_PREVIEW_PANE_KEY, self._details_preview_pane_enabled)
-        self.details_view.set_preview_visible(self._details_preview_pane_enabled)
-        self._update_action_states()
-
-    def _handle_details_preview_on_hover_toggled(self, checked: bool) -> None:
-        self._details_preview_on_hover_enabled = bool(checked)
-        self._settings.setValue(self.DETAILS_PREVIEW_ON_HOVER_KEY, self._details_preview_on_hover_enabled)
-        self.details_view.set_preview_on_hover_enabled(self._details_preview_on_hover_enabled)
-        state = "on" if self._details_preview_on_hover_enabled else "off"
-        self.statusBar().showMessage(f"Details preview on hover {state}")
-        self._update_action_states()
-
     def _set_details_row_density(self, density: str) -> None:
         normalized = self._normalize_details_row_density(density)
         self._details_row_density = normalized
@@ -13388,10 +13424,6 @@ class MainWindow(QMainWindow):
             self.actions.grid_view.setChecked(self._browser_view_mode == "grid")
         with QSignalBlocker(self.actions.details_view):
             self.actions.details_view.setChecked(self._browser_view_mode == "details")
-        with QSignalBlocker(self.actions.details_preview_pane):
-            self.actions.details_preview_pane.setChecked(self._details_preview_pane_enabled)
-        with QSignalBlocker(self.actions.details_preview_on_hover):
-            self.actions.details_preview_on_hover.setChecked(self._details_preview_on_hover_enabled)
         with QSignalBlocker(self.actions.details_density_compact):
             self.actions.details_density_compact.setChecked(self._details_row_density == "compact")
         with QSignalBlocker(self.actions.details_density_comfortable):
@@ -13429,8 +13461,6 @@ class MainWindow(QMainWindow):
         self.actions.show_hidden_folders.setEnabled(True)
         self.actions.grid_view.setEnabled(True)
         self.actions.details_view.setEnabled(True)
-        self.actions.details_preview_pane.setEnabled(self._browser_view_mode == "details")
-        self.actions.details_preview_on_hover.setEnabled(self._browser_view_mode == "details" and self._details_preview_pane_enabled)
         self.actions.details_density_compact.setEnabled(True)
         self.actions.details_density_comfortable.setEnabled(True)
         self.actions.details_next_unreviewed.setEnabled(bool(self._records))
@@ -25300,6 +25330,9 @@ class MainWindow(QMainWindow):
         self._decision_store.move_annotation(self._session_id, record.path, moved_record, annotation)
 
     def _show_grid_context_menu(self, index: int, global_pos) -> None:
+        if index < 0:
+            self._build_empty_grid_context_menu().exec(global_pos)
+            return
         current_record = self._record_at(index)
         if current_record is not None and current_record.is_folder:
             menu = QMenu(self)
@@ -25532,6 +25565,81 @@ class MainWindow(QMainWindow):
         if chosen == open_with_action:
             open_with_dialog(display_path)
             return
+
+    def _build_empty_grid_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.setObjectName("emptyGridContextMenu")
+
+        menu.addAction(self.actions.clear_filters)
+        clear_search = menu.addAction("Clear Search")
+        clear_search.setEnabled(
+            bool(self._filter_query.search_text.strip() or self._pending_search_text.strip())
+        )
+        clear_search.triggered.connect(self._clear_search_from_workspace_menu)
+
+        menu.addSeparator()
+        menu.addAction(self.actions.refresh_folder)
+
+        menu.addSeparator()
+        select_all = menu.addAction("Select All")
+        select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+        select_all.setShortcutVisibleInContextMenu(True)
+        visible_count = self.grid.visible_item_count()
+        selected_count = self.grid.selected_count()
+        select_all.setEnabled(visible_count > 0 and selected_count < visible_count)
+        select_all.triggered.connect(self.grid.select_all)
+
+        deselect_all = menu.addAction("Deselect All")
+        deselect_all.setEnabled(selected_count > 0)
+        deselect_all.triggered.connect(lambda: self.grid.clear_selection(keep_current=True))
+
+        menu.addSeparator()
+        view_menu = QMenu("View", menu)
+        menu.addMenu(view_menu)
+        show_filenames = view_menu.addAction("Show Filenames")
+        show_filenames.setCheckable(True)
+        show_filenames.setChecked(self._effective_loupe_card_style != "zen")
+        show_filenames.setEnabled(
+            self._browser_view_mode == "grid" and "gallery" in self._allowed_card_styles()
+        )
+        show_filenames.toggled.connect(self._set_grid_filenames_visible)
+        view_menu.addSeparator()
+        view_menu.addAction(self.actions.grid_view)
+        view_menu.addAction(self.actions.details_view)
+
+        sort_menu = QMenu("Sort By", menu)
+        menu.addMenu(sort_menu)
+        sort_group = QActionGroup(sort_menu)
+        sort_group.setExclusive(True)
+        for mode in SortMode:
+            sort_action = sort_menu.addAction(mode.value)
+            sort_action.setCheckable(True)
+            sort_group.addAction(sort_action)
+            sort_action.setChecked(self._sort_mode == mode)
+            if mode == SortMode.AI_RANK:
+                sort_action.setEnabled(self._ai_bundle is not None)
+            elif mode == SortMode.AI_WOW:
+                sort_action.setEnabled(bool(self._winner_scores_by_path))
+            sort_action.triggered.connect(
+                lambda _checked=False, selected=mode: self._set_sort_mode(selected)
+            )
+
+        menu.addSeparator()
+        open_folder_label = "Open Current Folder In File Explorer" if os.name == "nt" else "Open Current Folder In File Manager"
+        open_folder = menu.addAction(open_folder_label)
+        open_folder.setEnabled(bool(self._current_folder and os.path.isdir(self._current_folder)))
+        open_folder.triggered.connect(self._open_current_folder_in_file_manager)
+        return menu
+
+    def _clear_search_from_workspace_menu(self) -> None:
+        self._handle_search_text_changed("", source="context_menu")
+        self._search_apply_timer.stop()
+        self._commit_search_text_filter()
+        self.statusBar().showMessage("Cleared search")
+
+    def _open_current_folder_in_file_manager(self) -> None:
+        if self._current_folder and os.path.isdir(self._current_folder):
+            open_in_file_explorer(self._current_folder)
 
     def _unique_destination(self, directory: str, filename: str) -> str:
         return unique_destination(directory, filename)

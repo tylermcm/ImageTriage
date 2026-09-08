@@ -108,8 +108,6 @@ def build_main_menu_bar(
     layout_menu.addSeparator()
     layout_menu.addAction(actions.grid_view)
     layout_menu.addAction(actions.details_view)
-    layout_menu.addAction(actions.details_preview_pane)
-    layout_menu.addAction(actions.details_preview_on_hover)
     details_density_menu = layout_menu.addMenu("Details Row Density")
     details_density_menu.addAction(actions.details_density_comfortable)
     details_density_menu.addAction(actions.details_density_compact)
