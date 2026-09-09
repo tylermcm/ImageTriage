@@ -53,7 +53,10 @@ from .subject_masks import SubjectMaskWarmTask
 
 from .editor_copy import EditorCopyService
 from .editor_render import CpuEditorRenderBackend, EditorRenderService
+from .ui.canvas_overlay import OverlayStack
+from .ui.crop_overlay import CropOverlay
 from .ui.mask_overlay import MaskOverlay
+from .ui.retouch_overlay import RetouchOverlay
 from .ui.photo_editor_panel import EditRecipe, PhotoEditorPanel
 from .ui import preview_studio as studio
 from .ui.theme import ThemePalette, default_theme
@@ -590,76 +593,6 @@ class HistogramWidget(QWidget):
         painter.drawPath(_histogram_path(self._stats.histogram_blue, plot_rect, max_value))
         painter.setPen(QPen(self._theme.text_primary.qcolor(), 1.5))
         painter.drawPath(_histogram_path(self._stats.histogram_luma, plot_rect, max_value))
-
-
-class _ToolPopout(QWidget):
-    """A small frameless floating window that hosts one tool's controls, opened
-    from the studio tool rail. Draggable by its header; closes to its button."""
-
-    closed = Signal()
-    _HEADER_H = 34
-
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
-        self.setObjectName("toolPopout")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(
-            "#toolPopout{background:#20242b;border:1px solid rgba(255,255,255,0.10);"
-            "border-radius:12px;}"
-            "#toolPopoutHeader{background:rgba(255,255,255,0.04);"
-            "border-top-left-radius:12px;border-top-right-radius:12px;}"
-            "#toolPopoutTitle{color:#e9edf2;font-weight:600;}"
-            "#toolPopoutClose{color:#9aa4b1;border:none;background:transparent;"
-            "font-size:14px;} #toolPopoutClose:hover{color:#e9edf2;}"
-        )
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        header = QWidget(self)
-        header.setObjectName("toolPopoutHeader")
-        header.setFixedHeight(self._HEADER_H)
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(12, 0, 6, 0)
-        title_label = QLabel(title, header)
-        title_label.setObjectName("toolPopoutTitle")
-        close_button = QPushButton("✕", header)
-        close_button.setObjectName("toolPopoutClose")
-        close_button.setFixedSize(24, 24)
-        close_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        close_button.clicked.connect(self.close)
-        header_layout.addWidget(title_label, 1)
-        header_layout.addWidget(close_button)
-        outer.addWidget(header)
-        self._content_holder = QWidget(self)
-        self._content_layout = QVBoxLayout(self._content_holder)
-        self._content_layout.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self._content_holder, 1)
-        self.setMinimumWidth(300)
-        self._drag_offset: QPoint | None = None
-
-    def set_content(self, widget: QWidget) -> None:
-        self._content_layout.addWidget(widget)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= self._HEADER_H:
-            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-        else:
-            self._drag_offset = None
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_offset)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        self._drag_offset = None
-        super().mouseReleaseEvent(event)
-
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        self.closed.emit()
-        super().closeEvent(event)
 
 
 class FullScreenPreview(QDialog):
@@ -1207,18 +1140,35 @@ class FullScreenPreview(QDialog):
                 background: #2e2e2e; border: 1px solid #1c1c1c;
                 border-radius: 6px;
             }}
-            QFrame#editorTabBar {{
-                background: #232323; border: none; border-bottom: 1px solid #1a1a1a;
-                border-top-left-radius: 6px; border-top-right-radius: 6px;
+            QFrame#editorToolRail {{
+                background: #232323; border: none; border-right: 1px solid #1a1a1a;
+                border-top-left-radius: 6px; border-bottom-left-radius: 6px;
             }}
-            QToolButton#editorTab {{
-                background: transparent; border: none; color: #9a9a9a;
-                padding: 7px 11px; font-size: 11px; font-weight: 600;
-                border-top-left-radius: 4px; border-top-right-radius: 4px;
+            QFrame#editorToolRailDivider {{
+                background: #1a1a1a; border: none; margin-left: 7px; margin-right: 7px;
+            }}
+            QToolButton#editorToolRailButton {{
+                background: transparent; border: none; border-radius: 5px;
+                min-height: 0px; padding: 0px;
+            }}
+            QToolButton#editorToolRailButton:hover {{ background: #363636; }}
+            QToolButton#editorToolRailButton:checked {{
+                background: #2e2e2e; border-left: 2px solid #1473e6;
+                border-top-left-radius: 0px; border-bottom-left-radius: 0px;
+            }}
+            QToolButton#editorToolRailButton:disabled {{ background: transparent; }}
+            QWidget#photoEditorColumn {{ background: #2e2e2e; }}
+            QPushButton#editorSegmentButton {{
+                background: #3a3a3a; border: 1px solid #303030; color: #b8b8b8;
+                padding: 4px 2px; border-radius: 4px; font-size: 10px;
                 min-height: 0px;
             }}
-            QToolButton#editorTab:hover {{ color: #d9d9d9; }}
-            QToolButton#editorTab:checked {{ background: #2e2e2e; color: #f2f2f2; }}
+            QPushButton#editorSegmentButton:hover {{ background: #444444; color: #e6e6e6; }}
+            QPushButton#editorSegmentButton:checked {{
+                background: #1473e6; border-color: #1473e6; color: #ffffff;
+            }}
+            QPushButton#editorSegmentButton:disabled {{ color: #6a6a6a; }}
+            QWidget#colorWheel {{ background: transparent; }}
             QFrame#photoEditorDocBar {{ background: #2e2e2e; border-bottom: 1px solid #232323; }}
             QLabel#photoEditorSubtitle {{ color: #a0a0a0; font-size: 11px; }}
             QStackedWidget#photoEditorStack {{ background: #2e2e2e; }}
@@ -1669,26 +1619,42 @@ class FullScreenPreview(QDialog):
         self._settings.setValue(self.INSPECTOR_VISIBLE_KEY, shown)
         self._sync_mask_overlay()
 
-    def _sync_mask_overlay(self) -> None:
-        """Push the editor panel's mask state onto the focused pane's overlay.
-        The overlay goes inert (invisible, mouse-transparent) whenever the
-        editor rail is hidden or the Masks tab is not active."""
-        overlay = getattr(self, "_mask_overlay", None)
+    def _sync_editor_overlays(self) -> None:
+        """Push the editor panel's state onto the focused pane's overlays.
+
+        Every overlay goes inert whenever the editor rail is hidden, and at
+        most one of them takes the mouse — decided by the panel's active tool
+        rather than by page indices duplicated over here.
+        """
+        stack = getattr(self, "_overlay_stack", None)
         panel = getattr(self, "photo_editor_panel", None)
-        if overlay is None or panel is None:
+        if stack is None or panel is None:
             return
-        state = panel.mask_overlay_state()
+        states = panel.overlay_states()
         rail = getattr(self, "_studio_rail", None)
-        if rail is None or rail.isHidden():
-            state["interactive"] = False
-            state["show_overlay"] = False
-            state["create_mode"] = None
-            state["scene_pick"] = False
-            state["point_pick"] = False
-            state["busy_message"] = None
+        hidden = rail is None or rail.isHidden()
+        if hidden:
+            mask_state = states["mask"]
+            mask_state["interactive"] = False
+            mask_state["show_overlay"] = False
+            mask_state["create_mode"] = None
+            mask_state["scene_pick"] = False
+            mask_state["point_pick"] = False
+            mask_state["busy_message"] = None
+            states["crop"]["interactive"] = False
+            states["retouch"]["interactive"] = False
         if 0 <= self._focused_slot < len(self._panes):
-            overlay.attach_to(self._panes[self._focused_slot].image_label)
-        overlay.set_state(**state)
+            stack.attach(self._panes[self._focused_slot].image_label)
+        stack.set_view_transform(panel.view_transform())
+        for name, overlay in stack:
+            overlay.set_state(**states[name])
+        # set_state is allowed to set its own pass-through (MaskOverlay does),
+        # so the stack's arbitration runs last and always wins.
+        stack.set_active(None if hidden else panel.active_canvas_tool())
+
+    # The mask overlay was the only overlay for a long time; keep the old name
+    # so every existing caller and test keeps working.
+    _sync_mask_overlay = _sync_editor_overlays
 
     def _build_studio_toolbar(self) -> QFrame:
         toolbar = QFrame()
@@ -1719,26 +1685,8 @@ class FullScreenPreview(QDialog):
         layout.addWidget(self._studio_group_label("Edit"))
         layout.addWidget(self.next_edit_button)
         layout.addWidget(self.photoshop_button)
-        self.background_tool_button = QPushButton("  Background")
-        self.background_tool_button.setObjectName("studioToolButton")
-        self.background_tool_button.setCheckable(True)
-        self.background_tool_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.background_tool_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.background_tool_button.setToolTip("Background — blur or remove")
-        self.background_tool_button.setIcon(self._background_tool_icon())
-        self.background_tool_button.setIconSize(QSize(18, 18))
-        self.background_tool_button.clicked.connect(self._toggle_background_tool)
-        layout.addWidget(self.background_tool_button)
-        self.lens_blur_tool_button = QPushButton("  Lens Blur")
-        self.lens_blur_tool_button.setObjectName("studioToolButton")
-        self.lens_blur_tool_button.setCheckable(True)
-        self.lens_blur_tool_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.lens_blur_tool_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.lens_blur_tool_button.setToolTip("Lens Blur — depth-of-field")
-        self.lens_blur_tool_button.setIcon(self._lens_blur_tool_icon())
-        self.lens_blur_tool_button.setIconSize(QSize(18, 18))
-        self.lens_blur_tool_button.clicked.connect(self._toggle_lens_blur_tool)
-        layout.addWidget(self.lens_blur_tool_button)
+        # Background and Lens Blur used to open floating popouts from here; they
+        # are rail pages in the editor panel now.
         layout.addWidget(self.command_palette_button)
         layout.addStretch(1)
 
@@ -1771,7 +1719,8 @@ class FullScreenPreview(QDialog):
         """
         rail = QFrame()
         rail.setObjectName("rail")
-        rail.setFixedWidth(336)
+        # 336px of content plus the editor panel's 46px tool rail.
+        rail.setFixedWidth(336 + PhotoEditorPanel.RAIL_WIDTH)
         layout = QVBoxLayout(rail)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
@@ -1798,7 +1747,26 @@ class FullScreenPreview(QDialog):
             self.photo_editor_panel.handle_overlay_subject_candidate_toggled
         )
         self._mask_overlay.edit_committed.connect(self.photo_editor_panel.handle_overlay_commit)
-        self.photo_editor_panel.mask_overlay_changed.connect(self._sync_mask_overlay)
+
+        # Crop and retouch share the same image label. Z-order and mouse
+        # ownership belong to the stack, not to whichever overlay attached or
+        # set its state last.
+        self._crop_overlay = CropOverlay()
+        self._crop_overlay.crop_changed.connect(self.photo_editor_panel.handle_crop_changed)
+        self._crop_overlay.crop_committed.connect(self.photo_editor_panel.handle_crop_committed)
+        self._retouch_overlay = RetouchOverlay()
+        self._retouch_overlay.spot_added.connect(self.photo_editor_panel.handle_spot_added)
+        self._retouch_overlay.spot_moved.connect(self.photo_editor_panel.handle_spot_moved)
+        self._retouch_overlay.spot_removed.connect(self.photo_editor_panel.handle_spot_removed)
+        self._retouch_overlay.spot_committed.connect(self.photo_editor_panel.handle_spot_committed)
+        self._overlay_stack = OverlayStack(
+            {
+                "mask": self._mask_overlay,
+                "crop": self._crop_overlay,
+                "retouch": self._retouch_overlay,
+            }
+        )
+        self.photo_editor_panel.mask_overlay_changed.connect(self._sync_editor_overlays)
 
         self._studio_cards = []
         self._studio_segments = []
@@ -1869,86 +1837,6 @@ class FullScreenPreview(QDialog):
         # Reflect initial state into the freshly-built Studio controls
         # (gray-outs, segmented selections, card summaries).
         self._sync_preview_controls()
-
-    @staticmethod
-    def _background_tool_icon() -> QIcon:
-        pixmap = QPixmap(48, 48)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        # A soft, out-of-focus backdrop bar behind a crisp subject shape.
-        painter.setBrush(QColor(120, 130, 145, 150))
-        painter.drawRoundedRect(7, 11, 34, 13, 6, 6)
-        painter.setBrush(QColor(233, 237, 242))
-        painter.drawEllipse(19, 15, 10, 10)          # head
-        painter.drawRoundedRect(15, 26, 18, 15, 7, 7)  # shoulders
-        painter.end()
-        return QIcon(pixmap)
-
-    def _toggle_background_tool(self) -> None:
-        window = self._ensure_background_tool_window()
-        if window.isVisible():
-            window.hide()
-            self.background_tool_button.setChecked(False)
-            return
-        # Drop the popout just under its toolbar button.
-        window.adjustSize()
-        button = self.background_tool_button
-        window.move(button.mapToGlobal(QPoint(0, button.height() + 6)))
-        window.show()
-        window.raise_()
-        self.background_tool_button.setChecked(True)
-
-    def _ensure_background_tool_window(self) -> QWidget:
-        window = getattr(self, "_background_tool_window", None)
-        if window is not None:
-            return window
-        window = _ToolPopout("Background", self)
-        window.closed.connect(lambda: self.background_tool_button.setChecked(False))
-        window.set_content(self.photo_editor_panel.build_background_tool(window))
-        self._background_tool_window = window
-        return window
-
-    @staticmethod
-    def _lens_blur_tool_icon() -> QIcon:
-        pixmap = QPixmap(48, 48)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        # A crisp aperture ring with a soft halo — depth-of-field shorthand.
-        painter.setBrush(QColor(120, 130, 145, 130))
-        painter.drawEllipse(6, 6, 36, 36)
-        painter.setBrush(QColor(233, 237, 242))
-        painter.drawEllipse(15, 15, 18, 18)
-        painter.setBrush(QColor(120, 130, 145, 200))
-        painter.drawEllipse(21, 21, 6, 6)
-        painter.end()
-        return QIcon(pixmap)
-
-    def _toggle_lens_blur_tool(self) -> None:
-        window = self._ensure_lens_blur_tool_window()
-        if window.isVisible():
-            window.hide()
-            self.lens_blur_tool_button.setChecked(False)
-            return
-        window.adjustSize()
-        button = self.lens_blur_tool_button
-        window.move(button.mapToGlobal(QPoint(0, button.height() + 6)))
-        window.show()
-        window.raise_()
-        self.lens_blur_tool_button.setChecked(True)
-
-    def _ensure_lens_blur_tool_window(self) -> QWidget:
-        window = getattr(self, "_lens_blur_tool_window", None)
-        if window is not None:
-            return window
-        window = _ToolPopout("Lens Blur", self)
-        window.closed.connect(lambda: self.lens_blur_tool_button.setChecked(False))
-        window.set_content(self.photo_editor_panel.build_lens_blur_tool(window))
-        self._lens_blur_tool_window = window
-        return window
 
     def set_browse_context(
         self,
@@ -3710,12 +3598,30 @@ class FullScreenPreview(QDialog):
             self._render_pane(slot)
             return
         base_key = self._image_cache_key(slot, image)
-        source_key = (*base_key, "editor", self._editor_recipe_version)
+        source_key = (*base_key, *self._editor_state_key())
         self._editor_render_service.request(
             image, self._editor_recipe, masked, base_key=base_key, source_key=source_key,
             background=self._editor_background_spec(),
             lensblur=self._editor_lensblur_spec(),
+            view=self._editor_view_spec(),
         )
+
+    def _editor_state_key(self) -> tuple:
+        """Identity of the current editor render, for every cache key.
+
+        This used to be the literal expression ``("editor", version)`` written
+        out at five separate sites. Crop bypass is tool state rather than
+        recipe state, so it has to join the key — and updating four of five
+        sites would have produced either a frozen pane or a bypassed frame
+        overwriting a cropped one.
+        """
+        panel = getattr(self, "photo_editor_panel", None)
+        bypass = bool(panel is not None and panel.view_render_spec().get("bypass_crop"))
+        return ("editor", self._editor_recipe_version, bypass)
+
+    def _editor_view_spec(self) -> dict | None:
+        panel = getattr(self, "photo_editor_panel", None)
+        return panel.view_render_spec() if panel is not None else None
 
     def _editor_background_spec(self) -> dict | None:
         panel = getattr(self, "photo_editor_panel", None)
@@ -3741,8 +3647,7 @@ class FullScreenPreview(QDialog):
             return
         expected_key = (
             *self._image_cache_key(slot, current),
-            "editor",
-            self._editor_recipe_version,
+            *self._editor_state_key(),
         )
         if tuple(source_key) != tuple(expected_key):
             return
@@ -3778,6 +3683,10 @@ class FullScreenPreview(QDialog):
             target_path,
             recipe,
             list(masked_adjustments or []),
+            # Background and Lens Blur were silently missing from saved copies:
+            # write_edited_copy never received their specs.
+            background=self._editor_background_spec(),
+            lensblur=self._editor_lensblur_spec(),
         )
         if not requested:
             self.photo_editor_panel.finish_save_copy(target_path, "Another copy is still being saved.")
@@ -3830,7 +3739,7 @@ class FullScreenPreview(QDialog):
         ):
             return image
         base_key = self._image_cache_key(slot, image)
-        cache_key = (*base_key, "editor", self._editor_recipe_version)
+        cache_key = (*base_key, *self._editor_state_key())
         cached = self._editor_preview_cache.get(cache_key)
         if cached is not None:
             perf_logger().log("editslider.render_image_cache_hit", slot=slot, w=image.width(), h=image.height())
@@ -3840,6 +3749,7 @@ class FullScreenPreview(QDialog):
                 image, self._editor_recipe, masked, base_key=base_key,
                 background=self._editor_background_spec(),
                 lensblur=self._editor_lensblur_spec(),
+                view=self._editor_view_spec(),
             )
         except Exception as exc:
             self._handle_editor_status_changed(f"Preview edit failed: {exc}")
@@ -3915,7 +3825,7 @@ class FullScreenPreview(QDialog):
     def _display_render_key(self, slot: int, image: QImage) -> tuple[object, ...]:
         base_key = self._image_cache_key(slot, image)
         if slot == self._focused_slot and self._editor_edits_active():
-            base_key = (*base_key, "editor", self._editor_recipe_version)
+            base_key = (*base_key, *self._editor_state_key())
         if not self._focus_assist_enabled:
             return (*base_key, "display")
         return (*self._focus_assist_cache_key(slot, image), "focus-assist")
@@ -3925,7 +3835,7 @@ class FullScreenPreview(QDialog):
     ) -> tuple[object, ...]:
         base_key = self._image_cache_key(slot, image)
         if slot == self._focused_slot and self._editor_edits_active():
-            base_key = (*base_key, "editor", self._editor_recipe_version)
+            base_key = (*base_key, *self._editor_state_key())
         return (
             *base_key,
             self._focus_assist_color.id,
