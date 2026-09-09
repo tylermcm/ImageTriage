@@ -25,12 +25,14 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QRadialGradient,
+    QTransform,
 )
 from PySide6.QtWidgets import QWidget
 
 from ..mask_refinement import has_mask_refinements, refine_bitmap_qimage
 from ..perf import perf_logger
 from .busy_overlay import paint_busy_card
+from .canvas_overlay import CanvasOverlay
 from .scene_regions import SceneRegionIndex
 
 MAX_ALPHA = 128          # overlay opacity at full mask strength / 100 density
@@ -441,24 +443,53 @@ def mask_strength_qimage(
     height: int,
     source_size: tuple[int, int],
     guide_image: QImage | None = None,
+    transform: QTransform | None = None,
 ) -> QImage | None:
     """Grayscale8 union strength field for live masked-adjustment previews.
     White = full effect, black = none. Painted with Qt gradients, so it is
-    fast enough to rebuild per slider tick."""
-    gray = build_group_strength(
+    fast enough to rebuild per slider tick.
+
+    ``transform`` is the source->frame geometry (crop, straighten, flip). When
+    it is given the field is rasterized in *source* space and then put through
+    the identical affine the pixels took, so a mask cannot drift relative to
+    the photo. When it is None the original scale-only path runs untouched —
+    that equivalence is what makes the crop work safe to add.
+    """
+    if transform is None:
+        gray = build_group_strength(
+            components,
+            width,
+            height,
+            source_size,
+            guide_image=guide_image,
+        )
+        return gray.convertToFormat(QImage.Format.Format_Grayscale8) if gray else None
+
+    source_gray = build_group_strength(
         components,
-        width,
-        height,
+        max(1, int(source_size[0])),
+        max(1, int(source_size[1])),
         source_size,
         guide_image=guide_image,
     )
-    if gray is None:
+    if source_gray is None:
         return None
-    return gray.convertToFormat(QImage.Format.Format_Grayscale8)
+    warped = QImage(max(1, int(width)), max(1, int(height)), QImage.Format.Format_RGB32)
+    warped.fill(Qt.GlobalColor.black)
+    painter = QPainter(warped)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    painter.setWorldTransform(transform)
+    painter.drawImage(0, 0, source_gray)
+    painter.end()
+    return warped.convertToFormat(QImage.Format.Format_Grayscale8)
 
 
-class MaskOverlay(QWidget):
-    """Interactive overlay for one shape mask (radial or linear-gradient)."""
+class MaskOverlay(CanvasOverlay):
+    """Interactive overlay for one shape mask (radial or linear-gradient).
+
+    Attachment, geometry tracking and source<->display mapping come from
+    CanvasOverlay, which it shares with the crop and retouch overlays.
+    """
 
     # A drag on empty canvas finished while a create tool was armed.
     mask_created = Signal(str, dict)   # mask type, params (source coords)
@@ -479,8 +510,6 @@ class MaskOverlay(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMouseTracking(True)
         self._mask_type: str | None = None
         self._params: dict[str, Any] | None = None
         self._components: list[tuple[str, dict[str, Any], str]] = []
@@ -526,25 +555,6 @@ class MaskOverlay(QWidget):
         self.update()
 
     # -- attachment ---------------------------------------------------------
-    def attach_to(self, label: QWidget) -> None:
-        """Parent the overlay to ``label`` (a pane's image label) and track
-        its size so the overlay always covers the displayed pixmap."""
-        if self._watched is label:
-            return
-        if self._watched is not None:
-            self._watched.removeEventFilter(self)
-        self._watched = label
-        self.setParent(label)
-        label.installEventFilter(self)
-        self.setGeometry(label.rect())
-        self.show()
-        self.raise_()
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        if watched is self._watched and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
-            self.setGeometry(self._watched.rect())
-        return False
-
     # -- state --------------------------------------------------------------
     def set_state(
         self,
@@ -673,32 +683,6 @@ class MaskOverlay(QWidget):
             elif not message and self._busy_timer.isActive():
                 self._busy_timer.stop()
         self.update()
-
-    def _set_pass_through(self, on: bool) -> None:
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, on)
-        if on:
-            self.unsetCursor()
-
-    # -- coordinate mapping ---------------------------------------------------
-    def _scales(self) -> tuple[float, float] | None:
-        if self._source_size is None or self.width() < 2 or self.height() < 2:
-            return None
-        sw, sh = self._source_size
-        if sw < 1 or sh < 1:
-            return None
-        return self.width() / sw, self.height() / sh
-
-    def _to_display(self, x: float, y: float) -> QPointF:
-        scales = self._scales()
-        if scales is None:
-            return QPointF(0, 0)
-        return QPointF(x * scales[0], y * scales[1])
-
-    def _to_source(self, pos: QPointF) -> tuple[float, float]:
-        scales = self._scales()
-        if scales is None:
-            return 0.0, 0.0
-        return pos.x() / scales[0], pos.y() / scales[1]
 
     # -- painting -------------------------------------------------------------
     @staticmethod

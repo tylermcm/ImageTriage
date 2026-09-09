@@ -319,7 +319,7 @@ class PhotoEditorPanelMaskTests(unittest.TestCase):
 
             panel = PhotoEditorPanel()
             panel.set_image(source_path)
-            panel.editor_stack.setCurrentIndex(1)
+            panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
 
             panel.luminance_range_slider.setValues(0, 80)
             panel.add_luminance_range_mask()
@@ -369,7 +369,7 @@ class PhotoEditorPanelMaskTests(unittest.TestCase):
 
             panel = PhotoEditorPanel()
             panel.set_image(source_path)
-            panel.editor_stack.setCurrentIndex(1)
+            panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
             panel._open_mask_create_pane()
             panel._arm_base_tool("radial")
             panel.handle_overlay_mask_created(
@@ -435,7 +435,7 @@ class PhotoEditorPanelMaskTests(unittest.TestCase):
             Image.new("RGB", (20, 20), "gray").save(source_path)
             panel = PhotoEditorPanel()
             panel.set_image(source_path)
-            panel.editor_stack.setCurrentIndex(1)
+            panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
             panel.arm_brush_mask("add")
 
             logger = _RecordingPerfLogger()

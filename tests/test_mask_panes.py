@@ -26,7 +26,7 @@ def _panel():
 
     panel = PhotoEditorPanel()
     panel._source_path = Path("photo.jpg")
-    panel.editor_stack.setCurrentIndex(1)  # Masks
+    panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
     panel._sync_enabled()
     return panel
 
@@ -123,7 +123,7 @@ class MaskTwoStateNavigationTests(unittest.TestCase):
         from image_triage.ui.photo_editor_panel import PhotoEditorPanel
 
         panel = PhotoEditorPanel()
-        panel.editor_stack.setCurrentIndex(1)
+        panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
         panel._source_path = None
         panel._sync_enabled()
         self.assertFalse(panel.new_mask_button.isEnabled())
@@ -498,7 +498,7 @@ class MaskContextualSectionTests(unittest.TestCase):
         self.assertIs(page, panel._mask_touchup_page)
         self.assertFalse(panel._mask_touchup_page.isHidden())
         for widget in (
-            panel._editor_tab_bar,
+            panel._editor_tool_rail,
             panel._editor_doc_bar,
             panel.editor_stack,
             panel._editor_footer,
@@ -528,7 +528,7 @@ class MaskContextualSectionTests(unittest.TestCase):
         self.assertIsNone(panel._mask_touchup_mask_id)
         self.assertTrue(panel._mask_touchup_page.isHidden())
         for widget in (
-            panel._editor_tab_bar,
+            panel._editor_tool_rail,
             panel._editor_doc_bar,
             panel.editor_stack,
             panel._editor_footer,

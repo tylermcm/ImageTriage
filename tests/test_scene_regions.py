@@ -289,7 +289,7 @@ class ScenePanelWiringTests(unittest.TestCase):
 
         panel = PhotoEditorPanel()
         panel._source_path = Path("photo.jpg")
-        panel.editor_stack.setCurrentIndex(1)
+        panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
         return panel
 
     def test_scene_pick_runs_only_on_the_new_mask_pane(self) -> None:
@@ -362,7 +362,7 @@ class ScenePanelWiringTests(unittest.TestCase):
 
         panel = PhotoEditorPanel()
         panel._source_path = Path("photo.jpg")
-        panel.editor_stack.setCurrentIndex(1)
+        panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
         panel._show_mask_pane(panel.MASK_PANE_CREATE)
         self.assertIsNone(panel.mask_overlay_state()["busy_message"])
 
@@ -472,7 +472,7 @@ class ScenePanelWiringTests(unittest.TestCase):
             try:
                 panel = PhotoEditorPanel()
                 panel.set_image(photo)
-                panel.editor_stack.setCurrentIndex(1)
+                panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
                 panel._show_mask_pane(panel.MASK_PANE_CREATE)
                 panel._mask_source_size = lambda: SOURCE_SIZE
 

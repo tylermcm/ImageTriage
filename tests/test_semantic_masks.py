@@ -625,7 +625,7 @@ class SemanticMaskPanelTests(unittest.TestCase):
         requested: list[str] = []
         panel.semantic_warm_requested.connect(requested.append)
         try:
-            panel._set_editor_page(1)
+            panel._set_editor_page(panel.PAGE_MASKS)
             self.assertEqual(["model"], requested)
         finally:
             panel.close()
@@ -642,7 +642,7 @@ class SemanticMaskPanelTests(unittest.TestCase):
             try:
                 panel.set_image(source_path)
                 self.assertEqual([], requests)
-                panel._set_editor_page(1)
+                panel._set_editor_page(panel.PAGE_MASKS)
                 self.assertEqual([SEMANTIC_MASK_INVENTORY_REQUEST], requests)
             finally:
                 panel._start_semantic_mask_task = original_start

@@ -390,7 +390,7 @@ class SubjectMaskPanelTests(unittest.TestCase):
         requested: list[str] = []
         panel.subject_warm_requested.connect(requested.append)
 
-        panel._set_editor_page(1)
+        panel._set_editor_page(panel.PAGE_MASKS)
         panel._open_mask_create_pane()
 
         self.assertEqual(["model", "model"], requested)
@@ -398,7 +398,7 @@ class SubjectMaskPanelTests(unittest.TestCase):
 
     def test_popout_open_reset_returns_editor_to_adjustments(self) -> None:
         panel = PhotoEditorPanel()
-        panel._set_editor_page(1)
+        panel._set_editor_page(panel.PAGE_MASKS)
 
         panel.show_adjustments_page()
 
@@ -440,7 +440,7 @@ class SubjectMaskPanelTests(unittest.TestCase):
             )
             panel = PhotoEditorPanel()
             panel.set_image(source_path)
-            panel.editor_stack.setCurrentIndex(1)
+            panel.editor_stack.setCurrentIndex(panel.PAGE_MASKS)
 
             panel._show_subject_choice(result, (None, "add"))
 
