@@ -198,21 +198,94 @@ class EditRecipe:
     curve_red: Optional[list] = None
     curve_green: Optional[list] = None
     curve_blue: Optional[list] = None
+    # Color Mixer. Saturation came first (and is what older sidecars carry);
+    # hue and luminance complete the per-band HSL set. All -100..100, 0 neutral.
+    red_hue: float = 0.0
     red_saturation: float = 0.0
+    red_luminance: float = 0.0
+    orange_hue: float = 0.0
     orange_saturation: float = 0.0
+    orange_luminance: float = 0.0
+    yellow_hue: float = 0.0
     yellow_saturation: float = 0.0
+    yellow_luminance: float = 0.0
+    green_hue: float = 0.0
     green_saturation: float = 0.0
+    green_luminance: float = 0.0
+    aqua_hue: float = 0.0
     aqua_saturation: float = 0.0
+    aqua_luminance: float = 0.0
+    blue_hue: float = 0.0
     blue_saturation: float = 0.0
+    blue_luminance: float = 0.0
+    purple_hue: float = 0.0
     purple_saturation: float = 0.0
+    purple_luminance: float = 0.0
+    magenta_hue: float = 0.0
     magenta_saturation: float = 0.0
+    magenta_luminance: float = 0.0
+    # Legacy global luminance lift, kept so old sidecars keep rendering the
+    # same; the per-band controls above are what the GUI writes now.
     hsl_luminance: float = 0.0
+    # Point Color: [{"h","s","l","hueShift","satShift","lumShift","range"}, ...]
+    # sampled from the image, each shifting only colors near the sample.
+    point_colors: Optional[list] = None
+    # Color grading: four zones, each a hue (0..360) + saturation (0..100) +
+    # luminance (-100..100). Blending/balance set how the zones meet.
+    grading_shadow_hue: float = 0.0
+    grading_shadow_sat: float = 0.0
+    grading_shadow_lum: float = 0.0
+    grading_midtone_hue: float = 0.0
+    grading_midtone_sat: float = 0.0
+    grading_midtone_lum: float = 0.0
+    grading_highlight_hue: float = 0.0
+    grading_highlight_sat: float = 0.0
+    grading_highlight_lum: float = 0.0
+    grading_global_hue: float = 0.0
+    grading_global_sat: float = 0.0
+    grading_global_lum: float = 0.0
+    grading_blending: float = 50.0
+    grading_balance: float = 0.0
+    # Color calibration: shadow tint plus per-primary hue/saturation, applied
+    # before the tonal stack the way a camera profile would be.
+    calibration_shadow_tint: float = 0.0
+    calibration_red_hue: float = 0.0
+    calibration_red_saturation: float = 0.0
+    calibration_green_hue: float = 0.0
+    calibration_green_saturation: float = 0.0
+    calibration_blue_hue: float = 0.0
+    calibration_blue_saturation: float = 0.0
+    # Defringe: desaturate purple/green edge fringing within a hue window.
+    defringe_purple_amount: float = 0.0
+    defringe_purple_hue_low: float = 30.0
+    defringe_purple_hue_high: float = 70.0
+    defringe_green_amount: float = 0.0
+    defringe_green_hue_low: float = 40.0
+    defringe_green_hue_high: float = 60.0
+    # Grain shape. Amount is `grain` above; these two are its neutral-at-
+    # non-zero shape controls, like the vignette's.
+    grain_size: float = 25.0
+    grain_roughness: float = 50.0
     vignette_correction: float = 0.0
     chromatic_aberration: float = 0.0
     perspective_x: float = 0.0
     perspective_y: float = 0.0
     rotate: float = 0.0
     crop: Optional[Tuple[int, int, int, int]] = None
+    # Crop geometry. `crop_angle` is the straighten in degrees; it and the
+    # flips fold into the crop's single affine rather than becoming extra
+    # resamples, and the crop box is defined in *straightened* space so
+    # dragging the angle does not change what is inside the box.
+    crop_angle: float = 0.0
+    flip_h: bool = False
+    flip_v: bool = False
+    crop_aspect: str = ""
+    # Parametric retouch spots, source-pixel coordinates:
+    # [{"id","kind","x","y","r","feather","strength","sx","sy","seq"}, ...].
+    # Optional[list] rather than a default_factory on purpose: merged() reads
+    # field.default, which is MISSING for a factory field, so a factory here
+    # would quietly break preset merging.
+    retouch: Optional[list] = None
     # AI background tool (blur / replace) — a compositing pass driven by a
     # BiRefNet matte, applied by the editor render backend (not apply() below,
     # which has no access to the matte). Only the settings persist; the matte
@@ -261,12 +334,21 @@ class EditRecipe:
 
     def apply(self, image: Image.Image) -> Image.Image:
         working = _exif_rgb(image)
-        if self.crop:
-            working = working.crop(self.crop)
+        # Retouch runs first, in source space: RENDERER_ORDER puts it ahead of
+        # every transform, and a heal must sample ungraded pixels.
+        working = apply_retouch(working, self.retouch)
+        # Flip, straighten and crop are one transform: two resamples in a row
+        # cost quality for nothing, and the composed affine is the same matrix
+        # the overlays map through (see image_triage/editor_geometry.py).
+        working = apply_view_geometry(working, self)
         if self.rotate:
             working = working.rotate(self.rotate, expand=True, resample=Image.Resampling.BICUBIC)
         if self.perspective_x or self.perspective_y:
             working = apply_perspective(working, self.perspective_x, self.perspective_y)
+
+        # Calibration sits at the head of the colour pipeline: it redefines the
+        # primaries, so everything downstream should see the corrected colours.
+        working = apply_color_calibration(working, self)
 
         if self.exposure:
             working = apply_exposure(working, self.exposure)
@@ -325,20 +407,11 @@ class EditRecipe:
             sharp = working.filter(ImageFilter.UnsharpMask(radius=1.4, percent=int(70 + 180 * amount), threshold=3))
             working = Image.blend(working, sharp, min(1.0, amount))
 
-        if any(
-            (
-                self.red_saturation,
-                self.orange_saturation,
-                self.yellow_saturation,
-                self.green_saturation,
-                self.aqua_saturation,
-                self.blue_saturation,
-                self.purple_saturation,
-                self.magenta_saturation,
-                self.hsl_luminance,
-            )
-        ):
+        if hsl_adjustments_active(self):
             working = apply_hsl_adjustments(working, self)
+
+        working = apply_point_color(working, self)
+        working = apply_color_grading(working, self)
 
         if self.curve_shadows or self.curve_mids or self.curve_highlights:
             working = apply_tone_curve(working, self.curve_shadows, self.curve_mids, self.curve_highlights)
@@ -364,8 +437,14 @@ class EditRecipe:
             )
         if self.chromatic_aberration:
             working = reduce_chromatic_aberration(working, self.chromatic_aberration)
+        working = apply_defringe(working, self)
         if self.grain:
-            working = apply_grain(working, self.grain)
+            working = apply_grain(
+                working,
+                self.grain,
+                size=self.grain_size,
+                roughness=self.grain_roughness,
+            )
 
         return working
 
@@ -615,51 +694,389 @@ def apply_tone_curve(image: Image.Image, shadows: float, mids: float, highlights
     return image.point(lut * 3)
 
 
+# Color Mixer bands, in PIL's 0..255 hue units. Contiguous and non-overlapping,
+# so a hue-indexed LUT reproduces "first band that matches wins" exactly.
+HSL_BANDS: tuple[tuple[str, tuple[int, int]], ...] = (
+    ("red", (0, 12)),
+    ("orange", (13, 28)),
+    ("yellow", (29, 48)),
+    ("green", (49, 100)),
+    ("aqua", (101, 135)),
+    ("blue", (136, 175)),
+    ("purple", (176, 210)),
+    ("magenta", (211, 255)),
+)
+# A hue slider at ±100 walks the hue this far around the 256-unit circle
+# (≈ ±17°), which keeps a band's shift inside its neighbours as Lightroom does.
+HSL_HUE_TRAVEL = 12.0
+
+
 def apply_hsl_adjustments(image: Image.Image, recipe: EditRecipe) -> Image.Image:
+    """Per-band hue / saturation / luminance (the Color Mixer).
+
+    Saturation-only recipes stay byte-identical to the original implementation
+    — older sidecars carry saturation alone, and the vectorization tests lock
+    that path.
+    """
     hsv = image.convert("HSV")
     h, s, v = hsv.split()
-    hue_ranges = (
-        ((0, 12), recipe.red_saturation),
-        ((13, 28), recipe.orange_saturation),
-        ((29, 48), recipe.yellow_saturation),
-        ((49, 100), recipe.green_saturation),
-        ((101, 135), recipe.aqua_saturation),
-        ((136, 175), recipe.blue_saturation),
-        ((176, 210), recipe.purple_saturation),
-        ((211, 255), recipe.magenta_saturation),
-    )
     lum = _clamp_percent(recipe.hsl_luminance) / 100.0
-    # Vectorized replacement for the former per-pixel Python loop (byte-identical).
-    # Per-hue saturation is a 256-entry lookup by hue; ranges are contiguous and
-    # non-overlapping, so first-match ordering is preserved.
     hue_arr = np.asarray(h, dtype=np.uint8)
     s_arr = np.asarray(s, dtype=np.float64)
     v_arr = np.asarray(v, dtype=np.float64)
+
     sat_lut = np.zeros(256, dtype=np.float64)
-    for (low, high), amount in hue_ranges:
-        sat_lut[low : high + 1] = _clamp_percent(amount) / 100.0
-    sat_delta = sat_lut[hue_arr]
-    # round(s*1)==s where sat_delta is 0, so applying everywhere matches the
-    # loop's "only touch pixels whose hue is in a band" behaviour exactly.
-    s_new = np.clip(np.rint(s_arr * (1.0 + sat_delta)), 0, 255).astype(np.uint8)
-    if lum:
-        v_new = np.clip(np.rint(v_arr * (1.0 + lum * 0.35)), 0, 255).astype(np.uint8)
+    hue_lut = np.zeros(256, dtype=np.float64)
+    band_lum_lut = np.zeros(256, dtype=np.float64)
+    for band, (low, high) in HSL_BANDS:
+        sat_lut[low : high + 1] = _clamp_percent(getattr(recipe, f"{band}_saturation")) / 100.0
+        hue_lut[low : high + 1] = _clamp_percent(getattr(recipe, f"{band}_hue")) / 100.0
+        band_lum_lut[low : high + 1] = _clamp_percent(getattr(recipe, f"{band}_luminance")) / 100.0
+
+    # round(s*1)==s where the delta is 0, so applying everywhere matches the
+    # original "only touch pixels whose hue is in a band" behaviour exactly.
+    s_new = np.clip(np.rint(s_arr * (1.0 + sat_lut[hue_arr])), 0, 255).astype(np.uint8)
+
+    if hue_lut.any():
+        shifted = np.rint(hue_arr.astype(np.float64) + hue_lut[hue_arr] * HSL_HUE_TRAVEL)
+        h_new = np.mod(shifted, 256.0).astype(np.uint8)
+        h_img = Image.fromarray(h_new, "L")
+    else:
+        h_img = h
+
+    band_lum = band_lum_lut[hue_arr]
+    if lum or band_lum.any():
+        # The legacy global lift and the per-band lift compose multiplicatively;
+        # with no per-band values this reduces to the original expression.
+        v_new = np.clip(
+            np.rint(v_arr * (1.0 + lum * 0.35) * (1.0 + band_lum * 0.45)), 0, 255
+        ).astype(np.uint8)
     else:
         v_new = np.asarray(v, dtype=np.uint8)
     merged = Image.merge(
         "HSV",
-        (h, Image.fromarray(s_new, "L"), Image.fromarray(v_new, "L")),
+        (h_img, Image.fromarray(s_new, "L"), Image.fromarray(v_new, "L")),
     )
     return merged.convert("RGB")
 
 
-def apply_grain(image: Image.Image, amount: float) -> Image.Image:
+def hsl_adjustments_active(recipe: EditRecipe) -> bool:
+    if recipe.hsl_luminance:
+        return True
+    for band, _range in HSL_BANDS:
+        if (
+            getattr(recipe, f"{band}_hue")
+            or getattr(recipe, f"{band}_saturation")
+            or getattr(recipe, f"{band}_luminance")
+        ):
+            return True
+    return False
+
+
+def _hsv_to_rgb_unit(hue_degrees: float, saturation: float, value: float = 1.0) -> np.ndarray:
+    """One HSV triple to a float RGB triple in 0..1."""
+    hue = (float(hue_degrees) % 360.0) / 60.0
+    chroma = value * saturation
+    second = chroma * (1.0 - abs((hue % 2.0) - 1.0))
+    sector = int(hue) % 6
+    table = (
+        (chroma, second, 0.0),
+        (second, chroma, 0.0),
+        (0.0, chroma, second),
+        (0.0, second, chroma),
+        (second, 0.0, chroma),
+        (chroma, 0.0, second),
+    )
+    base = value - chroma
+    return np.asarray(table[sector], dtype=np.float64) + base
+
+
+def _luma(rgb: np.ndarray) -> np.ndarray:
+    """Rec.601 luma of a float HxWx3 array in 0..1."""
+    return rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+
+
+def _smoothstep(edge: np.ndarray) -> np.ndarray:
+    edge = np.clip(edge, 0.0, 1.0)
+    return edge * edge * (3.0 - 2.0 * edge)
+
+
+COLOR_GRADING_ZONES: tuple[str, ...] = ("shadow", "midtone", "highlight", "global")
+
+
+def color_grading_active(recipe: EditRecipe) -> bool:
+    # Saturation is the gate: a hue with no saturation tints nothing, and
+    # luminance alone still counts as an edit.
+    return any(
+        getattr(recipe, f"grading_{zone}_sat") or getattr(recipe, f"grading_{zone}_lum")
+        for zone in COLOR_GRADING_ZONES
+    )
+
+
+def apply_color_grading(image: Image.Image, recipe: EditRecipe) -> Image.Image:
+    """Four-zone color grading (shadows / midtones / highlights / global).
+
+    Each zone tints by pushing chroma toward its hue without moving overall
+    brightness, then optionally lifts or drops that zone's luminance. Balance
+    slides the split point; blending widens how far the zones overlap.
+    """
+    if not color_grading_active(recipe):
+        return image
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float64) / 255.0
+    luma = _luma(rgb)
+
+    balance = max(-100.0, min(100.0, float(recipe.grading_balance))) / 100.0
+    pivot = 0.5 - balance * 0.25
+    width = 0.15 + max(0.0, min(100.0, float(recipe.grading_blending))) / 100.0 * 0.5
+
+    weights = {
+        "shadow": _smoothstep((pivot + width - luma) / (2.0 * width)),
+        "highlight": _smoothstep((luma - (pivot - width)) / (2.0 * width)),
+        "midtone": _smoothstep(1.0 - np.abs(luma - pivot) / width),
+        "global": np.ones_like(luma),
+    }
+
+    out = rgb
+    for zone in COLOR_GRADING_ZONES:
+        saturation = max(0.0, min(100.0, float(getattr(recipe, f"grading_{zone}_sat")))) / 100.0
+        luminance = _clamp_percent(getattr(recipe, f"grading_{zone}_lum")) / 100.0
+        if not saturation and not luminance:
+            continue
+        weight = weights[zone][..., None]
+        if saturation:
+            tint = _hsv_to_rgb_unit(float(getattr(recipe, f"grading_{zone}_hue")), 1.0)
+            # Subtracting the tint's own luma keeps the push chromatic: the
+            # frame gets the colour without also getting brighter.
+            direction = tint - float(tint[0] * 0.299 + tint[1] * 0.587 + tint[2] * 0.114)
+            out = out + weight * (saturation * 0.5) * direction
+        if luminance:
+            out = out * (1.0 + weight * luminance * 0.5)
+    return Image.fromarray(np.clip(np.rint(out * 255.0), 0, 255).astype(np.uint8), "RGB")
+
+
+def color_calibration_active(recipe: EditRecipe) -> bool:
+    return bool(
+        recipe.calibration_shadow_tint
+        or recipe.calibration_red_hue
+        or recipe.calibration_red_saturation
+        or recipe.calibration_green_hue
+        or recipe.calibration_green_saturation
+        or recipe.calibration_blue_hue
+        or recipe.calibration_blue_saturation
+    )
+
+
+def _calibrated_primary(base_hue: float, hue_shift: float, saturation: float) -> np.ndarray:
+    """One rotated / resaturated primary, as a float RGB column.
+
+    Saturation pushes the primary away from its own gray rather than scaling
+    the vector — scaling would change the primary's luminance and show up as a
+    brightness jump instead of a colour shift.
+    """
+    hue = base_hue + _clamp_percent(hue_shift) / 100.0 * 30.0
+    color = _hsv_to_rgb_unit(hue, 1.0)
+    gray = float(color[0] * 0.299 + color[1] * 0.587 + color[2] * 0.114)
+    sat = max(0.0, min(2.0, 1.0 + _clamp_percent(saturation) / 100.0))
+    return gray + (color - gray) * sat
+
+
+def apply_color_calibration(image: Image.Image, recipe: EditRecipe) -> Image.Image:
+    """Camera-profile style calibration: rotate and resaturate each primary.
+
+    Rebuilding the three primaries and recombining is one 3x3 matrix multiply,
+    which is why this is cheap enough to sit in the per-tick pipeline.
+    """
+    if not color_calibration_active(recipe):
+        return image
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float64) / 255.0
+    matrix = np.stack(
+        (
+            _calibrated_primary(0.0, recipe.calibration_red_hue, recipe.calibration_red_saturation),
+            _calibrated_primary(120.0, recipe.calibration_green_hue, recipe.calibration_green_saturation),
+            _calibrated_primary(240.0, recipe.calibration_blue_hue, recipe.calibration_blue_saturation),
+        ),
+        axis=1,
+    )
+    # Normalize the rows so the matrix still maps white to white — without this
+    # a calibration change reads as an exposure change.
+    row_sums = matrix.sum(axis=1, keepdims=True)
+    matrix = np.divide(matrix, row_sums, out=np.eye(3), where=np.abs(row_sums) > 1e-6)
+    out = rgb @ matrix.T
+    tint = _clamp_percent(recipe.calibration_shadow_tint) / 100.0
+    if tint:
+        # Green/magenta shift that fades out as the frame brightens, which is
+        # what "shadow tint" means on a calibration panel.
+        shadow_weight = (1.0 - np.clip(_luma(rgb), 0.0, 1.0))[..., None] ** 2
+        shift = np.asarray((tint * 0.06, -tint * 0.06, tint * 0.06), dtype=np.float64)
+        out = out + shadow_weight * shift
+    return Image.fromarray(np.clip(np.rint(out * 255.0), 0, 255).astype(np.uint8), "RGB")
+
+
+def defringe_active(recipe: EditRecipe) -> bool:
+    return bool(recipe.defringe_purple_amount or recipe.defringe_green_amount)
+
+
+def _edge_weight(luma: np.ndarray) -> np.ndarray:
+    """Normalized gradient magnitude — fringing lives on edges, so this is what
+    stops a defringe pass desaturating a flat purple flower."""
+    gy = np.zeros_like(luma)
+    gx = np.zeros_like(luma)
+    gy[1:-1, :] = luma[2:, :] - luma[:-2, :]
+    gx[:, 1:-1] = luma[:, 2:] - luma[:, :-2]
+    magnitude = np.sqrt(gx * gx + gy * gy)
+    peak = float(magnitude.max())
+    if peak <= 1e-6:
+        return np.zeros_like(luma)
+    return _smoothstep(magnitude / peak * 3.0)
+
+
+def apply_defringe(image: Image.Image, recipe: EditRecipe) -> Image.Image:
+    """Desaturate purple and green fringing inside a hue window, on edges only.
+
+    Hue is only ever *read* from HSV; the result is blended in RGB. Writing an
+    HSV array back would requantize every pixel, so a defringe that removes
+    nothing would still degrade the frame.
+    """
+    if not defringe_active(recipe):
+        return image
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float64)
+    hsv = np.asarray(image.convert("HSV"), dtype=np.float64)
+    hue = hsv[..., 0]
+    edges = _edge_weight(np.asarray(image.convert("L"), dtype=np.float64) / 255.0)
+
+    removal = np.zeros_like(hue)
+    for amount_key, low_key, high_key, band in (
+        ("defringe_purple_amount", "defringe_purple_hue_low", "defringe_purple_hue_high", (176, 232)),
+        ("defringe_green_amount", "defringe_green_hue_low", "defringe_green_hue_high", (49, 135)),
+    ):
+        amount = max(0.0, min(20.0, float(getattr(recipe, amount_key)))) / 20.0
+        if not amount:
+            continue
+        # The hue sliders are 0..100 across the band, so the window the user
+        # sets maps onto the band's own hue span rather than the whole circle.
+        span = band[1] - band[0]
+        low = band[0] + span * max(0.0, min(100.0, float(getattr(recipe, low_key)))) / 100.0
+        high = band[0] + span * max(0.0, min(100.0, float(getattr(recipe, high_key)))) / 100.0
+        if high <= low:
+            continue
+        inside = (hue >= low) & (hue <= high)
+        removal = np.maximum(removal, np.where(inside, amount, 0.0))
+
+    strength = removal * edges
+    if not strength.any():
+        return image
+    # Pull the fringe toward its own luma — that is what removing a fringe is,
+    # and it leaves untouched pixels bit-identical.
+    luma = _luma(rgb / 255.0)[..., None] * 255.0
+    out = rgb + (luma - rgb) * strength[..., None]
+    return Image.fromarray(np.clip(np.rint(out), 0, 255).astype(np.uint8), "RGB")
+
+
+def point_colors_active(recipe: EditRecipe) -> bool:
+    return bool(recipe.point_colors)
+
+
+def apply_point_color(image: Image.Image, recipe: EditRecipe) -> Image.Image:
+    """Point Color: shift hue / saturation / luminance near a sampled color.
+
+    Each entry falls off with distance from its sample in HSV, so only the
+    colors the user picked move.
+    """
+    if not point_colors_active(recipe):
+        return image
+    original = np.asarray(image.convert("RGB"), dtype=np.float64)
+    hsv = np.asarray(image.convert("HSV"), dtype=np.float64)
+    hue, sat, val = hsv[..., 0].copy(), hsv[..., 1].copy(), hsv[..., 2].copy()
+    # Tracks how much any sample reaches each pixel, so pixels no sample
+    # touches come back exactly as they went in rather than HSV-requantized.
+    touched = np.zeros_like(hue)
+    for entry in recipe.point_colors or ():
+        try:
+            target_h = float(entry["h"]) % 256.0
+            target_s = float(entry["s"])
+            target_v = float(entry["l"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        reach = max(1.0, min(100.0, float(entry.get("range", 25.0))))
+        # Hue distance wraps; saturation/value distances are looser so a
+        # sample still catches the same colour in shade.
+        hue_distance = np.abs(((hue - target_h + 128.0) % 256.0) - 128.0) / (reach * 0.6)
+        sat_distance = np.abs(sat - target_s) / (reach * 2.4)
+        val_distance = np.abs(val - target_v) / (reach * 3.2)
+        weight = _smoothstep(
+            1.0 - np.sqrt(hue_distance**2 + sat_distance**2 + val_distance**2)
+        )
+        if not weight.any():
+            continue
+        touched = np.maximum(touched, weight)
+        hue = hue + weight * (_clamp_percent(entry.get("hueShift", 0.0)) / 100.0) * HSL_HUE_TRAVEL
+        sat = sat * (1.0 + weight * _clamp_percent(entry.get("satShift", 0.0)) / 100.0)
+        val = val * (1.0 + weight * _clamp_percent(entry.get("lumShift", 0.0)) / 100.0 * 0.45)
+    if not touched.any():
+        return image
+    hsv[..., 0] = np.mod(np.rint(hue), 256.0)
+    hsv[..., 1] = np.clip(np.rint(sat), 0, 255)
+    hsv[..., 2] = np.clip(np.rint(val), 0, 255)
+    shifted = np.asarray(
+        Image.fromarray(hsv.astype(np.uint8), "HSV").convert("RGB"), dtype=np.float64
+    )
+    blend = touched[..., None]
+    out = original + (shifted - original) * blend
+    return Image.fromarray(np.clip(np.rint(out), 0, 255).astype(np.uint8), "RGB")
+
+
+GRAIN_DEFAULTS = {"size": 25.0, "roughness": 50.0}
+
+
+def apply_grain(
+    image: Image.Image,
+    amount: float,
+    *,
+    size: float = 25.0,
+    roughness: float = 50.0,
+) -> Image.Image:
+    """Film grain. ``size`` grows the grain cell, ``roughness`` its contrast.
+
+    Bigger grain is generated small and scaled up rather than blurred, so the
+    cells stay crisp the way real grain does.
+    """
     amount = abs(_clamp_percent(amount)) / 100.0
     if amount == 0:
         return image
-    noise = Image.effect_noise(image.size, 60).convert("L")
+    width, height = image.size
+    cell = 1.0 + max(0.0, min(100.0, float(size))) / 100.0 * 3.0
+    sigma = 30.0 + max(0.0, min(100.0, float(roughness))) / 100.0 * 70.0
+    noise_size = (max(1, int(width / cell)), max(1, int(height / cell)))
+    noise = Image.effect_noise(noise_size, sigma).convert("L")
+    if noise_size != (width, height):
+        noise = noise.resize((width, height), Image.Resampling.BILINEAR)
     noise_rgb = ImageOps.colorize(noise, (105, 105, 105), (150, 150, 150)).convert("RGB")
     return Image.blend(image, Image.blend(image, noise_rgb, 0.45), min(0.35, amount * 0.35))
+
+
+def view_geometry_active(recipe: "EditRecipe") -> bool:
+    return bool(recipe.crop or recipe.crop_angle or recipe.flip_h or recipe.flip_v)
+
+
+def apply_view_geometry(image: Image.Image, recipe: "EditRecipe") -> Image.Image:
+    """Flip + straighten + crop, as one affine resample.
+
+    The coefficients come from ``ViewTransform.affine`` so the pixels and every
+    on-canvas overlay go through the identical mapping.
+    """
+    if not view_geometry_active(recipe):
+        return image
+    from image_triage.editor_geometry import view_transform_for
+
+    view = view_transform_for(recipe, image.size)
+    if view.is_identity():
+        return image
+    return image.transform(
+        view.frame_size(),
+        Image.Transform.AFFINE,
+        view.affine(),
+        resample=Image.Resampling.BICUBIC,
+    )
 
 
 def apply_perspective(image: Image.Image, horizontal: float, vertical: float) -> Image.Image:
@@ -693,33 +1110,228 @@ def reduce_chromatic_aberration(image: Image.Image, amount: float) -> Image.Imag
     return Image.blend(image, corrected, min(0.7, amount))
 
 
+# --- retouch ----------------------------------------------------------------
+# These run on every render tick once a photo carries spots, so they are all
+# patch-local: bounded by the spot own box, never the frame. The originals
+# median-filtered the whole image per spot and looped in Python per pixel,
+# which is the exact class of bug this module has already had to fix once.
+
+
+def _patch_box(
+    x: float, y: float, radius: float, width: int, height: int, pad: int = 0
+) -> Tuple[int, int, int, int]:
+    """Clamped integer box around a spot, optionally padded."""
+    reach = radius + pad
+    left = max(0, int(math.floor(x - reach)))
+    top = max(0, int(math.floor(y - reach)))
+    right = min(width, int(math.ceil(x + reach)) + 1)
+    bottom = min(height, int(math.ceil(y + reach)) + 1)
+    return left, top, right, bottom
+
+
+def _radial_alpha(
+    box: Tuple[int, int, int, int],
+    centre_x: float,
+    centre_y: float,
+    radius: float,
+    feather: float,
+    strength: float,
+) -> np.ndarray:
+    """Feathered disc coverage in 0..1, shaped for the box."""
+    left, top, right, bottom = box
+    if right <= left or bottom <= top:
+        return np.zeros((0, 0), dtype=np.float32)
+    ys = np.arange(top, bottom, dtype=np.float32)[:, None] - centre_y
+    xs = np.arange(left, right, dtype=np.float32)[None, :] - centre_x
+    distance = np.sqrt(xs * xs + ys * ys)
+    softness = max(0.0, min(100.0, float(feather))) / 100.0
+    inner = radius * (1.0 - softness)
+    if radius - inner < 1e-3:
+        alpha = (distance <= radius).astype(np.float32)
+    else:
+        alpha = np.clip((radius - distance) / (radius - inner), 0.0, 1.0)
+        alpha = alpha * alpha * (3.0 - 2.0 * alpha)  # smoothstep
+    return alpha * max(0.0, min(1.0, float(strength)))
+
+
+def _blend_patch(
+    arr: np.ndarray,
+    box: Tuple[int, int, int, int],
+    patch: np.ndarray,
+    alpha: np.ndarray,
+) -> None:
+    left, top, right, bottom = box
+    if right <= left or bottom <= top:
+        return
+    target = arr[top:bottom, left:right].astype(np.float32)
+    weight = alpha[..., None]
+    arr[top:bottom, left:right] = np.clip(
+        np.rint(target + (patch.astype(np.float32) - target) * weight), 0, 255
+    ).astype(np.uint8)
+
+
+def heal_spot_patch(
+    arr: np.ndarray,
+    x: float,
+    y: float,
+    radius: float,
+    *,
+    feather: float = 50.0,
+    strength: float = 0.8,
+) -> None:
+    """Median-blend a blemish away, in place, over the spot box only."""
+    height, width = arr.shape[:2]
+    pad = HEAL_MEDIAN_SIZE // 2 + 1
+    outer = _patch_box(x, y, radius, width, height, pad=pad)
+    inner = _patch_box(x, y, radius, width, height)
+    if inner[2] <= inner[0] or inner[3] <= inner[1]:
+        return
+    # Filter the padded neighbourhood, then trim the pad off, so the median has
+    # real context at the spot edge instead of a clamped border.
+    #
+    # PIL's MedianFilter is O(pixels * window^2) and its window would have to
+    # grow with the spot to keep erasing texture — which made a big spot cost
+    # hundreds of milliseconds on every render tick. Instead the window is
+    # fixed and *the patch* is shrunk, so a heal costs about the same whatever
+    # its radius. The replacement is low-frequency fill either way, so nothing
+    # visible is lost.
+    region = np.ascontiguousarray(arr[outer[1]:outer[3], outer[0]:outer[2]])
+    patch_h, patch_w = region.shape[:2]
+    scale = max(1, int(math.ceil(max(patch_w, patch_h) / HEAL_WORKING_SIZE)))
+    source = Image.fromarray(region, "RGB")
+    if scale > 1:
+        small = source.resize(
+            (max(1, patch_w // scale), max(1, patch_h // scale)),
+            Image.Resampling.BILINEAR,
+        )
+        small = small.filter(ImageFilter.MedianFilter(size=HEAL_MEDIAN_SIZE))
+        source = small.resize((patch_w, patch_h), Image.Resampling.BILINEAR)
+    else:
+        source = source.filter(ImageFilter.MedianFilter(size=HEAL_MEDIAN_SIZE))
+    filtered = np.asarray(source)
+    trim_x = inner[0] - outer[0]
+    trim_y = inner[1] - outer[1]
+    patch = filtered[
+        trim_y:trim_y + (inner[3] - inner[1]),
+        trim_x:trim_x + (inner[2] - inner[0]),
+    ]
+    _blend_patch(arr, inner, patch, _radial_alpha(inner, x, y, radius, feather, strength))
+
+
+def clone_stamp_patch(
+    arr: np.ndarray,
+    source_x: float,
+    source_y: float,
+    x: float,
+    y: float,
+    radius: float,
+    *,
+    feather: float = 50.0,
+    strength: float = 0.85,
+) -> None:
+    """Copy a disc from the source to the target, in place."""
+    height, width = arr.shape[:2]
+    target = _patch_box(x, y, radius, width, height)
+    if target[2] <= target[0] or target[3] <= target[1]:
+        return
+    offset_x = int(round(source_x - x))
+    offset_y = int(round(source_y - y))
+    src_left = target[0] + offset_x
+    src_top = target[1] + offset_y
+    src_right = src_left + (target[2] - target[0])
+    src_bottom = src_top + (target[3] - target[1])
+    if src_left < 0 or src_top < 0 or src_right > width or src_bottom > height:
+        return  # source hangs off the frame; nothing sensible to copy
+    # Copy before writing: source and target discs may overlap, and blending
+    # from a half-written array smears.
+    patch = arr[src_top:src_bottom, src_left:src_right].copy()
+    _blend_patch(arr, target, patch, _radial_alpha(target, x, y, radius, feather, strength))
+
+
+def red_eye_patch(
+    arr: np.ndarray,
+    x: float,
+    y: float,
+    radius: float,
+    *,
+    feather: float = 50.0,
+    strength: float = 1.0,
+) -> None:
+    """Neutralize red pupils inside the disc, in place.
+
+    Unlike the original this is confined to the feathered disc rather than the
+    whole bounding box, which is correct for a click-placed spot and a
+    deliberate improvement on the old behaviour.
+    """
+    height, width = arr.shape[:2]
+    box = _patch_box(x, y, radius, width, height)
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return
+    patch = arr[box[1]:box[3], box[0]:box[2]].astype(np.int16)
+    red, green, blue = patch[..., 0], patch[..., 1], patch[..., 2]
+    is_red = (red > 80) & (red > green * 1.35) & (red > blue * 1.35)
+    replacement = (green + blue) // 2
+    alpha = _radial_alpha(box, x, y, radius, feather, strength) * is_red
+    corrected = patch.copy()
+    corrected[..., 0] = np.rint(red * (1.0 - alpha) + replacement * alpha)
+    _blend_patch(arr, box, corrected.astype(np.uint8), np.ones_like(alpha))
+
+
+# Heal tuning. The median window is fixed and the patch is downsampled to at
+# most HEAL_WORKING_SIZE on its long side, so cost is bounded by the window
+# rather than by the spot's radius.
+HEAL_MEDIAN_SIZE = 9
+HEAL_WORKING_SIZE = 64
+
+RETOUCH_KINDS = ("heal", "clone", "red_eye")
+
+
+def apply_retouch(image: Image.Image, spots: Any) -> Image.Image:
+    """Apply a parametric spot list. Returns ``image`` untouched when empty."""
+    if not spots:
+        return image
+    # convert() copies even when the mode already matches, and the array copy
+    # below is the one we actually need — skip the redundant one.
+    base = image if image.mode == "RGB" else image.convert("RGB")
+    arr = np.array(base, dtype=np.uint8, copy=True)
+    for spot in spots:
+        try:
+            kind = str(spot["kind"])
+            x = float(spot["x"])
+            y = float(spot["y"])
+            radius = float(spot["r"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if radius <= 0:
+            continue
+        feather = float(spot.get("feather", 50.0))
+        strength = float(spot.get("strength", 0.8))
+        if kind == "heal":
+            heal_spot_patch(arr, x, y, radius, feather=feather, strength=strength)
+        elif kind == "clone" and spot.get("sx") is not None:
+            clone_stamp_patch(
+                arr,
+                float(spot["sx"]),
+                float(spot["sy"]),
+                x,
+                y,
+                radius,
+                feather=feather,
+                strength=strength,
+            )
+        elif kind == "red_eye":
+            red_eye_patch(arr, x, y, radius, feather=feather, strength=1.0)
+    return Image.fromarray(arr, "RGB")
+
+
 def heal_spot(image: Image.Image, x: int, y: int, radius: int, strength: float = 0.8) -> Image.Image:
+    """Single-spot heal (the CLI entry point), over the patch kernel."""
     if radius <= 0:
         raise ValueError("radius must be greater than 0")
-
-    strength = max(0.0, min(1.0, float(strength)))
     base = _exif_rgb(image)
-    filter_size = max(3, radius // 2 * 2 + 1)
-    filtered = base.filter(ImageFilter.MedianFilter(size=filter_size))
-    mask = Image.new("L", base.size, 0)
-    draw = ImageDraw.Draw(mask)
-
-    x = int(x)
-    y = int(y)
-    radius = int(radius)
-    for current_radius in range(radius, 0, -1):
-        alpha = int(255 * strength * (current_radius / radius))
-        draw.ellipse(
-            (
-                x - current_radius,
-                y - current_radius,
-                x + current_radius,
-                y + current_radius,
-            ),
-            fill=alpha,
-        )
-
-    return Image.composite(filtered, base, mask)
+    arr = np.array(base, dtype=np.uint8, copy=True)
+    heal_spot_patch(arr, float(x), float(y), float(radius), feather=100.0, strength=strength)
+    return Image.fromarray(arr, "RGB")
 
 
 def clone_stamp(
@@ -729,36 +1341,32 @@ def clone_stamp(
     radius: int,
     strength: float = 0.85,
 ) -> Image.Image:
+    """Single clone (the CLI entry point), over the patch kernel."""
     base = _exif_rgb(image)
-    radius = max(1, int(radius))
-    sx, sy = source
-    tx, ty = target
-    source_box = (sx - radius, sy - radius, sx + radius, sy + radius)
-    patch = base.crop(source_box)
-    mask = Image.new("L", patch.size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.ellipse((0, 0, patch.width - 1, patch.height - 1), fill=_clamp_byte(255 * max(0.0, min(1.0, strength))))
-    mask = mask.filter(ImageFilter.GaussianBlur(radius=max(1, radius * 0.25)))
-    result = base.copy()
-    result.paste(patch, (tx - radius, ty - radius), mask)
-    return result
+    arr = np.array(base, dtype=np.uint8, copy=True)
+    clone_stamp_patch(
+        arr,
+        float(source[0]),
+        float(source[1]),
+        float(target[0]),
+        float(target[1]),
+        float(max(1, int(radius))),
+        feather=50.0,
+        strength=strength,
+    )
+    return Image.fromarray(arr, "RGB")
 
 
 def remove_red_eye(image: Image.Image, x: int, y: int, radius: int) -> Image.Image:
+    """Single red-eye fix (the CLI entry point), over the patch kernel.
+
+    The old body walked the bounding box pixel by pixel in Python. This is the
+    vectorized equivalent, confined to the disc rather than the box.
+    """
     base = _exif_rgb(image)
-    radius = max(2, int(radius))
-    box = (max(0, x - radius), max(0, y - radius), min(base.width, x + radius), min(base.height, y + radius))
-    patch = base.crop(box)
-    pixels = patch.load()
-    for py in range(patch.height):
-        for px in range(patch.width):
-            red, green, blue = pixels[px, py]
-            if red > 80 and red > green * 1.35 and red > blue * 1.35:
-                replacement = int((green + blue) / 2)
-                pixels[px, py] = (replacement, green, blue)
-    result = base.copy()
-    result.paste(patch, box[:2])
-    return result
+    arr = np.array(base, dtype=np.uint8, copy=True)
+    red_eye_patch(arr, float(x), float(y), float(max(2, int(radius))), feather=0.0)
+    return Image.fromarray(arr, "RGB")
 
 
 def auto_remove_dust(image: Image.Image, radius: int = 5, threshold: int = 38, max_spots: int = 80) -> Image.Image:
@@ -767,15 +1375,18 @@ def auto_remove_dust(image: Image.Image, radius: int = 5, threshold: int = 38, m
     median = small.filter(ImageFilter.MedianFilter(size=max(3, radius * 2 + 1)))
     diff = ImageChops.subtract(median, small)
     candidates = diff.point(lambda value: 255 if value > threshold else 0)
-    result = base
-    found = 0
+    hits = np.asarray(candidates, dtype=np.uint8)
     step = max(2, radius)
-    pixels = candidates.load()
-    for y in range(radius, base.height - radius, step):
-        for x in range(radius, base.width - radius, step):
-            if pixels[x, y] > 0:
-                result = heal_spot(result, x, y, radius, strength=0.75)
+    ys = np.arange(radius, max(radius + 1, base.height - radius), step)
+    xs = np.arange(radius, max(radius + 1, base.width - radius), step)
+    arr = np.array(base, dtype=np.uint8, copy=True)
+    found = 0
+    for y in ys:
+        row = hits[y]
+        for x in xs:
+            if row[x] > 0:
+                heal_spot_patch(arr, float(x), float(y), float(radius), feather=100.0, strength=0.75)
                 found += 1
                 if found >= max_spots:
-                    return result
-    return result
+                    return Image.fromarray(arr, "RGB")
+    return Image.fromarray(arr, "RGB")

@@ -28,6 +28,7 @@ RENDERER_ORDER = [
     "transform.crop_preset",
     "transform.rotate",
     "transform.perspective",
+    "adjust.calibration",
     "adjust.exposure",
     "adjust.levels",
     "adjust.white_balance",
@@ -47,11 +48,14 @@ RENDERER_ORDER = [
     "adjust.dehaze",
     "adjust.sharpen",
     "adjust.hsl_saturation_luminance",
+    "adjust.point_color",
+    "adjust.color_grading",
     "adjust.tone_curve",
     "adjust.point_curve",
     "adjust.vignette_correction",
     "adjust.vignette",
     "adjust.chromatic_aberration",
+    "adjust.defringe",
     "adjust.grain",
 ]
 
@@ -422,7 +426,70 @@ def validate_operation_params(op_id: str, op_type: str, params: Dict[str, Any]) 
         anchor = params.get("anchor", "center")
         if anchor not in {"center", "top", "bottom", "left", "right"}:
             errors.append(f"{op_id} crop preset anchor must be center/top/bottom/left/right")
+    elif op_type == "adjust.color_grading":
+        for zone in ("shadow", "midtone", "highlight", "global"):
+            errors.extend(_range_errors(op_id, params, f"{zone}Hue", 0.0, 360.0))
+            errors.extend(_range_errors(op_id, params, f"{zone}Sat", 0.0, 100.0))
+            errors.extend(_range_errors(op_id, params, f"{zone}Lum", -100.0, 100.0))
+        errors.extend(_range_errors(op_id, params, "blending", 0.0, 100.0))
+        errors.extend(_range_errors(op_id, params, "balance", -100.0, 100.0))
+    elif op_type == "adjust.calibration":
+        errors.extend(_range_errors(op_id, params, "shadowTint", -100.0, 100.0))
+        for primary in ("red", "green", "blue"):
+            errors.extend(_range_errors(op_id, params, f"{primary}Hue", -100.0, 100.0))
+            errors.extend(_range_errors(op_id, params, f"{primary}Saturation", -100.0, 100.0))
+    elif op_type == "adjust.defringe":
+        for band in ("purple", "green"):
+            errors.extend(_range_errors(op_id, params, f"{band}Amount", 0.0, 20.0))
+            errors.extend(_range_errors(op_id, params, f"{band}HueLow", 0.0, 100.0))
+            errors.extend(_range_errors(op_id, params, f"{band}HueHigh", 0.0, 100.0))
+    elif op_type == "adjust.hsl_saturation_luminance":
+        for band in ("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"):
+            for channel in ("Hue", "Saturation", "Luminance"):
+                errors.extend(_range_errors(op_id, params, f"{band}{channel}", -100.0, 100.0))
+        errors.extend(_range_errors(op_id, params, "luminance", -100.0, 100.0))
+    elif op_type == "adjust.grain":
+        errors.extend(_range_errors(op_id, params, "grain", -100.0, 100.0))
+        errors.extend(_range_errors(op_id, params, "size", 0.0, 100.0))
+        errors.extend(_range_errors(op_id, params, "roughness", 0.0, 100.0))
+    elif op_type == "adjust.point_color":
+        entries = params.get("colors")
+        if not isinstance(entries, list) or not entries:
+            errors.append(f"{op_id} adjust.point_color requires a non-empty colors list")
+        else:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    errors.append(f"{op_id} point_color entries must be objects")
+                    break
+                for field, low, high in (
+                    ("h", 0.0, 255.0),
+                    ("s", 0.0, 255.0),
+                    ("l", 0.0, 255.0),
+                    ("range", 1.0, 100.0),
+                ):
+                    value = entry.get(field)
+                    if not isinstance(value, (int, float)) or not low <= value <= high:
+                        errors.append(f"{op_id} point_color {field} must be {low:g}..{high:g}")
+                        break
     return errors
+
+
+def _range_errors(
+    op_id: str, params: Dict[str, Any], key: str, low: float, high: float
+) -> List[str]:
+    """Check one optional numeric param. Absent is fine — these ops carry only
+    the fields the GUI actually set — but present-and-wrong is not, and an
+    unvalidated NaN only surfaces as a crash on the next load."""
+    if key not in params:
+        return []
+    value = params[key]
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return [f"{op_id} {key} must be numeric"]
+    if value != value:  # NaN
+        return [f"{op_id} {key} must be a finite number"]
+    if not low <= value <= high:
+        return [f"{op_id} {key} must be {low:g}..{high:g}"]
+    return []
 
 
 def insert_operation(session: Dict[str, Any], op: Dict[str, Any], before: Optional[str], after: Optional[str], first: bool, last: bool) -> None:
