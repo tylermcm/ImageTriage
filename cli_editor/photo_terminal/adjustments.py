@@ -722,12 +722,12 @@ def apply_hsl_adjustments(image: Image.Image, recipe: EditRecipe) -> Image.Image
     h, s, v = hsv.split()
     lum = _clamp_percent(recipe.hsl_luminance) / 100.0
     hue_arr = np.asarray(h, dtype=np.uint8)
-    s_arr = np.asarray(s, dtype=np.float64)
-    v_arr = np.asarray(v, dtype=np.float64)
+    s_arr = np.asarray(s, dtype=np.float32)
+    v_arr = np.asarray(v, dtype=np.float32)
 
-    sat_lut = np.zeros(256, dtype=np.float64)
-    hue_lut = np.zeros(256, dtype=np.float64)
-    band_lum_lut = np.zeros(256, dtype=np.float64)
+    sat_lut = np.zeros(256, dtype=np.float32)
+    hue_lut = np.zeros(256, dtype=np.float32)
+    band_lum_lut = np.zeros(256, dtype=np.float32)
     for band, (low, high) in HSL_BANDS:
         sat_lut[low : high + 1] = _clamp_percent(getattr(recipe, f"{band}_saturation")) / 100.0
         hue_lut[low : high + 1] = _clamp_percent(getattr(recipe, f"{band}_hue")) / 100.0
@@ -738,7 +738,7 @@ def apply_hsl_adjustments(image: Image.Image, recipe: EditRecipe) -> Image.Image
     s_new = np.clip(np.rint(s_arr * (1.0 + sat_lut[hue_arr])), 0, 255).astype(np.uint8)
 
     if hue_lut.any():
-        shifted = np.rint(hue_arr.astype(np.float64) + hue_lut[hue_arr] * HSL_HUE_TRAVEL)
+        shifted = np.rint(hue_arr.astype(np.float32) + hue_lut[hue_arr] * HSL_HUE_TRAVEL)
         h_new = np.mod(shifted, 256.0).astype(np.uint8)
         h_img = Image.fromarray(h_new, "L")
     else:
@@ -788,7 +788,7 @@ def _hsv_to_rgb_unit(hue_degrees: float, saturation: float, value: float = 1.0) 
         (chroma, 0.0, second),
     )
     base = value - chroma
-    return np.asarray(table[sector], dtype=np.float64) + base
+    return np.asarray(table[sector], dtype=np.float32) + base
 
 
 def _luma(rgb: np.ndarray) -> np.ndarray:
@@ -822,7 +822,7 @@ def apply_color_grading(image: Image.Image, recipe: EditRecipe) -> Image.Image:
     """
     if not color_grading_active(recipe):
         return image
-    rgb = np.asarray(image.convert("RGB"), dtype=np.float64) / 255.0
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
     luma = _luma(rgb)
 
     balance = max(-100.0, min(100.0, float(recipe.grading_balance))) / 100.0
@@ -888,7 +888,7 @@ def apply_color_calibration(image: Image.Image, recipe: EditRecipe) -> Image.Ima
     """
     if not color_calibration_active(recipe):
         return image
-    rgb = np.asarray(image.convert("RGB"), dtype=np.float64) / 255.0
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
     matrix = np.stack(
         (
             _calibrated_primary(0.0, recipe.calibration_red_hue, recipe.calibration_red_saturation),
@@ -900,14 +900,19 @@ def apply_color_calibration(image: Image.Image, recipe: EditRecipe) -> Image.Ima
     # Normalize the rows so the matrix still maps white to white — without this
     # a calibration change reads as an exposure change.
     row_sums = matrix.sum(axis=1, keepdims=True)
-    matrix = np.divide(matrix, row_sums, out=np.eye(3), where=np.abs(row_sums) > 1e-6)
+    matrix = np.divide(
+        matrix,
+        row_sums,
+        out=np.eye(3, dtype=np.float32),
+        where=np.abs(row_sums) > 1e-6,
+    )
     out = rgb @ matrix.T
     tint = _clamp_percent(recipe.calibration_shadow_tint) / 100.0
     if tint:
         # Green/magenta shift that fades out as the frame brightens, which is
         # what "shadow tint" means on a calibration panel.
         shadow_weight = (1.0 - np.clip(_luma(rgb), 0.0, 1.0))[..., None] ** 2
-        shift = np.asarray((tint * 0.06, -tint * 0.06, tint * 0.06), dtype=np.float64)
+        shift = np.asarray((tint * 0.06, -tint * 0.06, tint * 0.06), dtype=np.float32)
         out = out + shadow_weight * shift
     return Image.fromarray(np.clip(np.rint(out * 255.0), 0, 255).astype(np.uint8), "RGB")
 
@@ -939,10 +944,10 @@ def apply_defringe(image: Image.Image, recipe: EditRecipe) -> Image.Image:
     """
     if not defringe_active(recipe):
         return image
-    rgb = np.asarray(image.convert("RGB"), dtype=np.float64)
-    hsv = np.asarray(image.convert("HSV"), dtype=np.float64)
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
+    hsv = np.asarray(image.convert("HSV"), dtype=np.float32)
     hue = hsv[..., 0]
-    edges = _edge_weight(np.asarray(image.convert("L"), dtype=np.float64) / 255.0)
+    edges = _edge_weight(np.asarray(image.convert("L"), dtype=np.float32) / 255.0)
 
     removal = np.zeros_like(hue)
     for amount_key, low_key, high_key, band in (
@@ -984,8 +989,8 @@ def apply_point_color(image: Image.Image, recipe: EditRecipe) -> Image.Image:
     """
     if not point_colors_active(recipe):
         return image
-    original = np.asarray(image.convert("RGB"), dtype=np.float64)
-    hsv = np.asarray(image.convert("HSV"), dtype=np.float64)
+    original = np.asarray(image.convert("RGB"), dtype=np.float32)
+    hsv = np.asarray(image.convert("HSV"), dtype=np.float32)
     hue, sat, val = hsv[..., 0].copy(), hsv[..., 1].copy(), hsv[..., 2].copy()
     # Tracks how much any sample reaches each pixel, so pixels no sample
     # touches come back exactly as they went in rather than HSV-requantized.
@@ -1018,7 +1023,7 @@ def apply_point_color(image: Image.Image, recipe: EditRecipe) -> Image.Image:
     hsv[..., 1] = np.clip(np.rint(sat), 0, 255)
     hsv[..., 2] = np.clip(np.rint(val), 0, 255)
     shifted = np.asarray(
-        Image.fromarray(hsv.astype(np.uint8), "HSV").convert("RGB"), dtype=np.float64
+        Image.fromarray(hsv.astype(np.uint8), "HSV").convert("RGB"), dtype=np.float32
     )
     blend = touched[..., None]
     out = original + (shifted - original) * blend

@@ -15,7 +15,11 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
-from image_triage.editor_render import CpuEditorRenderBackend, EditorRenderService
+from image_triage.editor_render import (
+    CpuEditorRenderBackend,
+    EditorRenderService,
+    _scaled_recipe_for_render,
+)
 from image_triage.ui.photo_editor_panel import EditRecipe
 
 
@@ -179,12 +183,103 @@ class EditorRenderMaskCacheTests(unittest.TestCase):
             self.assertGreater(after.pixelColor(13, 4).red(), 64)
 
 
+class BoundedEditorPreviewTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = _app()
+
+    def test_source_space_geometry_scales_without_mutating_recipe(self) -> None:
+        recipe = EditRecipe.from_dict(
+            {
+                "crop": (100, 50, 900, 450),
+                "retouch": [
+                    {
+                        "id": "spot-1",
+                        "kind": "clone",
+                        "x": 400.0,
+                        "y": 200.0,
+                        "sx": 300.0,
+                        "sy": 100.0,
+                        "r": 40.0,
+                    }
+                ],
+            }
+        )
+
+        scaled = _scaled_recipe_for_render(recipe, (1000, 500), (500, 250))
+
+        self.assertEqual((50, 25, 450, 225), scaled.crop)
+        self.assertEqual((200.0, 100.0), (scaled.retouch[0]["x"], scaled.retouch[0]["y"]))
+        self.assertEqual((150.0, 50.0), (scaled.retouch[0]["sx"], scaled.retouch[0]["sy"]))
+        self.assertEqual(20.0, scaled.retouch[0]["r"])
+        self.assertEqual((100, 50, 900, 450), recipe.crop)
+        self.assertEqual(400.0, recipe.retouch[0]["x"])
+
+    def test_interactive_render_is_bounded_and_crop_stays_aligned(self) -> None:
+        base = QImage(1000, 500, QImage.Format.Format_RGB32)
+        base.fill(QColor(80, 120, 160))
+        recipe = EditRecipe.from_dict({"crop": (100, 50, 900, 450), "exposure": 0.2})
+
+        rendered = CpuEditorRenderBackend().render(
+            base,
+            recipe,
+            [],
+            base_key=("preview",),
+            view={"source_size": (1000, 500), "max_edge": 200, "bypass_crop": False},
+        )
+
+        self.assertEqual((160, 80), (rendered.width(), rendered.height()))
+
+    def test_export_style_render_has_no_implicit_resolution_cap(self) -> None:
+        base = QImage(640, 360, QImage.Format.Format_RGB32)
+        base.fill(QColor(80, 120, 160))
+
+        rendered = CpuEditorRenderBackend().render(
+            base,
+            EditRecipe.from_dict({"exposure": 0.2}),
+            [],
+            base_key=("export",),
+            view={"bypass_crop": False},
+        )
+
+        self.assertEqual((640, 360), (rendered.width(), rendered.height()))
+
+
 class PreviewResetRaceTests(unittest.TestCase):
     """End-to-end: a render in flight when the user resets must not overwrite
     the base image once it finally arrives."""
 
     def setUp(self) -> None:
         self.app = _app()
+
+    def test_cache_miss_queues_render_without_blocking_the_ui_thread(self) -> None:
+        from image_triage.models import ImageRecord
+        from image_triage.preview import FullScreenPreview, PreviewEntry
+
+        preview = FullScreenPreview()
+        base = QImage(800, 600, QImage.Format.Format_RGB32)
+        base.fill(QColor(40, 90, 160))
+        record = ImageRecord(path="C:/photos/frame.jpg", name="frame.jpg", size=1, modified_ns=1)
+        preview._entries = [PreviewEntry(record=record, source_path=record.path)]
+        preview._current_images = [base]
+        preview._source_versions = [None]
+        preview._current_image_display_tokens = [()]
+        preview._focused_slot = 0
+        preview._editor_recipe = EditRecipe.from_dict({"exposure": 1.0})
+        preview._editor_recipe_version = 1
+        backend = _GatedBackend()
+        preview._editor_render_service._backend = backend
+
+        started = time.perf_counter()
+        shown = preview._editor_image_for_slot(0, base)
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.1)
+        self.assertEqual(base.cacheKey(), shown.cacheKey())
+        self.assertTrue(_pump(lambda: bool(backend.started)))
+        for tag in list(backend.gates):
+            backend.release(tag)
+        _pump(lambda: preview._editor_render_service._active_seq is None)
+        preview.close()
 
     def test_reset_is_not_overwritten_by_a_late_edited_render(self) -> None:
         import tempfile

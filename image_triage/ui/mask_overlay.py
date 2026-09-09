@@ -444,6 +444,7 @@ def mask_strength_qimage(
     source_size: tuple[int, int],
     guide_image: QImage | None = None,
     transform: QTransform | None = None,
+    transform_source_size: tuple[int, int] | None = None,
 ) -> QImage | None:
     """Grayscale8 union strength field for live masked-adjustment previews.
     White = full effect, black = none. Painted with Qt gradients, so it is
@@ -465,10 +466,11 @@ def mask_strength_qimage(
         )
         return gray.convertToFormat(QImage.Format.Format_Grayscale8) if gray else None
 
+    raster_source_size = transform_source_size or source_size
     source_gray = build_group_strength(
         components,
-        max(1, int(source_size[0])),
-        max(1, int(source_size[1])),
+        max(1, int(raster_source_size[0])),
+        max(1, int(raster_source_size[1])),
         source_size,
         guide_image=guide_image,
     )

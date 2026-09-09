@@ -2431,7 +2431,10 @@ class PhotoEditorPanel(QFrame):
     def view_render_spec(self) -> dict[str, Any]:
         """Told to the render backend: suppress the crop while the tool is armed
         so the viewer sees the whole straightened frame with the box on it."""
-        return {"bypass_crop": self.active_canvas_tool() == "crop"}
+        return {
+            "bypass_crop": self.active_canvas_tool() == "crop",
+            "source_size": self._mask_source_size(),
+        }
 
     def view_transform(self) -> ViewTransform | None:
         size = self._mask_source_size()
@@ -2448,7 +2451,9 @@ class PhotoEditorPanel(QFrame):
         self._apply_recipe_field("crop", tuple(int(v) for v in crop))
 
     def handle_crop_committed(self) -> None:
-        self._mask_commit_timer.start()
+        # Crop is part of the in-memory recipe, not the mask session. Starting
+        # the mask-save timer here rebuilt the mask UI and rendered twice.
+        pass
 
     def _handle_crop_aspect_changed(self, _index: int) -> None:
         combo = self.crop_aspect_combo
@@ -2709,7 +2714,6 @@ class PhotoEditorPanel(QFrame):
         self._apply_recipe_field("retouch", spots)
         self._refresh_spot_lists()
         self.mask_overlay_changed.emit()
-        self._mask_commit_timer.start()
 
     def handle_spot_moved(self, spot_id: str, changes: dict[str, Any]) -> None:
         spots = [dict(entry) for entry in (self._recipe.retouch or ())]
@@ -2733,10 +2737,11 @@ class PhotoEditorPanel(QFrame):
         self._apply_recipe_field("retouch", spots or None)
         self._refresh_spot_lists()
         self.mask_overlay_changed.emit()
-        self._mask_commit_timer.start()
 
     def handle_spot_committed(self) -> None:
-        self._mask_commit_timer.start()
+        # Spot geometry is already live in the recipe and is saved by the
+        # editor's normal Save action; it must not flush the mask session.
+        pass
 
     def clear_retouch_spots(self, kinds: tuple[str, ...]) -> None:
         spots = [
@@ -2748,7 +2753,6 @@ class PhotoEditorPanel(QFrame):
         self._apply_recipe_field("retouch", spots or None)
         self._refresh_spot_lists()
         self.mask_overlay_changed.emit()
-        self._mask_commit_timer.start()
 
     def _select_spot_row(self, widget: QListWidget, row: int) -> None:
         item = widget.item(row) if row >= 0 else None

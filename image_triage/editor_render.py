@@ -16,8 +16,9 @@ backend-agnostic interface:
 
 The backend also caches the two things that stay constant during a drag — the
 base image's QImage→PIL conversion and each mask group's strength field — so a
-drag reuses them instead of rebuilding every tick. All output is full
-resolution; nothing here reduces fidelity.
+drag reuses them instead of rebuilding every tick. Callers may request a
+bounded working image for an interactive preview; exports omit that bound and
+continue to render at full resolution.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ import threading
 from pathlib import Path
 from typing import Any, Protocol
 
-from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QImage
 from PIL import Image as PILImage
 
@@ -41,6 +42,70 @@ from .ui.mask_overlay import mask_strength_qimage
 
 
 MaskedAdjustment = tuple  # (components, source_size, mask_recipe)
+
+
+def _bounded_size(width: int, height: int, max_edge: int) -> tuple[int, int]:
+    if max_edge <= 0 or max(width, height) <= max_edge:
+        return max(1, int(width)), max(1, int(height))
+    scale = max_edge / max(width, height)
+    return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+
+
+def _source_size_from_view(view: dict | None, fallback: tuple[int, int]) -> tuple[int, int]:
+    value = view.get("source_size") if view else None
+    try:
+        width, height = int(value[0]), int(value[1])
+    except (IndexError, TypeError, ValueError):
+        return fallback
+    return (width, height) if width > 0 and height > 0 else fallback
+
+
+def _scaled_recipe_for_render(
+    recipe: Any,
+    source_size: tuple[int, int],
+    render_size: tuple[int, int],
+) -> Any:
+    """Map source-pixel crop/retouch geometry onto a bounded preview image."""
+    source_w, source_h = source_size
+    render_w, render_h = render_size
+    if source_w <= 0 or source_h <= 0 or source_size == render_size:
+        return recipe
+    scale_x = render_w / source_w
+    scale_y = render_h / source_h
+    changes: dict[str, Any] = {}
+    crop = getattr(recipe, "crop", None)
+    if crop:
+        changes["crop"] = (
+            int(round(float(crop[0]) * scale_x)),
+            int(round(float(crop[1]) * scale_y)),
+            int(round(float(crop[2]) * scale_x)),
+            int(round(float(crop[3]) * scale_y)),
+        )
+    spots = getattr(recipe, "retouch", None)
+    if spots:
+        radius_scale = (scale_x + scale_y) / 2.0
+        scaled_spots = []
+        for spot in spots:
+            if not isinstance(spot, dict):
+                scaled_spots.append(spot)
+                continue
+            scaled = dict(spot)
+            for key in ("x", "sx"):
+                if key in scaled:
+                    scaled[key] = float(scaled[key]) * scale_x
+            for key in ("y", "sy"):
+                if key in scaled:
+                    scaled[key] = float(scaled[key]) * scale_y
+            if "r" in scaled:
+                scaled["r"] = max(1.0, float(scaled["r"]) * radius_scale)
+            scaled_spots.append(scaled)
+        changes["retouch"] = scaled_spots
+    if not changes:
+        return recipe
+    try:
+        return dataclasses.replace(recipe, **changes)
+    except TypeError:
+        return recipe
 
 
 def _recipe_for_render(recipe: Any, *, bypass_crop: bool) -> Any:
@@ -284,25 +349,71 @@ class CpuEditorRenderBackend:
             h=base_image.height(),
             masks=len(masked),
         ):
+            view_spec = view or {}
+            declared_source_size = _source_size_from_view(
+                view_spec, (base_image.width(), base_image.height())
+            )
+            try:
+                max_edge = max(0, int(view_spec.get("max_edge") or 0))
+            except (TypeError, ValueError):
+                max_edge = 0
+            working_size = _bounded_size(base_image.width(), base_image.height(), max_edge)
+            working_key = (
+                (*base_key, "editor-working", *working_size)
+                if base_key is not None
+                else None
+            )
             source = None
             with self._lock:
-                if base_key is not None and base_key == self._base_key and self._base_pil is not None:
+                if (
+                    working_key is not None
+                    and working_key == self._base_key
+                    and self._base_pil is not None
+                ):
                     source = self._base_pil
             if source is None:
-                with logger.span("editslider.qimage_to_pil", w=base_image.width(), h=base_image.height()):
-                    source = _pillow_from_qimage(base_image)
+                working_image = base_image
+                if working_size != (base_image.width(), base_image.height()):
+                    with logger.span(
+                        "editslider.preview_downscale",
+                        source_w=base_image.width(),
+                        source_h=base_image.height(),
+                        w=working_size[0],
+                        h=working_size[1],
+                    ):
+                        working_image = base_image.scaled(
+                            QSize(*working_size),
+                            Qt.AspectRatioMode.IgnoreAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                with logger.span(
+                    "editslider.qimage_to_pil", w=working_image.width(), h=working_image.height()
+                ):
+                    source = _pillow_from_qimage(working_image)
                 with self._lock:
-                    self._base_key = base_key
+                    self._base_key = working_key
                     self._base_pil = source
+            working_recipe = _scaled_recipe_for_render(
+                recipe, declared_source_size, source.size
+            )
             # Retouch is the first pipeline stage and depends only on the base
             # image and the spot list, so it gets its own cache ahead of the
             # adjustment stack.
             source = self._retouched_source(
-                source, getattr(recipe, "retouch", None), base_key, logger
+                source, getattr(working_recipe, "retouch", None), working_key, logger
             )
             bypass_crop = bool(view and view.get("bypass_crop"))
-            render_recipe = _recipe_for_render(recipe, bypass_crop=bypass_crop)
-            view_transform = _view_transform_for_render(recipe, source, bypass_crop=bypass_crop)
+            render_recipe = _recipe_for_render(working_recipe, bypass_crop=bypass_crop)
+            view_transform = _view_transform_for_render(
+                working_recipe, source, bypass_crop=bypass_crop
+            )
+            asset_view_transform = None
+            try:
+                asset_view_transform = view_transform_for(
+                    recipe, declared_source_size, bypass_crop=bypass_crop
+                )
+            except Exception:
+                pass
             # apply() is functional (never mutates its input), so the cached
             # base can be reused across ticks.
             with logger.span("editslider.recipe_apply"):
@@ -316,7 +427,7 @@ class CpuEditorRenderBackend:
                     logger,
                     group_index,
                     guide_image=base_image,
-                    guide_key=base_key,
+                    guide_key=working_key,
                     view=view_transform,
                 )
                 if strength is None:
@@ -329,9 +440,13 @@ class CpuEditorRenderBackend:
             # image (after global tone and every local mask). Lens blur first so
             # a background cut, if also set, lands on top of it.
             if lensblur:
-                adjusted = self._apply_lens_blur(adjusted, lensblur, logger, view=view_transform)
+                adjusted = self._apply_lens_blur(
+                    adjusted, lensblur, logger, view=asset_view_transform
+                )
             if background:
-                adjusted = self._apply_background(adjusted, background, logger, view=view_transform)
+                adjusted = self._apply_background(
+                    adjusted, background, logger, view=asset_view_transform
+                )
             with logger.span("editslider.pil_to_qimage", w=adjusted.width, h=adjusted.height):
                 return _qimage_from_pillow(adjusted, target_size=QSize())
 
@@ -414,6 +529,7 @@ class CpuEditorRenderBackend:
                 source_size,
                 guide_image=guide_image,
                 transform=None if view is None or view.is_identity() else view.qtransform(),
+                transform_source_size=None if view is None else view.source_size,
             )
             if strength_q is None:
                 return None
