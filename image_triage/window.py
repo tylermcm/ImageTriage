@@ -9598,7 +9598,8 @@ class MainWindow(QMainWindow):
         heading.setObjectName("aiSetupTitle")
         hero_layout.addWidget(heading)
         subheading = QLabel(
-            "Choose a runtime. Image Triage installs the matching packages and AI culling models together.",
+            "Choose a runtime. Image Triage installs the matching packages, editor masking support, "
+            "and AI culling models together.",
             hero,
         )
         subheading.setWordWrap(True)
@@ -9630,20 +9631,20 @@ class MainWindow(QMainWindow):
             detail_label.setObjectName("aiSetupMuted")
             detail_label.setWordWrap(True)
             card_layout.addWidget(detail_label)
-            download_mb = estimate_ai_runtime_download_size_mb(
-                variant, include_dino=False
-            )
-            installed_mb = estimate_ai_runtime_installed_size_mb(
-                variant, include_dino=False
-            )
+            download_mb = estimate_ai_runtime_download_size_mb(variant, include_dino=True)
+            installed_mb = estimate_ai_runtime_installed_size_mb(variant, include_dino=True)
             sizes = QLabel(
                 f"{download_mb / 1024:.1f} GB download  ·  {installed_mb / 1024:.1f} GB on disk",
                 card,
             )
             sizes.setObjectName("aiSetupProfileTitle")
             card_layout.addWidget(sizes)
-            if variant in runtime_status.installed_variants:
+            if variant in runtime_status.dino_installed_variants:
                 installed = QLabel("Installed", card)
+                installed.setObjectName("aiSetupMuted")
+                card_layout.addWidget(installed)
+            elif variant in runtime_status.installed_variants:
+                installed = QLabel("Core installed; masking support will be added", card)
                 installed.setObjectName("aiSetupMuted")
                 card_layout.addWidget(installed)
             card_layout.addStretch(1)
@@ -9717,13 +9718,13 @@ class MainWindow(QMainWindow):
         runtime_variant = (
             AI_RUNTIME_CPU_VARIANT if cpu_radio.isChecked() else AI_RUNTIME_GPU_VARIANT
         )
-        runtime_ready = (
-            runtime_variant in runtime_status.installed_variants
-        )
+        # The compact ONNX profile is sufficient for culling, but the editor's
+        # mask engines also require the shared PyTorch/Transformers bundle.
+        runtime_ready = runtime_variant in runtime_status.dino_installed_variants
         return AISetupSelection(
             install_runtime=not runtime_ready,
             runtime_variant=runtime_variant,
-            include_dino_runtime=False,
+            include_dino_runtime=True,
             download_aiculler_clip_model=clip_missing,
             download_aiculler_topiq_model=topiq_missing,
             download_aiculler_face_model=face_missing,
@@ -9961,7 +9962,7 @@ class MainWindow(QMainWindow):
                 or semantic_model_missing
             ),
             default_install_runtime=runtime_missing,
-            default_include_dino_runtime=False,
+            default_include_dino_runtime=True,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
@@ -9984,7 +9985,7 @@ class MainWindow(QMainWindow):
             self._start_ai_runtime_install(
                 selection.runtime_variant,
                 force=force_runtime,
-                include_dino=False,
+                include_dino=selection.include_dino_runtime,
                 download_aiculler_clip_after=selection.download_aiculler_clip_model,
                 download_aiculler_topiq_after=selection.download_aiculler_topiq_model,
                 download_aiculler_face_after=selection.download_aiculler_face_model,
@@ -10023,7 +10024,7 @@ class MainWindow(QMainWindow):
             allow_runtime=False,
             allow_model=True,
             default_install_runtime=False,
-            default_include_dino_runtime=False,
+            default_include_dino_runtime=True,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
@@ -10049,7 +10050,7 @@ class MainWindow(QMainWindow):
             allow_runtime=True,
             allow_model=False,
             default_install_runtime=True,
-            default_include_dino_runtime=False,
+            default_include_dino_runtime=True,
             default_download_aiculler_clip_model=False,
             default_download_aiculler_topiq_model=False,
             default_download_aiculler_face_model=False,

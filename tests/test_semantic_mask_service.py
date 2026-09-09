@@ -29,7 +29,10 @@ class SemanticRuntimeValidationTests(unittest.TestCase):
             original = service_module.resolve_ai_runtime_site_packages
             service_module.resolve_ai_runtime_site_packages = lambda **_kwargs: (site_packages,)
             try:
-                with self.assertRaisesRegex(RuntimeError, "transformers"):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "transformers.*run Set Up AI again.*editor masking support",
+                ):
                     validate_semantic_runtime()
             finally:
                 service_module.resolve_ai_runtime_site_packages = original

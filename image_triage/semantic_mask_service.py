@@ -79,6 +79,8 @@ def _resolve_semantic_runtime() -> tuple[AIWorkflowRuntime, tuple[Path, ...]]:
         raise RuntimeError(
             "The installed AI runtime is missing scene-mask dependencies: "
             + ", ".join(missing)
+            + ". Open Settings, run Set Up AI again, and reinstall the selected runtime "
+            "to add editor masking support."
         )
     return runtime, site_packages
 

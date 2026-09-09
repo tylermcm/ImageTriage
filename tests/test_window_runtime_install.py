@@ -76,7 +76,7 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         self.assertIn("creationflags", captured_kwargs)
         self.assertIn("startupinfo", captured_kwargs)
 
-    def test_combined_ai_setup_uses_base_runtime_and_skips_dino(self) -> None:
+    def test_combined_ai_setup_installs_editor_mask_runtime_dependencies(self) -> None:
         calls: list[tuple[tuple, dict]] = []
 
         class _SetupStub:
@@ -103,7 +103,7 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         self.assertTrue(started)
         self.assertEqual(1, len(calls))
         _args, kwargs = calls[0]
-        self.assertFalse(kwargs["include_dino"])
+        self.assertTrue(kwargs["include_dino"])
         self.assertFalse(kwargs["download_dino_model_after"])
         self.assertTrue(kwargs["download_aiculler_clip_after"])
         self.assertTrue(kwargs["download_aiculler_topiq_after"])

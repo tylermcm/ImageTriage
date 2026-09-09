@@ -159,6 +159,43 @@ class AIRuntimePackageTests(unittest.TestCase):
             self.assertEqual(status.dino_installed_variants, ())
             self.assertNotIn("transformers>=4.56", recorded_calls[0])
 
+    def test_full_runtime_install_upgrades_existing_compact_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir) / "runtime"
+            recorded_calls: list[list[str]] = []
+
+            def fake_pip_runner(args: list[str], cwd: Path) -> int:
+                self.assertEqual(cwd, install_root)
+                recorded_calls.append(args)
+                target_dir = Path(args[args.index("--target") + 1])
+                if "transformers>=4.56" in args:
+                    _materialize_runtime_modules(target_dir)
+                else:
+                    _materialize_base_runtime_modules(target_dir)
+                return 0
+
+            compact_status = install_ai_runtime(
+                AI_RUNTIME_CPU_VARIANT,
+                include_dino=False,
+                install_root=install_root,
+                pip_runner=fake_pip_runner,
+            )
+            upgraded_status = install_ai_runtime(
+                AI_RUNTIME_CPU_VARIANT,
+                include_dino=True,
+                install_root=install_root,
+                pip_runner=fake_pip_runner,
+            )
+
+            self.assertEqual(compact_status.dino_installed_variants, ())
+            self.assertEqual(
+                upgraded_status.dino_installed_variants,
+                (AI_RUNTIME_CPU_VARIANT,),
+            )
+            self.assertEqual(len(recorded_calls), 2)
+            self.assertNotIn("transformers>=4.56", recorded_calls[0])
+            self.assertIn("transformers>=4.56", recorded_calls[1])
+
     def test_old_gpu_torch_runtime_is_reported_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             install_root = Path(temp_dir) / "runtime"
