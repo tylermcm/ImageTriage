@@ -41,7 +41,10 @@ class _GatedBackend:
         self.raise_tags = raise_tags or set()
         self._lock = threading.Lock()
 
-    def render(self, base_image, recipe, masked, *, base_key=None, background=None, lensblur=None):
+    def render(
+        self, base_image, recipe, masked, *, base_key=None, background=None,
+        lensblur=None, view=None,
+    ):
         with self._lock:
             self.started.append(base_key)
         self.gates[base_key].wait(timeout=5.0)

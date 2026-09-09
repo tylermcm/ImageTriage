@@ -21,6 +21,7 @@ resolution; nothing here reduces fidelity.
 """
 from __future__ import annotations
 
+import dataclasses
 import threading
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,6 +33,7 @@ from PIL import Image as PILImage
 import numpy as np
 
 from .background_ops import composite_background
+from .editor_geometry import view_transform_for
 from .depth_effects import composite_lens_blur
 from .image_resize import _pillow_from_qimage, _qimage_from_pillow
 from .perf import perf_logger
@@ -39,6 +41,33 @@ from .ui.mask_overlay import mask_strength_qimage
 
 
 MaskedAdjustment = tuple  # (components, source_size, mask_recipe)
+
+
+def _recipe_for_render(recipe: Any, *, bypass_crop: bool) -> Any:
+    """The recipe the adjustment stack should see.
+
+    Retouch is stripped because this backend already applied it (and cached the
+    result); the crop is stripped while the Crop tool is armed so the viewer
+    sees the whole straightened frame under the crop box.
+    """
+    if getattr(recipe, "retouch", None) is None and not bypass_crop:
+        return recipe
+    try:
+        changes: dict[str, Any] = {"retouch": None}
+        if bypass_crop:
+            changes["crop"] = None
+        return dataclasses.replace(recipe, **changes)
+    except TypeError:
+        return recipe
+
+
+def _view_transform_for_render(recipe: Any, source: Any, *, bypass_crop: bool):
+    """The geometry the pixels are about to go through — masks, mattes and depth
+    maps must be put through the identical transform or they slide off."""
+    try:
+        return view_transform_for(recipe, source.size, bypass_crop=bypass_crop)
+    except Exception:
+        return None
 
 
 def _freeze_value(value: Any) -> Any:
@@ -65,6 +94,20 @@ def _freeze_component(component: Any) -> tuple:
     return (str(mask_type), tuple(frozen), str(combine))
 
 
+def _freeze_spot(spot: Any) -> tuple:
+    """Cache identity for one retouch spot. ``id`` is excluded: renaming a spot
+    must not invalidate a cached render, only its geometry may."""
+    if not isinstance(spot, dict):
+        return (repr(spot),)
+    return tuple(
+        sorted((str(k), _freeze_value(v)) for k, v in spot.items() if k != "id")
+    )
+
+
+def _freeze_retouch(spots: Any) -> tuple:
+    return tuple(_freeze_spot(spot) for spot in (spots or ()))
+
+
 class EditorRenderBackend(Protocol):
     """Compute contract shared by CPU (and, later, GPU) render backends."""
 
@@ -77,6 +120,7 @@ class EditorRenderBackend(Protocol):
         base_key: tuple | None = None,
         background: dict | None = None,
         lensblur: dict | None = None,
+        view: dict | None = None,
     ) -> QImage:
         ...
 
@@ -103,6 +147,10 @@ class CpuEditorRenderBackend:
         self._matte_cache: PILImage.Image | None = None
         self._depth_cache_key: tuple | None = None
         self._depth_cache: PILImage.Image | None = None
+        # The retouched frame is invariant while only adjustments change, so a
+        # slider drag must never re-run the spot stack.
+        self._retouch_key: tuple | None = None
+        self._retouch_pil: PILImage.Image | None = None
 
     def invalidate(self) -> None:
         with self._lock:
@@ -113,6 +161,8 @@ class CpuEditorRenderBackend:
             self._matte_cache = None
             self._depth_cache_key = None
             self._depth_cache = None
+            self._retouch_key = None
+            self._retouch_pil = None
 
     def _background_matte(self, path: str) -> PILImage.Image | None:
         try:
@@ -152,8 +202,31 @@ class CpuEditorRenderBackend:
             self._depth_cache = depth
         return depth
 
+    @staticmethod
+    def _align_asset(asset: PILImage.Image, image: PILImage.Image, view: Any) -> PILImage.Image:
+        """Put a source-space asset (matte, depth map) through the same geometry
+        the pixels went through.
+
+        A plain resize to the rendered frame silently stretches a full-frame
+        matte across a crop, sliding the subject cut-out off the subject — no
+        error, just a wrong picture.
+        """
+        if view is not None and not view.is_identity():
+            source_w, source_h = view.source_size
+            if asset.size != (source_w, source_h):
+                asset = asset.resize((source_w, source_h), PILImage.Resampling.BILINEAR)
+            asset = asset.transform(
+                view.frame_size(),
+                PILImage.Transform.AFFINE,
+                view.affine(),
+                resample=PILImage.Resampling.BILINEAR,
+            )
+        if asset.size != image.size:
+            asset = asset.resize(image.size, PILImage.Resampling.BILINEAR)
+        return asset
+
     def _apply_lens_blur(
-        self, image: PILImage.Image, lensblur: dict, logger
+        self, image: PILImage.Image, lensblur: dict, logger, *, view: Any = None
     ) -> PILImage.Image:
         amount = float(lensblur.get("amount", 0.0))
         depth_path = lensblur.get("depth_path")
@@ -163,8 +236,7 @@ class CpuEditorRenderBackend:
         if depth is None:
             return image
         with logger.span("editslider.lens_blur"):
-            if depth.size != image.size:
-                depth = depth.resize(image.size, PILImage.Resampling.BILINEAR)
+            depth = self._align_asset(depth, image, view)
             composited = composite_lens_blur(
                 np.asarray(image.convert("RGB"), dtype=np.uint8),
                 np.asarray(depth, dtype=np.uint8),
@@ -174,7 +246,7 @@ class CpuEditorRenderBackend:
             return PILImage.fromarray(composited, mode="RGB")
 
     def _apply_background(
-        self, image: PILImage.Image, background: dict, logger
+        self, image: PILImage.Image, background: dict, logger, *, view: Any = None
     ) -> PILImage.Image:
         mode = str(background.get("mode") or "off")
         matte_path = background.get("matte_path")
@@ -184,8 +256,7 @@ class CpuEditorRenderBackend:
         if matte is None:
             return image
         with logger.span("editslider.background", mode=mode):
-            if matte.size != image.size:
-                matte = matte.resize(image.size, PILImage.Resampling.BILINEAR)
+            matte = self._align_asset(matte, image, view)
             composited = composite_background(
                 np.asarray(image.convert("RGB"), dtype=np.uint8),
                 np.asarray(matte, dtype=np.uint8),
@@ -204,6 +275,7 @@ class CpuEditorRenderBackend:
         base_key: tuple | None = None,
         background: dict | None = None,
         lensblur: dict | None = None,
+        view: dict | None = None,
     ) -> QImage:
         logger = perf_logger()
         with logger.span(
@@ -222,10 +294,19 @@ class CpuEditorRenderBackend:
                 with self._lock:
                     self._base_key = base_key
                     self._base_pil = source
+            # Retouch is the first pipeline stage and depends only on the base
+            # image and the spot list, so it gets its own cache ahead of the
+            # adjustment stack.
+            source = self._retouched_source(
+                source, getattr(recipe, "retouch", None), base_key, logger
+            )
+            bypass_crop = bool(view and view.get("bypass_crop"))
+            render_recipe = _recipe_for_render(recipe, bypass_crop=bypass_crop)
+            view_transform = _view_transform_for_render(recipe, source, bypass_crop=bypass_crop)
             # apply() is functional (never mutates its input), so the cached
             # base can be reused across ticks.
             with logger.span("editslider.recipe_apply"):
-                adjusted = recipe.apply(source)
+                adjusted = render_recipe.apply(source)
             for group_index, (components, source_size, mask_recipe) in enumerate(masked):
                 strength = self._strength_for(
                     components,
@@ -236,6 +317,7 @@ class CpuEditorRenderBackend:
                     group_index,
                     guide_image=base_image,
                     guide_key=base_key,
+                    view=view_transform,
                 )
                 if strength is None:
                     continue
@@ -247,11 +329,57 @@ class CpuEditorRenderBackend:
             # image (after global tone and every local mask). Lens blur first so
             # a background cut, if also set, lands on top of it.
             if lensblur:
-                adjusted = self._apply_lens_blur(adjusted, lensblur, logger)
+                adjusted = self._apply_lens_blur(adjusted, lensblur, logger, view=view_transform)
             if background:
-                adjusted = self._apply_background(adjusted, background, logger)
+                adjusted = self._apply_background(adjusted, background, logger, view=view_transform)
             with logger.span("editslider.pil_to_qimage", w=adjusted.width, h=adjusted.height):
                 return _qimage_from_pillow(adjusted, target_size=QSize())
+
+    def _retouched_source(
+        self,
+        source: PILImage.Image,
+        spots: Any,
+        base_key: tuple | None,
+        logger,
+    ) -> PILImage.Image:
+        """The base frame with every retouch spot applied, cached.
+
+        Adding the Nth spot reuses the cached prefix of the first N-1, so
+        clicking a new spot costs one patch rather than replaying the stack.
+        """
+        frozen = _freeze_retouch(spots)
+        if not frozen:
+            return source
+        key = (base_key, frozen)
+        prefix: PILImage.Image | None = None
+        start = 0
+        with self._lock:
+            if key == self._retouch_key and self._retouch_pil is not None:
+                return self._retouch_pil
+            prior = self._retouch_key
+            if (
+                prior is not None
+                and prior[0] == base_key
+                and self._retouch_pil is not None
+                and len(prior[1]) < len(frozen)
+                and frozen[: len(prior[1])] == prior[1]
+            ):
+                prefix, start = self._retouch_pil, len(prior[1])
+        base = prefix if prefix is not None else source
+        pending = list(spots or ())[start:]
+        # Imported lazily: photo_terminal lives outside this package and is only
+        # on sys.path once the editor UI has set it up, so a module-level import
+        # breaks anything that imports this backend on its own.
+        from photo_terminal.adjustments import apply_retouch
+
+        with logger.span("editslider.retouch", spots=len(frozen), reused=start):
+            # apply_retouch copies before mutating, so the cached prefix above
+            # is never written through.
+            result = apply_retouch(base, pending) if pending else base
+        with self._lock:
+            self._retouch_key = key
+            self._retouch_pil = result
+        return result
 
     def _strength_for(
         self,
@@ -264,6 +392,7 @@ class CpuEditorRenderBackend:
         *,
         guide_image: QImage | None = None,
         guide_key: tuple | None = None,
+        view: Any = None,
     ) -> PILImage.Image | None:
         key = (
             tuple(_freeze_component(c) for c in components),
@@ -271,6 +400,7 @@ class CpuEditorRenderBackend:
             height,
             source_size,
             guide_key,
+            view.freeze() if view is not None else None,
         )
         with self._lock:
             cached = self._strength_cache.get(key)
@@ -283,6 +413,7 @@ class CpuEditorRenderBackend:
                 height,
                 source_size,
                 guide_image=guide_image,
+                transform=None if view is None or view.is_identity() else view.qtransform(),
             )
             if strength_q is None:
                 return None
@@ -354,6 +485,7 @@ class EditorRenderService(QObject):
         source_key: tuple,
         background: dict | None = None,
         lensblur: dict | None = None,
+        view: dict | None = None,
     ) -> None:
         self._seq += 1
         self._latest_seq = self._seq
@@ -366,6 +498,7 @@ class EditorRenderService(QObject):
             "source_key": source_key,
             "background": background,
             "lensblur": lensblur,
+            "view": view,
         }
         logger = perf_logger()
         if self._active_seq is None:
@@ -397,6 +530,7 @@ class EditorRenderService(QObject):
                 base_key=request["base_key"],
                 background=request.get("background"),
                 lensblur=request.get("lensblur"),
+                view=request.get("view"),
             )
         except Exception as exc:  # noqa: BLE001 - surfaced as a null result
             perf_logger().log("editslider.render_failed", seq=request["seq"], error=str(exc))
