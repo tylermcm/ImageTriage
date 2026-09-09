@@ -161,6 +161,27 @@ class MaskStrengthUnderCropTests(unittest.TestCase):
         self.assertAlmostEqual(100.0, float(xs.mean()), delta=8.0)
         self.assertAlmostEqual(75.0, float(ys.mean()), delta=8.0)
 
+    def test_a_bounded_preview_rasterizes_the_mask_at_working_size(self) -> None:
+        # Components remain in 400x300 source coordinates, while the working
+        # image and its crop transform are half-sized.
+        view = ViewTransform(source_size=(200, 150), crop=(50, 38, 150, 113))
+        field = mask_strength_qimage(
+            self.components,
+            100,
+            75,
+            (400, 300),
+            transform=view.qtransform(),
+            transform_source_size=(200, 150),
+        )
+        self.assertIsNotNone(field)
+        arr = np.frombuffer(field.constBits(), dtype=np.uint8).reshape(
+            field.height(), field.bytesPerLine()
+        )[:, : field.width()]
+        ys, xs = np.nonzero(arr > 200)
+        self.assertTrue(len(xs) > 0, "mask vanished in the bounded preview")
+        self.assertAlmostEqual(50.0, float(xs.mean()), delta=5.0)
+        self.assertAlmostEqual(37.0, float(ys.mean()), delta=5.0)
+
 
 class RetouchKernelTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -606,6 +627,21 @@ class PanelToolArbitrationTests(unittest.TestCase):
                     page == self.panel.PAGE_CROP,
                     self.panel.view_render_spec()["bypass_crop"],
                 )
+
+    def test_view_render_spec_includes_original_source_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            Image.new("RGB", (640, 480), "gray").save(source)
+            self.panel.set_image(source)
+
+            self.assertEqual((640, 480), self.panel.view_render_spec()["source_size"])
+
+    def test_crop_and_retouch_commits_do_not_schedule_mask_session_writes(self) -> None:
+        self.panel._mask_commit_timer.stop()
+        self.panel.handle_crop_committed()
+        self.panel.handle_spot_committed()
+
+        self.assertFalse(self.panel._mask_commit_timer.isActive())
 
     def test_no_image_means_no_tool(self) -> None:
         self.panel._source_path = None

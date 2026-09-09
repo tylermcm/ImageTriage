@@ -599,6 +599,7 @@ class FullScreenPreview(QDialog):
     DEFAULT_PRELOAD_BATCH_SIZE = 10
     MIN_PRELOAD_BATCH_SIZE = 0
     MAX_PRELOAD_BATCH_SIZE = 128
+    EDITOR_PREVIEW_MAX_EDGE = 1600
     FOCUS_ASSIST_COLOR_KEY = "preview/focus_assist_color"
     FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
     FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
@@ -3621,7 +3622,11 @@ class FullScreenPreview(QDialog):
 
     def _editor_view_spec(self) -> dict | None:
         panel = getattr(self, "photo_editor_panel", None)
-        return panel.view_render_spec() if panel is not None else None
+        if panel is None:
+            return None
+        spec = dict(panel.view_render_spec())
+        spec["max_edge"] = self.EDITOR_PREVIEW_MAX_EDGE
+        return spec
 
     def _editor_background_spec(self) -> dict | None:
         panel = getattr(self, "photo_editor_panel", None)
@@ -3727,10 +3732,9 @@ class FullScreenPreview(QDialog):
         return not self._editor_recipe_is_default() or bool(self._editor_masked_adjustments())
 
     def _editor_image_for_slot(self, slot: int, image: QImage) -> QImage:
-        # Synchronous editor render, used by non-drag paths (zoom/focus/decode).
-        # Slider drags go through _request_editor_render instead so the UI
-        # thread never blocks; both share one backend, so the pipeline lives in
-        # exactly one place.
+        # Never run the adjustment pipeline on the UI thread. Decode, zoom and
+        # resize paths can arrive before the async frame is cached; keep showing
+        # the base image and queue the current edit rather than freezing input.
         masked = self._editor_masked_adjustments()
         if (
             not 0 <= slot < len(self._entries)
@@ -3744,18 +3748,8 @@ class FullScreenPreview(QDialog):
         if cached is not None:
             perf_logger().log("editslider.render_image_cache_hit", slot=slot, w=image.width(), h=image.height())
             return cached
-        try:
-            rendered = self._editor_render_backend.render(
-                image, self._editor_recipe, masked, base_key=base_key,
-                background=self._editor_background_spec(),
-                lensblur=self._editor_lensblur_spec(),
-                view=self._editor_view_spec(),
-            )
-        except Exception as exc:
-            self._handle_editor_status_changed(f"Preview edit failed: {exc}")
-            return image
-        self._editor_preview_cache[cache_key] = rendered
-        return rendered
+        self._request_editor_render(slot)
+        return image
 
     def _display_image_for_slot(self, slot: int) -> QImage:
         if not 0 <= slot < len(self._current_images):
