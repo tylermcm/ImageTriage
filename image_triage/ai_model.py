@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
+from .ai_manifest import MODEL_BUNDLES, bundle_expected_sha256
+from .ai_paths import managed_model_dir
+
 
 DEFAULT_AI_MODEL_REPO_ID = "Skulleton12/DinoV3"
 DEFAULT_AI_MODEL_REVISION = "2372da520e9da0b79430d18c8f038de0e8e3ba68"
@@ -29,36 +32,12 @@ DEFAULT_AICULLER_CLIP_SIZE_MB = 98
 DEFAULT_AICULLER_TOPIQ_REPO_ID = "Skulleton12/TOPIQ"
 DEFAULT_AICULLER_TOPIQ_REVISION = "56526fd721537c9abd4ec41b10b2ffcad5166c46"
 DEFAULT_AICULLER_TOPIQ_SIZE_MB = 185
-DEFAULT_AI_MODEL_SHA256 = {
-    "config.json": "135ecd23e34a70b6fbed8b083fdecb319b7e3a54e3d849258bbe4ddcf1783bb5",
-    "model.safetensors": "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179",
-}
-DEFAULT_SEMANTIC_MODEL_SHA256 = {
-    "config.json": "b575ef3c36f2a057fa19e221650105052d61cc9c1a972ec15019c6261ec98770",
-    "preprocessor_config.json": "910e70b3956ac9879ebc90b22fb3bc8a75b6a0677814500101a4c072bd7857bd",
-    "tokenizer_config.json": "34b7336e4bee12e0a9730eaf5189f582ef3c3eea5027f65730e5717256755aad",
-    "vocab.json": "5047b556ce86ccaf6aa22b3ffccfc52d391ea4accdab9c2f2407da5b742d4363",
-    "merges.txt": "f526393189112391ce6f9795d4695f704121ce452c3aad1f5335cc41337eba85",
-    "special_tokens_map.json": "f8c0d6c39aee3f8431078ef6646567b0aba7f2246e9c54b8b99d55c22b707cbf",
-    "pytorch_model.bin": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f",
-}
-DEFAULT_SEGMENTATION_MODEL_SHA256 = {
-    "config.json": "091cbc7c980128ae63b2a15d882923f326f85926ef163adad00c24bd90228896",
-    "merges.txt": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
-    "preprocessor_config.json": "2c3c403d8414263e732996bb2ffeab80dd5ced0068ab11bfe5adf476ef75823c",
-    "pytorch_model.bin": "909b07dbf4129c2bbb8df4498e35dcd46f305e3ec45329d3ff6d4f0360de27f3",
-    "special_tokens_map.json": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac",
-    "tokenizer_config.json": "64dd88e64d791e3be4d38be62d7e77e0a24df9e79205ac740af505aa2e94c367",
-    "vocab.json": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
-}
-DEFAULT_BIREFNET_MODEL_SHA256 = {
-    "model.safetensors": "9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154",
-}
-DEFAULT_AICULLER_CLIP_MODEL_SHA256 = {
-    "tokenizer.json": "6d9109cc838977f3ca94a379eec36aecc7c807e1785cd729660ca2fc0171fb35",
-    "onnx/model.onnx": "31d28cb07209533d10fc4fef73ac324ce17de6741a2372e7e1531a4ac8fdaeb2",
-}
-DEFAULT_AICULLER_TOPIQ_MODEL_SHA256: dict[str, str] = {}
+DEFAULT_AI_MODEL_SHA256 = bundle_expected_sha256("dino")
+DEFAULT_SEMANTIC_MODEL_SHA256 = bundle_expected_sha256("clip")
+DEFAULT_SEGMENTATION_MODEL_SHA256 = bundle_expected_sha256("oneformer")
+DEFAULT_BIREFNET_MODEL_SHA256 = bundle_expected_sha256("birefnet")
+DEFAULT_AICULLER_CLIP_MODEL_SHA256 = bundle_expected_sha256("tinyclip")
+DEFAULT_AICULLER_TOPIQ_MODEL_SHA256 = bundle_expected_sha256("topiq")
 AI_MODEL_DIR_ENV = "AICULLING_MODEL_DIR"
 AI_MODEL_REPO_ENV = "AICULLING_MODEL_REPO_ID"
 AI_MODEL_REVISION_ENV = "AICULLING_MODEL_REVISION"
@@ -132,7 +111,7 @@ AICULLER_TOPIQ_MODEL_REQUIRED_FILENAMES = ("topiq_nr.onnx",)
 DEFAULT_AICULLER_FACE_REPO_ID = "fal/AuraFace-v1"
 DEFAULT_AICULLER_FACE_REVISION = "af6d057c9b0ec4071d4c49c80e3539258798b609"
 DEFAULT_AICULLER_FACE_SIZE_MB = 285
-DEFAULT_AICULLER_FACE_MODEL_SHA256: dict[str, str] = {}
+DEFAULT_AICULLER_FACE_MODEL_SHA256 = bundle_expected_sha256("faces")
 AICULLER_FACE_MODEL_DIR_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_DIR"
 AICULLER_FACE_MODEL_REPO_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REPO_ID"
 AICULLER_FACE_MODEL_REVISION_ENV = "IMAGE_TRIAGE_AICULLER_FACE_MODEL_REVISION"
@@ -159,6 +138,10 @@ class AIModelInstallation:
     required_filenames: tuple[str, ...] = AI_MODEL_REQUIRED_FILENAMES
     expected_sha256: dict[str, str] | None = None
     alternate_download_filenames: dict[str, tuple[str, ...]] | None = None
+    # Set when this installation corresponds to a manifest bundle, which routes
+    # download and readiness through the transactional store instead of the
+    # old "the file exists, so it must be fine" check.
+    bundle_key: str = ""
 
     @property
     def model_name(self) -> str:
@@ -174,6 +157,17 @@ class AIModelInstallation:
 
     @property
     def is_installed(self) -> bool:
+        """Whether this model is genuinely usable, not merely present.
+
+        For a manifest bundle this is the verified status: every file present,
+        every size matching the published size, and the recorded revision equal
+        to the one this build requires.
+        """
+        if self.bundle_key:
+            from .ai_model_store import bundle_status  # local import: avoids a cycle
+
+            if bundle_install_dir_matches(self):
+                return bundle_status(self.bundle_key).is_ready
         return not self.missing_files
 
     def download_url(self, filename: str) -> str:
@@ -184,6 +178,31 @@ class AIModelInstallation:
         normalized = filename.strip().lstrip("/")
         alternates = self.alternate_download_filenames or {}
         return (normalized, *alternates.get(normalized, ()))
+
+
+def bundle_install_dir_matches(installation: "AIModelInstallation") -> bool:
+    """True when this installation points at the managed bundle directory.
+
+    A caller that overrides ``install_dir`` (tests, support workflows) keeps the
+    old existence semantics rather than being judged against the manifest.
+    """
+    from .ai_model_store import bundle_install_dir  # local import: avoids a cycle
+
+    if not installation.bundle_key:
+        return False
+    bundle = MODEL_BUNDLES.get(installation.bundle_key)
+    if bundle is None:
+        return False
+    # A caller asking for a different file set than the manifest describes (the
+    # fp16 TinyCLIP export, for example) is not this bundle.
+    if tuple(installation.required_filenames) != tuple(bundle.filenames):
+        return False
+    if installation.repo_id != bundle.repo_id or installation.revision != bundle.revision:
+        return False
+    try:
+        return installation.install_dir == bundle_install_dir(installation.bundle_key)
+    except (KeyError, OSError):
+        return False
 
 
 def resolve_ai_model_installation(
@@ -213,6 +232,7 @@ def resolve_ai_model_installation(
         revision=resolved_revision,
         install_dir=resolved_dir,
         expected_sha256=DEFAULT_AI_MODEL_SHA256 if resolved_repo_id == DEFAULT_AI_MODEL_REPO_ID and resolved_revision == DEFAULT_AI_MODEL_REVISION else None,
+        bundle_key="dino",
     )
 
 
@@ -248,6 +268,7 @@ def resolve_semantic_model_installation(
             if resolved_repo_id == DEFAULT_SEMANTIC_MODEL_REPO_ID and resolved_revision == DEFAULT_SEMANTIC_MODEL_REVISION
             else None
         ),
+        bundle_key="clip",
     )
 
 
@@ -284,6 +305,7 @@ def resolve_segmentation_model_installation(
             and resolved_revision == DEFAULT_SEGMENTATION_MODEL_REVISION
             else None
         ),
+        bundle_key="oneformer",
     )
 
 
@@ -319,6 +341,7 @@ def resolve_birefnet_model_installation(
             and resolved_revision == DEFAULT_BIREFNET_MODEL_REVISION
             else None
         ),
+        bundle_key="birefnet",
     )
 
 
@@ -353,6 +376,7 @@ def resolve_aiculler_clip_model_installation(
             and resolved_revision == DEFAULT_AICULLER_CLIP_REVISION
             else None
         ),
+        bundle_key="tinyclip",
     )
 
 
@@ -387,63 +411,59 @@ def resolve_aiculler_topiq_model_installation(
             if resolved_repo_id == DEFAULT_AICULLER_TOPIQ_REPO_ID and resolved_revision == DEFAULT_AICULLER_TOPIQ_REVISION
             else None
         ),
+        bundle_key="topiq",
     )
 
 
-def default_ai_model_install_dir(*, repo_id: str = DEFAULT_AI_MODEL_REPO_ID) -> Path:
+def _managed_bundle_dir(
+    bundle_key: str,
+    repo_id: str,
+    *,
+    prefix: tuple[str, ...] = (),
+) -> Path:
+    """Managed directory for a bundle, or a sibling when the repo is overridden."""
+    bundle = MODEL_BUNDLES[bundle_key]
+    if repo_id == bundle.repo_id:
+        return managed_model_dir(*bundle.install_parts)
     _owner, name = _repo_path_parts(repo_id)
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
+    return managed_model_dir(*prefix, name)
+
+
+def default_ai_model_install_dir(*, repo_id: str = DEFAULT_AI_MODEL_REPO_ID) -> Path:
+    return _managed_bundle_dir("dino", repo_id)
 
 
 def default_semantic_model_install_dir(*, repo_id: str = DEFAULT_SEMANTIC_MODEL_REPO_ID) -> Path:
-    _owner, name = _repo_path_parts(repo_id)
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
+    return _managed_bundle_dir("clip", repo_id)
 
 
 def default_segmentation_model_install_dir(
     *,
     repo_id: str = DEFAULT_SEGMENTATION_MODEL_REPO_ID,
 ) -> Path:
-    _owner, name = _repo_path_parts(repo_id)
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / name
+    return _managed_bundle_dir("oneformer", repo_id)
 
 
 def default_birefnet_model_install_dir(
     *,
     repo_id: str = DEFAULT_BIREFNET_MODEL_REPO_ID,
 ) -> Path:
-    _owner, name = _repo_path_parts(repo_id)
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "Editor" / name
+    return _managed_bundle_dir("birefnet", repo_id, prefix=("Editor",))
 
 
 def default_aiculler_clip_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_CLIP_REPO_ID) -> Path:
-    _owner, name = _repo_path_parts(repo_id)
-    return (
-        _default_user_cache_root()
-        / "image_triage_ai_cache"
-        / "models"
-        / "CLI-Culler"
-        / "Clip"
-        / name
-    )
+    return _managed_bundle_dir("tinyclip", repo_id, prefix=("CLI-Culler", "Clip"))
 
 
 def default_aiculler_topiq_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_TOPIQ_REPO_ID) -> Path:
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "CLI-Culler" / "TOPIQ"
+    del repo_id  # the TOPIQ bundle always lands in one fixed directory
+    return managed_model_dir(*MODEL_BUNDLES["topiq"].install_parts)
 
 
 def default_aiculler_face_model_install_dir(*, repo_id: str = DEFAULT_AICULLER_FACE_REPO_ID) -> Path:
     # Laid out so InsightFace FaceAnalysis(name=<pack>, root=<.../faces>)
     # finds the ONNX at <root>/models/<pack>/<file>.onnx.
-    return (
-        _default_user_cache_root()
-        / "image_triage_ai_cache"
-        / "models"
-        / "CLI-Culler"
-        / "faces"
-        / "models"
-        / AICULLER_FACE_PACK_NAME
-    )
+    return managed_model_dir(*MODEL_BUNDLES["faces"].install_parts)
 
 
 def active_face_identity_model() -> str:
@@ -474,11 +494,26 @@ def download_ai_model(
     progress_callback: AIModelProgressCallback | None = None,
 ) -> AIModelInstallation:
     resolved = installation or resolve_ai_model_installation()
+
+    if bundle_install_dir_matches(resolved):
+        # Manifest bundles install transactionally: staged, fully verified and
+        # activated atomically, so an interrupted download can never leave a
+        # directory that later looks installed.
+        from .ai_model_store import install_bundle  # local import: avoids a cycle
+
+        install_bundle(
+            resolved.bundle_key,
+            force=force,
+            progress_callback=progress_callback,
+        )
+        return resolved
+
     resolved.install_dir.mkdir(parents=True, exist_ok=True)
 
     for filename in resolved.required_filenames:
         destination = resolved.install_dir / filename
-        if destination.exists() and not force:
+        expected = (resolved.expected_sha256 or {}).get(filename)
+        if destination.exists() and not force and _file_is_trusted(destination, expected):
             continue
         errors: list[str] = []
         for source_filename in resolved.download_filenames(filename):
@@ -555,18 +590,11 @@ SAM_MODEL_REQUIRED_FILENAMES = (
     "processor_config.json",
     "video_preprocessor_config.json",
 )
-DEFAULT_SAM_MODEL_SHA256 = {
-    "config.json": "860aff9751b139d83a4ad7df1e5535416fded533e0ead02625edbefcb9953cce",
-    "model.safetensors": "48c14467e5cf9e51870511feb72c89688e82dd74523142c0538b663e193ac2a7",
-    "preprocessor_config.json": "6ebf229ee259368ce4a8d4f2fe893a72b053023710853e257253939e601f583d",
-    "processor_config.json": "f8a68e865cfad115c1c2763f3d93eca7b1c622da06da2a9273eb437fb2389b6d",
-    "video_preprocessor_config.json": "9fccfe5f464ec38c2f236d0e6a68e95511c80c22132fc2fa4b9f7b65f24fad95",
-}
+DEFAULT_SAM_MODEL_SHA256 = bundle_expected_sha256("sam")
 
 
 def default_sam_model_install_dir(*, repo_id: str = DEFAULT_SAM_MODEL_REPO_ID) -> Path:
-    _owner, name = _repo_path_parts(repo_id)
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "Editor" / name
+    return _managed_bundle_dir("sam", repo_id, prefix=("Editor",))
 
 
 def resolve_sam_model_installation(
@@ -601,6 +629,7 @@ def resolve_sam_model_installation(
             and resolved_revision == DEFAULT_SAM_MODEL_REVISION
             else None
         ),
+        bundle_key="sam",
     )
 
 
@@ -619,7 +648,7 @@ def download_sam_model(
 
 DEFAULT_DEPTH_MODEL_REPO_ID = "depth-anything/Depth-Anything-V2-Small-hf"
 # Apache-2.0 (the Small variant only; Base/Large are CC-BY-NC).
-DEFAULT_DEPTH_MODEL_REVISION = "main"
+DEFAULT_DEPTH_MODEL_REVISION = MODEL_BUNDLES["depth"].revision
 DEFAULT_DEPTH_MODEL_SIZE_MB = 100
 DEPTH_MODEL_DIR_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_DIR"
 DEPTH_MODEL_REPO_ENV = "IMAGE_TRIAGE_DEPTH_MODEL_REPO_ID"
@@ -632,8 +661,7 @@ DEPTH_MODEL_REQUIRED_FILENAMES = (
 
 
 def default_depth_model_install_dir(*, repo_id: str = DEFAULT_DEPTH_MODEL_REPO_ID) -> Path:
-    _owner, name = _repo_path_parts(repo_id)
-    return _default_user_cache_root() / "image_triage_ai_cache" / "models" / "Editor" / name
+    return _managed_bundle_dir("depth", repo_id, prefix=("Editor",))
 
 
 def resolve_depth_model_installation(
@@ -662,7 +690,13 @@ def resolve_depth_model_installation(
         revision=resolved_revision,
         install_dir=Path(resolved_dir_value).expanduser().resolve(),
         required_filenames=DEPTH_MODEL_REQUIRED_FILENAMES,
-        expected_sha256=None,  # TODO: pin a revision + hashes once validated.
+        expected_sha256=(
+            bundle_expected_sha256("depth")
+            if resolved_repo_id == DEFAULT_DEPTH_MODEL_REPO_ID
+            and resolved_revision == DEFAULT_DEPTH_MODEL_REVISION
+            else None
+        ),
+        bundle_key="depth",
     )
 
 
@@ -737,6 +771,7 @@ def resolve_aiculler_face_model_installation(
             and resolved_revision == DEFAULT_AICULLER_FACE_REVISION
             else None
         ),
+        bundle_key="faces",
     )
 
 
@@ -812,30 +847,30 @@ def _download_file(
         raise
 
 
+def _file_is_trusted(path: Path, expected_sha256: str | None) -> bool:
+    """Whether an already-present file may be skipped.
+
+    A file with a published hash is only skipped once that hash matches, so a
+    truncated or intercepted earlier download is re-fetched instead of being
+    accepted forever.
+    """
+    if not expected_sha256:
+        try:
+            return path.stat().st_size > 0
+        except OSError:
+            return False
+    try:
+        return _sha256_file(path).casefold() == expected_sha256.casefold()
+    except OSError:
+        return False
+
+
 def _sha256_file(path: Path) -> str:
     hasher = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(AI_MODEL_DOWNLOAD_CHUNK_SIZE), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def _default_user_cache_root() -> Path:
-    if os.name == "nt":
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
-            return Path(local_appdata)
-        try:
-            return Path.home() / "AppData" / "Local"
-        except RuntimeError:
-            return Path.cwd() / ".image-triage-cache"
-    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache_home:
-        return Path(xdg_cache_home)
-    try:
-        return Path.home() / ".cache"
-    except RuntimeError:
-        return Path.cwd() / ".cache"
 
 
 def _repo_path_parts(repo_id: str) -> tuple[str, str]:

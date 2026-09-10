@@ -74,6 +74,9 @@ class MainWindowActions:
     ai_mode: QAction
     install_ai_runtime: QAction
     download_ai_model: QAction
+    repair_ai: QAction
+    check_ai_readiness: QAction
+    copy_ai_diagnostics: QAction
     uninstall_ai_components: QAction
     guided_ai_cull_preferences: QAction
     open_ai_workflow_center: QAction
@@ -349,6 +352,21 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Set Up AI...",
             slot=window._download_ai_model,
+        ),
+        repair_ai=_create_action(
+            window,
+            "Repair AI...",
+            slot=window._repair_ai_components,
+        ),
+        check_ai_readiness=_create_action(
+            window,
+            "Check AI Readiness (Demo Ready)...",
+            slot=window._check_ai_readiness,
+        ),
+        copy_ai_diagnostics=_create_action(
+            window,
+            "Copy AI Diagnostics",
+            slot=window._copy_ai_diagnostics,
         ),
         uninstall_ai_components=_create_action(
             window,

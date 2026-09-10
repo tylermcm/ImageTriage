@@ -7,10 +7,45 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from freeze_support import FreezeAssetLayout, prepare_ai_build_assets, resolve_freeze_asset_layout
+from freeze_support import (
+    FreezeAssetLayout,
+    QT_WINDOWS_BINARY_EXCLUDES,
+    prepare_ai_build_assets,
+    resolve_freeze_asset_layout,
+)
 
 
 class FreezeSupportTests(unittest.TestCase):
+    def test_qt_binary_excludes_block_all_host_icu_dependency_resolution(self) -> None:
+        self.assertEqual(
+            set(QT_WINDOWS_BINARY_EXCLUDES),
+            {"icu.dll", "icuin.dll", "icuuc.dll", "icudt78.dll"},
+        )
+
+    def test_frozen_layout_ships_managed_runtime_locks(self) -> None:
+        root = Path("C:/build-test")
+        layout = FreezeAssetLayout(
+            ai_source=root / "engine",
+            ai_site_packages_source=root / "site-packages",
+            ai_stdlib_source=root / "stdlib",
+            ai_binary_modules_source=root / "lib-dynload",
+        )
+        destinations = {destination for _source, destination in layout.include_files}
+
+        self.assertIn("packaging/ai_runtime_locks", destinations)
+
+    def test_frozen_layout_ships_cli_editor_package_on_the_import_path(self) -> None:
+        root = Path("C:/build-test")
+        layout = FreezeAssetLayout(
+            ai_source=root / "engine",
+            ai_site_packages_source=root / "site-packages",
+            ai_stdlib_source=root / "stdlib",
+            ai_binary_modules_source=root / "lib-dynload",
+        )
+        destinations = {destination for _source, destination in layout.include_files}
+
+        self.assertIn("lib/photo_terminal", destinations)
+
     def test_resolve_freeze_asset_layout_prefers_explicit_environment_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

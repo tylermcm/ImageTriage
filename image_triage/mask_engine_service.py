@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .ai_runtime_packages import resolve_ai_runtime_site_packages
+from .ai_env import RuntimeSelection, build_worker_env, select_runtime
 from .ai_workflow import (
     AIWorkflowRuntime,
     default_ai_workflow_runtime,
@@ -35,6 +35,11 @@ from .semantic_mask_service import (
 
 
 ProgressCallback = Callable[[str], None]
+
+# Bumped whenever the request/response shape between this service and
+# mask_engine_worker changes, so a worker left alive across an application
+# upgrade fails loudly instead of misreading a newer request.
+MASK_ENGINE_PROTOCOL_VERSION = 1
 
 ENGINE_SUBJECT = "subject"
 ENGINE_SEMANTIC = "semantic"
@@ -59,7 +64,9 @@ class MaskEngineService:
         self._lock = threading.RLock()
         self._process: subprocess.Popen[str] | None = None
         self._runtime: AIWorkflowRuntime | None = None
-        self._site_packages: tuple[Path, ...] = ()
+        # The profile this host was launched against, so a log line can name
+        # what actually loaded rather than what was requested.
+        self._selection: RuntimeSelection | None = None
         self._imports_ready = False
         self._loaded_models: dict[str, Path] = {}
         self._embedded_image_key: str | None = None
@@ -361,17 +368,20 @@ class MaskEngineService:
         self._clear_process_locked()
         logger = perf_logger()
         phase_started = time.perf_counter()
-        runtime, site_packages = _resolve_engine_runtime()
+        runtime, selection = _resolve_engine_runtime()
         logger.duration(
             "ai.mask.engine.service.runtime_resolve",
             _elapsed_ms(phase_started),
             requested_device=runtime.device,
-            site_packages=len(site_packages),
+            selected_device=selection.device,
+            profile=selection.profile_id,
         )
         worker_path = _mask_engine_worker_path(runtime)
         command = resolve_ai_python_script_command(worker_path, runtime=runtime)
-        command.extend(("--server", "--device", runtime.device))
-        env = _engine_worker_environment(site_packages, logger.enabled)
+        # The worker is told the *resolved* device, never "auto", so parent and
+        # child can never select different profiles for one job.
+        command.extend(("--server", "--device", selection.device))
+        env = _engine_worker_environment(selection, logger.enabled)
         creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
         phase_started = time.perf_counter()
         process = subprocess.Popen(
@@ -391,7 +401,7 @@ class MaskEngineService:
             raise RuntimeError("MaskEngine host did not expose its command pipes.")
         self._process = process
         self._runtime = runtime
-        self._site_packages = site_packages
+        self._selection = selection
         self._imports_ready = False
         self._loaded_models = {}
         self._device = "unknown"
@@ -399,6 +409,8 @@ class MaskEngineService:
             "ai.mask.engine.service.worker_spawn",
             _elapsed_ms(phase_started),
             requested_device=runtime.device,
+            selected_device=selection.device,
+            profile=selection.profile_id,
             worker_pid=process.pid,
         )
 
@@ -525,7 +537,7 @@ class MaskEngineService:
         process = self._process
         self._process = None
         self._runtime = None
-        self._site_packages = ()
+        self._selection = None
         self._imports_ready = False
         self._loaded_models = {}
         self._embedded_image_key = None
@@ -570,31 +582,27 @@ def _mask_engine_worker_path(runtime: AIWorkflowRuntime) -> Path:
     return worker_path
 
 
-def _engine_worker_environment(site_packages: tuple[Path, ...], metrics_enabled: bool) -> dict[str, str]:
-    from .ai_workflow import AI_METRICS_ENV_VAR
-
-    env = os.environ.copy()
-    existing = [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
-    env["PYTHONPATH"] = os.pathsep.join([*(str(p) for p in site_packages), *existing])
-    env["PYTHONUNBUFFERED"] = "1"
-    env["HF_HUB_OFFLINE"] = "1"
-    env["TRANSFORMERS_OFFLINE"] = "1"
-    env[AI_METRICS_ENV_VAR] = "1" if metrics_enabled else "0"
-    return env
+def _engine_worker_environment(selection: RuntimeSelection, metrics_enabled: bool) -> dict[str, str]:
+    """One environment builder for every worker (see image_triage.ai_env)."""
+    return build_worker_env(
+        selection,
+        metrics_enabled=metrics_enabled,
+        protocol_version=MASK_ENGINE_PROTOCOL_VERSION,
+    )
 
 
-def _resolve_engine_runtime() -> tuple[AIWorkflowRuntime, tuple[Path, ...]]:
+def _resolve_engine_runtime() -> tuple[AIWorkflowRuntime, RuntimeSelection]:
+    """Pin one runtime profile for the shared mask-engine host.
+
+    The host requires the managed PyTorch runtime, but deliberately *not* any
+    particular model bundle: it loads engines lazily, and each caller has
+    already verified its own capability. Requiring every bundle here would let
+    one missing model (OneFormer, say) disable unrelated features such as depth
+    estimation and click selection.
+    """
     runtime = default_ai_workflow_runtime()
-    site_packages = resolve_ai_runtime_site_packages(device=runtime.device)
-    if not site_packages:
-        raise RuntimeError("The AI runtime is unavailable. Install the PyTorch AI runtime first.")
-    # The host can serve any editor engine; require the union of their deps so a
-    # spawned host can warm either without a mid-session surprise.
-    required = ("torch", "transformers", "safetensors", "timm", "PIL", "numpy")
-    missing = [name for name in required if not any((d / name).exists() for d in site_packages)]
-    if missing:
-        raise RuntimeError("The installed AI runtime is missing MaskEngine dependencies: " + ", ".join(missing))
-    return runtime, site_packages
+    selection = select_runtime(runtime.device, require_torch=True)
+    return runtime, selection
 
 
 __all__ = [

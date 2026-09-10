@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from image_triage import ai_runtime_packages
 from image_triage.ai_runtime_packages import (
     AI_RUNTIME_CPU_VARIANT,
     AI_RUNTIME_GPU_VARIANT,
@@ -123,12 +124,73 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertIn("https://download.pytorch.org/whl/cpu", args)
         self.assertIn("--progress-bar", args)
         self.assertIn("raw", args)
-        self.assertIn("transformers==5.14.1", args)
-        self.assertIn("torch==2.9.0", args)
-        self.assertIn("torchvision==0.24.0", args)
-        self.assertIn("onnx>=1.16", args)
-        self.assertIn("onnxruntime>=1.16", args)
-        self.assertNotIn("onnxruntime-gpu>=1.26,<1.27", args)
+
+    def test_install_uses_the_pinned_lock_when_this_build_ships_one(self) -> None:
+        # A lock pins every transitive distribution and its wheel hash, so pip
+        # must not resolve anything of its own.
+        for variant in (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT):
+            with self.subTest(variant=variant):
+                lock = ai_runtime_packages.resolve_lock_file(variant)
+                if lock is None:
+                    self.skipTest(f"no lock ships for {variant} on this interpreter")
+                args = build_ai_runtime_pip_install_args(
+                    variant=variant, target_dir=Path("C:/temp/runtime")
+                )
+                self.assertIn("--require-hashes", args)
+                self.assertIn("--no-deps", args)
+                self.assertIn(str(lock), args)
+
+    def test_requirements_are_pinned_exactly_when_no_lock_ships(self) -> None:
+        # The fallback path must still be reproducible: no open floors.
+        with patch("image_triage.ai_runtime_packages.resolve_lock_file", return_value=None):
+            cpu = build_ai_runtime_pip_install_args(
+                variant=AI_RUNTIME_CPU_VARIANT, target_dir=Path("C:/temp/runtime")
+            )
+            gpu = build_ai_runtime_pip_install_args(
+                variant=AI_RUNTIME_GPU_VARIANT, target_dir=Path("C:/temp/runtime")
+            )
+
+        self.assertIn("transformers==5.14.1", cpu)
+        self.assertIn("torch==2.9.0", cpu)
+        self.assertIn("torchvision==0.24.0", cpu)
+        self.assertIn("onnxruntime==1.27.0", cpu)
+        self.assertIn("insightface==1.0.1", cpu)
+        self.assertNotIn("onnxruntime-gpu==1.26.0", cpu)
+
+        self.assertIn("torch==2.9.0+cu128", gpu)
+        self.assertIn("onnxruntime-gpu==1.26.0", gpu)
+        # The CPU wheel installs the same package directory as the GPU wheel.
+        self.assertNotIn("onnxruntime==1.27.0", gpu)
+
+        floors = [
+            requirement
+            for requirement in cpu + gpu
+            if isinstance(requirement, str) and ">=" in requirement and "://" not in requirement
+        ]
+        self.assertEqual(floors, [], msg=f"open version floors remain: {floors}")
+
+    def test_missing_lock_can_be_made_a_hard_error_for_release_builds(self) -> None:
+        with patch("image_triage.ai_runtime_packages.resolve_lock_file", return_value=None):
+            with patch.dict(
+                os.environ,
+                {ai_runtime_packages.AI_RUNTIME_REQUIRE_LOCK_ENV: "1"},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "refresh_ai_runtime_lock"):
+                    build_ai_runtime_pip_install_args(
+                        variant=AI_RUNTIME_CPU_VARIANT, target_dir=Path("C:/temp/runtime")
+                    )
+
+    def test_frozen_windows_build_cannot_install_without_a_lock(self) -> None:
+        with (
+            patch("image_triage.ai_runtime_packages.resolve_lock_file", return_value=None),
+            patch("image_triage.ai_runtime_packages.sys.frozen", True, create=True),
+            patch("image_triage.ai_runtime_packages.os.name", "nt"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "refresh_ai_runtime_lock"):
+                build_ai_runtime_pip_install_args(
+                    variant=AI_RUNTIME_CPU_VARIANT, target_dir=Path("C:/temp/runtime")
+                )
 
     def test_default_pip_runner_uses_embedded_pip_when_frozen(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -151,11 +213,64 @@ class AIRuntimePackageTests(unittest.TestCase):
         )
 
         self.assertIn("https://download.pytorch.org/whl/cu128", args)
-        self.assertIn("torch==2.9.0+cu128", args)
-        self.assertIn("torchvision==0.24.0+cu128", args)
-        self.assertIn("onnx>=1.16", args)
-        self.assertIn("onnxruntime-gpu>=1.26,<1.27", args)
-        self.assertNotIn("onnxruntime>=1.16", args)
+
+    def test_shipped_locks_never_contain_both_onnxruntime_distributions(self) -> None:
+        # Both wheels install the same `onnxruntime` package directory, so a
+        # profile holding both has an provider set decided by unpack order.
+        for include_dino in (True, False):
+            lock = ai_runtime_packages.resolve_lock_file(
+                AI_RUNTIME_GPU_VARIANT, include_dino=include_dino
+            )
+            if lock is None:
+                continue
+            with self.subTest(include_dino=include_dino):
+                names = {
+                    line.split("==", 1)[0].strip().lower()
+                    for line in lock.read_text(encoding="utf-8").splitlines()
+                    if "==" in line and not line.startswith("#")
+                }
+                self.assertIn("onnxruntime-gpu", names)
+                self.assertNotIn("onnxruntime", names)
+
+    def test_shipped_locks_never_contain_both_opencv_distributions(self) -> None:
+        for variant in (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT):
+            for include_dino in (True, False):
+                lock = ai_runtime_packages.resolve_lock_file(
+                    variant, include_dino=include_dino
+                )
+                if lock is None:
+                    continue
+                with self.subTest(variant=variant, include_dino=include_dino):
+                    names = {
+                        line.split("==", 1)[0].strip().lower()
+                        for line in lock.read_text(encoding="utf-8").splitlines()
+                        if "==" in line and not line.startswith("#")
+                    }
+                    self.assertIn("opencv-python-headless", names)
+                    self.assertNotIn("opencv-python", names)
+
+    def test_shipped_locks_hash_every_distribution(self) -> None:
+        for variant in (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT):
+            for include_dino in (True, False):
+                lock = ai_runtime_packages.resolve_lock_file(
+                    variant, include_dino=include_dino
+                )
+                if lock is None:
+                    continue
+                with self.subTest(variant=variant, include_dino=include_dino):
+                    lines = [
+                        line.strip()
+                        for line in lock.read_text(encoding="utf-8").splitlines()
+                        if line.strip() and not line.strip().startswith("#")
+                    ]
+                    pins = [line for line in lines if "==" in line]
+                    hashes = [line for line in lines if line.startswith("--hash=sha256:")]
+                    self.assertTrue(pins, msg=f"{lock.name} pins nothing")
+                    self.assertEqual(
+                        len(pins),
+                        len(hashes),
+                        msg=f"{lock.name} has {len(pins)} pins but {len(hashes)} hashes",
+                    )
 
     def test_runtime_install_can_skip_optional_dino_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -177,7 +292,10 @@ class AIRuntimePackageTests(unittest.TestCase):
 
             self.assertEqual(status.installed_variants, (AI_RUNTIME_CPU_VARIANT,))
             self.assertEqual(status.dino_installed_variants, ())
-            self.assertNotIn("transformers==5.14.1", recorded_calls[0])
+            self.assertTrue(
+                any("-base" in str(item) for item in recorded_calls[0]),
+                msg=f"compact install did not use the base set: {recorded_calls[0]}",
+            )
 
     def test_full_runtime_install_upgrades_existing_compact_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -188,7 +306,9 @@ class AIRuntimePackageTests(unittest.TestCase):
                 self.assertEqual(cwd, install_root)
                 recorded_calls.append(args)
                 target_dir = Path(args[args.index("--target") + 1])
-                if "transformers==5.14.1" in args:
+                # The requirement set now reaches pip through a lock file, so
+                # infer the profile from the recorded call order instead.
+                if len(recorded_calls) > 1:
                     _materialize_runtime_modules(target_dir)
                 else:
                     _materialize_base_runtime_modules(target_dir)
@@ -213,8 +333,13 @@ class AIRuntimePackageTests(unittest.TestCase):
                 (AI_RUNTIME_CPU_VARIANT,),
             )
             self.assertEqual(len(recorded_calls), 2)
-            self.assertNotIn("transformers==5.14.1", recorded_calls[0])
-            self.assertIn("transformers==5.14.1", recorded_calls[1])
+            # Each install names the lock (or requirement set) for its own
+            # profile shape: compact first, then the PyTorch one.
+            self.assertTrue(
+                any("-base" in str(item) for item in recorded_calls[0]),
+                msg=f"compact install did not use the base set: {recorded_calls[0]}",
+            )
+            self.assertFalse(any("-base" in str(item) for item in recorded_calls[1]))
 
     def test_failed_reinstall_preserves_active_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -462,6 +587,21 @@ class AIRuntimePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing installed files"):
                 _validate_distribution_records(site_packages)
 
+    def test_distribution_validation_rejects_both_opencv_wheels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            site_packages = Path(temp_dir)
+            for name in ("opencv_python", "opencv_python_headless"):
+                dist_info = site_packages / f"{name}-5.0.0.93.dist-info"
+                dist_info.mkdir()
+                (dist_info / "METADATA").write_text(
+                    f"Name: {name.replace('_', '-')}\nVersion: 5.0.0.93\n",
+                    encoding="utf-8",
+                )
+                (dist_info / "RECORD").write_text("", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "both opencv-python"):
+                _validate_distribution_records(site_packages)
+
     def test_runtime_install_lock_rejects_a_second_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime_root = Path(temp_dir) / "runtime"
@@ -524,6 +664,35 @@ class AIRuntimePackageTests(unittest.TestCase):
             status.profiles[AI_RUNTIME_CPU_VARIANT].missing_modules,
         )
 
+
+
+class OnnxRuntimeExclusivityTests(unittest.TestCase):
+    """A profile must never hold both ONNX Runtime distributions at once."""
+
+    @staticmethod
+    def _distribution(site_packages: Path, name: str, version: str) -> None:
+        info = site_packages / f"{name.replace('-', '_')}-{version}.dist-info"
+        info.mkdir(parents=True)
+        (info / "METADATA").write_text(
+            f"Name: {name}\nVersion: {version}\n", encoding="utf-8"
+        )
+        (info / "RECORD").write_text("", encoding="utf-8")
+
+    def test_both_distributions_present_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            site_packages = Path(temp_dir)
+            self._distribution(site_packages, "onnxruntime", "1.26.0")
+            self._distribution(site_packages, "onnxruntime-gpu", "1.26.0")
+
+            with self.assertRaisesRegex(RuntimeError, "onnxruntime-gpu"):
+                ai_runtime_packages._validate_onnxruntime_exclusivity(site_packages)
+
+    def test_a_single_distribution_is_accepted(self) -> None:
+        for name in ("onnxruntime", "onnxruntime-gpu"):
+            with self.subTest(distribution=name), tempfile.TemporaryDirectory() as temp_dir:
+                site_packages = Path(temp_dir)
+                self._distribution(site_packages, name, "1.26.0")
+                ai_runtime_packages._validate_onnxruntime_exclusivity(site_packages)
 
 if __name__ == "__main__":
     unittest.main()

@@ -2949,6 +2949,15 @@ class PhotoEditorPanel(QFrame):
         )
 
     def _mask_models_are_installed(self) -> bool:
+        """Whether the editor masking models are verified, not merely present.
+
+        ``AIModelInstallation.is_installed`` now consults the transactional
+        model store, so a partial or wrong-revision download no longer reads as
+        installed (docs/ai_runtime_failure_map.md, root cause B). The runtime
+        packages behind these models are a separate concern reported by
+        ``image_triage.ai_health``; this gate only covers the downloads this
+        panel owns.
+        """
         return all(
             installation.is_installed
             for _label, installation in self._mask_model_installations()

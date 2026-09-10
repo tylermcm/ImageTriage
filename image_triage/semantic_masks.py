@@ -24,6 +24,7 @@ from .ai_model import (
     download_segmentation_model,
     resolve_segmentation_model_installation,
 )
+from .ai_paths import managed_cache_dir
 from .imaging import load_image_for_display
 from .mask_engine_service import default_mask_engine_service
 from .perf import perf_logger, write_execution_log
@@ -141,25 +142,14 @@ def _load_opencv() -> Any | None:
 
 
 def default_semantic_mask_cache_root() -> Path:
-    if os.name == "nt":
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
-            base = Path(local_appdata)
-        else:
-            try:
-                base = Path.home() / "AppData" / "Local"
-            except RuntimeError:
-                base = Path.cwd() / ".image-triage-cache"
-    else:
-        xdg_cache = os.environ.get("XDG_CACHE_HOME")
-        if xdg_cache:
-            base = Path(xdg_cache)
-        else:
-            try:
-                base = Path.home() / ".cache"
-            except RuntimeError:
-                base = Path.cwd() / ".cache"
-    return base / "image_triage_ai_cache" / "semantic_masks"
+    """Managed cache directory for semantic_masks.
+
+    Resolves through the one canonical managed root so it cannot land inside
+    Store Python's virtualized package cache (docs/ai_runtime_failure_map.md,
+    root cause A). Migration of a previous release's directory happens once,
+    explicitly, in ``ai_model_store.migrate_ai_assets``.
+    """
+    return managed_cache_dir("semantic_masks")
 
 
 def ensure_semantic_masks(

@@ -5,6 +5,7 @@ from cx_Freeze import Executable, setup
 from freeze_support import (
     AI_FREEZE_EXCLUDES,
     APP_ICON_WINDOWS_PATH,
+    QT_WINDOWS_BINARY_EXCLUDES,
     prepare_ai_build_assets,
     read_project_version,
 )
@@ -14,10 +15,24 @@ freeze_assets = prepare_ai_build_assets()
 
 build_exe_options = {
     "include_msvcr": True,
+    # Qt 6.11 uses Windows' System32 ICU forwarders. Never freeze host ICU
+    # binaries because tools such as Poppler may expose incompatible versions.
+    "bin_excludes": list(QT_WINDOWS_BINARY_EXCLUDES),
     "includes": [
         "astropy",
         "astropy.io.fits",
         "astropy.visualization",
+        # The capability probe runs inside the frozen ai_runtime_installer.exe
+        # and is imported lazily, so name it (and the manifest it reads)
+        # explicitly rather than relying on static import analysis.
+        "aiculler.topiq_onnx",
+        "image_triage.ai_manifest",
+        "image_triage.ai_paths",
+        "image_triage.ai_probe",
+        "image_triage.birefnet_worker",
+        "image_triage.depth_worker",
+        "image_triage.oneformer_worker",
+        "image_triage.sam_worker",
         "onnxruntime",
         "PIL",
         "pip",

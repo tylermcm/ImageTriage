@@ -40,6 +40,41 @@ ENGINE_PROMPT = "prompt"
 ENGINE_DEPTH = "depth"
 ENGINE_NAMES = (ENGINE_SUBJECT, ENGINE_SEMANTIC, ENGINE_PROMPT, ENGINE_DEPTH)
 
+# Must match mask_engine_service.MASK_ENGINE_PROTOCOL_VERSION.
+MASK_ENGINE_PROTOCOL_VERSION = 1
+
+
+def _parent_environment() -> dict[str, str]:
+    """What the parent pinned for this process, for reporting back.
+
+    Read straight from the environment rather than importing image_triage:
+    this module runs under the managed AI runtime, which has no Qt and no
+    guarantee that the application package is importable.
+    """
+    import os
+
+    return {
+        "profile": (os.environ.get("IMAGE_TRIAGE_AI_PROFILE", "") or "").strip(),
+        "selectedDevice": (os.environ.get("IMAGE_TRIAGE_AI_SELECTED_DEVICE", "") or "").strip(),
+        "protocol": (os.environ.get("IMAGE_TRIAGE_AI_PROTOCOL", "") or "").strip(),
+    }
+
+
+def _loaded_runtime_report() -> dict[str, object]:
+    """Where this process's packages *actually* came from.
+
+    The parent logs this so a mismatch between the profile it selected and the
+    one the worker loaded is visible instead of silent.
+    """
+    report: dict[str, object] = dict(_parent_environment())
+    for module_name in ("torch", "transformers", "numpy"):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        report[f"{module_name}Version"] = str(getattr(module, "__version__", "") or "")
+        report[f"{module_name}Path"] = str(getattr(module, "__file__", "") or "")
+    return report
+
 
 class MaskEngineHost:
     """Own one process's worth of torch and route requests to per-model engines.
@@ -214,10 +249,25 @@ def run_server(requested_device: str, *, host: MaskEngineHost | None = None) -> 
             request_id = request.get("id")
             command = str(request.get("command") or "").strip().casefold()
             engine = str(request.get("engine") or "").strip().casefold() or None
-            if command == "warm-imports":
+            if command == "handshake":
+                _server_response(
+                    request_id,
+                    result={
+                        "stage": "handshake",
+                        "protocol": MASK_ENGINE_PROTOCOL_VERSION,
+                        "runtime": _loaded_runtime_report(),
+                    },
+                )
+            elif command == "warm-imports":
                 device = host.warm_imports(engine)
                 _server_response(
-                    request_id, result={"device": device, "stage": "imports", "engine": engine or "all"}
+                    request_id,
+                    result={
+                        "device": device,
+                        "stage": "imports",
+                        "engine": engine or "all",
+                        "runtime": _loaded_runtime_report(),
+                    },
                 )
             elif command == "load-model":
                 if engine is None:
@@ -256,6 +306,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.server:
         parser.error("mask_engine_worker only runs in --server mode")
+    parent = _parent_environment()
+    if parent["protocol"] and parent["protocol"] != str(MASK_ENGINE_PROTOCOL_VERSION):
+        print(
+            f"MaskEngine speaks protocol {MASK_ENGINE_PROTOCOL_VERSION} but was started "
+            f"by protocol {parent['protocol']}. Restart Image Triage.",
+            file=sys.stderr,
+        )
+        return 3
     return run_server(args.device)
 
 

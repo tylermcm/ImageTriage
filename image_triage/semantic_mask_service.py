@@ -17,7 +17,8 @@ from pathlib import Path
 from PySide6.QtCore import QRunnable
 
 from .ai_model import resolve_segmentation_model_installation
-from .ai_runtime_packages import resolve_ai_runtime_site_packages
+from .ai_env import RuntimeSelection, select_runtime
+from .ai_health import require_capability
 from .ai_workflow import AI_METRIC_PREFIX, AIWorkflowRuntime, default_ai_workflow_runtime
 from .perf import perf_logger
 
@@ -62,48 +63,44 @@ class _WorkerTransportError(RuntimeError):
     pass
 
 
-def _resolve_semantic_runtime() -> tuple[AIWorkflowRuntime, tuple[Path, ...]]:
+def resolve_mask_runtime(capability_key: str) -> tuple[AIWorkflowRuntime, RuntimeSelection]:
+    """Pin one runtime profile for a single editor mask capability.
+
+    Readiness comes from the central capability health service, so this can no
+    longer disagree with what Settings reported (docs/ai_runtime_failure_map.md,
+    root cause C). The capability key matters: depth estimation and click
+    selection must not be blocked by a missing OneFormer model, and vice versa.
+    """
     runtime = default_ai_workflow_runtime()
-    site_packages = resolve_ai_runtime_site_packages(device=runtime.device)
-    if not site_packages:
-        raise RuntimeError(
-            "The AI runtime is unavailable. Install the PyTorch AI runtime first."
-        )
-    required_modules = ("torch", "transformers", "safetensors", "PIL", "numpy")
-    missing = [
-        name
-        for name in required_modules
-        if not any((site_dir / name).exists() for site_dir in site_packages)
-    ]
-    if missing:
-        raise RuntimeError(
-            "The installed AI runtime is missing scene-mask dependencies: "
-            + ", ".join(missing)
-            + ". Open Settings, run Set Up AI again, and reinstall the selected runtime "
-            "to add editor masking support."
-        )
-    return runtime, site_packages
+    selection = select_runtime(runtime.device, require_torch=True)
+    require_capability(capability_key, device=runtime.device)
+    return runtime, selection
 
 
-_RUNTIME_VALIDATED = False
+_VALIDATED_CAPABILITIES: set[str] = set()
+
+
+def validate_mask_runtime(capability_key: str) -> None:
+    """Validate one editor mask capability, at most once per session.
+
+    Resolving the runtime costs ~140 ms and is stable within a session, so the
+    result is cached per capability. The host spawn path re-resolves
+    independently, so a genuinely broken runtime still surfaces.
+    """
+    if capability_key in _VALIDATED_CAPABILITIES:
+        return
+    resolve_mask_runtime(capability_key)
+    _VALIDATED_CAPABILITIES.add(capability_key)
 
 
 def validate_semantic_runtime() -> None:
-    # Resolving the runtime (env + filesystem existence checks) costs ~140 ms
-    # and is stable within a session, so validate once. The host spawn path
-    # re-resolves independently, so a genuinely broken runtime still surfaces.
-    global _RUNTIME_VALIDATED
-    if _RUNTIME_VALIDATED:
-        return
-    _resolve_semantic_runtime()
-    _RUNTIME_VALIDATED = True
+    validate_mask_runtime("scene_masks")
 
 
 def reset_runtime_validation_cache() -> None:
-    """Force the next ``validate_semantic_runtime`` to re-check (tests, or after
-    the AI runtime is (un)installed / the device changes mid-session)."""
-    global _RUNTIME_VALIDATED
-    _RUNTIME_VALIDATED = False
+    """Force the next validation to re-check (tests, or after the AI runtime is
+    (un)installed / the device changes mid-session)."""
+    _VALIDATED_CAPABILITIES.clear()
 
 
 class SemanticMaskWarmTask(QRunnable):
@@ -162,5 +159,7 @@ __all__ = [
     "SemanticMaskWarmTask",
     "SemanticWorkerResult",
     "reset_runtime_validation_cache",
+    "resolve_mask_runtime",
+    "validate_mask_runtime",
     "validate_semantic_runtime",
 ]
