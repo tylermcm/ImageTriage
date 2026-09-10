@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from enum import Enum
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
+
+
+CHECKBOX_CHECK_ASSET = (Path(__file__).resolve().parent / "assets" / "checkbox_check.png").as_posix()
 
 
 class AppearanceMode(str, Enum):
@@ -407,7 +411,7 @@ def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
 
 
 def default_theme() -> ThemePalette:
-    return _dark_theme()
+    return _graphite_theme()
 
 
 def contrast_ratio(foreground: ColorToken, background: ColorToken) -> float:
@@ -643,6 +647,29 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_primary.css};
             outline: none;
             selection-background-color: {theme.selection_fill.css};
+        }}
+        QCheckBox {{
+            color: {theme.text_primary.css};
+            spacing: 8px;
+        }}
+        QCheckBox::indicator {{
+            width: 15px;
+            height: 15px;
+            background-color: {theme.input_bg.css};
+            border: 2px solid {theme.text_muted.css};
+            border-radius: 4px;
+        }}
+        QCheckBox::indicator:hover {{
+            border-color: {theme.accent_hover.css};
+        }}
+        QCheckBox::indicator:checked {{
+            background-color: {theme.accent.css};
+            border-color: {theme.accent.css};
+            image: url("{CHECKBOX_CHECK_ASSET}");
+        }}
+        QCheckBox::indicator:disabled {{
+            background-color: {theme.panel_alt_bg.css};
+            border-color: {theme.border.css};
         }}
         QComboBox#settingsSessionCombo {{
             padding-left: 0px;
@@ -1145,9 +1172,34 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
         }}
-        QScrollArea#inspectorScrollArea, QWidget#inspectorBody {{
+        QScrollArea#inspectorScrollArea, QWidget#inspectorBody,
+        QScrollArea#inspectorSectionScrollArea,
+        QScrollArea#inspectorSectionScrollArea > QWidget > QWidget {{
             background-color: transparent;
             border: none;
+        }}
+        QScrollBar#inspectorSectionScrollBar:vertical {{
+            background: transparent;
+            width: 7px;
+            margin: 1px 0px;
+        }}
+        QScrollBar#inspectorSectionScrollBar::handle:vertical {{
+            background-color: {theme.border.css};
+            border-radius: 3px;
+            min-height: 22px;
+        }}
+        QScrollBar#inspectorSectionScrollBar::handle:vertical:hover {{
+            background-color: {theme.text_muted.css};
+        }}
+        QScrollBar#inspectorSectionScrollBar::add-line:vertical,
+        QScrollBar#inspectorSectionScrollBar::sub-line:vertical {{
+            height: 0px;
+            background: transparent;
+            border: none;
+        }}
+        QScrollBar#inspectorSectionScrollBar::add-page:vertical,
+        QScrollBar#inspectorSectionScrollBar::sub-page:vertical {{
+            background: transparent;
         }}
         QScrollBar#inspectorOverlayScrollBar:vertical {{
             background: transparent;
@@ -1743,12 +1795,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_secondary.css};
             font-size: 13px;
             outline: 0;
-            padding: 18px 8px;
+            padding: 22px 10px;
         }}
         QListWidget#settingsSectionList::item {{
-            padding: 8px 14px;
+            padding: 11px 14px;
             border-radius: 8px;
-            margin: 1px 4px;
+            margin: 2px 4px;
         }}
         QListWidget#settingsSectionList::item:hover {{
             background-color: {theme.input_hover_bg.css};
@@ -1767,9 +1819,19 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#settingsPageTitle {{
             color: {theme.text_primary.css};
-            font-size: 18px;
+            font-size: 22px;
             font-weight: 700;
-            padding-bottom: 4px;
+            padding-bottom: 2px;
+        }}
+        QLabel#settingsPageSubtitle {{
+            color: {theme.text_muted.css};
+            font-size: 12px;
+        }}
+        QLabel#settingsCategoryHeading {{
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 2px 3px 2px;
         }}
         QFrame#settingsPageSeparator {{
             background-color: {theme.border_muted.css};
@@ -1780,9 +1842,21 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 12px;
             font-weight: 500;
         }}
+        QWidget#settingsRow {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 8px;
+        }}
+        QWidget#settingsRow:hover {{
+            border-color: {theme.border.css};
+        }}
         QFrame#settingsFooter {{
             background-color: {theme.panel_alt_bg.css};
             border-top: 1px solid {theme.border_muted.css};
+        }}
+        QPushButton#settingsHelpButton {{
+            min-height: 30px;
+            padding: 0 14px;
         }}
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};

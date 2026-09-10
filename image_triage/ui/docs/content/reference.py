@@ -15,10 +15,23 @@ ARTICLES = [
         id="shortcuts",
         title="Keyboard shortcuts",
         category="reference",
-        summary="The complete keyboard reference.",
+        summary="The main built-in shortcuts and where to customize command keys.",
         keywords=("shortcut", "shortcuts", "keyboard", "hotkey", "keys"),
         markdown="""
         # Keyboard shortcuts
+
+        Open **`Settings > Settings... > Shortcuts`** to change the listed command shortcuts. Click a key field and press the new combination; Reset restores that command's default.
+
+        ## App and view
+
+        | Key | Action |
+        | --- | --- |
+        | `Ctrl+O` | Open a folder |
+        | `F5` | Refresh the open folder |
+        | `Ctrl+,` | Open Settings |
+        | `F1` | Open Documentation |
+        | `Ctrl+1` / `Ctrl+2` | Switch between Grid and Details view |
+        | `F11` | Toggle Zen Mode |
 
         ## Sorting
 
@@ -59,6 +72,19 @@ ARTICLES = [
         | --- | --- |
         | `Ctrl+Alt+P` | Next AI top pick |
         | `Ctrl+Alt+G` | Compare current AI group |
+        | `Ctrl+Shift+W` | Open the AI Workflow Center |
+        | `Ctrl+Shift+Y` | Quick Rerank an unchanged folder |
+
+        ## Batch and handoff tools
+
+        | Key | Action |
+        | --- | --- |
+        | `Ctrl+Shift+R` | Batch Rename |
+        | `Ctrl+Shift+E` | Batch Resize |
+        | `Ctrl+Shift+C` | Batch Convert |
+        | `Ctrl+Alt+H` | Deliver / Handoff Builder |
+        | `Ctrl+Alt+E` | Send To Editor |
+        | `Ctrl+Alt+B` | Best-of-Set Auto Assembly |
 
         See [Working keyboard-first](doc:keyboard-first) for how to put these together.
         """,

@@ -26,7 +26,7 @@ ARTICLES = [
 
         - **Speed** — review and sort hundreds of images with the keyboard, not the mouse.
         - **Safety** — nothing is moved, copied, or deleted unless you ask for it.
-        - **Optional AI** — let the app score and pre-sort a folder, then learn your taste over time. AI suggests; you decide.
+        - **Optional AI** — let the app group, score, and pre-sort a folder. AI suggests; you decide.
 
         ## Where to go next
 
@@ -35,7 +35,7 @@ ARTICLES = [
         - Ready to move fast? Read [Working keyboard-first](doc:keyboard-first).
         - Curious about the AI? Begin with [How AI culling works](doc:how-ai-works).
 
-        > **Tip:** Every dialog with a **`?`** button has focused help for that screen. This Documentation window is the full reference behind those buttons.
+        > **Tip:** Press `F1` at any time to reopen this documentation. Some task windows also include a Help button for guidance about that specific screen.
         """,
     ),
     DocArticle(
@@ -66,9 +66,11 @@ ARTICLES = [
         - **File** — open folders and manage the session.
         - **View** — appearance, layout, sorting, filters, and burst views.
         - **Review** — culling, preview, and selection tools.
-        - **Library / Workflow** — collections, the catalog, and export recipes.
+        - **Library** — collections and the searchable catalog.
+        - **Workflow** — delivery, editor handoff, and reusable export recipes.
         - **AI** — guided culling, the AI Workflow Center, and result filters.
         - **Tools** — batch rename, resize, convert, and archive.
+        - **Settings** — app behavior, interface, folders, AI culling, duplicate checks, and shortcuts.
         - **Help** — this documentation, guides, and updates.
 
         ## The status bar
@@ -91,7 +93,7 @@ ARTICLES = [
         2. **Select images** — click, `Ctrl`-click, `Shift`-click, or drag to marquee-select. See [Selecting images](doc:selecting).
         3. **Cull quickly** — `W` marks winners, `X` rejects, `K` moves to `_keep`, `M` moves, `Delete` trashes.
         4. **Preview when unsure** — `Space` or `Enter` opens the full view.
-        5. **Run batch actions** — right-click or the **Tools** menu for rename, resize, convert, and archive.
+        5. **Run batch actions** — use the **Tools** menu for rename, resize, convert, and archive.
         6. **Organize by drag and drop** — drop onto folders or favorites; hold `Ctrl` to copy instead of move.
 
         ## Made a mistake?

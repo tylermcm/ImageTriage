@@ -196,7 +196,25 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         result = dialog.result_settings()
 
         self.assertNotIn("DINO Prefilter", pages)
+        self.assertIn("AI Culling", pages)
+        self.assertIn("Duplicates", pages)
         self.assertFalse(result.dino_prefilter_settings.enabled)
+        dialog.deleteLater()
+
+    def test_settings_refresh_uses_descriptions_and_labeled_help(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+        )
+
+        labels = {label.text() for label in dialog.findChildren(QLabel)}
+
+        self.assertGreaterEqual(dialog.minimumWidth(), 760)
+        self.assertIn("Review behavior", labels)
+        self.assertIn("Navigation and preview", labels)
+        self.assertEqual("Settings Guide", dialog.help_button.text())
         dialog.deleteLater()
 
     def test_dino_prefilter_result_settings_round_trip_controls(self) -> None:

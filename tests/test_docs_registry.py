@@ -57,6 +57,13 @@ class DocsRegistryTests(unittest.TestCase):
     def test_get_registry_is_cached_singleton(self) -> None:
         self.assertIs(get_registry(), get_registry())
 
+    def test_current_settings_and_editor_guides_are_registered(self) -> None:
+        article_ids = {article.id for article in self.registry.all_articles()}
+
+        self.assertIn("duplicate-settings", article_ids)
+        self.assertIn("editor-masks", article_ids)
+        self.assertIsNone(self.registry.article("training"))
+
 
 if __name__ == "__main__":
     unittest.main()

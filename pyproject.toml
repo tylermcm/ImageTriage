@@ -30,7 +30,7 @@ include = ["image_triage*", "aiculler*"]
 
 [tool.setuptools.package-data]
 aiculler = ["resources/*.csv"]
-"image_triage.ui" = ["assets/*.png"]
+"image_triage.ui" = ["assets/*.png", "assets/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
