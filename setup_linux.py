@@ -17,6 +17,17 @@ build_exe_options = {
         "astropy",
         "astropy.io.fits",
         "astropy.visualization",
+        # The capability probe runs inside the frozen ai_runtime_installer.exe
+        # and is imported lazily, so name it (and the manifest it reads)
+        # explicitly rather than relying on static import analysis.
+        "aiculler.topiq_onnx",
+        "image_triage.ai_manifest",
+        "image_triage.ai_paths",
+        "image_triage.ai_probe",
+        "image_triage.birefnet_worker",
+        "image_triage.depth_worker",
+        "image_triage.oneformer_worker",
+        "image_triage.sam_worker",
         "onnxruntime",
         "PIL",
         "pip",

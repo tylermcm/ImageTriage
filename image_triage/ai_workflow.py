@@ -10,6 +10,7 @@ grouping, and report commands on worker threads.
 
 import ctypes
 import csv
+import logging
 import gc
 import json
 import os
@@ -37,11 +38,14 @@ from .ai_model import (
     resolve_semantic_model_installation,
 )
 from .ai_runtime_packages import (
+    AI_RUNTIME_CPU_VARIANT,
+    AI_RUNTIME_GPU_VARIANT,
     load_ai_runtime_installation_status,
-    resolve_ai_runtime_site_packages,
 )
 from .formats import RAW_SUFFIXES
 from .perf import perf_logger
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .models import ImageRecord
@@ -1529,24 +1533,71 @@ def _get_drive_type(path: Path) -> int:
         return DRIVE_UNKNOWN
 
 
-def _inject_ai_runtime_pythonpath(env: dict[str, str], *, device: str = "auto") -> None:
-    """Prepend the installed AI runtime site-packages onto the subprocess PYTHONPATH.
+def _default_runtime_device() -> str:
+    """The device the application would choose right now.
 
-    Engine scripts run with the host interpreter when launched from source, so torch
-    and friends live only in the runtime cache, not on the interpreter's own path.
+    Used so a command launched without an explicit device still pins a real
+    profile rather than resolving "auto" independently in each process.
     """
-    site_dirs = [str(path) for path in resolve_ai_runtime_site_packages(device=device)]
-    if not site_dirs:
-        return
-    existing = env.get("PYTHONPATH", "")
-    entries = site_dirs + [part for part in existing.split(os.pathsep) if part]
-    env["PYTHONPATH"] = os.pathsep.join(entries)
+    override = ai_device_environment_override()
+    if override is not None:
+        return override
+    try:
+        status = load_ai_runtime_installation_status()
+    except Exception:  # pragma: no cover - unreadable metadata
+        return "auto"
+    if AI_RUNTIME_GPU_VARIANT in status.installed_variants:
+        return "cuda"
+    if status.installed_variants == (AI_RUNTIME_CPU_VARIANT,):
+        return "cpu"
+    return "auto"
+
+
+def _inject_ai_runtime_pythonpath(
+    env: dict[str, str],
+    *,
+    device: str = "auto",
+    required: bool = True,
+) -> str:
+    """Pin one managed runtime profile onto a subprocess environment.
+
+    Raises ``AIRuntimeUnavailable`` when the runtime cannot be resolved and the
+    command needs it. Returning quietly used to let the child fall back to a
+    bundled or global package and produce the misleading ``ModuleNotFoundError``
+    this work set out to remove (docs/ai_runtime_failure_map.md, root cause F).
+    """
+    from .ai_env import AIRuntimeUnavailable, build_worker_env, select_runtime
+
+    try:
+        selection = select_runtime(device)
+    except AIRuntimeUnavailable as exc:
+        logger = perf_logger()
+        if logger.enabled:
+            logger.log(
+                "ai.runtime.unavailable",
+                requested_device=device,
+                category=exc.category,
+                message=str(exc),
+            )
+        _LOGGER.warning("Managed AI runtime unavailable for device %s: %s", device, exc)
+        if required:
+            raise
+        return ""
+    resolved = build_worker_env(
+        selection,
+        base_env=env,
+        metrics_enabled=env.get(AI_METRICS_ENV_VAR) == "1",
+    )
+    env.update(resolved)
+    return selection.profile_id
 
 
 def _run_command_with_live_output(
     command: list[str],
     *,
     cwd: Path,
+    device: str = "",
+    requires_ai_runtime: bool = True,
     progress_callback: Callable[[str], None] | None = None,
     output_callback: Callable[[str], None] | None = None,
     detail_callback: Callable[[str], None] | None = None,
@@ -1569,7 +1620,11 @@ def _run_command_with_live_output(
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("IMAGE_TRIAGE_HOST_ROOT", str(Path(__file__).resolve().parents[1]))
     env[AI_METRICS_ENV_VAR] = "1" if logger.enabled or detail_callback is not None else "0"
-    _inject_ai_runtime_pythonpath(env)
+    _inject_ai_runtime_pythonpath(
+        env,
+        device=device or _default_runtime_device(),
+        required=requires_ai_runtime,
+    )
     spawn_start = time.perf_counter() if logger.enabled else 0.0
     try:
         process = subprocess.Popen(
@@ -1949,23 +2004,93 @@ def _path_signature(path: Path | None) -> dict[str, object] | None:
     }
 
 
+# Directories that never contribute to an AI stage's inputs but can each hold
+# tens of thousands of files. Walking them turned a cache-key computation into
+# a multi-minute stall on a developer checkout.
+SIGNATURE_PRUNED_DIRECTORY_NAMES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".idea",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".svn",
+        ".vs",
+        ".vscode",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "site-packages",
+    }
+)
+# Upper bound on files hashed into one directory signature. Beyond this the
+# signature records the count and stops, which stays deterministic while
+# guaranteeing the walk terminates promptly.
+SIGNATURE_MAX_ENTRIES = 4000
+
+
+def _is_pruned_directory(name: str) -> bool:
+    lowered = name.casefold()
+    if lowered in SIGNATURE_PRUNED_DIRECTORY_NAMES:
+        return True
+    # Virtual environments: ".venv", "venv", "linux_build_venv", ...
+    return lowered.endswith("venv") or lowered.startswith(".venv")
+
+
 def _directory_signature(path: Path) -> dict[str, object]:
+    """A deterministic, bounded fingerprint of a directory's contents.
+
+    Bounded on purpose: this feeds a cache key that is computed on the UI path,
+    and the engine root can be an arbitrary user directory. A single unreadable
+    entry (a reparse point, a WSL symlink, a file an antivirus scanner has
+    locked) is skipped rather than aborting the whole signature.
+    """
     entries: list[dict[str, object]] = []
-    if path.exists():
-        for child in sorted((candidate for candidate in path.rglob("*") if candidate.is_file()), key=lambda item: item.as_posix().casefold()):
-            try:
-                stat_result = child.stat()
-            except OSError:
-                continue
-            entries.append(
-                {
-                    "path": child.relative_to(path).as_posix(),
-                    "size": int(stat_result.st_size),
-                    "modified_ns": int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))),
-                }
+    exists = path.exists()
+    truncated = False
+    if exists:
+        collected: list[tuple[str, int, int]] = []
+        for directory, subdirectories, filenames in os.walk(path, onerror=lambda _exc: None):
+            subdirectories[:] = sorted(
+                name for name in subdirectories if not _is_pruned_directory(name)
             )
-    return {
+            directory_path = Path(directory)
+            for filename in sorted(filenames):
+                child = directory_path / filename
+                try:
+                    stat_result = child.stat()
+                except OSError:
+                    continue
+                collected.append(
+                    (
+                        child.relative_to(path).as_posix(),
+                        int(stat_result.st_size),
+                        int(
+                            getattr(
+                                stat_result,
+                                "st_mtime_ns",
+                                int(stat_result.st_mtime * 1_000_000_000),
+                            )
+                        ),
+                    )
+                )
+                if len(collected) >= SIGNATURE_MAX_ENTRIES:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        collected.sort(key=lambda item: item[0].casefold())
+        entries = [
+            {"path": relative, "size": size, "modified_ns": modified}
+            for relative, size, modified in collected
+        ]
+    signature: dict[str, object] = {
         "path": str(path),
-        "exists": path.exists(),
+        "exists": exists,
         "entries": entries,
     }
+    if truncated:
+        signature["truncated"] = True
+    return signature

@@ -3,6 +3,11 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
+from image_triage.frozen_bootstrap import configure_frozen_dll_search
+
+
+configure_frozen_dll_search()
+
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import QApplication

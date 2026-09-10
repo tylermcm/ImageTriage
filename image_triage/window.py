@@ -3266,6 +3266,10 @@ class MainWindow(QMainWindow):
         self._active_ai_run_start_perf = 0.0
         self._active_ai_runtime_task: AIRuntimeInstallTask | None = None
         self._active_ai_model_task: AIModelDownloadTask | None = None
+        self._active_ai_readiness_task: QRunnable | None = None
+        self._active_ai_bundle_task: QRunnable | None = None
+        self._active_ai_repair_task: QRunnable | None = None
+        self._last_ai_readiness_results: dict[str, object] = {}
         self._active_update_check_task: AppUpdateCheckTask | None = None
         self._active_update_download_task: AppUpdateDownloadTask | None = None
         self._update_progress_dialog: QProgressDialog | None = None
@@ -9926,9 +9930,31 @@ class MainWindow(QMainWindow):
         self._prompt_for_ai_model_install(automatic=False)
         return False
 
+    def _migrate_managed_ai_assets(self) -> None:
+        from .ai_model_store import migrate_ai_assets, recover_interrupted_activations
+
+        try:
+            moved = migrate_ai_assets()
+            recovered = recover_interrupted_activations()
+        except OSError as exc:
+            self.statusBar().showMessage(f"Could not move the AI cache to its new location: {exc}")
+            return
+        if recovered:
+            self.statusBar().showMessage(
+                f"Recovered {len(recovered)} interrupted AI model installation(s)."
+            )
+        elif moved:
+            self.statusBar().showMessage(
+                f"Moved {len(moved)} AI cache folder(s) to the new managed location."
+            )
+
     def _maybe_prompt_for_ai_setup(self) -> None:
         if not getattr(sys, "frozen", False):
             return
+        # Adopt a previous release's model and cache directories before asking
+        # the user to download anything. This is the one deliberate migration
+        # point; resolving a managed path never moves files by itself.
+        self._migrate_managed_ai_assets()
         runtime_missing = not self._ai_runtime_available()
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
@@ -10172,11 +10198,12 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
-        self._set_ai_setup_busy(None)
-        QMessageBox.information(
-            self,
-            "AI Setup Complete",
-            f"The {ai_runtime_variant_label(variant_choice)} AI runtime is ready.",
+        # The installer exiting zero does not prove any capability works, and
+        # the runtime alone is not the whole selected feature set: finish the
+        # remaining model bundles, then verify what was actually installed.
+        self._start_ai_capability_bundles(
+            title="AI Setup",
+            context=f"The {ai_runtime_variant_label(variant_choice)} AI runtime was installed.",
         )
 
     def _handle_ai_runtime_install_failed(self, message: str) -> None:
@@ -10235,6 +10262,233 @@ class MainWindow(QMainWindow):
                 components.append((label, resolved, size))
                 seen.add(resolved)
         return components
+
+    # ------------------------------------------------------------------
+    # Capability readiness, repair and diagnostics
+    # ------------------------------------------------------------------
+
+    def _selected_ai_capabilities(self) -> tuple[str, ...]:
+        """Which capabilities this installation is expected to provide.
+
+        This is the same set ``Set Up AI`` installs, so verification can never
+        demand something setup never downloaded. Torch-only features drop out
+        when the user installed the compact base runtime, and DINO stays opt-in.
+        """
+        from .ai_manifest import setup_capabilities
+
+        status = self._managed_ai_runtime_status()
+        has_torch = bool(set(status.installed_variants) & set(status.dino_installed_variants))
+        return setup_capabilities(include_torch=has_torch)
+
+    def _start_ai_readiness_check(
+        self,
+        *,
+        busy_message: str,
+        title: str,
+        context: str = "",
+        deep_models: bool = False,
+        thorough: bool = False,
+    ) -> None:
+        from .ui.ai_readiness import AIReadinessTask
+
+        if self._active_ai_readiness_task is not None:
+            self.statusBar().showMessage("An AI readiness check is already running.")
+            return
+        task = AIReadinessTask(
+            capability_keys=self._selected_ai_capabilities(),
+            deep_models=deep_models,
+            use_cache=False,
+            thorough=thorough,
+        )
+        task.signals.progress.connect(
+            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.finished.connect(
+            lambda results: self._handle_ai_readiness_finished(results, title, context),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            self._handle_ai_readiness_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._active_ai_readiness_task = task
+        self._set_ai_setup_busy(busy_message)
+        self.statusBar().showMessage(busy_message)
+        self._ai_model_pool.start(task)
+
+    def _start_ai_capability_bundles(self, *, title: str, context: str = "") -> None:
+        """Download any model bundle the selected capabilities still need."""
+        from .ui.ai_readiness import AIBundleInstallTask
+
+        capabilities = self._selected_ai_capabilities()
+        if not capabilities or self._active_ai_bundle_task is not None:
+            self._verify_ai_setup(title=title, context=context)
+            return
+        task = AIBundleInstallTask(capabilities)
+        task.signals.progress.connect(
+            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.finished.connect(
+            lambda _installed: self._handle_ai_bundle_install_finished(title, context),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            lambda message: self._handle_ai_bundle_install_failed(message, title, context),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._active_ai_bundle_task = task
+        self._set_ai_setup_busy("Downloading AI models...")
+        self.statusBar().showMessage("Downloading AI models...")
+        self._ai_model_pool.start(task)
+
+    def _handle_ai_bundle_install_finished(self, title: str, context: str) -> None:
+        self._active_ai_bundle_task = None
+        self._invalidate_ai_runtime_status_cache()
+        self._verify_ai_setup(title=title, context=context)
+
+    def _handle_ai_bundle_install_failed(self, message: str, title: str, context: str) -> None:
+        self._active_ai_bundle_task = None
+        # A download failure still leaves whatever succeeded, so report the
+        # real per-capability state rather than a bare error.
+        self.statusBar().showMessage(f"Some AI models could not be downloaded: {message}")
+        self._verify_ai_setup(title=title, context=context)
+
+    def _verify_ai_setup(self, *, title: str, context: str = "") -> None:
+        self._start_ai_readiness_check(
+            busy_message="Verifying AI setup...", title=title, context=context
+        )
+
+    def _handle_ai_readiness_finished(
+        self,
+        results: dict,
+        title: str,
+        context: str,
+    ) -> None:
+        from .ui.ai_readiness import AIReadinessDialog, summarize
+
+        self._active_ai_readiness_task = None
+        self._active_ai_repair_task = None
+        self._invalidate_ai_runtime_status_cache()
+        self._refresh_ai_runtime_preferences()
+        self._set_ai_setup_busy(None)
+        self._update_action_states()
+        self._update_ai_toolbar_state()
+        self._last_ai_readiness_results = dict(results)
+        summary = summarize(results)
+        self.statusBar().showMessage(summary)
+        if results and all(health.ready for health in results.values()) and context:
+            QMessageBox.information(self, title, f"{context}\n\n{summary}")
+            return
+        AIReadinessDialog(results, parent=self, title=title).exec()
+
+    def _handle_ai_readiness_failed(self, message: str) -> None:
+        self._active_ai_readiness_task = None
+        self._set_ai_setup_busy(None)
+        self._update_action_states()
+        QMessageBox.warning(self, "AI Readiness", message)
+        self.statusBar().showMessage("The AI readiness check could not run.")
+
+    def _check_ai_readiness(self) -> None:
+        """Demo Ready: prove every selected AI feature works, right now.
+
+        This is the one place that pays for the full proof — model weights are
+        loaded and a forward pass is run for every selected capability, so it
+        can take a couple of minutes on a cold machine.
+        """
+        self._start_ai_readiness_check(
+            busy_message="Checking AI readiness (this can take a few minutes)...",
+            title="AI Readiness",
+            deep_models=True,
+            thorough=True,
+        )
+
+    def _repair_ai_components(self) -> None:
+        from .ui.ai_readiness import AIRepairTask
+
+        if self._active_ai_repair_task is not None or self._active_ai_readiness_task is not None:
+            self.statusBar().showMessage("An AI operation is already running.")
+            return
+        capabilities = self._selected_ai_capabilities()
+        if not capabilities:
+            QMessageBox.information(
+                self,
+                "Repair AI",
+                "There is no AI runtime installed yet. Run Set Up AI first.",
+            )
+            return
+        confirmed = QMessageBox.question(
+            self,
+            "Repair AI",
+            "Image Triage will verify every installed AI model and re-download "
+            "anything that is missing or damaged.\n\nThis can take several minutes.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok,
+        )
+        if confirmed != QMessageBox.StandardButton.Ok:
+            return
+        task = AIRepairTask(capabilities)
+        task.signals.progress.connect(
+            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.finished.connect(
+            self._handle_ai_repair_finished, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.failed.connect(
+            self._handle_ai_repair_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._active_ai_repair_task = task
+        self._set_ai_setup_busy("Repairing AI...")
+        self.statusBar().showMessage("Repairing AI...")
+        self._ai_model_pool.start(task)
+
+    def _handle_ai_repair_finished(self, results: dict, runtime_required: bool) -> None:
+        self._active_ai_repair_task = None
+        if runtime_required:
+            # Model repair cannot rebuild damaged packages; offer the operation
+            # that can instead of leaving the user to guess.
+            self._set_ai_setup_busy(None)
+            self._update_action_states()
+            choice = QMessageBox.question(
+                self,
+                "Repair AI",
+                "The downloaded models are now correct, but the AI runtime packages "
+                "themselves are damaged and have to be reinstalled.\n\n"
+                "Reinstall the AI runtime now?",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Ok,
+            )
+            if choice == QMessageBox.StandardButton.Ok:
+                status = self._managed_ai_runtime_status()
+                self._start_ai_runtime_install(
+                    status.preferred_variant,
+                    force=True,
+                    include_dino=bool(status.dino_installed_variants),
+                )
+                return
+        self._handle_ai_readiness_finished(results, "Repair AI", "Repair finished.")
+
+    def _handle_ai_repair_failed(self, message: str) -> None:
+        self._active_ai_repair_task = None
+        self._set_ai_setup_busy(None)
+        self._update_action_states()
+        QMessageBox.warning(self, "Repair AI", message)
+        self.statusBar().showMessage("AI repair failed.")
+
+    def _copy_ai_diagnostics(self) -> None:
+        """Put a redacted support bundle on the clipboard and save it to disk."""
+        from .ai_health import ai_health
+
+        service = ai_health()
+        results = self._last_ai_readiness_results or None
+        text = service.diagnostics_text(results)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text, mode=clipboard.Mode.Clipboard)
+        try:
+            path = service.write_diagnostics(results)
+        except OSError as exc:
+            self.statusBar().showMessage(f"Diagnostics copied, but could not be saved: {exc}")
+            return
+        self.statusBar().showMessage(f"AI diagnostics copied and saved to {path}")
 
     def _uninstall_ai_components(self) -> None:
         if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
@@ -10462,11 +10716,9 @@ class MainWindow(QMainWindow):
         self._refresh_ai_runtime_preferences()
         self._update_action_states()
         self._update_ai_toolbar_state()
-        self.statusBar().showMessage("AI setup complete.")
-        QMessageBox.information(
-            self,
-            "AI Setup Complete",
-            "The AI runtime and culling models are ready.",
+        self._start_ai_capability_bundles(
+            title="AI Setup",
+            context="The AI runtime and culling models were installed.",
         )
 
     def _handle_ai_model_download_failed(self, message: str) -> None:

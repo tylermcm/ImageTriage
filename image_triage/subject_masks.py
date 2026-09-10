@@ -21,9 +21,11 @@ from .ai_model import (
     download_birefnet_model,
     resolve_birefnet_model_installation,
 )
-from .ai_runtime_packages import resolve_ai_runtime_site_packages
-from .ai_workflow import AIWorkflowRuntime, default_ai_workflow_runtime
+from .ai_env import RuntimeSelection
+from .ai_paths import managed_cache_dir
+from .ai_workflow import AIWorkflowRuntime
 from .mask_engine_service import default_mask_engine_service
+from .semantic_mask_service import resolve_mask_runtime
 from .imaging import load_image_for_display
 from .perf import perf_logger
 
@@ -68,13 +70,14 @@ _WEIGHTS_HASH_LOCK = threading.Lock()
 
 
 def default_subject_mask_cache_root() -> Path:
-    if os.name == "nt":
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-    else:
-        xdg_cache = os.environ.get("XDG_CACHE_HOME")
-        base = Path(xdg_cache) if xdg_cache else Path.home() / ".cache"
-    return base / "image_triage_ai_cache" / "subject_masks"
+    """Managed cache directory for subject_masks.
+
+    Resolves through the one canonical managed root so it cannot land inside
+    Store Python's virtualized package cache (docs/ai_runtime_failure_map.md,
+    root cause A). Migration of a previous release's directory happens once,
+    explicitly, in ``ai_model_store.migrate_ai_assets``.
+    """
+    return managed_cache_dir("subject_masks")
 
 
 def ensure_subject_masks(
@@ -432,30 +435,14 @@ def _validate_subject_runtime() -> None:
     _resolve_subject_runtime()
 
 
-def _resolve_subject_runtime() -> tuple[AIWorkflowRuntime, tuple[Path, ...]]:
-    runtime = default_ai_workflow_runtime()
-    site_packages = resolve_ai_runtime_site_packages(device=runtime.device)
-    if not site_packages:
-        raise RuntimeError(
-            "The AI runtime is unavailable. Install the PyTorch AI runtime first."
-        )
-    required_modules = (
-        "torch",
-        "transformers",
-        "timm",
-        "safetensors",
-    )
-    missing = [
-        name
-        for name in required_modules
-        if not any((site_dir / name).exists() for site_dir in site_packages)
-    ]
-    if missing:
-        raise RuntimeError(
-            "The installed AI runtime is missing BiRefNet dependencies: "
-            + ", ".join(missing)
-        )
-    return runtime, site_packages
+def _resolve_subject_runtime() -> tuple[AIWorkflowRuntime, RuntimeSelection]:
+    """Pin one runtime profile for subject masking.
+
+    Readiness comes from the central capability health service rather than a
+    private list of directory-existence checks that could disagree with
+    Settings (docs/ai_runtime_failure_map.md, root cause C).
+    """
+    return resolve_mask_runtime("subject_masks")
 
 
 def _decode_rgb_preview(path: Path, long_edge: int) -> np.ndarray:

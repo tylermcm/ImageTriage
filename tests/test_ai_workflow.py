@@ -439,6 +439,55 @@ class AIWorkflowStreamingTests(unittest.TestCase):
 
             self.assertTrue(ai_semantic_artifacts_ready(paths))
 
+    def test_directory_signature_skips_heavy_non_input_directories(self) -> None:
+        from image_triage.ai_workflow import _directory_signature
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "configs").mkdir()
+            (root / "configs" / "extract.json").write_text("{}", encoding="utf-8")
+            for noisy in ("node_modules", "__pycache__", ".git", "build", ".linux_build_venv"):
+                (root / noisy).mkdir()
+                (root / noisy / "junk.bin").write_bytes(b"x")
+
+            signature = _directory_signature(root)
+
+        paths = {entry["path"] for entry in signature["entries"]}
+        self.assertEqual(paths, {"configs/extract.json"})
+
+    def test_directory_signature_is_bounded_and_marks_truncation(self) -> None:
+        from image_triage import ai_workflow
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index in range(12):
+                (root / f"file{index:03d}.bin").write_bytes(b"x")
+            with patch.object(ai_workflow, "SIGNATURE_MAX_ENTRIES", 5):
+                signature = ai_workflow._directory_signature(root)
+
+        self.assertTrue(signature.get("truncated"))
+        self.assertEqual(len(signature["entries"]), 5)
+
+    def test_directory_signature_survives_an_unreadable_entry(self) -> None:
+        from image_triage.ai_workflow import _directory_signature
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "good.json").write_text("{}", encoding="utf-8")
+            original_stat = Path.stat
+
+            def flaky(self, *args, **kwargs):
+                if self.name == "locked.bin":
+                    raise OSError(1920, "The file cannot be accessed by the system")
+                return original_stat(self, *args, **kwargs)
+
+            (root / "locked.bin").write_bytes(b"x")
+            with patch.object(Path, "stat", flaky):
+                signature = _directory_signature(root)
+
+        paths = {entry["path"] for entry in signature["entries"]}
+        self.assertEqual(paths, {"good.json"})
+
     def test_semantic_cache_key_changes_when_sidecar_config_changes(self) -> None:
         record = ImageRecord(path="C:/shots/a.jpg", name="a.jpg", size=10, modified_ns=20)
         runtime = AIWorkflowRuntime(
