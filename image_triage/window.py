@@ -10093,6 +10093,7 @@ class MainWindow(QMainWindow):
                 variant_choice,
             ]
             cwd = workspace_root
+        command.extend(["--install-root", str(install_root)])
         if force:
             command.append("--force")
         if not include_dino:

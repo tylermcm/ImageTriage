@@ -15,6 +15,7 @@ from image_triage.ai_runtime_packages import (  # noqa: E402
     AI_RUNTIME_INSTALL_CHOICES,
     install_ai_runtime,
     load_ai_runtime_installation_status,
+    validate_ai_runtime_imports,
 )
 
 
@@ -39,15 +40,39 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip optional DINO/PyTorch/transformers dependencies.",
     )
+    install_parser.add_argument(
+        "--install-root",
+        type=Path,
+        help="Exact managed runtime root selected by the parent application.",
+    )
 
     status_parser = subparsers.add_parser("status", help="Print current AI runtime installation status")
     status_parser.add_argument("--json", action="store_true", help="Emit status as JSON")
+    validate_parser = subparsers.add_parser(
+        "validate-profile",
+        help=argparse.SUPPRESS,
+    )
+    validate_parser.add_argument("--site-packages", type=Path, required=True)
+    validate_parser.add_argument("--variant", choices=("cpu", "gpu"), required=True)
+    validate_parser.add_argument("--no-dino", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.command == "validate-profile":
+        try:
+            validate_ai_runtime_imports(
+                args.site_packages,
+                variant=args.variant,
+                include_dino=not bool(args.no_dino),
+            )
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print("AI runtime imports validated.")
+        return 0
     if args.command == "status":
         status = load_ai_runtime_installation_status()
         if args.json:
@@ -69,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             args.variant,
             force=bool(args.force),
             include_dino=not bool(args.no_dino),
+            install_root=args.install_root,
             output_callback=print,
         )
     except Exception as exc:
