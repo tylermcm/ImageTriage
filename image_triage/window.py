@@ -354,7 +354,6 @@ from .ui import (
     save_shortcut_overrides,
     build_app_palette,
     build_app_stylesheet,
-    build_help_button,
     build_main_menu_bar,
     build_main_window_actions,
     build_pin_icon,
@@ -3158,7 +3157,9 @@ class MainWindow(QMainWindow):
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
         self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
         self._workspace_toolbar_overflow_update_pending: set[str] = set()
-        self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.DARK.value, str))
+        self._appearance_mode = parse_appearance_mode(
+            self._settings.value(self.APPEARANCE_KEY, AppearanceMode.GRAPHITE.value, str)
+        )
         self._ui_gamma = normalize_ui_gamma(self._settings.value(self.UI_GAMMA_KEY, 1.0, float))
         self._theme = None
         self._child_sync_state_path = self._prepare_child_sync_state_path()
@@ -3781,9 +3782,6 @@ class MainWindow(QMainWindow):
         library_header_layout.setContentsMargins(0, 0, 0, 0)
         library_header_layout.setSpacing(8)
         library_header_layout.addWidget(self.library_label, 1)
-        library_help_button = build_help_button(self, tooltip="Open library, collection, and catalog help")
-        library_help_button.clicked.connect(self._show_library_help)
-        library_header_layout.addWidget(library_help_button, 0)
 
         self.left_ai_activity_buttons: dict[str, tuple[QToolButton, QToolButton]] = {}
         self.left_ai_activity_panel = self._build_generated_ai_activity_panel()
@@ -23617,14 +23615,14 @@ class MainWindow(QMainWindow):
                 4. **Preview** — `Space` or `Enter`.
                 5. **Run batch actions** — right-click or the **Tools** menu for rename, resize, convert, and archive.
                 6. **Organize by drag and drop** — drop onto folders or favorites; hold `Ctrl` to copy instead of move.
-                7. **Toggle burst views** — **`View > Burst Groups`** tags likely burst sequences, or **`View > Burst Stacks`** opens a stacked burst navigator in the main viewer.
-                8. **Explore AI** — open **`Help > AI Guide`** for AI review, culling, and training.
+                7. **Toggle burst views** — **`View > Review View > Smart Groups`** marks likely burst sequences, while **Smart Stacks** collapses similar frames behind one representative.
+                8. **Explore AI** — open **`Help > AI Guide`** for scoring, review, and applying clear decisions.
 
                 ## Need more?
 
                 - **`Help > AI Guide`** — the full AI workflow.
                 - **`Help > Advanced Help`** — broader controls and shortcuts.
-                - The **`?`** button in the AI Workflow Center, Settings, Library, Catalog, Collections, and Workflow dialogs — focused, step-by-step help.
+                - Help or **`?`** buttons in the AI Workflow Center, Settings, Catalog, Collections, and Workflow dialogs — focused, step-by-step help.
                 """
             ),
         )
@@ -23687,7 +23685,7 @@ class MainWindow(QMainWindow):
                 5. Press **`Ctrl+Alt+P`** to jump to the next AI top pick.
                 6. Press **`Ctrl+Alt+G`** to compare the current AI group.
                 7. Choose **`AI > Run And Apply > Apply AI Decisions`** to auto-file only the clearest winners and rejects.
-                8. Later, use **`AI > Load Saved AI For Folder`** to reopen cached results without rerunning the model.
+                8. Later, use **Load Saved** on the AI task rail, or find **Load Saved AI For Folder** in the Command Palette, to reopen cached results without rerunning the models.
 
                 ## AI review tags
 
@@ -23740,8 +23738,8 @@ class MainWindow(QMainWindow):
                 - Drag on empty space to marquee-select, like File Explorer
                 - Drag selected thumbnails onto folders or favorites to move them
                 - Hold `Ctrl` while dragging to copy instead of move
-                - **`View > Burst Groups`** highlights likely capture bursts in the grid as a toggle, not a permanent regrouping
-                - **`View > Burst Stacks`** adds stacked burst visuals plus burst cycling in the main viewer with `[` and `]`
+                - **`View > Review View > Smart Groups`** highlights likely capture bursts in the grid as a toggle, not a permanent regrouping
+                - **`View > Review View > Smart Stacks`** adds stacked burst visuals plus burst cycling in the main viewer with `[` and `]`
 
                 ## Core review
 
@@ -23752,7 +23750,6 @@ class MainWindow(QMainWindow):
                 - `M` moves to a folder
                 - `Delete` trashes
                 - `Ctrl+Z` undoes the last change
-                - `0`-`5` rates
                 - `T` tags
                 - `C` toggles compare
 
@@ -23762,8 +23759,8 @@ class MainWindow(QMainWindow):
                 - Batch tools use the checkbox mode in the grid
                 - Resize and Convert are also available from the image right-click menu
                 - RAW files are skipped for Resize and Convert
-                - The **`AI > Adapter Training`** menu holds the label review, training, evaluation, and ranking flow
-                - Long AI tasks show centered progress dialogs, and **Stats For Nerds** opens the live training log
+                - The **AI Workflow Center** shows setup, Cull & Score, result review, and applying decisions in order
+                - Long AI tasks show progress and a detailed activity log when that option is enabled in Settings
 
                 ## Preview
 
@@ -23780,10 +23777,10 @@ class MainWindow(QMainWindow):
 
                 - Right-click folders or favorites to create, rename, move, delete, or favorite them
                 - Recent destinations appear in the copy and move menus for faster sorting
-                - The Library panel **`?`** explains favorites, virtual collections, and catalog search
+                - The Library panel's bottom **Help** button explains favorites, virtual collections, and catalog search
                 - Workflow dialogs include their own **`?`** help for recipes, content mode, transfer mode, and saved recipes
-                - Settings includes a **`?`** help button for the AI, DINO, and pHash sections
-                - **AI Review** lets you run AI review, apply AI culling, or load saved AI results for the current folder
+                - Settings includes a **Settings Guide** button for General, Interface, folders, AI Culling, Duplicates, and Shortcuts
+                - **AI Review** lets you inspect results, apply clear decisions, or load saved results for the current folder
                 - **`Help > AI Guide`** is the dedicated walkthrough for the AI side of the app
                 - `Ctrl+Alt+P` jumps to the next AI top pick
                 - `Ctrl+Alt+G` compares the current AI group

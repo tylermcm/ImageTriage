@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSizeGrip,
     QSplitter,
@@ -179,6 +180,7 @@ class InspectorSection(QWidget):
         body: QWidget,
         *,
         expanded: bool = True,
+        scrollable: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -205,8 +207,24 @@ class InspectorSection(QWidget):
         layout.addWidget(self.header)
 
         self.body = body
-        self.body.setParent(self)
-        layout.addWidget(self.body)
+        self.body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.body_scroll: QScrollArea | None = None
+        if scrollable:
+            # Section cards keep their assigned height. When a long explanation
+            # or narrow panel makes rows taller than that space, only this
+            # card's contents scroll; the inspector itself remains stationary.
+            self.body_scroll = QScrollArea(self)
+            self.body_scroll.setObjectName("inspectorSectionScrollArea")
+            self.body_scroll.setWidgetResizable(True)
+            self.body_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.body_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.body_scroll.verticalScrollBar().setObjectName("inspectorSectionScrollBar")
+            self.body_scroll.setWidget(self.body)
+            layout.addWidget(self.body_scroll, 1)
+        else:
+            self.body.setParent(self)
+            layout.addWidget(self.body, 1)
 
         self.empty_label = QLabel("", self)
         self.empty_label.setObjectName("inspectorEmptyState")
@@ -236,18 +254,54 @@ class InspectorSection(QWidget):
         self.empty_label.setText(text or "")
         self.empty_label.setVisible(has_empty_state and self.is_expanded())
         self.body.setVisible(not has_empty_state and self.is_expanded())
+        if self.body_scroll is not None:
+            self.body_scroll.setVisible(not has_empty_state and self.is_expanded())
         self.updateGeometry()
 
     def _set_body_visible(self, expanded: bool) -> None:
         self.header.setToolTip(f"{'Collapse' if expanded else 'Expand'} {self.header.title.text()}")
         has_empty_state = bool(self.empty_label.text())
         self.body.setVisible(expanded and not has_empty_state)
+        if self.body_scroll is not None:
+            self.body_scroll.setVisible(expanded and not has_empty_state)
         self.empty_label.setVisible(expanded and has_empty_state)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding if expanded else QSizePolicy.Policy.Fixed,
         )
         self.updateGeometry()
+
+    def expanded_height_hint(self) -> int:
+        margins = self.layout().contentsMargins()
+        body_height = max(self.body.minimumSizeHint().height(), self.body.sizeHint().height())
+        return margins.top() + self.header.height() + self.layout().spacing() + body_height + margins.bottom()
+
+    def content_will_clip_at(self, section_height: int) -> bool:
+        if self.body_scroll is None or not self.is_expanded() or self.empty_label.text():
+            return False
+        margins = self.layout().contentsMargins()
+        viewport_height = max(
+            0,
+            int(section_height)
+            - margins.top()
+            - margins.bottom()
+            - self.header.height()
+            - self.layout().spacing(),
+        )
+        # A couple of pixels can be consumed by QScrollArea's internal viewport
+        # geometry. Treat that as fitting so a useless two-pixel scrollbar does
+        # not appear on otherwise comfortable displays.
+        return self.body.sizeHint().height() > viewport_height + 4
+
+    def sync_scrollbar_policy(self) -> None:
+        if self.body_scroll is None:
+            return
+        policy = (
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if self.content_will_clip_at(self.height())
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.body_scroll.setVerticalScrollBarPolicy(policy)
 
 
 class SnapPreviewOverlay(QWidget):
@@ -1811,7 +1865,13 @@ class InspectorPanel(QWidget):
         histogram_layout.setSpacing(6)
         histogram_layout.addWidget(self.histogram_widget)
         histogram_layout.addWidget(self.histogram_summary)
-        self.histogram_section = self._make_custom_section(layout, "histogram", "Histogram", histogram_body)
+        self.histogram_section = self._make_custom_section(
+            layout,
+            "histogram",
+            "Histogram",
+            histogram_body,
+            scrollable=False,
+        )
         self.culling_rows = self._make_section(
             layout, "culling", "Culling", ("Decision", "AI Suggestion", "Confidence", "Reason")
         )
@@ -1880,6 +1940,8 @@ class InspectorPanel(QWidget):
         key: str,
         title: str,
         widget: QWidget,
+        *,
+        scrollable: bool = True,
     ) -> InspectorSection:
         body = QWidget(self)
         body_layout = QVBoxLayout(body)
@@ -1887,7 +1949,7 @@ class InspectorPanel(QWidget):
         body_layout.setSpacing(0)
         body_layout.addWidget(widget)
         body_layout.addStretch(1)
-        section = InspectorSection(key, title, body, parent=self)
+        section = InspectorSection(key, title, body, scrollable=scrollable, parent=self)
         self._register_section(section)
         layout.addWidget(section, self.SECTION_HEIGHT_WEIGHTS[key])
         return section
@@ -1931,20 +1993,78 @@ class InspectorPanel(QWidget):
             self.height() - preview_height - layout.spacing() * section_count,
         )
         weight_total = sum(self.SECTION_HEIGHT_WEIGHTS.values())
-        expanded_heights = {
+        base_heights = {
             key: max(34, int(round(available * weight / weight_total)))
             for key, weight in self.SECTION_HEIGHT_WEIGHTS.items()
         }
-        height_delta = available - sum(expanded_heights.values())
-        expanded_heights["edit_potential"] += height_delta
+        height_delta = available - sum(base_heights.values())
+        base_heights["edit_potential"] += height_delta
+
+        # The histogram must remain legible as one unit. Reserve enough height
+        # for its chart and synopsis, taking the small-screen cost from the
+        # text sections that can scroll safely.
+        histogram = self._sections.get("histogram")
+        if histogram is not None and histogram.is_expanded():
+            histogram_required = histogram.expanded_height_hint()
+            histogram_extra = max(0, histogram_required - base_heights["histogram"])
+            if histogram_extra:
+                base_heights["histogram"] += histogram_extra
+                remaining = histogram_extra
+                for key in reversed(tuple(self.SECTION_HEIGHT_WEIGHTS)):
+                    if key == "histogram":
+                        continue
+                    available_reduction = max(0, base_heights[key] - 34)
+                    reduction = min(remaining, available_reduction)
+                    base_heights[key] -= reduction
+                    remaining -= reduction
+                    if remaining <= 0:
+                        break
+
+        assigned_heights = {
+            key: base_heights[key] if section.is_expanded() else 34
+            for key, section in self._sections.items()
+        }
+
+        # Collapsing a card creates spare room. Donate that room only to open
+        # text cards whose content would otherwise scroll, and only until their
+        # content fits. Cards that already fit retain their normal height.
+        spare_height = sum(
+            max(0, base_heights[key] - 34)
+            for key, section in self._sections.items()
+            if not section.is_expanded()
+        )
+        if spare_height:
+            deficits = {
+                key: max(0, section.expanded_height_hint() - base_heights[key])
+                for key, section in self._sections.items()
+                if section.is_expanded()
+                and section.body_scroll is not None
+                and section.content_will_clip_at(base_heights[key])
+            }
+            while spare_height > 0 and deficits:
+                progressed = False
+                for key in tuple(deficits):
+                    if spare_height <= 0:
+                        break
+                    addition = min(deficits[key], max(1, spare_height // len(deficits)))
+                    assigned_heights[key] += addition
+                    deficits[key] -= addition
+                    spare_height -= addition
+                    progressed = True
+                    if deficits[key] <= 0:
+                        del deficits[key]
+                if not progressed:
+                    break
 
         for key, section in self._sections.items():
             index = layout.indexOf(section)
             if index >= 0:
                 layout.setStretch(index, 0)
-            section.setFixedHeight(expanded_heights[key] if section.is_expanded() else 34)
+            section.setFixedHeight(assigned_heights[key])
         layout.invalidate()
         layout.activate()
+        for section in self._sections.values():
+            section.sync_scrollbar_policy()
 
     def _make_quick_actions(self, layout: QVBoxLayout) -> dict[str, QPushButton]:
         body = QWidget(self)

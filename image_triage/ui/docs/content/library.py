@@ -26,7 +26,7 @@ ARTICLES = [
 
         - [Favorites](doc:favorites) — shortcuts to folders you use often.
         - Folder browsing — move through your drives and directories.
-        - [Virtual collections](doc:collections) — saved image sets that span folders.
+        - **Projects** — the sidebar name for [virtual collections](doc:collections), saved image sets that can span folders.
         - [The global catalog](doc:catalog) — a searchable index of chosen folders.
 
         The Library does not replace normal folder browsing. It simply makes it easier to reopen important folders and assemble image sets across different locations.
@@ -66,6 +66,8 @@ ARTICLES = [
         A virtual collection is a named group of image references. Collections let you gather images together **without moving or copying** the original files.
 
         Think of a collection as a playlist for images: it points to files, but it does not contain them.
+
+        Collections appear under **Projects** in the Library panel. Create and manage them from **`Library > Collections`**.
 
         ## Good uses
 

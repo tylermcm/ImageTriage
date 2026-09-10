@@ -179,7 +179,7 @@ def library_help_pages() -> tuple[HelpPage, ...]:
 
             - Favorites
             - Folder browsing
-            - Virtual collections
+            - Projects, which are saved virtual collections
             - Catalog tools
 
             The Library does not replace normal folder browsing. It simply makes it easier to reopen important folders and build image sets across different locations.
@@ -340,31 +340,41 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
 
             Settings are grouped by area so you can adjust one part of the app without hunting through a single long list.
 
-            ## General and Interface
+            ## General
 
-            Overall app behavior, layout, and display preferences.
+            Review presets, accepted-image behavior, deletion, and update checks.
+
+            ## Interface
+
+            Card appearance, interface brightness, scrolling, preview loading, and automatic review movement.
 
             ## Library and Folders
 
-            Folder loading, catalog cache behavior, and how the app handles image bundle data.
+            Folder-tree behavior, automatic refresh, and the catalog cache.
 
-            ## AI
+            ## AI Culling
 
             The main CLIP/TOPIQ/InsightFace scoring workflow, keeper thresholds, and review bands.
 
-            ## pHash Prefilter
+            ## Duplicates
 
-            Duplicate and near-duplicate detection using perceptual hashing.
+            Duplicate and near-duplicate detection using perceptual hashing, usually called pHash.
+
+            ## Shortcuts
+
+            Keyboard bindings for common commands. Click a key field, press the new shortcut, and use Reset to restore its default.
             """,
         ),
         HelpPage(
-            "AI Settings",
+            "AI and Duplicates",
             """
             # AI settings
 
-            Core AI settings affect how images are scored, ranked, grouped, and reviewed.
+            **Processing workers** controls how many images the AI prepares at once. Auto is the best starting point. A higher value can finish sooner, but uses more memory and processor capacity.
 
-            pHash settings affect which near-duplicates reach the main scoring stage. Because the prefilter runs before the main AI ranking, change it conservatively.
+            **Likely winners** and **Review band** divide the completed ranking into winner, human-review, and likely-reject ranges. They do not retrain the models.
+
+            The duplicate page controls pHash, a visual fingerprint used to find tight repeats. Lower duplicate-distance values are stricter. The prefilter keeps duplicate candidates out of full scoring, but never deletes them and always protects manually chosen winners.
 
             After changing prefilter settings, check the results with these filters:
 
@@ -373,6 +383,18 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
             - AI Top Picks
 
             These views confirm whether the AI is filtering the right images before you rely on it for a full triage pass.
+            """,
+        ),
+        HelpPage(
+            "Interface and Folders",
+            """
+            # Interface and folders
+
+            **Card style** changes the information around thumbnails. **UI gamma** changes only the interface brightness; it never alters a photo.
+
+            **Preview preload** prepares nearby images for faster Left/Right navigation. Reduce it when memory is limited. Burst grouping and stacking only change how frames are presented for review.
+
+            Folder watching refreshes the open folder after another program adds, removes, or renames files. The catalog cache stores lightweight folder information so familiar folders reopen faster; it does not move or copy the originals.
             """,
         ),
     )

@@ -24,6 +24,10 @@ def test_library_sidebar_uses_the_application_font_stack() -> None:
     assert 'font-family: "Segoe UI", "Segoe UI Variable Text";' in stylesheet
 
 
+def test_graphite_is_the_default_application_palette() -> None:
+    assert default_theme().name == "graphite"
+
+
 def test_workspace_metrics_expose_the_supported_spacing_and_radius_scale() -> None:
     assert (
         WORKSPACE_METRICS.space_4,

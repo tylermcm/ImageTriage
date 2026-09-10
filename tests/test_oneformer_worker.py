@@ -15,6 +15,57 @@ from PIL import Image
 import image_triage.oneformer_worker as worker
 
 
+class LocalProcessorTests(unittest.TestCase):
+    def test_metadata_is_available_during_construction_without_hub_cache(self):
+        with TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            config = {
+                "repo_path": "shi-labs/oneformer_demo",
+                "class_info_file": "ade20k_panoptic.json",
+                "metadata": {"class_names": ["sky", "person"], "thing_ids": [1]},
+                "size": {"shortest_edge": 512},
+            }
+            original = json.dumps(config)
+            (model_dir / "preprocessor_config.json").write_text(original)
+            (model_dir / "vocab.json").write_text('{"test": 1}')
+            (model_dir / "merges.txt").write_text("#version: 0.2")
+            (model_dir / "pytorch_model.bin").write_bytes(b"do not copy weights")
+            test = self
+            loaded_paths = []
+
+            class Processor:
+                @staticmethod
+                def from_pretrained(path, *, local_files_only):
+                    test.assertTrue(local_files_only)
+                    local = Path(path)
+                    loaded_paths.append(local)
+                    saved = json.loads((local / "preprocessor_config.json").read_text())
+                    # Match OneFormer's constructor: resolve metadata before
+                    # applying any from_pretrained keyword overrides.
+                    labels = json.loads(
+                        (Path(saved["repo_path"]) / saved["class_info_file"]).read_text()
+                    )
+                    test.assertEqual({"name": "person", "isthing": True}, labels["1"])
+                    test.assertEqual({"name": "sky", "isthing": False}, labels["0"])
+                    test.assertEqual(config["size"], saved["size"])
+                    test.assertEqual('{"test": 1}', (local / "vocab.json").read_text())
+                    test.assertTrue((local / "merges.txt").is_file())
+                    test.assertFalse((local / "pytorch_model.bin").exists())
+                    return labels
+
+            result = worker._load_local_processor(Processor, model_dir)
+            self.assertEqual(2, len(result))
+            self.assertFalse(loaded_paths[0].exists())
+            self.assertEqual(original, (model_dir / "preprocessor_config.json").read_text())
+
+    def test_missing_metadata_reports_local_model_problem(self):
+        with TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            (model_dir / "preprocessor_config.json").write_text('{}')
+            with self.assertRaisesRegex(ValueError, "local class metadata"):
+                worker._load_local_processor(None, model_dir)
+
+
 class OneFormerMappingTests(unittest.TestCase):
     """Ported from the validated OneFormer sandbox mapping suite."""
 

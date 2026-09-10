@@ -174,7 +174,7 @@ class InspectorPanelTests(unittest.TestCase):
         self.assertTrue(restored.preview_collapse_button.isChecked())
         self.assertTrue(all(section.is_expanded() for section in restored._sections.values()))
 
-    def test_panel_fills_available_height_without_a_scroll_container(self) -> None:
+    def test_panel_fills_available_height_with_scroll_contained_in_sections(self) -> None:
         host = QWidget()
         host.setFixedSize(320, 1250)
         host_layout = QVBoxLayout(host)
@@ -189,13 +189,72 @@ class InspectorPanelTests(unittest.TestCase):
         self.assertEqual(last_section.geometry().bottom(), panel.height() - 1)
         self.assertEqual(panel.preview_card.width(), panel.preview_card.height())
         self.assertEqual(panel.culling_rows["Decision"].label.width(), 96)
-        self.assertEqual(panel.findChildren(QScrollArea), [])
+        section_scroll_areas = panel.findChildren(QScrollArea, "inspectorSectionScrollArea")
+        self.assertEqual(len(section_scroll_areas), len(panel._sections) - 1)
+        self.assertTrue(all(area.parentWidget() in panel._sections.values() for area in section_scroll_areas))
+        self.assertIsNone(panel.histogram_section.body_scroll)
+        self.assertTrue(all(not area.verticalScrollBar().isVisible() for area in section_scroll_areas))
 
         square_side = panel.preview_card.height()
         host.setFixedHeight(1350)
         self.app.processEvents()
         self.assertEqual(panel.preview_card.width(), square_side)
         self.assertEqual(panel.preview_card.height(), square_side)
+        host.close()
+
+    def test_long_inspector_values_scroll_inside_their_fixed_section(self) -> None:
+        host = QWidget()
+        host.setFixedSize(320, 925)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        panel = InspectorPanel()
+        host_layout.addWidget(panel)
+        long_value = (
+            "A long inspection explanation that wraps inside this card and remains "
+            "available by scrolling without moving the rest of the inspector. " * 6
+        )
+        for row in panel.quality_rows.values():
+            row.set_value(long_value)
+
+        host.show()
+        self.app.processEvents()
+        section = panel._sections["quality"]
+        assigned_height = section.height()
+
+        self.assertGreater(section.body_scroll.verticalScrollBar().maximum(), 0)
+        self.assertTrue(section.body_scroll.verticalScrollBar().isVisible())
+        self.assertEqual(section.height(), assigned_height)
+        self.assertEqual(panel._sections["edit_potential"].geometry().bottom(), panel.height() - 1)
+        host.close()
+
+    def test_collapsed_card_donates_height_only_to_overflowing_sections(self) -> None:
+        host = QWidget()
+        host.setFixedSize(320, 925)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        panel = InspectorPanel()
+        host_layout.addWidget(panel)
+        long_value = "A long quality explanation that needs additional vertical space. " * 24
+        for row in panel.quality_rows.values():
+            row.set_value(long_value)
+
+        host.show()
+        self.app.processEvents()
+        panel._sync_inspector_geometry()
+        self.app.processEvents()
+        quality = panel._sections["quality"]
+        original_quality_height = quality.height()
+        original_histogram_height = panel.histogram_section.height()
+
+        panel._sections["subject"].set_expanded(False)
+        self.app.processEvents()
+
+        self.assertGreater(quality.height(), original_quality_height)
+        self.assertEqual(panel.histogram_section.height(), original_histogram_height)
+        self.assertGreaterEqual(
+            panel.histogram_section.height(),
+            panel.histogram_section.expanded_height_hint(),
+        )
         host.close()
 
     def test_warning_heavy_content_does_not_clip_the_square_preview_or_last_section(self) -> None:
@@ -229,7 +288,10 @@ class InspectorPanelTests(unittest.TestCase):
         previous_bottom = panel.preview_card.geometry().bottom()
         for section in panel._sections.values():
             self.assertGreater(section.geometry().top(), previous_bottom)
-            self.assertGreaterEqual(section.height(), section.minimumSizeHint().height())
+            if section is panel.histogram_section:
+                self.assertGreaterEqual(section.height(), section.expanded_height_hint())
+            elif section.height() < section.expanded_height_hint():
+                self.assertTrue(section.body_scroll.verticalScrollBar().isVisible())
             previous_bottom = section.geometry().bottom()
         host.close()
 
