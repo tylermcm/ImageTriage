@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import importlib
 import json
 import os
 import platform
@@ -7,9 +9,12 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 
 AI_RUNTIME_INSTALL_ROOT_ENV = "IMAGE_TRIAGE_AI_RUNTIME_ROOT"
@@ -17,6 +22,8 @@ AI_RUNTIME_ACTIVE_VARIANT_ENV = "IMAGE_TRIAGE_AI_TORCH_VARIANT"
 AI_RUNTIME_METADATA_FILENAME = "runtime_installation.json"
 AI_RUNTIME_PROFILES_DIRNAME = "profiles"
 AI_RUNTIME_SITE_PACKAGES_DIRNAME = "site-packages"
+AI_RUNTIME_INSTALL_LOCK_FILENAME = ".install.lock"
+AI_RUNTIME_METADATA_VERSION = 2
 AI_RUNTIME_CPU_VARIANT = "cpu"
 AI_RUNTIME_GPU_VARIANT = "gpu"
 AI_RUNTIME_BOTH_VARIANT = "both"
@@ -25,6 +32,7 @@ AI_RUNTIME_ONNX_CPU_REQUIREMENT = "onnxruntime>=1.16"
 # ONNX Runtime 1.27+ PyPI GPU wheels target CUDA 13. Keep the managed
 # CUDA-12.8 PyTorch and ONNX runtimes on the same CUDA generation.
 AI_RUNTIME_ONNX_GPU_REQUIREMENT = "onnxruntime-gpu>=1.26,<1.27"
+AI_RUNTIME_TRANSFORMERS_REQUIREMENT = "transformers==5.14.1"
 AI_RUNTIME_INSTALL_CHOICES = (*AI_RUNTIME_VARIANTS, AI_RUNTIME_BOTH_VARIANT)
 DEFAULT_CPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 DEFAULT_GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
@@ -45,7 +53,7 @@ AI_RUNTIME_DINO_PIP_REQUIREMENTS = (
     "torch",
     "torchvision",
     "timm>=1.0",
-    "transformers>=4.56",
+    AI_RUNTIME_TRANSFORMERS_REQUIREMENT,
     "safetensors>=0.4",
     "tokenizers>=0.15",
 )
@@ -68,6 +76,21 @@ AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES = (
     "transformers",
     "safetensors",
     "tokenizers",
+)
+AI_RUNTIME_BASE_REQUIRED_FILES = (
+    (Path("insightface/model_zoo/model_store.py"), "insightface package files"),
+)
+AI_RUNTIME_DINO_REQUIRED_FILES = (
+    (
+        Path("transformers/models/audio_spectrogram_transformer/configuration_audio_spectrogram_transformer.py"),
+        "transformers package files",
+    ),
+    (Path("transformers/models/oneformer/configuration_oneformer.py"), "transformers package files"),
+    (Path("transformers/models/sam2/configuration_sam2.py"), "transformers package files"),
+    (
+        Path("transformers/models/depth_anything/configuration_depth_anything.py"),
+        "transformers package files",
+    ),
 )
 AI_RUNTIME_REQUIRED_MODULE_NAMES = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES
 AI_RUNTIME_REQUIRED_VERSION_FLOORS = {
@@ -94,6 +117,7 @@ AI_RUNTIME_BASE_ESTIMATED_INSTALLED_MB = {
 }
 
 PipRunner = Callable[[list[str], Path], int]
+ProfileValidator = Callable[[Path, str, bool], None]
 
 
 @dataclass(frozen=True)
@@ -104,7 +128,13 @@ class AIRuntimeDirectories:
 
     def site_packages_dir(self, variant: str) -> Path:
         normalized = normalize_ai_runtime_variant(variant)
-        return self.profiles_root / normalized / AI_RUNTIME_SITE_PACKAGES_DIRNAME
+        metadata = _load_ai_runtime_metadata(self.metadata_path)
+        generation = _profile_generation(metadata, normalized)
+        profile_name = generation or normalized
+        return self.profiles_root / profile_name / AI_RUNTIME_SITE_PACKAGES_DIRNAME
+
+    def generated_site_packages_dir(self, generation: str) -> Path:
+        return self.profiles_root / generation / AI_RUNTIME_SITE_PACKAGES_DIRNAME
 
 
 @dataclass(frozen=True)
@@ -198,8 +228,18 @@ def directory_size_bytes(path: str | Path) -> int:
 
 
 def default_ai_runtime_install_root() -> Path:
-    cache_root = _default_user_cache_root() / "image_triage_ai_cache" / "runtime"
-    return cache_root / _python_runtime_tag()
+    if os.name == "nt":
+        # Store Python redirects LocalAppData writes back into its package cache,
+        # recreating the very long path this location is meant to avoid.
+        user_profile = os.environ.get("USERPROFILE")
+        cache_root = (
+            Path(user_profile) if user_profile else Path.home()
+        ) / ".image-triage" / "AI" / "rt"
+    else:
+        cache_root = _default_user_cache_root() / "ImageTriage" / "AI" / "rt"
+    root = cache_root / _python_runtime_tag()
+    _migrate_legacy_runtime(root)
+    return root
 
 
 def resolve_ai_runtime_directories(*, install_root: str | Path | None = None) -> AIRuntimeDirectories:
@@ -234,10 +274,20 @@ def load_ai_runtime_installation_status(
             normalize_ai_runtime_variant(str(variant))
             for variant in installed_metadata
         } if isinstance(installed_metadata, list) else set(AI_RUNTIME_VARIANTS)
-    profiles = {
-        variant: _profile_status(directories, variant, include_dino=variant in dino_enabled_variants)
-        for variant in AI_RUNTIME_VARIANTS
-    }
+    profiles = {}
+    for variant in AI_RUNTIME_VARIANTS:
+        generation = _profile_generation(metadata, variant)
+        target_dir = (
+            directories.generated_site_packages_dir(generation)
+            if generation
+            else directories.profiles_root / variant / AI_RUNTIME_SITE_PACKAGES_DIRNAME
+        )
+        profiles[variant] = _profile_status(
+            directories,
+            variant,
+            include_dino=variant in dino_enabled_variants,
+            site_packages_dir=target_dir,
+        )
     installed_variants = tuple(
         variant
         for variant in AI_RUNTIME_VARIANTS
@@ -258,7 +308,7 @@ def load_ai_runtime_installation_status(
         variant
         for variant in AI_RUNTIME_VARIANTS
         if variant == AI_RUNTIME_GPU_VARIANT
-        and bool(_installed_distribution_version(directories.site_packages_dir(variant), "onnxruntime-gpu"))
+        and bool(_installed_distribution_version(profiles[variant].site_packages_dir, "onnxruntime-gpu"))
     )
     return AIRuntimeInstallationStatus(
         directories=directories,
@@ -285,7 +335,7 @@ def resolve_ai_runtime_site_packages(
     )
     if not variant:
         return ()
-    return (status.directories.site_packages_dir(variant),)
+    return (status.profiles[variant].site_packages_dir,)
 
 
 def install_ai_runtime(
@@ -296,6 +346,7 @@ def install_ai_runtime(
     install_root: str | Path | None = None,
     output_callback: Callable[[str], None] | None = None,
     pip_runner: PipRunner | None = None,
+    profile_validator: ProfileValidator | None = None,
 ) -> AIRuntimeInstallationStatus:
     normalized_choice = normalize_ai_runtime_variant(variant_choice, allow_both=True)
     target_variants = (
@@ -305,54 +356,92 @@ def install_ai_runtime(
     directories.root.mkdir(parents=True, exist_ok=True)
     directories.profiles_root.mkdir(parents=True, exist_ok=True)
     runner = pip_runner or _default_pip_runner
-    current_status = load_ai_runtime_installation_status(install_root=install_root)
-    installed_variants = set(current_status.installed_variants)
+    validator = profile_validator or _validate_profile_in_subprocess
 
-    for variant in target_variants:
-        target_dir = directories.site_packages_dir(variant)
-        if force and target_dir.exists():
-            shutil.rmtree(target_dir, ignore_errors=True)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        if output_callback is not None:
-            output_callback(
-                f"Installing {ai_runtime_variant_label(variant)} AI runtime packages to {target_dir}"
+    with _ai_runtime_install_lock(directories.root):
+        current_status = load_ai_runtime_installation_status(install_root=install_root)
+        current_metadata = _load_ai_runtime_metadata(directories.metadata_path)
+        installed_variants = set(current_status.installed_variants)
+        staged_profiles: dict[str, tuple[str, Path]] = {}
+        try:
+            for variant in target_variants:
+                generation = f"{variant}-{uuid.uuid4().hex[:12]}"
+                target_dir = directories.generated_site_packages_dir(generation)
+                target_dir.mkdir(parents=True, exist_ok=False)
+                staged_profiles[variant] = (generation, target_dir)
+                if output_callback is not None:
+                    output_callback(
+                        f"Installing {ai_runtime_variant_label(variant)} AI runtime packages to a new profile"
+                    )
+                args = build_ai_runtime_pip_install_args(
+                    variant=variant,
+                    target_dir=target_dir,
+                    force=force,
+                    include_dino=include_dino,
+                )
+                exit_code = runner(args, directories.root)
+                if exit_code != 0:
+                    raise RuntimeError(
+                        f"AI runtime install failed for {ai_runtime_variant_label(variant)} "
+                        f"(exit code {exit_code}). The existing runtime was not changed."
+                    )
+                profile_status = _profile_status(
+                    directories,
+                    variant,
+                    include_dino=include_dino,
+                    site_packages_dir=target_dir,
+                )
+                if not profile_status.is_installed:
+                    missing = ", ".join(profile_status.missing_modules)
+                    raise RuntimeError(
+                        f"AI runtime validation failed for {ai_runtime_variant_label(variant)}: "
+                        f"required modules are missing: {missing}. The existing runtime was not changed."
+                    )
+                if pip_runner is None:
+                    _validate_distribution_records(target_dir)
+                    validator(target_dir, variant, include_dino)
+                elif profile_validator is not None:
+                    validator(target_dir, variant, include_dino)
+                installed_variants.add(variant)
+
+            preferred_variant = (
+                AI_RUNTIME_GPU_VARIANT
+                if normalized_choice in {AI_RUNTIME_GPU_VARIANT, AI_RUNTIME_BOTH_VARIANT}
+                else AI_RUNTIME_CPU_VARIANT
             )
-        args = build_ai_runtime_pip_install_args(
-            variant=variant,
-            target_dir=target_dir,
-            force=force,
-            include_dino=include_dino,
+            generations = {
+                variant: generation
+                for variant, generation in _profile_generations(current_metadata).items()
+                if variant in installed_variants
+            }
+            generations.update(
+                {variant: generation for variant, (generation, _path) in staged_profiles.items()}
+            )
+            dino_enabled = set(current_status.dino_installed_variants) - set(target_variants)
+            if include_dino:
+                dino_enabled.update(target_variants)
+            metadata = {
+                "metadata_version": AI_RUNTIME_METADATA_VERSION,
+                "installed_variants": sorted(installed_variants),
+                "preferred_variant": preferred_variant,
+                "dino_enabled_variants": sorted(dino_enabled),
+                "profile_generations": generations,
+                "runtime_tag": _python_runtime_tag(),
+            }
+            _write_json_atomic(directories.metadata_path, metadata)
+        except Exception:
+            for generation, _target_dir in staged_profiles.values():
+                _remove_tree_with_retry(directories.profiles_root / generation)
+            raise
+
+        active_profile_names = set(generations.values()) | {
+            variant for variant in installed_variants if variant not in generations
+        }
+        _cleanup_inactive_profiles(
+            directories,
+            active_profile_names=active_profile_names,
+            output_callback=output_callback,
         )
-        exit_code = runner(args, directories.root)
-        if exit_code != 0:
-            shutil.rmtree(target_dir, ignore_errors=True)
-            raise RuntimeError(
-                f"AI runtime install failed for {ai_runtime_variant_label(variant)} (exit code {exit_code})."
-            )
-        profile_status = _profile_status(directories, variant, include_dino=include_dino)
-        if not profile_status.is_installed:
-            missing = ", ".join(profile_status.missing_modules)
-            raise RuntimeError(
-                f"AI runtime install for {ai_runtime_variant_label(variant)} completed, "
-                f"but required modules are still missing: {missing}"
-            )
-        installed_variants.add(variant)
-
-    preferred_variant = (
-        AI_RUNTIME_GPU_VARIANT
-        if normalized_choice in {AI_RUNTIME_GPU_VARIANT, AI_RUNTIME_BOTH_VARIANT}
-        else AI_RUNTIME_CPU_VARIANT
-    )
-    metadata = {
-        "installed_variants": sorted(installed_variants),
-        "preferred_variant": preferred_variant,
-        "dino_enabled_variants": sorted(
-            set(current_status.dino_installed_variants)
-            | (set(target_variants) if include_dino else set())
-        ),
-        "runtime_tag": _python_runtime_tag(),
-    }
-    directories.metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return load_ai_runtime_installation_status(install_root=install_root)
 
 
@@ -363,7 +452,7 @@ def uninstall_ai_runtime(*, install_root: str | Path | None = None) -> bool:
     directories = resolve_ai_runtime_directories(install_root=install_root)
     if not directories.root.exists():
         return False
-    shutil.rmtree(directories.root, ignore_errors=True)
+    _remove_tree_with_retry(directories.root)
     return not directories.root.exists()
 
 
@@ -392,10 +481,10 @@ def build_ai_runtime_pip_install_args(
     else:
         args.extend(["--extra-index-url", _torch_index_url_for_variant(normalized)])
         args.extend(["--only-binary=:all:"])
-    if force:
-        args.extend(["--upgrade", "--force-reinstall"])
-    else:
-        args.append("--upgrade")
+    # Every install targets a fresh generation, so pip never has to replace a
+    # live package tree. Ignore global packages to ensure the target is complete.
+    del force
+    args.extend(["--ignore-installed", "--no-compile"])
     args.extend(_ai_runtime_pip_requirements_for_variant(normalized, include_dino=include_dino))
     return args
 
@@ -410,16 +499,30 @@ def _ai_runtime_pip_requirements_for_variant(variant: str, *, include_dino: bool
             else requirement
             for requirement in requirements
         )
-    if not include_dino or normalized != AI_RUNTIME_GPU_VARIANT:
+    if not include_dino:
         return requirements
-    return tuple(
+    pinned_requirements = tuple(
         requirement
         for requirement in requirements
         if not requirement.partition("==")[0] in {"torch", "torchvision"}
-    ) + (
-        f"torch=={_gpu_torch_version_spec()}",
-        f"torchvision=={_gpu_torchvision_version_spec()}",
     )
+    if normalized == AI_RUNTIME_GPU_VARIANT:
+        return pinned_requirements + (
+            f"torch=={_gpu_torch_version_spec()}",
+            f"torchvision=={_gpu_torchvision_version_spec()}",
+        )
+    return pinned_requirements + (
+        f"torch=={_cpu_torch_version_spec()}",
+        f"torchvision=={_cpu_torchvision_version_spec()}",
+    )
+
+
+def _cpu_torch_version_spec() -> str:
+    return os.environ.get("IMAGE_TRIAGE_TORCH_CPU_VERSION", "2.9.0")
+
+
+def _cpu_torchvision_version_spec() -> str:
+    return os.environ.get("IMAGE_TRIAGE_TORCHVISION_CPU_VERSION", "0.24.0")
 
 
 def _gpu_torch_version_spec() -> str:
@@ -467,8 +570,14 @@ def _run_embedded_pip(args: list[str], cwd: Path) -> int:
         os.chdir(previous_cwd)
 
 
-def _profile_status(directories: AIRuntimeDirectories, variant: str, *, include_dino: bool = True) -> AIRuntimeProfileStatus:
-    target_dir = directories.site_packages_dir(variant)
+def _profile_status(
+    directories: AIRuntimeDirectories,
+    variant: str,
+    *,
+    include_dino: bool = True,
+    site_packages_dir: Path | None = None,
+) -> AIRuntimeProfileStatus:
+    target_dir = site_packages_dir or directories.site_packages_dir(variant)
     missing_items: list[str] = []
     module_names = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (
         AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES if include_dino else ()
@@ -480,6 +589,12 @@ def _profile_status(directories: AIRuntimeDirectories, variant: str, *, include_
         minimum_version = AI_RUNTIME_REQUIRED_VERSION_FLOORS.get(module_name)
         if minimum_version and not _module_version_at_least(target_dir, module_name, minimum_version):
             missing_items.append(f"{module_name}>={'.'.join(str(part) for part in minimum_version)}")
+    required_files = AI_RUNTIME_BASE_REQUIRED_FILES + (
+        AI_RUNTIME_DINO_REQUIRED_FILES if include_dino else ()
+    )
+    for relative_path, missing_label in required_files:
+        if not (target_dir / relative_path).is_file() and missing_label not in missing_items:
+            missing_items.append(missing_label)
     if include_dino and normalize_ai_runtime_variant(variant) == AI_RUNTIME_GPU_VARIANT:
         if not _torch_cuda_binaries_present(target_dir):
             missing_items.append("torch CUDA binaries")
@@ -565,6 +680,251 @@ def _load_ai_runtime_metadata(metadata_path: Path) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _profile_generations(metadata: dict[str, object]) -> dict[str, str]:
+    value = metadata.get("profile_generations")
+    if not isinstance(value, dict):
+        return {}
+    generations: dict[str, str] = {}
+    for variant in AI_RUNTIME_VARIANTS:
+        generation = value.get(variant)
+        if not isinstance(generation, str):
+            continue
+        generation = generation.strip()
+        if (
+            generation
+            and Path(generation).name == generation
+            and generation.startswith(f"{variant}-")
+        ):
+            generations[variant] = generation
+    return generations
+
+
+def _profile_generation(metadata: dict[str, object], variant: str) -> str:
+    normalized = normalize_ai_runtime_variant(variant)
+    return _profile_generations(metadata).get(normalized, "")
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+@contextmanager
+def _ai_runtime_install_lock(root: Path) -> Iterator[None]:
+    lock_path = root.parent / f".{root.name}{AI_RUNTIME_INSTALL_LOCK_FILENAME}"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+        lock_file.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError("Another AI runtime installation is already running.") from exc
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
+def _remove_tree_with_retry(path: Path, *, attempts: int = 6) -> bool:
+    if not path.exists():
+        return True
+    for attempt in range(max(1, attempts)):
+        try:
+            shutil.rmtree(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            if attempt + 1 >= attempts:
+                break
+            time.sleep(0.15 * (attempt + 1))
+    return not path.exists()
+
+
+def _cleanup_inactive_profiles(
+    directories: AIRuntimeDirectories,
+    *,
+    active_profile_names: set[str],
+    output_callback: Callable[[str], None] | None,
+) -> None:
+    try:
+        children = tuple(directories.profiles_root.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if not child.is_dir() or child.name in active_profile_names:
+            continue
+        if child.name not in AI_RUNTIME_VARIANTS and not any(
+            child.name.startswith(f"{variant}-") for variant in AI_RUNTIME_VARIANTS
+        ):
+            continue
+        if not _remove_tree_with_retry(child) and output_callback is not None:
+            output_callback(
+                f"The previous inactive AI profile could not be removed yet: {child.name}"
+            )
+
+
+def _validate_distribution_records(site_packages_dir: Path) -> None:
+    missing: list[str] = []
+    records = tuple(site_packages_dir.glob("*.dist-info/RECORD"))
+    if not records:
+        raise RuntimeError(
+            "AI runtime validation found no installed-package records. "
+            "The existing runtime was not changed."
+        )
+    root = site_packages_dir.resolve()
+    for record_path in records:
+        try:
+            with record_path.open("r", encoding="utf-8", errors="replace", newline="") as stream:
+                rows = tuple(csv.reader(stream))
+        except OSError as exc:
+            raise RuntimeError(
+                f"AI runtime validation could not read {record_path.name}: {exc}. "
+                "The existing runtime was not changed."
+            ) from exc
+        for row in rows:
+            if not row or not row[0]:
+                continue
+            candidate = (site_packages_dir / row[0]).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            if not candidate.exists():
+                missing.append(row[0])
+                if len(missing) >= 12:
+                    break
+        if len(missing) >= 12:
+            break
+    if missing:
+        examples = ", ".join(missing[:3])
+        raise RuntimeError(
+            f"AI runtime validation found {len(missing)} missing installed files "
+            f"(for example: {examples}). The existing runtime was not changed."
+        )
+
+
+def validate_ai_runtime_imports(
+    site_packages_dir: str | Path,
+    *,
+    variant: str,
+    include_dino: bool,
+) -> None:
+    """Import the installed AI surface from an isolated validator process."""
+
+    target = Path(site_packages_dir).resolve()
+    target_text = str(target)
+    if target_text in sys.path:
+        sys.path.remove(target_text)
+    sys.path.insert(0, target_text)
+    importlib.invalidate_caches()
+    dll_handles: list[object] = []
+    if os.name == "nt" and hasattr(os, "add_dll_directory"):
+        for dll_dir in (target, target / "torch" / "lib", target / "onnxruntime" / "capi"):
+            if dll_dir.exists():
+                dll_handles.append(os.add_dll_directory(str(dll_dir)))
+
+    modules = AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES + (
+        AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES if include_dino else ()
+    )
+    for module_name in modules:
+        module = importlib.import_module(module_name)
+        module_path = Path(getattr(module, "__file__", "") or "").resolve()
+        try:
+            module_path.relative_to(target)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{module_name} was loaded outside the managed AI runtime: {module_path}"
+            ) from exc
+
+    if include_dino:
+        transformers = importlib.import_module("transformers")
+        required_symbols = (
+            "AutoImageProcessor",
+            "AutoModelForDepthEstimation",
+            "AutoModelForImageSegmentation",
+            "OneFormerForUniversalSegmentation",
+            "OneFormerProcessor",
+            "Sam2Model",
+            "Sam2Processor",
+        )
+        for symbol in required_symbols:
+            getattr(transformers, symbol)
+        if normalize_ai_runtime_variant(variant) == AI_RUNTIME_GPU_VARIANT:
+            torch = importlib.import_module("torch")
+            if not str(getattr(torch, "__version__", "")).lower().endswith("cu128"):
+                raise RuntimeError("The GPU profile did not load the required CUDA 12.8 PyTorch build.")
+
+
+def _validate_profile_in_subprocess(
+    site_packages_dir: Path,
+    variant: str,
+    include_dino: bool,
+) -> None:
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "validate-profile"]
+    else:
+        installer = Path(__file__).resolve().parents[1] / "packaging" / "ai_runtime_installer.py"
+        command = [sys.executable, str(installer), "validate-profile"]
+    command.extend(["--site-packages", str(site_packages_dir), "--variant", variant])
+    if not include_dino:
+        command.append("--no-dino")
+    env = os.environ.copy()
+    env["PYTHONNOUSERSITE"] = "1"
+    env["TRANSFORMERS_OFFLINE"] = "1"
+    env["HF_HUB_OFFLINE"] = "1"
+    process = subprocess.run(
+        command,
+        cwd=str(site_packages_dir.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    if process.returncode == 0:
+        return
+    detail = (process.stderr or process.stdout or "unknown import error").strip().splitlines()
+    tail = " | ".join(detail[-4:])
+    raise RuntimeError(
+        f"AI runtime import validation failed for {ai_runtime_variant_label(variant)}: {tail}. "
+        "The existing runtime was not changed."
+    )
+
+
 def _module_present(site_packages_dir: Path, module_name: str) -> bool:
     if not site_packages_dir.exists():
         return False
@@ -634,9 +994,59 @@ def _parse_version_prefix(version: str, *, parts: int) -> tuple[int, ...] | None
 def _default_user_cache_root() -> Path:
     if os.name == "nt":
         local_appdata = os.environ.get("LOCALAPPDATA")
-        return Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        if local_appdata:
+            candidate = Path(local_appdata)
+            normalized = str(candidate).replace("/", "\\").lower()
+            is_store_virtualized = (
+                "\\packages\\pythonsoftwarefoundation.python." in normalized
+                and "\\localcache\\local" in normalized
+            )
+            user_profile = os.environ.get("USERPROFILE")
+            if is_store_virtualized and user_profile:
+                return Path(user_profile) / "AppData" / "Local"
+            return candidate
+        user_profile = os.environ.get("USERPROFILE")
+        return Path(user_profile) / "AppData" / "Local" if user_profile else Path.home() / "AppData" / "Local"
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
     return Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
+
+
+def _legacy_ai_runtime_roots() -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    raw_local_appdata = os.environ.get("LOCALAPPDATA") if os.name == "nt" else os.environ.get("XDG_CACHE_HOME")
+    if raw_local_appdata:
+        raw_cache = Path(raw_local_appdata)
+        candidates.extend(
+            (
+                raw_cache / "image_triage_ai_cache" / "runtime" / _python_runtime_tag(),
+                raw_cache / "ImageTriage" / "AI" / "rt" / _python_runtime_tag(),
+            )
+        )
+    candidates.append(
+        _default_user_cache_root() / "image_triage_ai_cache" / "runtime" / _python_runtime_tag()
+    )
+    candidates.append(
+        _default_user_cache_root() / "ImageTriage" / "AI" / "rt" / _python_runtime_tag()
+    )
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return tuple(unique)
+
+
+def _migrate_legacy_runtime(new_root: Path) -> None:
+    if new_root.exists():
+        return
+    for legacy_root in _legacy_ai_runtime_roots():
+        if legacy_root == new_root or not legacy_root.exists():
+            continue
+        try:
+            new_root.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(legacy_root, new_root)
+        except OSError:
+            continue
+        return
 
 
 def _python_runtime_tag() -> str:
