@@ -58,6 +58,7 @@ from .ui.crop_overlay import CropOverlay
 from .ui.mask_overlay import MaskOverlay
 from .ui.retouch_overlay import RetouchOverlay
 from .ui.photo_editor_panel import EditRecipe, PhotoEditorPanel
+from .ui.display_metrics import DisplayProfile, STANDARD_DISPLAY
 from .ui import preview_studio as studio
 from .ui.theme import ThemePalette, default_theme
 
@@ -626,6 +627,7 @@ class FullScreenPreview(QDialog):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._display_profile = STANDARD_DISPLAY
         self._entries: list[PreviewEntry] = []
         self._source_entries: list[PreviewEntry] = []
         self._current_images: list[QImage] = []
@@ -1720,13 +1722,14 @@ class FullScreenPreview(QDialog):
         """
         rail = QFrame()
         rail.setObjectName("rail")
-        # 336px of content plus the editor panel's 46px tool rail.
-        rail.setFixedWidth(336 + PhotoEditorPanel.RAIL_WIDTH)
+        profile = self._display_profile
+        rail.setFixedWidth(profile.editor_content_width + profile.editor_tool_rail_width)
         layout = QVBoxLayout(rail)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
         self.photo_editor_panel = PhotoEditorPanel(rail)
+        self.photo_editor_panel.apply_display_profile(profile)
         self.photo_editor_panel.recipe_changed.connect(self._handle_editor_recipe_changed)
         self.photo_editor_panel.status_changed.connect(self._handle_editor_status_changed)
         self.photo_editor_panel.saved.connect(self._handle_editor_sidecar_saved)
@@ -1772,6 +1775,19 @@ class FullScreenPreview(QDialog):
         self._studio_cards = []
         self._studio_segments = []
         return rail
+
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        """Apply the main window's logical density profile to the editor rail."""
+
+        self._display_profile = profile
+        rail = getattr(self, "_studio_rail", None)
+        if rail is not None:
+            rail.setFixedWidth(profile.editor_content_width + profile.editor_tool_rail_width)
+        panel = getattr(self, "photo_editor_panel", None)
+        if panel is not None:
+            panel.apply_display_profile(profile)
+        if self.isVisible():
+            self._render_all()
 
     def _apply_studio_layout(self) -> None:
         self._studio_layout_active = True

@@ -5,7 +5,11 @@ import unittest
 
 from PySide6.QtCore import QByteArray, QRect
 
-from image_triage.ui.layout_state import restore_window_layout, save_window_layout
+from image_triage.ui.layout_state import (
+    clamp_rect_to_available_geometry,
+    restore_window_layout,
+    save_window_layout,
+)
 
 
 class _SettingsStub:
@@ -68,6 +72,22 @@ class _WindowStub:
 
 
 class LayoutStateTests(unittest.TestCase):
+    def test_clamp_rect_shrinks_height_to_stay_above_taskbar(self) -> None:
+        available = QRect(0, 0, 1920, 1040)
+        restored = QRect(120, 20, 1600, 1100)
+
+        fitted = clamp_rect_to_available_geometry(restored, available)
+
+        self.assertEqual(QRect(120, 8, 1600, 1024), fitted)
+
+    def test_clamp_rect_moves_an_offscreen_window_into_work_area(self) -> None:
+        available = QRect(1920, 0, 1920, 1040)
+        restored = QRect(4200, 1300, 900, 700)
+
+        fitted = clamp_rect_to_available_geometry(restored, available)
+
+        self.assertEqual(QRect(2932, 332, 900, 700), fitted)
+
     def test_save_window_layout_persists_window_state_and_normal_geometry(self) -> None:
         settings = _SettingsStub()
         docks = _WorkspaceDockStub()

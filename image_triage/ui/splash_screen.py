@@ -7,8 +7,9 @@ from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixma
 from PySide6.QtWidgets import QWidget
 
 
-_BACKGROUND_PATH = Path(__file__).resolve().parent / "assets" / "splash_background-v4.png"
+_BACKGROUND_PATH = Path(__file__).resolve().parent / "assets" / "splash_background-v7.png"
 _BACKGROUND_ASPECT = 1633 / 963
+_SPLASH_SIZE_SCALE = 0.75
 
 
 class StartupSplash(QWidget):
@@ -23,7 +24,8 @@ class StartupSplash(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(1020, round(1020 / _BACKGROUND_ASPECT))
+        initial_width = round(1020 * _SPLASH_SIZE_SCALE)
+        self.setFixedSize(initial_width, round(initial_width / _BACKGROUND_ASPECT))
         self._background = QPixmap(str(_BACKGROUND_PATH))
         self._status = "Starting…"
         self._progress = 8
@@ -45,12 +47,14 @@ class StartupSplash(QWidget):
         screen = self.screen()
         if screen is not None:
             area = screen.availableGeometry()
-            target_width = min(1100, max(560, int(area.width() * 0.72)))
-            target_width = min(target_width, area.width() - 48)
-            target_height = round(target_width / _BACKGROUND_ASPECT)
-            if target_height > area.height() - 48:
-                target_height = area.height() - 48
-                target_width = round(target_height * _BACKGROUND_ASPECT)
+            base_width = min(1100, max(560, int(area.width() * 0.72)))
+            base_width = min(base_width, max(1, area.width() - 48))
+            base_height = round(base_width / _BACKGROUND_ASPECT)
+            if base_height > area.height() - 48:
+                base_height = max(1, area.height() - 48)
+                base_width = round(base_height * _BACKGROUND_ASPECT)
+            target_width = max(1, round(base_width * _SPLASH_SIZE_SCALE))
+            target_height = max(1, round(base_height * _SPLASH_SIZE_SCALE))
             self.setFixedSize(target_width, target_height)
             self.move(area.center() - self.rect().center())
         self.show()

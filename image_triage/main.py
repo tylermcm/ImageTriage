@@ -17,6 +17,8 @@ from image_triage.updater import current_app_version
 
 
 _APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "app_icon-v2.ico"
+# One deployment switch controls whether the preserved splash is shown.
+_STARTUP_SPLASH_ENABLED = True
 
 
 def _configure_windows_app_identity() -> None:
@@ -52,24 +54,28 @@ def main() -> int:
     app.setApplicationDisplayName("Image Triage")
     app.setWindowIcon(QIcon(str(_APP_ICON_PATH)))
 
-    from image_triage.ui.splash_screen import StartupSplash
+    splash = None
+    if _STARTUP_SPLASH_ENABLED:
+        from image_triage.ui.splash_screen import StartupSplash
 
-    splash = StartupSplash(QCoreApplication.applicationVersion())
-    splash.show_centered()
-    app.processEvents()
+        splash = StartupSplash(QCoreApplication.applicationVersion())
+        splash.show_centered()
+        app.processEvents()
+        splash.set_status("Loading workspace…", 22)
+        app.processEvents()
 
-    splash.set_status("Loading workspace…", 22)
-    app.processEvents()
-    # MainWindow has a broad UI dependency graph. Import it only after the
-    # splash is visible so a cold launch always gives immediate feedback.
     from image_triage.window import MainWindow
 
-    splash.set_status("Restoring your library…", 58)
-    app.processEvents()
+    if splash is not None:
+        splash.set_status("Restoring your library…", 58)
+        app.processEvents()
     window = MainWindow(launch_target=launch_target_from_argv(sys.argv))
-    splash.set_status("Ready", 100)
-    app.processEvents()
-    splash.finish(window)
+    if splash is not None:
+        splash.set_status("Ready", 100)
+        app.processEvents()
+        splash.finish(window)
+    else:
+        window.show()
     return app.exec()
 
 
