@@ -346,7 +346,7 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
 
             ## Interface
 
-            Card appearance, interface brightness, scrolling, preview loading, and automatic review movement.
+            Interface size, card appearance, interface brightness, scrolling, preview loading, and automatic review movement.
 
             ## Library and Folders
 
@@ -389,6 +389,10 @@ def settings_help_pages() -> tuple[HelpPage, ...]:
             "Interface and Folders",
             """
             # Interface and folders
+
+            **Interface size** controls the spacing and size of the app's controls. **Automatic** measures the usable app window and chooses Compact, Comfortable, or Large. It also updates when you resize the window or move it to another monitor. Windows display scaling is still respected, so a 4K display at 200% does not get enlarged twice.
+
+            Choose **Compact** when you want more working room, **Comfortable** for the original 2K layout density, or **Large** when you want bigger controls. A manual choice stays the same across monitors until you switch back to Automatic.
 
             **Card style** changes the information around thumbnails. **UI gamma** changes only the interface brightness; it never alters a photo.
 

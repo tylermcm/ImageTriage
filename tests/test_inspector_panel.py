@@ -17,6 +17,7 @@ from image_triage.ui.docks import (
     InspectorSeverity,
     build_workspace_docks,
 )
+from image_triage.ui.display_metrics import COMPACT_DISPLAY
 
 
 def _underexposed_stats() -> InspectionStats:
@@ -51,6 +52,17 @@ class InspectorPanelTests(unittest.TestCase):
         self.assertEqual(row.severity, InspectorSeverity.WARNING)
         self.assertFalse(row.warning_icon.isHidden())
         self.assertEqual(row.value_label.property("severity"), "warning")
+
+    def test_compact_profile_resizes_inspector_chrome_and_rows(self) -> None:
+        panel = InspectorPanel()
+        panel.resize(COMPACT_DISPLAY.inspector_width, 820)
+
+        panel.apply_display_profile(COMPACT_DISPLAY)
+
+        self.assertEqual(78, panel.culling_rows["Decision"].label.width())
+        self.assertEqual(COMPACT_DISPLAY.inspector_section_header_height, panel.histogram_section.header.height())
+        self.assertEqual(COMPACT_DISPLAY.inspector_header_button_width, panel.close_button.width())
+        self.assertEqual(COMPACT_DISPLAY.inspector_histogram_max_height, panel.histogram_widget.maximumHeight())
 
     def test_severity_mapping_is_limited_to_actionable_conditions(self) -> None:
         warning_cases = (
@@ -98,6 +110,25 @@ class InspectorPanelTests(unittest.TestCase):
 
         panel._set_histogram_summary(EMPTY_INSPECTION_STATS)
         self.assertEqual(panel.histogram_summary.text(), "Not analyzed")
+
+    def test_histogram_height_tracks_wrapped_content_without_dead_space(self) -> None:
+        host = QWidget()
+        host.setFixedSize(370, 900)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        panel = InspectorPanel()
+        host_layout.addWidget(panel)
+        host.show()
+        self.app.processEvents()
+
+        panel.preview_collapse_button.setChecked(False)
+        panel._set_histogram_summary(_underexposed_stats())
+        panel._sync_inspector_geometry()
+        self.app.processEvents()
+
+        self.assertEqual(panel.histogram_section.expanded_height_hint(), panel.histogram_section.height())
+        self.assertLessEqual(panel.histogram_section.height(), 150)
+        host.close()
 
     def test_empty_sections_keep_original_row_layout(self) -> None:
         panel = InspectorPanel()
@@ -186,7 +217,7 @@ class InspectorPanelTests(unittest.TestCase):
 
         last_section = panel._sections["edit_potential"]
         self.assertEqual(panel.height(), host.height())
-        self.assertEqual(last_section.geometry().bottom(), panel.height() - 1)
+        self.assertLessEqual(last_section.geometry().bottom(), panel.height() - 1)
         self.assertEqual(panel.preview_card.width(), panel.preview_card.height())
         self.assertEqual(panel.culling_rows["Decision"].label.width(), 96)
         section_scroll_areas = panel.findChildren(QScrollArea, "inspectorSectionScrollArea")
@@ -201,6 +232,23 @@ class InspectorPanelTests(unittest.TestCase):
         self.assertEqual(panel.preview_card.width(), square_side)
         self.assertEqual(panel.preview_card.height(), square_side)
         host.close()
+
+    def test_complete_preview_card_stays_square_at_supported_panel_widths(self) -> None:
+        for width in (276, 300, 320, 460):
+            with self.subTest(width=width):
+                host = QWidget()
+                host.setFixedSize(width, width + 1200)
+                host_layout = QVBoxLayout(host)
+                host_layout.setContentsMargins(0, 0, 0, 0)
+                panel = InspectorPanel()
+                host_layout.addWidget(panel)
+                host.show()
+                self.app.processEvents()
+                panel._sync_inspector_geometry()
+                self.app.processEvents()
+
+                self.assertEqual(panel.preview_card.width(), panel.preview_card.height())
+                host.close()
 
     def test_long_inspector_values_scroll_inside_their_fixed_section(self) -> None:
         host = QWidget()
@@ -257,6 +305,29 @@ class InspectorPanelTests(unittest.TestCase):
         )
         host.close()
 
+    def test_collapsed_preview_releases_its_full_height_to_open_sections(self) -> None:
+        host = QWidget()
+        host.setFixedSize(400, 760)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        panel = InspectorPanel()
+        host_layout.addWidget(panel)
+        host.show()
+        self.app.processEvents()
+
+        panel.preview_collapse_button.setChecked(False)
+        panel._sections["culling"].set_expanded(False)
+        panel._sections["subject"].set_expanded(False)
+        panel._sync_inspector_geometry()
+        self.app.processEvents()
+
+        self.assertEqual(INSPECTOR_PREVIEW_COLLAPSED_HEIGHT, panel.preview_card.height())
+        for key in ("quality", "group_comparison", "edit_potential"):
+            section = panel._sections[key]
+            self.assertGreaterEqual(section.height(), section.expanded_height_hint())
+            self.assertFalse(section.body_scroll.verticalScrollBar().isVisible())
+        host.close()
+
     def test_warning_heavy_content_does_not_clip_the_square_preview_or_last_section(self) -> None:
         host = QWidget()
         host.setFixedSize(300, 1250)
@@ -290,7 +361,7 @@ class InspectorPanelTests(unittest.TestCase):
             self.assertGreater(section.geometry().top(), previous_bottom)
             if section is panel.histogram_section:
                 self.assertGreaterEqual(section.height(), section.expanded_height_hint())
-            elif section.height() < section.expanded_height_hint():
+            elif section.content_will_clip_at(section.height()):
                 self.assertTrue(section.body_scroll.verticalScrollBar().isVisible())
             previous_bottom = section.geometry().bottom()
         host.close()

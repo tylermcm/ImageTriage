@@ -28,6 +28,7 @@ from PySide6.QtGui import (
 )
 from ..editor_geometry import ViewTransform, view_transform_for
 from ..perf import perf_logger
+from .display_metrics import DisplayProfile, STANDARD_DISPLAY
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -1405,6 +1406,7 @@ class PhotoEditorPanel(QFrame):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("photoEditorPanel")
+        self._display_profile = STANDARD_DISPLAY
         self._source_path: Path | None = None
         self._session_path: Path | None = None
         self._session: dict[str, Any] | None = None
@@ -1597,6 +1599,20 @@ class PhotoEditorPanel(QFrame):
     def recipe(self) -> EditRecipe:
         return self._recipe
 
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        self._display_profile = profile
+        rail = getattr(self, "_editor_tool_rail", None)
+        if rail is not None:
+            rail.setFixedWidth(profile.editor_tool_rail_width)
+            layout = rail.layout()
+            if layout is not None:
+                side = max(4, (profile.editor_tool_rail_width - profile.editor_tool_button_width) // 2)
+                vertical = max(5, round(6 * profile.scale))
+                layout.setContentsMargins(side, vertical, side, vertical)
+        for button in getattr(self, "_mode_buttons", ()):
+            button.setIconSize(QSize(profile.editor_tool_icon_size, profile.editor_tool_icon_size))
+            button.setFixedSize(profile.editor_tool_button_width, profile.editor_tool_button_height)
+
     def _build_tool_rail(self) -> QFrame:
         """The vertical tool rail down the panel's left edge.
 
@@ -1607,9 +1623,11 @@ class PhotoEditorPanel(QFrame):
         """
         rail = QFrame(self)
         rail.setObjectName("editorToolRail")
-        rail.setFixedWidth(self.RAIL_WIDTH)
+        profile = self._display_profile
+        rail.setFixedWidth(profile.editor_tool_rail_width)
         layout = QVBoxLayout(rail)
-        layout.setContentsMargins(5, 6, 5, 6)
+        side = max(4, (profile.editor_tool_rail_width - profile.editor_tool_button_width) // 2)
+        layout.setContentsMargins(side, max(5, round(6 * profile.scale)), side, max(5, round(6 * profile.scale)))
         layout.setSpacing(2)
         self._mode_buttons: list[QToolButton] = []
         previous_group: int | None = None
@@ -1625,8 +1643,8 @@ class PhotoEditorPanel(QFrame):
             button = QToolButton(rail)
             button.setObjectName("editorToolRailButton")
             button.setIcon(self._mask_glyph(glyph))
-            button.setIconSize(QSize(18, 18))
-            button.setFixedSize(36, 34)
+            button.setIconSize(QSize(profile.editor_tool_icon_size, profile.editor_tool_icon_size))
+            button.setFixedSize(profile.editor_tool_button_width, profile.editor_tool_button_height)
             button.setToolTip(f"{label} — {tooltip}")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)

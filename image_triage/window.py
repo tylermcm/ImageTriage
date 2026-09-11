@@ -361,6 +361,7 @@ from .ui import (
     clear_window_layout,
     default_theme,
     format_action_tooltip,
+    fit_window_to_available_geometry,
     parse_appearance_mode,
     restore_window_layout,
     resolve_theme,
@@ -368,6 +369,12 @@ from .ui import (
     show_paged_help,
 )
 from .ui.busy_overlay import BusyOverlay
+from .ui.display_metrics import (
+    DisplayProfile,
+    STANDARD_DISPLAY,
+    display_profile_for_preference,
+    normalize_display_profile_preference,
+)
 from .ui.sections import SectionHeader
 from .ui.face_groups import FaceGroupsPanel, face_group_photo_paths, load_face_groups
 from .ui.help_topics import library_help_pages, settings_help_pages
@@ -2557,6 +2564,7 @@ class MainWindow(QMainWindow):
     AUTO_BRACKET_KEY = "window/auto_bracket_compare"
     APPEARANCE_KEY = "window/appearance"
     UI_GAMMA_KEY = "view/ui_gamma"
+    INTERFACE_SIZE_KEY = "view/interface_size"
     GEOMETRY_KEY = "window/geometry"
     STATE_KEY = "window/state"
     SESSION_KEY = "workflow/session"
@@ -3161,7 +3169,12 @@ class MainWindow(QMainWindow):
             self._settings.value(self.APPEARANCE_KEY, AppearanceMode.GRAPHITE.value, str)
         )
         self._ui_gamma = normalize_ui_gamma(self._settings.value(self.UI_GAMMA_KEY, 1.0, float))
+        self._interface_size = normalize_display_profile_preference(
+            self._settings.value(self.INTERFACE_SIZE_KEY, "automatic", str)
+        )
         self._theme = None
+        self._display_profile: DisplayProfile | None = None
+        self._display_profile_update_pending = False
         self._child_sync_state_path = self._prepare_child_sync_state_path()
         self._child_processes: dict[int, ChildAppProcess] = {}
         self._child_process_timer = QTimer(self)
@@ -4216,6 +4229,7 @@ class MainWindow(QMainWindow):
         self.zen_hint_hide_timer.timeout.connect(self.zen_hint_overlay.hide)
         self.summary_strip.hide()
         self._apply_default_workspace()
+        self._apply_display_profile()
         QTimer.singleShot(0, self._restore_details_view_state)
 
         status = QStatusBar()
@@ -4603,6 +4617,7 @@ class MainWindow(QMainWindow):
         nav_layout = QHBoxLayout(nav_cluster)
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(self.TOPBAR_SLOT_SPACING)
+        self._topbar_nav_layout = nav_layout
 
         def make_labeled_nav_button(item_id: str, label: str, tooltip: str) -> QToolButton:
             button = QToolButton(nav_cluster)
@@ -4820,9 +4835,11 @@ class MainWindow(QMainWindow):
         No action, no click behaviour — it just occupies a cell."""
         holder = QWidget()
         holder.setObjectName("topbarDividerCell")
-        holder.setFixedSize(self.TOPBAR_SLOT_BUTTON_WIDTH, self.TOPBAR_BUTTON_HEIGHT)
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        holder.setFixedSize(profile.topbar_slot_button_width, profile.topbar_button_height)
         layout = QHBoxLayout(holder)
-        layout.setContentsMargins(0, 7, 0, 7)
+        vertical_margin = max(5, round(profile.topbar_button_height * 0.21))
+        layout.setContentsMargins(0, vertical_margin, 0, vertical_margin)
         layout.setSpacing(0)
         line = QFrame(holder)
         line.setObjectName("topbarDividerLine")
@@ -4876,12 +4893,13 @@ class MainWindow(QMainWindow):
 
     def _apply_topbar_button_style(self, button: QToolButton, icon: QIcon) -> None:
         """Place every glyph and caption in identical fixed-height rows."""
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
         caption = button.text()
         button.setMinimumSize(0, 0)
         button.setMaximumSize(16777215, 16777215)
         button.setObjectName("appTopBarIconButton")
-        hover_width = self.TOPBAR_SLOT_BUTTON_WIDTH + 2 * self.TOPBAR_HOVER_MARGIN
-        hover_height = self.TOPBAR_BUTTON_HEIGHT + 2 * self.TOPBAR_HOVER_MARGIN
+        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+        hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
         button.setFixedSize(hover_width, hover_height)
         button.setAccessibleName(caption)
         button.setProperty("topbarCaption", caption)
@@ -4894,10 +4912,10 @@ class MainWindow(QMainWindow):
         content.setObjectName("appTopBarButtonContent")
         content.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         content.setGeometry(
-            self.TOPBAR_HOVER_MARGIN,
-            self.TOPBAR_HOVER_MARGIN,
-            self.TOPBAR_SLOT_BUTTON_WIDTH,
-            self.TOPBAR_BUTTON_HEIGHT,
+            profile.topbar_hover_margin,
+            profile.topbar_hover_margin,
+            profile.topbar_slot_button_width,
+            profile.topbar_button_height,
         )
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -4908,17 +4926,40 @@ class MainWindow(QMainWindow):
         glyph.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         glyph.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         glyph.setIcon(icon)
-        glyph.setIconSize(QSize(22, 22))
+        glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
         glyph.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        glyph.setFixedSize(self.TOPBAR_SLOT_BUTTON_WIDTH, 22)
+        glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
         layout.addWidget(glyph, 0, Qt.AlignmentFlag.AlignHCenter)
 
         caption_label = QLabel(caption, content)
         caption_label.setObjectName("appTopBarButtonCaption")
         caption_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         caption_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        caption_label.setFixedSize(self.TOPBAR_SLOT_BUTTON_WIDTH, 12)
+        caption_label.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
         layout.addWidget(caption_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+    @staticmethod
+    def _resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
+        """Resize an existing composite top-bar button without rebuilding it."""
+
+        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+        hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
+        button.setFixedSize(hover_width, hover_height)
+        content = button.findChild(QWidget, "appTopBarButtonContent")
+        if content is not None:
+            content.setGeometry(
+                profile.topbar_hover_margin,
+                profile.topbar_hover_margin,
+                profile.topbar_slot_button_width,
+                profile.topbar_button_height,
+            )
+        glyph = button.findChild(QToolButton, "appTopBarGlyph")
+        if glyph is not None:
+            glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
+            glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
+        caption = button.findChild(QLabel, "appTopBarButtonCaption")
+        if caption is not None:
+            caption.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
 
     def _topbar_nav_icon(self, item_id: str) -> QIcon:
         glyphs = self.TOPBAR_NAV_FLUENT_ICONS.get(item_id)
@@ -5002,13 +5043,24 @@ class MainWindow(QMainWindow):
     def _topbar_visible_slot_count(self) -> int:
         stack = getattr(self, "topbar_action_stack", None)
         width = stack.width() if isinstance(stack, QWidget) else 0
-        return self._topbar_visible_slot_count_for_width(width)
+        profile = getattr(self, "_display_profile", None)
+        if profile is None:
+            return self._topbar_visible_slot_count_for_width(width)
+        available = int(width or 0)
+        if available <= 0:
+            return max(1, min(self.TOPBAR_INITIAL_VISIBLE_SLOTS, self.TOPBAR_SLOT_COUNT))
+        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+        cell = max(profile.topbar_slot_cell_min, hover_width)
+        spacing = max(0, profile.topbar_slot_spacing)
+        count = (available + spacing) // (cell + spacing)
+        return max(1, min(self.TOPBAR_SLOT_COUNT, int(count)))
 
     def _configure_topbar_grid_columns(self, grid: QGridLayout, visible_slots: int) -> None:
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
         for col in range(self.TOPBAR_SLOT_COUNT):
             active = col < visible_slots
             grid.setColumnStretch(col, 1 if active else 0)
-            grid.setColumnMinimumWidth(col, self.TOPBAR_SLOT_CELL_MIN if active else 0)
+            grid.setColumnMinimumWidth(col, profile.topbar_slot_cell_min if active else 0)
 
     def _rebuild_topbar_action_stack(self, mode: str | None = None) -> None:
         layouts = getattr(self, "_topbar_action_layouts", None)
@@ -5151,7 +5203,101 @@ class MainWindow(QMainWindow):
         return "detailed"
 
     # -- Resolution-aware card-style policy --------------------------------
+    def _schedule_display_profile_update(self) -> None:
+        if self._display_profile_update_pending:
+            return
+        self._display_profile_update_pending = True
+        QTimer.singleShot(0, self._apply_display_profile)
+
+    def _apply_display_profile(self) -> None:
+        self._display_profile_update_pending = False
+        container = getattr(self, "central_container", None)
+        width = int(container.width()) if container is not None and container.width() > 0 else int(self.width())
+        height = int(container.height()) if container is not None and container.height() > 0 else int(self.height())
+        profile = display_profile_for_preference(width, height, self._interface_size)
+        if profile == self._display_profile:
+            return
+        self._display_profile = profile
+
+        if container is not None:
+            layout = container.layout()
+            if layout is not None:
+                layout.setContentsMargins(
+                    profile.shell_margin,
+                    profile.shell_margin,
+                    profile.shell_margin,
+                    profile.shell_margin,
+                )
+                layout.setSpacing(profile.shell_spacing)
+        docks = getattr(self, "workspace_docks", None)
+        if docks is not None:
+            docks.apply_display_profile(profile)
+        self._apply_main_chrome_display_profile(profile)
+        preview = getattr(self, "preview", None)
+        if preview is not None and hasattr(preview, "apply_display_profile"):
+            preview.apply_display_profile(profile)
+
+    def _apply_main_chrome_display_profile(self, profile: DisplayProfile) -> None:
+        """Apply bounded profile metrics to the production window chrome."""
+
+        bar = getattr(self, "app_top_bar", None)
+        if bar is not None and bar.layout() is not None:
+            bar.layout().setContentsMargins(
+                profile.shell_margin,
+                max(4, profile.shell_margin - 2),
+                profile.shell_margin + 2,
+                max(4, profile.shell_margin - 2),
+            )
+            bar.layout().setSpacing(profile.inspector_spacing)
+        search = getattr(self, "topbar_search_field", None)
+        if search is not None:
+            search.setMinimumWidth(profile.topbar_search_min_width)
+            search.setMaximumWidth(profile.topbar_search_max_width)
+        zoom = getattr(self, "topbar_zoom_slider", None)
+        if zoom is not None:
+            zoom.setFixedWidth(profile.topbar_zoom_width)
+        path = getattr(self, "topbar_path_combo", None)
+        if path is not None:
+            path.setMinimumWidth(profile.topbar_path_min_width)
+            path.setMaximumWidth(profile.topbar_path_max_width)
+        for button, _base in getattr(self, "_topbar_nav_buttons", ()):
+            button.setFixedSize(profile.topbar_nav_button_size, profile.topbar_nav_button_size)
+            font = button.font()
+            font.setPixelSize(profile.topbar_nav_font_size)
+            button.setFont(font)
+        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
+            self._resize_topbar_button(button, profile)
+        nav_layout = getattr(self, "_topbar_nav_layout", None)
+        if nav_layout is not None:
+            nav_layout.setSpacing(profile.topbar_slot_spacing)
+        rail = getattr(self, "left_task_rail", None)
+        if rail is not None:
+            rail.setFixedWidth(profile.left_rail_width)
+            rail_layout = rail.layout()
+            if rail_layout is not None:
+                side_margin = max(4, (profile.left_rail_width - profile.left_rail_button_size) // 2)
+                rail_layout.setContentsMargins(side_margin, profile.shell_margin, side_margin, profile.shell_margin)
+                rail_layout.setSpacing(profile.shell_spacing)
+        tool_layout = getattr(self, "_left_rail_tool_layout", None)
+        if tool_layout is not None:
+            tool_layout.setSpacing(profile.shell_spacing)
+        for button, _base in getattr(self, "_left_rail_buttons", ()):
+            is_add = button is getattr(self, "_left_rail_add_button", None)
+            icon_size = profile.left_rail_add_icon_size if is_add else profile.left_rail_icon_size
+            button.setIconSize(QSize(icon_size, icon_size))
+            button.setFixedSize(profile.left_rail_button_size, profile.left_rail_button_size)
+        for grid in getattr(self, "_topbar_action_layouts", {}).values():
+            grid.setHorizontalSpacing(profile.topbar_slot_spacing)
+        if getattr(self, "_topbar_action_layouts", None):
+            self._rebuild_topbar_action_stack()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._schedule_display_profile_update()
+
     def _display_class(self) -> str:
+        # Card detail depends chiefly on usable height. A narrow window should
+        # condense its chrome without unexpectedly forcing photo-only cards.
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return "high"
@@ -5197,6 +5343,7 @@ class MainWindow(QMainWindow):
     def _post_show_display_setup(self) -> None:
         # Runs once the window is up: warn if on a small display, and re-apply the
         # policy live when moved to another screen or the resolution changes.
+        self._apply_display_profile()
         self._apply_display_style_policy(show_warning=True)
         handle = self.windowHandle()
         if handle is not None:
@@ -5211,11 +5358,19 @@ class MainWindow(QMainWindow):
             screen.geometryChanged.connect(
                 self._handle_display_change, Qt.ConnectionType.UniqueConnection
             )
+            screen.availableGeometryChanged.connect(
+                self._handle_display_change, Qt.ConnectionType.UniqueConnection
+            )
+            screen.logicalDotsPerInchChanged.connect(
+                self._handle_display_change, Qt.ConnectionType.UniqueConnection
+            )
         except (TypeError, RuntimeError):
             pass
 
     def _handle_display_change(self, _arg=None) -> None:
         self._connect_screen_geometry_signal()
+        self._schedule_display_profile_update()
+        QTimer.singleShot(0, lambda: fit_window_to_available_geometry(self))
         self._apply_display_style_policy(show_warning=True)
 
     def _maybe_warn_small_display(self) -> None:
@@ -10763,6 +10918,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._sync_zoom_slider_from_grid)
         if self._startup_window_state in {"maximized", "fullscreen"}:
             QTimer.singleShot(0, self._apply_startup_window_state_fixup)
+        else:
+            # The saved/default client rectangle was clamped before show. Run
+            # once more now that Windows has reported the real frame/title bar,
+            # keeping the complete window above the taskbar.
+            QTimer.singleShot(0, lambda: fit_window_to_available_geometry(self))
 
     def _clear_startup_focus(self) -> None:
         focused = self.focusWidget()
@@ -23997,6 +24157,7 @@ class MainWindow(QMainWindow):
             loupe_card_style=self._effective_loupe_card_style,
             allowed_card_styles=self._allowed_card_styles(),
             ui_gamma=self._ui_gamma,
+            interface_size=self._interface_size,
             free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
             preview_preload_batch_size=self._preview_preload_batch_size,
             show_hidden_folders=self._show_hidden_folders,
@@ -24027,6 +24188,7 @@ class MainWindow(QMainWindow):
             reset_layout_callback=self._reset_window_layout,
             shortcut_overrides=load_shortcut_overrides(),
             initial_section=initial_section,
+            display_profile=self._display_profile or STANDARD_DISPLAY,
             parent=self,
         )
         if self._exec_dialog_with_geometry(dialog, "settings_compact") != dialog.DialogCode.Accepted:
@@ -24048,6 +24210,8 @@ class MainWindow(QMainWindow):
         card_style_changed = self._normalize_loupe_card_style(result.loupe_card_style) != self._effective_loupe_card_style
         new_ui_gamma = normalize_ui_gamma(result.ui_gamma)
         ui_gamma_changed = abs(new_ui_gamma - self._ui_gamma) > 1e-3
+        new_interface_size = normalize_display_profile_preference(result.interface_size)
+        interface_size_changed = new_interface_size != self._interface_size
         free_scroll_changed = result.free_smooth_scroll_enabled != self._free_smooth_scroll_enabled
         new_preview_preload_batch_size = self._normalize_preview_preload_batch_size(result.preview_preload_batch_size)
         preview_preload_changed = new_preview_preload_batch_size != self._preview_preload_batch_size
@@ -24076,6 +24240,7 @@ class MainWindow(QMainWindow):
         if card_style_changed:
             self._loupe_card_style = self._normalize_loupe_card_style(result.loupe_card_style)
         self._ui_gamma = new_ui_gamma
+        self._interface_size = new_interface_size
         self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
         self._preview_preload_batch_size = new_preview_preload_batch_size
         self._show_hidden_folders = result.show_hidden_folders
@@ -24116,6 +24281,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.DELETE_MODE_KEY, self._delete_mode.value)
         self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, self._loupe_card_style)
         self._settings.setValue(self.UI_GAMMA_KEY, self._ui_gamma)
+        self._settings.setValue(self.INTERFACE_SIZE_KEY, self._interface_size)
         self._settings.setValue(self.FREE_SMOOTH_SCROLL_KEY, self._free_smooth_scroll_enabled)
         self._settings.setValue(self.PREVIEW_PRELOAD_BATCH_SIZE_KEY, self._preview_preload_batch_size)
         self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
@@ -24149,6 +24315,9 @@ class MainWindow(QMainWindow):
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         if ui_gamma_changed:
             self._apply_appearance()
+        if interface_size_changed:
+            self._display_profile = None
+            self._apply_display_profile()
         self.folder_model.setFilter(self._folder_tree_filter())
         self.folder_tree.set_single_drive_expansion_enabled(
             self._single_drive_expansion_enabled
@@ -24186,6 +24355,14 @@ class MainWindow(QMainWindow):
                 "gallery": "Gallery",
             }.get(self._loupe_card_style, self._loupe_card_style)
             self.statusBar().showMessage(f"Card style set to {label}")
+        elif interface_size_changed:
+            label = {
+                "automatic": "Automatic",
+                "compact": "Compact",
+                "standard": "Comfortable",
+                "spacious": "Large",
+            }.get(self._interface_size, self._interface_size)
+            self.statusBar().showMessage(f"Interface size set to {label}")
         elif free_scroll_changed:
             state = "enabled" if self._free_smooth_scroll_enabled else "disabled"
             self.statusBar().showMessage(f"Free smooth scrolling {state}")

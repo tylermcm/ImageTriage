@@ -8,6 +8,7 @@ from image_triage.models import DeleteMode, WinnerMode
 from image_triage.dino_prefilter import DINOPrefilterSettings
 from image_triage.phash_prefilter import PHashPrefilterSettings
 from image_triage.settings_dialog import WorkflowSettingsDialog, _settings_tooltip
+from image_triage.ui.display_metrics import COMPACT_DISPLAY
 
 
 def _ensure_app() -> QApplication:
@@ -199,6 +200,21 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertIn("AI Culling", pages)
         self.assertIn("Duplicates", pages)
         self.assertFalse(result.dino_prefilter_settings.enabled)
+        dialog.deleteLater()
+
+    def test_interface_size_choice_round_trips_and_sizes_dialog_chrome(self) -> None:
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+            interface_size="large",
+            display_profile=COMPACT_DISPLAY,
+        )
+
+        self.assertEqual("spacious", dialog.result_settings().interface_size)
+        self.assertEqual(COMPACT_DISPLAY.settings_nav_width, dialog.section_list.width())
+        self.assertEqual(COMPACT_DISPLAY.settings_min_width, dialog.minimumWidth())
         dialog.deleteLater()
 
     def test_settings_refresh_uses_descriptions_and_labeled_help(self) -> None:

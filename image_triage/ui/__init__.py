@@ -32,7 +32,12 @@ from .handoff_dialog import HandoffBuilderDialog
 from .help_dialog import HelpMarkdownDialog, HelpPage, PagedHelpDialog, build_help_button, show_paged_help
 from .icons import build_pin_icon, build_symbol_icon, build_undo_icon
 from .keyboard_dialog import KeyboardShortcutDialog
-from .layout_state import clear_window_layout, restore_window_layout, save_window_layout
+from .layout_state import (
+    clear_window_layout,
+    fit_window_to_available_geometry,
+    restore_window_layout,
+    save_window_layout,
+)
 from .menus import build_main_menu_bar
 from .people_dialog import PeopleSearchDialog
 from .photo_editor_panel import PhotoEditorPanel
@@ -109,6 +114,7 @@ __all__ = [
     "build_main_menu_bar",
     "build_main_window_actions",
     "format_action_tooltip",
+    "fit_window_to_available_geometry",
     "build_primary_toolbar",
     "build_help_button",
     "build_pin_icon",

@@ -47,6 +47,11 @@ from .phash_prefilter import (
 from .ui.help_dialog import show_paged_help
 from .ui.help_topics import settings_help_pages
 from .ui.shortcuts import SHORTCUT_REGISTRY
+from .ui.display_metrics import (
+    DisplayProfile,
+    STANDARD_DISPLAY,
+    normalize_display_profile_preference,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -64,6 +69,7 @@ class WorkflowSettingsResult:
     delete_mode: DeleteMode
     loupe_card_style: str = "detailed"
     ui_gamma: float = 1.0
+    interface_size: str = "automatic"
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
@@ -135,6 +141,7 @@ class WorkflowSettingsDialog(QDialog):
         loupe_card_style: str = "detailed",
         allowed_card_styles: "tuple[str, ...] | None" = None,
         ui_gamma: float = 1.0,
+        interface_size: str = "automatic",
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
@@ -166,13 +173,16 @@ class WorkflowSettingsDialog(QDialog):
         reset_layout_callback: Callable[[], None] | None = None,
         shortcut_overrides: dict[str, str] | None = None,
         initial_section: str | None = None,
+        display_profile: DisplayProfile | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self._display_profile = display_profile or STANDARD_DISPLAY
+        profile = self._display_profile
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setMinimumSize(760, 520)
-        self.resize(880, 620)
+        self.setMinimumSize(profile.settings_min_width, profile.settings_min_height)
+        self.resize(profile.settings_width, profile.settings_height)
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
@@ -197,7 +207,7 @@ class WorkflowSettingsDialog(QDialog):
 
         self.section_list = QListWidget(body)
         self.section_list.setObjectName("settingsSectionList")
-        self.section_list.setFixedWidth(196)
+        self.section_list.setFixedWidth(profile.settings_nav_width)
         self.section_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.section_list.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.section_list.setFrameShape(QFrame.Shape.NoFrame)
@@ -205,7 +215,7 @@ class WorkflowSettingsDialog(QDialog):
 
         self.pages = QStackedWidget(body)
         self.pages.setObjectName("settingsPages")
-        self.pages.setMinimumWidth(560)
+        self.pages.setMinimumWidth(profile.settings_pages_min_width)
         body_layout.addWidget(self.section_list)
         body_layout.addWidget(self.pages, 1)
         root_layout.addWidget(body, 1)
@@ -336,6 +346,21 @@ class WorkflowSettingsDialog(QDialog):
         ui_gamma_layout.addWidget(self.ui_gamma_value_label)
         ui_gamma_layout.addWidget(reset_gamma_button)
 
+        self.interface_size_combo = QComboBox()
+        self.interface_size_combo.setMinimumWidth(180)
+        self.interface_size_combo.addItem("Automatic (recommended)", "automatic")
+        self.interface_size_combo.addItem("Compact", "compact")
+        self.interface_size_combo.addItem("Comfortable", "standard")
+        self.interface_size_combo.addItem("Large", "spacious")
+        interface_size_index = self.interface_size_combo.findData(
+            normalize_display_profile_preference(interface_size)
+        )
+        self.interface_size_combo.setCurrentIndex(max(0, interface_size_index))
+        self.interface_size_combo.setToolTip(_settings_tooltip(
+            "Automatic adapts the interface to the app window's usable logical size. "
+            "Choose another size to keep the same control density on every display."
+        ))
+
         self.free_smooth_scroll_checkbox = QCheckBox("Use free smooth scrolling")
         self.free_smooth_scroll_checkbox.setChecked(free_smooth_scroll_enabled)
         self.free_smooth_scroll_checkbox.setToolTip(_settings_tooltip(
@@ -391,6 +416,7 @@ class WorkflowSettingsDialog(QDialog):
             "Adjust how the image grid looks, how previews load, and how review moves from one image to the next.",
         )
         self._add_category_heading(interface_layout, "Appearance")
+        self._add_form_row(interface_layout, "Interface size", self.interface_size_combo)
         self._add_form_row(interface_layout, "Card style", self.loupe_card_style_combo)
         self._add_form_row(interface_layout, "UI gamma", self.ui_gamma_row)
         self._add_category_heading(interface_layout, "Navigation and preview")
@@ -738,9 +764,15 @@ class WorkflowSettingsDialog(QDialog):
         content = QWidget()
         content.setObjectName("settingsPageContent")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(30, 26, 30, 30)
+        profile = self._display_profile
+        layout.setContentsMargins(
+            profile.settings_page_margin_x,
+            profile.settings_page_margin_y,
+            profile.settings_page_margin_x,
+            profile.settings_page_margin_y,
+        )
         layout.setSpacing(8)
-        content.setMinimumWidth(500)
+        content.setMinimumWidth(profile.settings_page_min_width)
         title_label = QLabel(title)
         title_label.setObjectName("settingsPageTitle")
         layout.addWidget(title_label)
@@ -776,8 +808,14 @@ class WorkflowSettingsDialog(QDialog):
         row = QWidget()
         row.setObjectName("settingsRow")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(14)
+        profile = self._display_profile
+        layout.setContentsMargins(
+            profile.settings_row_margin_x,
+            profile.settings_row_margin_y,
+            profile.settings_row_margin_x,
+            profile.settings_row_margin_y,
+        )
+        layout.setSpacing(profile.settings_row_spacing)
         return row, layout
 
     _ROW_LABEL_WIDTH = 142
@@ -792,7 +830,7 @@ class WorkflowSettingsDialog(QDialog):
     def _add_form_row(self, layout: QVBoxLayout, label_text: str, field: QWidget) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setFixedWidth(self._display_profile.settings_row_label_width)
         label.setObjectName("settingsRowLabel")
         tooltip = field.toolTip()
         if tooltip:
@@ -805,7 +843,7 @@ class WorkflowSettingsDialog(QDialog):
     def _add_checkbox_row(self, layout: QVBoxLayout, label_text: str, checkbox: QCheckBox) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setFixedWidth(self._display_profile.settings_row_label_width)
         label.setObjectName("settingsRowLabel")
         tooltip = checkbox.toolTip()
         if tooltip:
@@ -818,7 +856,7 @@ class WorkflowSettingsDialog(QDialog):
     def _add_text_row(self, layout: QVBoxLayout, label_text: str, value: QLabel) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setFixedWidth(self._display_profile.settings_row_label_width)
         label.setObjectName("settingsRowLabel")
         tooltip = value.toolTip()
         if tooltip:
@@ -866,7 +904,7 @@ class WorkflowSettingsDialog(QDialog):
             for attr_name, default, display in entries:
                 row, row_layout = self._row_frame()
                 label = QLabel(display)
-                label.setFixedWidth(self._ROW_LABEL_WIDTH * 2)
+                label.setFixedWidth(self._display_profile.settings_shortcut_label_width)
                 label.setObjectName("settingsRowLabel")
                 tooltip = _settings_tooltip(
                     f"Keyboard shortcut for {display}. Default: {default or 'none'}."
@@ -888,7 +926,7 @@ class WorkflowSettingsDialog(QDialog):
                 reset_button = QPushButton("Reset")
                 reset_button.setObjectName("settingsRowReset")
                 reset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                reset_button.setFixedWidth(64)
+                reset_button.setFixedWidth(self._display_profile.settings_shortcut_reset_width)
                 reset_button.setToolTip(_settings_tooltip(
                     f"Restore the default shortcut for {display}."
                 ))
@@ -1110,6 +1148,9 @@ class WorkflowSettingsDialog(QDialog):
             delete_mode=delete_mode,
             loupe_card_style=str(self.loupe_card_style_combo.currentData() or "detailed"),
             ui_gamma=self.ui_gamma_slider.value() / 100.0,
+            interface_size=normalize_display_profile_preference(
+                self.interface_size_combo.currentData()
+            ),
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
