@@ -740,7 +740,11 @@ def _path_parent_stem_key(path: str) -> str:
 # never crowd the folder tree out of the sidebar.
 _MAX_VISIBLE_PROJECT_ROWS = 6
 _PROJECT_ROW_PX = 34
-_PROJECT_EMPTY_ROW_PX = 42
+# The empty row's stylesheet has a 32px minimum plus 3px vertical padding on
+# each side. Its viewport must include that full 38px box or Qt clips glyphs.
+_PROJECT_EMPTY_ROW_PX = 38
+_NAV_SECTION_GAP_PX = 8
+_PROJECT_HEADER_BODY_GAP_PX = 0
 
 
 def _search_match_path_key(path: str | Path) -> str:
@@ -2849,6 +2853,19 @@ class MainWindow(QMainWindow):
     # Kept renderable for existing saved layouts, but omitted from the picker.
     # ``quick_filter`` opens the exact same menu as the clearer ``filters`` item.
     TOPBAR_PICKER_HIDDEN_ITEMS = frozenset({"quick_filter"})
+    TOOLBAR_PICKER_SECTION_ORDER = (
+        "Review",
+        "AI",
+        "Search & Filter",
+        "View",
+        "Selection",
+        "Files",
+        "Workflow",
+        "Projects",
+        "Catalog",
+        "Utilities",
+        "Layout",
+    )
     # Filled chrome glyphs that should render as a clean solid silhouette
     # (no stroke carve-out) because their key feature is an open appendage:
     # E721 = Search (magnifier handle), E9D2 = AI/Activity (picture).
@@ -3106,9 +3123,12 @@ class MainWindow(QMainWindow):
         "more": ("E712", None),
     }
 
-    def __init__(self, launch_target: str | None = None) -> None:
+    def __init__(self, launch_target: str | None = None, *, quick_view: bool = False) -> None:
         super().__init__()
         self._startup_launch_target = normalize_filesystem_path(launch_target) if launch_target else ""
+        self._quick_view_mode = bool(quick_view and self._startup_launch_target)
+        self._pending_quick_view_path = self._startup_launch_target if self._quick_view_mode else ""
+        self._quick_view_source_overrides: dict[str, str] = {}
         self._pending_folder_focus_path = ""
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
@@ -4313,7 +4333,7 @@ class MainWindow(QMainWindow):
         self._handle_mode_tab_changed(self.mode_tabs.currentIndex())
         self._update_action_states()
         QTimer.singleShot(0, self._finish_startup_restore)
-        if self._check_updates_on_startup:
+        if self._check_updates_on_startup and not self._quick_view_mode:
             QTimer.singleShot(2500, self._check_for_updates_on_startup)
 
     def _build_section_label(self, text: str) -> QLabel:
@@ -4366,6 +4386,38 @@ class MainWindow(QMainWindow):
         painter.drawLine(17, 50, 47, 50)
         painter.end()
         return QIcon(pixmap)
+
+    def _pane_toggle_icon(self, side: str) -> QIcon:
+        """Return a mirrored panel glyph whose bright side means visible."""
+        theme = getattr(self, "_theme", None) or default_theme()
+
+        def draw(outline: QColor, panel: QColor) -> QPixmap:
+            pixmap = QPixmap(64, 64)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(outline, 3)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRect(8, 12, 47, 39), 4, 4)
+            painter.fillRect(QRect(12, 16, 13, 31), panel)
+            painter.end()
+            if side == "right":
+                return pixmap.transformed(QTransform().scale(-1, 1))
+            return pixmap
+
+        icon = QIcon()
+        colors = (
+            (QIcon.Mode.Normal, theme.text_muted.qcolor(), theme.text_muted.qcolor()),
+            (QIcon.Mode.Active, theme.text_secondary.qcolor(), theme.text_secondary.qcolor()),
+            (QIcon.Mode.Disabled, theme.text_disabled.qcolor(), theme.text_disabled.qcolor()),
+        )
+        for mode, outline, inactive_panel in colors:
+            icon.addPixmap(draw(outline, inactive_panel), mode, QIcon.State.Off)
+            active_panel = theme.text_primary.qcolor() if mode != QIcon.Mode.Disabled else inactive_panel
+            icon.addPixmap(draw(outline, active_panel), mode, QIcon.State.On)
+        return icon
 
     def _refresh_update_button_state(self) -> None:
         button = getattr(self, "update_download_button", None)
@@ -4722,17 +4774,28 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.topbar_path_combo, 0)
         layout.addSpacing(8)
 
-        for glyph, tooltip, key in (
-            ("◫", "Show or hide the library panel", "library"),
-            ("◧", "Show or hide the inspector panel", "inspector"),
+        self._topbar_pane_buttons: dict[str, QToolButton] = {}
+        for side, tooltip, key in (
+            ("left", "Show or hide the library panel", "library"),
+            ("right", "Show or hide the inspector panel", "inspector"),
         ):
-            toggle = make_icon_button(glyph, tooltip)
+            toggle = QToolButton(bar)
+            toggle.setObjectName("appTopBarPaneButton")
+            toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            toggle.setAutoRaise(True)
+            toggle.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            toggle.setFixedSize(38, 38)
+            toggle.setIconSize(QSize(24, 24))
+            toggle.setIcon(self._pane_toggle_icon(side))
+            toggle.setToolTip(tooltip)
+            toggle.setAccessibleName(tooltip)
             action = self.workspace_docks.toggle_actions.get(key)
             if action is not None:
                 toggle.setCheckable(True)
                 toggle.setChecked(action.isChecked())
                 toggle.clicked.connect(lambda _checked=False, target=action: target.trigger())
                 action.toggled.connect(toggle.setChecked)
+            self._topbar_pane_buttons[key] = toggle
             layout.addWidget(toggle)
 
         return bar
@@ -5267,6 +5330,11 @@ class MainWindow(QMainWindow):
             button.setFont(font)
         for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
             self._resize_topbar_button(button, profile)
+        for button in getattr(self, "_topbar_pane_buttons", {}).values():
+            hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+            hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
+            button.setFixedSize(hover_width, hover_height)
+            button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
         nav_layout = getattr(self, "_topbar_nav_layout", None)
         if nav_layout is not None:
             nav_layout.setSpacing(profile.topbar_slot_spacing)
@@ -5577,6 +5645,8 @@ class MainWindow(QMainWindow):
             glyph = button.findChild(QToolButton, "appTopBarGlyph")
             if glyph is not None:
                 glyph.setIcon(self._topbar_nav_icon(item_id))
+        for key, button in getattr(self, "_topbar_pane_buttons", {}).items():
+            button.setIcon(self._pane_toggle_icon("left" if key == "library" else "right"))
 
         for widgets in getattr(self, "_workspace_toolbar_item_widgets", {}).values():
             for item_id, widget in widgets.items():
@@ -7025,9 +7095,7 @@ class MainWindow(QMainWindow):
         sections = {
             "Review": {
                 "review", "open_preview", "compare", "winner_ladder_mode", "auto_advance",
-                "burst_groups", "burst_stacks", "accept_selection", "reject_selection",
-                "keep_selection", "move_selection", "move_selection_to_new_folder",
-                "delete_selection", "restore_selection",
+                "burst_groups", "burst_stacks",
             },
             "AI": {
                 "run_ai_culling", "quick_rerank_ai_culling", "apply_ai_culling",
@@ -7037,18 +7105,27 @@ class MainWindow(QMainWindow):
                 "next_unreviewed_ai_pick", "compare_ai_group", "dispute_current_ai_result",
                 "review_ai_disagreements",
             },
+            "Search & Filter": {
+                "search", "filters", "advanced_filters", "clear_filters", "save_filter_preset",
+            },
             "View": {"view", "columns", "sort", "show_hidden_folders", "zen_mode"},
-            "Filters": {"filters", "advanced_filters", "clear_filters", "save_filter_preset"},
+            "Selection": {
+                "selection_count", "accept_selection", "reject_selection", "keep_selection",
+                "move_selection", "move_selection_to_new_folder", "delete_selection",
+                "restore_selection",
+            },
             "Files": {
-                "new_folder", "rename_selection", "reveal_in_explorer", "open_in_photoshop",
-                "batch_rename", "batch_resize", "batch_convert",
+                "open_folder", "refresh_folder", "new_folder", "rename_selection",
+                "reveal_in_explorer", "open_in_photoshop", "batch_rename", "batch_resize",
+                "batch_convert",
             },
             "Projects": {"projects"},
             "Catalog": {"catalog"},
             "Workflow": {"handoff_builder", "send_to_editor", "best_of_set"},
-            "Utilities": {"command_palette", "keyboard_shortcuts"},
+            "Utilities": {"command_palette", "keyboard_shortcuts", "undo"},
+            "Layout": {"divider", "address"},
         }
-        return next((section for section, items in sections.items() if item_id in items), "Toolbar")
+        return next((section for section, items in sections.items() if item_id in items), "Utilities")
 
     def _add_toolbar_item_inplace(self, item_id: str) -> None:
         mode = "ai" if (self._toolbar_edit_active_mode or self._ui_mode) == "ai" else "manual"
@@ -7107,6 +7184,15 @@ class MainWindow(QMainWindow):
                     callback=lambda selected=item_id: self._add_toolbar_item_inplace(selected),
                 )
             )
+        section_positions = {
+            section: index for index, section in enumerate(self.TOOLBAR_PICKER_SECTION_ORDER)
+        }
+        commands.sort(
+            key=lambda command: (
+                section_positions.get(command.section, len(section_positions)),
+                command.title.casefold(),
+            )
+        )
         return commands
 
     def _ensure_toolbar_item_picker_dialog(self) -> CommandPaletteDialog:
@@ -7141,6 +7227,7 @@ class MainWindow(QMainWindow):
             card_size=QSize(520, 420),
             accept_on_click=True,
             compact_rows=True,
+            group_by_section=True,
             anchor_widget=self._toolbar_edit_hud_add_button,
         )
         dialog.set_prominent(False)
@@ -8159,12 +8246,25 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.setParent(self.left_nav_body)
 
-        for header, body in self._nav_sections():
+        # Use explicit gaps so the Projects list can sit flush beneath its
+        # header without disturbing the established Face Groups spacing or the
+        # separation between the two sections.
+        layout.setSpacing(0)
+        for section_index, (header, body) in enumerate(self._nav_sections()):
+            if section_index:
+                layout.addSpacing(_NAV_SECTION_GAP_PX)
             layout.addWidget(header)
             header.setVisible(True)
             expanded = header.is_expanded()
             body.setVisible(expanded)
             if expanded:
+                body_gap = (
+                    _PROJECT_HEADER_BODY_GAP_PX
+                    if header is self.projects_header
+                    else _NAV_SECTION_GAP_PX
+                )
+                if body_gap:
+                    layout.addSpacing(body_gap)
                 layout.addWidget(body, 1)
         # Soaks up whatever the bodies cannot use: they are capped at the height
         # of their own rows, so a short list must not be stretched to fill.
@@ -8214,9 +8314,13 @@ class MainWindow(QMainWindow):
             item.setSizeHint(QSize(0, _PROJECT_ROW_PX))
             panel.addItem(item)
         if not collections:
-            empty = QListWidgetItem("No projects\nin this library")
+            # Keep the empty state close to its section header.  The previous
+            # two-line, vertically-centred row left a conspicuous blank band
+            # above the only visible text (and QListWidget elided the newline
+            # anyway, so it still appeared as a single line).
+            empty = QListWidgetItem("No projects yet.")
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
-            empty.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            empty.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             empty.setSizeHint(QSize(0, _PROJECT_EMPTY_ROW_PX))
             panel.addItem(empty)
         self._update_projects_height()
@@ -9231,9 +9335,12 @@ class MainWindow(QMainWindow):
             self._startup_launch_target = ""
         else:
             self._startup_launch_target = ""
+            if self._quick_view_mode:
+                self._show_main_window_after_quick_view_failure()
             self._load_start_folder()
             self._restore_ai_results()
-        QTimer.singleShot(0, self._maybe_prompt_for_ai_setup)
+        if not self._quick_view_mode:
+            QTimer.singleShot(0, self._maybe_prompt_for_ai_setup)
 
     def _managed_ai_model_installation(self) -> AIModelInstallation:
         runtime_installation = self._ai_runtime.model_installation
@@ -10992,6 +11099,52 @@ class MainWindow(QMainWindow):
                 return True
         self.statusBar().showMessage(f"Launch target not found: {normalized}")
         return False
+
+    def _record_and_index_for_loaded_path(self, path: str) -> tuple[int, ImageRecord] | None:
+        target_key = _memory_path_key(path)
+        if not target_key:
+            return None
+        for index, record in enumerate(self._records):
+            if record.is_folder:
+                continue
+            if any(_memory_path_key(candidate) == target_key for candidate in record.stack_paths):
+                return index, record
+        return None
+
+    def _maybe_open_startup_quick_view(self) -> bool:
+        target = self._pending_quick_view_path
+        if not self._quick_view_mode or not target or self.preview.isVisible():
+            return False
+        match = self._record_and_index_for_loaded_path(target)
+        if match is None:
+            return False
+        index, record = match
+        self._quick_view_source_overrides[record.path] = target
+        self.grid.set_current_index(index)
+        self._pending_quick_view_path = ""
+        self._open_preview(index)
+        return True
+
+    def _show_main_window_after_quick_view_failure(self) -> None:
+        if not self._quick_view_mode:
+            return
+        target = self._pending_quick_view_path
+        self._quick_view_mode = False
+        self._pending_quick_view_path = ""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if target:
+            self.statusBar().showMessage(f"Could not open {Path(target).name} in the quick viewer.")
+
+    def _finish_quick_view_attempt_if_ready(self) -> None:
+        if (
+            self._quick_view_mode
+            and self._pending_quick_view_path
+            and not self._scan_in_progress
+            and not self._records_view_chunk_active()
+        ):
+            self._show_main_window_after_quick_view_failure()
 
     def _folder_drive_root(self, folder: str | None = None) -> str:
         target = folder or self._current_folder
@@ -18323,6 +18476,13 @@ class MainWindow(QMainWindow):
         self._resume_background_indexing()
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
+        if self._quick_view_mode:
+            self._quick_view_mode = False
+            self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+            return
         if not self._preview_navigation_dirty:
             return
         self._preview_navigation_dirty = False
@@ -18375,7 +18535,7 @@ class MainWindow(QMainWindow):
         if record is None:
             return None
         annotation = self._annotations.get(record.path, SessionAnnotation())
-        displayed_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else self._preview_source_path(record)
+        displayed_path = self._displayed_preview_source_path(index, record)
         edited_candidates = self._ordered_edited_candidates(record, displayed_path)
         edited_path = edited_candidates[0] if edited_candidates else ""
         return PreviewEntry(
@@ -20038,6 +20198,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
+            self._maybe_open_startup_quick_view()
+            self._finish_quick_view_attempt_if_ready()
             self._pending_folder_focus_path = ""
             self._maybe_start_semantic_index(records)
             if logger.enabled:
@@ -20060,6 +20222,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
         if self._folder_watch_refresh_pending:
             self._folder_watch_refresh_timer.start(250)
+        self._finish_quick_view_attempt_if_ready()
         self._pending_folder_focus_path = ""
         self._maybe_start_semantic_index(records)
         if logger.enabled:
@@ -20140,6 +20303,7 @@ class MainWindow(QMainWindow):
         self._catalog_load_detail = message
         self._refresh_catalog_status_indicator()
         self.statusBar().showMessage(f"Could not scan {self._current_folder}: {message}")
+        self._show_main_window_after_quick_view_failure()
         if self._folder_watch_refresh_pending:
             self._folder_watch_refresh_timer.start(450)
 
@@ -25124,12 +25288,20 @@ class MainWindow(QMainWindow):
     def _preview_source_path(self, record: ImageRecord) -> str:
         return record.path
 
+    def _displayed_preview_source_path(self, index: int, record: ImageRecord) -> str:
+        override = self._quick_view_source_overrides.get(record.path, "")
+        if override:
+            return override
+        if record.has_variant_stack:
+            return self.grid.displayed_variant_path(index)
+        return self._preview_source_path(record)
+
     def _preview_entries_for(self, index: int) -> tuple[list[PreviewEntry], int, int]:
         record = self._record_at(index)
         if record is None:
             return [], self._compare_count, index
         annotation = self._annotations.get(record.path, SessionAnnotation())
-        displayed_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else self._preview_source_path(record)
+        displayed_path = self._displayed_preview_source_path(index, record)
         edited_candidates = self._ordered_edited_candidates(record, displayed_path)
         edited_path = edited_candidates[0] if edited_candidates else ""
         if not self._compare_enabled:
@@ -25160,7 +25332,7 @@ class MainWindow(QMainWindow):
         entries: list[PreviewEntry] = []
         for item_index, record in enumerate(self._records[start:end], start=start):
             annotation = self._annotations.get(record.path, SessionAnnotation())
-            displayed_path = self.grid.displayed_variant_path(item_index) if record.has_variant_stack else self._preview_source_path(record)
+            displayed_path = self._displayed_preview_source_path(item_index, record)
             edited_candidates = self._ordered_edited_candidates(record, displayed_path)
             edited_path = edited_candidates[0] if edited_candidates else ""
             entries.append(
@@ -26280,6 +26452,7 @@ class MainWindow(QMainWindow):
         if self._pending_folder_scroll_value is not None:
             QTimer.singleShot(0, self._restore_pending_folder_scroll)
         step_start = log_step("records_view.finalize.pending_scroll", step_start, has_pending_scroll=self._pending_folder_scroll_value is not None)
+        self._maybe_open_startup_quick_view()
         if logger.enabled:
             logger.duration(
                 "records_view.finalize",
@@ -26369,6 +26542,7 @@ class MainWindow(QMainWindow):
             self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=True)
         elif post_load_enrichment == "start":
             self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=False)
+        self._finish_quick_view_attempt_if_ready()
         if logger.enabled:
             logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=True)
 

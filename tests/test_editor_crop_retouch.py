@@ -27,6 +27,9 @@ from PySide6.QtWidgets import QApplication, QLabel
 
 from image_triage.editor_geometry import ViewTransform, view_transform_for
 from image_triage.ui.canvas_overlay import CanvasOverlay, OverlayStack
+from types import SimpleNamespace
+
+from image_triage.editor_geometry import rect_in_quad, view_transform_for
 from image_triage.ui.crop_overlay import CropOverlay
 from image_triage.ui.mask_overlay import MaskOverlay, mask_strength_qimage
 from image_triage.ui.photo_editor_panel import (
@@ -67,17 +70,29 @@ class ViewTransformTests(unittest.TestCase):
         rng = np.random.RandomState(3)
         points = rng.uniform(0, 300, size=(50, 2))
         for angle in (0.0, 7.5, -12.0, 45.0):
-            for flip_h, flip_v in ((False, False), (True, False), (False, True), (True, True)):
-                view = ViewTransform(
-                    (400, 300), crop=(50, 40, 250, 190),
-                    angle=angle, flip_h=flip_h, flip_v=flip_v,
-                )
-                with self.subTest(angle=angle, flip_h=flip_h, flip_v=flip_v):
-                    for x, y in points:
-                        fx, fy = view.source_to_frame(x, y)
-                        bx, by = view.frame_to_source(fx, fy)
-                        self.assertAlmostEqual(x, bx, places=6)
-                        self.assertAlmostEqual(y, by, places=6)
+            for rotate in (0.0, 90.0, 270.0):
+                for flip_h, flip_v in (
+                    (False, False),
+                    (True, False),
+                    (False, True),
+                    (True, True),
+                ):
+                    view = ViewTransform(
+                        (400, 300),
+                        crop=(50, 40, 250, 190),
+                        angle=angle,
+                        rotate=rotate,
+                        flip_h=flip_h,
+                        flip_v=flip_v,
+                    )
+                    with self.subTest(
+                        angle=angle, rotate=rotate, flip_h=flip_h, flip_v=flip_v
+                    ):
+                        for x, y in points:
+                            fx, fy = view.source_to_frame(x, y)
+                            bx, by = view.frame_to_source(fx, fy)
+                            self.assertAlmostEqual(x, bx, places=6)
+                            self.assertAlmostEqual(y, by, places=6)
 
     def test_identity_when_nothing_is_set(self) -> None:
         view = view_transform_for(EditRecipe(), (400, 300))
@@ -89,6 +104,15 @@ class ViewTransformTests(unittest.TestCase):
         view = view_transform_for(recipe, (400, 300), bypass_crop=True)
         self.assertEqual((400, 300), view.frame_size())
         self.assertIsNone(view.effective_crop)
+
+    def test_quarter_turn_swaps_the_frame_and_visible_crop_axes(self) -> None:
+        view = ViewTransform(
+            source_size=(400, 300), crop=(50, 40, 250, 190), rotate=90.0
+        )
+        self.assertEqual((150, 200), view.frame_size())
+        rect = view.frame_rect_for_crop((50.0, 40.0, 250.0, 190.0))
+        self.assertAlmostEqual(150.0, rect[2] - rect[0], places=6)
+        self.assertAlmostEqual(200.0, rect[3] - rect[1], places=6)
 
 
 class GeometryRenderTests(unittest.TestCase):
@@ -113,6 +137,12 @@ class GeometryRenderTests(unittest.TestCase):
         out = EditRecipe.from_dict({"crop_angle": 10.0}).apply(self.image)
         self.assertGreater(out.width, 400)
         self.assertGreater(out.height, 300)
+
+    def test_quarter_turn_plus_straighten_matches_the_display_transform(self) -> None:
+        recipe = EditRecipe.from_dict({"rotate": 90.0, "crop_angle": 18.0})
+        out = recipe.apply(self.image)
+        view = view_transform_for(recipe, (400, 300))
+        self.assertEqual(view.frame_size(), out.size)
 
     def test_no_geometry_leaves_the_frame_untouched(self) -> None:
         self.assertTrue(np.array_equal(np.asarray(EditRecipe().apply(self.image)), self.arr))
@@ -160,6 +190,20 @@ class MaskStrengthUnderCropTests(unittest.TestCase):
         self.assertTrue(len(xs) > 0, "mask vanished under the crop")
         self.assertAlmostEqual(100.0, float(xs.mean()), delta=8.0)
         self.assertAlmostEqual(75.0, float(ys.mean()), delta=8.0)
+
+    def test_a_quarter_turn_rotates_the_mask_with_the_photo(self) -> None:
+        view = ViewTransform(source_size=(400, 300), rotate=90.0)
+        field = mask_strength_qimage(
+            self.components, 300, 400, (400, 300), transform=view.qtransform()
+        )
+        self.assertIsNotNone(field)
+        arr = np.frombuffer(field.constBits(), dtype=np.uint8).reshape(
+            field.height(), field.bytesPerLine()
+        )[:, : field.width()]
+        ys, xs = np.nonzero(arr > 200)
+        self.assertTrue(len(xs) > 0, "mask vanished under the quarter turn")
+        self.assertAlmostEqual(150.0, float(xs.mean()), delta=8.0)
+        self.assertAlmostEqual(200.0, float(ys.mean()), delta=8.0)
 
     def test_a_bounded_preview_rasterizes_the_mask_at_working_size(self) -> None:
         # Components remain in 400x300 source coordinates, while the working
@@ -504,7 +548,7 @@ class CropOverlayInteractionTests(unittest.TestCase):
         self.overlay.crop_changed.connect(seen.append)
         self.overlay._drag_mode = "l"
         self.overlay._drag_origin = QPointF(0, 150)
-        self.overlay._drag_start_crop = (0.0, 0.0, 400.0, 300.0)
+        self.overlay._drag_start_rect = (0.0, 0.0, 400.0, 300.0)
         self.overlay._apply_drag(QPointF(80, 150))
         self.assertTrue(seen)
         left, top, right, bottom = seen[-1]["crop"]
@@ -514,7 +558,7 @@ class CropOverlayInteractionTests(unittest.TestCase):
     def test_a_crop_can_never_collapse(self) -> None:
         self.overlay._drag_mode = "l"
         self.overlay._drag_origin = QPointF(0, 150)
-        self.overlay._drag_start_crop = (0.0, 0.0, 400.0, 300.0)
+        self.overlay._drag_start_rect = (0.0, 0.0, 400.0, 300.0)
         self.overlay._apply_drag(QPointF(4000, 150))
         left, _top, right, _bottom = self.overlay.crop_rect()
         self.assertGreaterEqual(right - left, 16)
@@ -525,7 +569,7 @@ class CropOverlayInteractionTests(unittest.TestCase):
         )
         self.overlay._drag_mode = "br"
         self.overlay._drag_origin = QPointF(400, 300)
-        self.overlay._drag_start_crop = (0.0, 0.0, 400.0, 300.0)
+        self.overlay._drag_start_rect = (0.0, 0.0, 400.0, 300.0)
         self.overlay._apply_drag(QPointF(200, 260))
         left, top, right, bottom = self.overlay.crop_rect()
         self.assertAlmostEqual(1.0, (right - left) / (bottom - top), places=1)
@@ -712,3 +756,366 @@ class PointColorOverlayInteractionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CropStaysOnThePhotoTests(unittest.TestCase):
+    """A straightened photo is a rotated quad; the frame's corners are blank.
+
+    The box used to be clamped to the frame, so it could be dragged out into
+    those corners and crop in black.
+    """
+
+    def setUp(self) -> None:
+        self.app = _app()
+        self.label = QLabel()
+        self.label.resize(400, 300)
+        self.overlay = CropOverlay()
+        self.overlay.attach_to(self.label)
+        self.view = ViewTransform(source_size=(400, 300), angle=12.0)
+        self.overlay.set_view_transform(self.view)
+        self.overlay.set_state(
+            interactive=True, crop=None, source_size=(400, 300), aspect=None
+        )
+
+    def test_an_untouched_box_starts_inside_the_photo(self) -> None:
+        self.assertTrue(rect_in_quad(self.view.image_quad(), self.overlay._rect))
+
+    def test_a_drag_towards_a_blank_corner_stops_at_the_edge(self) -> None:
+        start = self.overlay._rect
+        self.overlay._drag_mode = "tl"
+        self.overlay._drag_origin = QPointF(10, 10)
+        self.overlay._drag_start_rect = start
+        self.overlay._apply_drag(QPointF(-4000, -4000))
+        self.assertTrue(rect_in_quad(self.view.image_quad(), self.overlay._rect))
+
+    def test_the_box_keeps_its_shape_as_the_angle_turns(self) -> None:
+        # The old mapping put the two opposite corners through the rotation
+        # separately, which stretched the box as it turned.
+        self.overlay.set_state(
+            interactive=True, crop=(100, 75, 300, 225), source_size=(400, 300), aspect=None
+        )
+        first = self.overlay._rect
+        self.overlay.set_view_transform(ViewTransform(source_size=(400, 300), angle=30.0))
+        self.overlay.set_state(
+            interactive=True, crop=(100, 75, 300, 225), source_size=(400, 300), aspect=None
+        )
+        second = self.overlay._rect
+        self.assertAlmostEqual(first[2] - first[0], second[2] - second[0], places=6)
+        self.assertAlmostEqual(first[3] - first[1], second[3] - second[1], places=6)
+
+
+class CropFreeRotationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = _app()
+        self.label = QLabel()
+        self.label.resize(400, 300)
+        self.overlay = CropOverlay()
+        self.overlay.attach_to(self.label)
+        self.overlay.set_state(
+            interactive=True, crop=(100, 75, 300, 225), source_size=(400, 300), aspect=None
+        )
+
+    def test_pressing_outside_the_box_starts_a_rotation(self) -> None:
+        self.assertEqual("rotate", self.overlay._hit_test(QPointF(5, 5)))
+        self.assertEqual("move", self.overlay._hit_test(QPointF(200, 150)))
+
+    def test_dragging_outside_the_box_reports_an_angle(self) -> None:
+        seen: list[float] = []
+        self.overlay.angle_changed.connect(seen.append)
+        self.overlay._drag_mode = "rotate"
+        self.overlay._drag_start_angle = 0.0
+        self.overlay._drag_start_bearing = self.overlay._bearing(QPointF(380, 150))
+        self.overlay._apply_rotate(QPointF(380, 190))
+        self.assertTrue(seen)
+        self.assertNotAlmostEqual(0.0, seen[-1])
+
+    def test_rotation_is_capped_at_the_straighten_limit(self) -> None:
+        self.overlay._drag_mode = "rotate"
+        self.overlay._drag_start_angle = 44.0
+        self.overlay._drag_start_bearing = 0.0
+        self.overlay._apply_rotate(QPointF(200, 400))  # a big swing downward
+        self.assertLessEqual(abs(self.overlay._live_angle), 45.0)
+
+
+class CropPanelTests(unittest.TestCase):
+    """The Crop tool's controls: range, containment, and a way to apply."""
+
+    def setUp(self) -> None:
+        self.app = _app()
+        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
+
+        self.panel = PhotoEditorPanel()
+        self.panel._source_path = Path("photo.jpg")
+        self.panel._session = {
+            "masks": [],
+            "operations": [],
+            "coordinateSpaces": [
+                {"id": "space", "sourceWidth": 400, "sourceHeight": 300}
+            ],
+        }
+        self.panel._sync_enabled()
+        self.panel._set_editor_page(self.panel.PAGE_CROP)
+
+    def tearDown(self) -> None:
+        self.panel.close()
+
+    def test_straighten_covers_forty_five_degrees_each_way(self) -> None:
+        row = self.panel._rows["crop_angle"]
+        self.assertEqual(-45.0, row.slider.minimum() / row.scale)
+        self.assertEqual(45.0, row.slider.maximum() / row.scale)
+
+    def test_straightening_pulls_the_crop_back_onto_the_photo(self) -> None:
+        self.panel._set_crop_angle(20.0)
+        crop = self.panel.recipe.crop
+        self.assertIsNotNone(crop)
+        view = view_transform_for(self.panel.recipe, (400, 300), bypass_crop=True)
+        rect = view.frame_rect_for_crop(tuple(float(v) for v in crop))
+        self.assertTrue(rect_in_quad(view.image_quad(), rect))
+
+    def test_straightening_regrows_from_the_stable_full_photo_envelope(self) -> None:
+        self.panel._set_geometry_drag(True)
+        self.panel._set_crop_angle(45.0)
+        smallest = self.panel.recipe.crop
+        self.assertIsNotNone(smallest)
+        self.panel._set_crop_angle(20.0)
+        middle = self.panel.recipe.crop
+        self.panel._set_crop_angle(0.0)
+        restored = self.panel.recipe.crop
+        self.assertGreater(
+            (middle[2] - middle[0]) * (middle[3] - middle[1]),
+            (smallest[2] - smallest[0]) * (smallest[3] - smallest[1]),
+        )
+        self.assertEqual((0, 0, 400, 300), restored)
+
+    def test_each_angle_tick_publishes_one_coherent_recipe(self) -> None:
+        seen: list[object] = []
+        self.panel.recipe_changed.connect(seen.append)
+        self.panel._set_geometry_drag(True)
+        self.panel._set_crop_angle(20.0)
+        self.assertEqual(1, len(seen))
+        recipe = seen[0]
+        view = view_transform_for(recipe, (400, 300), bypass_crop=True)
+        rect = view.frame_rect_for_crop(tuple(float(v) for v in recipe.crop))
+        self.assertTrue(rect_in_quad(view.image_quad(), rect))
+
+    def test_auto_fit_keeps_the_original_aspect_and_reaches_the_edge(self) -> None:
+        self.panel._set_crop_angle(27.0)
+        crop = self.panel.recipe.crop
+        self.assertIsNotNone(crop)
+        width, height = crop[2] - crop[0], crop[3] - crop[1]
+        self.assertAlmostEqual(4.0 / 3.0, width / height, delta=0.01)
+        view = view_transform_for(self.panel.recipe, (400, 300), bypass_crop=True)
+        rect = view.frame_rect_for_crop(tuple(float(v) for v in crop))
+        cx, cy = (rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0
+        enlarged = tuple(
+            centre + (edge - centre) * 1.02
+            for centre, edge in ((cx, rect[0]), (cy, rect[1]), (cx, rect[2]), (cy, rect[3]))
+        )
+        self.assertFalse(rect_in_quad(view.image_quad(), enlarged))
+
+    def test_quarter_turn_then_straighten_stays_inside_with_portrait_aspect(self) -> None:
+        self.panel._rotate_quarter(1)
+        self.panel._set_geometry_drag(True)
+        self.panel._set_crop_angle(20.0)
+        crop = self.panel.recipe.crop
+        self.assertIsNotNone(crop)
+        view = view_transform_for(self.panel.recipe, (400, 300), bypass_crop=True)
+        rect = view.frame_rect_for_crop(tuple(float(v) for v in crop))
+        self.assertTrue(rect_in_quad(view.image_quad(), rect))
+        self.assertAlmostEqual(
+            3.0 / 4.0,
+            (rect[2] - rect[0]) / (rect[3] - rect[1]),
+            delta=0.01,
+        )
+
+    def test_changing_aspect_after_straighten_maximizes_to_the_edges(self) -> None:
+        self.panel._set_crop_angle(20.0)
+        index = self.panel.crop_aspect_combo.findData("16:9")
+        self.panel.crop_aspect_combo.setCurrentIndex(index)
+
+        def assert_maximum_at_current_angle() -> None:
+            crop = self.panel.recipe.crop
+            self.assertIsNotNone(crop)
+            view = view_transform_for(self.panel.recipe, (400, 300), bypass_crop=True)
+            rect = view.frame_rect_for_crop(tuple(float(v) for v in crop))
+            self.assertTrue(rect_in_quad(view.image_quad(), rect))
+            self.assertAlmostEqual(
+                16.0 / 9.0,
+                (rect[2] - rect[0]) / (rect[3] - rect[1]),
+                delta=0.015,
+            )
+            centre_x = (rect[0] + rect[2]) / 2.0
+            centre_y = (rect[1] + rect[3]) / 2.0
+            enlarged = tuple(
+                centre + (edge - centre) * 1.01
+                for centre, edge in (
+                    (centre_x, rect[0]),
+                    (centre_y, rect[1]),
+                    (centre_x, rect[2]),
+                    (centre_y, rect[3]),
+                )
+            )
+            self.assertFalse(
+                rect_in_quad(view.image_quad(), enlarged),
+                "the selected aspect left avoidable space around the crop",
+            )
+
+        assert_maximum_at_current_angle()
+        # The oversized aspect envelope must survive later straighten ticks;
+        # otherwise the crop becomes shrink-only again after the selection.
+        self.panel._set_crop_angle(10.0)
+        assert_maximum_at_current_angle()
+
+    def test_the_footer_offers_reset_and_apply(self) -> None:
+        self.assertFalse(self.panel._editor_footer.isHidden())
+        self.assertFalse(self.panel.crop_apply_button.isHidden())
+        self.assertFalse(self.panel.crop_reset_button.isHidden())
+        # The Adjust page's own actions stay out of the way.
+        self.assertTrue(self.panel.save_button.isHidden())
+
+    def test_applying_keeps_the_crop_and_leaves_the_tool(self) -> None:
+        self.panel._apply_recipe_field("crop", (50, 40, 250, 190))
+        self.panel.apply_crop()
+        self.assertEqual((50, 40, 250, 190), self.panel.recipe.crop)
+        # Leaving the tool is what stops the render bypassing the crop.
+        self.assertIsNone(self.panel.active_canvas_tool())
+        self.assertEqual(self.panel.PAGE_ADJUST, self.panel.editor_stack.currentIndex())
+
+    def test_buttons_do_not_answer_enter_on_their_own(self) -> None:
+        # Enter used to reach a default button and reset the crop.
+        from PySide6.QtWidgets import QPushButton
+
+        for button in self.panel.findChildren(QPushButton):
+            with self.subTest(button=button.text()):
+                self.assertFalse(button.autoDefault())
+                self.assertFalse(button.isDefault())
+
+    def test_the_two_rotate_icons_point_opposite_ways(self) -> None:
+        # They used to be hand-drawn arcs that read as the same direction.
+        def ink_centre(image) -> float:
+            total = weighted = 0.0
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    alpha = image.pixelColor(x, y).alpha()
+                    total += alpha
+                    weighted += alpha * x
+            return weighted / max(total, 1.0)
+
+        clockwise = self.panel._rotate_icon(clockwise=True).pixmap(20, 20).toImage()
+        counter = self.panel._rotate_icon(clockwise=False).pixmap(20, 20).toImage()
+        self.assertNotEqual(
+            clockwise.constBits().tobytes(), counter.constBits().tobytes()
+        )
+        # One is the other mirrored, so their ink sits on opposite sides.
+        self.assertAlmostEqual(
+            ink_centre(clockwise),
+            (clockwise.width() - 1) - ink_centre(counter),
+            delta=0.75,
+        )
+
+
+class StraightenDraftTests(unittest.TestCase):
+    """Straightening re-runs the whole adjustment stack on freshly rotated
+    pixels, so a drag renders a draft and the release renders it properly."""
+
+    def setUp(self) -> None:
+        self.app = _app()
+        from image_triage.ui.photo_editor_panel import PhotoEditorPanel
+
+        self.panel = PhotoEditorPanel()
+        self.panel._source_path = Path("photo.jpg")
+        self.panel._session = {
+            "masks": [],
+            "operations": [],
+            "coordinateSpaces": [
+                {"id": "space", "sourceWidth": 400, "sourceHeight": 300}
+            ],
+        }
+        self.panel._sync_enabled()
+        self.panel._set_editor_page(self.panel.PAGE_CROP)
+
+    def tearDown(self) -> None:
+        self.panel.close()
+
+    def test_the_spec_says_draft_only_while_dragging(self) -> None:
+        self.assertFalse(self.panel.view_render_spec()["draft"])
+        self.panel._set_geometry_drag(True)
+        self.assertTrue(self.panel.view_render_spec()["draft"])
+        self.panel._set_geometry_drag(False)
+        self.assertFalse(self.panel.view_render_spec()["draft"])
+
+    def test_letting_go_asks_for_one_full_render(self) -> None:
+        seen: list[object] = []
+        self.panel.recipe_changed.connect(seen.append)
+        self.panel._set_geometry_drag(True)
+        self.assertEqual([], seen, "starting a drag should not re-render")
+        self.panel._set_geometry_drag(False)
+        self.assertEqual(1, len(seen))
+
+    def test_a_canvas_rotation_counts_as_a_drag(self) -> None:
+        self.panel.handle_crop_angle_dragged(8.0)
+        self.assertTrue(self.panel.view_render_spec()["draft"])
+        self.panel.handle_crop_committed()
+        self.assertFalse(self.panel.view_render_spec()["draft"])
+
+
+class PreviewDraftSizingTests(unittest.TestCase):
+    """The preview picks the render size, and keeps drafts out of the cache."""
+
+    def setUp(self) -> None:
+        self.app = _app()
+        from image_triage.preview import FullScreenPreview
+
+        self.cls = FullScreenPreview
+
+    def _stub(self, *, draft: bool):
+        panel = SimpleNamespace(
+            view_render_spec=lambda: {
+                "bypass_crop": True,
+                "source_size": (400, 300),
+                "draft": draft,
+            }
+        )
+        return SimpleNamespace(
+            photo_editor_panel=panel,
+            _editor_recipe_version=3,
+            EDITOR_PREVIEW_MAX_EDGE=self.cls.EDITOR_PREVIEW_MAX_EDGE,
+            EDITOR_PREVIEW_DRAFT_MAX_EDGE=self.cls.EDITOR_PREVIEW_DRAFT_MAX_EDGE,
+        )
+
+    def test_a_draft_renders_smaller(self) -> None:
+        self.assertLess(
+            self.cls.EDITOR_PREVIEW_DRAFT_MAX_EDGE, self.cls.EDITOR_PREVIEW_MAX_EDGE
+        )
+        full = self.cls._editor_view_spec(self._stub(draft=False))
+        draft = self.cls._editor_view_spec(self._stub(draft=True))
+        self.assertEqual(self.cls.EDITOR_PREVIEW_MAX_EDGE, full["max_edge"])
+        self.assertEqual(self.cls.EDITOR_PREVIEW_DRAFT_MAX_EDGE, draft["max_edge"])
+
+    def test_a_draft_cannot_satisfy_the_full_render(self) -> None:
+        full = self.cls._editor_state_key(self._stub(draft=False))
+        draft = self.cls._editor_state_key(self._stub(draft=True))
+        self.assertNotEqual(full, draft)
+
+    def test_a_repaint_holds_the_previous_crop_frame_until_the_draft_arrives(self) -> None:
+        from PySide6.QtGui import QImage
+
+        base = QImage(400, 300, QImage.Format.Format_RGB32)
+        previous = QImage(240, 180, QImage.Format.Format_RGB32)
+        requested: list[int] = []
+        stub = SimpleNamespace(
+            _entries=[object()],
+            _editor_masked_adjustments=lambda: [],
+            _editor_recipe_is_default=lambda: False,
+            _image_cache_key=lambda _slot, _image: ("base",),
+            _editor_state_key=lambda: ("editor", 4, True, True),
+            _editor_preview_cache={},
+            _request_editor_render=requested.append,
+            _editor_last_presented=(("base",), True, previous),
+            photo_editor_panel=SimpleNamespace(
+                view_render_spec=lambda: {"bypass_crop": True, "draft": True}
+            ),
+        )
+        shown = self.cls._editor_image_for_slot(stub, 0, base)
+        self.assertEqual([0], requested)
+        self.assertEqual(previous.cacheKey(), shown.cacheKey())

@@ -505,6 +505,9 @@ class MaskOverlay(CanvasOverlay):
     scene_region_picked = Signal(str)
     # A point was clicked in promptable click-to-select mode (source coords).
     point_picked = Signal(float, float)
+    # The pointer moved over/left promptable click-to-select mode.
+    point_hovered = Signal(float, float)
+    point_hover_cleared = Signal()
     # A BiRefNet foreground component was toggled in the subject picker.
     subject_candidate_toggled = Signal(str)
     # An edit drag ended; owners should persist the pending changes.
@@ -539,6 +542,7 @@ class MaskOverlay(CanvasOverlay):
         self._scene_pick = False
         self._scene_hover: str | None = None
         self._point_pick = False
+        self._point_preview_path: str | None = None
         self._subject_candidates: list[dict[str, Any]] = []
         self._subject_hover: str | None = None
         self._watched: QWidget | None = None
@@ -577,6 +581,7 @@ class MaskOverlay(CanvasOverlay):
         scene_index: SceneRegionIndex | None = None,
         scene_pick: bool = False,
         point_pick: bool = False,
+        point_preview_path: str | None = None,
         subject_candidates: list[dict[str, Any]] | None = None,
         overlay_mode: str = "color",
         overlay_color: QColor | str | None = None,
@@ -654,6 +659,9 @@ class MaskOverlay(CanvasOverlay):
         if not self._scene_pick:
             self._scene_hover = None
         self._point_pick = bool(point_pick)
+        preview_path = str(point_preview_path or "") or None
+        if preview_path != self._point_preview_path:
+            self._point_preview_path = preview_path
         self._subject_candidates = [
             dict(candidate) for candidate in (subject_candidates or [])
         ]
@@ -757,6 +765,26 @@ class MaskOverlay(CanvasOverlay):
         # empty canvas is the whole point of scene picking.
         if self._scene_pick and self._scene_hover:
             self._paint_scene_hover(painter)
+        if self._point_pick and self._point_preview_path and self._show_overlay:
+            preview = self._cached_component_bitmap(
+                {"assetPath": self._point_preview_path}
+            )
+            if preview is not None:
+                scaled = preview.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                base = self._display_base_image(self.width(), self.height())
+                painter.drawImage(
+                    self.rect(),
+                    compose_mask_overlay(
+                        scaled,
+                        self._overlay_mode,
+                        self._overlay_color,
+                        base,
+                    ),
+                )
         if self._point_pick and self._hover_pos is not None and self._drag is None:
             self._paint_point_pick_hint(painter)
         if self._params is None and not self._components:
@@ -1419,6 +1447,9 @@ class MaskOverlay(CanvasOverlay):
                 self._hover_pos = pos
                 self._refresh_subject_hover(pos)
                 self._refresh_scene_hover(pos)
+                if self._point_pick:
+                    src_x, src_y = self._to_source(pos)
+                    self.point_hovered.emit(src_x, src_y)
                 self._update_hover_cursor(pos)
                 self.update()
             event.ignore()
@@ -1487,6 +1518,8 @@ class MaskOverlay(CanvasOverlay):
         event.accept()
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._point_pick:
+            self.point_hover_cleared.emit()
         self._hover_pos = None
         self._scene_hover = None
         self._subject_hover = None

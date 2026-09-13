@@ -1073,7 +1073,10 @@ def apply_view_geometry(image: Image.Image, recipe: "EditRecipe") -> Image.Image
         return image
     from image_triage.editor_geometry import view_transform_for
 
-    view = view_transform_for(recipe, image.size)
+    # The legacy rotate field is still performed immediately after this call.
+    # Exclude it from this affine while allowing display/overlay transforms to
+    # include it and describe the final oriented frame.
+    view = view_transform_for(recipe, image.size, include_rotate=False)
     if view.is_identity():
         return image
     return image.transform(

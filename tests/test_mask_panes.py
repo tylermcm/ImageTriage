@@ -53,6 +53,8 @@ class MaskTwoStateNavigationTests(unittest.TestCase):
         panel = _panel()
         panel.new_mask_button.click()
         self.assertEqual(panel.MASK_PANE_CREATE, panel.mask_stack.currentIndex())
+        self.assertEqual("Point to preview.\nClick to mask.", panel._scene_hint.text())
+        self.assertTrue(panel._scene_hint.wordWrap())
         panel.mask_create_back.click()
         self.assertEqual(panel.MASK_PANE_WORK, panel.mask_stack.currentIndex())
 
@@ -499,7 +501,6 @@ class MaskContextualSectionTests(unittest.TestCase):
         self.assertFalse(panel._mask_touchup_page.isHidden())
         for widget in (
             panel._editor_tool_rail,
-            panel._editor_doc_bar,
             panel.editor_stack,
             panel._editor_footer,
         ):
@@ -529,7 +530,6 @@ class MaskContextualSectionTests(unittest.TestCase):
         self.assertTrue(panel._mask_touchup_page.isHidden())
         for widget in (
             panel._editor_tool_rail,
-            panel._editor_doc_bar,
             panel.editor_stack,
             panel._editor_footer,
         ):
@@ -544,10 +544,29 @@ class MaskContextualSectionTests(unittest.TestCase):
         panel._mask_touchup_spins["edgeSmooth"].setValue(44)
         panel._mask_touchup_spins["edgeShift"].setValue(-20)
 
-        panel._finish_mask_touchup(accepted=False)
+        panel.mask_touchup_cancel_button.click()
 
         self.assertEqual({"edgeSmooth": 12}, panel._selected_mask_dict()["params"])
         self.assertIsNone(panel._mask_touchup_mask_id)
+        self.assertEqual("Cancel", panel.mask_touchup_cancel_button.text())
+        self.assertEqual(72, panel.mask_touchup_cancel_button.width())
+
+    def test_cancelling_click_select_discards_the_session_mask(self) -> None:
+        panel = _panel()
+        _fake_mask(panel, "mask-001", "subject-select")
+        panel._prompt_session_active = True
+        panel._prompt_session_root_id = "mask-001"
+        panel._mask_touchup_mask_id = "mask-001"
+        panel._prompt_meta = {"mask-001": {"points": [(0.5, 0.5)]}}
+        panel._ensure_session = lambda: (Path("session.json"), panel._session)  # type: ignore[method-assign]
+        panel._write_session = lambda session, status: None  # type: ignore[method-assign]
+
+        panel.mask_touchup_cancel_button.click()
+
+        self.assertEqual([], panel._session["masks"])
+        self.assertEqual({}, panel._prompt_meta)
+        self.assertFalse(panel._prompt_session_active)
+        self.assertFalse(panel._point_select_active)
 
     def test_touchup_page_keeps_overlay_controls_available(self) -> None:
         panel = _panel()
@@ -666,6 +685,185 @@ class MaskPaneFootprintTests(unittest.TestCase):
         panel = _panel()
         create = panel.mask_stack.widget(panel.MASK_PANE_CREATE).widget()
         self.assertLess(create.sizeHint().height(), 640)
+
+
+class EditorFooterTests(unittest.TestCase):
+    """The footer belongs to the page: Adjust saves, a mask finishes, and every
+    other page leaves the strip free."""
+
+    def setUp(self) -> None:
+        self.app = QApplication.instance() or QApplication([])
+
+    def test_adjust_keeps_save_and_hides_the_mask_actions(self) -> None:
+        panel = _panel()
+        panel._set_editor_page(panel.PAGE_ADJUST)
+        self.assertFalse(panel._editor_footer.isHidden())
+        self.assertFalse(panel.save_button.isHidden())
+        self.assertTrue(panel.mask_done_button.isHidden())
+        self.assertTrue(panel.delete_mask_button.isHidden())
+
+    def test_the_other_tool_pages_have_no_footer(self) -> None:
+        panel = _panel()
+        # Crop keeps a footer of its own (Reset crop / Apply crop).
+        for page in (
+            panel.PAGE_REMOVE,
+            panel.PAGE_RED_EYE,
+            panel.PAGE_BACKGROUND,
+            panel.PAGE_LENS_BLUR,
+            panel.PAGE_PRESETS,
+        ):
+            with self.subTest(page=page):
+                panel._set_editor_page(page)
+                self.assertTrue(panel._editor_footer.isHidden())
+
+    def test_the_mask_overview_has_no_footer_either(self) -> None:
+        panel = _panel()
+        panel._set_editor_page(panel.PAGE_MASKS)
+        self.assertTrue(panel._editor_footer.isHidden())
+
+    def test_inside_a_mask_the_slots_become_reset_done_delete(self) -> None:
+        panel = _panel()
+        panel._set_editor_page(panel.PAGE_MASKS)
+        _fake_mask(panel, "mask-001", "radial")
+        self.assertFalse(panel._editor_footer.isHidden())
+        for button in (
+            panel.reset_mask_adjustments_button,
+            panel.mask_done_button,
+            panel.delete_mask_button,
+        ):
+            with self.subTest(label=button.text()):
+                self.assertFalse(button.isHidden())
+        for button in (panel.reset_button, panel.save_button, panel.save_copy_button):
+            with self.subTest(label=button.text()):
+                self.assertTrue(button.isHidden())
+
+    def test_done_leaves_the_mask_for_the_overview(self) -> None:
+        panel = _panel()
+        panel._set_editor_page(panel.PAGE_MASKS)
+        _fake_mask(panel, "mask-001", "radial")
+        panel.mask_done_button.click()
+        self.assertIsNone(panel._selected_mask_id())
+        self.assertTrue(panel._mask_overview.isVisibleTo(panel))
+        self.assertTrue(panel._editor_footer.isHidden())
+
+    def test_the_relocated_actions_left_the_scrolling_detail(self) -> None:
+        panel = _panel()
+        for button in (panel.reset_mask_adjustments_button, panel.delete_mask_button):
+            with self.subTest(label=button.text()):
+                self.assertFalse(panel._mask_detail.isAncestorOf(button))
+                self.assertTrue(panel._editor_footer.isAncestorOf(button))
+
+
+class MaskOverviewTests(unittest.TestCase):
+    """With no mask open the Work pane is a layer overview; opening a layer puts
+    you inside that mask, and "All masks" steps back out."""
+
+    def setUp(self) -> None:
+        self.app = QApplication.instance() or QApplication([])
+
+    def _panel_with_layers(self):
+        panel = _panel()
+        panel._session = {
+            "masks": [
+                {"id": "mask-001", "type": "radial", "coordinateSpaceId": "space",
+                 "params": {"cx": 50, "cy": 50, "rx": 20, "ry": 20}},
+                {"id": "mask-002", "type": "linear-gradient", "coordinateSpaceId": "space",
+                 "params": {"x1": 0, "y1": 0, "x2": 100, "y2": 100}},
+                {"id": "mask-003", "type": "radial", "coordinateSpaceId": "space",
+                 "parentId": "mask-002", "combine": "subtract",
+                 "params": {"cx": 20, "cy": 20, "rx": 10, "ry": 10}},
+            ],
+            "operations": [],
+            "coordinateSpaces": [{"id": "space", "sourceWidth": 100, "sourceHeight": 100}],
+        }
+        for mask_id in ("mask-001", "mask-002", "mask-003"):
+            item = QListWidgetItem(mask_id)
+            item.setData(Qt.ItemDataRole.UserRole, mask_id)
+            panel.masks_list.addItem(item)
+        panel._ensure_session = lambda: (Path("session.json"), panel._session)  # type: ignore[method-assign]
+        panel._write_session = (  # type: ignore[method-assign]
+            lambda session, status: panel._sync_mask_controls(panel._selected_mask_dict())
+        )
+        panel._sync_mask_controls(None)
+        return panel
+
+    @staticmethod
+    def _live(panel, name: str) -> list:
+        from PySide6.QtWidgets import QWidget
+
+        # Rebuilt cards are hidden and deleteLater'd, so skip the hidden ones.
+        return [w for w in panel._mask_overview.findChildren(QWidget, name) if not w.isHidden()]
+
+    def test_opening_a_photo_shows_one_card_per_mask_group(self) -> None:
+        panel = self._panel_with_layers()
+        self.assertEqual(2, len(self._live(panel, "maskLayerCard")))
+        self.assertTrue(panel._mask_overview.isVisibleTo(panel))
+        self.assertFalse(panel._mask_detail.isVisibleTo(panel))
+        self.assertFalse(panel.mask_list_viewport.isVisibleTo(panel))
+
+    def test_opening_a_layer_goes_inside_that_mask(self) -> None:
+        panel = self._panel_with_layers()
+        panel._enter_mask("mask-002")
+        self.assertEqual("mask-002", panel._selected_mask_id())
+        self.assertFalse(panel._mask_overview.isVisibleTo(panel))
+        self.assertTrue(panel._mask_detail.isVisibleTo(panel))
+        self.assertTrue(panel.mask_back_button.isVisibleTo(panel))
+
+    def test_all_masks_returns_to_the_overview_with_that_layer_open(self) -> None:
+        panel = self._panel_with_layers()
+        panel._enter_mask("mask-003")
+        panel.mask_back_button.click()
+        self.assertIsNone(panel._selected_mask_id())
+        self.assertTrue(panel._mask_overview.isVisibleTo(panel))
+        self.assertEqual("mask-002", panel._expanded_layer_id())
+        # The expanded group lists its base and its subtracting component.
+        self.assertEqual(2, len(self._live(panel, "maskComponentRow")))
+
+    def test_all_masks_sits_on_the_overlay_row_not_in_the_caption(self) -> None:
+        panel = self._panel_with_layers()
+        panel._enter_mask("mask-002")
+        panel.resize(380, 900)
+        panel.show()
+        self.app.processEvents()
+        back = panel.mask_back_button
+        # Same row as Show overlay, left of it; Show overlay beside its settings.
+        self.assertIs(back.parentWidget(), panel.overlay_check.parentWidget())
+        self.assertLess(back.geometry().x(), panel.overlay_check.geometry().x())
+        self.assertLess(
+            panel.overlay_check.geometry().x(), panel.overlay_menu_button.geometry().x()
+        )
+        self.assertEqual(back.geometry().center().y(), panel.overlay_check.geometry().center().y())
+        panel.close()
+
+    def test_hiding_a_layer_drops_it_from_the_composite_but_keeps_its_edits(self) -> None:
+        from photo_terminal.adjustments import EditRecipe
+
+        from image_triage.ui.photo_editor_panel import recipe_for_mask, replace_mask_operations
+
+        panel = self._panel_with_layers()
+        replace_mask_operations(panel._session, "mask-001", EditRecipe(exposure=0.5))
+        shown = len(panel.masked_adjustments())
+        panel.set_mask_layer_visible("mask-001", False)
+        self.assertEqual(shown - 1, len(panel.masked_adjustments()))
+        self.assertEqual(0.5, recipe_for_mask(panel._session, "mask-001").exposure)
+        panel.set_mask_layer_visible("mask-001", True)
+        self.assertEqual(shown, len(panel.masked_adjustments()))
+        self.assertNotIn("enabled", panel._session["masks"][0])
+
+    def test_only_components_switch_between_add_and_subtract(self) -> None:
+        panel = self._panel_with_layers()
+        panel.set_mask_component_combine("mask-003", "add")
+        self.assertNotIn("combine", panel._mask_by_id("mask-003"))
+        panel.set_mask_component_combine("mask-003", "subtract")
+        self.assertEqual("subtract", panel._mask_by_id("mask-003")["combine"])
+        panel.set_mask_component_combine("mask-002", "subtract")
+        self.assertNotIn("combine", panel._mask_by_id("mask-002"))
+
+    def test_an_expanded_overview_fits_the_editor_column(self) -> None:
+        panel = self._panel_with_layers()
+        panel._toggle_overview_layer("mask-002")
+        body = panel.mask_stack.widget(panel.MASK_PANE_WORK).widget()
+        self.assertLessEqual(body.minimumSizeHint().width(), 344)
 
 
 if __name__ == "__main__":

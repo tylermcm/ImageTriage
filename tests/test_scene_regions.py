@@ -442,6 +442,99 @@ class ScenePanelWiringTests(unittest.TestCase):
         self.assertEqual([], started)
         panel.close()
 
+    def test_click_to_select_hover_is_debounced_without_scene_overlay(self) -> None:
+        panel = self._masks_tab_panel()
+        panel._show_mask_pane(panel.MASK_PANE_CREATE)
+        panel._point_select_active = True
+        panel._mask_source_size = lambda: (200, 100)  # type: ignore[assignment]
+        panel._scene_index = object()
+        panel._ensure_scene_index = lambda: self.fail(  # type: ignore[assignment]
+            "point hover must not launch scene analysis"
+        )
+
+        panel.handle_overlay_point_hovered(100.0, 25.0)
+
+        self.assertEqual((0.5, 0.25), panel._prompt_hover_pending)
+        self.assertTrue(panel._prompt_hover_timer.isActive())
+        state = panel.mask_overlay_state()
+        self.assertIsNone(state["scene_index"])
+        self.assertTrue(state["point_pick"])
+        panel.close()
+
+    def test_click_reuses_matching_hover_mask(self) -> None:
+        from image_triage.prompt_masks import PromptMaskResult
+
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            photo = directory / "photo.png"
+            mask = directory / "hover.png"
+            Image.new("RGB", SOURCE_SIZE, "gray").save(photo)
+            Image.new("L", SOURCE_SIZE, 255).save(mask)
+            panel = self._masks_tab_panel()
+            panel._source_path = photo
+            panel._point_select_active = True
+            panel._mask_source_size = lambda: SOURCE_SIZE  # type: ignore[assignment]
+            panel._click_is_on_person = lambda nx, ny: False  # type: ignore[assignment]
+            result = PromptMaskResult(
+                source_path=photo,
+                source_size=SOURCE_SIZE,
+                mask_path=mask,
+                bounds=(0, 0, *SOURCE_SIZE),
+                coverage=1.0,
+                model_id="sam",
+                model_version="1",
+                weights_hash="hash",
+            )
+            panel._prompt_hover_result = result
+            panel._prompt_hover_context = {"point": (0.5, 0.5)}
+            applied: list[tuple[object, dict]] = []
+            panel._apply_prompt_mask_result = lambda value, context: applied.append(  # type: ignore[assignment]
+                (value, context)
+            )
+            panel._start_prompt_mask_task = lambda *args, **kwargs: self.fail(  # type: ignore[assignment]
+                "matching hover result should not run SAM again"
+            )
+
+            panel.handle_overlay_point_picked(SOURCE_SIZE[0] / 2, SOURCE_SIZE[1] / 2)
+
+            self.assertEqual(1, len(applied))
+            self.assertIs(result, applied[0][0])
+            self.assertIsNone(panel._prompt_hover_result)
+            panel.close()
+
+    def test_stale_hover_result_is_deleted_and_not_displayed(self) -> None:
+        from image_triage.prompt_masks import PromptMaskResult
+
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            photo = directory / "photo.png"
+            mask = directory / "stale.png"
+            Image.new("RGB", SOURCE_SIZE, "gray").save(photo)
+            Image.new("L", SOURCE_SIZE, 255).save(mask)
+            panel = self._masks_tab_panel()
+            panel._source_path = photo
+            panel._prompt_hover_generation = 4
+            panel._prompt_hover_pending = (0.8, 0.8)
+            result = PromptMaskResult(
+                source_path=photo,
+                source_size=SOURCE_SIZE,
+                mask_path=mask,
+                bounds=(0, 0, *SOURCE_SIZE),
+                coverage=1.0,
+                model_id="sam",
+                model_version="1",
+                weights_hash="hash",
+            )
+
+            panel._handle_prompt_hover_finished(
+                "request", str(photo.resolve()), result, 3, (0.2, 0.2)
+            )
+
+            self.assertFalse(mask.exists())
+            self.assertIsNone(panel._prompt_hover_result)
+            self.assertTrue(panel._prompt_hover_timer.isActive())
+            panel.close()
+
     def test_click_to_select_session_builds_one_mask_from_many_clicks(self) -> None:
         """The 'Click to Select (AI)' button opens the touch-up window and each
         click adds an 'add' component to the SAME mask; OK returns to Work."""
@@ -480,6 +573,7 @@ class ScenePanelWiringTests(unittest.TestCase):
                 panel._set_point_select_active(True)
                 self.assertTrue(panel._prompt_session_active)
                 self.assertFalse(panel._mask_touchup_page.isHidden())
+                self.assertTrue(panel._editor_column.isHidden())
                 self.assertTrue(panel.editor_stack.isHidden())
                 # point_pick stays live even though the New Mask pane is hidden.
                 self.assertTrue(panel.mask_overlay_state()["point_pick"])
@@ -546,6 +640,7 @@ class ScenePanelWiringTests(unittest.TestCase):
                 self.assertFalse(panel._prompt_session_active)
                 self.assertIsNone(panel._prompt_session_root_id)
                 self.assertFalse(panel._point_select_active)
+                self.assertFalse(panel._editor_column.isHidden())
                 self.assertEqual(panel.mask_stack.currentIndex(), panel.MASK_PANE_WORK)
                 self.assertFalse(panel.point_select_button.isChecked())
                 panel.close()
