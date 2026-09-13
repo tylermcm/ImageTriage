@@ -75,3 +75,13 @@ def test_sidebar_navigation_selection_uses_theme_tokens() -> None:
     assert "QListWidget#faceGroupsList::item:selected" in stylesheet
     assert "QListWidget#projectsList::item:selected" in stylesheet
     assert stylesheet.count(f"background-color: {theme.selection_fill.css};") >= 4
+
+
+def test_projects_header_does_not_add_an_oversized_gap_above_its_list() -> None:
+    stylesheet = build_app_stylesheet(default_theme())
+
+    projects_rule = stylesheet.split(
+        'QWidget#navSectionHeader[sectionRole="projects"]', 1
+    )[1].split("}", 1)[0]
+    assert "min-height: 36px;" in projects_rule
+    assert "padding-top: 0px;" in projects_rule

@@ -13,6 +13,7 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QIcon, QImageReader
 from PySide6.QtWidgets import QApplication
 
+from image_triage.formats import is_image_file_candidate
 from image_triage.updater import current_app_version
 
 
@@ -42,6 +43,13 @@ def launch_target_from_argv(argv: Sequence[str]) -> str:
     return ""
 
 
+def is_quick_view_launch_target(target: str) -> bool:
+    """Return whether a shell launch should open directly in the popout viewer."""
+
+    candidate = str(target or "").strip()
+    return bool(candidate and is_image_file_candidate(candidate) and Path(candidate).is_file())
+
+
 def main() -> int:
     _configure_windows_app_identity()
     QCoreApplication.setOrganizationName("Codex")
@@ -54,8 +62,10 @@ def main() -> int:
     app.setApplicationDisplayName("Image Triage")
     app.setWindowIcon(QIcon(str(_APP_ICON_PATH)))
 
+    launch_target = launch_target_from_argv(sys.argv)
+    quick_view = is_quick_view_launch_target(launch_target)
     splash = None
-    if _STARTUP_SPLASH_ENABLED:
+    if _STARTUP_SPLASH_ENABLED and not quick_view:
         from image_triage.ui.splash_screen import StartupSplash
 
         splash = StartupSplash(QCoreApplication.applicationVersion())
@@ -69,12 +79,12 @@ def main() -> int:
     if splash is not None:
         splash.set_status("Restoring your library…", 58)
         app.processEvents()
-    window = MainWindow(launch_target=launch_target_from_argv(sys.argv))
+    window = MainWindow(launch_target=launch_target, quick_view=quick_view)
     if splash is not None:
         splash.set_status("Ready", 100)
         app.processEvents()
         splash.finish(window)
-    else:
+    elif not quick_view:
         window.show()
     return app.exec()
 

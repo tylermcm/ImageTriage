@@ -138,13 +138,14 @@ class ToolRailFootprintTests(unittest.TestCase):
         # min-width: 0). The sections added for the Camera Raw parity work are
         # measured individually so a regression is attributable.
         body = _scrolled_body(self.panel.editor_stack.widget(self.panel.PAGE_ADJUST))
+        # Section captions are uppercase on every page (see _section).
         wanted = {
-            "Color Mixer",
-            "Point Color",
-            "Color Grading",
-            "Color Calibration",
-            "Defringe",
-            "Grain",
+            "COLOR MIXER",
+            "POINT COLOR",
+            "COLOR GRADING",
+            "COLOR CALIBRATION",
+            "DEFRINGE",
+            "GRAIN",
         }
         seen = set()
         for header in body.findChildren(QPushButton, "editorSectionHeader"):

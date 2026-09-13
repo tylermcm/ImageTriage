@@ -76,13 +76,26 @@ class NavSectionOrderTests(unittest.TestCase):
 
     def test_an_expanded_body_sits_under_its_own_header(self) -> None:
         self.assertEqual(
-            ["Face Groups", "FaceGroupsPanel", "Projects", "QListWidget", SPACE],
+            [
+                "Face Groups",
+                SPACE,
+                "FaceGroupsPanel",
+                SPACE,
+                "Projects",
+                "QListWidget",
+                SPACE,
+            ],
             self._arrange(faces=True, projects=True),
         )
 
+    def test_projects_body_is_flush_with_its_header(self) -> None:
+        order = self._arrange(faces=True, projects=True)
+        header_index = order.index("Projects")
+        self.assertEqual("QListWidget", order[header_index + 1])
+
     def test_a_collapsed_section_shrinks_to_its_header_in_place(self) -> None:
         order = self._arrange(faces=False, projects=True)
-        self.assertEqual(["Face Groups", "Projects", "QListWidget", SPACE], order)
+        self.assertEqual(["Face Groups", SPACE, "Projects", "QListWidget", SPACE], order)
         self.assertTrue(self.host.face_groups_panel.isHidden())
         self.assertFalse(self.host.projects_list.isHidden())
 

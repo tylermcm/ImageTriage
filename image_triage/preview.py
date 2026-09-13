@@ -601,6 +601,10 @@ class FullScreenPreview(QDialog):
     MIN_PRELOAD_BATCH_SIZE = 0
     MAX_PRELOAD_BATCH_SIZE = 128
     EDITOR_PREVIEW_MAX_EDGE = 1600
+    # While the straighten is being dragged: every tick rotates and then
+    # re-runs the adjustment stack. A 512px working edge keeps the CPU preview
+    # responsive; the release immediately replaces it with the 1600px render.
+    EDITOR_PREVIEW_DRAFT_MAX_EDGE = 512
     FOCUS_ASSIST_COLOR_KEY = "preview/focus_assist_color"
     FOCUS_ASSIST_STRENGTH_KEY = "preview/focus_assist_strength"
     FOCUS_ASSIST_DIM_BACKGROUND_KEY = "preview/focus_assist_dim_background"
@@ -728,6 +732,10 @@ class FullScreenPreview(QDialog):
         self._editor_recipe = EditRecipe()
         self._editor_recipe_version = 0
         self._editor_preview_cache: dict[tuple[object, ...], QImage] = {}
+        # Cache identity changes on every slider tick. Keep the last coherent
+        # frame separately so an incidental pane repaint while the next draft
+        # is rendering cannot flash the raw, uncropped source for one frame.
+        self._editor_last_presented: tuple[tuple, bool, QImage] | None = None
         # Editor renders run off the UI thread through this service so slider
         # drags never block; the backend is swappable (CPU today, GPU later).
         self._editor_render_backend = CpuEditorRenderBackend()
@@ -1172,8 +1180,6 @@ class FullScreenPreview(QDialog):
             }}
             QPushButton#editorSegmentButton:disabled {{ color: #6a6a6a; }}
             QWidget#colorWheel {{ background: transparent; }}
-            QFrame#photoEditorDocBar {{ background: #2e2e2e; border-bottom: 1px solid #232323; }}
-            QLabel#photoEditorSubtitle {{ color: #a0a0a0; font-size: 11px; }}
             QStackedWidget#photoEditorStack {{ background: #2e2e2e; }}
             QScrollArea#photoEditorScrollArea {{ background: #2e2e2e; border: none; }}
             QScrollArea#photoEditorScrollArea QWidget {{ background: #2e2e2e; }}
@@ -1189,27 +1195,82 @@ class FullScreenPreview(QDialog):
             QScrollArea#photoEditorScrollArea QScrollBar::sub-line:vertical {{ height: 0px; }}
             QScrollArea#photoEditorScrollArea QScrollBar::add-page:vertical,
             QScrollArea#photoEditorScrollArea QScrollBar::sub-page:vertical {{ background: transparent; }}
-            QLabel#maskPaneTitle {{ color: #e2e2e2; font-size: 11px; font-weight: 600; }}
+            QLabel#maskPaneTitle {{ color: #ececec; font-size: 12px; font-weight: 600; }}
             QFrame#maskHairline {{ background: #333333; border: none; max-height: 1px; }}
-            /* Quiet full-width tool rows: glyph, label, shortcut chip. */
+            /* Full-width tool rows: glyph, label, shortcut chip. The transparent
+               left border reserves the checked row's accent bar, so nothing
+               shifts when a tool is armed. */
             QFrame#photoEditorPanel QPushButton#maskToolRow {{
-                background: transparent; border: none; border-radius: 4px;
-                text-align: left; min-height: 30px; padding: 0px;
+                background: transparent; border: none; border-left: 2px solid transparent;
+                border-radius: 4px; text-align: left; padding: 0px;
+                min-height: 32px; max-height: 32px;
             }}
-            QFrame#photoEditorPanel QPushButton#maskToolRow:hover {{ background: #383838; }}
-            QFrame#photoEditorPanel QPushButton#maskToolRow:checked {{ background: #34506e; }}
-            QLabel#maskToolRowLabel {{ color: #dcdcdc; font-size: 12px; background: transparent; }}
-            QLabel#maskShortcutChip {{
-                color: #9a9a9a; font-size: 10px; background: #2a2a2a;
-                border: 1px solid #3a3a3a; border-radius: 3px; padding: 0px 5px;
+            QFrame#photoEditorPanel QPushButton#maskToolRow:hover {{ background: #3e3e3e; }}
+            QFrame#photoEditorPanel QPushButton#maskToolRow:checked {{
+                background: #2b4460; border-left: 2px solid #1473e6;
+                border-top-left-radius: 0px; border-bottom-left-radius: 0px;
             }}
-            /* AI scene masks as chips, promoted to the top of Create. */
+            QLabel#maskToolRowLabel {{ color: #e2e2e2; font-size: 12px; background: transparent; }}
+            QLabel#maskToolRowLabel:disabled {{ color: #767676; }}
+            /* The scroll area paints every plain widget and label with the pane
+               ground, which would cut dark blocks through a checked tool row. */
+            QFrame#photoEditorPanel QPushButton#maskToolRow QLabel,
+            QFrame#photoEditorPanel QPushButton#maskToolRow .QWidget {{ background: transparent; }}
+            QFrame#photoEditorPanel QLabel#maskShortcutChip {{
+                color: #a8a8a8; font-size: 10px; font-weight: 600; background: transparent;
+                border: 1px solid #505050; border-radius: 3px; padding: 0px;
+            }}
+            /* AI selections as rounded chips with a leading glyph. */
             QFrame#photoEditorPanel QPushButton#semanticMaskButton {{
-                background: #333333; border: 1px solid #414141; color: #e2e2e2;
-                border-radius: 13px; padding: 4px 12px; font-size: 11px; min-height: 18px;
+                background: #3d3d3d; border: 1px solid #4b4b4b; color: #e6e6e6;
+                border-radius: 14px; padding: 5px 12px; font-size: 11px; min-height: 18px;
             }}
             QFrame#photoEditorPanel QPushButton#semanticMaskButton:hover {{
-                background: {studio.ACCENT}; border-color: {studio.ACCENT}; color: #ffffff;
+                background: #474747; border-color: #5c5c5c; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QPushButton#semanticMaskButton:checked {{
+                background: #2b4460; border-color: #1473e6; color: #ffffff;
+            }}
+            QFrame#photoEditorPanel QPushButton#semanticMaskButton:disabled {{
+                background: #363636; border-color: #404040; color: #7a7a7a;
+            }}
+            /* Masks overview: one card per mask group. */
+            QFrame#photoEditorPanel QWidget#maskLayerCard {{
+                background: #343434; border: 1px solid #3f3f3f; border-radius: 6px;
+            }}
+            QFrame#photoEditorPanel QWidget#maskLayerCard:hover {{ border-color: #4d4d4d; }}
+            QFrame#photoEditorPanel QWidget#maskLayerCard[expanded="true"] {{ border-color: #1473e6; }}
+            QFrame#photoEditorPanel QWidget#maskLayerCard .QWidget,
+            QFrame#photoEditorPanel QWidget#maskLayerCard QLabel {{ background: transparent; }}
+            QFrame#photoEditorPanel QWidget#maskLayerCard QLabel#maskLayerThumb {{
+                background: #1c1c1c; border: 1px solid #2a2a2a; border-radius: 3px;
+            }}
+            QLabel#maskLayerTitle {{ color: #ececec; font-size: 12px; font-weight: 600; }}
+            QLabel#maskLayerSubtitle {{ color: #9c9c9c; font-size: 11px; }}
+            QFrame#photoEditorPanel QWidget#maskLayerCard[layerHidden="true"] QLabel#maskLayerTitle,
+            QFrame#photoEditorPanel QWidget#maskLayerCard[layerHidden="true"] QLabel#maskLayerSubtitle {{
+                color: #767676;
+            }}
+            QFrame#photoEditorPanel QToolButton#maskLayerAction {{
+                background: transparent; border: none; border-radius: 3px; padding: 1px;
+            }}
+            QFrame#photoEditorPanel QToolButton#maskLayerAction:hover {{ background: #454545; }}
+            QFrame#photoEditorPanel QWidget#maskComponentRow {{
+                background: #2b2b2b; border: 1px solid #3a3a3a; border-radius: 4px;
+            }}
+            QFrame#photoEditorPanel QWidget#maskComponentRow:hover {{ border-color: #525252; }}
+            QLabel#maskComponentName {{ color: #dcdcdc; font-size: 11px; }}
+            QLabel#maskComponentBase {{ color: #8a8a8a; font-size: 10px; padding-right: 6px; }}
+            QFrame#photoEditorPanel QComboBox#maskCombineCombo {{
+                padding: 1px 6px; min-height: 18px; font-size: 11px;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskAddComponent {{
+                background: transparent; border: none; color: #a8a8a8;
+                padding: 2px 2px; font-size: 11px; text-align: left;
+            }}
+            QFrame#photoEditorPanel QPushButton#maskAddComponent:hover,
+            QFrame#photoEditorPanel QPushButton#maskAddComponent:pressed {{
+                background: transparent; color: #ffffff;
             }}
             QFrame#photoEditorPanel QFrame#subjectChoicePanel {{
                 background: #292929; border: 1px solid #414141; border-radius: 4px;
@@ -1217,7 +1278,7 @@ class FullScreenPreview(QDialog):
             QFrame#photoEditorPanel QPushButton#newMaskButton {{
                 background: {studio.ACCENT}; border: 1px solid {studio.ACCENT}; color: #ffffff;
                 border-radius: 4px; min-height: 20px; max-height: 20px;
-                font-size: 11px; padding: 0px 8px;
+                font-size: 11px; font-weight: 600; padding: 0px 8px;
             }}
             QFrame#photoEditorPanel QPushButton#newMaskButton:hover {{ background: #5aa9ff; border-color: #5aa9ff; }}
             QFrame#photoEditorPanel QPushButton#newMaskButton:disabled {{
@@ -1239,17 +1300,27 @@ class FullScreenPreview(QDialog):
                 padding: 0px 2px;
             }}
             QFrame#photoEditorPanel QPushButton#maskLinkButton:hover {{ color: #ffffff; }}
+            QFrame#photoEditorPanel QPushButton#deleteMaskButton {{
+                background: transparent; border: 1px solid #4d3636; color: #e59a9a;
+            }}
             QFrame#photoEditorPanel QPushButton#deleteMaskButton:hover {{
-                color: #ff8a8a; border-color: #6a3a3a;
+                background: #3a2828; color: #ffb0b0; border-color: #6a3a3a;
             }}
-            QWidget#maskListBlock {{ border-bottom: 1px solid #232323; }}
             QFrame#editorSection {{ background: transparent; border-bottom: 1px solid #262626; }}
-            QPushButton#editorSectionHeader {{
-                background: transparent; border: none; color: #d6d6d6;
-                text-align: left; padding: 7px 10px; border-radius: 0px;
-                font-size: 11px; font-weight: 600;
+            /* One caption style for every section on every page: small, grey,
+               uppercase and letter-spaced (the font is set in code) on a
+               lighter full-width bar that marks where each category starts.
+               Scoped to the panel so it out-specifies the generic QPushButton
+               rule below, which used to paint the bar by accident (and turn
+               the caption white). */
+            QFrame#photoEditorPanel QPushButton#editorSectionHeader {{
+                background: #383838; border: none; color: #8f8f8f;
+                text-align: left; padding: 6px 10px; border-radius: 0px;
+                font-size: 10px; font-weight: 600;
             }}
-            QPushButton#editorSectionHeader:hover {{ background: #363636; color: #ffffff; }}
+            QFrame#photoEditorPanel QPushButton#editorSectionHeader:hover {{
+                background: #3e3e3e; color: #e6e6e6;
+            }}
             QLabel#editorControlLabel {{ color: #c4c4c4; font-size: 11px; }}
             /* A slider label that doubles as a disclosure — reads as the plain
                label until hovered, so the row keeps its normal height. */
@@ -1396,7 +1467,7 @@ class FullScreenPreview(QDialog):
                 font-family: 'Consolas'; font-size: 10px; color: #c8c8c8;
             }}
             QFrame#photoEditorPanel QFrame#maskListViewport {{
-                background: #242424; border: 1px solid #414141;
+                background: #2a2a2a; border: 1px solid #292929;
                 border-radius: 4px;
             }}
             QFrame#photoEditorPanel QFrame#maskListViewport QWidget#maskPaneHeader,
@@ -1747,10 +1818,22 @@ class FullScreenPreview(QDialog):
         self._mask_overlay.source_clicked.connect(self.photo_editor_panel.handle_overlay_source_clicked)
         self._mask_overlay.scene_region_picked.connect(self.photo_editor_panel.handle_overlay_scene_picked)
         self._mask_overlay.point_picked.connect(self.photo_editor_panel.handle_overlay_point_picked)
+        self._mask_overlay.point_hovered.connect(
+            self.photo_editor_panel.handle_overlay_point_hovered
+        )
+        self._mask_overlay.point_hover_cleared.connect(
+            self.photo_editor_panel.handle_overlay_point_hover_cleared
+        )
         self._mask_overlay.subject_candidate_toggled.connect(
             self.photo_editor_panel.handle_overlay_subject_candidate_toggled
         )
         self._mask_overlay.edit_committed.connect(self.photo_editor_panel.handle_overlay_commit)
+        # The Masks overview's layer thumbnails show the photo through each
+        # mask; the overlay already holds the displayed frame, so lend it.
+        self.photo_editor_panel.set_mask_thumbnail_source(
+            self._mask_overlay._display_base_cache_key,
+            self._mask_overlay._display_base_image,
+        )
 
         # Crop and retouch share the same image label. Z-order and mouse
         # ownership belong to the stack, not to whichever overlay attached or
@@ -1758,6 +1841,10 @@ class FullScreenPreview(QDialog):
         self._crop_overlay = CropOverlay()
         self._crop_overlay.crop_changed.connect(self.photo_editor_panel.handle_crop_changed)
         self._crop_overlay.crop_committed.connect(self.photo_editor_panel.handle_crop_committed)
+        # Dragging outside the box rotates the photo under it.
+        self._crop_overlay.angle_changed.connect(
+            self.photo_editor_panel.handle_crop_angle_dragged
+        )
         self._retouch_overlay = RetouchOverlay()
         self._retouch_overlay.spot_added.connect(self.photo_editor_panel.handle_spot_added)
         self._retouch_overlay.spot_moved.connect(self.photo_editor_panel.handle_spot_moved)
@@ -2527,6 +2614,14 @@ class FullScreenPreview(QDialog):
                 | Qt.KeyboardModifier.MetaModifier
             )
         )
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Enter commits the crop while that tool is armed; it used to reach
+            # a default button and throw the crop away.
+            panel = getattr(self, "photo_editor_panel", None)
+            if panel is not None and panel.active_canvas_tool() == "crop":
+                panel.apply_crop()
+                event.accept()
+                return
         if key in (Qt.Key.Key_Escape, Qt.Key.Key_Space):
             self.close()
             event.accept()
@@ -3633,15 +3728,23 @@ class FullScreenPreview(QDialog):
         overwriting a cropped one.
         """
         panel = getattr(self, "photo_editor_panel", None)
-        bypass = bool(panel is not None and panel.view_render_spec().get("bypass_crop"))
-        return ("editor", self._editor_recipe_version, bypass)
+        spec = panel.view_render_spec() if panel is not None else {}
+        bypass = bool(spec.get("bypass_crop"))
+        # The draft joins the key, or a half-size frame would satisfy (and be
+        # cached as) the full-size render that follows the drag.
+        draft = bool(spec.get("draft"))
+        return ("editor", self._editor_recipe_version, bypass, draft)
 
     def _editor_view_spec(self) -> dict | None:
         panel = getattr(self, "photo_editor_panel", None)
         if panel is None:
             return None
         spec = dict(panel.view_render_spec())
-        spec["max_edge"] = self.EDITOR_PREVIEW_MAX_EDGE
+        spec["max_edge"] = (
+            self.EDITOR_PREVIEW_DRAFT_MAX_EDGE
+            if spec.get("draft")
+            else self.EDITOR_PREVIEW_MAX_EDGE
+        )
         return spec
 
     def _editor_background_spec(self) -> dict | None:
@@ -3673,6 +3776,13 @@ class FullScreenPreview(QDialog):
         if tuple(source_key) != tuple(expected_key):
             return
         self._editor_preview_cache[source_key] = image
+        panel = getattr(self, "photo_editor_panel", None)
+        view_spec = panel.view_render_spec() if panel is not None else {}
+        self._editor_last_presented = (
+            self._image_cache_key(slot, current),
+            bool(view_spec.get("bypass_crop")),
+            image,
+        )
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         with logger.span("editslider.present", slot=slot):
@@ -3749,8 +3859,8 @@ class FullScreenPreview(QDialog):
 
     def _editor_image_for_slot(self, slot: int, image: QImage) -> QImage:
         # Never run the adjustment pipeline on the UI thread. Decode, zoom and
-        # resize paths can arrive before the async frame is cached; keep showing
-        # the base image and queue the current edit rather than freezing input.
+        # resize paths can arrive before the async frame is cached; queue the
+        # current edit and, when possible, hold the last coherent edited frame.
         masked = self._editor_masked_adjustments()
         if (
             not 0 <= slot < len(self._entries)
@@ -3765,6 +3875,22 @@ class FullScreenPreview(QDialog):
             perf_logger().log("editslider.render_image_cache_hit", slot=slot, w=image.width(), h=image.height())
             return cached
         self._request_editor_render(slot)
+        previous = self._editor_last_presented
+        panel = getattr(self, "photo_editor_panel", None)
+        view_spec = panel.view_render_spec() if panel is not None else {}
+        if (
+            previous is not None
+            and previous[0] == base_key
+            and previous[1] == bool(view_spec.get("bypass_crop"))
+            and not previous[2].isNull()
+        ):
+            perf_logger().log(
+                "editslider.render_hold_previous",
+                slot=slot,
+                w=previous[2].width(),
+                h=previous[2].height(),
+            )
+            return previous[2]
         return image
 
     def _display_image_for_slot(self, slot: int) -> QImage:

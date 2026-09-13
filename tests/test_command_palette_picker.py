@@ -5,8 +5,8 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QSize
-from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
 from image_triage.ui.command_palette import CommandPaletteDialog, PaletteCommand
 
@@ -97,6 +97,55 @@ class CommandPalettePickerTests(unittest.TestCase):
 
         self.assertEqual([CommandPaletteDialog.DialogCode.Rejected], results)
         parent.close()
+
+    def test_grouped_picker_adds_ordered_nonselectable_category_headers(self) -> None:
+        commands = [
+            PaletteCommand(id="review.one", title="One", section="Review", callback=lambda: None),
+            PaletteCommand(id="ai.one", title="AI One", section="AI", callback=lambda: None),
+            PaletteCommand(id="review.two", title="Two", section="Review", callback=lambda: None),
+        ]
+        parent = QWidget()
+        dialog = CommandPaletteDialog([], parent=parent)
+        dialog.configure(commands, compact_rows=True, group_by_section=True)
+
+        self.assertFalse(dialog.result_list.uniformItemSizes())
+        headers = []
+        command_ids = []
+        for row in range(dialog.result_list.count()):
+            item = dialog.result_list.item(row)
+            widget = dialog.result_list.itemWidget(item)
+            command_id = item.data(Qt.ItemDataRole.UserRole)
+            if command_id is None:
+                self.assertEqual(Qt.ItemFlag.NoItemFlags, item.flags())
+                headers.append(widget.findChild(QLabel, "commandPaletteSection").text())
+            else:
+                command_ids.append(command_id)
+
+        self.assertEqual(["REVIEW", "AI"], headers)
+        self.assertEqual(["review.one", "review.two", "ai.one"], command_ids)
+        self.assertEqual("review.one", dialog.result_list.currentItem().data(Qt.ItemDataRole.UserRole))
+
+    def test_grouped_picker_filter_only_shows_matching_categories(self) -> None:
+        parent = QWidget()
+        dialog = CommandPaletteDialog([], parent=parent)
+        dialog.configure(
+            [
+                PaletteCommand(id="review.preview", title="Preview", section="Review", callback=lambda: None),
+                PaletteCommand(id="files.rename", title="Rename", section="Files", callback=lambda: None),
+            ],
+            group_by_section=True,
+        )
+
+        dialog.search_field.setText("rename")
+
+        headers = [
+            dialog.result_list.itemWidget(dialog.result_list.item(row)).findChild(
+                QLabel, "commandPaletteSection"
+            ).text()
+            for row in range(dialog.result_list.count())
+            if dialog.result_list.item(row).data(Qt.ItemDataRole.UserRole) is None
+        ]
+        self.assertEqual(["FILES"], headers)
 
 
 if __name__ == "__main__":

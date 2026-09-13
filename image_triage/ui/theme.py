@@ -798,6 +798,26 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             image: none;
             width: 0px;
         }}
+        QToolButton#appTopBarPaneButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: {metrics.radius_7}px;
+            padding: 0px;
+        }}
+        QToolButton#appTopBarPaneButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: transparent;
+        }}
+        QToolButton#appTopBarPaneButton:checked {{
+            background-color: transparent;
+            border-color: transparent;
+        }}
+        QToolButton#appTopBarPaneButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QToolButton#appTopBarPaneButton:focus {{
+            border-color: {theme.selection_outline.css};
+        }}
         QLineEdit#workspaceSearchField {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -1687,13 +1707,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_primary.css};
         }}
         QToolButton#updateDownloadButton[updateAvailable="true"] {{
-            background-color: {theme.success_soft.css};
-            border-color: {theme.success.css};
+            background-color: transparent;
+            border-color: transparent;
             color: {theme.success.css};
         }}
         QToolButton#updateDownloadButton[updateAvailable="true"]:hover {{
-            background-color: {theme.success_soft.css};
-            border-color: {theme.success.css};
+            background-color: {theme.input_hover_bg.css};
+            border-color: transparent;
             color: {theme.success.css};
         }}
         QLabel#zenHintOverlay {{
@@ -1722,8 +1742,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QWidget#navSectionHeader[sectionRole="projects"] {{
             border-top: 1px solid {theme.border_muted.css};
-            min-height: 48px;
-            padding-top: 4px;
+            min-height: 36px;
+            padding-top: 0px;
         }}
         QWidget#navSectionHeader:hover QLabel#navSectionTitle {{
             color: {theme.text_primary.css};
@@ -2059,6 +2079,15 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_muted.css};
             font-size: 11px;
             padding: 0 2px 0 8px;
+        }}
+        QWidget#commandPaletteSectionHeader {{
+            background-color: transparent;
+        }}
+        QLabel#commandPaletteSection {{
+            color: {theme.text_secondary.css};
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
         }}
         QToolButton#workspaceFiltersButton, QToolButton#workspacePresetsButton {{
             min-height: 28px;

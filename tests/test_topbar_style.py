@@ -11,7 +11,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMainWindow, QMessageBox, QToolButton, QWidget
 
 from image_triage.ui.actions import format_action_tooltip
-from image_triage.ui.theme import default_theme
+from image_triage.ui.theme import build_app_stylesheet, default_theme
 from image_triage.window import MainWindow
 
 
@@ -113,6 +113,47 @@ class TopbarStyleTests(unittest.TestCase):
         trimmed = MainWindow._trim_icon_transparency(QIcon(pixmap), padding=3)
 
         self.assertEqual([trimmed.availableSizes()[0].width(), trimmed.availableSizes()[0].height()], [24, 22])
+
+    def test_pane_toggle_icons_are_true_mirrors_with_bright_checked_panel(self) -> None:
+        host = SimpleNamespace(_theme=default_theme())
+        left_icon = MainWindow._pane_toggle_icon(host, "left")
+        right_icon = MainWindow._pane_toggle_icon(host, "right")
+        left = left_icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.On).toImage()
+        right = right_icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.On).toImage()
+
+        for y in range(64):
+            for x in range(64):
+                self.assertEqual(left.pixelColor(x, y), right.pixelColor(63 - x, y))
+
+        unchecked = left_icon.pixmap(QSize(64, 64), QIcon.Mode.Normal, QIcon.State.Off).toImage()
+        checked_brightness = sum(
+            left.pixelColor(x, y).lightness() for y in range(16, 47) for x in range(12, 25)
+        )
+        unchecked_brightness = sum(
+            unchecked.pixelColor(x, y).lightness() for y in range(16, 47) for x in range(12, 25)
+        )
+        self.assertGreater(checked_brightness, unchecked_brightness)
+
+    def test_pane_and_update_selected_states_have_no_persistent_fill(self) -> None:
+        stylesheet = build_app_stylesheet(default_theme())
+
+        self.assertIn(
+            'QToolButton#appTopBarPaneButton:checked {\n            background-color: transparent;',
+            stylesheet,
+        )
+        self.assertIn(
+            'QToolButton#updateDownloadButton[updateAvailable="true"] {\n            background-color: transparent;',
+            stylesheet,
+        )
+
+    def test_toolbar_picker_assigns_every_button_to_a_named_category(self) -> None:
+        allowed = set().union(*map(set, MainWindow.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.values()))
+        allowed.add("divider")
+
+        categories = {MainWindow._toolbar_item_picker_section(item_id) for item_id in allowed}
+
+        self.assertNotIn("Toolbar", categories)
+        self.assertTrue(categories.issubset(set(MainWindow.TOOLBAR_PICKER_SECTION_ORDER)))
 
     def test_toolbar_edit_banner_is_centered_below_topbar(self) -> None:
         parent = QWidget()
