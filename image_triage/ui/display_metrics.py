@@ -115,7 +115,7 @@ def _profile(name: str, scale: float) -> DisplayProfile:
         left_rail_icon_size=_scaled(20, scale, minimum=18),
         left_rail_add_icon_size=_scaled(22, scale, minimum=20),
         inspector_label_width=_scaled(96, scale, minimum=86),
-        inspector_section_header_height=_scaled(24, scale, minimum=22),
+        inspector_section_header_height=_scaled(21, scale, minimum=20),
         inspector_header_button_width=_scaled(24, scale, minimum=22),
         inspector_header_button_height=_scaled(22, scale, minimum=20),
         inspector_spacing=_scaled(6, scale, minimum=5),

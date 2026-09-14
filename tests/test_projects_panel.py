@@ -1,4 +1,4 @@
-"""The Projects sidebar section over the library store's virtual collections.
+"""The Collections sidebar section over the library store's virtual collections.
 
 The collections backend already existed; these cover the sidebar surfacing of
 it, which is the part that was missing.
@@ -23,7 +23,7 @@ from image_triage.window import (
 
 
 class _PanelHost:
-    """Only the pieces of MainWindow the Projects section touches."""
+    """Only the pieces of MainWindow the Collections section touches."""
 
     def __init__(self, store: LibraryStore) -> None:
         self._library_store = store
@@ -34,7 +34,7 @@ class _PanelHost:
     _project_id_for_item = MainWindow._project_id_for_item
 
 
-class ProjectsPanelTests(unittest.TestCase):
+class CollectionsPanelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -67,7 +67,7 @@ class ProjectsPanelTests(unittest.TestCase):
         self.host._refresh_projects_panel()
         self.assertEqual(1, self.host.projects_list.count())
         item = self.host.projects_list.item(0)
-        self.assertEqual("No projects yet.", item.text())
+        self.assertEqual("No collections yet.", item.text())
         self.assertEqual(_PROJECT_EMPTY_ROW_PX, item.sizeHint().height())
         self.assertTrue(item.textAlignment() & Qt.AlignmentFlag.AlignTop)
         self.assertEqual(Qt.ItemFlag.NoItemFlags, item.flags())

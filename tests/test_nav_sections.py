@@ -26,7 +26,7 @@ class _NavHost:
         self._nav_layout.setContentsMargins(0, 0, 0, 0)
         self.face_groups_header = SectionHeader("Face Groups")
         self.face_groups_panel = FaceGroupsPanel()
-        self.projects_header = SectionHeader("Projects")
+        self.projects_header = SectionHeader("Collections")
         self.projects_list = QListWidget()
 
     _nav_sections = MainWindow._nav_sections
@@ -66,7 +66,7 @@ class NavSectionOrderTests(unittest.TestCase):
                 with self.subTest(faces=faces, projects=projects):
                     order = self._arrange(faces=faces, projects=projects)
                     self.assertEqual("Face Groups", order[0])
-                    self.assertLess(order.index("Face Groups"), order.index("Projects"))
+                    self.assertLess(order.index("Face Groups"), order.index("Collections"))
 
     def test_the_free_space_is_always_at_the_bottom(self) -> None:
         for faces in (True, False):
@@ -81,7 +81,7 @@ class NavSectionOrderTests(unittest.TestCase):
                 SPACE,
                 "FaceGroupsPanel",
                 SPACE,
-                "Projects",
+                "Collections",
                 "QListWidget",
                 SPACE,
             ],
@@ -90,12 +90,12 @@ class NavSectionOrderTests(unittest.TestCase):
 
     def test_projects_body_is_flush_with_its_header(self) -> None:
         order = self._arrange(faces=True, projects=True)
-        header_index = order.index("Projects")
+        header_index = order.index("Collections")
         self.assertEqual("QListWidget", order[header_index + 1])
 
     def test_a_collapsed_section_shrinks_to_its_header_in_place(self) -> None:
         order = self._arrange(faces=False, projects=True)
-        self.assertEqual(["Face Groups", SPACE, "Projects", "QListWidget", SPACE], order)
+        self.assertEqual(["Face Groups", SPACE, "Collections", "QListWidget", SPACE], order)
         self.assertTrue(self.host.face_groups_panel.isHidden())
         self.assertFalse(self.host.projects_list.isHidden())
 
