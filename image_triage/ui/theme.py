@@ -626,76 +626,253 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.accent.css};
         }}
-        QFrame#phoneShareConnectionCard {{
-            background-color: transparent;
-            border: none;
-            border-radius: 0px;
-        }}
         QDialog#sharePhoneDialog {{
             background-color: {theme.panel_bg.css};
             color: {theme.text_primary.css};
         }}
+        QLabel#sharePhoneSubtitle {{
+            color: {theme.text_secondary.css};
+        }}
+        QLabel#sharePhoneHint,
+        QLabel#sharePhoneFooterNote {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+        }}
         QTabWidget#sharePhoneTabs::pane {{
+            background-color: transparent;
+            border: none;
+            border-top: 1px solid {theme.border_muted.css};
+        }}
+        QTabWidget#sharePhoneTabs[resultMode="true"]::pane {{
+            border-top: none;
+        }}
+        QTabWidget#sharePhoneTabs::tab-bar {{
+            alignment: left;
+        }}
+        QTabWidget#sharePhoneTabs QTabBar::tab {{
+            background-color: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: {theme.text_muted.css};
+            font-weight: 600;
+            margin-right: 20px;
+            padding: 3px 1px 7px 1px;
+        }}
+        QTabWidget#sharePhoneTabs QTabBar::tab:hover:!selected {{
+            color: {theme.text_secondary.css};
+        }}
+        QTabWidget#sharePhoneTabs QTabBar::tab:selected {{
+            border-bottom-color: {theme.accent.css};
+            color: {theme.text_primary.css};
+        }}
+        QFrame#sharePhoneSelectionCard {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 9px;
+        }}
+        QLabel#sharePhoneSelectionIcon {{
+            background-color: {theme.accent_soft.css};
+            border-radius: 8px;
+            color: {theme.accent.css};
+        }}
+        QLabel#sharePhoneSelectionCount {{
+            color: {theme.text_primary.css};
+            font-size: 13px;
+            font-weight: 650;
+        }}
+        QLabel#sharePhoneSelectionSource {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+        }}
+        QProgressBar#sharePhoneProgress {{
+            background-color: {theme.raised_bg.css};
+            border: none;
+            border-radius: 3px;
+        }}
+        QProgressBar#sharePhoneProgress::chunk {{
+            background-color: {theme.accent.css};
+            border-radius: 3px;
+        }}
+        QFrame#phoneShareConnectionCard {{
             background-color: transparent;
             border: none;
         }}
         QFrame#phoneShareStatusPill {{
+            background-color: {theme.accent_soft.css};
+            border: none;
+            border-radius: 12px;
+        }}
+        QFrame#phoneShareStatusPill[state="done"] {{
+            background-color: {theme.success_soft.css};
+        }}
+        QFrame#phoneShareStatusPill[state="expired"] {{
             background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 8px;
         }}
         QFrame#phoneShareStatusDot {{
+            background-color: {theme.accent.css};
+            border: none;
+            border-radius: 4px;
+        }}
+        QFrame#phoneShareStatusPill[state="done"] QFrame#phoneShareStatusDot {{
             background-color: {theme.success.css};
-            border: 2px solid {theme.success_soft.css};
-            border-radius: 5px;
+        }}
+        QFrame#phoneShareStatusPill[state="expired"] QFrame#phoneShareStatusDot {{
+            background-color: {theme.text_muted.css};
         }}
         QLabel#phoneShareStatusLabel {{
             color: {theme.text_primary.css};
-            font-weight: 650;
-        }}
-        QFrame#phoneShareQrFrame {{
-            background-color: {theme.input_bg.css};
-            border: 1px solid {theme.accent.css};
-            border-radius: 10px;
-        }}
-        QLabel#phoneShareScanLabel {{
-            color: {theme.text_secondary.css};
             font-weight: 600;
         }}
-        QFrame#phoneShareDivider {{
-            color: {theme.border_muted.css};
-            background-color: {theme.border_muted.css};
-            border: none;
-            max-height: 1px;
+        QFrame#phoneShareQrFrame {{
+            background-color: rgb(255, 255, 255);
+            border: 1px solid {theme.border.css};
+            border-radius: 14px;
         }}
-        QLabel#phoneShareReadyLabel {{
-            color: {theme.text_primary.css};
-            font-weight: 650;
+        QLabel#phoneShareResultStatus {{
+            color: {theme.text_secondary.css};
+        }}
+        QLineEdit#phoneShareUrlField {{
+            color: {theme.text_secondary.css};
+            font-family: "Cascadia Mono", Consolas, "Courier New";
+            min-height: 30px;
+        }}
+        QPushButton#phoneShareInlineButton {{
+            font-weight: 600;
+            min-height: 30px;
+            padding: 1px 12px;
         }}
         QFrame#phoneShareNetworkPanel {{
             background-color: {theme.raised_bg.css};
             border: 1px solid {theme.border_muted.css};
-            border-radius: 8px;
+            border-radius: 9px;
+        }}
+        QFrame#phoneShareNetworkPanel[state="warning"] {{
+            background-color: {theme.warning.with_alpha(26).css};
+            border-color: {theme.warning.with_alpha(110).css};
         }}
         QLabel#phoneShareNetworkIcon {{
             color: {theme.accent.css};
-            font-size: 15px;
         }}
-        QLabel#phoneShareExpiryLabel {{
-            color: {theme.text_muted.css};
+        QFrame#phoneShareNetworkPanel[state="warning"] QLabel#phoneShareNetworkIcon {{
+            color: {theme.warning.css};
+        }}
+        QLabel#phoneShareNetworkTitle {{
+            color: {theme.text_primary.css};
+            font-weight: 650;
+        }}
+        QLabel#phoneShareNetworkWarning {{
+            color: {theme.text_secondary.css};
             font-size: 11px;
         }}
-        QFrame#phoneShareConnectionCard QToolButton {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 7px;
-            font-size: 11px;
+        QPushButton#phoneShareLinkButton {{
+            background-color: transparent;
+            border: none;
+            color: {theme.accent.css};
             font-weight: 600;
+            padding: 2px 4px;
+        }}
+        QPushButton#phoneShareLinkButton:hover {{
+            background-color: transparent;
+            color: {theme.accent_hover.css};
+        }}
+        QToolButton#sharePhoneIconButton {{
+            color: {theme.text_secondary.css};
             padding: 0px;
         }}
-        QFrame#phoneShareConnectionCard QToolButton:hover {{
+        QTableWidget#sharePhoneQueueTable {{
+            alternate-background-color: {theme.input_bg.css};
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 9px;
+            color: {theme.text_primary.css};
+            outline: none;
+            selection-background-color: transparent;
+            selection-color: {theme.text_primary.css};
+        }}
+        QTableWidget#sharePhoneQueueTable::item {{
+            border-bottom: 1px solid {theme.border_muted.css};
+            padding-left: 10px;
+            padding-right: 8px;
+        }}
+        QTableWidget#sharePhoneQueueTable::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QTableWidget#sharePhoneQueueTable QHeaderView::section {{
+            background-color: {theme.input_bg.css};
+            border: none;
+            border-bottom: 1px solid {theme.border_muted.css};
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 650;
+            padding: 7px 10px;
+        }}
+        QWidget#sharePhoneStatusCell {{
+            background-color: transparent;
+        }}
+        QLabel#sharePhoneStatusChip {{
+            background-color: {theme.raised_bg.css};
+            border-radius: 9px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 8px;
+        }}
+        QLabel#sharePhoneStatusChip[shareStatus="transferred"] {{
+            background-color: {theme.accent_soft.css};
+            color: {theme.accent.css};
+        }}
+        QLabel#sharePhoneStatusChip[shareStatus="posted"] {{
+            background-color: {theme.success_soft.css};
+            color: {theme.success.css};
+        }}
+        QLabel#sharePhoneStatusChip[shareStatus="failed"] {{
+            background-color: {theme.danger_soft.css};
+            color: {theme.danger.css};
+        }}
+        QLabel#sharePhoneStatusChip[shareStatus="archived"] {{
+            color: {theme.text_muted.css};
+        }}
+        QFrame#sharePhoneEmptyState {{
+            background-color: {theme.input_bg.css};
+            border: 1px dashed {theme.border.css};
+            border-radius: 9px;
+        }}
+        QLabel#sharePhoneEmptyIcon {{
+            color: {theme.text_muted.css};
+        }}
+        QLabel#sharePhoneEmptyTitle {{
+            color: {theme.text_primary.css};
+            font-size: 13px;
+            font-weight: 650;
+        }}
+        QPushButton#sharePhoneSecondaryButton,
+        QPushButton#sharePhoneGhostButton,
+        QPushButton#sharePhoneDangerButton {{
+            font-weight: 600;
+            min-height: 30px;
+            padding: 1px 14px;
+        }}
+        QPushButton#sharePhoneGhostButton,
+        QPushButton#sharePhoneDangerButton {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.text_secondary.css};
+        }}
+        QPushButton#sharePhoneDangerButton {{
+            color: {theme.danger.css};
+        }}
+        QPushButton#sharePhoneGhostButton:hover {{
             background-color: {theme.input_hover_bg.css};
-            border-color: {theme.accent.css};
+            color: {theme.text_primary.css};
+        }}
+        QPushButton#sharePhoneDangerButton:hover {{
+            background-color: {theme.danger_soft.css};
+        }}
+        QPushButton#sharePhoneGhostButton:disabled,
+        QPushButton#sharePhoneDangerButton:disabled {{
+            background-color: transparent;
+            color: {theme.text_disabled.css};
         }}
         QComboBox {{
             background-color: {theme.input_bg.css};
@@ -2039,7 +2216,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.panel_bg.css};
             color: {theme.text_primary.css};
         }}
-        QLabel#collectionDialogTitle {{
+        QLabel#collectionDialogTitle,
+        QLabel#sharePhoneTitle {{
             color: {theme.text_primary.css};
             font-size: 18px;
             font-weight: 700;
@@ -2053,28 +2231,35 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-weight: 600;
             padding: 4px 9px;
         }}
-        QLabel#collectionFieldLabel {{
+        QLabel#collectionFieldLabel,
+        QLabel#sharePhoneFieldLabel {{
             color: {theme.text_secondary.css};
             font-size: 11px;
             font-weight: 650;
         }}
         QLineEdit#collectionNameField,
-        QComboBox#collectionPurposeCombo {{
+        QComboBox#collectionPurposeCombo,
+        QLineEdit#sharePhoneField,
+        QComboBox#sharePhoneSizeCombo {{
             min-height: 30px;
         }}
-        QComboBox#collectionPurposeCombo {{
+        QComboBox#collectionPurposeCombo,
+        QComboBox#sharePhoneSizeCombo {{
             padding-right: 30px;
         }}
-        QComboBox#collectionPurposeCombo::drop-down {{
+        QComboBox#collectionPurposeCombo::drop-down,
+        QComboBox#sharePhoneSizeCombo::drop-down {{
             border: none;
             width: 28px;
         }}
-        QComboBox#collectionPurposeCombo::down-arrow {{
+        QComboBox#collectionPurposeCombo::down-arrow,
+        QComboBox#sharePhoneSizeCombo::down-arrow {{
             image: none;
             width: 0px;
             height: 0px;
         }}
-        QTextEdit#collectionDescriptionField {{
+        QTextEdit#collectionDescriptionField,
+        QTextEdit#sharePhoneCaptionField {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 7px;
@@ -2082,42 +2267,54 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             padding: 7px 9px;
             selection-background-color: {theme.selection_fill.css};
         }}
-        QTextEdit#collectionDescriptionField:hover {{
+        QTextEdit#collectionDescriptionField:hover,
+        QTextEdit#sharePhoneCaptionField:hover {{
             background-color: {theme.input_hover_bg.css};
         }}
-        QTextEdit#collectionDescriptionField:focus {{
+        QTextEdit#collectionDescriptionField:focus,
+        QTextEdit#sharePhoneCaptionField:focus {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.accent.css};
         }}
         QPushButton#collectionCancelButton,
         QPushButton#collectionPrimaryButton,
+        QPushButton#sharePhoneCancelButton,
         QPushButton#sharePhonePrimaryButton {{
             min-height: 30px;
             padding: 1px 14px;
             font-weight: 650;
         }}
-        QPushButton#collectionCancelButton {{
+        QPushButton#collectionCancelButton,
+        QPushButton#sharePhoneCancelButton,
+        QPushButton#sharePhonePrimaryButton[quiet="true"] {{
             background-color: transparent;
             border-color: {theme.border.css};
             color: {theme.text_secondary.css};
         }}
-        QPushButton#collectionCancelButton:hover {{
+        QPushButton#collectionCancelButton:hover,
+        QPushButton#sharePhoneCancelButton:hover,
+        QPushButton#sharePhonePrimaryButton[quiet="true"]:hover {{
             background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
             color: {theme.text_primary.css};
         }}
         QPushButton#collectionPrimaryButton,
-        QPushButton#sharePhonePrimaryButton {{
+        QPushButton#sharePhonePrimaryButton,
+        QPushButton#sharePhoneCancelButton[emphasis="true"] {{
             background-color: rgb(20, 115, 230);
             border-color: rgb(20, 115, 230);
             color: rgb(255, 255, 255);
         }}
         QPushButton#collectionPrimaryButton:hover,
-        QPushButton#sharePhonePrimaryButton:hover {{
+        QPushButton#sharePhonePrimaryButton:hover,
+        QPushButton#sharePhoneCancelButton[emphasis="true"]:hover {{
             background-color: rgb(43, 131, 235);
             border-color: rgb(43, 131, 235);
+            color: rgb(255, 255, 255);
         }}
         QPushButton#collectionPrimaryButton:pressed,
-        QPushButton#sharePhonePrimaryButton:pressed {{
+        QPushButton#sharePhonePrimaryButton:pressed,
+        QPushButton#sharePhoneCancelButton[emphasis="true"]:pressed {{
             background-color: rgb(13, 98, 202);
             border-color: rgb(13, 98, 202);
         }}
@@ -2126,6 +2323,11 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.raised_bg.css};
             border-color: {theme.border_muted.css};
             color: {theme.text_disabled.css};
+        }}
+        QPushButton#sharePhonePrimaryButton[quiet="true"]:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
         }}
         QLabel#secondaryText {{
             color: {theme.text_secondary.css};

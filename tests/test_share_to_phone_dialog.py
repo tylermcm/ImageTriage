@@ -9,7 +9,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from image_triage.image_resize import ResizeSourceItem
 from image_triage.share_phone import PhoneShareNetworkDiagnostic
@@ -44,9 +44,12 @@ class ShareToPhoneDialogTests(unittest.TestCase):
             self.assertEqual(dialog.prepare_button.text(), "Share")
             self.assertEqual(dialog.prepare_button.objectName(), "sharePhonePrimaryButton")
             self.assertTrue(dialog.prepare_button.isEnabled())
+            self.assertEqual(dialog.close_button.text(), "Close")
+            self.assertEqual(dialog.source_label.text(), f"From {Path(temp_dir).name}")
             dialog.show()
             self.app.processEvents()
-            self.assertEqual((dialog.width(), dialog.height()), (450, 550))
+            self.assertEqual((dialog.width(), dialog.height()), ShareToPhoneDialog.PREPARE_SIZE)
+            self.assertGreaterEqual(dialog.height(), dialog.minimumSizeHint().height())
             dialog.close()
 
     def test_spec_preserves_source_order_without_exposing_alt_text_editor(self) -> None:
@@ -75,15 +78,24 @@ class ShareToPhoneDialogTests(unittest.TestCase):
             )
 
             self.assertEqual(dialog.result_group.objectName(), "phoneShareConnectionCard")
-            self.assertEqual(dialog.status_label.text(), "Status: READY FOR CONNECTION")
+            self.assertEqual(dialog.status_label.text(), "Waiting for your phone")
+            self.assertEqual(dialog.status_pill.property("state"), "waiting")
             self.assertEqual(dialog.qr_label.width(), dialog.qr_label.height())
-            self.assertEqual(dialog.qr_label.width(), 180)
+            self.assertEqual(dialog.qr_label.width(), ShareToPhoneDialog.QR_SIZE)
             dialog.show()
             self.app.processEvents()
             dialog._show_result_mode()
             self.app.processEvents()
             self.assertLessEqual(dialog.width(), 500)
-            self.assertEqual(dialog.height(), 550)
+            self.assertGreaterEqual(dialog.height(), dialog.minimumSizeHint().height())
+            self.assertEqual(dialog.prepare_button.text(), "Share Another")
+            self.assertEqual(dialog.close_button.text(), "Done")
+            self.assertTrue(dialog.close_button.isDefault())
+            self.assertTrue(dialog.tabs.tabBar().isHidden())
+            dialog._reset_prepare_view()
+            self.app.processEvents()
+            self.assertEqual(dialog.close_button.text(), "Close")
+            self.assertTrue(dialog.prepare_button.isDefault())
             dialog.close()
 
     def test_private_network_status_does_not_repeat_as_a_warning(self) -> None:
@@ -98,9 +110,28 @@ class ShareToPhoneDialogTests(unittest.TestCase):
             finally:
                 share_dialog_module.phone_share_network_diagnostic = original_diagnostic
 
-            self.assertEqual(dialog.network_status.text(), "Local Network: Private Active")
+            self.assertEqual(dialog.network_status.text(), "Private network")
             self.assertTrue(dialog.network_warning.isHidden())
             self.assertTrue(dialog.network_buttons.isHidden())
+            self.assertEqual(dialog.network_panel.property("state"), "ok")
+            dialog.close()
+
+    def test_public_network_marks_panel_as_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dialog = ShareToPhoneDialog((), store=ShareQueueStore(Path(temp_dir) / "queue.sqlite3"))
+
+            diagnostic = PhoneShareNetworkDiagnostic(profile="public", private_rule_present=False)
+            original_diagnostic = share_dialog_module.phone_share_network_diagnostic
+            share_dialog_module.phone_share_network_diagnostic = lambda: diagnostic
+            try:
+                dialog._refresh_network_diagnostic()
+            finally:
+                share_dialog_module.phone_share_network_diagnostic = original_diagnostic
+
+            self.assertEqual(dialog.network_status.text(), "Public network")
+            self.assertFalse(dialog.network_warning.isHidden())
+            self.assertFalse(dialog.network_buttons.isHidden())
+            self.assertEqual(dialog.network_panel.property("state"), "warning")
             dialog.close()
 
     def test_queue_can_open_without_a_current_selection(self) -> None:
@@ -110,6 +141,30 @@ class ShareToPhoneDialogTests(unittest.TestCase):
             self.assertIs(dialog.tabs.currentWidget(), dialog.queue_tab)
             self.assertFalse(dialog.prepare_button.isEnabled())
             self.assertTrue(dialog.prepare_button.isHidden())
+            self.assertIs(dialog.queue_stack.currentWidget(), dialog.queue_empty)
+            dialog.close()
+
+    def test_queue_rows_show_status_chips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ShareQueueStore(Path(temp_dir) / "queue.sqlite3")
+            entry = store.create_ready(
+                name="Portfolio refresh",
+                target="Portfolio",
+                account="",
+                caption="",
+                preset_key="social_large",
+                source_paths=(str(Path(temp_dir) / "a.jpg"),),
+                output_paths=(),
+                alt_text=("",),
+                package_dir=str(Path(temp_dir) / "package"),
+            )
+            store.set_status(entry.id, "posted")
+            dialog = ShareToPhoneDialog((), store=store, show_queue=True)
+
+            self.assertIs(dialog.queue_stack.currentWidget(), dialog.queue_table)
+            chip = dialog.queue_table.cellWidget(0, 2).findChild(QLabel, "sharePhoneStatusChip")
+            self.assertEqual(chip.property("shareStatus"), "posted")
+            self.assertEqual(chip.text(), "✓ Posted")
             dialog.close()
 
 
