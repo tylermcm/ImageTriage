@@ -340,6 +340,7 @@ from .ui import (
     PeopleSearchDialog,
     PrepareTrainingSourcesDialog,
     ResizeDialog,
+    ShareToPhoneDialog,
     TasteCalibrationDialog,
     TrainRankerDialog,
     EvaluationSourceDialog,
@@ -736,7 +737,7 @@ def _path_parent_stem_key(path: str) -> str:
     return f"{parent}|{stem}" if parent and stem else ""
 
 
-# Beyond this the Projects section scrolls rather than growing, so it can
+# Beyond this the Collections section scrolls rather than growing, so it can
 # never crowd the folder tree out of the sidebar.
 _MAX_VISIBLE_PROJECT_ROWS = 6
 _PROJECT_ROW_PX = 34
@@ -2820,7 +2821,7 @@ class MainWindow(QMainWindow):
         "new_folder": "New Folder",
         "zen_mode": "Zen",
         "save_filter_preset": "Save Search",
-        "projects": "Projects",
+        "projects": "Collections",
         "catalog": "Catalog",
         "performance_logging": "Perf",
         "open_performance_logs": "Logs",
@@ -2861,7 +2862,7 @@ class MainWindow(QMainWindow):
         "Selection",
         "Files",
         "Workflow",
-        "Projects",
+        "Collections",
         "Catalog",
         "Utilities",
         "Layout",
@@ -2908,6 +2909,8 @@ class MainWindow(QMainWindow):
             "batch_rename",
             "batch_resize",
             "batch_convert",
+            "share_to_phone",
+            "share_queue",
             "handoff_builder",
             "send_to_editor",
             "best_of_set",
@@ -2959,6 +2962,8 @@ class MainWindow(QMainWindow):
             "batch_rename",
             "batch_resize",
             "batch_convert",
+            "share_to_phone",
+            "share_queue",
             "handoff_builder",
             "send_to_editor",
             "best_of_set",
@@ -3004,6 +3009,8 @@ class MainWindow(QMainWindow):
         "batch_rename": "Batch Rename",
         "batch_resize": "Batch Resize",
         "batch_convert": "Batch Convert",
+        "share_to_phone": "Share to Phone",
+        "share_queue": "Posting Queue",
         "handoff_builder": "Handoff",
         "send_to_editor": "Send To Editor",
         "best_of_set": "Best Of",
@@ -3048,7 +3055,7 @@ class MainWindow(QMainWindow):
         "new_folder": "New Folder",
         "zen_mode": "Zen Mode",
         "save_filter_preset": "Save Search",
-        "projects": "Projects",
+        "projects": "Collections",
         "catalog": "Catalog",
         "performance_logging": "Performance Logging",
         "open_performance_logs": "Performance Logs",
@@ -3072,6 +3079,8 @@ class MainWindow(QMainWindow):
         "batch_rename": ("E8AC", None),
         "batch_resize": ("E799", None),
         "batch_convert": ("EE71", None),
+        "share_to_phone": ("E72D", None),
+        "share_queue": ("E823", None),
         "handoff_builder": ("E7B8", None),
         "send_to_editor": ("E7AC", None),
         "best_of_set": ("E735", None),
@@ -3781,14 +3790,14 @@ class MainWindow(QMainWindow):
         face_groups_layout.addWidget(self.face_groups_search)
         face_groups_layout.addWidget(self.face_groups_panel)
 
-        # Projects are the library store's virtual collections, which until now
-        # only existed behind a menu. They sit beside Favorites because they are
-        # the same kind of thing: a way to navigate the library, not a command.
+        # Collections are saved, cross-folder sets of image-bundle references.
+        # They sit beside Favorites because they are a way to navigate the
+        # library, not a command or a duplicate copy of the source files.
         self.projects_add_button = self._build_left_rail_plus_button(
-            tooltip="New project from the current selection"
+            tooltip="New collection from the current selection"
         )
         self.projects_header = SectionHeader(
-            "Projects",
+            "Collections",
             icon=QIcon(sidebar_projects_icon_pixmap(21, sidebar_accent.name())),
             trailing=self.projects_add_button,
             collapsible=False,
@@ -4497,7 +4506,7 @@ class MainWindow(QMainWindow):
         return menu
 
     def _build_projects_toolbar_menu(self) -> QMenu:
-        menu = QMenu("Projects", self)
+        menu = QMenu("Collections", self)
         menu.addAction(self.actions.create_virtual_collection)
         menu.addAction(self.actions.add_selection_to_collection)
         menu.addAction(self.actions.remove_selection_from_collection)
@@ -4844,7 +4853,7 @@ class MainWindow(QMainWindow):
             "sort": ("Sort", self._build_sort_toolbar_menu),
             "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
             "ai_results": ("AI Results", self._build_ai_results_menu),
-            "projects": ("Projects", self._build_projects_toolbar_menu),
+            "projects": ("Collections", self._build_projects_toolbar_menu),
             "catalog": ("Catalog", self._build_catalog_toolbar_menu),
         }
 
@@ -6261,6 +6270,8 @@ class MainWindow(QMainWindow):
             "batch_rename": (self.actions.batch_rename_selection, "Rename"),
             "batch_resize": (self.actions.batch_resize_selection, "Resize"),
             "batch_convert": (self.actions.batch_convert_selection, "Convert"),
+            "share_to_phone": (self.actions.share_to_phone, "Phone Share"),
+            "share_queue": (self.actions.share_queue, "Post Queue"),
             "handoff_builder": (self.actions.handoff_builder, "Handoff"),
             "send_to_editor": (self.actions.send_to_editor_pipeline, "Editor"),
             "best_of_set": (self.actions.best_of_set_auto_assembly, "Best Of"),
@@ -6326,7 +6337,7 @@ class MainWindow(QMainWindow):
             "sort": ("Sort", self._build_sort_toolbar_menu),
             "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
             "ai_results": ("AI Results", self._build_ai_results_menu),
-            "projects": ("Projects", self._build_projects_toolbar_menu),
+            "projects": ("Collections", self._build_projects_toolbar_menu),
             "catalog": ("Catalog", self._build_catalog_toolbar_menu),
         }
         for item_id, (text, factory) in menu_factories.items():
@@ -7119,9 +7130,9 @@ class MainWindow(QMainWindow):
                 "reveal_in_explorer", "open_in_photoshop", "batch_rename", "batch_resize",
                 "batch_convert",
             },
-            "Projects": {"projects"},
+            "Collections": {"projects"},
             "Catalog": {"catalog"},
-            "Workflow": {"handoff_builder", "send_to_editor", "best_of_set"},
+            "Workflow": {"share_to_phone", "share_queue", "handoff_builder", "send_to_editor", "best_of_set"},
             "Utilities": {"command_palette", "keyboard_shortcuts", "undo"},
             "Layout": {"divider", "address"},
         }
@@ -8059,6 +8070,7 @@ class MainWindow(QMainWindow):
         register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
         register_action("ai.compare_group", self.actions.compare_ai_group, label="Compare Current AI Group", section="AI")
         register_action("workflow.handoff_builder", self.actions.handoff_builder, label="Deliver / Handoff Builder", section="Workflow")
+        register_action("workflow.share_to_phone", self.actions.share_to_phone, label="Share to Phone", section="Workflow")
         register_action("workflow.send_to_editor", self.actions.send_to_editor_pipeline, label="Send To Editor", section="Workflow")
         register_action("workflow.best_of", self.actions.best_of_set_auto_assembly, label="Best-of-Set Auto Assembly", section="Workflow")
         register_action("workflow.save_workspace", self.actions.save_workspace_preset, label="Save Current Workspace Preset", section="Workflow")
@@ -8152,6 +8164,9 @@ class MainWindow(QMainWindow):
             return
         self.workflow_recipe_menu.clear()
         self.workflow_recipe_menu.setTitle("Run Recipe")
+        self.workflow_recipe_menu.addAction(self.actions.share_to_phone)
+        self.workflow_recipe_menu.addAction(self.actions.share_queue)
+        self.workflow_recipe_menu.addSeparator()
         self.workflow_recipe_menu.addAction(self.actions.handoff_builder)
         self.workflow_recipe_menu.addAction(self.actions.send_to_editor_pipeline)
         self.workflow_recipe_menu.addSeparator()
@@ -8246,7 +8261,7 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.setParent(self.left_nav_body)
 
-        # Use explicit gaps so the Projects list can sit flush beneath its
+        # Use explicit gaps so the Collections list can sit flush beneath its
         # header without disturbing the established Face Groups spacing or the
         # separation between the two sections.
         layout.setSpacing(0)
@@ -8318,7 +8333,7 @@ class MainWindow(QMainWindow):
             # two-line, vertically-centred row left a conspicuous blank band
             # above the only visible text (and QListWidget elided the newline
             # anyway, so it still appeared as a single line).
-            empty = QListWidgetItem("No projects yet.")
+            empty = QListWidgetItem("No collections yet.")
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             empty.setSizeHint(QSize(0, _PROJECT_EMPTY_ROW_PX))
@@ -8356,7 +8371,7 @@ class MainWindow(QMainWindow):
         menu.addAction(self.actions.add_selection_to_collection)
         if collection_id:
             menu.addSeparator()
-            open_action = menu.addAction("Open project")
+            open_action = menu.addAction("Open collection")
             open_action.triggered.connect(
                 lambda _checked=False, target=collection_id: self._open_virtual_collection(target)
             )
@@ -8524,6 +8539,8 @@ class MainWindow(QMainWindow):
             add_action_command("tools.performance_logging", self.actions.performance_logging, section="Tools", subtitle=self._toggle_state_text(self._performance_logging_enabled), keywords=("diagnostics", "profiler", "performance log", "speed"))
             add_action_command("tools.open_performance_logs", self.actions.open_performance_log_folder, section="Tools", keywords=("diagnostics", "profiler", "logs", "performance"))
             add_action_command("workflow.handoff_builder", self.actions.handoff_builder, section="Workflow", keywords=("delivery", "handoff", "export workflow"))
+            add_action_command("workflow.share_to_phone", self.actions.share_to_phone, section="Workflow", keywords=("phone", "qr", "social", "share", "transfer"))
+            add_action_command("workflow.share_queue", self.actions.share_queue, section="Workflow", keywords=("posting queue", "social", "transferred", "posted"))
             add_action_command("workflow.send_to_editor", self.actions.send_to_editor_pipeline, section="Workflow", keywords=("retouch", "editor queue", "send to editor"))
             add_action_command("workflow.best_of", self.actions.best_of_set_auto_assembly, section="Workflow", keywords=("best of", "shortlist", "auto assembly"))
             add_action_command("workflow.keyboard_shortcuts", self.actions.keyboard_shortcuts, section="Workflow", keywords=("shortcuts", "keyboard mapping"))
@@ -14102,6 +14119,8 @@ class MainWindow(QMainWindow):
         self.actions.remove_catalog_folder.setEnabled(bool(catalog_roots))
         self.actions.refresh_catalog.setEnabled(bool(catalog_roots) and self._active_catalog_task is None)
         self.actions.rebuild_folder_catalog_cache.setEnabled(has_physical_folder and not self._scan_in_progress)
+        self.actions.share_to_phone.setEnabled(has_selection and not in_recycle_folder)
+        self.actions.share_queue.setEnabled(True)
         self.actions.handoff_builder.setEnabled(has_selection and has_physical_folder and not in_recycle_folder)
         self.actions.send_to_editor_pipeline.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.best_of_set_auto_assembly.setEnabled(bool(self._records) and (self._ai_bundle is not None or self._review_intelligence is not None))
@@ -14263,7 +14282,7 @@ class MainWindow(QMainWindow):
     ) -> VirtualCollection | None:
         collections = self._library_store.list_collections()
         if not collections:
-            self.statusBar().showMessage("Create a virtual collection first.")
+            self.statusBar().showMessage("Create a collection first.")
             return None
         labels: list[str] = []
         label_to_id: dict[str, str] = {}
@@ -14453,7 +14472,7 @@ class MainWindow(QMainWindow):
         confirmation = QMessageBox.question(
             self,
             "Delete Collection?",
-            f"Delete the virtual collection \"{collection.name}\"?\n\nThis does not delete any files.",
+            f"Delete the collection \"{collection.name}\"?\n\nThis does not delete any files.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -14569,6 +14588,19 @@ class MainWindow(QMainWindow):
             self._refresh_workflow_recipe_menu()
         result = dialog.result_data()
         self._run_workflow_recipe(result.recipe, destination_root=result.destination_root, records=records)
+
+    def _open_share_to_phone(self, _checked: bool = False) -> None:
+        records = self._selected_records_for_workflow()
+        sources = tuple(self._workflow_export_sources_for_records(records))
+        if not sources:
+            self.statusBar().showMessage("Select one or more exportable images before sharing to a phone.")
+            return
+        dialog = ShareToPhoneDialog(sources, parent=self)
+        self._exec_dialog_with_geometry(dialog, "share_to_phone")
+
+    def _open_share_queue(self, _checked: bool = False) -> None:
+        dialog = ShareToPhoneDialog((), show_queue=True, parent=self)
+        self._exec_dialog_with_geometry(dialog, "share_to_phone")
 
     def _open_send_to_editor_pipeline(self) -> None:
         recipe = next((item for item in built_in_workflow_recipes() if item.key == "send_to_editor"), None)
@@ -24101,7 +24133,7 @@ class MainWindow(QMainWindow):
 
                 - Right-click folders or favorites to create, rename, move, delete, or favorite them
                 - Recent destinations appear in the copy and move menus for faster sorting
-                - The Library panel's bottom **Help** button explains favorites, virtual collections, and catalog search
+                - The Library panel's bottom **Help** button explains favorites, collections, and catalog search
                 - Workflow dialogs include their own **`?`** help for recipes, content mode, transfer mode, and saved recipes
                 - Settings includes a **Settings Guide** button for General, Interface, folders, AI Culling, Duplicates, and Shortcuts
                 - **AI Review** lets you inspect results, apply clear decisions, or load saved results for the current folder

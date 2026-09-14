@@ -179,7 +179,7 @@ def library_help_pages() -> tuple[HelpPage, ...]:
 
             - Favorites
             - Folder browsing
-            - Projects, which are saved virtual collections
+            - Collections, which are saved cross-folder image sets
             - Catalog tools
 
             The Library does not replace normal folder browsing. It simply makes it easier to reopen important folders and build image sets across different locations.
@@ -194,7 +194,7 @@ def library_help_pages() -> tuple[HelpPage, ...]:
 
             Use favorites for folders such as:
 
-            - Current projects
+            - Current shoots
             - Client folders
             - Import folders
             - Export folders
@@ -202,11 +202,11 @@ def library_help_pages() -> tuple[HelpPage, ...]:
             """,
         ),
         HelpPage(
-            "Virtual Collections",
+            "Collections",
             """
-            # Virtual collections
+            # Collections
 
-            Virtual collections are saved groups of image references. They let you gather images together without moving or copying the original files.
+            Collections are saved groups of image references. They let you gather images together without moving or copying the original files.
 
             Use collections for sets such as:
 
@@ -276,7 +276,7 @@ def catalog_help_pages() -> tuple[HelpPage, ...]:
             - Find images across multiple folders
             - Search old shoots
             - Build a collection from past work
-            - Reopen a known project without browsing to it manually
+            - Reopen a known collection without browsing to each source folder manually
             - Quickly inspect cached folder information
 
             For active editing inside a single folder, normal folder browsing is usually the better choice.

@@ -26,7 +26,7 @@ ARTICLES = [
 
         - [Favorites](doc:favorites) — shortcuts to folders you use often.
         - Folder browsing — move through your drives and directories.
-        - **Projects** — the sidebar name for [virtual collections](doc:collections), saved image sets that can span folders.
+        - **Collections** — saved image sets that can span folders without moving or copying the originals.
         - [The global catalog](doc:catalog) — a searchable index of chosen folders.
 
         The Library does not replace normal folder browsing. It simply makes it easier to reopen important folders and assemble image sets across different locations.
@@ -45,7 +45,7 @@ ARTICLES = [
 
         Good candidates for favorites:
 
-        - Current projects
+        - Current shoots
         - Client folders
         - Import folders
         - Export folders
@@ -56,18 +56,18 @@ ARTICLES = [
     ),
     DocArticle(
         id="collections",
-        title="Virtual collections",
+        title="Collections",
         category="library",
         summary="Saved groups of image references that span folders.",
         keywords=("collection", "collections", "virtual", "set", "playlist", "group"),
         markdown="""
-        # Virtual collections
+        # Collections
 
-        A virtual collection is a named group of image references. Collections let you gather images together **without moving or copying** the original files.
+        A collection is a named group of image references. Collections let you gather images together **without moving or copying** the original files.
 
         Think of a collection as a playlist for images: it points to files, but it does not contain them.
 
-        Collections appear under **Projects** in the Library panel. Create and manage them from **`Library > Collections`**.
+        Collections appear in the Library panel's **Collections** section. Create and manage them from **`Library > Collections`**.
 
         ## Good uses
 
@@ -108,7 +108,7 @@ ARTICLES = [
 
         - Finding older work across many folders
         - Rebuilding a collection from past shoots
-        - Reopening a known project without browsing to it manually
+        - Reopening a known collection without browsing to each source folder manually
 
         > **Note:** AI caches are still stored per folder. The catalog helps with search and navigation — it does not change how folder-local AI processing works. See [Where AI files live](doc:where-files-live).
         """,

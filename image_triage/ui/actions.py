@@ -114,6 +114,8 @@ class MainWindowActions:
     remove_catalog_folder: QAction
     refresh_catalog: QAction
     rebuild_folder_catalog_cache: QAction
+    share_to_phone: QAction
+    share_queue: QAction
     handoff_builder: QAction
     send_to_editor_pipeline: QAction
     best_of_set_auto_assembly: QAction
@@ -526,6 +528,17 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Rebuild Open Folder Cache",
             slot=window._rebuild_current_folder_catalog_cache,
+        ),
+        share_to_phone=_create_action(
+            window,
+            "Share to Phone...",
+            slot=window._open_share_to_phone,
+            shortcut="Ctrl+Alt+P",
+        ),
+        share_queue=_create_action(
+            window,
+            "Posting Queue...",
+            slot=window._open_share_queue,
         ),
         handoff_builder=_create_action(
             window,

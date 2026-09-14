@@ -12,6 +12,34 @@ CATEGORY = DocCategory(
 
 ARTICLES = [
     DocArticle(
+        id="share-to-phone",
+        title="Share to Phone",
+        category="export",
+        summary="Prepare a private package and transfer it to a phone over the local network.",
+        keywords=("share", "phone", "qr", "social", "caption", "alt text", "posting queue"),
+        markdown="""
+        # Share to Phone
+
+        **Share to Phone** prepares social-ready JPEG copies and makes them available to a phone on the same local network. Image Triage does not upload the package to a cloud service or connect to a social account.
+
+        1. Select one or more images.
+        2. Open **Workflow > Share to Phone**.
+        3. Choose a package name, destination label, size, caption, and optional alt text.
+        4. Select **Prepare & Share**, then scan the QR code from the phone.
+        5. Download the complete package or individual images and copy the caption.
+
+        Prepared copies preserve the original framing, remove embedded metadata, and never modify the source files. The local link expires after 30 minutes or when the Share to Phone window closes.
+
+        If the phone times out while **Open on This PC** works, Windows is blocking the local-network connection. For a trusted home network, set the Windows network profile to **Private**, then use **Allow on Private Networks**. Image Triage's firewall rule is limited to TCP port 45873 and devices on the local subnet; it does not open sharing on Public networks.
+
+        ## Posting queue
+
+        The posting queue records packages as **Ready**, **Transferred**, or **Posted**. A download can be detected automatically. Because no social account is connected, **Posted** is always a manual confirmation.
+
+        Use **Share Again** to rebuild a package from its original sources. Deleting a queue entry removes its prepared copies but never removes the originals.
+        """,
+    ),
+    DocArticle(
         id="recipes",
         title="Workflow recipes",
         category="export",

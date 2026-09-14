@@ -59,7 +59,7 @@ ARTICLES = [
 
         ## The Library panel
 
-        The Library panel helps you navigate and reopen folders, manage favorites, and build virtual collections across locations. See [The Library panel](doc:library-overview).
+        The Library panel helps you navigate and reopen folders, manage favorites, and build collections across locations. See [The Library panel](doc:library-overview).
 
         ## The menu bar
 
