@@ -70,6 +70,16 @@ class GridInteractionTests(unittest.TestCase):
         ]
         self.grid.set_items(self.records, request_thumbnails=False)
 
+    def test_bottom_overlay_extends_scroll_range_so_last_row_clears_it(self) -> None:
+        scrollbar = self.grid.verticalScrollBar()
+        baseline = scrollbar.maximum()
+
+        self.grid.set_bottom_overlay(80, 200)
+
+        self.assertEqual(scrollbar.maximum(), baseline + 80)
+        self.grid.set_bottom_overlay(0, 0)
+        self.assertEqual(scrollbar.maximum(), baseline)
+
     def test_empty_space_requests_the_background_context_menu(self) -> None:
         empty_grid = ThumbnailGridView(ThumbnailManager())
         requested = []

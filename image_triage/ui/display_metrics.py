@@ -40,10 +40,6 @@ class DisplayProfile:
     topbar_zoom_width: int
     topbar_path_min_width: int
     topbar_path_max_width: int
-    left_rail_width: int
-    left_rail_button_size: int
-    left_rail_icon_size: int
-    left_rail_add_icon_size: int
     inspector_label_width: int
     inspector_section_header_height: int
     inspector_header_button_width: int
@@ -110,10 +106,6 @@ def _profile(name: str, scale: float) -> DisplayProfile:
         topbar_zoom_width=_scaled(118, scale, minimum=104),
         topbar_path_min_width=_scaled(220, scale, minimum=184),
         topbar_path_max_width=_scaled(460, scale, minimum=390),
-        left_rail_width=_scaled(42, scale, minimum=40),
-        left_rail_button_size=_scaled(30, scale, minimum=28),
-        left_rail_icon_size=_scaled(20, scale, minimum=18),
-        left_rail_add_icon_size=_scaled(22, scale, minimum=20),
         inspector_label_width=_scaled(96, scale, minimum=86),
         inspector_section_header_height=_scaled(21, scale, minimum=20),
         inspector_header_button_width=_scaled(24, scale, minimum=22),

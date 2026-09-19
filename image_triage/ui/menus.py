@@ -99,6 +99,9 @@ def build_main_menu_bar(
     appearance_menu = view_menu.addMenu("Appearance")
     for mode in appearance_profile_modes():
         appearance_menu.addAction(actions.appearance_actions[mode])
+    appearance_menu.addSeparator()
+    for placement in ("floating", "docked"):
+        appearance_menu.addAction(actions.toolbar_placement_actions[placement])
 
     layout_menu = view_menu.addMenu("Layout")
     columns_menu = layout_menu.addMenu("Columns")
@@ -138,10 +141,6 @@ def build_main_menu_bar(
     review_view_menu.addAction(actions.burst_stacks)
     review_view_menu.addAction(actions.compare_mode)
     review_view_menu.addAction(actions.auto_advance)
-
-    mode_menu = view_menu.addMenu("Mode")
-    mode_menu.addAction(actions.manual_mode)
-    mode_menu.addAction(actions.ai_mode)
 
     view_menu.addSeparator()
     view_menu.addAction(actions.open_ui_prototype)

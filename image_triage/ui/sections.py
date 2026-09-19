@@ -122,8 +122,10 @@ class SectionHeader(QWidget):
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         # The trailing control keeps its own clicks (e.g. "new collection").
-        if self._trailing is not None and self._trailing.geometry().contains(
-            event.position().toPoint()
+        if (
+            self._trailing is not None
+            and self._trailing.isVisible()
+            and self._trailing.geometry().contains(event.position().toPoint())
         ):
             super().mousePressEvent(event)
             return

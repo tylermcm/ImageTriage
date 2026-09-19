@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from image_triage.ui.theme import (
     WORKSPACE_METRICS,
+    AppearanceMode,
     appearance_profile_modes,
     build_app_stylesheet,
     contrast_ratio,
@@ -24,8 +25,25 @@ def test_library_sidebar_uses_the_application_font_stack() -> None:
     assert 'font-family: "Segoe UI", "Segoe UI Variable Text";' in stylesheet
 
 
-def test_graphite_is_the_default_application_palette() -> None:
-    assert default_theme().name == "graphite"
+def test_indigo_is_the_default_application_palette() -> None:
+    assert default_theme().name == "indigo"
+    assert appearance_profile_modes()[0] == AppearanceMode.INDIGO
+
+
+def test_only_backdrop_themes_turn_the_window_chrome_translucent() -> None:
+    app = QApplication.instance() or QApplication([])
+    indigo = build_app_stylesheet(resolve_theme(AppearanceMode.INDIGO, app))
+    graphite = build_app_stylesheet(resolve_theme(AppearanceMode.GRAPHITE, app))
+
+    assert "QMainWindow, QWidget#centralContainer" in indigo
+    assert "QMainWindow, QWidget#centralContainer" not in graphite
+
+
+def test_toolbar_strip_has_docked_and_floating_surfaces() -> None:
+    stylesheet = build_app_stylesheet(default_theme())
+
+    assert 'QFrame#appTopBar[toolbarPlacement="docked"]' in stylesheet
+    assert 'QFrame#appTopBar[toolbarPlacement="floating"]' in stylesheet
 
 
 def test_workspace_metrics_expose_the_supported_spacing_and_radius_scale() -> None:
@@ -69,8 +87,9 @@ def test_sidebar_navigation_selection_uses_theme_tokens() -> None:
     theme = default_theme()
     stylesheet = build_app_stylesheet(theme)
 
-    assert "QTabBar#leftModeTabs::tab:selected" in stylesheet
-    assert f"border-bottom: 3px solid {theme.selection_outline.css};" in stylesheet
+    rail_rule = stylesheet.split("QToolButton#leftNavButton:checked", 1)[1].split("}", 1)[0]
+    assert f"background-color: {theme.selection_fill.css};" in rail_rule
+    assert f"color: {theme.accent.css};" in rail_rule
     assert "QTreeView#folderTree::item:selected" in stylesheet
     assert "QListWidget#faceGroupsList::item:selected" in stylesheet
     assert "QListWidget#projectsList::item:selected" in stylesheet

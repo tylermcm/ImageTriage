@@ -474,10 +474,15 @@ class PhotoDetailsView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.table, 1)
+        self._root_layout = layout
         layout.addWidget(self.status_label)
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.set_row_density(self._row_density)
         self._refresh_status()
+
+    def set_bottom_overlay_reserve(self, reserve: int) -> None:
+        margins = self._root_layout.contentsMargins()
+        self._root_layout.setContentsMargins(margins.left(), margins.top(), margins.right(), max(0, int(reserve)))
 
     def set_records(self, records: list[ImageRecord]) -> None:
         self._model.set_records(records)
