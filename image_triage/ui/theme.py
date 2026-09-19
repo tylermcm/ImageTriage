@@ -13,6 +13,7 @@ CHECKBOX_CHECK_ASSET = (Path(__file__).resolve().parent / "assets" / "checkbox_c
 
 
 class AppearanceMode(str, Enum):
+    INDIGO = "indigo"
     DARK = "dark"
     MIDNIGHT = "midnight"
     GRAPHITE = "graphite"
@@ -89,6 +90,55 @@ class ThemePalette:
     image_bg: ColorToken
     badge_bg: ColorToken
     badge_text: ColorToken
+    # Optional window backdrop: two soft glows (top-left, bottom-right) painted
+    # behind see-through chrome. Themes without them paint window_bg flat.
+    backdrop_glow_primary: ColorToken | None = None
+    backdrop_glow_secondary: ColorToken | None = None
+    # Drive capacity meters run from start to end; themes without them use
+    # the accent throughout.
+    meter_start: ColorToken | None = None
+    meter_end: ColorToken | None = None
+
+
+def _indigo_theme() -> ThemePalette:
+    return ThemePalette(
+        name="indigo",
+        is_dark=True,
+        # Near-black navy under a violet glow (top left) and a teal glow
+        # (bottom right); chrome surfaces are faint white washes over it.
+        window_bg=ColorToken(9, 10, 15),
+        chrome_bg=ColorToken(15, 16, 22),
+        toolbar_bg=ColorToken(16, 17, 23),
+        panel_bg=ColorToken(21, 22, 30),
+        panel_alt_bg=ColorToken(18, 19, 26),
+        raised_bg=ColorToken(30, 31, 42),
+        input_bg=ColorToken(15, 16, 22),
+        input_hover_bg=ColorToken(34, 35, 48),
+        border=ColorToken(38, 40, 52),
+        border_muted=ColorToken(28, 30, 40),
+        text_primary=ColorToken(236, 238, 244),
+        text_secondary=ColorToken(190, 194, 206),
+        text_muted=ColorToken(141, 147, 163),
+        text_disabled=ColorToken(85, 91, 106),
+        accent=ColorToken(139, 123, 255),
+        accent_hover=ColorToken(164, 152, 255),
+        accent_soft=ColorToken(139, 123, 255, 46),
+        selection_fill=ColorToken(139, 123, 255, 46),
+        selection_outline=ColorToken(160, 148, 255),
+        success=ColorToken(255, 107, 154),
+        success_soft=ColorToken(92, 34, 56, 222),
+        warning=ColorToken(230, 180, 80),
+        warning_soft=ColorToken(88, 68, 24, 222),
+        danger=ColorToken(255, 107, 94),
+        danger_soft=ColorToken(96, 34, 38, 222),
+        image_bg=ColorToken(11, 12, 18),
+        badge_bg=ColorToken(12, 13, 20, 224),
+        badge_text=ColorToken(244, 246, 250),
+        backdrop_glow_primary=ColorToken(29, 26, 58),
+        backdrop_glow_secondary=ColorToken(15, 42, 51),
+        meter_start=ColorToken(108, 92, 255),
+        meter_end=ColorToken(79, 209, 197),
+    )
 
 
 def _dark_theme() -> ThemePalette:
@@ -352,6 +402,7 @@ def parse_appearance_mode(raw: str | AppearanceMode | None) -> AppearanceMode:
 
 def appearance_profile_modes(*, include_auto: bool = True) -> tuple[AppearanceMode, ...]:
     modes = (
+        AppearanceMode.INDIGO,
         AppearanceMode.DARK,
         AppearanceMode.MIDNIGHT,
         AppearanceMode.GRAPHITE,
@@ -367,6 +418,7 @@ def appearance_profile_modes(*, include_auto: bool = True) -> tuple[AppearanceMo
 
 def appearance_mode_label(mode: AppearanceMode) -> str:
     labels = {
+        AppearanceMode.INDIGO: "Indigo",
         AppearanceMode.DARK: "Dark",
         AppearanceMode.MIDNIGHT: "Midnight",
         AppearanceMode.GRAPHITE: "Graphite",
@@ -393,6 +445,8 @@ def _system_prefers_dark(app: QApplication) -> bool:
 
 
 def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
+    if mode == AppearanceMode.INDIGO:
+        return _indigo_theme()
     if mode == AppearanceMode.DARK:
         return _dark_theme()
     if mode == AppearanceMode.MIDNIGHT:
@@ -411,7 +465,7 @@ def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
 
 
 def default_theme() -> ThemePalette:
-    return _graphite_theme()
+    return _indigo_theme()
 
 
 def contrast_ratio(foreground: ColorToken, background: ColorToken) -> float:
@@ -1195,32 +1249,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             image: none;
             width: 0px;
         }}
-        QTabBar#leftModeTabs {{
-            qproperty-drawBase: 0;
-            background-color: transparent;
-            border-top: 1px solid {theme.border_muted.css};
-            border-bottom: 1px solid {theme.border_muted.css};
-            qproperty-iconSize: 20px 20px;
-        }}
-        QTabBar#leftModeTabs::tab {{
-            background-color: transparent;
-            border: none;
-            border-bottom: 3px solid transparent;
-            color: {theme.text_muted.css};
-            min-height: 21px;
-            padding: 9px 10px;
-            margin: 0px;
-            font-size: 14px;
-            font-weight: 550;
-        }}
-        QTabBar#leftModeTabs::tab:selected {{
-            color: {theme.text_primary.css};
-            border-bottom: 3px solid {theme.selection_outline.css};
-            font-weight: 700;
-        }}
-        QTabBar#leftModeTabs::tab:hover:!selected {{
-            color: {theme.text_secondary.css};
-        }}
         QWidget#libraryWorkspacePanel {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -1260,11 +1288,35 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-family: "Segoe UI", "Segoe UI Variable Text";
             letter-spacing: 0px;
         }}
-        QWidget#generatedLeftTaskRail {{
+        QWidget#leftNavRail {{
             background-color: {theme.chrome_bg.css};
             border-right: 1px solid {theme.border_muted.css};
             border-top-left-radius: 8px;
             border-bottom-left-radius: 8px;
+        }}
+        QToolButton#leftNavButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 10px;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 7px 2px 6px 2px;
+        }}
+        QToolButton#leftNavButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_secondary.css};
+        }}
+        QToolButton#leftNavButton:checked {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.accent.css};
+        }}
+        QToolButton#leftNavButton:focus {{
+            border: 1px solid {theme.selection_outline.css};
+        }}
+        QStackedWidget#leftNavPages {{
+            background-color: transparent;
+            border: none;
         }}
         QToolButton#generatedLeftRailButton {{
             background-color: transparent;
@@ -1381,17 +1433,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.raised_bg.css};
             border-color: {theme.text_muted.css};
         }}
-        QWidget#reviewControlsPane {{
-            background-color: {theme.input_bg.css};
-            border: none;
-        }}
-        QSplitter#leftBodySplitter::handle:vertical {{
-            background-color: {theme.border.css};
-            margin: 0px;
-        }}
-        QSplitter#leftBodySplitter::handle:vertical:hover {{
-            background-color: {theme.text_muted.css};
-        }}
         QFrame#leftSettingsBar {{
             background-color: transparent;
             border: none;
@@ -1414,31 +1455,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#leftSettingsBarButton:focus {{
             border-color: {theme.selection_outline.css};
-        }}
-        QLabel#leftPreviewTitle {{
-            color: {theme.text_primary.css};
-            font-size: 12px;
-            font-weight: 750;
-        }}
-        QToolButton#leftAiActivityTextButton {{
-            background-color: transparent;
-            border: none;
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 650;
-            min-height: 18px;
-            padding: 0px;
-            text-align: left;
-        }}
-        QToolButton#leftAiActivityTextButton:hover {{
-            color: {theme.text_primary.css};
-            background-color: transparent;
-            border: none;
-        }}
-        QToolButton#leftAiActivityTextButton:checked {{
-            color: {theme.text_primary.css};
-            background-color: transparent;
-            border: none;
         }}
         QWidget#inspectorBody,
         QScrollArea#inspectorScrollArea > QWidget > QWidget,
@@ -2624,5 +2640,281 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QSplitter::handle:hover {{
             background-color: {theme.accent_soft.css};
+        }}
+    """ + _app_bar_rules(theme) + _flat_shell_rules(theme) + _inspector_rules(theme) + _toolbar_placement_rules(theme) + _backdrop_rules(theme)
+
+
+def _inspector_rules(theme: ThemePalette) -> str:
+    """Inspector sections as plain titled blocks divided by hairlines, with the
+    AI analysis invitation as the one tinted card."""
+    glow = theme.backdrop_glow_secondary.qcolor().lighter(300) if theme.backdrop_glow_secondary else theme.accent.qcolor()
+    glow_css = f"rgba({glow.red()}, {glow.green()}, {glow.blue()}, 20)"
+    return f"""
+        QWidget#inspectorPreviewCard {{
+            background-color: transparent;
+            border: none;
+            border-radius: 0px;
+        }}
+        QLabel#inspectorPreviewImage {{
+            background-color: {theme.image_bg.css};
+            border-radius: 8px;
+        }}
+        QLabel#inspectorPreviewName {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+        }}
+        QLabel#inspectorPreviewPosition {{
+            color: {theme.text_muted.css};
+            font-size: 12px;
+        }}
+        QToolButton#inspectorNavButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 5px;
+            color: {theme.text_muted.css};
+            font-size: 15px;
+        }}
+        QToolButton#inspectorNavButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#inspectorNavButton:disabled {{
+            color: {theme.text_disabled.css};
+        }}
+        QScrollArea#inspectorScrollArea QWidget#inspectorSection {{
+            border-bottom: none;
+        }}
+        QWidget#inspectorSectionHeader {{
+            background-color: transparent;
+            border-top: 1px solid {theme.border_muted.css};
+        }}
+        QWidget#inspectorSectionHeader:hover {{
+            background-color: {theme.text_primary.with_alpha(8).css};
+        }}
+        QLabel#inspectorSectionTitle, QWidget#inspectorSectionHeader:hover QLabel#inspectorSectionTitle {{
+            color: {theme.text_primary.css};
+            font-size: 13px;
+            font-weight: 600;
+        }}
+        QLabel#inspectorSectionAside {{
+            color: {theme.text_muted.css};
+            font-size: 12px;
+        }}
+        QLabel#inspectorKey {{
+            font-size: 12px;
+        }}
+        QFrame#inspectorAiPlaceholder {{
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {theme.accent.with_alpha(51).css}, stop:1 {glow_css});
+            border: 1px solid {theme.accent.with_alpha(64).css};
+            border-radius: 8px;
+        }}
+        QFrame#inspectorAiPlaceholder QLabel#inspectorHint {{
+            color: {theme.text_secondary.css};
+            font-size: 12px;
+            padding: 0px;
+        }}
+        QLabel#inspectorAiChip {{
+            background-color: {theme.text_primary.with_alpha(18).css};
+            border-radius: 9px;
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            padding: 2px 8px;
+        }}
+        QPushButton#inspectorAnalyzeButton {{
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {theme.accent.css}, stop:1 {theme.accent_hover.css});
+            border: none;
+            border-radius: 7px;
+            color: #ffffff;
+            font-weight: 600;
+            min-height: 28px;
+            padding: 0px 14px;
+        }}
+        QPushButton#inspectorAnalyzeButton:hover {{
+            background-color: {theme.accent_hover.css};
+        }}
+    """
+
+
+def _flat_shell_rules(theme: ThemePalette) -> str:
+    """One continuous window: the library, grid and inspector run edge to edge
+    and are separated by hairlines instead of floating as rounded cards."""
+    return f"""
+        QWidget#appTopBar {{
+            border-bottom: 1px solid {theme.border_muted.css};
+        }}
+        QWidget#libraryWorkspacePanel {{
+            border: none;
+            border-right: 1px solid {theme.border_muted.css};
+            border-radius: 0px;
+        }}
+        QWidget#inspectorWorkspacePanel {{
+            background-color: {theme.panel_bg.css};
+            border: none;
+            border-left: 1px solid {theme.border_muted.css};
+            border-radius: 0px;
+        }}
+        QWidget#leftNavRail {{
+            border-radius: 0px;
+        }}
+        QFrame#leftSettingsBar {{
+            border-bottom-right-radius: 0px;
+        }}
+        QSplitter#workspaceSplitter::handle {{
+            background-color: transparent;
+        }}
+        QTreeView#driveList, QTreeView#folderTree {{
+            background-color: transparent;
+            border: none;
+        }}
+        QFrame#leftSettingsBar {{
+            background-color: {theme.text_primary.with_alpha(8).css};
+            border-top: 1px solid {theme.border_muted.css};
+        }}
+        QWidget#inspectorBody, QWidget#inspectorDetailsBody, QScrollArea#inspectorScrollArea,
+        QScrollArea#inspectorScrollArea > QWidget > QWidget {{
+            background-color: transparent;
+        }}
+        QFrame#leftRailDivider {{
+            background-color: {theme.border.css};
+            border: none;
+        }}
+        QLabel#leftRailSectionLabel {{
+            color: {theme.text_disabled.css};
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }}
+        QToolButton#leftRailToolButton, QToolButton#leftRailAddButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 8px;
+        }}
+        QToolButton#leftRailToolButton:hover, QToolButton#leftRailAddButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+    """
+
+
+def _app_bar_rules(theme: ThemePalette) -> str:
+    """Menu button, breadcrumb trail, search box and settings in the app bar."""
+    return f"""
+        QToolButton#appMenuButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 6px;
+            color: {theme.text_primary.css};
+            font-size: 13px;
+            padding: 4px 8px;
+        }}
+        QToolButton#appMenuButton:hover, QToolButton#appSettingsButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QToolButton#appSettingsButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 6px;
+        }}
+        QToolButton#breadcrumbSegment, QToolButton#breadcrumbCurrent {{
+            background-color: transparent;
+            border: none;
+            border-radius: 5px;
+            color: {theme.text_muted.css};
+            font-size: 13px;
+            padding: 3px 4px;
+        }}
+        QToolButton#breadcrumbCurrent, QLabel#breadcrumbCurrentLabel {{
+            color: {theme.text_primary.css};
+            font-weight: 600;
+        }}
+        QLabel#breadcrumbCurrentLabel {{
+            font-size: 13px;
+            padding: 3px 4px;
+        }}
+        QToolButton#breadcrumbSegment:hover, QToolButton#breadcrumbCurrent:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#breadcrumbSegment::menu-indicator {{
+            image: none;
+            width: 0px;
+        }}
+        QLabel#breadcrumbChevron {{
+            color: {theme.text_muted.css};
+            font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+            font-size: 8px;
+        }}
+        QFrame#appSearchBox {{
+            background-color: {theme.text_primary.with_alpha(15).css};
+            border: 1px solid transparent;
+            border-radius: 8px;
+            min-height: 30px;
+            max-height: 30px;
+        }}
+        QFrame#appSearchBox QLineEdit#workspaceSearchField {{
+            background-color: transparent;
+            border: none;
+            padding: 0px;
+            color: {theme.text_primary.css};
+        }}
+        QLabel#appSearchGlyph {{
+            color: {theme.text_muted.css};
+            font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+            font-size: 13px;
+        }}
+        QToolButton#appSearchKeyHint {{
+            background-color: transparent;
+            border: 1px solid {theme.border.css};
+            border-radius: 4px;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+            padding: 0px 6px;
+        }}
+        QToolButton#appSearchKeyHint:hover {{
+            color: {theme.text_primary.css};
+            border-color: {theme.text_muted.css};
+        }}
+    """
+
+
+def _toolbar_placement_rules(theme: ThemePalette) -> str:
+    """The customizable toolbar strip reuses the #appTopBar button rules and
+    only differs in its own surface: a flat row above the grid when docked,
+    a rounded dock floating over the grid's bottom edge otherwise."""
+    return f"""
+        QFrame#appTopBar[toolbarPlacement="docked"] {{
+            background-color: transparent;
+            border: none;
+            border-bottom: 1px solid {theme.border_muted.css};
+            border-radius: 0px;
+        }}
+        QFrame#appTopBar[toolbarPlacement="floating"] {{
+            background-color: {theme.panel_bg.with_alpha(214).css};
+            border: 1px solid {theme.text_primary.with_alpha(26).css};
+            border-radius: 12px;
+        }}
+        QFrame#toolbarStripDivider {{
+            background-color: {theme.border.css};
+            border: none;
+        }}
+    """
+
+
+def _backdrop_rules(theme: ThemePalette) -> str:
+    """Themes with a painted backdrop turn the window's own chrome into faint
+    white washes so the glows show through; popups and dialogs keep their
+    opaque surfaces."""
+    if theme.backdrop_glow_primary is None:
+        return ""
+    wash = theme.text_primary.with_alpha(8).css
+    panel_wash = theme.text_primary.with_alpha(11).css
+    return f"""
+        QMainWindow, QWidget#centralContainer {{
+            background-color: transparent;
+        }}
+        QMenuBar, QStatusBar, QWidget#appTopBar, QWidget#leftNavRail {{
+            background-color: {wash};
+        }}
+        QWidget#libraryWorkspacePanel, QWidget#inspectorWorkspacePanel {{
+            background-color: {panel_wash};
         }}
     """

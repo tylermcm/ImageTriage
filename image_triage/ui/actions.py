@@ -70,8 +70,6 @@ class MainWindowActions:
     details_next_kept: QAction
     details_next_rejected: QAction
     zen_mode: QAction
-    manual_mode: QAction
-    ai_mode: QAction
     install_ai_runtime: QAction
     download_ai_model: QAction
     repair_ai: QAction
@@ -139,11 +137,11 @@ class MainWindowActions:
     check_for_updates: QAction
     about: QAction
     appearance_actions: dict[AppearanceMode, QAction] = field(default_factory=dict)
+    toolbar_placement_actions: dict[str, QAction] = field(default_factory=dict)
     sort_actions: dict[SortMode, QAction] = field(default_factory=dict)
     filter_actions: dict[FilterMode, QAction] = field(default_factory=dict)
     ai_state_actions: dict[AIStateFilter, QAction] = field(default_factory=dict)
     column_actions: dict[int, QAction] = field(default_factory=dict)
-    mode_actions: dict[str, QAction] = field(default_factory=dict)
 
 
 def format_action_tooltip(text: str, shortcut: str | QKeySequence | None = None) -> str:
@@ -343,8 +341,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             checkable=True,
             shortcut="F11",
         ),
-        manual_mode=_create_action(window, "Manual Review", slot=lambda _checked=False: window._set_ui_mode("manual"), checkable=True),
-        ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
         install_ai_runtime=_create_action(
             window,
             "Set Up AI...",
@@ -627,11 +623,17 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         appearance_group.addAction(action)
         actions.appearance_actions[mode] = action
 
-    mode_group = QActionGroup(window)
-    mode_group.setExclusive(True)
-    mode_group.addAction(actions.manual_mode)
-    mode_group.addAction(actions.ai_mode)
-    actions.mode_actions = {"manual": actions.manual_mode, "ai": actions.ai_mode}
+    toolbar_placement_group = QActionGroup(window)
+    toolbar_placement_group.setExclusive(True)
+    for placement, label in (("floating", "Floating Toolbar (Bottom)"), ("docked", "Docked Toolbar (Top)")):
+        action = _create_action(
+            window,
+            label,
+            slot=lambda _checked=False, selected=placement: window._set_toolbar_placement(selected),
+            checkable=True,
+        )
+        toolbar_placement_group.addAction(action)
+        actions.toolbar_placement_actions[placement] = action
 
     sort_group = QActionGroup(window)
     sort_group.setExclusive(True)

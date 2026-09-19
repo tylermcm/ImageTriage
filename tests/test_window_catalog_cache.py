@@ -904,7 +904,8 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertEqual(1, window.load_hidden_calls)
             self.assertIsNone(window._ai_run_pool.started_task)
             self.assertEqual(0, window.defer_background_calls)
-            self.assertEqual(1, window.mode_tabs.index)
+            # AI Review is retired: finishing or reusing an AI run never switches mode.
+            self.assertEqual(-1, window.mode_tabs.index)
             self.assertIn("reused cached ai review results", window.status_messages[-1].casefold())
 
     def test_run_ai_pipeline_skips_extract_and_cluster_when_cluster_cache_matches(self) -> None:
@@ -970,7 +971,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             self.assertEqual(1, len(window.completion_dialog_calls))
             self.assertTrue(window.completion_dialog_calls[0]["same_folder"])
             self.assertEqual(str(paths), window.completion_dialog_calls[0]["report_dir"])
-            self.assertEqual(1, window.mode_tabs.index)
+            self.assertEqual(-1, window.mode_tabs.index)
             self.assertEqual(1, window.resume_background_calls)
 
     def test_ai_review_complete_dialog_starts_with_collapsed_outputs_and_two_column_legend(self) -> None:
