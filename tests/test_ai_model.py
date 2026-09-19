@@ -72,14 +72,27 @@ class AIModelTests(unittest.TestCase):
         self.assertEqual(installation.install_dir.name, "DinoV2")
         self.assertEqual(installation.install_dir.parent.name, "models")
 
-    def test_default_ai_model_installation_uses_local_appdata_without_home_lookup(self) -> None:
+    def test_default_ai_model_installation_uses_managed_root_not_local_appdata(self) -> None:
+        # Model directories must resolve under the short managed root rather
+        # than LOCALAPPDATA, which Store Python redirects into a very long
+        # package-cache path (docs/ai_runtime_failure_map.md, root cause A).
         with tempfile.TemporaryDirectory() as temp_dir:
-            env = {"LOCALAPPDATA": temp_dir}
+            store_cache = Path(temp_dir) / (
+                "Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/Local"
+            )
+            store_cache.mkdir(parents=True)
+            profile = Path(temp_dir) / "profile"
+            profile.mkdir()
+            env = {"LOCALAPPDATA": str(store_cache), "USERPROFILE": str(profile)}
             with patch.dict(os.environ, env, clear=False):
-                with patch("image_triage.ai_model.Path.home", side_effect=RuntimeError("no home")):
+                with patch("image_triage.ai_paths.Path.home", side_effect=RuntimeError("no home")):
                     installation = resolve_ai_model_installation(repo_id="owner/DinoV2")
 
-        self.assertTrue(str(installation.install_dir).startswith(temp_dir))
+        self.assertNotIn("LocalCache", str(installation.install_dir))
+        self.assertTrue(
+            str(installation.install_dir).startswith(str(profile)),
+            msg=f"expected a managed path under {profile}, got {installation.install_dir}",
+        )
 
     def test_default_semantic_model_installation_uses_model_name_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

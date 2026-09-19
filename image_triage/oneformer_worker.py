@@ -12,8 +12,10 @@ the processor and model resident so consecutive images reuse the loaded weights.
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 METRIC_PREFIX = "AI_METRIC "
@@ -118,6 +120,53 @@ def _category_class_ids(
     return class_ids, source_labels
 
 
+def _load_local_processor(processor_class, model_dir: Path):
+    """Use the class metadata already shipped in the model's processor config.
+
+    OneFormer's constructor otherwise downloads class_info_file separately,
+    without forwarding local_files_only. Materialize the embedded metadata for
+    that constructor; no Hub cache or writable model directory is required.
+    """
+    config = json.loads((model_dir / "preprocessor_config.json").read_text(encoding="utf-8"))
+    metadata = config.get("metadata") or {}
+    names = metadata.get("class_names")
+    thing_ids = metadata.get("thing_ids")
+    if not isinstance(names, list) or not names or not isinstance(thing_ids, list):
+        raise ValueError(
+            "The scene model's local class metadata is missing or invalid. "
+            "Repair the scene masking model in AI settings."
+        )
+    class_info = {
+        str(index): {"name": name, "isthing": index in thing_ids}
+        for index, name in enumerate(names)
+    }
+    # The library reads this file synchronously during construction and retains
+    # its contents in processor.image_processor.metadata.
+    with TemporaryDirectory(prefix="image-triage-oneformer-") as temporary:
+        metadata_path = Path(temporary) / "class_info.json"
+        metadata_path.write_text(json.dumps(class_info), encoding="utf-8")
+        # from_pretrained applies keyword overrides *after* constructing the
+        # image processor, too late to prevent its metadata download. Supply a
+        # corrected config and the small tokenizer files in a temporary bundle.
+        config["repo_path"] = temporary
+        config["class_info_file"] = metadata_path.name
+        (Path(temporary) / "preprocessor_config.json").write_text(
+            json.dumps(config), encoding="utf-8"
+        )
+        for filename in (
+            "config.json", "tokenizer_config.json", "special_tokens_map.json",
+            "vocab.json", "merges.txt", "tokenizer.json", "added_tokens.json",
+            "processor_config.json",
+        ):
+            source = model_dir / filename
+            if source.is_file():
+                shutil.copyfile(source, Path(temporary) / filename)
+        return processor_class.from_pretrained(
+            temporary,
+            local_files_only=True,
+        )
+
+
 class _OneFormerEngine:
     def __init__(self, requested_device: str) -> None:
         self.requested_device = requested_device
@@ -174,10 +223,7 @@ class _OneFormerEngine:
         assert self.torch is not None
         print("PROGRESS Loading scene model...", flush=True)
         phase_started = time.perf_counter()
-        self.processor = self.OneFormerProcessor.from_pretrained(
-            str(resolved_model_dir),
-            local_files_only=True,
-        )
+        self.processor = _load_local_processor(self.OneFormerProcessor, resolved_model_dir)
         model = self.OneFormerForUniversalSegmentation.from_pretrained(
             str(resolved_model_dir),
             local_files_only=True,

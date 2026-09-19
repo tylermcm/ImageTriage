@@ -214,6 +214,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._zoom_tile_width = 240
         self._row_x_offset = 0
         self._margin = 18
+        # Space a floating overlay (the bottom toolbar) covers: the scroll range
+        # grows by it so the last row can rest above the overlay, and cards
+        # fade out over ``_bottom_fade_height`` while there is more to scroll.
+        self._bottom_overlay_reserve = 0
+        self._bottom_fade_height = 0
+        # Optional ``painter(QPainter, QRect)`` that fills the viewport with the
+        # window backdrop instead of the flat viewport colour.
+        self._backdrop_painter = None
         self._spacing = 18
         self._caption_height = 22
         self._action_height = 24
@@ -1115,6 +1123,27 @@ class ThumbnailGridView(QAbstractScrollArea):
             return
         self._set_single_selection(index)
 
+    def visible_position(self, index: int) -> tuple[int, int]:
+        """(1-based position, count) of ``index`` among the shown items."""
+        order = self._visible_item_indexes
+        try:
+            return order.index(index) + 1, len(order)
+        except ValueError:
+            return 0, len(order)
+
+    def step_current(self, delta: int) -> None:
+        """Move the current item by ``delta`` places in display order."""
+        order = self._visible_item_indexes
+        if not order:
+            return
+        try:
+            position = order.index(self._current_index)
+        except ValueError:
+            position = -1 if delta > 0 else len(order)
+        target = order[max(0, min(len(order) - 1, position + delta))]
+        self.set_current_index(target)
+        self._ensure_index_visible(target)
+
     def current_record(self) -> ImageRecord | None:
         if 0 <= self._current_index < len(self._items):
             return self._items[self._current_index]
@@ -1193,7 +1222,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         painter = QPainter(self.viewport())
-        painter.fillRect(self.viewport().rect(), getattr(self, "_viewport_bg", None) or self.palette().color(QPalette.ColorRole.Base))
+        self._paint_viewport_background(painter, self.viewport().rect())
 
         if not self._items:
             self._paint_empty_state(painter)
@@ -1231,6 +1260,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.setPen(QPen(overlay_border, 1, Qt.PenStyle.DashLine))
             painter.setBrush(overlay_fill)
             painter.drawRect(self._marquee_rect)
+        self._paint_bottom_fade(painter)
         self._sync_adapter_label_controls()
         if logger.enabled:
             logger.duration(
@@ -3952,11 +3982,13 @@ class ThumbnailGridView(QAbstractScrollArea):
             return
         if rect.isNull():
             return
-        viewport = self.viewport().rect()
+        # Bring items to rest above the bottom fade, not just clear of the
+        # overlay, so the current photo is never dimmed.
+        visible_height = self.viewport().rect().height() - max(self._bottom_overlay_reserve, self._bottom_fade_height)
         if rect.top() < 0:
             self.verticalScrollBar().setValue(max(0, self.verticalScrollBar().value() + rect.top() - 12))
-        elif rect.bottom() > viewport.height():
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() + (rect.bottom() - viewport.height()) + 12)
+        elif rect.bottom() > visible_height:
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() + (rect.bottom() - visible_height) + 12)
 
     def _refresh_layout_after_visible_items_changed(self) -> None:
         self._recalculate_metrics()
@@ -4367,9 +4399,66 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _handle_smooth_scroll_finished(self) -> None:
         self._smooth_scroll_target = None
 
+    def set_bottom_overlay(self, reserve: int, fade_height: int) -> None:
+        reserve = max(0, int(reserve))
+        fade_height = max(0, int(fade_height))
+        if (reserve, fade_height) == (self._bottom_overlay_reserve, self._bottom_fade_height):
+            return
+        self._bottom_overlay_reserve = reserve
+        self._bottom_fade_height = fade_height
+        self._update_scrollbar()
+        self.viewport().update()
+
+    def set_backdrop_painter(self, backdrop_painter) -> None:
+        self._backdrop_painter = backdrop_painter
+        self.viewport().update()
+
+    def _paint_viewport_background(self, painter: QPainter, rect: QRect) -> None:
+        if self._backdrop_painter is not None:
+            self._backdrop_painter(painter, rect)
+            return
+        painter.fillRect(rect, getattr(self, "_viewport_bg", None) or self.palette().color(QPalette.ColorRole.Base))
+
+    def _paint_bottom_fade(self, painter: QPainter) -> None:
+        fade = self._bottom_fade_height
+        if fade <= 0:
+            return
+        scrollbar = self.verticalScrollBar()
+        remaining = scrollbar.maximum() - scrollbar.value()
+        if remaining <= 0:
+            return
+        # Ease the fade out over the last stretch so the final row settles
+        # fully visible instead of snapping from dimmed to clear.
+        strength = min(1.0, remaining / float(max(1, self._bottom_overlay_reserve)))
+        viewport = self.viewport().rect()
+        top = viewport.bottom() + 1 - fade
+        solid = self._bottom_overlay_reserve - 12
+        stops = ((0.0, 0.0), (max(0.0, 1.0 - (solid + 45) / fade), 0.75), (max(0.0, 1.0 - solid / fade), 1.0), (1.0, 1.0))
+        band_rect = QRect(0, top, viewport.width(), fade)
+        # The fade is the background itself, laid back over the cards with a
+        # rising opacity: a band of backdrop masked by the gradient.
+        ratio = max(1.0, self.viewport().devicePixelRatioF())
+        band = QImage(
+            max(1, round(band_rect.width() * ratio)),
+            max(1, round(band_rect.height() * ratio)),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        band.setDevicePixelRatio(ratio)
+        band.fill(Qt.GlobalColor.transparent)
+        band_painter = QPainter(band)
+        band_painter.translate(0, -top)
+        self._paint_viewport_background(band_painter, band_rect)
+        mask = QLinearGradient(0.0, float(top), 0.0, float(top + fade))
+        for position, alpha in stops:
+            mask.setColorAt(position, QColor(0, 0, 0, round(255 * alpha * strength)))
+        band_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        band_painter.fillRect(band_rect, mask)
+        band_painter.end()
+        painter.drawImage(band_rect.topLeft(), band)
+
     def _update_scrollbar(self) -> None:
         rows = self._row_count()
-        total_height = self._margin * 2
+        total_height = self._margin * 2 + self._bottom_overlay_reserve
         if rows:
             total_height += rows * self._tile_height() + max(0, rows - 1) * self._spacing
         max_value = max(0, total_height - self.viewport().height())

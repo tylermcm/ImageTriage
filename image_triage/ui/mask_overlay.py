@@ -25,12 +25,14 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QRadialGradient,
+    QTransform,
 )
 from PySide6.QtWidgets import QWidget
 
 from ..mask_refinement import has_mask_refinements, refine_bitmap_qimage
 from ..perf import perf_logger
 from .busy_overlay import paint_busy_card
+from .canvas_overlay import CanvasOverlay
 from .scene_regions import SceneRegionIndex
 
 MAX_ALPHA = 128          # overlay opacity at full mask strength / 100 density
@@ -441,24 +443,55 @@ def mask_strength_qimage(
     height: int,
     source_size: tuple[int, int],
     guide_image: QImage | None = None,
+    transform: QTransform | None = None,
+    transform_source_size: tuple[int, int] | None = None,
 ) -> QImage | None:
     """Grayscale8 union strength field for live masked-adjustment previews.
     White = full effect, black = none. Painted with Qt gradients, so it is
-    fast enough to rebuild per slider tick."""
-    gray = build_group_strength(
+    fast enough to rebuild per slider tick.
+
+    ``transform`` is the source->frame geometry (crop, straighten, flip). When
+    it is given the field is rasterized in *source* space and then put through
+    the identical affine the pixels took, so a mask cannot drift relative to
+    the photo. When it is None the original scale-only path runs untouched —
+    that equivalence is what makes the crop work safe to add.
+    """
+    if transform is None:
+        gray = build_group_strength(
+            components,
+            width,
+            height,
+            source_size,
+            guide_image=guide_image,
+        )
+        return gray.convertToFormat(QImage.Format.Format_Grayscale8) if gray else None
+
+    raster_source_size = transform_source_size or source_size
+    source_gray = build_group_strength(
         components,
-        width,
-        height,
+        max(1, int(raster_source_size[0])),
+        max(1, int(raster_source_size[1])),
         source_size,
         guide_image=guide_image,
     )
-    if gray is None:
+    if source_gray is None:
         return None
-    return gray.convertToFormat(QImage.Format.Format_Grayscale8)
+    warped = QImage(max(1, int(width)), max(1, int(height)), QImage.Format.Format_RGB32)
+    warped.fill(Qt.GlobalColor.black)
+    painter = QPainter(warped)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    painter.setWorldTransform(transform)
+    painter.drawImage(0, 0, source_gray)
+    painter.end()
+    return warped.convertToFormat(QImage.Format.Format_Grayscale8)
 
 
-class MaskOverlay(QWidget):
-    """Interactive overlay for one shape mask (radial or linear-gradient)."""
+class MaskOverlay(CanvasOverlay):
+    """Interactive overlay for one shape mask (radial or linear-gradient).
+
+    Attachment, geometry tracking and source<->display mapping come from
+    CanvasOverlay, which it shares with the crop and retouch overlays.
+    """
 
     # A drag on empty canvas finished while a create tool was armed.
     mask_created = Signal(str, dict)   # mask type, params (source coords)
@@ -472,6 +505,9 @@ class MaskOverlay(QWidget):
     scene_region_picked = Signal(str)
     # A point was clicked in promptable click-to-select mode (source coords).
     point_picked = Signal(float, float)
+    # The pointer moved over/left promptable click-to-select mode.
+    point_hovered = Signal(float, float)
+    point_hover_cleared = Signal()
     # A BiRefNet foreground component was toggled in the subject picker.
     subject_candidate_toggled = Signal(str)
     # An edit drag ended; owners should persist the pending changes.
@@ -479,8 +515,6 @@ class MaskOverlay(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMouseTracking(True)
         self._mask_type: str | None = None
         self._params: dict[str, Any] | None = None
         self._components: list[tuple[str, dict[str, Any], str]] = []
@@ -508,6 +542,7 @@ class MaskOverlay(QWidget):
         self._scene_pick = False
         self._scene_hover: str | None = None
         self._point_pick = False
+        self._point_preview_path: str | None = None
         self._subject_candidates: list[dict[str, Any]] = []
         self._subject_hover: str | None = None
         self._watched: QWidget | None = None
@@ -526,25 +561,6 @@ class MaskOverlay(QWidget):
         self.update()
 
     # -- attachment ---------------------------------------------------------
-    def attach_to(self, label: QWidget) -> None:
-        """Parent the overlay to ``label`` (a pane's image label) and track
-        its size so the overlay always covers the displayed pixmap."""
-        if self._watched is label:
-            return
-        if self._watched is not None:
-            self._watched.removeEventFilter(self)
-        self._watched = label
-        self.setParent(label)
-        label.installEventFilter(self)
-        self.setGeometry(label.rect())
-        self.show()
-        self.raise_()
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        if watched is self._watched and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
-            self.setGeometry(self._watched.rect())
-        return False
-
     # -- state --------------------------------------------------------------
     def set_state(
         self,
@@ -565,6 +581,7 @@ class MaskOverlay(QWidget):
         scene_index: SceneRegionIndex | None = None,
         scene_pick: bool = False,
         point_pick: bool = False,
+        point_preview_path: str | None = None,
         subject_candidates: list[dict[str, Any]] | None = None,
         overlay_mode: str = "color",
         overlay_color: QColor | str | None = None,
@@ -642,6 +659,9 @@ class MaskOverlay(QWidget):
         if not self._scene_pick:
             self._scene_hover = None
         self._point_pick = bool(point_pick)
+        preview_path = str(point_preview_path or "") or None
+        if preview_path != self._point_preview_path:
+            self._point_preview_path = preview_path
         self._subject_candidates = [
             dict(candidate) for candidate in (subject_candidates or [])
         ]
@@ -673,32 +693,6 @@ class MaskOverlay(QWidget):
             elif not message and self._busy_timer.isActive():
                 self._busy_timer.stop()
         self.update()
-
-    def _set_pass_through(self, on: bool) -> None:
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, on)
-        if on:
-            self.unsetCursor()
-
-    # -- coordinate mapping ---------------------------------------------------
-    def _scales(self) -> tuple[float, float] | None:
-        if self._source_size is None or self.width() < 2 or self.height() < 2:
-            return None
-        sw, sh = self._source_size
-        if sw < 1 or sh < 1:
-            return None
-        return self.width() / sw, self.height() / sh
-
-    def _to_display(self, x: float, y: float) -> QPointF:
-        scales = self._scales()
-        if scales is None:
-            return QPointF(0, 0)
-        return QPointF(x * scales[0], y * scales[1])
-
-    def _to_source(self, pos: QPointF) -> tuple[float, float]:
-        scales = self._scales()
-        if scales is None:
-            return 0.0, 0.0
-        return pos.x() / scales[0], pos.y() / scales[1]
 
     # -- painting -------------------------------------------------------------
     @staticmethod
@@ -771,6 +765,26 @@ class MaskOverlay(QWidget):
         # empty canvas is the whole point of scene picking.
         if self._scene_pick and self._scene_hover:
             self._paint_scene_hover(painter)
+        if self._point_pick and self._point_preview_path and self._show_overlay:
+            preview = self._cached_component_bitmap(
+                {"assetPath": self._point_preview_path}
+            )
+            if preview is not None:
+                scaled = preview.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                base = self._display_base_image(self.width(), self.height())
+                painter.drawImage(
+                    self.rect(),
+                    compose_mask_overlay(
+                        scaled,
+                        self._overlay_mode,
+                        self._overlay_color,
+                        base,
+                    ),
+                )
         if self._point_pick and self._hover_pos is not None and self._drag is None:
             self._paint_point_pick_hint(painter)
         if self._params is None and not self._components:
@@ -1433,6 +1447,9 @@ class MaskOverlay(QWidget):
                 self._hover_pos = pos
                 self._refresh_subject_hover(pos)
                 self._refresh_scene_hover(pos)
+                if self._point_pick:
+                    src_x, src_y = self._to_source(pos)
+                    self.point_hovered.emit(src_x, src_y)
                 self._update_hover_cursor(pos)
                 self.update()
             event.ignore()
@@ -1501,6 +1518,8 @@ class MaskOverlay(QWidget):
         event.accept()
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._point_pick:
+            self.point_hover_cleared.emit()
         self._hover_pos = None
         self._scene_hover = None
         self._subject_hover = None

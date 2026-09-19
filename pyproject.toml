@@ -14,6 +14,7 @@ dependencies = [
     "py7zr>=1.1",
     "pillow-heif>=0.18",
     "psd-tools>=1.10",
+    "qrcode>=8.0",
     "rawpy>=0.20",
     "tokenizers>=0.15",
 ]
@@ -30,7 +31,7 @@ include = ["image_triage*", "aiculler*"]
 
 [tool.setuptools.package-data]
 aiculler = ["resources/*.csv"]
-"image_triage.ui" = ["assets/*.png"]
+"image_triage.ui" = ["assets/*.png", "assets/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

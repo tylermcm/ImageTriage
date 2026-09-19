@@ -9,13 +9,15 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage.ico"
-APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage.png"
+APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage-v2.ico"
+APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage-v2.png"
 AI_STAGE_ROOT = ROOT / "build_assets" / "ai_runtime" / "AICullingPipeline"
 CLI_CULLER_PACKAGE_ROOT = ROOT / "aiculler"
+CLI_EDITOR_PACKAGE_ROOT = ROOT / "cli_editor" / "photo_terminal"
 AI_SITE_PACKAGES_STAGE_ROOT = ROOT / "build_assets" / "ai_site_packages"
 AI_STDLIB_STAGE_ROOT = ROOT / "build_assets" / "ai_stdlib"
 AI_DLLS_STAGE_ROOT = ROOT / "build_assets" / "ai_python_dlls"
+QT_WINDOWS_BINARY_EXCLUDES = ("icu.dll", "icuin.dll", "icuuc.dll", "icudt78.dll")
 STAGE_SCRIPT_NAMES = (
     "extract_embeddings.py",
     "cluster_embeddings.py",
@@ -134,7 +136,21 @@ class FreezeAssetLayout:
     def include_files(self) -> list[tuple[str, str]]:
         include_files = [
             (str(self.ai_stage_root.parent), "ai_runtime"),
+            (str(ROOT / "packaging" / "ai_runtime_locks"), "packaging/ai_runtime_locks"),
+            (
+                str(ROOT / "image_triage" / "ui" / "assets" / "splash_background-v4.png"),
+                "lib/image_triage/ui/assets/splash_background-v4.png",
+            ),
+            (
+                str(ROOT / "image_triage" / "ui" / "assets" / "app_icon-v2.ico"),
+                "lib/image_triage/ui/assets/app_icon-v2.ico",
+            ),
+            (
+                str(ROOT / "image_triage" / "ui" / "assets" / "checkbox_check.png"),
+                "lib/image_triage/ui/assets/checkbox_check.png",
+            ),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
+            (str(CLI_EDITOR_PACKAGE_ROOT), "lib/photo_terminal"),
             (str(ROOT / "image_triage" / "birefnet_worker.py"), "ai_workers/birefnet_worker.py"),
             (str(ROOT / "image_triage" / "oneformer_worker.py"), "ai_workers/oneformer_worker.py"),
             (str(ROOT / "image_triage" / "sam_worker.py"), "ai_workers/sam_worker.py"),

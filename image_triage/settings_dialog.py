@@ -44,9 +44,14 @@ from .phash_prefilter import (
     PHashPrefilterSettings,
     default_phash_prefilter_settings,
 )
-from .ui.help_dialog import build_help_button, show_paged_help
+from .ui.help_dialog import show_paged_help
 from .ui.help_topics import settings_help_pages
 from .ui.shortcuts import SHORTCUT_REGISTRY
+from .ui.display_metrics import (
+    DisplayProfile,
+    STANDARD_DISPLAY,
+    normalize_display_profile_preference,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -64,6 +69,7 @@ class WorkflowSettingsResult:
     delete_mode: DeleteMode
     loupe_card_style: str = "detailed"
     ui_gamma: float = 1.0
+    interface_size: str = "automatic"
     free_smooth_scroll_enabled: bool = False
     preview_preload_batch_size: int = 10
     show_hidden_folders: bool = False
@@ -135,6 +141,7 @@ class WorkflowSettingsDialog(QDialog):
         loupe_card_style: str = "detailed",
         allowed_card_styles: "tuple[str, ...] | None" = None,
         ui_gamma: float = 1.0,
+        interface_size: str = "automatic",
         free_smooth_scroll_enabled: bool = False,
         preview_preload_batch_size: int = 10,
         show_hidden_folders: bool = False,
@@ -166,13 +173,16 @@ class WorkflowSettingsDialog(QDialog):
         reset_layout_callback: Callable[[], None] | None = None,
         shortcut_overrides: dict[str, str] | None = None,
         initial_section: str | None = None,
+        display_profile: DisplayProfile | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self._display_profile = display_profile or STANDARD_DISPLAY
+        profile = self._display_profile
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setMinimumSize(640, 460)
-        self.resize(720, 540)
+        self.setMinimumSize(profile.settings_min_width, profile.settings_min_height)
+        self.resize(profile.settings_width, profile.settings_height)
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
@@ -197,7 +207,7 @@ class WorkflowSettingsDialog(QDialog):
 
         self.section_list = QListWidget(body)
         self.section_list.setObjectName("settingsSectionList")
-        self.section_list.setFixedWidth(168)
+        self.section_list.setFixedWidth(profile.settings_nav_width)
         self.section_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.section_list.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.section_list.setFrameShape(QFrame.Shape.NoFrame)
@@ -205,7 +215,7 @@ class WorkflowSettingsDialog(QDialog):
 
         self.pages = QStackedWidget(body)
         self.pages.setObjectName("settingsPages")
-        self.pages.setMinimumWidth(480)
+        self.pages.setMinimumWidth(profile.settings_pages_min_width)
         body_layout.addWidget(self.section_list)
         body_layout.addWidget(self.pages, 1)
         root_layout.addWidget(body, 1)
@@ -272,11 +282,16 @@ class WorkflowSettingsDialog(QDialog):
         session_layout.addWidget(self.save_preset_button)
         session_layout.addStretch(1)
 
-        general_page, general_layout = self._build_settings_page("General")
+        general_page, general_layout = self._build_settings_page(
+            "General",
+            "Choose what happens to accepted and deleted images, and manage reusable review presets.",
+        )
+        self._add_category_heading(general_layout, "Review behavior")
         self._add_form_row(general_layout, "Session", session_row)
         self._add_form_row(general_layout, "Accepted images", self.winner_mode_combo)
         self._add_form_row(general_layout, "Delete behavior", self.delete_mode_combo)
-        self._add_checkbox_row(general_layout, "Updates", self.check_updates_on_startup_checkbox)
+        self._add_category_heading(general_layout, "App updates")
+        self._add_checkbox_row(general_layout, "Automatic check", self.check_updates_on_startup_checkbox)
         self.preset_status_label = QLabel("")
         self.preset_status_label.setObjectName("mutedText")
         self.preset_status_label.setStyleSheet("font-size: 11px;")
@@ -286,8 +301,8 @@ class WorkflowSettingsDialog(QDialog):
 
         self.loupe_card_style_combo = QComboBox()
         self.loupe_card_style_combo.setMinimumWidth(180)
-        # The host restricts the selectable styles on small displays (720p keeps
-        # only Immersive/Zen), so honor the allowed list when given.
+        # The host can restrict selectable styles on smaller displays, so honor
+        # the allowed list when one is supplied.
         _card_style_options = (
             ("Detailed", "detailed"),
             ("Zen", "zen"),
@@ -300,12 +315,9 @@ class WorkflowSettingsDialog(QDialog):
         loupe_style_index = self.loupe_card_style_combo.findData(loupe_card_style)
         self.loupe_card_style_combo.setCurrentIndex(max(0, loupe_style_index))
         self.loupe_card_style_combo.setToolTip(_settings_tooltip(
-            "Card style. Detailed shows the full review card (filename, EXIF, status) up to "
-            "4 columns, then collapses to the minimal card at higher column counts; the "
-            "single-image view keeps the metadata strip below the photo. Immersive always "
-            "uses the minimal photo-first card and paints metadata over the photo's edge. "
-            "Zen strips everything away: just the photos and the selection ring. Classic is "
-            "the original boxed card with the caption and metadata rows below the photo."
+            "Detailed shows filenames, image details, and review status. Zen removes most "
+            "labels so the photos take priority. Gallery keeps a compact caption while "
+            "leaving more room for each image."
         ))
 
         self.ui_gamma_slider = QSlider(Qt.Orientation.Horizontal)
@@ -333,6 +345,21 @@ class WorkflowSettingsDialog(QDialog):
         ui_gamma_layout.addWidget(self.ui_gamma_slider, 1)
         ui_gamma_layout.addWidget(self.ui_gamma_value_label)
         ui_gamma_layout.addWidget(reset_gamma_button)
+
+        self.interface_size_combo = QComboBox()
+        self.interface_size_combo.setMinimumWidth(180)
+        self.interface_size_combo.addItem("Automatic (recommended)", "automatic")
+        self.interface_size_combo.addItem("Compact", "compact")
+        self.interface_size_combo.addItem("Comfortable", "standard")
+        self.interface_size_combo.addItem("Large", "spacious")
+        interface_size_index = self.interface_size_combo.findData(
+            normalize_display_profile_preference(interface_size)
+        )
+        self.interface_size_combo.setCurrentIndex(max(0, interface_size_index))
+        self.interface_size_combo.setToolTip(_settings_tooltip(
+            "Automatic adapts the interface to the app window's usable logical size. "
+            "Choose another size to keep the same control density on every display."
+        ))
 
         self.free_smooth_scroll_checkbox = QCheckBox("Use free smooth scrolling")
         self.free_smooth_scroll_checkbox.setChecked(free_smooth_scroll_enabled)
@@ -384,12 +411,19 @@ class WorkflowSettingsDialog(QDialog):
             "Stacks very similar burst frames behind one visible representative in the grid."
         ))
 
-        interface_page, interface_layout = self._build_settings_page("Interface")
+        interface_page, interface_layout = self._build_settings_page(
+            "Interface",
+            "Adjust how the image grid looks, how previews load, and how review moves from one image to the next.",
+        )
+        self._add_category_heading(interface_layout, "Appearance")
+        self._add_form_row(interface_layout, "Interface size", self.interface_size_combo)
         self._add_form_row(interface_layout, "Card style", self.loupe_card_style_combo)
         self._add_form_row(interface_layout, "UI gamma", self.ui_gamma_row)
+        self._add_category_heading(interface_layout, "Navigation and preview")
         self._add_checkbox_row(interface_layout, "Scrolling", self.free_smooth_scroll_checkbox)
         self._add_form_row(interface_layout, "Preview preload", self.preview_preload_batch_spin)
         self._add_checkbox_row(interface_layout, "Folders", self.show_hidden_folders_checkbox)
+        self._add_category_heading(interface_layout, "Review flow")
         self._add_checkbox_row(interface_layout, "Review", self.auto_advance_checkbox)
         self._add_checkbox_row(interface_layout, "Bursts", self.burst_groups_checkbox)
         self._add_checkbox_row(interface_layout, "Stacks", self.burst_stacks_checkbox)
@@ -415,12 +449,17 @@ class WorkflowSettingsDialog(QDialog):
         self.catalog_summary_label.setToolTip(_settings_tooltip(
             "Current catalog cache status and indexed-file summary."
         ))
-        folders_page, folders_layout = self._build_settings_page("Library & Folders")
+        folders_page, folders_layout = self._build_settings_page(
+            "Library & Folders",
+            "Control folder navigation, automatic refresh, and the lightweight catalog data used for faster browsing.",
+        )
+        self._add_category_heading(folders_layout, "Folder browsing")
         self._add_checkbox_row(
             folders_layout, "Folder tree", self.single_drive_expansion_checkbox
         )
-        self._add_checkbox_row(folders_layout, "Catalog cache", self.catalog_cache_checkbox)
         self._add_checkbox_row(folders_layout, "Watch folder", self.watch_current_folder_checkbox)
+        self._add_category_heading(folders_layout, "Catalog")
+        self._add_checkbox_row(folders_layout, "Catalog cache", self.catalog_cache_checkbox)
         self._add_text_row(folders_layout, "Catalog", self.catalog_summary_label)
         folders_layout.addStretch(1)
         self._add_settings_page("Library & Folders", folders_page)
@@ -432,12 +471,9 @@ class WorkflowSettingsDialog(QDialog):
         self.ai_embed_batch_size_spin.setValue(max(0, int(ai_embed_batch_size)))
         self.ai_embed_batch_size_spin.setMinimumWidth(120)
         self.ai_embed_batch_size_spin.setToolTip(_settings_tooltip(
-            "Concurrent workers in CLI-Culler's ingest pipeline. Both stages "
-            "(preview extraction + CLIP/TOPIQ feature extraction) get this "
-            "many threads each. Auto picks a balanced default for your "
-            "hardware (4 on CPU, 8 on GPU). Higher values speed up ingest "
-            "up to your CPU core count; very high values can oversubscribe "
-            "ONNX's internal thread pool."
+            "How many images the AI prepares at the same time. Auto chooses a balanced "
+            "value for your computer. A higher value may finish sooner, but it can use "
+            "more memory and make the app or computer less responsive."
         ))
 
         self.ai_review_detail_progress_checkbox = QCheckBox("Show detailed AI Review activity")
@@ -526,15 +562,20 @@ class WorkflowSettingsDialog(QDialog):
             "Higher values require images to be closer before they are treated as near-duplicates."
         ))
 
-        ai_page, ai_layout = self._build_settings_page("AI")
+        ai_page, ai_layout = self._build_settings_page(
+            "AI Culling",
+            "Tune processing and decide how much of a finished ranking is treated as likely winners or needs review.",
+        )
+        self._add_category_heading(ai_layout, "Processing")
         self._add_form_row(ai_layout, "Processing workers", self.ai_embed_batch_size_spin)
         self._add_checkbox_row(ai_layout, "Detailed progress log", self.ai_review_detail_progress_checkbox)
-        self._add_form_row(ai_layout, "Keep top", self.ai_keep_top_spin)
+        self._add_category_heading(ai_layout, "Result ranges")
+        self._add_form_row(ai_layout, "Likely winners", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
         self._add_form_row(ai_layout, "Cull breakdown", self.ai_cull_summary_label)
         ai_layout.addStretch(1)
         self._update_ai_cull_summary()
-        self._add_settings_page("AI", ai_page)
+        self._add_settings_page("AI Culling", ai_page)
 
         self.dino_prefilter_enabled_checkbox = QCheckBox("Enable DINO Prefilter")
         self.dino_prefilter_enabled_checkbox.setChecked(dino_settings.enabled)
@@ -664,16 +705,14 @@ class WorkflowSettingsDialog(QDialog):
             "Writes per-run pHash duplicate groups and decision rows for debugging and threshold tuning."
         ))
 
-        phash_page, phash_layout = self._build_settings_page("pHash Prefilter")
-        phash_hint = QLabel(
-            "pHash Prefilter is independent of DINO. It detects tight visual duplicates using hash metadata only; manual winners are always protected."
+        phash_page, phash_layout = self._build_settings_page(
+            "Duplicates",
+            "Find nearly identical frames before the slower AI scoring pass. This uses a visual fingerprint called pHash; it never deletes an image.",
         )
-        phash_hint.setWordWrap(True)
-        phash_hint.setObjectName("settingsRowLabel")
-        phash_layout.addWidget(phash_hint)
-        phash_layout.addSpacing(4)
-        self._add_checkbox_row(phash_layout, "pHash Prefilter", self.phash_prefilter_enabled_checkbox)
+        self._add_category_heading(phash_layout, "Detection")
+        self._add_checkbox_row(phash_layout, "Duplicate check", self.phash_prefilter_enabled_checkbox)
         self._add_form_row(phash_layout, "Duplicate distance", self.phash_hamming_spin)
+        self._add_category_heading(phash_layout, "Storage and diagnostics")
         self._add_checkbox_row(phash_layout, "Cache hash metadata", self.phash_cache_checkbox)
         self._add_checkbox_row(phash_layout, "Run diagnostics", self.phash_diagnostics_checkbox)
         phash_layout.addStretch(1)
@@ -684,7 +723,7 @@ class WorkflowSettingsDialog(QDialog):
         )
         self.phash_prefilter_enabled_checkbox.toggled.connect(self._set_phash_prefilter_controls_enabled)
         self._set_phash_prefilter_controls_enabled(self.phash_prefilter_enabled_checkbox.isChecked())
-        self._add_settings_page("pHash Prefilter", phash_page)
+        self._add_settings_page("Duplicates", phash_page)
 
         shortcuts_page = self._build_shortcuts_page(shortcut_overrides or {})
         self._add_settings_page("Shortcuts", shortcuts_page)
@@ -694,9 +733,11 @@ class WorkflowSettingsDialog(QDialog):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(24, 12, 24, 14)
         footer_layout.setSpacing(8)
-        help_button = build_help_button(self, tooltip="Open settings help")
-        help_button.clicked.connect(self._show_help)
-        footer_layout.addWidget(help_button, 0)
+        self.help_button = QPushButton("Settings Guide")
+        self.help_button.setObjectName("settingsHelpButton")
+        self.help_button.setToolTip("Open a plain-language guide to these settings")
+        self.help_button.clicked.connect(self._show_help)
+        footer_layout.addWidget(self.help_button, 0)
         footer_layout.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -716,27 +757,31 @@ class WorkflowSettingsDialog(QDialog):
             pages=settings_help_pages(),
         )
 
-    def _build_settings_page(self, title: str) -> tuple[QWidget, QVBoxLayout]:
+    def _build_settings_page(self, title: str, description: str = "") -> tuple[QWidget, QVBoxLayout]:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         content = QWidget()
         content.setObjectName("settingsPageContent")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 22, 24, 24)
-        layout.setSpacing(10)
-        content.setMinimumWidth(420)
+        profile = self._display_profile
+        layout.setContentsMargins(
+            profile.settings_page_margin_x,
+            profile.settings_page_margin_y,
+            profile.settings_page_margin_x,
+            profile.settings_page_margin_y,
+        )
+        layout.setSpacing(8)
+        content.setMinimumWidth(profile.settings_page_min_width)
         title_label = QLabel(title)
         title_label.setObjectName("settingsPageTitle")
         layout.addWidget(title_label)
-        # Separator below the title
-        separator = QFrame()
-        separator.setObjectName("settingsPageSeparator")
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Plain)
-        separator.setFixedHeight(1)
-        layout.addWidget(separator)
-        layout.addSpacing(4)
+        if description:
+            subtitle_label = QLabel(description)
+            subtitle_label.setObjectName("settingsPageSubtitle")
+            subtitle_label.setWordWrap(True)
+            layout.addWidget(subtitle_label)
+        layout.addSpacing(8)
         scroll.setWidget(content)
         return scroll, layout
 
@@ -747,6 +792,10 @@ class WorkflowSettingsDialog(QDialog):
 
     def _select_section(self, title: str) -> None:
         target = title.strip().casefold()
+        target = {
+            "ai": "ai culling",
+            "phash prefilter": "duplicates",
+        }.get(target, target)
         if not target:
             return
         for row in range(self.section_list.count()):
@@ -759,16 +808,29 @@ class WorkflowSettingsDialog(QDialog):
         row = QWidget()
         row.setObjectName("settingsRow")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        profile = self._display_profile
+        layout.setContentsMargins(
+            profile.settings_row_margin_x,
+            profile.settings_row_margin_y,
+            profile.settings_row_margin_x,
+            profile.settings_row_margin_y,
+        )
+        layout.setSpacing(profile.settings_row_spacing)
         return row, layout
 
-    _ROW_LABEL_WIDTH = 132
+    _ROW_LABEL_WIDTH = 142
+
+    def _add_category_heading(self, layout: QVBoxLayout, title: str) -> None:
+        if layout.count() > 2:
+            layout.addSpacing(8)
+        heading = QLabel(title)
+        heading.setObjectName("settingsCategoryHeading")
+        layout.addWidget(heading)
 
     def _add_form_row(self, layout: QVBoxLayout, label_text: str, field: QWidget) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setFixedWidth(self._display_profile.settings_row_label_width)
         label.setObjectName("settingsRowLabel")
         tooltip = field.toolTip()
         if tooltip:
@@ -781,7 +843,7 @@ class WorkflowSettingsDialog(QDialog):
     def _add_checkbox_row(self, layout: QVBoxLayout, label_text: str, checkbox: QCheckBox) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setFixedWidth(self._display_profile.settings_row_label_width)
         label.setObjectName("settingsRowLabel")
         tooltip = checkbox.toolTip()
         if tooltip:
@@ -794,7 +856,7 @@ class WorkflowSettingsDialog(QDialog):
     def _add_text_row(self, layout: QVBoxLayout, label_text: str, value: QLabel) -> None:
         row, row_layout = self._row_frame()
         label = QLabel(label_text)
-        label.setFixedWidth(self._ROW_LABEL_WIDTH)
+        label.setFixedWidth(self._display_profile.settings_row_label_width)
         label.setObjectName("settingsRowLabel")
         tooltip = value.toolTip()
         if tooltip:
@@ -842,7 +904,7 @@ class WorkflowSettingsDialog(QDialog):
             for attr_name, default, display in entries:
                 row, row_layout = self._row_frame()
                 label = QLabel(display)
-                label.setFixedWidth(self._ROW_LABEL_WIDTH * 2)
+                label.setFixedWidth(self._display_profile.settings_shortcut_label_width)
                 label.setObjectName("settingsRowLabel")
                 tooltip = _settings_tooltip(
                     f"Keyboard shortcut for {display}. Default: {default or 'none'}."
@@ -864,7 +926,7 @@ class WorkflowSettingsDialog(QDialog):
                 reset_button = QPushButton("Reset")
                 reset_button.setObjectName("settingsRowReset")
                 reset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                reset_button.setFixedWidth(64)
+                reset_button.setFixedWidth(self._display_profile.settings_shortcut_reset_width)
                 reset_button.setToolTip(_settings_tooltip(
                     f"Restore the default shortcut for {display}."
                 ))
@@ -1086,6 +1148,9 @@ class WorkflowSettingsDialog(QDialog):
             delete_mode=delete_mode,
             loupe_card_style=str(self.loupe_card_style_combo.currentData() or "detailed"),
             ui_gamma=self.ui_gamma_slider.value() / 100.0,
+            interface_size=normalize_display_profile_preference(
+                self.interface_size_combo.currentData()
+            ),
             free_smooth_scroll_enabled=self.free_smooth_scroll_checkbox.isChecked(),
             preview_preload_batch_size=max(0, int(self.preview_preload_batch_spin.value())),
             show_hidden_folders=self.show_hidden_folders_checkbox.isChecked(),
