@@ -99,6 +99,9 @@ def build_main_menu_bar(
     appearance_menu = view_menu.addMenu("Appearance")
     for mode in appearance_profile_modes():
         appearance_menu.addAction(actions.appearance_actions[mode])
+    appearance_menu.addSeparator()
+    for placement in ("floating", "docked"):
+        appearance_menu.addAction(actions.toolbar_placement_actions[placement])
 
     layout_menu = view_menu.addMenu("Layout")
     columns_menu = layout_menu.addMenu("Columns")
@@ -139,10 +142,6 @@ def build_main_menu_bar(
     review_view_menu.addAction(actions.compare_mode)
     review_view_menu.addAction(actions.auto_advance)
 
-    mode_menu = view_menu.addMenu("Mode")
-    mode_menu.addAction(actions.manual_mode)
-    mode_menu.addAction(actions.ai_mode)
-
     view_menu.addSeparator()
     view_menu.addAction(actions.open_ui_prototype)
 
@@ -178,6 +177,9 @@ def build_main_menu_bar(
         catalog_section.addMenu(catalog_menu)
 
     workflow_menu = menu_bar.addMenu("&Workflow")
+    workflow_menu.addAction(actions.share_to_phone)
+    workflow_menu.addAction(actions.share_queue)
+    workflow_menu.addSeparator()
     workflow_menu.addAction(actions.handoff_builder)
     workflow_menu.addAction(actions.send_to_editor_pipeline)
     workflow_menu.addAction(actions.best_of_set_auto_assembly)
@@ -206,6 +208,9 @@ def build_main_menu_bar(
     ai_menu.addSeparator()
     setup_menu = ai_menu.addMenu("AI Setup And Cache")
     setup_menu.addAction(actions.install_ai_runtime)
+    setup_menu.addAction(actions.check_ai_readiness)
+    setup_menu.addAction(actions.repair_ai)
+    setup_menu.addAction(actions.copy_ai_diagnostics)
     setup_menu.addAction(actions.uninstall_ai_components)
     setup_menu.addSeparator()
     setup_menu.addAction(actions.reset_ai_review_cache)

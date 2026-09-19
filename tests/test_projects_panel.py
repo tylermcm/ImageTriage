@@ -1,4 +1,4 @@
-"""The Projects sidebar section over the library store's virtual collections.
+"""The Collections sidebar section over the library store's virtual collections.
 
 The collections backend already existed; these cover the sidebar surfacing of
 it, which is the part that was missing.
@@ -14,11 +14,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QListWidget, QListWidgetItem
 
 from image_triage.library_store import LibraryStore
-from image_triage.window import _MAX_VISIBLE_PROJECT_ROWS, _PROJECT_ROW_PX, MainWindow
+from image_triage.window import (
+    _MAX_VISIBLE_PROJECT_ROWS,
+    _PROJECT_EMPTY_ROW_PX,
+    _PROJECT_ROW_PX,
+    MainWindow,
+)
 
 
 class _PanelHost:
-    """Only the pieces of MainWindow the Projects section touches."""
+    """Only the pieces of MainWindow the Collections section touches."""
 
     def __init__(self, store: LibraryStore) -> None:
         self._library_store = store
@@ -29,7 +34,7 @@ class _PanelHost:
     _project_id_for_item = MainWindow._project_id_for_item
 
 
-class ProjectsPanelTests(unittest.TestCase):
+class CollectionsPanelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -62,8 +67,9 @@ class ProjectsPanelTests(unittest.TestCase):
         self.host._refresh_projects_panel()
         self.assertEqual(1, self.host.projects_list.count())
         item = self.host.projects_list.item(0)
-        self.assertEqual("No projects\nin this library", item.text())
-        self.assertEqual(2, len(item.text().splitlines()))
+        self.assertEqual("No collections yet.", item.text())
+        self.assertEqual(_PROJECT_EMPTY_ROW_PX, item.sizeHint().height())
+        self.assertTrue(item.textAlignment() & Qt.AlignmentFlag.AlignTop)
         self.assertEqual(Qt.ItemFlag.NoItemFlags, item.flags())
         self.assertEqual("", self.host._project_id_for_item(item))
 

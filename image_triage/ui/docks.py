@@ -5,18 +5,33 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from PySide6.QtCore import QByteArray, QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QByteArray,
+    QEasingCurve,
+    QEvent,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMenu,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSizeGrip,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -27,6 +42,7 @@ from ..ai_results import build_ai_explanation_lines
 from ..review_tools import EMPTY_INSPECTION_STATS, InspectionStats, histogram_synopsis
 from ..quality.poi import focus_poi, should_use_smart_focus_crop
 from .sections import SectionHeader
+from .display_metrics import DisplayProfile, STANDARD_DISPLAY
 from .theme import ThemePalette, default_theme
 
 if TYPE_CHECKING:
@@ -161,12 +177,97 @@ class InspectorPropertyRow(QWidget):
     def text(self) -> str:
         return self.value_label.text()
 
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        self.label.setFixedWidth(profile.inspector_label_width)
+        layout = self.layout()
+        if layout is not None:
+            layout.setSpacing(profile.inspector_spacing)
+
     @staticmethod
     def _refresh_style(widget: QWidget) -> None:
         style = widget.style()
         style.unpolish(widget)
         style.polish(widget)
         widget.update()
+
+
+class _InspectorScrollArea(QScrollArea):
+    """Wheel-smoothed scrolling for overflowing inspector content."""
+
+    WHEEL_ANIMATION_MS = 160
+    MIN_WHEEL_STEP_PX = 28
+    MAX_WHEEL_STEP_PX = 72
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        bar = self.verticalScrollBar()
+        self._scroll_target = bar.value()
+        self._scroll_animation = QPropertyAnimation(bar, b"value", self)
+        self._scroll_animation.setDuration(self.WHEEL_ANIMATION_MS)
+        self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._scroll_animation.finished.connect(self._sync_scroll_target)
+        bar.sliderPressed.connect(self.stop_smooth_scroll)
+        bar.rangeChanged.connect(self._clamp_scroll_target)
+
+    def _sync_scroll_target(self) -> None:
+        self._scroll_target = self.verticalScrollBar().value()
+
+    def _clamp_scroll_target(self, minimum: int, maximum: int) -> None:
+        self._scroll_target = max(minimum, min(maximum, self._scroll_target))
+
+    def stop_smooth_scroll(self) -> None:
+        self._scroll_animation.stop()
+        self._sync_scroll_target()
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # Precision touchpads already deliver smooth pixel deltas. Applying a
+        # second animation makes those gestures feel delayed, so preserve them.
+        pixel_delta = event.pixelDelta().y()
+        if pixel_delta:
+            self.stop_smooth_scroll()
+            bar = self.verticalScrollBar()
+            bar.setValue(bar.value() - pixel_delta)
+            event.accept()
+            return
+
+        angle_delta = event.angleDelta().y()
+        if not angle_delta or event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            super().wheelEvent(event)
+            return
+
+        bar = self.verticalScrollBar()
+        if bar.maximum() <= bar.minimum():
+            super().wheelEvent(event)
+            return
+
+        wheel_step = max(
+            self.MIN_WHEEL_STEP_PX,
+            min(self.MAX_WHEEL_STEP_PX, QApplication.wheelScrollLines() * bar.singleStep()),
+        )
+        requested = -(angle_delta / 120.0) * wheel_step
+        current = bar.value()
+        remaining = self._scroll_target - current
+        # Same-direction ticks build on the pending destination. A direction
+        # reversal starts from the visible position for an immediate response.
+        base = self._scroll_target if requested * remaining > 0 else current
+        target = round(base + requested)
+        target = max(bar.minimum(), min(bar.maximum(), target))
+        self._scroll_target = target
+
+        self._scroll_animation.stop()
+        if target != current:
+            self._scroll_animation.setStartValue(current)
+            self._scroll_animation.setEndValue(target)
+            self._scroll_animation.start()
+        event.accept()
+
+
+INSPECTOR_SECTION_HEADER_HEIGHT = 32
+STAR_GLYPH = "\u2605"
+# Preview image height as a share of the card width (a 3:2-ish frame), plus the
+# card's header and filename rows.
+INSPECTOR_PREVIEW_IMAGE_RATIO = 0.64
+INSPECTOR_PREVIEW_CHROME_HEIGHT = 78
 
 
 class InspectorSection(QWidget):
@@ -179,6 +280,7 @@ class InspectorSection(QWidget):
         body: QWidget,
         *,
         expanded: bool = True,
+        aside: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -188,25 +290,37 @@ class InspectorSection(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 5)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
+        # Optional right-aligned status text in the header ("Not analyzed").
+        self.aside_label = QLabel(aside)
+        self.aside_label.setObjectName("inspectorSectionAside")
+        self.aside_label.setVisible(bool(aside))
         self.header = SectionHeader(
             title,
             expanded=expanded,
-            chevron_on_right=True,
+            trailing=self.aside_label,
             parent=self,
         )
         self.header.setObjectName("inspectorSectionHeader")
+        self.header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.header.title.setObjectName("inspectorSectionTitle")
-        self.header.layout().setContentsMargins(0, 0, 0, 0)
-        self.header.setFixedHeight(24)
+        self.header.layout().setContentsMargins(12, 0, 12, 0)
+        self.header.layout().setSpacing(8)
+        self.header.setFixedHeight(INSPECTOR_SECTION_HEADER_HEIGHT)
         self.header.toggled.connect(self._set_body_visible)
         layout.addWidget(self.header)
 
         self.body = body
+        self.body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        body_layout = self.body.layout()
+        if body_layout is not None:
+            body_layout.setContentsMargins(10, 5, 10, 5)
+            body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.body_scroll: QScrollArea | None = None
         self.body.setParent(self)
-        layout.addWidget(self.body)
+        layout.addWidget(self.body, 1)
 
         self.empty_label = QLabel("", self)
         self.empty_label.setObjectName("inspectorEmptyState")
@@ -219,9 +333,13 @@ class InspectorSection(QWidget):
     def is_expanded(self) -> bool:
         return self.header.is_expanded()
 
+    def set_aside(self, text: str) -> None:
+        self.aside_label.setText(text)
+        self.aside_label.setVisible(bool(text))
+
     def hasHeightForWidth(self) -> bool:
-        # Section boundaries are controlled by the pane's stable vertical
-        # proportions, not by whichever value happens to wrap most recently.
+        # InspectorPanel explicitly assigns the natural wrapped-content height
+        # before laying out the shared scrolling stack.
         return False
 
     def heightForWidth(self, _width: int) -> int:
@@ -236,17 +354,45 @@ class InspectorSection(QWidget):
         self.empty_label.setText(text or "")
         self.empty_label.setVisible(has_empty_state and self.is_expanded())
         self.body.setVisible(not has_empty_state and self.is_expanded())
+        if self.body_scroll is not None:
+            self.body_scroll.setVisible(not has_empty_state and self.is_expanded())
         self.updateGeometry()
 
     def _set_body_visible(self, expanded: bool) -> None:
         self.header.setToolTip(f"{'Collapse' if expanded else 'Expand'} {self.header.title.text()}")
         has_empty_state = bool(self.empty_label.text())
         self.body.setVisible(expanded and not has_empty_state)
+        if self.body_scroll is not None:
+            self.body_scroll.setVisible(expanded and not has_empty_state)
         self.empty_label.setVisible(expanded and has_empty_state)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding if expanded else QSizePolicy.Policy.Fixed,
         )
+        self.updateGeometry()
+
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        layout = self.layout()
+        if layout is not None:
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+        header_horizontal = max(8, round(12 * profile.scale))
+        body_horizontal = max(8, round(12 * profile.scale))
+        self.header.layout().setContentsMargins(
+            header_horizontal,
+            0,
+            header_horizontal,
+            0,
+        )
+        body_layout = self.body.layout()
+        if body_layout is not None:
+            body_layout.setContentsMargins(
+                body_horizontal,
+                5,
+                body_horizontal,
+                5,
+            )
+        self.header.setFixedHeight(max(26, round(INSPECTOR_SECTION_HEADER_HEIGHT * profile.scale)))
         self.updateGeometry()
 
 
@@ -731,6 +877,8 @@ class WorkspacePanel(QWidget):
         self._expanded_width = preferred_width
         self._minimum_expanded_width = minimum_width if minimum_width > 0 else max(236, preferred_width - 44)
         self._maximum_expanded_width = maximum_width if maximum_width > 0 else preferred_width + 180
+        self._display_profile_name = "standard"
+        self._user_width_override = False
         self._mode = "expanded"
 
         self.setObjectName(f"{variant}PanelSlot")
@@ -794,9 +942,41 @@ class WorkspacePanel(QWidget):
     def maximum_expanded_width(self) -> int:
         return self._maximum_expanded_width
 
-    def set_expanded_width(self, width: int) -> None:
+    @property
+    def width_customized(self) -> bool:
+        return self._user_width_override
+
+    def set_expanded_width(self, width: int, *, user_adjusted: bool = True) -> None:
         if width > 120:
             self._expanded_width = max(self._minimum_expanded_width, min(width, self._maximum_expanded_width))
+            if user_adjusted:
+                self._user_width_override = True
+
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        """Apply shell width bounds without replacing a user's manual width."""
+
+        preferred, minimum, maximum = profile.panel_widths(self.key)
+        self._minimum_expanded_width = minimum
+        self._maximum_expanded_width = max(minimum, maximum)
+        if not self._user_width_override:
+            self._expanded_width = max(minimum, min(preferred, self._maximum_expanded_width))
+        else:
+            self._expanded_width = max(
+                minimum,
+                min(self._expanded_width, self._maximum_expanded_width),
+            )
+        self._display_profile_name = profile.name
+        apply_content_profile = getattr(self.content, "apply_display_profile", None)
+        if callable(apply_content_profile):
+            apply_content_profile(profile)
+        if self._mode == "expanded":
+            self._apply_expanded_constraints()
+
+    def reset_display_width(self) -> None:
+        """Return to the active profile's default width during layout reset."""
+
+        self._user_width_override = False
+
 
     def apply_theme(self, theme: ThemePalette) -> None:
         self.side_tab.apply_theme(theme)
@@ -905,6 +1085,7 @@ class WorkspaceDocks:
             tab_widget.setDocumentMode(True)
             tab_widget.setMovable(True)
         self._default_sizes = [self.library.expanded_width, 1240, self.inspector.expanded_width]
+        self._active_display_profile: DisplayProfile | None = None
         self._wiring_complete = False
 
         for key, panel in self._panel_map.items():
@@ -937,11 +1118,26 @@ class WorkspaceDocks:
         self._side_orders = {"left": ["library"], "right": ["inspector"]}
         self._side_tab_groups = {"left": [], "right": []}
         self._sync_splitter_order()
+        self.library.reset_display_width()
+        self.inspector.reset_display_width()
+        if self._active_display_profile is not None:
+            self.library.apply_display_profile(self._active_display_profile)
+            self.inspector.apply_display_profile(self._active_display_profile)
+            self._default_sizes = [self.library.expanded_width, 1240, self.inspector.expanded_width]
         self.library.show_expanded()
         self.inspector.show_expanded()
         self._set_action_checked("library", True)
         self._set_action_checked("inspector", True)
         self.splitter.setSizes(self._default_sizes)
+
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        """Resize the dock shell for the current logical display profile."""
+
+        self._active_display_profile = profile
+        self.library.apply_display_profile(profile)
+        self.inspector.apply_display_profile(profile)
+        self._default_sizes = [self.library.expanded_width, 1240, self.inspector.expanded_width]
+        self._rebalance_sizes()
 
     def save_state(self) -> dict[str, Any]:
         panels_state: dict[str, Any] = {}
@@ -951,6 +1147,7 @@ class WorkspaceDocks:
                 "mode": panel.mode,
                 "side": panel.side,
                 "expanded_width": panel.expanded_width,
+                "width_customized": panel.width_customized,
                 "floating_geometry": _encode_qbytearray(window.saveGeometry()) if window is not None else "",
             }
             save_content_state = getattr(panel.content, "save_ui_state", None)
@@ -1004,7 +1201,10 @@ class WorkspaceDocks:
                 reset_content_state = getattr(panel.content, "reset_ui_state", None)
                 if callable(reset_content_state):
                     reset_content_state()
-            panel.set_expanded_width(int(panel_state.get("expanded_width", panel.expanded_width)))
+            panel.set_expanded_width(
+                int(panel_state.get("expanded_width", panel.expanded_width)),
+                user_adjusted=bool(panel_state.get("width_customized", False)),
+            )
             mode = panel_state.get("mode", "expanded")
             if mode == "hidden":
                 self.hide_panel(key)
@@ -1020,6 +1220,12 @@ class WorkspaceDocks:
             self.splitter.restoreState(splitter_state)
         else:
             self._rebalance_sizes()
+        # Reapply the active profile after restoring state. Older saved layouts
+        # have no width_customized marker and are treated as defaults, allowing
+        # them to adapt to the current logical window size.
+        active_profile = getattr(self, "_active_display_profile", None)
+        if active_profile is not None:
+            self.apply_display_profile(active_profile)
         return True
 
     def _validated_side_map(self, payload: object, *, default: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -1234,10 +1440,10 @@ class WorkspaceDocks:
             return
         for panel in self._panels_for_side("left"):
             if panel.mode == "expanded" and sizes[0] > TAB_WIDTH:
-                panel.set_expanded_width(sizes[0])
+                panel.set_expanded_width(sizes[0], user_adjusted=True)
         for panel in self._panels_for_side("right"):
             if panel.mode == "expanded" and sizes[2] > TAB_WIDTH:
-                panel.set_expanded_width(sizes[2])
+                panel.set_expanded_width(sizes[2], user_adjusted=True)
 
     def _rebalance_sizes(self) -> None:
         # Refresh each side column's width bounds and visibility for the current
@@ -1698,21 +1904,21 @@ class InspectorPanel(QWidget):
         "preview",
         "histogram",
         "culling",
-        "subject",
-        "quality",
-        "group_comparison",
-        "edit_potential",
+        "capture",
+        "ai_analysis",
     )
-    SECTION_HEIGHT_WEIGHTS = {
-        "histogram": 138,
-        "culling": 162,
-        "subject": 137,
-        "quality": 156,
-        "group_comparison": 170,
-        "edit_potential": 139,
+    SECTION_HEIGHTS = {
+        "histogram": 152,
+        "culling": 118,
+        "capture": 142,
+        "ai_analysis": 214,
     }
-
+    AI_DIMENSIONS = ("Focus", "Exposure", "Noise", "Detail", "Composition", "Group rank")
+    AI_ROWS = ("Suggestion", "Confidence", "Reason", "Subject", "Focus", "Exposure", "Noise", "Group rank")
     keep_requested = Signal()
+    previous_requested = Signal()
+    next_requested = Signal()
+    analyze_requested = Signal()
     reject_requested = Signal()
     compare_requested = Signal()
     best_of_set_requested = Signal()
@@ -1728,6 +1934,7 @@ class InspectorPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("inspectorPanelContent")
         self._theme = default_theme()
+        self._display_profile = STANDARD_DISPLAY
         self._sections: dict[str, InspectorSection] = {}
 
         root_layout = QVBoxLayout(self)
@@ -1737,10 +1944,10 @@ class InspectorPanel(QWidget):
         content = QWidget(self)
         content.setObjectName("inspectorBody")
         root_layout.addWidget(content, 1)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self._inspector_body_layout = layout
+        pinned_layout = QVBoxLayout(content)
+        pinned_layout.setContentsMargins(0, 0, 0, 0)
+        pinned_layout.setSpacing(6)
+        self._inspector_pinned_layout = pinned_layout
 
         # Preview card: the small header bar (pop-out / swap / close) sits above
         # the selection preview image, replacing the old folder-name header.
@@ -1751,6 +1958,7 @@ class InspectorPanel(QWidget):
         preview_layout = QVBoxLayout(self.preview_card)
         preview_layout.setContentsMargins(8, 8, 8, 10)
         preview_layout.setSpacing(8)
+        self._preview_layout = preview_layout
 
         header_bar = QWidget(self.preview_card)
         header_bar.setObjectName("inspectorHeaderBar")
@@ -1760,6 +1968,7 @@ class InspectorPanel(QWidget):
         header_layout = QHBoxLayout(header_bar)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
+        self._preview_header_layout = header_layout
         self.preview_collapse_button = self._make_header_button("▾", "Minimize preview", "inspectorHeaderButton")
         self.preview_collapse_button.setCheckable(True)
         self.preview_collapse_button.setChecked(True)
@@ -1772,12 +1981,16 @@ class InspectorPanel(QWidget):
         self.swap_side_button.clicked.connect(lambda _checked=False: self.swap_side_requested.emit())
         self.face_cycle_button.clicked.connect(lambda _checked=False: self.face_cycle_requested.emit())
         self.close_button.clicked.connect(lambda _checked=False: self.close_requested.emit())
+        self.preview_title = QLabel("Preview", header_bar)
+        self.preview_title.setObjectName("inspectorSectionTitle")
         header_layout.addWidget(self.preview_collapse_button, 0)
-        header_layout.addWidget(self.popout_button, 0)
-        header_layout.addWidget(self.swap_side_button, 0)
-        header_layout.addWidget(self.face_cycle_button, 0)
+        header_layout.addWidget(self.preview_title, 0)
         header_layout.addStretch(1)
+        header_layout.addWidget(self.face_cycle_button, 0)
         header_layout.addWidget(self.close_button, 0)
+        # Pop-out and swap stay reachable from the inspector's context menu.
+        self.popout_button.hide()
+        self.swap_side_button.hide()
         preview_layout.addWidget(header_bar)
 
         self.preview_image = QLabel(self.preview_card)
@@ -1797,7 +2010,46 @@ class InspectorPanel(QWidget):
         self._preview_focus = (0.5, 0.5)
         preview_layout.addWidget(self.preview_image, 1)
 
-        layout.addWidget(self.preview_card)
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(2, 0, 2, 0)
+        name_row.setSpacing(6)
+        self.preview_name = QLabel("", self.preview_card)
+        self.preview_name.setObjectName("inspectorPreviewName")
+        self.preview_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.preview_previous_button = self._make_header_button("\u2039", "Previous photo", "inspectorNavButton")
+        self.preview_next_button = self._make_header_button("\u203a", "Next photo", "inspectorNavButton")
+        self.preview_position = QLabel("", self.preview_card)
+        self.preview_position.setObjectName("inspectorPreviewPosition")
+        self.preview_previous_button.clicked.connect(lambda _checked=False: self.previous_requested.emit())
+        self.preview_next_button.clicked.connect(lambda _checked=False: self.next_requested.emit())
+        name_row.addWidget(self.preview_name, 1)
+        name_row.addWidget(self.preview_previous_button, 0)
+        name_row.addWidget(self.preview_position, 0)
+        name_row.addWidget(self.preview_next_button, 0)
+        preview_layout.addLayout(name_row)
+
+        pinned_layout.addWidget(self.preview_card)
+
+        # The preview stays pinned while every information card participates in
+        # one continuous scroll. Cards always receive their complete natural
+        # height, so the viewport can never cut text at an internal card edge.
+        self.details_scroll = _InspectorScrollArea(content)
+        self.details_scroll.setObjectName("inspectorScrollArea")
+        self.details_scroll.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.details_scroll.setWidgetResizable(True)
+        self.details_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.details_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.details_scroll.verticalScrollBar().setObjectName("inspectorOverlayScrollBar")
+        self.details_body = QWidget(self.details_scroll)
+        self.details_body.setObjectName("inspectorDetailsBody")
+        self.details_body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QVBoxLayout(self.details_body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self._inspector_body_layout = layout
+        self.details_scroll.setWidget(self.details_body)
+        pinned_layout.addWidget(self.details_scroll, 1)
 
         # Histogram sits directly below the preview.
         self.histogram_widget = InspectorHistogram(self)
@@ -1811,28 +2063,17 @@ class InspectorPanel(QWidget):
         histogram_layout.setSpacing(6)
         histogram_layout.addWidget(self.histogram_widget)
         histogram_layout.addWidget(self.histogram_summary)
-        self.histogram_section = self._make_custom_section(layout, "histogram", "Histogram", histogram_body)
-        self.culling_rows = self._make_section(
-            layout, "culling", "Culling", ("Decision", "AI Suggestion", "Confidence", "Reason")
-        )
-        self.subject_rows = self._make_section(
-            layout, "subject", "Subject", ("Type", "Review Focus", "Signal", "AI Detail")
-        )
-        self.quality_rows = self._make_section(
-            layout, "quality", "Quality", ("Detail", "Focus", "Motion Blur", "Noise", "Exposure", "Confidence")
-        )
-        self.group_rows = self._make_section(
+        self.histogram_section = self._make_custom_section(
             layout,
-            "group_comparison",
-            "Group Comparison",
-            ("Group Size", "Rank", "Best Candidate", "Similar Files", "Duplicate Risk", "Why"),
+            "histogram",
+            "Histogram",
+            histogram_body,
         )
-        self.edit_rows = self._make_section(
-            layout,
-            "edit_potential",
-            "Edit Potential",
-            ("Worth Editing", "Main Issue", "Fixes Needed", "Effort", "Notes"),
-        )
+        self.culling_rows = self._make_section(layout, "culling", "Culling", ("Decision", "Rating", "Group"))
+        self.culling_rows["Group"].value_label.setOpenExternalLinks(False)
+        self.culling_rows["Group"].value_label.linkActivated.connect(lambda _link: self.compare_requested.emit())
+        self.capture_rows = self._make_section(layout, "capture", "Capture", ("Camera", "Lens", "Settings", "Pixels"))
+        self.ai_rows, self.ai_section = self._make_ai_section(layout)
         layout.addStretch(1)
         # Quick Actions were removed: every button duplicated the toolbar.
         self.quick_action_buttons: dict[str, QPushButton] = {}
@@ -1889,7 +2130,7 @@ class InspectorPanel(QWidget):
         body_layout.addStretch(1)
         section = InspectorSection(key, title, body, parent=self)
         self._register_section(section)
-        layout.addWidget(section, self.SECTION_HEIGHT_WEIGHTS[key])
+        layout.addWidget(section)
         return section
 
     def _make_section(
@@ -1910,10 +2151,81 @@ class InspectorPanel(QWidget):
             row = InspectorPropertyRow(row_name, body)
             body_layout.addWidget(row)
             values[row_name] = row
-        target = InspectorSection(key, title, body, expanded=not collapsed, parent=self)
+        target = InspectorSection(
+            key,
+            title,
+            body,
+            expanded=not collapsed,
+            parent=self,
+        )
+        target.setProperty("lastInspectorSection", False)
         self._register_section(target)
-        layout.addWidget(target, self.SECTION_HEIGHT_WEIGHTS[key])
+        layout.addWidget(target)
         return values
+
+    def _make_ai_section(self, layout: QVBoxLayout) -> tuple[dict[str, InspectorPropertyRow], InspectorSection]:
+        """AI analysis: an invitation to analyze until results exist, then the
+        per-photo AI readout."""
+        body = QWidget(self)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        self.ai_stack = QStackedWidget(body)
+
+        placeholder = QFrame(self.ai_stack)
+        placeholder.setObjectName("inspectorAiPlaceholder")
+        placeholder_layout = QVBoxLayout(placeholder)
+        placeholder_layout.setContentsMargins(12, 12, 12, 12)
+        placeholder_layout.setSpacing(9)
+        intro = QLabel("Quality, subject, and group ranking appear here once this folder is analyzed.", placeholder)
+        intro.setObjectName("inspectorHint")
+        intro.setWordWrap(True)
+        placeholder_layout.addWidget(intro)
+        chips = QGridLayout()
+        chips.setContentsMargins(0, 0, 0, 0)
+        chips.setHorizontalSpacing(6)
+        chips.setVerticalSpacing(6)
+        for position, name in enumerate(self.AI_DIMENSIONS):
+            chip = QLabel(name, placeholder)
+            chip.setObjectName("inspectorAiChip")
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chips.addWidget(chip, position // 3, position % 3)
+        placeholder_layout.addLayout(chips)
+        self.analyze_button = QPushButton("Analyze folder", placeholder)
+        self.analyze_button.setObjectName("inspectorAnalyzeButton")
+        self.analyze_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.analyze_button.clicked.connect(lambda _checked=False: self.analyze_requested.emit())
+        placeholder_layout.addWidget(self.analyze_button, 0, Qt.AlignmentFlag.AlignLeft)
+        placeholder_layout.addStretch(1)
+        self.ai_stack.addWidget(placeholder)
+
+        rows_page = QWidget(self.ai_stack)
+        rows_layout = QVBoxLayout(rows_page)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(4)
+        rows: dict[str, InspectorPropertyRow] = {}
+        for row_name in self.AI_ROWS:
+            row = InspectorPropertyRow(row_name, rows_page)
+            rows_layout.addWidget(row)
+            rows[row_name] = row
+        rows_layout.addStretch(1)
+        self.ai_stack.addWidget(rows_page)
+        body_layout.addWidget(self.ai_stack)
+
+        section = InspectorSection("ai_analysis", "AI analysis", body, aside="Not analyzed", parent=self)
+        section.setProperty("lastInspectorSection", True)
+        self._register_section(section)
+        layout.addWidget(section)
+        return rows, section
+
+    def set_position(self, position: int, count: int) -> None:
+        """Show where the current photo sits in the grid (``10 / 48``)."""
+        shown = position > 0 and count > 0
+        self.preview_position.setText(f"{position} / {count}" if shown else "")
+        for button in (self.preview_previous_button, self.preview_next_button):
+            button.setVisible(shown)
+        self.preview_previous_button.setEnabled(shown and position > 1)
+        self.preview_next_button.setEnabled(shown and position < count)
 
     def _register_section(self, section: InspectorSection) -> None:
         self._sections[section.key] = section
@@ -1921,28 +2233,34 @@ class InspectorPanel(QWidget):
 
     def _sync_section_heights(self, _expanded: bool | None = None) -> None:
         layout = self._inspector_body_layout
-        section_count = len(self._sections)
-        if section_count == 0:
+        sections = tuple(self._sections.values())
+        if not sections:
             return
 
-        preview_height = max(80, int(self.width() or 0))
-        available = max(
-            section_count * 34,
-            self.height() - preview_height - layout.spacing() * section_count,
-        )
-        weight_total = sum(self.SECTION_HEIGHT_WEIGHTS.values())
-        expanded_heights = {
-            key: max(34, int(round(available * weight / weight_total)))
-            for key, weight in self.SECTION_HEIGHT_WEIGHTS.items()
-        }
-        height_delta = available - sum(expanded_heights.values())
-        expanded_heights["edit_potential"] += height_delta
-
+        assigned_heights: list[int] = []
         for key, section in self._sections.items():
             index = layout.indexOf(section)
             if index >= 0:
                 layout.setStretch(index, 0)
-            section.setFixedHeight(expanded_heights[key] if section.is_expanded() else 34)
+            height = (
+                max(
+                    section.header.height(),
+                    round(self.SECTION_HEIGHTS[key] * self._display_profile.scale),
+                )
+                if section.is_expanded()
+                else section.header.height()
+            )
+            assigned_heights.append(height)
+            section.setFixedHeight(height)
+
+        margins = layout.contentsMargins()
+        stack_height = (
+            margins.top()
+            + margins.bottom()
+            + sum(assigned_heights)
+            + layout.spacing() * max(0, len(sections) - 1)
+        )
+        self.details_body.setMinimumHeight(stack_height)
         layout.invalidate()
         layout.activate()
 
@@ -1983,6 +2301,44 @@ class InspectorPanel(QWidget):
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setFixedSize(24, 22)
         return button
+
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        """Resize inspector chrome while keeping its existing adaptive sections."""
+
+        self._display_profile = profile
+        self._inspector_pinned_layout.setSpacing(profile.inspector_spacing)
+        self._inspector_body_layout.setSpacing(0)
+        preview_margin = max(6, round(8 * profile.scale))
+        self._preview_layout.setContentsMargins(
+            preview_margin,
+            preview_margin,
+            preview_margin,
+            max(preview_margin, round(10 * profile.scale)),
+        )
+        self._preview_layout.setSpacing(profile.inspector_spacing)
+        self._preview_header_layout.setSpacing(profile.inspector_spacing)
+        for button in (
+            self.preview_collapse_button,
+            self.popout_button,
+            self.swap_side_button,
+            self.face_cycle_button,
+            self.close_button,
+            self.preview_previous_button,
+            self.preview_next_button,
+        ):
+            button.setFixedSize(
+                profile.inspector_header_button_width,
+                profile.inspector_header_button_height,
+            )
+        self.histogram_widget.setMinimumHeight(profile.inspector_histogram_min_height)
+        self.histogram_widget.setMaximumHeight(profile.inspector_histogram_max_height)
+        for section in self._sections.values():
+            section.apply_display_profile(profile)
+        for rows in (self.culling_rows, self.capture_rows, self.ai_rows):
+            for row in rows.values():
+                row.apply_display_profile(profile)
+        self._sync_property_label_widths()
+        self._sync_inspector_geometry()
 
     def _set_preview_expanded(self, expanded: bool) -> None:
         self.preview_image.setVisible(expanded)
@@ -2034,17 +2390,26 @@ class InspectorPanel(QWidget):
         if card is None:
             return
         try:
-            if not self.preview_image.isVisible():
+            # isVisible() is false while an otherwise-expanded inspector is
+            # still hidden during construction. The toggle is the persistent
+            # source of truth for the user's preview state.
+            if not self.preview_collapse_button.isChecked():
                 card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 card.setFixedHeight(INSPECTOR_PREVIEW_COLLAPSED_HEIGHT)
             else:
                 card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-                card.setFixedHeight(max(80, int(card.width() or self.width() or 0)))
+                card.setFixedHeight(self._expanded_preview_card_height())
             self._rescale_preview()
         except RuntimeError:
             # A zero-delay layout callback can outlive a panel destroyed in the
             # same event-loop turn (notably when replacing a workspace preset).
             return
+
+    def _expanded_preview_card_height(self) -> int:
+        """A landscape image frame plus the card's header and filename rows."""
+
+        width = int(self.preview_card.width() or self.width() or 0)
+        return max(120, round(width * INSPECTOR_PREVIEW_IMAGE_RATIO) + INSPECTOR_PREVIEW_CHROME_HEIGHT)
 
     def set_preview(
         self,
@@ -2108,6 +2473,11 @@ class InspectorPanel(QWidget):
     def _sync_inspector_geometry(self) -> None:
         try:
             self._sync_preview_card_aspect()
+            # The preview's square height changes during resizeEvent. Activate
+            # its parent immediately so the details viewport is laid out below
+            # the new boundary instead of briefly retaining the old size hint.
+            self._inspector_pinned_layout.invalidate()
+            self._inspector_pinned_layout.activate()
             self._sync_section_heights()
         except RuntimeError:
             # A zero-delay layout callback can outlive a panel destroyed in the
@@ -2137,6 +2507,12 @@ class InspectorPanel(QWidget):
         preview_action.setChecked(self.preview_collapse_button.isChecked())
         preview_action.toggled.connect(self.preview_collapse_button.setChecked)
         menu.addSeparator()
+        menu.addAction("Pop Out Inspector").triggered.connect(
+            lambda _checked=False: self.popout_requested.emit()
+        )
+        menu.addAction("Swap Panel Sides").triggered.connect(
+            lambda _checked=False: self.swap_side_requested.emit()
+        )
         menu.addAction("Hide Inspector Pane").triggered.connect(
             lambda _checked=False: self.close_requested.emit()
         )
@@ -2171,51 +2547,75 @@ class InspectorPanel(QWidget):
         self._sync_section_heights()
 
     def _sync_property_label_widths(self) -> None:
-        label_width = max(82, min(InspectorPropertyRow.LABEL_WIDTH, self.width() - 218))
-        for rows in (
-            self.culling_rows,
-            self.subject_rows,
-            self.quality_rows,
-            self.group_rows,
-            self.edit_rows,
-        ):
+        preferred = getattr(self, "_display_profile", STANDARD_DISPLAY).inspector_label_width
+        label_width = max(78, min(preferred, self.width() - 218))
+        for rows in (self.culling_rows, self.capture_rows, self.ai_rows):
             for row in rows.values():
                 row.label.setFixedWidth(label_width)
 
     def clear(self) -> None:
         self.set_preview(None)
-        for rows in (
-            self.culling_rows,
-            self.subject_rows,
-            self.quality_rows,
-            self.group_rows,
-            self.edit_rows,
-        ):
+        self.preview_name.setText("")
+        self.set_position(0, 0)
+        for rows in (self.culling_rows, self.capture_rows, self.ai_rows):
             for value in rows.values():
                 value.set_value("Unavailable", severity=InspectorSeverity.MUTED)
         self.culling_rows["Decision"].set_value("Unreviewed", emphasis="strong")
-        self.culling_rows["AI Suggestion"].set_value(
-            "No AI result", severity=InspectorSeverity.MUTED, emphasis="secondary"
-        )
-        self.culling_rows["Confidence"].set_value("Unavailable", severity=InspectorSeverity.MUTED)
-        self.culling_rows["Reason"].set_value("Unavailable", severity=InspectorSeverity.MUTED)
+        self.culling_rows["Rating"].set_value("Unrated", severity=InspectorSeverity.MUTED)
+        self.culling_rows["Group"].set_value("Single photo", severity=InspectorSeverity.MUTED)
         self.face_cycle_button.setVisible(False)
         self.face_cycle_button.setEnabled(False)
-        for row in self.subject_rows.values():
-            row.set_value("Not analyzed", severity=InspectorSeverity.MUTED)
-        for row in self.quality_rows.values():
-            row.set_value("Not analyzed", severity=InspectorSeverity.MUTED)
-        self._sections["group_comparison"].set_empty_state(None)
-        self.group_rows["Group Size"].set_value("No similar images detected", severity=InspectorSeverity.MUTED)
-        for row_name in ("Rank", "Best Candidate", "Similar Files", "Duplicate Risk", "Why"):
-            self.group_rows[row_name].set_value("Unavailable", severity=InspectorSeverity.MUTED)
-        self._sections["edit_potential"].set_empty_state(None)
-        self.edit_rows["Worth Editing"].set_value("Not analyzed", severity=InspectorSeverity.MUTED)
-        for row_name in ("Main Issue", "Fixes Needed", "Effort", "Notes"):
-            self.edit_rows[row_name].set_value("Unavailable", severity=InspectorSeverity.MUTED)
+        self._set_ai_analyzed(False)
         self.histogram_widget.set_stats(None)
         self._set_histogram_summary(EMPTY_INSPECTION_STATS)
         self._set_quick_actions_enabled(False, grouped=False)
+
+    def _set_ai_analyzed(self, analyzed: bool) -> None:
+        self.ai_stack.setCurrentIndex(1 if analyzed else 0)
+        self.ai_section.set_aside("" if analyzed else "Not analyzed")
+
+    def _decision_markup(self, annotation: "SessionAnnotation | None") -> str:
+        text = self._decision_text(annotation)
+        color = ""
+        if annotation is not None and annotation.winner:
+            color = self._theme.success.css
+        elif annotation is not None and annotation.reject:
+            color = self._theme.danger.css
+        if not color:
+            return text
+        return f'<span style="color:{color}">\u25cf</span>&nbsp; {text}'
+
+    def _rating_markup(self, rating: int) -> str:
+        rating = max(0, min(5, int(rating or 0)))
+        if rating <= 0:
+            return "Unrated"
+        on = self._theme.warning.css
+        off = self._theme.border.css
+        filled = STAR_GLYPH * rating
+        empty = STAR_GLYPH * (5 - rating)
+        return f'<span style="color:{on}">{filled}</span><span style="color:{off}">{empty}</span>'
+
+    @staticmethod
+    def _capture_settings_text(metadata: "CaptureMetadata | None") -> str:
+        if metadata is None:
+            return ""
+        iso = str(metadata.iso or "").strip()
+        if iso and not iso.upper().startswith("ISO"):
+            iso = f"ISO {iso}"
+        return " \u00b7 ".join(
+            part for part in (metadata.exposure, metadata.aperture, iso, metadata.focal_length) if part
+        )
+
+    @staticmethod
+    def _pixels_text(metadata: "CaptureMetadata | None", stats: InspectionStats) -> str:
+        width = int(getattr(metadata, "width", 0) or 0) if metadata is not None else 0
+        height = int(getattr(metadata, "height", 0) or 0) if metadata is not None else 0
+        if width <= 0 or height <= 0:
+            width, height = int(stats.width or 0), int(stats.height or 0)
+        if width <= 0 or height <= 0:
+            return ""
+        megapixels = width * height / 1_000_000
+        return f"{width:,} \u00d7 {height:,} \u00b7 {megapixels:.1f} MP"
 
     def set_context(
         self,
@@ -2257,106 +2657,74 @@ class InspectorPanel(QWidget):
         self.face_cycle_button.setVisible(len(face_records) > 1)
         self.face_cycle_button.setEnabled(len(face_records) > 1)
 
-        decision = self._decision_text(annotation)
-
-        self.culling_rows["Decision"].set_value(decision, emphasis="strong")
-        self.culling_rows["AI Suggestion"].set_value(
-            self._ai_suggestion_text(ai_result),
-            severity=InspectorSeverity.MUTED if ai_result is None else InspectorSeverity.NORMAL,
-            emphasis="secondary",
+        self.preview_name.setText(current_record.name)
+        self.culling_rows["Decision"].set_value(self._decision_markup(annotation), emphasis="strong")
+        rating = int(getattr(annotation, "rating", 0) or 0) if annotation is not None else 0
+        self.culling_rows["Rating"].set_value(
+            self._rating_markup(rating),
+            severity=InspectorSeverity.NORMAL if rating else InspectorSeverity.MUTED,
         )
-        confidence_text = self._ai_confidence_text(ai_result)
-        self.culling_rows["Confidence"].set_value(
-            confidence_text,
-            severity=self._severity_for_value("Confidence", confidence_text),
-        )
-        explanation = build_ai_explanation_lines(ai_result, review_summary=review_summary)
-        reason = self._first_text(
-            getattr(ai_result, "confidence_summary", "") if ai_result is not None else "",
-            getattr(ai_result, "cluster_reason", "") if ai_result is not None else "",
-            *(explanation[:2] if ai_result is not None else ()),
-            workflow_summary,
-        )
-        self.culling_rows["Reason"].set_value(
-            reason or "Unavailable",
-            severity=InspectorSeverity.NORMAL if reason else InspectorSeverity.MUTED,
-        )
-
-        self._set_subject_context(
-            category_profile=category_profile,
-            category_info=category_info or {},
-            face_records=face_records,
-            ai_result=ai_result,
-        )
-
-        stats = inspection_stats or EMPTY_INSPECTION_STATS
-        detail_score = stats.detail_score or self._float_attr(review_insight, "detail_score")
-        quality_values = {
-            "Detail": self._quality_level(detail_score, stats),
-            "Focus": self._focus_level(detail_score, stats),
-            "Motion Blur": self._motion_blur_level(
-                stats.motion_blur_score, analyzed=stats.width > 0, stats=stats
-            ),
-            "Noise": self._noise_level(stats.noise_score, analyzed=stats.width > 0),
-            "Exposure": self._exposure_label(stats),
-            "Confidence": self._quality_confidence_label(stats),
-        }
-        for row_name, value in quality_values.items():
-            self.quality_rows[row_name].set_value(
-                value,
-                severity=self._severity_for_value(row_name, value),
-            )
-
         group_size = max(
             int(getattr(ai_result, "group_size", 0) or 0) if ai_result is not None else 0,
             int(getattr(workflow_insight, "group_size", 0) or 0) if workflow_insight is not None else 0,
             current_record.stack_count if current_record.has_variant_stack else 0,
         )
         is_grouped = group_size > 1
-        self._sections["group_comparison"].set_empty_state(None)
-        self.group_rows["Group Size"].set_value(
-            f"{group_size} images" if is_grouped else "No similar images detected",
-            severity=InspectorSeverity.NORMAL if is_grouped else InspectorSeverity.MUTED,
-        )
-        self.group_rows["Rank"].set_value(
-            ai_result.rank_text if ai_result is not None and ai_result.group_size > 1 else "Unavailable",
-            severity=InspectorSeverity.NORMAL if is_grouped else InspectorSeverity.MUTED,
-        )
-        best_candidate = self._best_candidate_text(ai_result, workflow_insight)
-        self.group_rows["Best Candidate"].setText(best_candidate)
-        self.group_rows["Similar Files"].set_value(
-            str(max(0, group_size - 1)) if is_grouped else "Unavailable",
-            severity=InspectorSeverity.NORMAL if is_grouped else InspectorSeverity.MUTED,
-        )
-        duplicate_risk = "High" if bool(getattr(review_insight, "is_duplicate", False)) else "Low"
-        self.group_rows["Duplicate Risk"].set_value(
-            duplicate_risk if is_grouped else "Unavailable",
-            severity=InspectorSeverity.NORMAL if is_grouped else InspectorSeverity.MUTED,
-        )
-        why = self._first_text(*(workflow_details[:2]), getattr(ai_result, "confidence_summary", ""))
-        self.group_rows["Why"].set_value(
-            why or "Unavailable",
-            severity=InspectorSeverity.NORMAL if why else InspectorSeverity.MUTED,
-        )
+        if is_grouped:
+            rank = int(getattr(ai_result, "rank_in_group", 0) or 0) if ai_result is not None else 0
+            where = f"{rank} of {group_size}" if rank > 0 else f"{group_size} photos"
+            link = self._theme.accent.css
+            self.culling_rows["Group"].set_value(
+                f'Burst \u00b7 {where}&nbsp;&nbsp;<a href="group" style="color:{link};text-decoration:none">View group</a>'
+            )
+        else:
+            self.culling_rows["Group"].set_value("Single photo", severity=InspectorSeverity.MUTED)
 
-        self._sections["edit_potential"].set_empty_state(None)
-        worth_editing = self._worth_editing_text(annotation, ai_result, workflow_insight)
-        self.edit_rows["Worth Editing"].set_value(
-            worth_editing,
-            severity=(
-                InspectorSeverity.MUTED if worth_editing == "Not analyzed" else InspectorSeverity.NORMAL
-            ),
-        )
-        self.edit_rows["Main Issue"].set_value("Unavailable", severity=InspectorSeverity.MUTED)
-        self.edit_rows["Fixes Needed"].set_value("Unavailable", severity=InspectorSeverity.MUTED)
-        self.edit_rows["Effort"].set_value("Not analyzed", severity=InspectorSeverity.MUTED)
-        notes = self._first_text(workflow_summary, review_summary)
-        self.edit_rows["Notes"].set_value(
-            notes or "Unavailable",
-            severity=InspectorSeverity.NORMAL if notes else InspectorSeverity.MUTED,
-        )
+        camera = ""
+        if metadata is not None:
+            camera = metadata.camera or " ".join(part for part in (metadata.camera_make, metadata.camera_model) if part)
+        stats = inspection_stats or EMPTY_INSPECTION_STATS
+        capture_values = {
+            "Camera": camera,
+            "Lens": metadata.lens if metadata is not None else "",
+            "Settings": self._capture_settings_text(metadata),
+            "Pixels": self._pixels_text(metadata, stats),
+        }
+        for row_name, value in capture_values.items():
+            self.capture_rows[row_name].set_value(
+                value or "Unavailable",
+                severity=InspectorSeverity.NORMAL if value else InspectorSeverity.MUTED,
+            )
 
-        self.histogram_widget.set_stats(stats)
+        analyzed = ai_result is not None
+        self._set_ai_analyzed(analyzed)
+        if analyzed:
+            explanation = build_ai_explanation_lines(ai_result, review_summary=review_summary)
+            reason = self._first_text(
+                getattr(ai_result, "confidence_summary", ""),
+                getattr(ai_result, "cluster_reason", ""),
+                *explanation[:2],
+                workflow_summary,
+            )
+            detail_score = stats.detail_score or self._float_attr(review_insight, "detail_score")
+            subject, _focus_hint, _signal = self._subject_profile_text(str(category_profile or "uncategorized").strip().lower())
+            ai_values = {
+                "Suggestion": self._ai_suggestion_text(ai_result),
+                "Confidence": self._ai_confidence_text(ai_result),
+                "Reason": reason,
+                "Subject": subject,
+                "Focus": self._focus_level(detail_score, stats),
+                "Exposure": self._exposure_label(stats),
+                "Noise": self._noise_level(stats.noise_score, analyzed=stats.width > 0),
+                "Group rank": ai_result.rank_text if ai_result.group_size > 1 else "",
+            }
+            for row_name, value in ai_values.items():
+                self.ai_rows[row_name].set_value(
+                    value or "Unavailable",
+                    severity=self._severity_for_value(row_name, value or ""),
+                )
+
+                self.histogram_widget.set_stats(stats)
         self._set_histogram_summary(stats)
 
         self._set_quick_actions_enabled(not current_record.is_folder, grouped=is_grouped)
@@ -2390,6 +2758,8 @@ class InspectorPanel(QWidget):
     def _set_histogram_summary(self, stats: InspectionStats) -> None:
         synopsis = histogram_synopsis(stats)
         self.histogram_summary.setText(synopsis)
+        self.histogram_summary.updateGeometry()
+        self._sync_section_heights()
 
     @staticmethod
     def _should_use_face_as_main_preview(
@@ -2464,51 +2834,6 @@ class InspectorPanel(QWidget):
         crop_left = int(round(max(0.0, min(center_x - crop_side / 2.0, width - crop_side))))
         crop_top = int(round(max(0.0, min(center_y - crop_side / 2.0, height - crop_side))))
         return image.copy(QRect(crop_left, crop_top, crop_side, crop_side))
-
-    def _set_subject_context(
-        self,
-        *,
-        category_profile: str,
-        category_info: dict[str, object],
-        face_records: tuple[object, ...],
-        ai_result: "AIImageResult | None",
-    ) -> None:
-        profile = str(category_profile or "uncategorized").strip().lower()
-        label, focus, signal = self._subject_profile_text(profile)
-        self.subject_rows["Type"].set_value(label)
-        self.subject_rows["Review Focus"].set_value(focus)
-        if profile == "people_portrait" and face_records:
-            primary = max(face_records, key=lambda item: float(getattr(item, "det_score", 0.0) or 0.0))
-            det = self._float_attr(primary, "det_score")
-            eyes = self._float_attr(primary, "eye_sharpness")
-            pieces = [f"{len(face_records)} face{'s' if len(face_records) != 1 else ''}"]
-            if det is not None:
-                pieces.append(f"{det * 100:.0f}% detect")
-            if eyes is not None:
-                pieces.append(f"eyes {eyes:.1f}/10")
-            signal = " · ".join(pieces)
-        signal_tooltip = "No specialized category context available." if profile == "uncategorized" else ""
-        self.subject_rows["Signal"].set_value(signal, tooltip=signal_tooltip)
-        confidence = category_info.get("confidence")
-        try:
-            confidence_value = float(confidence)
-        except (TypeError, ValueError):
-            confidence_value = 0.0
-        confidence_text = f"category score {confidence_value:.2f}" if confidence_value > 0 else ""
-        ai_bits = []
-        if ai_result is not None:
-            bucket = getattr(ai_result, "confidence_bucket_label", "") or getattr(ai_result, "confidence_bucket_short_label", "")
-            if bucket:
-                ai_bits.append(str(bucket))
-            score = getattr(ai_result, "display_score_text", "")
-            if score:
-                ai_bits.append(str(score))
-        if confidence_text:
-            ai_bits.append(confidence_text)
-        self.subject_rows["AI Detail"].set_value(
-            " · ".join(ai_bits) if ai_bits else "No AI result",
-            severity=InspectorSeverity.NORMAL if ai_bits else InspectorSeverity.MUTED,
-        )
 
     @staticmethod
     def _subject_profile_text(profile: str) -> tuple[str, str, str]:
@@ -2801,7 +3126,7 @@ def build_workspace_docks(
     splitter = QSplitter(Qt.Orientation.Horizontal, shell)
     splitter.setObjectName("workspaceSplitter")
     splitter.setChildrenCollapsible(False)
-    splitter.setHandleWidth(8)
+    splitter.setHandleWidth(1)
     splitter.addWidget(library)
     splitter.addWidget(center_widget)
     splitter.addWidget(inspector)

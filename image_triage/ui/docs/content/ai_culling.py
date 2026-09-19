@@ -94,7 +94,7 @@ ARTICLES = [
 
         Re-run Cull & Score if images were added or removed. For an unchanged folder, **Quick Rerank** reuses the existing ingest, categories, and clusters and recalculates the base ranking.
 
-        > **Tip:** Already scored a folder once? Use **`AI > Load Saved AI For Folder`** to reopen cached results without rerunning the models.
+        > **Tip:** Already scored a folder once? Use **Load Saved** on the AI task rail or search for **Load Saved AI For Folder** in the Command Palette. This reopens the folder's cached results without rerunning the models.
         """,
     ),
     DocArticle(

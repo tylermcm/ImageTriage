@@ -84,6 +84,8 @@ def write_edited_copy(
     target_path: str | Path,
     recipe: Any,
     masked_adjustments: list,
+    background: dict | None = None,
+    lensblur: dict | None = None,
 ) -> Path:
     """Decode at full resolution, apply current edits, and atomically write a copy."""
     source = Path(source_path)
@@ -108,6 +110,11 @@ def write_edited_copy(
         recipe,
         masked_adjustments,
         base_key=("save-copy", str(source.resolve(strict=False))),
+        background=background,
+        lensblur=lensblur,
+        # An export always renders the real crop, whatever tool happens to be
+        # armed in the UI at the time.
+        view={"bypass_crop": False},
     )
     if rendered.isNull():
         raise OSError(f"Could not render {source.name}.")
@@ -130,6 +137,8 @@ class _EditorCopyRunnable(QRunnable):
         target_path: str,
         recipe: Any,
         masked_adjustments: list,
+        background: dict | None = None,
+        lensblur: dict | None = None,
     ) -> None:
         super().__init__()
         self._service = service
@@ -137,6 +146,8 @@ class _EditorCopyRunnable(QRunnable):
         self._target_path = target_path
         self._recipe = recipe
         self._masked_adjustments = masked_adjustments
+        self._background = background
+        self._lensblur = lensblur
 
     def run(self) -> None:
         try:
@@ -145,6 +156,8 @@ class _EditorCopyRunnable(QRunnable):
                 self._target_path,
                 self._recipe,
                 self._masked_adjustments,
+                background=self._background,
+                lensblur=self._lensblur,
             )
         except Exception as exc:  # noqa: BLE001 - surfaced in the editor UI
             self._service._worker_done.emit(self._source_path, self._target_path, str(exc))
@@ -176,6 +189,8 @@ class EditorCopyService(QObject):
         target_path: str,
         recipe: Any,
         masked_adjustments: list,
+        background: dict | None = None,
+        lensblur: dict | None = None,
     ) -> bool:
         if self._active:
             return False
@@ -187,6 +202,8 @@ class EditorCopyService(QObject):
                 target_path,
                 recipe,
                 masked_adjustments,
+                background,
+                lensblur,
             )
         )
         return True

@@ -3,9 +3,76 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import QByteArray, QRect, QSettings
+from PySide6.QtGui import QGuiApplication
 
 
 LAYOUT_STATE_VERSION = 2
+WINDOW_WORK_AREA_MARGIN = 8
+
+
+def clamp_rect_to_available_geometry(
+    rect: QRect,
+    available: QRect,
+    *,
+    margin: int = WINDOW_WORK_AREA_MARGIN,
+) -> QRect:
+    """Fit a top-level frame rectangle completely inside a screen work area."""
+
+    if rect.isNull() or available.isNull():
+        return QRect(rect)
+    inset = max(0, int(margin))
+    usable = available.adjusted(inset, inset, -inset, -inset)
+    if usable.width() <= 0 or usable.height() <= 0:
+        usable = QRect(available)
+    width = min(max(1, rect.width()), usable.width())
+    height = min(max(1, rect.height()), usable.height())
+    rightmost_x = usable.right() - width + 1
+    bottommost_y = usable.bottom() - height + 1
+    x = max(usable.left(), min(rect.x(), rightmost_x))
+    y = max(usable.top(), min(rect.y(), bottommost_y))
+    return QRect(x, y, width, height)
+
+
+def fit_window_to_available_geometry(window) -> bool:
+    """Keep a normal top-level window above the taskbar on its current screen."""
+
+    try:
+        if window.isMaximized() or window.isFullScreen():
+            return False
+        frame = QRect(window.frameGeometry())
+        client = QRect(window.geometry())
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    if frame.isNull() or client.isNull():
+        return False
+
+    screen = QGuiApplication.screenAt(frame.center())
+    if screen is None:
+        try:
+            screen = window.screen()
+        except (AttributeError, RuntimeError):
+            screen = None
+    if screen is None:
+        screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        return False
+
+    target_frame = clamp_rect_to_available_geometry(frame, screen.availableGeometry())
+    if target_frame == frame:
+        return False
+
+    frame_left = max(0, client.left() - frame.left())
+    frame_top = max(0, client.top() - frame.top())
+    frame_extra_width = max(0, frame.width() - client.width())
+    frame_extra_height = max(0, frame.height() - client.height())
+    target_client = QRect(
+        target_frame.left() + frame_left,
+        target_frame.top() + frame_top,
+        max(1, target_frame.width() - frame_extra_width),
+        max(1, target_frame.height() - frame_extra_height),
+    )
+    window.setGeometry(target_client)
+    return True
 
 
 def restore_window_layout(window, settings: QSettings, geometry_key: str, state_key: str, workspace_docks=None) -> tuple[bool, str]:
@@ -27,6 +94,11 @@ def restore_window_layout(window, settings: QSettings, geometry_key: str, state_
             saved_window_state = "maximized"
         else:
             saved_window_state = "normal"
+
+    # Saved geometry can come from a monitor with a larger logical work area.
+    # Clamp the normal rectangle before the first paint; MainWindow repeats this
+    # once after show so Windows' real title-bar dimensions are included.
+    fit_window_to_available_geometry(window)
 
     restored_workspace = False
     if workspace_docks is None:

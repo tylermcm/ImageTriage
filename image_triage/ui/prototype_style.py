@@ -21,15 +21,12 @@ from PySide6.QtCore import (
     QStorageInfo,
     Qt,
 )
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QFileIconProvider,
     QStyle,
     QStyledItemDelegate,
-    QStyleOptionTab,
     QStyleOptionViewItem,
-    QStylePainter,
-    QTabBar,
     QTreeView,
     QWidget,
 )
@@ -57,102 +54,6 @@ PROTO_FOLDER_COLOR = "#d3b15b"     # flat folder icon gold
 PROTO_DRIVE_COLOR = "#8f9bb0"      # flat drive icon steel
 PROTO_DRIVE_LED_COLOR = "#5ad17e"  # drive activity LED accent
 SIDEBAR_ACCENT_COLOR = "#579bff"
-
-
-class CompactIconTabBar(QTabBar):
-    """Paint icon-and-label tabs with an explicit, predictable gap."""
-
-    def __init__(self, parent: QWidget | None = None, *, icon_text_gap: int = 2) -> None:
-        super().__init__(parent)
-        self._icon_text_gap = max(0, int(icon_text_gap))
-        self._normal_text_color = QColor("#8390a2")
-        self._hover_text_color = QColor("#b8c2d0")
-        self._selected_text_color = QColor("#f3f6fb")
-
-    def set_text_colors(
-        self,
-        normal: QColor,
-        selected: QColor,
-        hover: QColor | None = None,
-    ) -> None:
-        self._normal_text_color = QColor(normal)
-        self._selected_text_color = QColor(selected)
-        self._hover_text_color = QColor(hover or selected)
-        self.update()
-
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        painter = QStylePainter(self)
-        painter.setClipRect(event.rect())
-        selected_index = self.currentIndex()
-        order = [index for index in range(self.count()) if index != selected_index]
-        if selected_index >= 0:
-            order.append(selected_index)
-
-        for index in order:
-            option = QStyleOptionTab()
-            self.initStyleOption(option, index)
-            icon = QIcon(option.icon)
-            text = option.text
-
-            # Let the active Qt stylesheet retain ownership of the tab shape,
-            # underline, hover background, and borders. Only its label layout
-            # is replaced because Qt does not expose that icon/text gap.
-            option.icon = QIcon()
-            option.text = ""
-            painter.drawControl(QStyle.ControlElement.CE_TabBarTabShape, option)
-
-            selected = bool(option.state & QStyle.StateFlag.State_Selected)
-            hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
-            font = QFont(self.font())
-            font.setPixelSize(14)
-            font.setWeight(QFont.Weight.Bold if selected else QFont.Weight.DemiBold)
-            painter.setFont(font)
-            if selected:
-                painter.setPen(self._selected_text_color)
-            elif hovered:
-                painter.setPen(self._hover_text_color)
-            else:
-                painter.setPen(self._normal_text_color)
-
-            content_rect = option.rect.adjusted(10, 0, -10, 0)
-            icon_size = self.iconSize()
-            maximum_text_width = max(
-                0,
-                content_rect.width() - icon_size.width() - self._icon_text_gap,
-            )
-            metrics = painter.fontMetrics()
-            display_text = metrics.elidedText(
-                text,
-                Qt.TextElideMode.ElideRight,
-                maximum_text_width,
-            )
-            text_width = metrics.horizontalAdvance(display_text)
-            content_width = icon_size.width() + self._icon_text_gap + text_width
-            left = content_rect.x() + max(0, (content_rect.width() - content_width) // 2)
-            icon_rect = QRect(
-                left,
-                option.rect.center().y() - icon_size.height() // 2,
-                icon_size.width(),
-                icon_size.height(),
-            )
-            mode = (
-                QIcon.Mode.Normal
-                if option.state & QStyle.StateFlag.State_Enabled
-                else QIcon.Mode.Disabled
-            )
-            state = QIcon.State.On if selected else QIcon.State.Off
-            icon.paint(painter, icon_rect, Qt.AlignmentFlag.AlignCenter, mode, state)
-            text_rect = QRect(
-                icon_rect.x() + icon_rect.width() + self._icon_text_gap,
-                option.rect.y(),
-                text_width,
-                option.rect.height(),
-            )
-            painter.drawText(
-                text_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                display_text,
-            )
 
 
 def folder_icon_pixmap(size: int = 16, color: str = PROTO_FOLDER_COLOR) -> QPixmap:
@@ -268,7 +169,60 @@ class FolderTreeView(QTreeView):
         self._hovered_row_fill.setAlpha(28)
         self._single_drive_expansion_enabled = True
         self._enforcing_single_expansion = False
+        self._drives_only = False
+        self._usage_track = QColor(58, 66, 77, 210)
+        self._usage_fill = (QColor("#5b9cff"), QColor("#5b9cff"))
+        self._drive_icon_provider = None
         self.expanded.connect(self._handle_index_expanded)
+
+    def set_drives_only(self, enabled: bool) -> None:
+        """Show just the top-level drives as a flat, fixed-height list."""
+        self._drives_only = bool(enabled)
+        self.setItemsExpandable(not self._drives_only)
+        self.setExpandsOnDoubleClick(not self._drives_only)
+        if self._drives_only:
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.updateGeometry()
+
+    def setRootIndex(self, index: QModelIndex) -> None:  # type: ignore[override]
+        # Under a drive root the top-level folders need their own branch
+        # column (for expand arrows); Qt only reserves it when decorated.
+        super().setRootIndex(index)
+        self.setRootIsDecorated(index.isValid())
+
+    def drives_only(self) -> bool:
+        return self._drives_only
+
+    def set_usage_bar_colors(self, track: QColor, fill_start: QColor, fill_end: QColor) -> None:
+        self._usage_track = QColor(track)
+        self._usage_fill = (QColor(fill_start), QColor(fill_end))
+        self.viewport().update()
+
+    def usage_bar_colors(self) -> tuple[QColor, tuple[QColor, QColor]]:
+        return self._usage_track, self._usage_fill
+
+    def set_drive_icon_provider(self, provider) -> None:
+        """``provider(path) -> QIcon | None`` replaces the shell's drive icons."""
+        self._drive_icon_provider = provider
+        self.viewport().update()
+
+    def drive_icon_for(self, path: str) -> QIcon | None:
+        provider = self._drive_icon_provider
+        return provider(path) if provider is not None else None
+
+    def fit_height_to_rows(self) -> None:
+        """Drives-only lists size to their rows so the Folders section below
+        gets the rest of the pane."""
+        model = self.model()
+        if model is None:
+            return
+        root = self.rootIndex()
+        height = 0
+        for row in range(model.rowCount(root)):
+            height += max(0, self.sizeHintForRow(row))
+        frame = 2 * self.frameWidth()
+        self.setFixedHeight(max(0, height) + frame + 2)
 
     def single_drive_expansion_enabled(self) -> bool:
         return self._single_drive_expansion_enabled
@@ -285,7 +239,9 @@ class FolderTreeView(QTreeView):
         clicked_disclosure = item_rect.isValid() and position.x() < item_rect.left()
         was_expanded = index.isValid() and self.isExpanded(index)
         model = self.model()
-        expandable = bool(model is not None and index.isValid() and model.hasChildren(index))
+        expandable = bool(
+            not self._drives_only and model is not None and index.isValid() and model.hasChildren(index)
+        )
         super().mousePressEvent(event)
         if (
             event.button() == Qt.MouseButton.LeftButton
@@ -370,9 +326,14 @@ class FolderTreeView(QTreeView):
             painter.setBrush(fill)
             painter.drawRoundedRect(QRectF(rect), 6, 6)
             painter.restore()
-        depth = 0
+        # Depth below the displayed root, so a tree rooted at a drive starts
+        # its folders flush left.
+        # Rows directly under a drive root still get a branch column, so their
+        # expand arrows line up with the rest of the tree.
+        root = self.rootIndex()
+        depth = 1 if root.isValid() else 0
         parent = index.parent()
-        while parent.isValid():
+        while parent.isValid() and parent != root:
             depth += 1
             parent = parent.parent()
 
@@ -461,8 +422,12 @@ class _FolderTreeDelegate(QStyledItemDelegate):
             20,
             20,
         )
-        if not option.icon.isNull():
-            option.icon.paint(painter, icon_rect, Qt.AlignmentFlag.AlignCenter)
+        model = index.model()
+        drive_path = model.filePath(index) if hasattr(model, "filePath") else ""
+        custom_icon = self._tree.drive_icon_for(drive_path)
+        drive_icon = custom_icon if custom_icon is not None and not custom_icon.isNull() else option.icon
+        if not drive_icon.isNull():
+            drive_icon.paint(painter, icon_rect, Qt.AlignmentFlag.AlignCenter)
 
         text_left = icon_rect.right() + 9
         text_rect = QRect(text_left, rect.top(), max(0, rect.right() - text_left - 6), 20)
@@ -479,14 +444,18 @@ class _FolderTreeDelegate(QStyledItemDelegate):
         if not self._tree.isExpanded(index):
             ratio = self._drive_usage_ratio(index)
             if ratio is not None:
+                track, (fill_start, fill_end) = self._tree.usage_bar_colors()
                 bar = QRectF(text_left, rect.top() + 25, max(24, rect.right() - text_left - 7), 4)
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(58, 66, 77, 210))
+                painter.setBrush(track)
                 painter.drawRoundedRect(bar, 2, 2)
                 if ratio > 0:
                     used = QRectF(bar)
                     used.setWidth(max(5.0, bar.width() * ratio))
-                    painter.setBrush(QColor("#5b9cff"))
+                    gradient = QLinearGradient(bar.left(), 0.0, bar.right(), 0.0)
+                    gradient.setColorAt(0.0, fill_start)
+                    gradient.setColorAt(1.0, fill_end)
+                    painter.setBrush(gradient)
                     painter.drawRoundedRect(used, 2, 2)
         painter.restore()
 

@@ -27,10 +27,11 @@ from .ai_model import (
     download_depth_model,
     resolve_depth_model_installation,
 )
+from .ai_paths import managed_cache_dir
 from .mask_engine_service import default_mask_engine_service
 from .perf import perf_logger
 from .prompt_masks import _decode_rgb_preview
-from .semantic_mask_service import validate_semantic_runtime
+from .semantic_mask_service import validate_mask_runtime
 
 DEPTH_PREVIEW_EDGE = 1600
 DEPTH_MODEL_ID = DEFAULT_DEPTH_MODEL_REPO_ID
@@ -49,13 +50,14 @@ class DepthMapResult:
 
 
 def default_depth_cache_root() -> Path:
-    if os.name == "nt":
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-    else:
-        xdg_cache = os.environ.get("XDG_CACHE_HOME")
-        base = Path(xdg_cache) if xdg_cache else Path.home() / ".cache"
-    return base / "image_triage_ai_cache" / "depth_maps"
+    """Managed cache directory for depth_maps.
+
+    Resolves through the one canonical managed root so it cannot land inside
+    Store Python's virtualized package cache (docs/ai_runtime_failure_map.md,
+    root cause A). Migration of a previous release's directory happens once,
+    explicitly, in ``ai_model_store.migrate_ai_assets``.
+    """
+    return managed_cache_dir("depth_maps")
 
 
 def _progress(callback: ProgressCallback | None, message: str) -> None:
@@ -97,7 +99,9 @@ def ensure_depth_map(
 
         download_depth_model(model_installation, progress_callback=download_progress)
 
-    validate_semantic_runtime()
+    # Depth has its own capability: a missing OneFormer model must not
+    # block it, and its failure message must name depth estimation.
+    validate_mask_runtime("depth")
     stat = source.stat()
     cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns)
     cache_dir = Path(cache_root or default_depth_cache_root()) / cache_key

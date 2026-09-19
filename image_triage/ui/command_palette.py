@@ -63,6 +63,7 @@ class CommandPaletteDialog(QWidget):
         self._prominent = False
         self._accept_on_click = False
         self._compact_rows = False
+        self._group_by_section = False
         self._anchor_widget: QWidget | None = None
         self._finishing = False
         self._presented = False
@@ -124,6 +125,7 @@ class CommandPaletteDialog(QWidget):
         card_size: QSize | None = None,
         accept_on_click: bool | None = None,
         compact_rows: bool | None = None,
+        group_by_section: bool | None = None,
         anchor_widget: QWidget | None = None,
     ) -> None:
         self._commands = commands
@@ -134,9 +136,12 @@ class CommandPaletteDialog(QWidget):
             self._accept_on_click = bool(accept_on_click)
         if compact_rows is not None:
             self._compact_rows = bool(compact_rows)
+        if group_by_section is not None:
+            self._group_by_section = bool(group_by_section)
         self._anchor_widget = anchor_widget
         self.setProperty("anchored", anchor_widget is not None)
         self.setProperty("compactRows", self._compact_rows)
+        self.result_list.setUniformItemSizes(not self._group_by_section)
         if anchor_widget is not None:
             self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self._card_layout.setContentsMargins(*(12, 12, 12, 12) if self._compact_rows else (16, 16, 16, 16))
@@ -233,14 +238,45 @@ class CommandPaletteDialog(QWidget):
                 self.result_list.addItem(empty)
                 return
 
-            for command in self._visible_commands:
+            section_order = {
+                section: index
+                for index, section in enumerate(
+                    dict.fromkeys(command.section for command in self._commands if command.section)
+                )
+            }
+            visible = self._visible_commands
+            if self._group_by_section:
+                # Keep ranked relevance within each category while presenting
+                # categories in the deliberate order supplied by the caller.
+                visible = sorted(
+                    visible,
+                    key=lambda command: section_order.get(command.section, len(section_order)),
+                )
+
+            previous_section: str | None = None
+            first_command_row = -1
+            for command in visible:
+                if self._group_by_section and command.section != previous_section:
+                    header = QListWidgetItem(self.result_list)
+                    header.setFlags(Qt.ItemFlag.NoItemFlags)
+                    header.setSizeHint(QSize(0, 26 if self._compact_rows else 32))
+                    self.result_list.setItemWidget(header, _CommandSectionHeader(command.section))
+                    previous_section = command.section
                 item = QListWidgetItem(self.result_list)
                 item.setSizeHint(command_palette_item_size_hint(compact=self._compact_rows))
                 item.setData(Qt.ItemDataRole.UserRole, command.id)
-                self.result_list.addItem(item)
-                self.result_list.setItemWidget(item, _CommandRow(command, compact=self._compact_rows))
+                self.result_list.setItemWidget(
+                    item,
+                    _CommandRow(
+                        command,
+                        compact=self._compact_rows,
+                        show_section=not self._group_by_section,
+                    ),
+                )
+                if first_command_row < 0:
+                    first_command_row = self.result_list.row(item)
 
-            self.result_list.setCurrentRow(0)
+            self.result_list.setCurrentRow(first_command_row)
         finally:
             self.result_list.setUpdatesEnabled(True)
 
@@ -338,8 +374,26 @@ class CommandPaletteDialog(QWidget):
             self._debug_hook(f"dialog {message}")
 
 
+class _CommandSectionHeader(QWidget):
+    def __init__(self, section: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("commandPaletteSectionHeader")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 7, 8, 2)
+        label = QLabel((section or "Other").upper(), self)
+        label.setObjectName("commandPaletteSection")
+        layout.addWidget(label)
+
+
 class _CommandRow(QWidget):
-    def __init__(self, command: PaletteCommand, parent=None, *, compact: bool = False) -> None:
+    def __init__(
+        self,
+        command: PaletteCommand,
+        parent=None,
+        *,
+        compact: bool = False,
+        show_section: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
@@ -359,7 +413,11 @@ class _CommandRow(QWidget):
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         text_column.addWidget(title_label)
 
-        subtitle_parts = [part for part in (command.section, command.subtitle) if part]
+        subtitle_parts = [
+            part
+            for part in (command.section if show_section else "", command.subtitle)
+            if part
+        ]
         subtitle_label = QLabel(" | ".join(subtitle_parts), text_container)
         subtitle_label.setObjectName("commandPaletteSubtitle")
         subtitle_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)

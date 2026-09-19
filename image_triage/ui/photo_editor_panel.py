@@ -10,6 +10,8 @@ from typing import Any
 
 import math
 
+import numpy as np
+
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QSize, QSettings, Qt, QSignalBlocker, QThreadPool, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
@@ -17,15 +19,26 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QIcon,
+    QImage,
     QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
+    QRadialGradient,
+)
+from ..editor_geometry import (
+    ViewTransform,
+    fit_rect_in_quad,
+    inset_quad,
+    view_transform_for,
 )
 from ..perf import perf_logger
+from .display_metrics import DisplayProfile, STANDARD_DISPLAY
+from .mask_overlay import build_group_strength, compose_mask_overlay
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
+    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -42,6 +55,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -171,6 +185,7 @@ ADJUSTMENT_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
     ("saturation", "Saturation", -100, 100, 1),
     ("clarity", "Clarity", -100, 100, 1),
     ("dehaze", "Dehaze", -100, 100, 1),
+    ("texture", "Texture", -100, 100, 1),
     ("sharpen", "Sharpen", 0, 100, 1),
     ("denoise", "Denoise", 0, 100, 1),
     ("vignette", "Vignette", -100, 100, 1),
@@ -179,7 +194,146 @@ ADJUSTMENT_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
 ADJUSTMENT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Light", ("exposure", "contrast", "highlights", "shadows", "whites", "blacks")),
     ("Color", ("temperature", "tint", "vibrance", "saturation")),
-    ("Effects", ("clarity", "dehaze", "sharpen", "denoise", "vignette")),
+    # Texture sits between Clarity and Sharpen, as in Camera Raw: clarity is
+    # local contrast, texture is mid-frequency detail, sharpen is edges.
+    ("Effects", ("clarity", "texture", "dehaze", "sharpen", "denoise", "vignette")),
+)
+
+# --- Color Mixer ------------------------------------------------------------
+# The eight hue bands, in the order Camera Raw lists them. Each carries a hue,
+# saturation and luminance slider, shown one band at a time so the section fits
+# the editor column.
+COLOR_MIXER_BANDS: tuple[tuple[str, str], ...] = (
+    ("red", "Red"),
+    ("orange", "Orange"),
+    ("yellow", "Yellow"),
+    ("green", "Green"),
+    ("aqua", "Aqua"),
+    ("blue", "Blue"),
+    ("purple", "Purple"),
+    ("magenta", "Magenta"),
+)
+# Representative colors for the band chips — the picker's only label.
+COLOR_MIXER_SWATCHES: dict[str, str] = {
+    "red": "#e04a4a",
+    "orange": "#e08c3a",
+    "yellow": "#ddc93c",
+    "green": "#5bb04a",
+    "aqua": "#41b7b0",
+    "blue": "#4576d0",
+    "purple": "#8558c8",
+    "magenta": "#c94b96",
+}
+COLOR_MIXER_CHANNELS: tuple[tuple[str, str], ...] = (
+    ("hue", "Hue"),
+    ("saturation", "Saturation"),
+    ("luminance", "Luminance"),
+)
+COLOR_MIXER_SPECS: tuple[tuple[str, str, int, int, int], ...] = tuple(
+    (f"{band}_{channel}", label, -100, 100, 1)
+    for band, _band_label in COLOR_MIXER_BANDS
+    for channel, label in COLOR_MIXER_CHANNELS
+)
+COLOR_MIXER_KEYS: frozenset[str] = frozenset(spec[0] for spec in COLOR_MIXER_SPECS)
+
+# --- Color grading ----------------------------------------------------------
+COLOR_GRADING_ZONES: tuple[tuple[str, str], ...] = (
+    ("shadow", "Shadows"),
+    ("midtone", "Midtones"),
+    ("highlight", "Highlights"),
+    ("global", "Global"),
+)
+COLOR_GRADING_SPECS: tuple[tuple[str, str, int, int, int], ...] = tuple(
+    spec
+    for zone, _zone_label in COLOR_GRADING_ZONES
+    for spec in (
+        (f"grading_{zone}_hue", "Hue", 0, 360, 1),
+        (f"grading_{zone}_sat", "Saturation", 0, 100, 1),
+        (f"grading_{zone}_lum", "Luminance", -100, 100, 1),
+    )
+)
+# Shared across every zone, so they sit under the zone picker rather than in it.
+COLOR_GRADING_MIX_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
+    ("grading_blending", "Blending", 0, 100, 1),
+    ("grading_balance", "Balance", -100, 100, 1),
+)
+COLOR_GRADING_KEYS: frozenset[str] = frozenset(
+    spec[0] for spec in (*COLOR_GRADING_SPECS, *COLOR_GRADING_MIX_SPECS)
+)
+
+# --- Color calibration ------------------------------------------------------
+CALIBRATION_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
+    ("calibration_shadow_tint", "Shadow Tint", -100, 100, 1),
+    ("calibration_red_hue", "Red Hue", -100, 100, 1),
+    ("calibration_red_saturation", "Red Saturation", -100, 100, 1),
+    ("calibration_green_hue", "Green Hue", -100, 100, 1),
+    ("calibration_green_saturation", "Green Saturation", -100, 100, 1),
+    ("calibration_blue_hue", "Blue Hue", -100, 100, 1),
+    ("calibration_blue_saturation", "Blue Saturation", -100, 100, 1),
+)
+CALIBRATION_KEYS: frozenset[str] = frozenset(spec[0] for spec in CALIBRATION_SPECS)
+
+# --- Defringe ---------------------------------------------------------------
+DEFRINGE_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
+    ("defringe_purple_amount", "Purple Amount", 0, 20, 1),
+    ("defringe_purple_hue_low", "Purple Hue", 0, 100, 1),
+    ("defringe_purple_hue_high", "Purple Hue Max", 0, 100, 1),
+    ("defringe_green_amount", "Green Amount", 0, 20, 1),
+    ("defringe_green_hue_low", "Green Hue", 0, 100, 1),
+    ("defringe_green_hue_high", "Green Hue Max", 0, 100, 1),
+)
+DEFRINGE_KEYS: frozenset[str] = frozenset(spec[0] for spec in DEFRINGE_SPECS)
+# Hue windows have non-zero neutrals, so like the vignette shape they are only
+# worth persisting when their amount is doing something.
+DEFRINGE_SHAPE_KEYS: frozenset[str] = frozenset(
+    key for key in DEFRINGE_KEYS if not key.endswith("_amount")
+)
+
+# --- Crop -------------------------------------------------------------------
+# The ratios transform.crop_preset already validates, plus the free and
+# original options the GUI needs.
+CROP_ASPECTS: tuple[tuple[str, str], ...] = (
+    ("", "Free"),
+    ("original", "Original"),
+    ("1:1", "1:1 Square"),
+    ("3:2", "3:2"),
+    ("4:3", "4:3"),
+    ("4:5", "4:5"),
+    ("5:4", "5:4"),
+    ("16:9", "16:9"),
+    ("9:16", "9:16"),
+)
+
+
+def _aspect_ratio(value: object) -> float | None:
+    """Aspect string -> width/height, or None for Free/Original."""
+    text = str(value or "")
+    if ":" not in text:
+        return None
+    width, _sep, height = text.partition(":")
+    try:
+        ratio = float(width) / float(height)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return ratio if ratio > 0 else None
+
+
+# --- Grain ------------------------------------------------------------------
+GRAIN_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
+    ("grain", "Amount", 0, 100, 1),
+    ("grain_size", "Size", 0, 100, 1),
+    ("grain_roughness", "Roughness", 0, 100, 1),
+)
+GRAIN_SHAPE_KEYS: frozenset[str] = frozenset(("grain_size", "grain_roughness"))
+
+# --- Point Color -----------------------------------------------------------
+# These rows edit the currently selected sample. They deliberately do not join
+# ``_rows`` because each sample owns independent values in a list.
+POINT_COLOR_SPECS: tuple[tuple[str, str, int, int, int], ...] = (
+    ("hueShift", "Hue Shift", -100, 100, 1),
+    ("satShift", "Saturation", -100, 100, 1),
+    ("lumShift", "Luminance", -100, 100, 1),
+    ("range", "Range", 1, 100, 1),
 )
 
 # Shape controls that live behind the Vignette row's disclosure. Kept out of
@@ -294,6 +448,23 @@ MASK_TOUCHUP_KEYS: tuple[str, ...] = (
 
 
 CURVE_OP_TYPE = "adjust.point_curve"
+POINT_COLOR_OP_TYPE = "adjust.point_color"
+CROP_OP_TYPE = "transform.crop"
+RETOUCH_OP_TYPES: dict[str, str] = {
+    "heal": "retouch.heal",
+    "clone": "retouch.clone",
+    "red_eye": "retouch.red_eye",
+}
+RETOUCH_TYPE_TO_KIND: dict[str, str] = {v: k for k, v in RETOUCH_OP_TYPES.items()}
+# Every GUI-authored spot and crop lives in the session's full-source space —
+# these op types are in PIXEL_OPERATION_TYPES and the schema requires it.
+SOURCE_SPACE_ID = "space-source-full"
+# Ops the GUI owns outright. They never carry a maskId, so they must bypass the
+# maskId escape hatch in the preserve rule — otherwise every save appends a
+# fresh copy (with a fresh id, so no duplicate-id error catches it).
+GUI_GLOBAL_ONLY_OP_TYPES: frozenset[str] = frozenset(
+    (*RETOUCH_OP_TYPES.values(), CROP_OP_TYPE)
+)
 # Curve editor channel -> EditRecipe field. Persisted as one point_curve op per
 # channel (the op carries a ``channel`` param) since the values are lists.
 CURVE_RECIPE_KEYS: dict[str, str] = {
@@ -303,11 +474,26 @@ CURVE_RECIPE_KEYS: dict[str, str] = {
     "blue": "curve_blue",
 }
 
+# A preset captures the whole look — every global adjustment, not just the
+# Light/Color/Effects sliders. Point Color is deliberately excluded: its
+# samples are tied to one photo's colours and mean nothing on another frame.
 PRESET_RECIPE_KEYS: tuple[str, ...] = (
     *(spec[0] for spec in ADJUSTMENT_SPECS),
     *(spec[0] for spec in VIGNETTE_OPTION_SPECS),
+    *(spec[0] for spec in COLOR_MIXER_SPECS),
+    *(spec[0] for spec in COLOR_GRADING_SPECS),
+    *(spec[0] for spec in COLOR_GRADING_MIX_SPECS),
+    *(spec[0] for spec in CALIBRATION_SPECS),
+    *(spec[0] for spec in DEFRINGE_SPECS),
+    *(spec[0] for spec in GRAIN_SPECS),
     *CURVE_RECIPE_KEYS.values(),
 )
+
+def _camel_param(key: str, prefix: str) -> str:
+    """``calibration_red_hue`` -> ``redHue`` — session params are camelCase."""
+    head, *rest = key[len(prefix) :].split("_")
+    return head + "".join(part.capitalize() for part in rest)
+
 
 SESSION_OPS: dict[str, tuple[str, str]] = {
     "exposure": ("adjust.exposure", "exposure"),
@@ -331,7 +517,54 @@ SESSION_OPS: dict[str, tuple[str, str]] = {
     "vignette_roundness": ("adjust.vignette", "roundness"),
     "vignette_feather": ("adjust.vignette", "feather"),
     "vignette_highlights": ("adjust.vignette", "highlights"),
+    "texture": ("adjust.texture", "texture"),
+    "grain": ("adjust.grain", "grain"),
+    # Shape controls, written alongside a non-zero amount (see the vignette
+    # note above — same neutral-is-not-zero problem).
+    "grain_size": ("adjust.grain", "size"),
+    "grain_roughness": ("adjust.grain", "roughness"),
 }
+
+# The Color Mixer's 24 sliders all ride the one pre-existing HSL op.
+SESSION_OPS.update(
+    {
+        f"{band}_{channel}": (
+            "adjust.hsl_saturation_luminance",
+            f"{band}{channel.capitalize()}",
+        )
+        for band, _label in COLOR_MIXER_BANDS
+        for channel, _channel_label in COLOR_MIXER_CHANNELS
+    }
+)
+SESSION_OPS["hsl_luminance"] = ("adjust.hsl_saturation_luminance", "luminance")
+SESSION_OPS.update(
+    {
+        f"grading_{zone}_{field}": ("adjust.color_grading", f"{zone}{field.capitalize()}")
+        for zone, _label in COLOR_GRADING_ZONES
+        for field in ("hue", "sat", "lum")
+    }
+)
+SESSION_OPS["grading_blending"] = ("adjust.color_grading", "blending")
+SESSION_OPS["grading_balance"] = ("adjust.color_grading", "balance")
+SESSION_OPS.update(
+    {key: ("adjust.calibration", _camel_param(key, "calibration_")) for key in CALIBRATION_KEYS}
+)
+SESSION_OPS.update(
+    {key: ("adjust.defringe", _camel_param(key, "defringe_")) for key in DEFRINGE_KEYS}
+)
+
+# Controls whose neutral value is not zero. They only reach the session when the
+# amount they shape is non-zero, but they are always read back so a saved shape
+# survives a reload.
+SHAPE_KEY_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("adjust.vignette", VIGNETTE_OPTION_KEYS),
+    ("adjust.grain", GRAIN_SHAPE_KEYS),
+    ("adjust.defringe", DEFRINGE_SHAPE_KEYS),
+    ("adjust.color_grading", frozenset(("grading_blending",))),
+)
+SHAPE_ONLY_KEYS: frozenset[str] = frozenset().union(
+    *(keys for _op_type, keys in SHAPE_KEY_GROUPS)
+)
 
 def _next_id(existing: set[str], prefix: str) -> str:
     index = 1
@@ -553,6 +786,10 @@ class CurveEditor(QWidget):
     # Padding around the plot so the endpoint handles, which sit *on* the
     # frame corners, are drawn in full instead of being clipped.
     PADDING = 6
+    # Value ramps along the axes: black to full value, in the channel's colour.
+    # The gap clears the endpoint handles, which straddle the plot's border.
+    BAR = 9
+    BAR_GAP = 6
     HIT_PX = 9.0
     OFF_PLOT_PX = 22.0  # drag this far outside the plot to delete a point
 
@@ -638,7 +875,12 @@ class CurveEditor(QWidget):
         """The square grid the curve is drawn in, inset by PADDING so the
         endpoint handles can straddle its border without being clipped."""
         pad = self.PADDING
-        available = QRectF(self.rect().adjusted(pad, pad, -pad, -pad))
+        # Left and bottom gutters hold the output / input ramps. They are the
+        # same width, so a square widget still yields a square plot.
+        gutter = self.BAR + self.BAR_GAP
+        available = QRectF(
+            self.rect().adjusted(pad + gutter, pad, -pad, -(pad + gutter))
+        )
         side = max(1.0, min(available.width(), available.height()))
         return QRectF(
             available.left() + (available.width() - side) / 2.0,
@@ -769,6 +1011,7 @@ class CurveEditor(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self._plot_rect()
+        self._paint_value_ramps(painter, rect)
         # The frame *is* the plot, so the end handles sit on its corners rather
         # than floating inside it.
         painter.setPen(QPen(QColor("#141414")))
@@ -813,6 +1056,87 @@ class CurveEditor(QWidget):
                 painter.drawEllipse(center, radius, radius)
         painter.end()
 
+    def _paint_value_ramps(self, painter: QPainter, rect: QRectF) -> None:
+        """Black-to-value ramps down the output axis and along the input axis,
+        tinted with the channel being edited, so each edge shows what its
+        direction means: dark at the origin, full value at the far end."""
+        full = (
+            QColor("#f0f0f0")
+            if self._channel == "rgb"
+            else QColor(self._CHANNEL_COLORS[self._channel])
+        )
+        dark = QColor("#0a0a0a")
+
+        output_bar = QRectF(
+            rect.left() - self.BAR_GAP - self.BAR, rect.top(), self.BAR, rect.height()
+        )
+        vertical = QLinearGradient(
+            QPointF(0.0, output_bar.bottom()), QPointF(0.0, output_bar.top())
+        )
+        vertical.setColorAt(0.0, dark)
+        vertical.setColorAt(1.0, full)
+
+        input_bar = QRectF(rect.left(), rect.bottom() + self.BAR_GAP, rect.width(), self.BAR)
+        horizontal = QLinearGradient(
+            QPointF(input_bar.left(), 0.0), QPointF(input_bar.right(), 0.0)
+        )
+        horizontal.setColorAt(0.0, dark)
+        horizontal.setColorAt(1.0, full)
+
+        painter.setPen(QPen(QColor("#141414")))
+        for bar, gradient in ((output_bar, vertical), (input_bar, horizontal)):
+            painter.setBrush(gradient)
+            painter.drawRoundedRect(bar, 2.0, 2.0)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+
+class _ScrollGuard:
+    """Wheel does nothing until the control has been clicked.
+
+    Scrolling the editor column used to drag every slider, spin box and combo
+    the pointer crossed, quietly changing the photo on the way down. An
+    unfocused control now ``ignore()``s the wheel so the event propagates to
+    the scroll area and the pane scrolls instead; click the control first and
+    the wheel adjusts it as usual.
+
+    Ignoring (rather than eating) the event is the whole point — swallowing it
+    would stop the pane scrolling, which is what made this painful.
+    """
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class _EditorSlider(_ScrollGuard, QSlider):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Click focus, not tab focus: the wheel becomes live once you click,
+        # without putting every slider in the tab chain.
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+
+
+class _EditorSpinBox(_ScrollGuard, QSpinBox):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Qt defaults spin boxes to WheelFocus, where a wheel tick grants focus
+        # and the next one edits the value — exactly what this guards against.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+class _EditorDoubleSpinBox(_ScrollGuard, QDoubleSpinBox):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+class _EditorComboBox(_ScrollGuard, QComboBox):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
 
 def _configure_value_box(spin: QAbstractSpinBox) -> None:
     """Compact, editable numeric readout: no spin buttons (the slider is the
@@ -825,9 +1149,12 @@ def _configure_value_box(spin: QAbstractSpinBox) -> None:
     spin.setKeyboardTracking(False)
     spin.setAccelerated(True)
     spin.setCorrectionMode(QAbstractSpinBox.CorrectionMode.CorrectToNearestValue)
+    # Never WheelFocus (Qt's default here), so a passing wheel tick cannot take
+    # focus and start editing the value.
+    spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
 
-class _ValueBox(QDoubleSpinBox):
+class _ValueBox(_EditorDoubleSpinBox):
     """Editable value field that renders a leading ``+`` on non-negative values
     (matching the editor's signed readout) while still accepting typed input
     with an explicit ``+``/``-``."""
@@ -884,7 +1211,7 @@ class _AdjustmentRow(QWidget):
         self.key = key
         self.scale = scale
         self._label = label
-        self.slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.slider = _EditorSlider(Qt.Orientation.Horizontal, self)
         self.slider.setRange(minimum, maximum)
         self.slider.setSingleStep(1)
         self.slider.setPageStep(10)
@@ -950,6 +1277,148 @@ class _AdjustmentRow(QWidget):
             self.value_box.setValue(float(value))
 
 
+class _ColorWheel(QWidget):
+    """An HSV disc with a draggable puck — hue is the angle, saturation the
+    radius. It is a second view of the two sliders beneath it, not a separate
+    value, so it emits on every drag and is set programmatically without echo.
+    """
+
+    changed = Signal(float, float)  # hue 0..360, saturation 0..100
+
+    DIAMETER = 132
+    _PUCK_RADIUS = 6.0
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("colorWheel")
+        self.setFixedSize(self.DIAMETER, self.DIAMETER)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self._hue = 0.0
+        self._saturation = 0.0
+        self._dragging = False
+        self._wheel_cache: QPixmap | None = None
+
+    def values(self) -> tuple[float, float]:
+        return self._hue, self._saturation
+
+    def set_values(self, hue: float, saturation: float) -> None:
+        self._hue = float(hue) % 360.0
+        self._saturation = max(0.0, min(100.0, float(saturation)))
+        self.update()
+
+    def _radius(self) -> float:
+        return self.DIAMETER / 2.0 - self._PUCK_RADIUS - 1.0
+
+    def _wheel_pixmap(self) -> QPixmap:
+        # The disc never changes, so it is painted once and blitted — repainting
+        # a per-pixel HSV gradient on every drag tick would be visible.
+        if self._wheel_cache is not None:
+            return self._wheel_cache
+        size = self.DIAMETER
+        centre = size / 2.0
+        radius = self._radius()
+        ys, xs = np.ogrid[0:size, 0:size]
+        dx = xs - centre
+        dy = ys - centre
+        distance = np.sqrt(dx * dx + dy * dy)
+        hue = (np.degrees(np.arctan2(-dy, dx)) % 360.0) / 360.0
+        saturation = np.clip(distance / radius, 0.0, 1.0)
+        # HSV -> RGB, vectorized (a per-pixel Python loop here was never an
+        # option; this module's history is full of that mistake).
+        sector = np.floor(hue * 6.0)
+        offset = hue * 6.0 - sector
+        p = 1.0 - saturation
+        q = 1.0 - saturation * offset
+        t = 1.0 - saturation * (1.0 - offset)
+        ones = np.ones_like(hue)
+        sector = sector.astype(int) % 6
+        red = np.select(
+            [sector == 0, sector == 1, sector == 2, sector == 3, sector == 4],
+            [ones, q, p, p, t], default=ones,
+        )
+        green = np.select(
+            [sector == 0, sector == 1, sector == 2, sector == 3, sector == 4],
+            [t, ones, ones, q, p], default=p,
+        )
+        blue = np.select(
+            [sector == 0, sector == 1, sector == 2, sector == 3, sector == 4],
+            [p, p, t, ones, ones], default=q,
+        )
+        alpha = np.where(distance <= radius + 0.5, 255.0, 0.0)
+        # Premultiplied BGRA is what Format_ARGB32_Premultiplied expects.
+        buffer = np.ascontiguousarray(
+            np.dstack(
+                [
+                    np.rint(blue * alpha),
+                    np.rint(green * alpha),
+                    np.rint(red * alpha),
+                    alpha,
+                ]
+            ).astype(np.uint8)
+        )
+        # Build from the buffer and copy immediately: QImage does not take
+        # ownership of memory handed to this constructor, so the copy is what
+        # detaches it from `payload` before that goes out of scope. (Writing
+        # through scanLine() would be the other option and is a good way to
+        # corrupt the heap.)
+        payload = buffer.tobytes()
+        image = QImage(
+            payload, size, size, size * 4, QImage.Format.Format_ARGB32_Premultiplied
+        ).copy()
+        self._wheel_cache = QPixmap.fromImage(image)
+        return self._wheel_cache
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.drawPixmap(0, 0, self._wheel_pixmap())
+        centre = self.DIAMETER / 2.0
+        radius = self._radius()
+        angle = math.radians(self._hue)
+        distance = self._saturation / 100.0 * radius
+        x = centre + math.cos(angle) * distance
+        y = centre - math.sin(angle) * distance
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(0, 0, 0, 160), 3.0))
+        painter.drawEllipse(QPointF(x, y), self._PUCK_RADIUS, self._PUCK_RADIUS)
+        painter.setPen(QPen(QColor("#ffffff"), 1.6))
+        painter.drawEllipse(QPointF(x, y), self._PUCK_RADIUS, self._PUCK_RADIUS)
+        painter.end()
+
+    def _apply_pos(self, pos: QPointF) -> None:
+        centre = self.DIAMETER / 2.0
+        dx = pos.x() - centre
+        dy = centre - pos.y()
+        radius = self._radius()
+        distance = math.hypot(dx, dy)
+        self._hue = math.degrees(math.atan2(dy, dx)) % 360.0
+        self._saturation = max(0.0, min(100.0, distance / radius * 100.0))
+        self.update()
+        self.changed.emit(self._hue, self._saturation)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._apply_pos(event.position())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._dragging:
+            self._apply_pos(event.position())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class _MaskListRow(QWidget):
     """A mask list row. Clicking the name/blank area selects the row; the trash
     button is a real child that handles its own clicks. (The container is NOT
@@ -986,6 +1455,33 @@ class PhotoEditorPanel(QFrame):
     # Two states, Lightroom-style: pick a mask type, or work on the mask you have.
     MASK_PANE_WORK = 0
     MASK_PANE_CREATE = 1
+
+    # editor_stack pages, in rail order. Always compare against these — the
+    # indices shift whenever a tool is added, and bare integers scattered
+    # through the panel were how the old three-tab layout got away with it.
+    PAGE_ADJUST = 0
+    PAGE_CROP = 1
+    PAGE_REMOVE = 2
+    PAGE_RED_EYE = 3
+    PAGE_MASKS = 4
+    PAGE_BACKGROUND = 5
+    PAGE_LENS_BLUR = 6
+    PAGE_PRESETS = 7
+    RAIL_WIDTH = 46
+
+    # (page, label, tooltip, glyph, group). The group only decides where the
+    # hairline separators fall, so tools read as categories rather than a
+    # single undifferentiated stack of icons.
+    RAIL_TOOLS: tuple[tuple[int, str, str, str, int], ...] = (
+        (PAGE_ADJUST, "Adjust", "Tone, color and effects", "adjust", 0),
+        (PAGE_CROP, "Crop", "Crop, straighten and flip", "crop", 1),
+        (PAGE_REMOVE, "Remove", "Heal, spot heal and clone", "heal", 2),
+        (PAGE_RED_EYE, "Red Eye", "Red eye and pet eye removal", "red-eye", 2),
+        (PAGE_MASKS, "Masks", "Local adjustments", "mask", 3),
+        (PAGE_BACKGROUND, "Background", "Background — blur or remove", "background", 4),
+        (PAGE_LENS_BLUR, "Lens Blur", "Depth-of-field blur", "lens-blur", 4),
+        (PAGE_PRESETS, "Presets", "Saved editing looks", "presets", 5),
+    )
     OVERLAY_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
         ("color", "Color Overlay"),
         ("color-bw", "Color Overlay on B&W"),
@@ -1008,10 +1504,22 @@ class PhotoEditorPanel(QFrame):
         "linear-gradient": "Drawing a linear mask — drag across the photo to place it.",
         "color-range": "Click the photo to sample the color range.",
     }
+    # Leading glyph for each AI scene-category chip (see _mask_glyph).
+    _SCENE_MASK_GLYPHS = {
+        "sky": "cloud",
+        "trees": "tree",
+        "foliage": "foliage",
+        "water": "water",
+        "mountains": "mountains",
+        "animals": "animals",
+        "people": "person",
+        "buildings": "buildings",
+    }
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("photoEditorPanel")
+        self._display_profile = STANDARD_DISPLAY
         self._source_path: Path | None = None
         self._session_path: Path | None = None
         self._session: dict[str, Any] | None = None
@@ -1027,6 +1535,19 @@ class PhotoEditorPanel(QFrame):
         self._lens_blur_tool_panel: QWidget | None = None
         self._status_message = ""
         self._rows: dict[str, _AdjustmentRow] = {}
+        # Retouch tool state. The brush seeds each new spot; every placed spot
+        # then carries its own copy, so moving these sliders never rewrites
+        # work already done.
+        self._retouch_tool: str | None = None
+        self._retouch_brush: dict[str, float] = {
+            "size": 40.0,
+            "feather": 50.0,
+            "strength": 80.0,
+        }
+        self._selected_spot_id: str | None = None
+        self._point_color_sample_armed = False
+        self._point_color_selected_index = -1
+        self._point_color_syncing = False
         self._mask_create_mode: str | None = None
         self._pending_parent_id: str | None = None
         self._pending_combine: str = "add"
@@ -1081,6 +1602,17 @@ class PhotoEditorPanel(QFrame):
         self._point_select_active = False
         self._prompt_mask_task: object | None = None
         self._prompt_mask_context: dict[str, Any] | None = None
+        self._prompt_hover_task: object | None = None
+        self._prompt_hover_pending: tuple[float, float] | None = None
+        self._prompt_hover_context: dict[str, Any] | None = None
+        self._prompt_hover_result: PromptMaskResult | None = None
+        self._prompt_hover_active_point: tuple[float, float] | None = None
+        self._prompt_hover_commit_context: dict[str, Any] | None = None
+        self._prompt_hover_generation = 0
+        self._prompt_hover_timer = QTimer(self)
+        self._prompt_hover_timer.setSingleShot(True)
+        self._prompt_hover_timer.setInterval(140)
+        self._prompt_hover_timer.timeout.connect(self._start_prompt_hover_task)
         self._prompt_mask_counter = 0
         self._prompt_session_active = False
         self._prompt_session_root_id: str | None = None
@@ -1103,6 +1635,21 @@ class PhotoEditorPanel(QFrame):
         self._people_instances: list[PersonInstance] | None = None
         self._people_instances_source: Path | None = None
         self._people_instance_task: PeopleInstanceTask | None = None
+        # Masks overview (the Work pane with no mask open): which layer card is
+        # expanded — keyed to the photo so a new image opens collapsed — and
+        # cached layer thumbnails. The preview lends its displayed frame as the
+        # thumbnail source (set_mask_thumbnail_source).
+        # True while the straighten is being dragged, so the preview can
+        # render a draft instead of a full-size frame on every tick.
+        self._geometry_drag_active = False
+        # Straightening temporarily constrains a crop, but must not replace the
+        # unconstrained box it came from. Keeping that envelope separately is
+        # what lets the box grow again as the angle returns towards zero.
+        self._straighten_crop_envelope: tuple[float, float, float, float] | None = None
+        self._overview_expanded: tuple[Path | None, str] | None = None
+        self._mask_thumb_cache: dict[tuple, QPixmap] = {}
+        self._mask_thumb_key_fn: Any = None
+        self._mask_thumb_image_fn: Any = None
         self._semantic_mask_pool = QThreadPool(self)
         self._semantic_mask_pool.setMaxThreadCount(1)
         self._mask_commit_timer = QTimer(self)
@@ -1114,33 +1661,40 @@ class PhotoEditorPanel(QFrame):
         self._range_update_timer.setInterval(160)
         self._range_update_timer.timeout.connect(self._regenerate_selected_range_mask)
 
-        root = QVBoxLayout(self)
+        # [tool rail][content column]. The rail replaced the old horizontal tab
+        # bar; the doc bar and footer live inside the column so they stop at the
+        # rail's edge instead of running under it.
+        root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._editor_tab_bar = self._build_tab_bar()
-        root.addWidget(self._editor_tab_bar)
+        self._editor_tool_rail = self._build_tool_rail()
+        root.addWidget(self._editor_tool_rail)
 
-        doc_bar = QFrame(self)
-        self._editor_doc_bar = doc_bar
-        doc_bar.setObjectName("photoEditorDocBar")
-        doc_layout = QHBoxLayout(doc_bar)
-        doc_layout.setContentsMargins(12, 6, 12, 6)
-        doc_layout.setSpacing(6)
-        self.subtitle_label = QLabel("No image selected", doc_bar)
-        self.subtitle_label.setObjectName("photoEditorSubtitle")
-        self.subtitle_label.setWordWrap(True)
-        doc_layout.addWidget(self.subtitle_label, 1)
-        root.addWidget(doc_bar)
+        column = QWidget(self)
+        column.setObjectName("photoEditorColumn")
+        self._editor_column = column
+        column_layout = QVBoxLayout(column)
+        column_layout.setContentsMargins(0, 0, 0, 0)
+        column_layout.setSpacing(0)
+        root.addWidget(column, 1)
 
-        self.editor_stack = QStackedWidget(self)
+        # No document header: the file name and page name cost a strip of
+        # height the controls want, and the preview names the photo already.
+        self.editor_stack = QStackedWidget(column)
         self.editor_stack.setObjectName("photoEditorStack")
+        # Added in PAGE_* order — the rail indexes straight into the stack.
         self.editor_stack.addWidget(self._build_adjust_tab())
+        self.editor_stack.addWidget(self._build_crop_page())
+        self.editor_stack.addWidget(self._build_remove_page())
+        self.editor_stack.addWidget(self._build_red_eye_page())
         self.editor_stack.addWidget(self._build_masks_tab())
+        self.editor_stack.addWidget(self._build_background_page())
+        self.editor_stack.addWidget(self._build_lens_blur_page())
         self.editor_stack.addWidget(self._build_presets_tab())
-        root.addWidget(self.editor_stack, 1)
+        column_layout.addWidget(self.editor_stack, 1)
 
-        footer = QFrame(self)
+        footer = QFrame(column)
         self._editor_footer = footer
         footer.setObjectName("photoEditorFooter")
         footer_layout = QVBoxLayout(footer)
@@ -1160,78 +1714,191 @@ class PhotoEditorPanel(QFrame):
         button_row.addWidget(self.reset_button)
         button_row.addWidget(self.save_button)
         button_row.addWidget(self.save_copy_button)
+        # The same three slots, reused inside a mask: masks commit to the
+        # sidecar as they are edited, so Save / Save Copy have nothing to do
+        # there, while leaving a mask had no button at all. Every other page
+        # gets no footer, leaving the strip free for its own tools later.
+        self.reset_mask_adjustments_button = QPushButton("Reset adjustments", footer)
+        self.reset_mask_adjustments_button.clicked.connect(self.reset_mask_adjustments)
+        self.mask_done_button = QPushButton("Done", footer)
+        self.mask_done_button.setObjectName("editorPrimaryButton")
+        self.mask_done_button.setToolTip("Back to every mask on this photo")
+        self.mask_done_button.clicked.connect(self._return_to_mask_overview)
+        self.delete_mask_button = QPushButton("Delete mask", footer)
+        self.delete_mask_button.setObjectName("deleteMaskButton")
+        self.delete_mask_button.clicked.connect(self.delete_selected_mask)
+        for button in (
+            self.reset_mask_adjustments_button,
+            self.mask_done_button,
+            self.delete_mask_button,
+        ):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.hide()
+            button_row.addWidget(button)
+        # The Crop tool's own pair. Applying a crop is "stop bypassing it",
+        # which had no button at all before.
+        self.crop_reset_button = QPushButton("Reset crop", footer)
+        self.crop_reset_button.clicked.connect(self.reset_crop)
+        self.crop_apply_button = QPushButton("Apply crop", footer)
+        self.crop_apply_button.setObjectName("editorPrimaryButton")
+        self.crop_apply_button.setToolTip("Apply the crop and leave the tool (Enter)")
+        self.crop_apply_button.clicked.connect(self.apply_crop)
+        for button in (self.crop_reset_button, self.crop_apply_button):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.hide()
+            button_row.addWidget(button)
         footer_layout.addLayout(button_row)
-        root.addWidget(footer)
+        column_layout.addWidget(footer)
+        # Touch-up takes over the whole panel (rail included), so it hangs off
+        # the root row rather than the content column.
         self._mask_touchup_page = self._build_mask_touchup_page()
         self._mask_touchup_page.hide()
         root.addWidget(self._mask_touchup_page, 1)
         self._sync_enabled()
         self._sync_mask_controls(None)
+        # Enter must not fire whichever button Qt decided was the dialog's
+        # default (it was landing on Reset). Tools opt in explicitly.
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
+            button.setDefault(False)
 
     @property
     def recipe(self) -> EditRecipe:
         return self._recipe
 
-    def _build_tab_bar(self) -> QFrame:
-        bar = QFrame(self)
-        bar.setObjectName("editorTabBar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(6, 5, 6, 0)
-        layout.setSpacing(1)
+    def apply_display_profile(self, profile: DisplayProfile) -> None:
+        self._display_profile = profile
+        rail = getattr(self, "_editor_tool_rail", None)
+        if rail is not None:
+            rail.setFixedWidth(profile.editor_tool_rail_width)
+            layout = rail.layout()
+            if layout is not None:
+                side = max(4, (profile.editor_tool_rail_width - profile.editor_tool_button_width) // 2)
+                vertical = max(5, round(6 * profile.scale))
+                layout.setContentsMargins(side, vertical, side, vertical)
+        for button in getattr(self, "_mode_buttons", ()):
+            button.setIconSize(QSize(profile.editor_tool_icon_size, profile.editor_tool_icon_size))
+            button.setFixedSize(profile.editor_tool_button_width, profile.editor_tool_button_height)
+
+    def _build_tool_rail(self) -> QFrame:
+        """The vertical tool rail down the panel's left edge.
+
+        Every tool lives here, grouped by category — it replaced the old
+        Adjust/Masks/Presets tab bar, which could not grow past three entries
+        without wrapping, and absorbed the Background and Lens Blur buttons
+        that used to float in the studio toolbar.
+        """
+        rail = QFrame(self)
+        rail.setObjectName("editorToolRail")
+        profile = self._display_profile
+        rail.setFixedWidth(profile.editor_tool_rail_width)
+        layout = QVBoxLayout(rail)
+        side = max(4, (profile.editor_tool_rail_width - profile.editor_tool_button_width) // 2)
+        layout.setContentsMargins(side, max(5, round(6 * profile.scale)), side, max(5, round(6 * profile.scale)))
+        layout.setSpacing(2)
         self._mode_buttons: list[QToolButton] = []
-        tabs = (
-            ("Adjust", "Tone, color and effects", 0),
-            ("Masks", "Local adjustments", 1),
-            ("Presets", "Saved editing looks", 2),
-        )
-        for text, tooltip, index in tabs:
-            button = QToolButton(bar)
-            button.setObjectName("editorTab")
-            button.setText(text)
-            button.setToolTip(tooltip)
+        previous_group: int | None = None
+        for page, label, tooltip, glyph, group in self.RAIL_TOOLS:
+            if previous_group is not None and group != previous_group:
+                divider = QFrame(rail)
+                divider.setObjectName("editorToolRailDivider")
+                divider.setFixedHeight(1)
+                layout.addSpacing(3)
+                layout.addWidget(divider)
+                layout.addSpacing(3)
+            previous_group = group
+            button = QToolButton(rail)
+            button.setObjectName("editorToolRailButton")
+            button.setIcon(self._mask_glyph(glyph))
+            button.setIconSize(QSize(profile.editor_tool_icon_size, profile.editor_tool_icon_size))
+            button.setFixedSize(profile.editor_tool_button_width, profile.editor_tool_button_height)
+            button.setToolTip(f"{label} — {tooltip}")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.clicked.connect(lambda _checked=False, page=index: self._set_editor_page(page))
-            layout.addWidget(button)
+            button.clicked.connect(
+                lambda _checked=False, target=page: self._set_editor_page(target)
+            )
+            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
             self._mode_buttons.append(button)
         layout.addStretch(1)
         self._mode_buttons[0].setChecked(True)
-        return bar
+        return rail
+
+    def _rail_button_for_page(self, page: int) -> QToolButton | None:
+        for button, (target, *_rest) in zip(self._mode_buttons, self.RAIL_TOOLS):
+            if target == page:
+                return button
+        return None
 
     def _set_editor_page(self, index: int) -> None:
+        if index != self.PAGE_ADJUST and self._point_color_sample_armed:
+            self._set_point_color_sample_armed(False)
         self.editor_stack.setCurrentIndex(index)
-        for button_index, button in enumerate(self._mode_buttons):
-            button.setChecked(button_index == index)
+        for button, (page, *_rest) in zip(self._mode_buttons, self.RAIL_TOOLS):
+            button.setChecked(page == index)
+        self._sync_editor_footer()
         self.mask_overlay_changed.emit()
-        if index == 1:
+        if index == self.PAGE_MASKS:
             self._sync_mask_model_controls()
+            # The photo is on screen by now, so layer thumbnails can show it.
+            self._refresh_mask_overview()
             if self._mask_models_are_installed():
                 self.subject_warm_requested.emit("model")
                 # Load the OneFormer weights ahead of inventory; the expensive
                 # torch/CUDA spin-up is already warmed on photo render.
                 self.semantic_warm_requested.emit("model")
                 self._ensure_semantic_inventory()
-        elif index == 2:
+        elif index == self.PAGE_PRESETS:
             self._refresh_preset_targets()
+
+    def _sync_editor_footer(self) -> None:
+        """The footer belongs to the page it sits under. Adjust keeps Reset /
+        Save / Save Copy; inside a mask those slots become Reset adjustments /
+        Done / Delete mask; every other page has no footer."""
+        footer = getattr(self, "_editor_footer", None)
+        if footer is None or getattr(self, "mask_done_button", None) is None:
+            return
+        page = self.editor_stack.currentIndex()
+        inside_mask = (
+            page == self.PAGE_MASKS
+            and self.mask_stack.currentIndex() == self.MASK_PANE_WORK
+            and self._selected_mask_id() is not None
+        )
+        for button in (self.reset_button, self.save_button, self.save_copy_button):
+            button.setVisible(page == self.PAGE_ADJUST)
+        for button in (
+            self.reset_mask_adjustments_button,
+            self.mask_done_button,
+            self.delete_mask_button,
+        ):
+            button.setVisible(inside_mask)
+        cropping = page == self.PAGE_CROP
+        for button in (self.crop_reset_button, self.crop_apply_button):
+            button.setVisible(cropping)
+        footer.setVisible(page == self.PAGE_ADJUST or inside_mask or cropping)
 
     def show_adjustments_page(self) -> None:
         if self._mask_touchup_mask_id is not None:
             self._finish_mask_touchup(accepted=True)
-        self._set_editor_page(0)
+        self._set_editor_page(self.PAGE_ADJUST)
 
     def _section(self, title: str, parent: QWidget) -> tuple[QFrame, QVBoxLayout]:
+        """One editor section, identical on every page: an uppercase grey
+        caption over its controls, divider beneath."""
         section = QFrame(parent)
         section.setObjectName("editorSection")
         layout = QVBoxLayout(section)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        header = QPushButton(f"▾  {title}", section)
+        caption = title.upper()
+        header = QPushButton(f"▾  {caption}", section)
         header.setObjectName("editorSectionHeader")
         header.setCheckable(True)
         header.setChecked(True)
         header.setCursor(Qt.CursorShape.PointingHandCursor)
         header.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._letter_space(header)
         body = QWidget(section)
         content = QVBoxLayout(body)
         content.setContentsMargins(10, 2, 10, 10)
@@ -1240,7 +1907,7 @@ class PhotoEditorPanel(QFrame):
         def _toggle(expanded: bool) -> None:
             body.setVisible(expanded)
             arrow = "▾" if expanded else "▸"
-            header.setText(f"{arrow}  {title}")
+            header.setText(f"{arrow}  {caption}")
 
         header.toggled.connect(_toggle)
         layout.addWidget(header)
@@ -1265,7 +1932,7 @@ class PhotoEditorPanel(QFrame):
         _configure_value_box(spin)
         spin.setParent(row)
         spin.show()
-        slider = QSlider(Qt.Orientation.Horizontal, row)
+        slider = _EditorSlider(Qt.Orientation.Horizontal, row)
         slider.setRange(int(round(minimum * scale)), int(round(maximum * scale)))
         slider.setValue(int(round(float(spin.value()) * scale)))
         slider.setSingleStep(1)
@@ -1310,7 +1977,7 @@ class PhotoEditorPanel(QFrame):
         spin.setParent(row)
         spin.setSuffix(" px")
         spin.show()
-        slider = QSlider(Qt.Orientation.Horizontal, row)
+        slider = _EditorSlider(Qt.Orientation.Horizontal, row)
         slider.setRange(0, 3000)
         slider.setSingleStep(1)
 
@@ -1384,13 +2051,17 @@ class PhotoEditorPanel(QFrame):
             self.linear_tool_button.setChecked(mode == "linear-gradient")
             self.brush_tool_button.setChecked(self._brush_paint_mode is not None)
             self.color_tool_button.setChecked(mode == "color-range")
+        # The prompt shows only while a tool is armed; the idle how-to lives on
+        # the shape tools' tooltips so the resting pane stays quiet.
         if mode is None:
             self._masking_hint.setText(self._MASK_IDLE_HINT)
             self._masking_hint.setStyleSheet("")
+            self._masking_hint.hide()
         else:
             self._masking_hint.setText(self._MASK_ARMED_HINT[mode])
             # Accent the prompt so an armed tool reads as a distinct mode.
             self._masking_hint.setStyleSheet("color: #4a9eff; font-weight: 600;")
+            self._masking_hint.show()
         self.mask_overlay_changed.emit()
 
     def _build_vignette_options(self, parent: QWidget, vignette_row: _AdjustmentRow) -> QWidget:
@@ -1437,7 +2108,7 @@ class PhotoEditorPanel(QFrame):
                 profile_row.setContentsMargins(0, 0, 0, 4)
                 profile_label = QLabel("White balance", section)
                 profile_label.setObjectName("editorControlLabel")
-                self.white_balance_combo = QComboBox(section)
+                self.white_balance_combo = _EditorComboBox(section)
                 self.white_balance_combo.addItems(["As Shot", "Auto", "Daylight", "Cloudy", "Shade", "Custom"])
                 profile_row.addWidget(profile_label)
                 profile_row.addWidget(self.white_balance_combo)
@@ -1506,9 +2177,1000 @@ class PhotoEditorPanel(QFrame):
         curve_io.addStretch(1)
         curve_layout.addLayout(curve_io)
         body_layout.addWidget(curve_section)
+        body_layout.addWidget(self._build_color_mixer_section(body))
+        body_layout.addWidget(self._build_point_color_section(body))
+        body_layout.addWidget(self._build_color_grading_section(body))
+        body_layout.addWidget(self._build_calibration_section(body))
+        body_layout.addWidget(self._build_defringe_section(body))
+        body_layout.addWidget(self._build_grain_section(body))
         body_layout.addStretch(1)
         scroll.setWidget(body)
         return scroll
+
+    def _add_rows(
+        self,
+        specs: tuple[tuple[str, str, int, int, int], ...],
+        parent: QWidget,
+        into: QVBoxLayout,
+    ) -> None:
+        """Register a block of adjustment rows.
+
+        Rows key straight off the recipe field name, so anything added here is
+        automatically driven by _handle_adjustment_changed and restored by
+        _sync_rows_from_recipe — no per-control wiring.
+        """
+        for spec in specs:
+            row = _AdjustmentRow(*spec, parent=parent)
+            row.changed.connect(self._handle_adjustment_changed)
+            self._rows[spec[0]] = row
+            into.addWidget(row)
+
+    def _segmented_picker(
+        self,
+        parent: QWidget,
+        options: tuple[tuple[str, str], ...],
+        on_change,
+        *,
+        columns: int = 2,
+    ) -> QWidget:
+        """A compact grid of exclusive buttons.
+
+        Two columns by default: the editor column is only 344px wide and four
+        labelled buttons abreast overran it (this panel's recurring trap).
+        """
+        holder = QWidget(parent)
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 0, 0, 4)
+        grid.setSpacing(2)
+        group = QButtonGroup(holder)
+        group.setExclusive(True)
+        for index, (value, label) in enumerate(options):
+            button = QPushButton(label, holder)
+            button.setObjectName("editorSegmentButton")
+            button.setCheckable(True)
+            button.setChecked(index == 0)
+            button.setMinimumWidth(0)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda _checked=False, key=value: on_change(key))
+            group.addButton(button)
+            grid.addWidget(button, index // columns, index % columns)
+        holder.setProperty("buttonGroup", group)
+        return holder
+
+    def _swatch_picker(
+        self,
+        parent: QWidget,
+        options: tuple[tuple[str, str], ...],
+        colors: dict[str, str],
+        on_change,
+    ) -> QWidget:
+        """A row of colour chips, one per hue band.
+
+        Eight text buttons will not fit the column, and a colour is a better
+        label for a hue band anyway — this is how Camera Raw picks them too.
+        """
+        holder = QWidget(parent)
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 4)
+        row.setSpacing(3)
+        group = QButtonGroup(holder)
+        group.setExclusive(True)
+        self._swatch_buttons: dict[str, QPushButton] = getattr(self, "_swatch_buttons", {})
+        for index, (value, label) in enumerate(options):
+            button = QPushButton(holder)
+            button.setObjectName("editorSwatchButton")
+            button.setCheckable(True)
+            button.setChecked(index == 0)
+            button.setFixedSize(26, 20)
+            button.setToolTip(label)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            # Per-widget sheet: the swatch colour is data, not theme, so it
+            # cannot live in the shared stylesheet.
+            button.setStyleSheet(
+                f"QPushButton#editorSwatchButton{{background:{colors[value]};"
+                "border:1px solid #303030;border-radius:3px;}"
+                "QPushButton#editorSwatchButton:hover{border-color:#8a8a8a;}"
+                "QPushButton#editorSwatchButton:checked{border:2px solid #ffffff;}"
+            )
+            button.clicked.connect(lambda _checked=False, key=value: on_change(key))
+            group.addButton(button)
+            row.addWidget(button)
+            self._swatch_buttons[value] = button
+        row.addStretch(1)
+        holder.setProperty("buttonGroup", group)
+        return holder
+
+    def _build_color_mixer_section(self, parent: QWidget) -> QWidget:
+        section, layout = self._section("Color Mixer", parent)
+        self._color_mixer_band = COLOR_MIXER_BANDS[0][0]
+        layout.addWidget(
+            self._swatch_picker(
+                section, COLOR_MIXER_BANDS, COLOR_MIXER_SWATCHES, self._set_color_mixer_band
+            )
+        )
+        self._color_mixer_rows: dict[str, list[_AdjustmentRow]] = {}
+        for band, _band_label in COLOR_MIXER_BANDS:
+            specs = tuple(
+                spec for spec in COLOR_MIXER_SPECS if spec[0].startswith(f"{band}_")
+            )
+            before = set(self._rows)
+            self._add_rows(specs, section, layout)
+            rows = [self._rows[spec[0]] for spec in specs if spec[0] not in before]
+            self._color_mixer_rows[band] = rows
+            for row in rows:
+                row.setVisible(band == self._color_mixer_band)
+        return section
+
+    def _set_color_mixer_band(self, band: str) -> None:
+        self._color_mixer_band = band
+        for name, rows in self._color_mixer_rows.items():
+            for row in rows:
+                row.setVisible(name == band)
+
+    def _build_point_color_section(self, parent: QWidget) -> QWidget:
+        section, layout = self._section("Point Color", parent)
+
+        picker_row = QHBoxLayout()
+        picker_row.setContentsMargins(0, 0, 0, 4)
+        picker_row.setSpacing(4)
+        self.point_color_sample_button = QToolButton(section)
+        self.point_color_sample_button.setObjectName("editorToolButton")
+        self.point_color_sample_button.setIcon(self._mask_glyph("eyedropper"))
+        self.point_color_sample_button.setIconSize(QSize(18, 18))
+        self.point_color_sample_button.setFixedSize(38, 28)
+        self.point_color_sample_button.setToolTip("Sample a color from the photo")
+        self.point_color_sample_button.setCheckable(True)
+        self.point_color_sample_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.point_color_sample_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.point_color_sample_button.toggled.connect(self._set_point_color_sample_armed)
+        picker_row.addWidget(self.point_color_sample_button)
+
+        self.point_color_combo = _EditorComboBox(section)
+        self.point_color_combo.setObjectName("pointColorSampleCombo")
+        self.point_color_combo.setIconSize(QSize(14, 14))
+        self.point_color_combo.currentIndexChanged.connect(self._select_point_color)
+        picker_row.addWidget(self.point_color_combo, 1)
+
+        self.point_color_delete_button = QToolButton(section)
+        self.point_color_delete_button.setObjectName("editorToolButton")
+        self.point_color_delete_button.setIcon(self._mask_glyph("trash"))
+        self.point_color_delete_button.setIconSize(QSize(18, 18))
+        self.point_color_delete_button.setFixedSize(38, 28)
+        self.point_color_delete_button.setToolTip("Delete selected color sample")
+        self.point_color_delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.point_color_delete_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.point_color_delete_button.clicked.connect(self._remove_selected_point_color)
+        picker_row.addWidget(self.point_color_delete_button)
+        layout.addLayout(picker_row)
+
+        self._point_color_rows: dict[str, _AdjustmentRow] = {}
+        for spec in POINT_COLOR_SPECS:
+            row = _AdjustmentRow(*spec, parent=section)
+            row.changed.connect(self._handle_point_color_adjustment)
+            self._point_color_rows[spec[0]] = row
+            layout.addWidget(row)
+        self._sync_point_color_controls()
+        return section
+
+    @staticmethod
+    def _point_color_icon(sample: dict[str, Any]) -> QIcon:
+        hue = int(round(float(sample.get("h", 0.0)) * 359.0 / 255.0)) % 360
+        saturation = max(0, min(255, int(round(float(sample.get("s", 0.0))))))
+        value = max(0, min(255, int(round(float(sample.get("l", 0.0))))))
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(QColor.fromHsv(hue, saturation, value))
+        return QIcon(pixmap)
+
+    def _sync_point_color_controls(self) -> None:
+        if not hasattr(self, "point_color_combo"):
+            return
+        colors = list(self._recipe.point_colors or [])
+        if not colors:
+            self._point_color_selected_index = -1
+        elif not 0 <= self._point_color_selected_index < len(colors):
+            self._point_color_selected_index = 0
+
+        self._point_color_syncing = True
+        try:
+            with QSignalBlocker(self.point_color_combo):
+                self.point_color_combo.clear()
+                if colors:
+                    for index, sample in enumerate(colors):
+                        self.point_color_combo.addItem(
+                            self._point_color_icon(sample), f"Sample {index + 1}", index
+                        )
+                    self.point_color_combo.setCurrentIndex(self._point_color_selected_index)
+                else:
+                    self.point_color_combo.addItem("No samples", -1)
+                    self.point_color_combo.setCurrentIndex(0)
+            selected = (
+                colors[self._point_color_selected_index]
+                if 0 <= self._point_color_selected_index < len(colors)
+                else None
+            )
+            defaults = {"hueShift": 0.0, "satShift": 0.0, "lumShift": 0.0, "range": 25.0}
+            for key, row in self._point_color_rows.items():
+                row.set_value(float((selected or defaults).get(key, defaults[key])))
+                row.setEnabled(selected is not None and self._source_path is not None)
+            self.point_color_combo.setEnabled(bool(colors) and self._source_path is not None)
+            self.point_color_delete_button.setEnabled(
+                selected is not None and self._source_path is not None
+            )
+            self.point_color_sample_button.setEnabled(self._source_path is not None)
+        finally:
+            self._point_color_syncing = False
+
+    def _select_point_color(self, index: int) -> None:
+        if self._point_color_syncing:
+            return
+        data = self.point_color_combo.itemData(index)
+        self._point_color_selected_index = int(data) if data is not None else -1
+        self._sync_point_color_controls()
+
+    def _handle_point_color_adjustment(self, key: str, value: float) -> None:
+        if self._point_color_syncing:
+            return
+        colors = deepcopy(self._recipe.point_colors or [])
+        index = self._point_color_selected_index
+        if not 0 <= index < len(colors):
+            return
+        colors[index][key] = float(value)
+        data = asdict(self._recipe)
+        data["point_colors"] = colors
+        self._recipe = EditRecipe.from_dict(data)
+        self.recipe_changed.emit(self._recipe)
+
+    def _remove_selected_point_color(self) -> None:
+        colors = deepcopy(self._recipe.point_colors or [])
+        index = self._point_color_selected_index
+        if not 0 <= index < len(colors):
+            return
+        del colors[index]
+        self._point_color_selected_index = min(index, len(colors) - 1)
+        data = asdict(self._recipe)
+        data["point_colors"] = colors or None
+        self._recipe = EditRecipe.from_dict(data)
+        self._sync_point_color_controls()
+        self.recipe_changed.emit(self._recipe)
+
+    def _set_point_color_sample_armed(self, armed: bool) -> None:
+        self._point_color_sample_armed = bool(armed and self._source_path is not None)
+        button = getattr(self, "point_color_sample_button", None)
+        if button is not None:
+            with QSignalBlocker(button):
+                button.setChecked(self._point_color_sample_armed)
+        if self._point_color_sample_armed:
+            self._set_status("Click the photo to sample a color")
+        self.mask_overlay_changed.emit()
+
+    def _sample_point_color_at(self, x: float, y: float) -> None:
+        if not self._point_color_sample_armed or self._source_path is None:
+            return
+        try:
+            with open_image(self._source_path) as image:
+                hsv = image.convert("HSV")
+                sample_xy = (
+                    max(0, min(hsv.width - 1, int(round(x)))),
+                    max(0, min(hsv.height - 1, int(round(y)))),
+                )
+                hue, saturation, value = hsv.getpixel(sample_xy)
+            colors = deepcopy(self._recipe.point_colors or [])
+            colors.append(
+                {
+                    "h": int(hue),
+                    "s": int(saturation),
+                    "l": int(value),
+                    "hueShift": 0.0,
+                    "satShift": 0.0,
+                    "lumShift": 0.0,
+                    "range": 25.0,
+                }
+            )
+            data = asdict(self._recipe)
+            data["point_colors"] = colors
+            self._recipe = EditRecipe.from_dict(data)
+            self._point_color_selected_index = len(colors) - 1
+            self._set_point_color_sample_armed(False)
+            self._sync_point_color_controls()
+            self._set_status("Color sampled")
+            self.recipe_changed.emit(self._recipe)
+        except Exception as exc:
+            self._set_point_color_sample_armed(False)
+            self._set_status(f"Could not sample color: {exc}")
+
+    def _build_color_grading_section(self, parent: QWidget) -> QWidget:
+        section, layout = self._section("Color Grading", parent)
+        self._grading_zone = COLOR_GRADING_ZONES[0][0]
+        layout.addWidget(
+            self._segmented_picker(section, COLOR_GRADING_ZONES, self._set_grading_zone)
+        )
+        self.color_grading_wheel = _ColorWheel(section)
+        self.color_grading_wheel.changed.connect(self._handle_grading_wheel_changed)
+        layout.addWidget(self.color_grading_wheel, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._grading_rows: dict[str, list[_AdjustmentRow]] = {}
+        for zone, _zone_label in COLOR_GRADING_ZONES:
+            specs = tuple(
+                spec for spec in COLOR_GRADING_SPECS if spec[0].startswith(f"grading_{zone}_")
+            )
+            before = set(self._rows)
+            self._add_rows(specs, section, layout)
+            rows = [self._rows[spec[0]] for spec in specs if spec[0] not in before]
+            self._grading_rows[zone] = rows
+            for row in rows:
+                row.setVisible(zone == self._grading_zone)
+        layout.addWidget(self._mask_hairline(section))
+        self._add_rows(COLOR_GRADING_MIX_SPECS, section, layout)
+        return section
+
+    def _set_grading_zone(self, zone: str) -> None:
+        self._grading_zone = zone
+        for name, rows in self._grading_rows.items():
+            for row in rows:
+                row.setVisible(name == zone)
+        self._sync_grading_wheel()
+
+    def _sync_grading_wheel(self) -> None:
+        wheel = getattr(self, "color_grading_wheel", None)
+        if wheel is None:
+            return
+        zone = self._grading_zone
+        wheel.set_values(
+            float(getattr(self._recipe, f"grading_{zone}_hue", 0.0)),
+            float(getattr(self._recipe, f"grading_{zone}_sat", 0.0)),
+        )
+
+    def _handle_grading_wheel_changed(self, hue: float, saturation: float) -> None:
+        zone = self._grading_zone
+        # Route through the rows so the sliders, the recipe and the render all
+        # move together — the wheel is another view of the same two values.
+        self._rows[f"grading_{zone}_hue"].set_value(hue)
+        self._rows[f"grading_{zone}_sat"].set_value(saturation)
+        data = asdict(self._recipe)
+        data[f"grading_{zone}_hue"] = hue
+        data[f"grading_{zone}_sat"] = saturation
+        self._recipe = EditRecipe.from_dict(data)
+        self.recipe_changed.emit(self._recipe)
+
+    def _build_calibration_section(self, parent: QWidget) -> QWidget:
+        section, layout = self._section("Color Calibration", parent)
+        self._add_rows(CALIBRATION_SPECS, section, layout)
+        return section
+
+    def _build_defringe_section(self, parent: QWidget) -> QWidget:
+        section, layout = self._section("Defringe", parent)
+        hint = QLabel(
+            "Removes purple and green fringing along high-contrast edges.", section
+        )
+        hint.setObjectName("editorHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self._add_rows(DEFRINGE_SPECS, section, layout)
+        return section
+
+    def _build_grain_section(self, parent: QWidget) -> QWidget:
+        section, layout = self._section("Grain", parent)
+        self._add_rows(GRAIN_SPECS, section, layout)
+        return section
+
+    def _tool_page(self, hint: str) -> tuple[QScrollArea, QWidget, QVBoxLayout]:
+        """A scrolled page shell matching the Adjust page's chrome.
+
+        Everything hung off the rail scrolls the same way, and the body is what
+        the footprint tests measure, so the shape is shared rather than
+        re-typed per tool.
+        """
+        scroll = QScrollArea(self)
+        scroll.setObjectName("photoEditorScrollArea")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget(scroll)
+        body.setObjectName("photoEditorBody")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        if hint:
+            label = QLabel(hint, body)
+            label.setObjectName("editorHint")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        scroll.setWidget(body)
+        return scroll, body, layout
+
+    def _build_crop_page(self) -> QWidget:
+        page, body, layout = self._tool_page(
+            "Crop, straighten and flip. Drag the box on the photo, or drag "
+            "outside it to rotate. The frame stays uncropped while this tool is "
+            "open, so the box can be pulled back out. Enter applies the crop."
+        )
+        self._crop_page_body = body
+
+        aspect_label = QLabel("Aspect ratio", body)
+        aspect_label.setObjectName("editorControlLabel")
+        layout.addWidget(aspect_label)
+        self.crop_aspect_combo = _EditorComboBox(body)
+        for value, label in CROP_ASPECTS:
+            self.crop_aspect_combo.addItem(label, value)
+        self.crop_aspect_combo.currentIndexChanged.connect(self._handle_crop_aspect_changed)
+        layout.addWidget(self.crop_aspect_combo)
+
+        # Raw slider units over the scale: -450..450 at 10 is the full ±45°.
+        # It read -45..45, which is ±4.5° — the "few degrees" the straighten
+        # was stuck inside.
+        angle_row = _AdjustmentRow("crop_angle", "Straighten", -450, 450, 10, parent=body)
+        angle_row.changed.connect(self._handle_crop_angle_changed)
+        # Straightening re-runs the whole adjustment stack on freshly rotated
+        # pixels (geometry comes first in EditRecipe.apply), so a drag renders
+        # a draft and the release renders it properly.
+        angle_row.slider.sliderPressed.connect(lambda: self._set_geometry_drag(True))
+        angle_row.slider.sliderReleased.connect(lambda: self._set_geometry_drag(False))
+        self._rows["crop_angle"] = angle_row
+        layout.addWidget(angle_row)
+
+        layout.addWidget(self._mask_hairline(body))
+        rotate_label = QLabel("Rotate & flip", body)
+        rotate_label.setObjectName("editorControlLabel")
+        layout.addWidget(rotate_label)
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(4)
+        for icon, tooltip, handler in (
+            (
+                self._rotate_icon(clockwise=False),
+                "Rotate 90° counter-clockwise",
+                lambda: self._rotate_quarter(-1),
+            ),
+            (
+                self._rotate_icon(clockwise=True),
+                "Rotate 90° clockwise",
+                lambda: self._rotate_quarter(1),
+            ),
+            (self._mask_glyph("flip-h"), "Flip horizontal", lambda: self._toggle_flip("flip_h")),
+            (self._mask_glyph("flip-v"), "Flip vertical", lambda: self._toggle_flip("flip_v")),
+        ):
+            button = QToolButton(body)
+            button.setObjectName("editorToolButton")
+            button.setIcon(icon)
+            button.setIconSize(QSize(18, 18))
+            button.setFixedSize(38, 28)
+            button.setToolTip(tooltip)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(handler)
+            button_row.addWidget(button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        # Reset and Apply live in the footer now, with the page's actions.
+        layout.addStretch(1)
+        return page
+
+    # -- crop ------------------------------------------------------------------
+
+    def crop_overlay_state(self) -> dict[str, Any]:
+        """Snapshot for the on-canvas CropOverlay."""
+        source_size = self._mask_source_size()
+        combo = getattr(self, "crop_aspect_combo", None)
+        aspect = (
+            self._crop_display_aspect(combo.currentData())
+            if combo is not None
+            else None
+        )
+        return {
+            "interactive": self.active_canvas_tool() == "crop",
+            "crop": self._recipe.crop,
+            "source_size": source_size,
+            "aspect": aspect,
+            "show_grid": True,
+        }
+
+    def view_render_spec(self) -> dict[str, Any]:
+        """Told to the render backend: suppress the crop while the tool is armed
+        so the viewer sees the whole straightened frame with the box on it."""
+        return {
+            "bypass_crop": self.active_canvas_tool() == "crop",
+            "source_size": self._mask_source_size(),
+            "draft": self._geometry_drag_active,
+        }
+
+    def view_transform(self) -> ViewTransform | None:
+        size = self._mask_source_size()
+        if size is None:
+            return None
+        return view_transform_for(
+            self._recipe, size, bypass_crop=self.active_canvas_tool() == "crop"
+        )
+
+    def handle_crop_changed(self, payload: dict[str, Any]) -> None:
+        crop = payload.get("crop")
+        if not crop:
+            return
+        stored = tuple(int(v) for v in crop)
+        self._straighten_crop_envelope = stored
+        self._apply_recipe_field("crop", stored)
+
+    def handle_crop_committed(self) -> None:
+        # Crop is part of the in-memory recipe, not the mask session. Starting
+        # the mask-save timer here rebuilt the mask UI and rendered twice.
+        # A rotate drag ending does need the draft replaced, though.
+        self._set_geometry_drag(False)
+
+    def _handle_crop_aspect_changed(self, _index: int) -> None:
+        combo = self.crop_aspect_combo
+        value = str(combo.currentData() or "")
+        data = asdict(self._recipe)
+        data["crop_aspect"] = value
+        self._recipe = EditRecipe.from_dict(data)
+        ratio = self._crop_display_aspect(value)
+        if ratio:
+            self._set_maximum_crop_envelope(ratio)
+        else:
+            # Free starts from exactly what is on screen and remains manually
+            # resizable rather than unexpectedly jumping to the whole photo.
+            self._straighten_crop_envelope = self._recipe.crop
+        self._fit_crop_to_photo()
+        # Aspect and the resulting crop are one visual state. Publishing them
+        # separately rendered an avoidable intermediate frame.
+        self.recipe_changed.emit(self._recipe)
+        self.mask_overlay_changed.emit()
+
+    def _crop_display_aspect(self, value: object) -> float | None:
+        """Requested width/height in the final, visibly oriented frame."""
+        text = str(value or "")
+        ratio = _aspect_ratio(text)
+        if text == "original":
+            size = self._mask_source_size()
+            if size is not None and size[1] > 0:
+                ratio = float(size[0]) / float(size[1])
+        view = self.view_transform()
+        if ratio and view is not None and view.swaps_axes():
+            ratio = 1.0 / ratio
+        return ratio
+
+    def _set_maximum_crop_envelope(self, aspect: float) -> None:
+        """Set an oversized aspect-correct envelope around the photo.
+
+        The containment solver shrinks this envelope until the first pair of
+        crop corners reaches the image edges. Starting from the current crop
+        cannot do that because the solver is intentionally shrink-only.
+        """
+        size = self._mask_source_size()
+        if size is None or aspect <= 0.0:
+            return
+        view = view_transform_for(self._recipe, size, bypass_crop=True)
+        quad = view.image_quad()
+        if view.angle:
+            quad = inset_quad(quad)
+        centre_x = sum(point[0] for point in quad) / 4.0
+        centre_y = sum(point[1] for point in quad) / 4.0
+        bounds_w = max(point[0] for point in quad) - min(point[0] for point in quad)
+        bounds_h = max(point[1] for point in quad) - min(point[1] for point in quad)
+        # Cover the quad in both axes while preserving the requested ratio.
+        # This guarantees the subsequent shrink reaches the maximum fit.
+        width = max(bounds_w, bounds_h * aspect)
+        height = width / aspect
+        candidate = (
+            centre_x - width / 2.0,
+            centre_y - height / 2.0,
+            centre_x + width / 2.0,
+            centre_y + height / 2.0,
+        )
+        self._straighten_crop_envelope = view.crop_for_frame_rect(candidate)
+
+    def _handle_crop_angle_changed(self, _key: str, value: float) -> None:
+        self._set_crop_angle(float(value))
+
+    def handle_crop_angle_dragged(self, angle: float) -> None:
+        """Free rotation from the canvas (drag outside the box), with the
+        Straighten slider kept in step."""
+        row = self._rows.get("crop_angle")
+        if row is not None:
+            row.set_value(float(angle))
+        self._set_geometry_drag(True)
+        self._set_crop_angle(float(angle))
+
+    def _set_geometry_drag(self, active: bool) -> None:
+        """Draft renders while a straighten is in flight; one full render when
+        the hand comes off."""
+        if self._geometry_drag_active == bool(active):
+            return
+        if active:
+            self._ensure_straighten_crop_envelope()
+        self._geometry_drag_active = bool(active)
+        if not active:
+            self.recipe_changed.emit(self._recipe)
+
+    def _set_crop_angle(self, value: float) -> None:
+        """Straighten and fit the crop as one presentable frame."""
+        started = time.perf_counter()
+        self._ensure_straighten_crop_envelope()
+        self._update_recipe_field("crop_angle", float(value))
+        self._fit_crop_to_photo()
+        crop = self._recipe.crop
+        perf_logger().duration(
+            "editslider.crop_straighten",
+            (time.perf_counter() - started) * 1000.0,
+            angle=round(float(value), 3),
+            crop=None if crop is None else tuple(crop),
+            draft=self._geometry_drag_active,
+        )
+        # One slider tick must produce one render. Emitting after both fields
+        # are coherent prevents the old-angle/old-crop fullscreen flash.
+        self.recipe_changed.emit(self._recipe)
+        self.mask_overlay_changed.emit()
+
+    def _ensure_straighten_crop_envelope(self) -> tuple[float, float, float, float] | None:
+        """Return the crop before angle containment temporarily shrinks it."""
+        if self._straighten_crop_envelope is not None:
+            return self._straighten_crop_envelope
+        if self._recipe.crop is not None:
+            self._straighten_crop_envelope = tuple(float(v) for v in self._recipe.crop)
+            return self._straighten_crop_envelope
+        size = self._mask_source_size()
+        if size is None:
+            return None
+        self._straighten_crop_envelope = (0.0, 0.0, float(size[0]), float(size[1]))
+        return self._straighten_crop_envelope
+
+    def _fit_crop_to_photo(self) -> bool:
+        """Fit the stable crop envelope inside the straightened photo.
+
+        Rotating grows the frame and swings the photo inside it, so a box that
+        fitted a moment ago can hang over the blank corners. The fit is always
+        recomputed from the unconstrained envelope rather than the previous
+        smaller result; therefore it both shrinks and expands with the angle.
+        """
+        size = self._mask_source_size()
+        if size is None:
+            return False
+        # bypass_crop: the Crop tool's geometry is the whole straightened
+        # frame, which is the space the box is expressed in.
+        view = view_transform_for(self._recipe, size, bypass_crop=True)
+        crop = self._recipe.crop
+        envelope = self._ensure_straighten_crop_envelope()
+        if envelope is None:
+            return False
+        # The source-sized envelope preserves the photo/crop aspect. Starting
+        # from the rotated frame bounds would preserve the changing bounding-
+        # box aspect instead, producing an undersized square near 45 degrees.
+        rect = view.frame_rect_for_crop(tuple(float(v) for v in envelope))
+        # Slack only when straightened: square-on there are no blank
+        # corners, and the whole frame must stay reachable.
+        quad = view.image_quad()
+        if view.angle:
+            quad = inset_quad(quad)
+        fitted = fit_rect_in_quad(quad, rect)
+        stored = tuple(int(round(v)) for v in view.crop_for_frame_rect(fitted))
+        if crop and tuple(int(v) for v in crop) == stored:
+            return False
+        self._update_recipe_field("crop", stored)
+        return True
+
+    def apply_crop(self) -> None:
+        """Commit the crop and leave the tool.
+
+        While the tool is armed the render *bypasses* the crop so a handle can
+        be dragged back out, which makes applying exactly "stop bypassing".
+        Enter lands here too: it used to reach whichever button Qt had made the
+        dialog default, which reset the crop instead of keeping it.
+        """
+        if self.active_canvas_tool() != "crop":
+            return
+        self._fit_crop_to_photo()
+        self.recipe_changed.emit(self._recipe)
+        self._set_editor_page(self.PAGE_ADJUST)
+
+    def _rotate_quarter(self, direction: int) -> None:
+        # Quarter turns ride the legacy `rotate` field, which expands the frame
+        # rather than resampling into the crop box.
+        self._apply_recipe_field("rotate", (self._recipe.rotate + 90.0 * direction) % 360.0)
+        self.mask_overlay_changed.emit()
+
+    def _toggle_flip(self, key: str) -> None:
+        self._apply_recipe_field(key, not getattr(self._recipe, key))
+        self.mask_overlay_changed.emit()
+
+    def reset_crop(self) -> None:
+        """Clear the crop geometry only — Reset in the footer must not be the
+        only way back, and it would take every adjustment with it."""
+        data = asdict(self._recipe)
+        defaults = asdict(EditRecipe())
+        for key in ("crop", "crop_angle", "flip_h", "flip_v", "crop_aspect", "rotate"):
+            data[key] = defaults[key]
+        self._recipe = EditRecipe.from_dict(data)
+        self._straighten_crop_envelope = None
+        combo = getattr(self, "crop_aspect_combo", None)
+        if combo is not None:
+            with QSignalBlocker(combo):
+                combo.setCurrentIndex(0)
+        row = self._rows.get("crop_angle")
+        if row is not None:
+            row.set_value(0.0)
+        self.recipe_changed.emit(self._recipe)
+        self.mask_overlay_changed.emit()
+
+    def active_canvas_tool(self) -> str | None:
+        """Which overlay owns the mouse: 'crop' | 'retouch' | 'mask' | None.
+
+        preview.py asks this instead of comparing page indices, so adding a
+        tool never means editing an index comparison somewhere else.
+        """
+        if self._source_path is None:
+            return None
+        index = self.editor_stack.currentIndex()
+        if index == self.PAGE_ADJUST and self._point_color_sample_armed:
+            return "mask"
+        if index == self.PAGE_CROP:
+            return "crop"
+        if index in (self.PAGE_REMOVE, self.PAGE_RED_EYE):
+            return "retouch"
+        if index == self.PAGE_MASKS:
+            return "mask"
+        return None
+
+    def overlay_states(self) -> dict[str, dict[str, Any]]:
+        return {
+            "mask": self.mask_overlay_state(),
+            "crop": self.crop_overlay_state(),
+            "retouch": self.retouch_overlay_state(),
+        }
+
+    def _build_remove_page(self) -> QWidget:
+        page, body, layout = self._tool_page(
+            "Spot heal, heal and clone. Click or drag on the photo to place a "
+            "spot; every spot stays editable."
+        )
+        self._remove_page_body = body
+        self.remove_tool_buttons: dict[str, QToolButton] = {}
+        tool_row = QHBoxLayout()
+        tool_row.setContentsMargins(0, 0, 0, 0)
+        tool_row.setSpacing(4)
+        for kind, glyph, tooltip in (
+            ("heal", "heal", "Spot heal — sample nearby texture automatically"),
+            ("clone", "clone", "Clone — drag to set the source, then paint"),
+        ):
+            button = QToolButton(body)
+            button.setObjectName("editorToolButton")
+            button.setIcon(self._mask_glyph(glyph))
+            button.setIconSize(QSize(18, 18))
+            button.setFixedSize(38, 28)
+            button.setToolTip(tooltip)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(
+                lambda _checked=False, tool=kind: self._set_retouch_tool(tool)
+            )
+            tool_row.addWidget(button)
+            self.remove_tool_buttons[kind] = button
+        tool_row.addStretch(1)
+        layout.addLayout(tool_row)
+        self._build_retouch_brush_controls(body, layout, prefix="remove")
+        layout.addWidget(self._mask_hairline(body))
+        self.remove_spot_list = self._build_spot_list(body, kinds=("heal", "clone"))
+        layout.addWidget(self.remove_spot_list)
+        self.remove_clear_button = self._action_button("Remove All Spots", body)
+        self.remove_clear_button.clicked.connect(
+            lambda: self.clear_retouch_spots(("heal", "clone"))
+        )
+        layout.addWidget(self.remove_clear_button)
+        layout.addStretch(1)
+        return page
+
+    def _build_red_eye_page(self) -> QWidget:
+        page, body, layout = self._tool_page(
+            "Red eye and pet eye removal. Click a pupil on the photo, then tune "
+            "its size and darkening."
+        )
+        self._red_eye_page_body = body
+        self.red_eye_tool_button = QToolButton(body)
+        self.red_eye_tool_button.setObjectName("editorToolButton")
+        self.red_eye_tool_button.setIcon(self._mask_glyph("red-eye"))
+        self.red_eye_tool_button.setIconSize(QSize(18, 18))
+        self.red_eye_tool_button.setFixedSize(38, 28)
+        self.red_eye_tool_button.setToolTip("Red eye — click a pupil")
+        self.red_eye_tool_button.setCheckable(True)
+        self.red_eye_tool_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.red_eye_tool_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.red_eye_tool_button.clicked.connect(
+            lambda _checked=False: self._set_retouch_tool("red_eye")
+        )
+        tool_row = QHBoxLayout()
+        tool_row.setContentsMargins(0, 0, 0, 0)
+        tool_row.addWidget(self.red_eye_tool_button)
+        tool_row.addStretch(1)
+        layout.addLayout(tool_row)
+        self._build_retouch_brush_controls(body, layout, prefix="red_eye")
+        layout.addWidget(self._mask_hairline(body))
+        self.red_eye_spot_list = self._build_spot_list(body, kinds=("red_eye",))
+        layout.addWidget(self.red_eye_spot_list)
+        self.red_eye_clear_button = self._action_button("Remove All", body)
+        self.red_eye_clear_button.clicked.connect(
+            lambda: self.clear_retouch_spots(("red_eye",))
+        )
+        layout.addWidget(self.red_eye_clear_button)
+        layout.addStretch(1)
+        return page
+
+    def _build_retouch_brush_controls(
+        self, parent: QWidget, into: QVBoxLayout, *, prefix: str
+    ) -> None:
+        """Size / feather / strength for the retouch brush.
+
+        These are tool settings, not recipe fields — they seed each new spot,
+        and each placed spot then carries its own copy so editing the brush
+        never retroactively changes work already done.
+        """
+        for key, label, minimum, maximum, value in (
+            ("size", "Size", 4, 400, 40),
+            ("feather", "Feather", 0, 100, 50),
+            ("strength", "Opacity", 0, 100, 80),
+        ):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 2, 0, 0)
+            row.setSpacing(8)
+            caption = QLabel(label, parent)
+            caption.setObjectName("editorControlLabel")
+            caption.setFixedWidth(52)
+            slider = _EditorSlider(Qt.Orientation.Horizontal, parent)
+            slider.setRange(minimum, maximum)
+            slider.setValue(value)
+            readout = QLabel(str(value), parent)
+            readout.setObjectName("editorControlLabel")
+            readout.setFixedWidth(30)
+            readout.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            slider.valueChanged.connect(
+                lambda raw, name=key, out=readout: self._set_retouch_brush(name, raw, out)
+            )
+            row.addWidget(caption)
+            row.addWidget(slider, 1)
+            row.addWidget(readout)
+            into.addLayout(row)
+            setattr(self, f"{prefix}_{key}_slider", slider)
+
+    def _build_spot_list(self, parent: QWidget, *, kinds: tuple[str, ...]) -> QListWidget:
+        widget = QListWidget(parent)
+        widget.setObjectName("retouchSpotList")
+        widget.setMaximumHeight(122)
+        widget.setProperty("spotKinds", list(kinds))
+        widget.currentRowChanged.connect(
+            lambda row, source=widget: self._select_spot_row(source, row)
+        )
+        return widget
+
+    # -- retouch ---------------------------------------------------------------
+
+    def _set_retouch_tool(self, tool: str | None) -> None:
+        self._retouch_tool = None if self._retouch_tool == tool else tool
+        self._sync_retouch_tool_buttons()
+        self.mask_overlay_changed.emit()
+
+    def _sync_retouch_tool_buttons(self) -> None:
+        for kind, button in getattr(self, "remove_tool_buttons", {}).items():
+            with QSignalBlocker(button):
+                button.setChecked(self._retouch_tool == kind)
+        button = getattr(self, "red_eye_tool_button", None)
+        if button is not None:
+            with QSignalBlocker(button):
+                button.setChecked(self._retouch_tool == "red_eye")
+
+    def _set_retouch_brush(self, key: str, raw: int, readout: QLabel) -> None:
+        readout.setText(str(int(raw)))
+        self._retouch_brush[key] = float(raw)
+        self.mask_overlay_changed.emit()
+
+    def retouch_overlay_state(self) -> dict[str, Any]:
+        """Snapshot for the on-canvas RetouchOverlay."""
+        active = self.active_canvas_tool() == "retouch"
+        page = self.editor_stack.currentIndex()
+        visible = (
+            ("red_eye",) if page == self.PAGE_RED_EYE else ("heal", "clone")
+        )
+        spots = [
+            dict(spot)
+            for spot in (self._recipe.retouch or ())
+            if spot.get("kind") in visible
+        ]
+        return {
+            "interactive": active,
+            "spots": spots,
+            "tool": self._retouch_tool if active else None,
+            "selected_id": self._selected_spot_id,
+            "brush": dict(self._retouch_brush),
+            "source_size": self._mask_source_size(),
+        }
+
+    def handle_spot_added(self, spot: dict[str, Any]) -> None:
+        spots = [dict(entry) for entry in (self._recipe.retouch or ())]
+        entry = dict(spot)
+        entry["id"] = _next_id({str(s.get("id")) for s in spots}, "spot")
+        entry["seq"] = len(spots)
+        spots.append(entry)
+        self._selected_spot_id = entry["id"]
+        self._apply_recipe_field("retouch", spots)
+        self._refresh_spot_lists()
+        self.mask_overlay_changed.emit()
+
+    def handle_spot_moved(self, spot_id: str, changes: dict[str, Any]) -> None:
+        spots = [dict(entry) for entry in (self._recipe.retouch or ())]
+        for entry in spots:
+            if str(entry.get("id")) == spot_id:
+                entry.update(changes)
+                break
+        else:
+            return
+        self._apply_recipe_field("retouch", spots)
+        self.mask_overlay_changed.emit()
+
+    def handle_spot_removed(self, spot_id: str) -> None:
+        spots = [
+            dict(entry)
+            for entry in (self._recipe.retouch or ())
+            if str(entry.get("id")) != spot_id
+        ]
+        if self._selected_spot_id == spot_id:
+            self._selected_spot_id = None
+        self._apply_recipe_field("retouch", spots or None)
+        self._refresh_spot_lists()
+        self.mask_overlay_changed.emit()
+
+    def handle_spot_committed(self) -> None:
+        # Spot geometry is already live in the recipe and is saved by the
+        # editor's normal Save action; it must not flush the mask session.
+        pass
+
+    def clear_retouch_spots(self, kinds: tuple[str, ...]) -> None:
+        spots = [
+            dict(entry)
+            for entry in (self._recipe.retouch or ())
+            if entry.get("kind") not in kinds
+        ]
+        self._selected_spot_id = None
+        self._apply_recipe_field("retouch", spots or None)
+        self._refresh_spot_lists()
+        self.mask_overlay_changed.emit()
+
+    def _select_spot_row(self, widget: QListWidget, row: int) -> None:
+        item = widget.item(row) if row >= 0 else None
+        self._selected_spot_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+        self.mask_overlay_changed.emit()
+
+    def _refresh_spot_lists(self) -> None:
+        labels = {"heal": "Spot heal", "clone": "Clone", "red_eye": "Red eye"}
+        for widget in (
+            getattr(self, "remove_spot_list", None),
+            getattr(self, "red_eye_spot_list", None),
+        ):
+            if widget is None:
+                continue
+            kinds = set(widget.property("spotKinds") or ())
+            with QSignalBlocker(widget):
+                widget.clear()
+                for index, spot in enumerate(self._recipe.retouch or ()):
+                    if spot.get("kind") not in kinds:
+                        continue
+                    name = labels.get(str(spot.get("kind")), "Spot")
+                    item = QListWidgetItem(
+                        f"{name} {index + 1}  ·  {int(spot.get('r', 0))}px", widget
+                    )
+                    item.setData(Qt.ItemDataRole.UserRole, spot.get("id"))
+                    widget.addItem(item)
+
+    def _build_background_page(self) -> QWidget:
+        page, body, layout = self._tool_page("")
+        layout.addWidget(self.build_background_tool(body))
+        layout.addStretch(1)
+        return page
+
+    def _build_lens_blur_page(self) -> QWidget:
+        page, body, layout = self._tool_page("")
+        layout.addWidget(self.build_lens_blur_tool(body))
+        layout.addStretch(1)
+        return page
 
     def build_background_tool(self, parent: QWidget | None = None) -> QWidget:
         """The Background tool as a standalone panel (hosted in a popout window
@@ -1539,10 +3201,9 @@ class PhotoEditorPanel(QFrame):
         blur_label = QLabel("Blur", panel)
         blur_label.setObjectName("editorControlLabel")
         blur_label.setFixedWidth(46)
-        self.background_blur_slider = QSlider(Qt.Orientation.Horizontal, panel)
+        self.background_blur_slider = _EditorSlider(Qt.Orientation.Horizontal, panel)
         self.background_blur_slider.setRange(0, 100)
         self.background_blur_slider.setValue(0)
-        self.background_blur_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.background_blur_slider.valueChanged.connect(self._set_background_blur)
         self.background_blur_value = QLabel("0", panel)
         self.background_blur_value.setObjectName("editorControlLabel")
@@ -1620,6 +3281,7 @@ class PhotoEditorPanel(QFrame):
             self._clear_subject_choice()
             self._sync_mask_create_title()
         self._sync_mask_pane_enabled()
+        self._sync_editor_footer()
         self.mask_overlay_changed.emit()
 
     def _open_mask_create_pane(
@@ -1667,6 +3329,15 @@ class PhotoEditorPanel(QFrame):
         )
 
     def _mask_models_are_installed(self) -> bool:
+        """Whether the editor masking models are verified, not merely present.
+
+        ``AIModelInstallation.is_installed`` now consults the transactional
+        model store, so a partial or wrong-revision download no longer reads as
+        installed (docs/ai_runtime_failure_map.md, root cause B). The runtime
+        packages behind these models are a separate concern reported by
+        ``image_triage.ai_health``; this gate only covers the downloads this
+        panel owns.
+        """
         return all(
             installation.is_installed
             for _label, installation in self._mask_model_installations()
@@ -1732,7 +3403,7 @@ class PhotoEditorPanel(QFrame):
         self.semantic_mask_status.show()
         self._set_status("AI masking tools are ready")
         self.mask_overlay_changed.emit()
-        if self.editor_stack.currentIndex() == 1:
+        if self.editor_stack.currentIndex() == self.PAGE_MASKS:
             self.subject_warm_requested.emit("model")
             self.semantic_warm_requested.emit("model")
             QTimer.singleShot(0, self._ensure_semantic_inventory)
@@ -1798,6 +3469,215 @@ class PhotoEditorPanel(QFrame):
             painter.drawLine(13, 5, 12, 15)
             painter.drawLine(6, 15, 12, 15)        # can base
             painter.drawLine(9, 7, 9, 13)          # ribs
+        elif kind == "eyedropper":
+            painter.drawLine(QPointF(5, 13), QPointF(13.5, 4.5))
+            painter.drawLine(QPointF(4, 12), QPointF(6, 14))
+            painter.drawLine(QPointF(12.5, 3.5), QPointF(14.5, 5.5))
+            painter.drawLine(QPointF(3.5, 14.5), QPointF(6.5, 14.5))
+        elif kind == "adjust":
+            # Three sliders with their handles at different positions.
+            for row, handle_x in ((4.5, 11.5), (9.0, 6.5), (13.5, 12.5)):
+                painter.drawLine(QPointF(2.5, row), QPointF(15.5, row))
+                painter.setBrush(QColor("#c4c4c4"))
+                painter.drawEllipse(QPointF(handle_x, row), 2.0, 2.0)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+        elif kind == "crop":
+            # Two interlocking crop marks, as in every crop tool since forever.
+            painter.drawLine(QPointF(5.5, 1.5), QPointF(5.5, 12.5))
+            painter.drawLine(QPointF(5.5, 12.5), QPointF(16.5, 12.5))
+            painter.drawLine(QPointF(1.5, 5.5), QPointF(12.5, 5.5))
+            painter.drawLine(QPointF(12.5, 5.5), QPointF(12.5, 16.5))
+        elif kind in ("heal", "spot-heal"):
+            # A target ring over the blemish, with crosshairs.
+            painter.drawEllipse(QRectF(3, 3, 12, 12))
+            painter.drawLine(QPointF(9, 5.5), QPointF(9, 12.5))
+            painter.drawLine(QPointF(5.5, 9), QPointF(12.5, 9))
+        elif kind == "clone":
+            # A stamp: handle, shaft, base.
+            painter.drawLine(QPointF(7, 2.5), QPointF(11, 2.5))
+            painter.drawLine(QPointF(9, 2.5), QPointF(9, 7))
+            painter.drawLine(QPointF(5.5, 7), QPointF(12.5, 7))
+            painter.drawLine(QPointF(6.5, 7), QPointF(6.5, 11))
+            painter.drawLine(QPointF(11.5, 7), QPointF(11.5, 11))
+            painter.drawLine(QPointF(3.5, 11), QPointF(14.5, 11))
+            painter.drawLine(QPointF(4.5, 11), QPointF(4.5, 15.5))
+            painter.drawLine(QPointF(13.5, 11), QPointF(13.5, 15.5))
+            painter.drawLine(QPointF(4.5, 15.5), QPointF(13.5, 15.5))
+        elif kind == "red-eye":
+            # An eye with a filled pupil — the pupil is what the tool targets.
+            painter.drawEllipse(QRectF(1.5, 5, 15, 8))
+            painter.setBrush(QColor("#c4c4c4"))
+            painter.drawEllipse(QPointF(9, 9), 2.2, 2.2)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+        elif kind == "mask":
+            # A circle half covered by hatching — the masking convention.
+            painter.drawEllipse(QRectF(2.5, 2.5, 13, 13))
+            for offset in (0.0, 3.0, 6.0):
+                painter.drawLine(QPointF(9, 4.0 + offset), QPointF(14.2 - offset * 0.55, 9.2 + offset))
+        elif kind == "background":
+            # A sharp subject standing clear of a soft backdrop bar.
+            painter.drawLine(QPointF(1.5, 6.5), QPointF(16.5, 6.5))
+            painter.drawEllipse(QRectF(6.5, 4, 5, 5))
+            painter.drawLine(QPointF(4.5, 16), QPointF(4.5, 13.5))
+            painter.drawLine(QPointF(4.5, 13.5), QPointF(13.5, 13.5))
+            painter.drawLine(QPointF(13.5, 13.5), QPointF(13.5, 16))
+        elif kind == "lens-blur":
+            # An aperture: nested rings, tight centre, wide rim.
+            painter.drawEllipse(QRectF(1.5, 1.5, 15, 15))
+            painter.drawEllipse(QRectF(5.5, 5.5, 7, 7))
+        elif kind in ("rotate-cw", "rotate-ccw"):
+            # A three-quarter arc with an arrowhead on the open end.
+            painter.drawArc(QRectF(3, 3, 12, 12), 90 * 16, 270 * 16)
+            if kind == "rotate-cw":
+                painter.drawLine(QPointF(9, 3), QPointF(6.5, 1.5))
+                painter.drawLine(QPointF(9, 3), QPointF(6.5, 4.5))
+            else:
+                painter.drawLine(QPointF(9, 3), QPointF(11.5, 1.5))
+                painter.drawLine(QPointF(9, 3), QPointF(11.5, 4.5))
+        elif kind in ("flip-h", "flip-v"):
+            # A mirror line with a solid side and an outlined side.
+            if kind == "flip-h":
+                painter.drawLine(QPointF(9, 2), QPointF(9, 16))
+                painter.setBrush(QColor("#c4c4c4"))
+                painter.drawRect(QRectF(2.5, 5.5, 5, 7))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(10.5, 5.5, 5, 7))
+            else:
+                painter.drawLine(QPointF(2, 9), QPointF(16, 9))
+                painter.setBrush(QColor("#c4c4c4"))
+                painter.drawRect(QRectF(5.5, 2.5, 7, 5))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(5.5, 10.5, 7, 5))
+        elif kind == "presets":
+            # A stack of looks.
+            painter.drawLine(QPointF(9, 2), QPointF(15.5, 6))
+            painter.drawLine(QPointF(15.5, 6), QPointF(9, 10))
+            painter.drawLine(QPointF(9, 10), QPointF(2.5, 6))
+            painter.drawLine(QPointF(2.5, 6), QPointF(9, 2))
+            painter.drawLine(QPointF(2.5, 9.5), QPointF(9, 13.5))
+            painter.drawLine(QPointF(15.5, 9.5), QPointF(9, 13.5))
+            painter.drawLine(QPointF(2.5, 12.5), QPointF(9, 16.5))
+            painter.drawLine(QPointF(15.5, 12.5), QPointF(9, 16.5))
+        elif kind in ("gradient-linear", "gradient-radial"):
+            # A swatch fading out — the linear tool's across, the radial's
+            # from the centre.
+            if kind == "gradient-linear":
+                ramp = QLinearGradient(QPointF(3, 0), QPointF(15, 0))
+            else:
+                ramp = QRadialGradient(QPointF(9, 9), 6.5)
+            ramp.setColorAt(0.0, QColor("#f0f0f0"))
+            ramp.setColorAt(1.0, QColor(240, 240, 240, 0))
+            painter.setBrush(ramp)
+            if kind == "gradient-linear":
+                painter.drawRoundedRect(QRectF(2.5, 2.5, 13, 13), 2.5, 2.5)
+            else:
+                painter.drawEllipse(QRectF(2.5, 2.5, 13, 13))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+        elif kind == "luminance":
+            # A histogram in a frame.
+            painter.drawRoundedRect(QRectF(2.5, 2.5, 13, 13), 2.5, 2.5)
+            painter.save()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#c4c4c4"))
+            for left, height in ((4.6, 3.0), (7.1, 7.0), (9.6, 9.0), (12.1, 5.0)):
+                painter.drawRect(QRectF(left, 14.0 - height, 1.5, height))
+            painter.restore()
+        elif kind == "color-range":
+            # Three overlapping colour drops — the one deliberately coloured
+            # glyph, because colour is the point of the tool.
+            painter.save()
+            painter.setPen(Qt.PenStyle.NoPen)
+            for colour, centre in (
+                ("#e25a60", QPointF(6.5, 7.0)),
+                ("#5cc47a", QPointF(11.5, 7.0)),
+                ("#4f8ff0", QPointF(9.0, 11.5)),
+            ):
+                fill = QColor(colour)
+                fill.setAlpha(220)
+                painter.setBrush(fill)
+                painter.drawEllipse(centre, 3.6, 3.6)
+            painter.restore()
+        elif kind == "cloud":
+            cloud = QPainterPath()
+            cloud.setFillRule(Qt.FillRule.WindingFill)
+            cloud.addEllipse(QRectF(2.5, 8.0, 6.0, 6.0))
+            cloud.addEllipse(QRectF(5.5, 4.5, 7.5, 7.5))
+            cloud.addEllipse(QRectF(10.0, 7.5, 5.5, 6.5))
+            cloud.addRect(QRectF(5.5, 10.0, 7.5, 4.0))
+            painter.drawPath(cloud.simplified())
+        elif kind == "tree":
+            crown = QPainterPath(QPointF(9, 2.5))
+            crown.lineTo(14.5, 12.0)
+            crown.lineTo(3.5, 12.0)
+            crown.closeSubpath()
+            painter.drawPath(crown)
+            painter.drawLine(QPointF(9, 12.0), QPointF(9, 15.5))
+        elif kind == "foliage":
+            leaf = QPainterPath(QPointF(3.5, 14.5))
+            leaf.cubicTo(QPointF(3.5, 6.0), QPointF(9.0, 3.0), QPointF(15.0, 3.0))
+            leaf.cubicTo(QPointF(15.0, 9.0), QPointF(12.0, 14.5), QPointF(3.5, 14.5))
+            painter.drawPath(leaf)
+            painter.drawLine(QPointF(3.5, 14.5), QPointF(11.0, 7.0))
+        elif kind == "water":
+            for y in (5.5, 9.5, 13.5):
+                wave = QPainterPath(QPointF(2.5, y))
+                wave.cubicTo(QPointF(4.5, y - 2), QPointF(6.5, y - 2), QPointF(9.0, y))
+                wave.cubicTo(QPointF(11.5, y + 2), QPointF(13.5, y + 2), QPointF(15.5, y))
+                painter.drawPath(wave)
+        elif kind == "mountains":
+            ridge = QPainterPath(QPointF(1.5, 14.5))
+            for x, y in ((6.5, 5.5), (9.5, 10.0), (12.0, 7.5), (16.5, 14.5)):
+                ridge.lineTo(x, y)
+            ridge.closeSubpath()
+            painter.drawPath(ridge)
+        elif kind == "animals":
+            # A paw: four toes over a pad.
+            painter.setBrush(QColor("#c4c4c4"))
+            for centre in (
+                QPointF(4.5, 8.0), QPointF(7.2, 4.6), QPointF(10.8, 4.6), QPointF(13.5, 8.0),
+            ):
+                painter.drawEllipse(centre, 1.2, 1.5)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QRectF(5.5, 9.0, 7.0, 5.5))
+        elif kind == "person":
+            painter.drawEllipse(QRectF(6.5, 2.5, 5.0, 5.0))
+            shoulders = QPainterPath(QPointF(3.5, 15.5))
+            shoulders.cubicTo(QPointF(3.5, 11.0), QPointF(6.0, 9.5), QPointF(9.0, 9.5))
+            shoulders.cubicTo(QPointF(12.0, 9.5), QPointF(14.5, 11.0), QPointF(14.5, 15.5))
+            painter.drawPath(shoulders)
+        elif kind == "buildings":
+            painter.drawRect(QRectF(3.0, 7.0, 5.5, 8.5))
+            painter.drawRect(QRectF(8.5, 2.5, 6.5, 13.0))
+            for y in (5.5, 8.5, 11.5):
+                painter.drawLine(QPointF(10.8, y), QPointF(12.7, y))
+            painter.drawLine(QPointF(4.8, 10.5), QPointF(6.7, 10.5))
+        elif kind == "point":
+            # A pointer — click the thing you want.
+            arrow = QPainterPath(QPointF(4.5, 2.5))
+            for x, y in (
+                (4.5, 14.0), (7.4, 11.2), (9.6, 15.5), (11.4, 14.6), (9.2, 10.4), (13.0, 10.4),
+            ):
+                arrow.lineTo(x, y)
+            arrow.closeSubpath()
+            painter.drawPath(arrow)
+        elif kind in ("download", "import"):
+            # An arrow into (download) or out of (import) a tray.
+            head, tail = (11.0, 2.5) if kind == "download" else (2.5, 11.0)
+            barb = head - 3.5 if kind == "download" else head + 3.5
+            painter.drawLine(QPointF(9, tail), QPointF(9, head))
+            painter.drawLine(QPointF(5.5, barb), QPointF(9, head))
+            painter.drawLine(QPointF(12.5, barb), QPointF(9, head))
+            painter.drawLine(QPointF(3, 12.5), QPointF(3, 15))
+            painter.drawLine(QPointF(15, 12.5), QPointF(15, 15))
+            painter.drawLine(QPointF(3, 15), QPointF(15, 15))
+        elif kind in ("eye", "eye-off"):
+            lids = QPainterPath(QPointF(1.5, 9.0))
+            lids.quadTo(QPointF(9.0, 1.5), QPointF(16.5, 9.0))
+            lids.quadTo(QPointF(9.0, 16.5), QPointF(1.5, 9.0))
+            painter.drawPath(lids)
+            painter.drawEllipse(QPointF(9.0, 9.0), 2.4, 2.4)
+            if kind == "eye-off":
+                painter.drawLine(QPointF(3.0, 15.0), QPointF(15.0, 3.0))
         painter.end()
         return QIcon(pixmap)
 
@@ -1815,6 +3695,33 @@ class PhotoEditorPanel(QFrame):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         return button
+
+    def _rotate_icon(self, *, clockwise: bool) -> QIcon:
+        """The system's circular-arrow vector, mirrored for the other way round.
+
+        The hand-drawn arcs this replaces read as the same direction twice; one
+        glyph plus a mirror is opposite by construction.
+        """
+        pixmap = QPixmap(20, 20)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setPen(QColor("#d8d8d8"))
+        font = QFont("Segoe MDL2 Assets")
+        font.setPixelSize(16)
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, chr(0xE72C))
+        painter.end()
+        if not clockwise:
+            return QIcon(pixmap)
+        # E72C sweeps up its left side to a head at the top-left: that reads
+        # counter-clockwise, so the clockwise button takes the mirror. Mirror
+        # the rendered glyph rather than painting through a mirrored transform
+        # — Qt rasterizes text in device space, and the flipped draw landed off
+        # the pixmap.
+        return QIcon(QPixmap.fromImage(pixmap.toImage().mirrored(True, False)))
 
     def _overlay_settings_icon(self) -> QIcon:
         pixmap = QPixmap(18, 18)
@@ -2038,6 +3945,8 @@ class PhotoEditorPanel(QFrame):
         if shortcut:
             chip = QLabel(shortcut, row)
             chip.setObjectName("maskShortcutChip")
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chip.setFixedSize(20, 20)
             chip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             inner.addWidget(chip)
         return row
@@ -2054,21 +3963,21 @@ class PhotoEditorPanel(QFrame):
         header.layout().addWidget(self.mask_create_back)
         layout.addWidget(header)
 
-        content = QWidget(body)
-        content.setObjectName("maskCreateContent")
-        cl = QVBoxLayout(content)
-        cl.setContentsMargins(11, 8, 11, 8)
-        cl.setSpacing(8)
+        # -- AI selection: let a model pick the region ---------------------------
+        content, cl = self._section("AI Selection", body)
 
         # One instruction for the whole pill group: hovering the photo lights up
         # the person or region under the cursor; the pills are explicit choices.
         self._scene_hint = QLabel(
-            "Point at the photo — the person or region under the cursor lights up. "
-            "Click to mask it.",
+            "Point to preview.\nClick to mask.",
             content,
         )
         self._scene_hint.setObjectName("editorHint")
         self._scene_hint.setWordWrap(True)
+        self._scene_hint.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum,
+        )
         cl.addWidget(self._scene_hint)
 
         self.subject_mask_options = QWidget(content)
@@ -2078,15 +3987,13 @@ class PhotoEditorPanel(QFrame):
         # Subject / background come from BiRefNet, the scene pills from
         # OneFormer, but they're all "let the model pick a region" — so they wear
         # the same pill styling and sit in a matching two-column row.
-        self.select_subject_button = self._action_button(
-            "Select subject", self.subject_mask_options
+        self.select_subject_button = self._mask_pill(
+            "Select subject", "person", self.subject_mask_options
         )
-        self.select_subject_button.setObjectName("semanticMaskButton")
         self.select_subject_button.setAccessibleName("Select subject")
-        self.select_background_button = self._action_button(
-            "Select background", self.subject_mask_options
+        self.select_background_button = self._mask_pill(
+            "Select background", "background", self.subject_mask_options
         )
-        self.select_background_button.setObjectName("semanticMaskButton")
         self.select_background_button.setAccessibleName("Select background")
         self.select_subject_button.clicked.connect(
             lambda: self.request_subject_mask("subject")
@@ -2136,8 +4043,9 @@ class PhotoEditorPanel(QFrame):
         self._semantic_grid = semantic_grid
         self._semantic_mask_buttons: dict[str, QPushButton] = {}
         for category in SEMANTIC_MASK_CATEGORIES:
-            button = self._action_button(category.title(), content)
-            button.setObjectName("semanticMaskButton")
+            button = self._mask_pill(
+                category.title(), self._SCENE_MASK_GLYPHS.get(category, "scene"), content
+            )
             button.clicked.connect(
                 lambda _checked=False, selected=category: self.request_semantic_mask(selected)
             )
@@ -2146,8 +4054,7 @@ class PhotoEditorPanel(QFrame):
         cl.addLayout(semantic_grid)
         # Promptable click-to-select: isolate one specific person/object (incl.
         # one of several touching people) by clicking it.
-        self.point_select_button = self._action_button("Click to Select (AI)", content)
-        self.point_select_button.setObjectName("semanticMaskButton")
+        self.point_select_button = self._mask_pill("Click to Select (AI)", "point", content)
         self.point_select_button.setCheckable(True)
         self.point_select_button.setToolTip(
             "Click a person or object on the photo to select just that one — "
@@ -2155,10 +4062,9 @@ class PhotoEditorPanel(QFrame):
         )
         self.point_select_button.toggled.connect(self._set_point_select_active)
         cl.addWidget(self.point_select_button)
-        self.download_mask_models_button = self._action_button(
-            "Download AI Masking Tools", content
+        self.download_mask_models_button = self._mask_pill(
+            "Download AI Masking Tools", "download", content
         )
-        self.download_mask_models_button.setObjectName("semanticMaskButton")
         self.download_mask_models_button.setToolTip(
             "Download the local AI tools used for automatic photo selections."
         )
@@ -2170,19 +4076,27 @@ class PhotoEditorPanel(QFrame):
         self.semantic_mask_status.setWordWrap(True)
         cl.addWidget(self.semantic_mask_status)
         self._sync_mask_model_controls()
+        layout.addWidget(content)
 
-        cl.addWidget(self._mask_hairline(content))
-
-        # Drawing tools, as a quiet icon list with shortcut chips.
-        self._masking_hint = QLabel(self._MASK_IDLE_HINT, content)
+        # -- drawing and range tools, as quiet icon rows with shortcut chips -----
+        tools_card, tl = self._section("Manual Tools", body)
+        # Shown only while a tool is armed (see _set_mask_tool).
+        self._masking_hint = QLabel(self._MASK_IDLE_HINT, tools_card)
         self._masking_hint.setObjectName("editorHint")
         self._masking_hint.setWordWrap(True)
-        cl.addWidget(self._masking_hint)
+        self._masking_hint.hide()
+        tl.addWidget(self._masking_hint)
         self.brush_tool_button = self._mask_tool_row("brush", "Brush", shortcut="B", checkable=True)
-        self.linear_tool_button = self._mask_tool_row("linear", "Linear gradient", shortcut="L", checkable=True)
-        self.radial_tool_button = self._mask_tool_row("radial", "Radial gradient", shortcut="R", checkable=True)
-        self.luma_tool_button = self._mask_tool_row("range", "Luminance range")
-        self.color_tool_button = self._mask_tool_row("range", "Color range", checkable=True)
+        self.linear_tool_button = self._mask_tool_row(
+            "gradient-linear", "Linear gradient", shortcut="L", checkable=True
+        )
+        self.radial_tool_button = self._mask_tool_row(
+            "gradient-radial", "Radial gradient", shortcut="R", checkable=True
+        )
+        self.luma_tool_button = self._mask_tool_row("luminance", "Luminance range")
+        self.color_tool_button = self._mask_tool_row("color-range", "Color range", checkable=True)
+        for tool in (self.linear_tool_button, self.radial_tool_button):
+            tool.setToolTip(self._MASK_IDLE_HINT)
         self.radial_tool_button.clicked.connect(
             lambda checked=False: self._arm_base_tool("radial" if checked else None)
         )
@@ -2196,26 +4110,25 @@ class PhotoEditorPanel(QFrame):
         self.color_tool_button.clicked.connect(
             lambda checked=False: self.arm_color_range_mask() if checked else self._set_mask_tool(None)
         )
-        for tool in (
-            self.brush_tool_button,
-            self.linear_tool_button,
-            self.radial_tool_button,
-            self.luma_tool_button,
-            self.color_tool_button,
-        ):
-            cl.addWidget(tool)
+        for tool in (self.brush_tool_button, self.linear_tool_button, self.radial_tool_button):
+            tl.addWidget(tool)
+        layout.addWidget(tools_card)
 
-        cl.addWidget(self._mask_hairline(content))
+        range_section, range_layout = self._section("Range Selection Tools", body)
+        for tool in (self.luma_tool_button, self.color_tool_button):
+            range_layout.addWidget(tool)
+        layout.addWidget(range_section)
 
-        # Import stays, demoted to two quiet rows.
-        self.add_painted_button = self._mask_tool_row("brush", "Import brush PNG")
+        # -- import stays, demoted to two quiet rows ------------------------------
+        import_section, il = self._section("Import", body)
+        self.add_painted_button = self._mask_tool_row("import", "Import brush PNG")
         self.add_subject_button = self._mask_tool_row("scene", "Import subject PNG")
         self.add_painted_button.clicked.connect(self.add_painted_mask)
         self.add_subject_button.clicked.connect(self.add_subject_mask)
-        cl.addWidget(self.add_painted_button)
-        cl.addWidget(self.add_subject_button)
-
-        layout.addWidget(content)
+        il.addWidget(self.add_painted_button)
+        il.addWidget(self.add_subject_button)
+        layout.addWidget(import_section)
+        layout.addSpacing(14)
         layout.addStretch(1)
         return pane
 
@@ -2223,10 +4136,15 @@ class PhotoEditorPanel(QFrame):
         pane, body, layout = self._mask_pane()
 
         # -- mask list + create, always at the top ----------------------------
-        list_block = QWidget(body)
-        list_block.setObjectName("maskListBlock")
-        lb = QVBoxLayout(list_block)
-        lb.setContentsMargins(11, 9, 11, 9)
+        # Inside a mask, "All masks" steps back out to the layer overview.
+        self.mask_back_button = QPushButton("‹  All masks", body)
+        self.mask_back_button.setObjectName("maskLinkButton")
+        self.mask_back_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mask_back_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.mask_back_button.setToolTip("Back to every mask on this photo")
+        self.mask_back_button.clicked.connect(self._return_to_mask_overview)
+        self.mask_back_button.hide()
+        list_block, lb = self._section("Masks", body)
         lb.setSpacing(7)
 
         # Keep the mask collection visually separate from the commands below it.
@@ -2287,15 +4205,31 @@ class PhotoEditorPanel(QFrame):
             lambda: self._open_mask_create_pane()
         )
         lb.addWidget(self.new_mask_button)
+        # "All masks" (only shown inside a mask) on the left; the overlay
+        # toggle sits with its settings on the right. In the caption bar the
+        # link crowded the section header.
         overlay_row = QHBoxLayout()
+        overlay_row.setSpacing(8)
+        overlay_row.addWidget(self.mask_back_button)
+        overlay_row.addStretch(1)
         self.overlay_check = QCheckBox("Show overlay", list_block)
         self.overlay_check.setChecked(True)
         self.overlay_check.toggled.connect(lambda _on: self.mask_overlay_changed.emit())
         overlay_row.addWidget(self.overlay_check)
-        overlay_row.addStretch(1)
         overlay_row.addWidget(self._build_overlay_menu_button(list_block))
         lb.addLayout(overlay_row)
         layout.addWidget(list_block)
+
+        # -- the layer overview: what you see with no mask open ---------------
+        # Opening a photo with masks lands here: one card per mask group, with
+        # visibility, a thumbnail and its components. Opening a card puts you
+        # inside that mask (the detail below); "All masks" comes back.
+        self._mask_overview = QWidget(body)
+        self._mask_overview.setObjectName("maskOverview")
+        self._mask_overview_layout = QVBoxLayout(self._mask_overview)
+        self._mask_overview_layout.setContentsMargins(10, 8, 10, 0)
+        self._mask_overview_layout.setSpacing(8)
+        layout.addWidget(self._mask_overview)
 
         # -- everything for the selected mask, one continuous scroll below -----
         detail = QWidget(body)
@@ -2313,14 +4247,14 @@ class PhotoEditorPanel(QFrame):
         self.space_height_spin = self._spin(hidden_space, 1, 200000, 1)
         self.add_space_button = QPushButton("Add Space", hidden_space)
         self.add_space_button.clicked.connect(self.add_coordinate_space)
-        self.mask_space_combo = QComboBox(hidden_space)
+        self.mask_space_combo = _EditorComboBox(hidden_space)
 
         self._build_mask_shape_section(detail, dl)
         self._build_mask_range_section(detail, dl)
         self._build_mask_brush_section(detail, dl)
         self._build_mask_adjust_section(detail, dl)
-        self._build_mask_group_section(detail, dl)
         layout.addWidget(detail)
+        layout.addSpacing(14)
         layout.addStretch(1)
         return pane
 
@@ -2379,7 +4313,7 @@ class PhotoEditorPanel(QFrame):
 
         self.color_refine_spin = self._spin(section, 0, 100, 30)
         self.color_refine_row = self._slider_spin_row(
-            "Refine", self.color_refine_spin, minimum=0, maximum=100, parent=section
+            "Refine", self.color_refine_spin, minimum=0, maximum=100, parent=section,
         )
         rl.addWidget(self.color_refine_row)
 
@@ -2434,22 +4368,24 @@ class PhotoEditorPanel(QFrame):
         self.brush_density_spin = self._spin(section, 0, 100, 100)
         self.brush_flow_spin = self._spin(section, 0, 100, 100)
         self.brush_size_row = self._slider_spin_row(
-            "Size", self.brush_size_spin, minimum=1, maximum=500, parent=section
+            "Size", self.brush_size_spin, minimum=1, maximum=500, parent=section,
         )
         self.brush_feather_row = self._slider_spin_row(
-            "Feather", self.brush_feather_spin, minimum=0, maximum=100, parent=section
+            "Feather", self.brush_feather_spin, minimum=0, maximum=100, parent=section,
         )
         self.brush_density_row = self._slider_spin_row(
-            "Density", self.brush_density_spin, minimum=0, maximum=100, parent=section
+            "Density", self.brush_density_spin, minimum=0, maximum=100, parent=section,
         )
         self.brush_flow_row = self._slider_spin_row(
-            "Flow", self.brush_flow_spin, minimum=0, maximum=100, parent=section
+            "Flow", self.brush_flow_spin, minimum=0, maximum=100, parent=section,
         )
+        # Size, Feather, Flow, Density — how the stroke is laid down, then how
+        # much of it lands.
         for row in (
             self.brush_size_row,
             self.brush_feather_row,
-            self.brush_density_row,
             self.brush_flow_row,
+            self.brush_density_row,
         ):
             bl.addWidget(row)
         for spin in (
@@ -2460,8 +4396,15 @@ class PhotoEditorPanel(QFrame):
         ):
             spin.valueChanged.connect(self._handle_brush_control_changed)
         brush_row = QHBoxLayout()
+        brush_row.setSpacing(6)
         add_brush_button = self._action_button("Add", section)
         subtract_brush_button = self._action_button("Subtract", section)
+        # Paint / erase, sized like the list's Add / Subtract rather than two
+        # heavy blocks under the sliders.
+        for button in (add_brush_button, subtract_brush_button):
+            button.setObjectName("maskCombineButton")
+            button.setFixedHeight(22)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
         add_brush_button.clicked.connect(lambda: self.arm_brush_mask("add"))
         subtract_brush_button.clicked.connect(lambda: self.arm_brush_mask("subtract"))
         brush_row.addWidget(add_brush_button)
@@ -2489,35 +4432,366 @@ class PhotoEditorPanel(QFrame):
                 self._mask_rows[key] = row
                 sl.addWidget(row)
             into.addWidget(section)
-        reset_holder = QWidget(parent)
-        rl = QHBoxLayout(reset_holder)
-        rl.setContentsMargins(10, 6, 10, 6)
-        self.reset_mask_adjustments_button = self._action_button("Reset adjustments", reset_holder)
-        self.reset_mask_adjustments_button.clicked.connect(self.reset_mask_adjustments)
-        rl.addWidget(self.reset_mask_adjustments_button)
-        into.addWidget(reset_holder)
-
-    def _build_mask_group_section(self, parent: QWidget, into: QVBoxLayout) -> None:
-        # Add/Subtract now live under the mask list; only the destructive action
-        # stays down here, kept apart from everything else on purpose.
-        section, gl = self._section("Delete", parent)
-        self.delete_mask_button = self._action_button("Delete Mask", section)
-        self.delete_mask_button.setObjectName("deleteMaskButton")
-        self.delete_mask_button.clicked.connect(self.delete_selected_mask)
-        gl.addWidget(self.delete_mask_button)
-        into.addWidget(section)
+        # Reset adjustments and Delete mask live in the footer (built with the
+        # panel), so the scroll ends on the adjustments themselves.
 
     def _mask_pane_header(self, title: str, parent: QWidget) -> QWidget:
         header = QWidget(parent)
         header.setObjectName("maskPaneHeader")
         row = QHBoxLayout(header)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(12, 12, 12, 0)
         row.setSpacing(6)
         label = QLabel(title, header)
         label.setObjectName("maskPaneTitle")
         row.addWidget(label)
         row.addStretch(1)
         return header
+
+    # -- Masks-tab cards: an uppercase caption over a rounded card -------------
+    @staticmethod
+    def _letter_space(widget: QWidget, spacing: float = 0.8) -> None:
+        # QSS has no letter-spacing; the stylesheet's size/weight resolve on top
+        # of this font and keep the spacing.
+        font = widget.font()
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, spacing)
+        widget.setFont(font)
+
+    def _mask_pill(self, text: str, glyph: str, parent: QWidget) -> QPushButton:
+        """A rounded AI-selection chip with a leading line glyph."""
+        button = self._action_button(text, parent)
+        button.setObjectName("semanticMaskButton")
+        button.setIcon(self._mask_glyph(glyph))
+        button.setIconSize(QSize(14, 14))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        return button
+
+    # -- the layer overview (Work pane, no mask open) --------------------------
+    MASK_THUMB_SIZE = QSize(52, 38)
+
+    def set_mask_thumbnail_source(self, key_fn: Any, image_fn: Any) -> None:
+        """Where layer thumbnails get the photo: ``key_fn()`` returns an int
+        that changes whenever the frame does (0 = nothing shown yet), and
+        ``image_fn(width, height)`` the frame at that size. The preview lends
+        its mask overlay's displayed frame."""
+        self._mask_thumb_key_fn = key_fn
+        self._mask_thumb_image_fn = image_fn
+        self._mask_thumb_cache.clear()
+
+    def _expanded_layer_id(self) -> str | None:
+        expanded = self._overview_expanded
+        if expanded is None or expanded[0] != self._source_path:
+            return None
+        return expanded[1]
+
+    def _set_expanded_layer(self, root_id: str | None) -> None:
+        self._overview_expanded = (self._source_path, root_id) if root_id else None
+
+    def _refresh_mask_overview(self) -> None:
+        if getattr(self, "_mask_overview", None) is not None and self._selected_mask_id() is None:
+            self._rebuild_mask_overview()
+
+    def _rebuild_mask_overview(self) -> None:
+        layout = self._mask_overview_layout
+        while layout.count():
+            widget = layout.takeAt(0).widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        if self._source_path is None:
+            return
+        roots = [
+            mask for mask in (self._session or {}).get("masks", []) if not mask.get("parentId")
+        ]
+        if not roots:
+            hint = QLabel("No masks yet. New mask adds the first one.", self._mask_overview)
+            hint.setObjectName("editorHint")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+            return
+        for number, root in enumerate(roots, start=1):
+            layout.addWidget(self._make_mask_layer_card(root, number))
+
+    def _mask_layer_button(self, glyph: str, parent: QWidget) -> QToolButton:
+        button = QToolButton(parent)
+        button.setObjectName("maskLayerAction")
+        button.setIcon(self._mask_glyph(glyph))
+        button.setIconSize(QSize(15, 15))
+        button.setFixedSize(22, 22)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        return button
+
+    def _make_mask_layer_card(self, root: dict[str, Any], number: int) -> QWidget:
+        """One mask group: visibility, thumbnail, name, edit and delete; the
+        expanded card also lists its components. Click expands, double-click
+        (or the edit button) opens the mask."""
+        root_id = str(root.get("id"))
+        members = self._group_members(root_id)
+        visible = bool(root.get("enabled", True))
+        card = _MaskListRow(self._mask_overview)
+        card.setObjectName("maskLayerCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card.setProperty("expanded", root_id == self._expanded_layer_id())
+        card.setProperty("layerHidden", not visible)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.clicked.connect(lambda rid=root_id: self._toggle_overview_layer(rid))
+        card.doubleClicked.connect(lambda rid=root_id: self._enter_mask(rid))
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(6, 8, 8, 6)
+        outer.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        eye = self._mask_layer_button("eye" if visible else "eye-off", card)
+        eye.setToolTip(
+            "Hide this mask's adjustments" if visible else "Show this mask's adjustments"
+        )
+        eye.clicked.connect(
+            lambda _checked=False, rid=root_id, show=not visible: self.set_mask_layer_visible(
+                rid, show
+            )
+        )
+        header.addWidget(eye)
+        thumb = QLabel(card)
+        thumb.setObjectName("maskLayerThumb")
+        thumb.setFixedSize(self.MASK_THUMB_SIZE)
+        thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pixmap = self._mask_layer_thumbnail(root_id)
+        if not pixmap.isNull():
+            thumb.setPixmap(pixmap)
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        title = QLabel(f"Layer {number}", card)
+        title.setObjectName("maskLayerTitle")
+        subtitle = QLabel(self._mask_layer_subtitle(root, members), card)
+        subtitle.setObjectName("maskLayerSubtitle")
+        subtitle.setWordWrap(True)
+        for label in (thumb, title, subtitle):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        text.addWidget(title)
+        text.addWidget(subtitle)
+        header.addWidget(thumb)
+        header.addLayout(text, 1)
+        edit = self._mask_layer_button("adjust", card)
+        edit.setToolTip("Edit this mask")
+        edit.clicked.connect(lambda _checked=False, rid=root_id: self._enter_mask(rid))
+        trash = self._mask_layer_button("trash", card)
+        trash.setObjectName("maskRowTrash")
+        trash.setToolTip("Delete this mask and its components")
+        trash.clicked.connect(lambda _checked=False, rid=root_id: self.delete_mask(rid))
+        header.addWidget(edit)
+        header.addWidget(trash)
+        outer.addLayout(header)
+
+        if root_id == self._expanded_layer_id():
+            for member, name in zip(members, self._mask_component_names(members)):
+                outer.addWidget(self._make_mask_component_row(member, name, card))
+        add = QPushButton("＋  Add component", card)
+        add.setObjectName("maskAddComponent")
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        add.setToolTip("Draw or pick another shape into this mask")
+        add.clicked.connect(
+            lambda _checked=False, rid=root_id: self._open_mask_create_pane(parent_id=rid)
+        )
+        outer.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
+        return card
+
+    def _make_mask_component_row(
+        self, mask: dict[str, Any], name: str, parent: QWidget
+    ) -> QWidget:
+        """A component inside an expanded layer card. Submasks can switch
+        between adding to and carving out of the group; the root is the base."""
+        mask_id = str(mask.get("id"))
+        row = _MaskListRow(parent)
+        row.setObjectName("maskComponentRow")
+        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        row.setToolTip("Click to edit this component")
+        row.clicked.connect(lambda mid=mask_id: self._enter_mask(mid))
+        inner = QHBoxLayout(row)
+        inner.setContentsMargins(8, 3, 4, 3)
+        inner.setSpacing(8)
+        glyph = QLabel(row)
+        glyph.setPixmap(self._mask_glyph(self._mask_component_glyph(mask)).pixmap(QSize(16, 16)))
+        text = QLabel(name, row)
+        text.setObjectName("maskComponentName")
+        for label in (glyph, text):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        inner.addWidget(glyph)
+        inner.addWidget(text, 1)
+        if mask.get("parentId"):
+            combine = _EditorComboBox(row)
+            combine.setObjectName("maskCombineCombo")
+            combine.addItem("Add", "add")
+            combine.addItem("Subtract", "subtract")
+            combine.setCurrentIndex(1 if mask.get("combine") == "subtract" else 0)
+            combine.setToolTip("Whether this component adds to the mask or carves out of it")
+            combine.currentIndexChanged.connect(
+                lambda _index, mid=mask_id, box=combine: self.set_mask_component_combine(
+                    mid, str(box.currentData())
+                )
+            )
+            trash = self._mask_layer_button("trash", row)
+            trash.setObjectName("maskRowTrash")
+            trash.setToolTip("Delete this component")
+            trash.clicked.connect(lambda _checked=False, mid=mask_id: self.delete_mask(mid))
+            inner.addWidget(combine)
+            inner.addWidget(trash)
+        else:
+            base = QLabel("Base", row)
+            base.setObjectName("maskComponentBase")
+            base.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            inner.addWidget(base)
+        return row
+
+    @staticmethod
+    def _mask_component_names(members: list[dict[str, Any]]) -> list[str]:
+        """Friendly component names, numbered when a kind repeats."""
+        counts: dict[str, int] = {}
+        names: list[str] = []
+        for member in members:
+            label = _friendly_mask_label(member)
+            counts[label] = counts.get(label, 0) + 1
+            names.append(label if counts[label] == 1 else f"{label} {counts[label]}")
+        return names
+
+    def _mask_component_glyph(self, mask: dict[str, Any]) -> str:
+        category = str(mask.get("semanticCategory") or "").strip().casefold()
+        if category:
+            return self._SCENE_MASK_GLYPHS.get(
+                category, "background" if category == "background" else "person"
+            )
+        by_style = {"brush": "brush", "luminance-range": "luminance", "color-range": "color-range"}
+        style = str(mask.get("uiStyle") or "")
+        if style in by_style:
+            return by_style[style]
+        by_type = {
+            "radial": "gradient-radial",
+            "linear-gradient": "gradient-linear",
+            "subject-select": "point",
+        }
+        return by_type.get(str(mask.get("type")), "scene")
+
+    @staticmethod
+    def _mask_layer_subtitle(root: dict[str, Any], members: list[dict[str, Any]]) -> str:
+        label = _friendly_mask_label(root)
+        if root.get("semanticCategory"):
+            label = f"{label} Mask (AI)"
+        elif root.get("type") == "subject-select":
+            label = f"{label} (AI)"
+        if len(members) > 1:
+            label = f"{label} · {len(members)} components"
+        if not root.get("enabled", True):
+            label = f"{label} · hidden"
+        return label
+
+    def _mask_layer_thumbnail(self, root_id: str) -> QPixmap:
+        """The photo seen through the layer's mask (white-on-black until the
+        preview has shown a frame), fitted to the photo's aspect."""
+        source_size = self._mask_source_size()
+        components = self._group_components(root_id)
+        if not source_size or not components:
+            return QPixmap()
+        tile = self.MASK_THUMB_SIZE
+        scale = min(tile.width() / source_size[0], tile.height() / source_size[1])
+        width = max(1, round(source_size[0] * scale))
+        height = max(1, round(source_size[1] * scale))
+        base_key = 0
+        if self._mask_thumb_key_fn is not None:
+            base_key = int(self._mask_thumb_key_fn() or 0)
+        # repr(components) carries geometry and bitmap assetRevision, so an
+        # edited mask misses the cache and redraws.
+        key = (repr(components), width, height, base_key)
+        cached = self._mask_thumb_cache.get(key)
+        if cached is not None:
+            return cached
+        gray = build_group_strength(components, width, height, source_size)
+        if gray is None:
+            return QPixmap()
+        base = (
+            self._mask_thumb_image_fn(width, height)
+            if base_key and self._mask_thumb_image_fn is not None
+            else None
+        )
+        if base is None:
+            image = compose_mask_overlay(gray, "white-black", self._overlay_color)
+        else:
+            # "image-black" is an overlay (black wherever the mask is not), made
+            # to sit over the photo — so paint the photo first.
+            image = base.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+            painter = QPainter(image)
+            painter.drawImage(
+                0, 0, compose_mask_overlay(gray, "image-black", self._overlay_color, base)
+            )
+            painter.end()
+        pixmap = QPixmap.fromImage(image)
+        if len(self._mask_thumb_cache) >= 64:
+            self._mask_thumb_cache.clear()
+        self._mask_thumb_cache[key] = pixmap
+        return pixmap
+
+    def _toggle_overview_layer(self, root_id: str) -> None:
+        self._set_expanded_layer(None if self._expanded_layer_id() == root_id else root_id)
+        self._rebuild_mask_overview()
+
+    def _enter_mask(self, mask_id: str) -> None:
+        """Open a mask from the overview: selecting it shows its detail."""
+        mask = self._mask_by_id(mask_id)
+        if mask is None:
+            return
+        self._set_expanded_layer(str(self._mask_root(mask).get("id")))
+        self._select_mask_in_list(mask_id)
+
+    def _return_to_mask_overview(self) -> None:
+        """Leave the open mask for the overview, with its layer expanded."""
+        mask = self._selected_mask_dict()
+        if mask is not None:
+            self._set_expanded_layer(str(self._mask_root(mask).get("id")))
+        self._active_mask_edit_id = None
+        self._brush_paint_mode = None
+        self._set_mask_tool(None)
+        with QSignalBlocker(self.masks_list):
+            self.masks_list.setCurrentRow(-1)
+            self.masks_list.clearSelection()
+        self._handle_mask_selection_changed()
+
+    def set_mask_layer_visible(self, root_id: str, visible: bool) -> None:
+        """Show or hide a layer's local adjustments. A GUI-side flag on the
+        group root that masked_adjustments() skips; the operations stay intact
+        (and editable) for when the layer comes back."""
+        try:
+            _path, session = self._ensure_session()
+            root = next(
+                (mask for mask in session.get("masks", []) if mask.get("id") == root_id), None
+            )
+            if root is None or root.get("parentId"):
+                raise SessionError(f"mask group not found: {root_id}")
+            if visible:
+                root.pop("enabled", None)
+            else:
+                root["enabled"] = False
+            self._write_session(session, "Showed mask" if visible else "Hid mask")
+        except Exception as exc:
+            self._set_status(f"Mask visibility failed: {exc}")
+
+    def set_mask_component_combine(self, mask_id: str, combine: str) -> None:
+        """Switch a submask between adding to and subtracting from its group."""
+        try:
+            _path, session = self._ensure_session()
+            mask = next(
+                (mask for mask in session.get("masks", []) if mask.get("id") == mask_id), None
+            )
+            if mask is None or not mask.get("parentId"):
+                return  # the group root is always the add base
+            if combine == "subtract":
+                mask["combine"] = "subtract"
+            else:
+                mask.pop("combine", None)
+            self._write_session(
+                session, "Component subtracts" if combine == "subtract" else "Component adds"
+            )
+        except Exception as exc:
+            self._set_status(f"Combine change failed: {exc}")
 
     # The list shows one row when there is one mask and caps at a few before it
     # scrolls, so it never eats the panel with empty space.
@@ -2733,12 +5007,19 @@ class PhotoEditorPanel(QFrame):
         ok_layout = QHBoxLayout(ok_holder)
         ok_layout.setContentsMargins(12, 8, 12, 0)
         ok_layout.addStretch(1)
+        self.mask_touchup_cancel_button = QPushButton("Cancel", ok_holder)
+        self.mask_touchup_cancel_button.setObjectName("maskTouchupSecondaryButton")
+        self.mask_touchup_cancel_button.setFixedWidth(72)
+        self.mask_touchup_cancel_button.clicked.connect(
+            lambda: self._finish_mask_touchup(accepted=False)
+        )
         self.mask_touchup_ok_button = QPushButton("OK", ok_holder)
         self.mask_touchup_ok_button.setObjectName("maskTouchupOkButton")
         self.mask_touchup_ok_button.setFixedWidth(72)
         self.mask_touchup_ok_button.clicked.connect(
             lambda: self._finish_mask_touchup(accepted=True)
         )
+        ok_layout.addWidget(self.mask_touchup_cancel_button)
         ok_layout.addWidget(self.mask_touchup_ok_button)
         root.addWidget(ok_holder)
         root.addStretch(1)
@@ -2761,13 +5042,13 @@ class PhotoEditorPanel(QFrame):
         return self._mask_touchup_page
 
     def _enter_touchup_view(self) -> None:
-        for widget in (
-            self._editor_tab_bar,
-            self._editor_doc_bar,
-            self.editor_stack,
-            self._editor_footer,
-        ):
-            widget.hide()
+        # Touch-up is a sibling of the normal editor column. Hide both normal
+        # siblings completely so their size hints cannot renegotiate the width
+        # as the touch-up subtitle changes with each added mask.
+        self._editor_tool_rail.hide()
+        self.editor_stack.hide()
+        self._editor_footer.hide()
+        self._editor_column.hide()
         self._mask_touchup_page.show()
         self._mask_touchup_page.setFocus()
 
@@ -2852,7 +5133,7 @@ class PhotoEditorPanel(QFrame):
         if self._mask_has_local_adjustments(target):
             self.recipe_changed.emit(self._recipe)
 
-    def _clear_prompt_session(self) -> None:
+    def _clear_prompt_session(self) -> bool:
         """Delete every selection made in the current click-to-select session
         and reset it to empty, ready for fresh clicks."""
         root_id = self._prompt_session_root_id
@@ -2873,7 +5154,7 @@ class PhotoEditorPanel(QFrame):
                 self._write_session(session, "Cleared selection")
             except Exception as exc:
                 self._set_status(f"Clear failed: {exc}")
-                return
+                return False
         self._prompt_session_root_id = None
         self._prompt_session_label = None
         self._mask_touchup_mask_id = None
@@ -2888,6 +5169,7 @@ class PhotoEditorPanel(QFrame):
         self.mask_touchup_refine_button.setEnabled(False)
         self._set_status("Selection cleared — click to start again")
         self.mask_overlay_changed.emit()
+        return True
 
     def _toggle_mask_touchup_invert(self, checked: bool) -> None:
         target = self._mask_by_id(self._mask_touchup_mask_id)
@@ -2899,6 +5181,9 @@ class PhotoEditorPanel(QFrame):
             self.recipe_changed.emit(self._recipe)
 
     def _finish_mask_touchup(self, *, accepted: bool) -> None:
+        was_session = self._prompt_session_active
+        if was_session and not accepted and not self._clear_prompt_session():
+            return
         target = self._mask_by_id(self._mask_touchup_mask_id)
         if target is not None and not accepted:
             target_params = target.setdefault("params", {})
@@ -2919,16 +5204,13 @@ class PhotoEditorPanel(QFrame):
         self._mask_touchup_original_present = set()
         self._mask_touchup_original_values = {}
         self._mask_touchup_page.hide()
-        for widget in (
-            self._editor_tab_bar,
-            self._editor_doc_bar,
-            self.editor_stack,
-            self._editor_footer,
-        ):
-            widget.show()
+        self._editor_tool_rail.show()
+        self._editor_column.show()
+        self.editor_stack.show()
+        self._editor_footer.show()
+        self._sync_editor_footer()
         # Tear down any click-to-select session and drop the user back on the
         # mask adjustment (Work) pane with the button released.
-        was_session = self._prompt_session_active
         self._prompt_session_active = False
         self._prompt_session_root_id = None
         self._prompt_session_label = None
@@ -2974,7 +5256,7 @@ class PhotoEditorPanel(QFrame):
         target_row = QHBoxLayout()
         target_label = QLabel("Target", target_section)
         target_label.setObjectName("editorControlLabel")
-        self.preset_target_combo = QComboBox(target_section)
+        self.preset_target_combo = _EditorComboBox(target_section)
         self.preset_target_combo.currentIndexChanged.connect(
             lambda _index: self._sync_preset_buttons()
         )
@@ -3170,6 +5452,8 @@ class PhotoEditorPanel(QFrame):
         self._sync_preset_buttons()
 
     def set_image(self, source_path: str | Path | None) -> None:
+        if self._point_color_sample_armed:
+            self._set_point_color_sample_armed(False)
         if self._mask_touchup_mask_id is not None or self._prompt_session_active:
             self._finish_mask_touchup(accepted=True)
         rejected_editor_asset = bool(source_path and is_editor_asset_path(source_path))
@@ -3188,23 +5472,29 @@ class PhotoEditorPanel(QFrame):
         self._semantic_mask_request_context = None
         self._subject_mask_request_context = None
         self._point_select_active = False
+        self._clear_prompt_hover()
         self._prompt_mask_task = None
         self._prompt_meta = {}
         self._background_matte_path = None
         self._background_matte_task = None
         self._depth_map_path = None
         self._depth_map_task = None
+        # Retouch tool state is per-photo: a spot selected on the last frame
+        # does not exist on this one, and leaving a tool armed across a
+        # navigation means the next click drops a spot the user did not ask for.
+        self._retouch_tool = None
+        self._selected_spot_id = None
+        self._sync_retouch_tool_buttons()
         self._clear_subject_choice()
         if not source_path:
+            self._point_color_selected_index = -1
             self._semantic_mask_result = None
             self._source_path = None
             self._populate_semantic_mask_buttons(())
             self._session_path = None
             self._session = None
             self._recipe = EditRecipe()
-            self.subtitle_label.setText(
-                "Generated mask asset" if rejected_editor_asset else "No image selected"
-            )
+            self._straighten_crop_envelope = None
             self._sync_rows_from_recipe()
             self._sync_enabled()
             self._refresh_session_views()
@@ -3216,6 +5506,7 @@ class PhotoEditorPanel(QFrame):
         path = Path(source_path)
         if self._source_path is not None and path == self._source_path:
             return
+        self._point_color_selected_index = -1
         self._semantic_mask_result = None
         self._reset_scene_regions()
         self._populate_semantic_mask_buttons(())
@@ -3227,16 +5518,37 @@ class PhotoEditorPanel(QFrame):
         migrate_bundle(path)
         self._session_path = resolve_session_for_read(path)
         self._recipe = self._load_recipe_for_path(path)
-        self.subtitle_label.setText(path.name)
+        self._straighten_crop_envelope = self._recipe.crop
         self._sync_rows_from_recipe()
         self._sync_enabled()
         self._refresh_session_views()
         self.recipe_changed.emit(self._recipe)
-        if self.editor_stack.currentIndex() == 1:
+        if self.editor_stack.currentIndex() == self.PAGE_MASKS:
             QTimer.singleShot(0, self._ensure_semantic_inventory)
 
+    # Reset clears the *look*. Crop geometry and retouch spots are structural
+    # work with their own Reset buttons, and wiping them from a button labelled
+    # for adjustments would be unrecoverable.
+    STRUCTURAL_RECIPE_KEYS: tuple[str, ...] = (
+        "crop",
+        "crop_angle",
+        "crop_aspect",
+        "flip_h",
+        "flip_v",
+        "rotate",
+        "retouch",
+    )
+
     def reset_recipe(self) -> None:
-        self._recipe = EditRecipe()
+        current = asdict(self._recipe)
+        data = asdict(EditRecipe())
+        # Keep the crop and the retouch spots: this button says "Adjustments
+        # reset", and silently throwing away geometry and spot work — neither
+        # of which is undoable — is not what it offers to do. Both have their
+        # own resets on their own pages.
+        for key in self.STRUCTURAL_RECIPE_KEYS:
+            data[key] = current[key]
+        self._recipe = EditRecipe.from_dict(data)
         self._sync_rows_from_recipe()
         self._set_status("Adjustments reset")
         self.recipe_changed.emit(self._recipe)
@@ -3366,12 +5678,31 @@ class PhotoEditorPanel(QFrame):
         if any(data.get(key) != defaults[key] for key in VIGNETTE_OPTION_KEYS):
             self._rows["vignette"].set_expanded(True)
         self._sync_curves_from_recipe()
+        self._sync_grading_wheel()
+        self._sync_crop_controls()
+        self._refresh_spot_lists()
         self._sync_background_controls()
+        self._sync_point_color_controls()
+
+    def _sync_crop_controls(self) -> None:
+        """Put the aspect combo back where a loaded session left it.
+
+        The straighten slider is an ordinary row, so it syncs with the rest;
+        the combo is not, and would otherwise read Free over a saved 16:9 crop.
+        """
+        combo = getattr(self, "crop_aspect_combo", None)
+        if combo is None:
+            return
+        wanted = str(self._recipe.crop_aspect or "")
+        index = combo.findData(wanted)
+        with QSignalBlocker(combo):
+            combo.setCurrentIndex(index if index >= 0 else 0)
 
     def _sync_enabled(self) -> None:
         enabled = self._source_path is not None
         for row in self._rows.values():
             row.setEnabled(enabled)
+        self._sync_point_color_controls()
         self.reset_button.setEnabled(enabled)
         self.save_button.setEnabled(enabled)
         self.save_copy_button.setEnabled(enabled and not self._copy_save_busy)
@@ -3422,7 +5753,7 @@ class PhotoEditorPanel(QFrame):
             self.subject_mask_options.setVisible(subject_category_detected)
 
     def _spin(self, parent: QWidget, minimum: int, maximum: int, value: int) -> QSpinBox:
-        spin = QSpinBox(parent)
+        spin = _EditorSpinBox(parent)
         spin.setRange(minimum, maximum)
         spin.setValue(value)
         return spin
@@ -3436,7 +5767,7 @@ class PhotoEditorPanel(QFrame):
         *,
         decimals: int,
     ) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox(parent)
+        spin = _EditorDoubleSpinBox(parent)
         spin.setRange(minimum, maximum)
         spin.setDecimals(decimals)
         spin.setValue(value)
@@ -3494,8 +5825,9 @@ class PhotoEditorPanel(QFrame):
                 save_session(self._session_path, session)
             with logger.span("editslider.write_reload"):
                 self._session = load_session(self._session_path)
-                self._recipe = recipe_from_session(self._session)
-            self._sync_rows_from_recipe()
+            # This path writes mask/session state. Global adjustments may still
+            # be intentionally unsaved, so reloading the on-disk recipe here
+            # would discard in-memory crop, retouch, and adjustment changes.
             with logger.span("editslider.write_refresh_views"):
                 self._refresh_session_views(selected_mask_id=selected_mask_id)
             self.recipe_changed.emit(self._recipe)
@@ -3546,6 +5878,8 @@ class PhotoEditorPanel(QFrame):
         for mask, is_child in ordered:
             mask_id = str(mask.get("id"))
             label = _friendly_mask_label(mask)
+            if not is_child and not mask.get("enabled", True):
+                label = f"{label} (hidden)"
             marker = ""
             if is_child:
                 marker = "−" if str(mask.get("combine", "add")) == "subtract" else "↳"
@@ -3707,10 +6041,16 @@ class PhotoEditorPanel(QFrame):
                 }
                 for component in self._subject_choice_result.components
             ]
-        masks_tab = self.editor_stack.currentIndex() == 1
-        interactive = masks_tab and self._source_path is not None
+        masks_tab = self.editor_stack.currentIndex() == self.PAGE_MASKS
+        point_color_pick = bool(
+            self.editor_stack.currentIndex() == self.PAGE_ADJUST
+            and self._point_color_sample_armed
+            and self._source_path is not None
+        )
+        interactive = (masks_tab or point_color_pick) and self._source_path is not None
         create_pane_active = bool(
-            hasattr(self, "mask_stack")
+            masks_tab
+            and hasattr(self, "mask_stack")
             and self.mask_stack.currentIndex() == self.MASK_PANE_CREATE
         )
         # Scene picking belongs exclusively to New Mask. It yields to any
@@ -3747,6 +6087,12 @@ class PhotoEditorPanel(QFrame):
             and self.show_luminance_map_check.isChecked()
         )
         scene_index_value = self._ensure_scene_index() if scene_pick else None
+        if point_color_pick:
+            mask_type = None
+            params = None
+            components = None
+            selected_index = None
+            subject_candidates = None
         # A centered "working…" spinner while New Mask analysis runs, so the pane
         # never reads as frozen. Ordered by what the user is waiting on.
         busy_message: str | None = None
@@ -3763,10 +6109,18 @@ class PhotoEditorPanel(QFrame):
             "scene_index": scene_index_value,
             "scene_pick": scene_pick,
             "point_pick": point_pick,
+            "point_preview_path": (
+                str(self._prompt_hover_result.mask_path)
+                if point_pick
+                and self._prompt_hover_result is not None
+                and self._prompt_hover_result.mask_path.is_file()
+                else None
+            ),
             "interactive": interactive,
             "busy_message": busy_message,
             "show_overlay": (
                 interactive
+                and not point_color_pick
                 and (
                     self.overlay_check.isChecked()
                     or show_luminance_map
@@ -3777,7 +6131,11 @@ class PhotoEditorPanel(QFrame):
             "overlay_mode": "white-black" if show_luminance_map else self._overlay_mode,
             "overlay_color": QColor(self._overlay_color),
             "show_tools": self._overlay_show_tools,
-            "create_mode": self._mask_create_mode if interactive else None,
+            "create_mode": (
+                "color-range"
+                if point_color_pick
+                else self._mask_create_mode if interactive else None
+            ),
             "create_combine": self._pending_combine if interactive else "add",
             "brush_mode": self._brush_paint_mode if interactive else None,
             "brush_size": self.brush_size_spin.value() if hasattr(self, "brush_size_spin") else 25,
@@ -4385,6 +6743,17 @@ class PhotoEditorPanel(QFrame):
         data[key] = value
         self._recipe = EditRecipe.from_dict(data)
 
+    def _apply_recipe_field(self, key: str, value: object) -> None:
+        """Set a recipe field *and* re-render.
+
+        _update_recipe_field deliberately stays silent — its background callers
+        emit once after setting several fields — so anything that changes one
+        field on its own has to go through here or the edit never reaches the
+        preview.
+        """
+        self._update_recipe_field(key, value)
+        self.recipe_changed.emit(self._recipe)
+
     _BACKGROUND_MATTE_MODES = ("blur", "color", "remove")
 
     def _apply_background_settings(self, *, mode: str, amount: float) -> None:
@@ -4538,9 +6907,8 @@ class PhotoEditorPanel(QFrame):
         amount_label = QLabel("Amount", panel)
         amount_label.setObjectName("editorControlLabel")
         amount_label.setFixedWidth(46)
-        self.lensblur_amount_slider = QSlider(Qt.Orientation.Horizontal, panel)
+        self.lensblur_amount_slider = _EditorSlider(Qt.Orientation.Horizontal, panel)
         self.lensblur_amount_slider.setRange(0, 100)
-        self.lensblur_amount_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.lensblur_amount_slider.valueChanged.connect(self._set_lensblur_amount)
         self.lensblur_amount_value = QLabel("0", panel)
         self.lensblur_amount_value.setObjectName("editorControlLabel")
@@ -4559,10 +6927,9 @@ class PhotoEditorPanel(QFrame):
         focus_label = QLabel("Focus", panel)
         focus_label.setObjectName("editorControlLabel")
         focus_label.setFixedWidth(46)
-        self.lensblur_focus_slider = QSlider(Qt.Orientation.Horizontal, panel)
+        self.lensblur_focus_slider = _EditorSlider(Qt.Orientation.Horizontal, panel)
         self.lensblur_focus_slider.setRange(0, 100)
         self.lensblur_focus_slider.setValue(70)
-        self.lensblur_focus_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.lensblur_focus_slider.valueChanged.connect(self._set_lensblur_focus)
         focus_hint = QLabel("far → near", panel)
         focus_hint.setObjectName("editorControlLabel")
@@ -4694,9 +7061,169 @@ class PhotoEditorPanel(QFrame):
             combine = "add"
         else:
             parent_id, combine = self._pending_parent_id, self._pending_combine
+        hover = self._prompt_hover_result
+        hover_context = self._prompt_hover_context or {}
+        hover_point = hover_context.get("point")
+        commit_context = {
+            "parent_id": parent_id,
+            "combine": combine,
+            "refine": refine,
+            "points": [(nx, ny)],
+        }
+        if (
+            not refine
+            and hover is not None
+            and hover_point is not None
+            and max(abs(nx - hover_point[0]), abs(ny - hover_point[1])) <= 0.002
+        ):
+            self._prompt_hover_result = None
+            self._prompt_hover_context = None
+            self._apply_prompt_mask_result(
+                hover,
+                commit_context,
+            )
+            self.mask_overlay_changed.emit()
+            return
+        active_point = self._prompt_hover_active_point
+        if (
+            self._prompt_hover_task is not None
+            and active_point is not None
+            and max(abs(nx - active_point[0]), abs(ny - active_point[1])) <= 0.002
+        ):
+            self._prompt_hover_timer.stop()
+            self._prompt_hover_pending = active_point
+            self._prompt_hover_commit_context = commit_context
+            self._set_status("Finishing selection preview...")
+            return
+        self._clear_prompt_hover()
         self._start_prompt_mask_task(
             [(nx, ny)], refine=refine, parent_id=parent_id, combine=combine
         )
+
+    def handle_overlay_point_hovered(self, x: float, y: float) -> None:
+        if not self._point_select_active or self._source_path is None:
+            return
+        source_size = self._mask_source_size()
+        if not source_size or source_size[0] < 1 or source_size[1] < 1:
+            return
+        point = (
+            max(0.0, min(1.0, float(x) / source_size[0])),
+            max(0.0, min(1.0, float(y) / source_size[1])),
+        )
+        self._prompt_hover_pending = point
+        self._prompt_hover_generation += 1
+        self._prompt_hover_timer.start()
+
+    def handle_overlay_point_hover_cleared(self) -> None:
+        self._clear_prompt_hover()
+
+    def _clear_prompt_hover(self) -> None:
+        self._prompt_hover_timer.stop()
+        self._prompt_hover_pending = None
+        self._prompt_hover_generation += 1
+        result = self._prompt_hover_result
+        self._prompt_hover_result = None
+        self._prompt_hover_context = None
+        self._prompt_hover_commit_context = None
+        if result is not None:
+            result.mask_path.unlink(missing_ok=True)
+        if hasattr(self, "mask_overlay_changed"):
+            self.mask_overlay_changed.emit()
+
+    def _start_prompt_hover_task(self) -> None:
+        if (
+            self._prompt_hover_task is not None
+            or self._prompt_mask_task is not None
+            or self._refine_active_task is not None
+            or self._source_path is None
+            or self._prompt_hover_pending is None
+        ):
+            return
+        point = self._prompt_hover_pending
+        generation = self._prompt_hover_generation
+        source = self._source_path.resolve()
+        task = PromptMaskTask(source, [point], refine=False)
+        task.signals.finished.connect(
+            lambda request_id, source_path, result: self._handle_prompt_hover_finished(
+                request_id, source_path, result, generation, point
+            ),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            lambda request_id, source_path, message: self._handle_prompt_hover_failed(
+                request_id, source_path, message, generation
+            ),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._prompt_hover_task = task
+        self._prompt_hover_active_point = point
+        self._semantic_mask_pool.start(task)
+
+    def _handle_prompt_hover_finished(
+        self,
+        request_id: str,
+        source_path: str,
+        result: object,
+        generation: int,
+        point: tuple[float, float],
+    ) -> None:
+        self._prompt_hover_task = None
+        self._prompt_hover_active_point = None
+        current_source = self._source_path.resolve() if self._source_path else None
+        valid = (
+            generation == self._prompt_hover_generation
+            and current_source is not None
+            and Path(source_path) == current_source
+            and isinstance(result, PromptMaskResult)
+            and result.mask_path.is_file()
+        )
+        if not valid:
+            if isinstance(result, PromptMaskResult):
+                result.mask_path.unlink(missing_ok=True)
+            if self._prompt_hover_pending is not None:
+                self._prompt_hover_timer.start()
+            return
+        commit_context = self._prompt_hover_commit_context
+        self._prompt_hover_commit_context = None
+        if commit_context is not None:
+            self._prompt_hover_pending = None
+            if bool(commit_context.get("refine")):
+                result.mask_path.unlink(missing_ok=True)
+                self._start_prompt_mask_task(
+                    list(commit_context.get("points") or []),
+                    refine=True,
+                    parent_id=commit_context.get("parent_id"),
+                    combine=str(commit_context.get("combine", "add")),
+                )
+            else:
+                self._apply_prompt_mask_result(result, commit_context)
+                self.mask_overlay_changed.emit()
+            return
+        old = self._prompt_hover_result
+        self._prompt_hover_result = result
+        self._prompt_hover_context = {"point": point, "source_path": source_path}
+        if old is not None and old.mask_path != result.mask_path:
+            old.mask_path.unlink(missing_ok=True)
+        self.mask_overlay_changed.emit()
+
+    def _handle_prompt_hover_failed(
+        self, request_id: str, source_path: str, message: str, generation: int
+    ) -> None:
+        self._prompt_hover_task = None
+        self._prompt_hover_active_point = None
+        commit_context = self._prompt_hover_commit_context
+        self._prompt_hover_commit_context = None
+        if commit_context is not None and generation == self._prompt_hover_generation:
+            self._prompt_hover_pending = None
+            self._start_prompt_mask_task(
+                list(commit_context.get("points") or []),
+                refine=bool(commit_context.get("refine")),
+                parent_id=commit_context.get("parent_id"),
+                combine=str(commit_context.get("combine", "add")),
+            )
+            return
+        if generation != self._prompt_hover_generation and self._prompt_hover_pending is not None:
+            self._prompt_hover_timer.start()
 
     def _click_is_on_person(self, nx: float, ny: float) -> bool:
         """Whether the click landed in OneFormer's people/animals region."""
@@ -4771,6 +7298,11 @@ class PhotoEditorPanel(QFrame):
         if not isinstance(result, PromptMaskResult) or not result.mask_path.is_file():
             self._handle_prompt_mask_failed(request_id, source_path, "Selection produced no mask")
             return
+        self._apply_prompt_mask_result(result, context)
+
+    def _apply_prompt_mask_result(
+        self, result: PromptMaskResult, context: dict[str, Any]
+    ) -> None:
         parent_id = context.get("parent_id")
         combine = str(context.get("combine", "add"))
         refine = bool(context.get("refine"))
@@ -4802,7 +7334,8 @@ class PhotoEditorPanel(QFrame):
                 ui_style="subject-select",
             )
         except Exception as exc:
-            self._handle_prompt_mask_failed(request_id, source_path, str(exc))
+            source_path = str(self._source_path.resolve()) if self._source_path else ""
+            self._handle_prompt_mask_failed("prompt-result", source_path, str(exc))
             return
         # Remember how this component was made so "Refine Edges" can re-run the
         # same SAM point prompt with BiRefNet applied.
@@ -4987,7 +7520,7 @@ class PhotoEditorPanel(QFrame):
         self._semantic_mask_request_context = None
         if self._source_path is None or Path(source_path) != self._source_path.resolve():
             self.semantic_mask_status.hide()
-            if self.editor_stack.currentIndex() == 1:
+            if self.editor_stack.currentIndex() == self.PAGE_MASKS:
                 QTimer.singleShot(0, self._ensure_semantic_inventory)
             return
         if not isinstance(result, SemanticMaskResult):
@@ -5056,7 +7589,7 @@ class PhotoEditorPanel(QFrame):
             self.semantic_mask_status.setText(text)
             self.semantic_mask_status.show()
             self._set_status(text)
-        elif self.editor_stack.currentIndex() == 1:
+        elif self.editor_stack.currentIndex() == self.PAGE_MASKS:
             QTimer.singleShot(0, self._ensure_semantic_inventory)
 
     def _register_semantic_mask(
@@ -5428,10 +7961,19 @@ class PhotoEditorPanel(QFrame):
             button = getattr(self, name, None)
             if button is not None:
                 button.setEnabled(has_mask)
-        # The whole detail stack appears only when a mask is selected — with no
-        # mask the Work pane is just the list and the New mask prompt.
+                button.setVisible(has_mask)
+        # The whole detail stack appears only when a mask is selected. With no
+        # mask the pane is the layer overview instead, which stands in for the
+        # compact list (and its Add/Subtract) with one card per mask group.
         if getattr(self, "_mask_detail", None) is not None:
             self._mask_detail.setVisible(has_mask)
+        if getattr(self, "_mask_overview", None) is not None:
+            self.mask_list_viewport.setVisible(has_mask)
+            self.mask_back_button.setVisible(has_mask)
+            self._mask_overview.setVisible(not has_mask)
+            if not has_mask:
+                self._rebuild_mask_overview()
+        self._sync_editor_footer()
         # A selected component exposes only controls that alter that component.
         # Semantic masks already contain their generated strength map and have
         # no mask-shape controls.
@@ -5646,7 +8188,9 @@ class PhotoEditorPanel(QFrame):
             return []
         out: list[tuple[list[tuple[str, dict[str, Any]]], tuple[int, int], EditRecipe]] = []
         for mask in self._session.get("masks", []):
-            if mask.get("parentId"):
+            # A hidden layer (eye off in the overview) keeps its operations but
+            # sits out of the composite; preview and Save Copy both read here.
+            if mask.get("parentId") or not mask.get("enabled", True):
                 continue
             root_id = str(mask.get("id"))
             recipe = recipe_for_mask(self._session, root_id)
@@ -5876,6 +8420,9 @@ class PhotoEditorPanel(QFrame):
         self.arm_color_range_mask()
 
     def handle_overlay_source_clicked(self, x: float, y: float) -> None:
+        if self._point_color_sample_armed:
+            self._sample_point_color_at(x, y)
+            return
         if self._mask_create_mode != "color-range":
             return
         try:
@@ -6082,11 +8629,20 @@ class PhotoEditorPanel(QFrame):
         else:
             ensure_edit_root(path.parent)
             session_path, session = new_session(path, session_path)
-        gui_op_types = {op_type for op_type, _param_key in SESSION_OPS.values()} | {CURVE_OP_TYPE}
+        gui_op_types = {op_type for op_type, _param_key in SESSION_OPS.values()} | {
+            CURVE_OP_TYPE,
+            POINT_COLOR_OP_TYPE,
+            *GUI_GLOBAL_ONLY_OP_TYPES,
+        }
+        # Crop and retouch ops never carry a maskId, so they have to bypass the
+        # maskId escape hatch below — preserving them alongside freshly written
+        # copies would double them on every save, and the new ids mean no
+        # duplicate-id check would catch it.
         preserved_ops = [
             op
             for op in session.get("operations", [])
-            if op.get("maskId") is not None or op.get("type") not in gui_op_types
+            if op.get("type") not in GUI_GLOBAL_ONLY_OP_TYPES
+            and (op.get("maskId") is not None or op.get("type") not in gui_op_types)
         ]
         session["operations"] = sorted(
             [*preserved_ops, *operations_from_recipe(recipe, existing_ids=operation_ids({"operations": preserved_ops}))],
@@ -6099,6 +8655,7 @@ class PhotoEditorPanel(QFrame):
 
 def recipe_from_session(session: dict[str, Any]) -> EditRecipe:
     values: dict[str, Any] = {}
+    spots: list[dict[str, Any]] = []
     for op in session.get("operations", []):
         if not op.get("enabled", True) or op.get("maskId") is not None:
             continue
@@ -6108,9 +8665,47 @@ def recipe_from_session(session: dict[str, Any]) -> EditRecipe:
             if channel in CURVE_RECIPE_KEYS:
                 values[CURVE_RECIPE_KEYS[channel]] = params["points"]
             continue
-        for recipe_key, (op_type, param_key) in SESSION_OPS.items():
-            if op.get("type") == op_type and param_key in params:
+        op_type = op.get("type")
+        if op_type == CROP_OP_TYPE:
+            left = params.get("left", 0)
+            right = params.get("right", 0)
+            top = params.get("top", 0)
+            bottom = params.get("bottom", 0)
+            if right > left and bottom > top:
+                values["crop"] = (int(left), int(top), int(right), int(bottom))
+            values["crop_angle"] = float(params.get("angle", 0.0) or 0.0)
+            values["flip_h"] = bool(params.get("flipH", False))
+            values["flip_v"] = bool(params.get("flipV", False))
+            values["crop_aspect"] = str(params.get("aspect", "") or "")
+            continue
+        if op_type in RETOUCH_TYPE_TO_KIND:
+            spot = {
+                "id": str(op.get("id") or ""),
+                "kind": RETOUCH_TYPE_TO_KIND[op_type],
+                "x": float(params.get("x", 0.0)),
+                "y": float(params.get("y", 0.0)),
+                "r": float(params.get("radius", 0.0)),
+                "feather": float(params.get("feather", 50.0)),
+                "strength": float(params.get("strength", 0.8)),
+                "seq": int(params.get("seq", len(spots))),
+            }
+            if op_type == "retouch.clone":
+                spot["sx"] = float(params.get("sourceX", 0.0))
+                spot["sy"] = float(params.get("sourceY", 0.0))
+            spots.append(spot)
+            continue
+        if op_type == POINT_COLOR_OP_TYPE:
+            # List-valued, like the curves above, so it cannot ride the scalar
+            # SESSION_OPS mapping.
+            colors = params.get("colors")
+            if isinstance(colors, list) and colors:
+                values["point_colors"] = colors
+            continue
+        for recipe_key, (mapped_type, param_key) in SESSION_OPS.items():
+            if op_type == mapped_type and param_key in params:
                 values[recipe_key] = params[param_key]
+    if spots:
+        values["retouch"] = sorted(spots, key=lambda entry: entry.get("seq", 0))
     return EditRecipe.from_dict(values)
 
 
@@ -6152,19 +8747,21 @@ def operations_from_recipe(recipe: EditRecipe, *, existing_ids: set[str] | None 
     for recipe_key, value in values.items():
         if recipe_key in CURVE_RECIPE_KEYS or recipe_key not in SESSION_OPS:
             continue
-        if recipe_key in VIGNETTE_OPTION_KEYS:
+        if recipe_key in SHAPE_ONLY_KEYS:
             continue  # written below, and only alongside a non-zero amount
         if value in (0, 0.0, None):
             continue
         op_type, param_key = SESSION_OPS[recipe_key]
         grouped.setdefault(op_type, {})[param_key] = value
 
-    # The shape controls have non-zero neutral values, so the zero test above
-    # cannot decide whether they are worth persisting — the amount does.
-    if "adjust.vignette" in grouped:
-        for recipe_key in VIGNETTE_OPTION_KEYS:
+    # Shape controls have non-zero neutral values, so the zero test above cannot
+    # decide whether they are worth persisting — the amount they belong to does.
+    for op_type, shape_keys in SHAPE_KEY_GROUPS:
+        if op_type not in grouped:
+            continue
+        for recipe_key in shape_keys:
             _op_type, param_key = SESSION_OPS[recipe_key]
-            grouped["adjust.vignette"][param_key] = values[recipe_key]
+            grouped[op_type][param_key] = values[recipe_key]
 
     for op_type, params in grouped.items():
         op_id = _next_id(used_ids, "gui-adjust")
@@ -6177,6 +8774,77 @@ def operations_from_recipe(recipe: EditRecipe, *, existing_ids: set[str] | None 
             "params": params,
         }
         ops.append(op)
+
+    if recipe.crop or recipe.crop_angle or recipe.flip_h or recipe.flip_v:
+        op_id = _next_id(used_ids, "gui-adjust")
+        used_ids.add(op_id)
+        left, top, right, bottom = (
+            tuple(int(v) for v in recipe.crop) if recipe.crop else (0, 0, 0, 0)
+        )
+        ops.append(
+            {
+                "id": op_id,
+                "type": CROP_OP_TYPE,
+                "enabled": True,
+                "maskId": None,
+                "coordinateSpaceId": SOURCE_SPACE_ID,
+                "params": {
+                    "left": left,
+                    "top": top,
+                    "right": right,
+                    "bottom": bottom,
+                    "angle": float(recipe.crop_angle),
+                    "flipH": bool(recipe.flip_h),
+                    "flipV": bool(recipe.flip_v),
+                    "aspect": str(recipe.crop_aspect or ""),
+                },
+            }
+        )
+
+    for index, spot in enumerate(recipe.retouch or ()):
+        op_type = RETOUCH_OP_TYPES.get(str(spot.get("kind")))
+        if op_type is None:
+            continue
+        op_id = _next_id(used_ids, "gui-retouch")
+        used_ids.add(op_id)
+        params = {
+            "x": float(spot.get("x", 0.0)),
+            "y": float(spot.get("y", 0.0)),
+            "radius": float(spot.get("r", 0.0)),
+            "feather": float(spot.get("feather", 50.0)),
+            # RENDERER_ORDER sorts heal before clone before red_eye, so a mixed
+            # list is re-ordered by kind on save; seq is what restores the order
+            # the user actually placed them in.
+            "seq": int(spot.get("seq", index)),
+        }
+        if op_type != "retouch.red_eye":
+            params["strength"] = float(spot.get("strength", 0.8))
+        if op_type == "retouch.clone":
+            params["sourceX"] = float(spot.get("sx", 0.0))
+            params["sourceY"] = float(spot.get("sy", 0.0))
+        ops.append(
+            {
+                "id": op_id,
+                "type": op_type,
+                "enabled": True,
+                "maskId": None,
+                "coordinateSpaceId": SOURCE_SPACE_ID,
+                "params": params,
+            }
+        )
+
+    if recipe.point_colors:
+        op_id = _next_id(used_ids, "gui-adjust")
+        used_ids.add(op_id)
+        ops.append(
+            {
+                "id": op_id,
+                "type": POINT_COLOR_OP_TYPE,
+                "enabled": True,
+                "maskId": None,
+                "params": {"colors": deepcopy(recipe.point_colors)},
+            }
+        )
 
     # Point curves are lists, so they get one op per channel rather than the
     # scalar param grouping above.

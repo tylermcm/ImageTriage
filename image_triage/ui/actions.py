@@ -70,10 +70,11 @@ class MainWindowActions:
     details_next_kept: QAction
     details_next_rejected: QAction
     zen_mode: QAction
-    manual_mode: QAction
-    ai_mode: QAction
     install_ai_runtime: QAction
     download_ai_model: QAction
+    repair_ai: QAction
+    check_ai_readiness: QAction
+    copy_ai_diagnostics: QAction
     uninstall_ai_components: QAction
     guided_ai_cull_preferences: QAction
     open_ai_workflow_center: QAction
@@ -111,6 +112,8 @@ class MainWindowActions:
     remove_catalog_folder: QAction
     refresh_catalog: QAction
     rebuild_folder_catalog_cache: QAction
+    share_to_phone: QAction
+    share_queue: QAction
     handoff_builder: QAction
     send_to_editor_pipeline: QAction
     best_of_set_auto_assembly: QAction
@@ -134,11 +137,11 @@ class MainWindowActions:
     check_for_updates: QAction
     about: QAction
     appearance_actions: dict[AppearanceMode, QAction] = field(default_factory=dict)
+    toolbar_placement_actions: dict[str, QAction] = field(default_factory=dict)
     sort_actions: dict[SortMode, QAction] = field(default_factory=dict)
     filter_actions: dict[FilterMode, QAction] = field(default_factory=dict)
     ai_state_actions: dict[AIStateFilter, QAction] = field(default_factory=dict)
     column_actions: dict[int, QAction] = field(default_factory=dict)
-    mode_actions: dict[str, QAction] = field(default_factory=dict)
 
 
 def format_action_tooltip(text: str, shortcut: str | QKeySequence | None = None) -> str:
@@ -338,8 +341,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             checkable=True,
             shortcut="F11",
         ),
-        manual_mode=_create_action(window, "Manual Review", slot=lambda _checked=False: window._set_ui_mode("manual"), checkable=True),
-        ai_mode=_create_action(window, "AI Review", slot=lambda _checked=False: window._set_ui_mode("ai"), checkable=True),
         install_ai_runtime=_create_action(
             window,
             "Set Up AI...",
@@ -349,6 +350,21 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             window,
             "Set Up AI...",
             slot=window._download_ai_model,
+        ),
+        repair_ai=_create_action(
+            window,
+            "Repair AI...",
+            slot=window._repair_ai_components,
+        ),
+        check_ai_readiness=_create_action(
+            window,
+            "Check AI Readiness (Demo Ready)...",
+            slot=window._check_ai_readiness,
+        ),
+        copy_ai_diagnostics=_create_action(
+            window,
+            "Copy AI Diagnostics",
+            slot=window._copy_ai_diagnostics,
         ),
         uninstall_ai_components=_create_action(
             window,
@@ -509,6 +525,17 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Rebuild Open Folder Cache",
             slot=window._rebuild_current_folder_catalog_cache,
         ),
+        share_to_phone=_create_action(
+            window,
+            "Share to Phone...",
+            slot=window._open_share_to_phone,
+            shortcut="Ctrl+Alt+P",
+        ),
+        share_queue=_create_action(
+            window,
+            "Posting Queue...",
+            slot=window._open_share_queue,
+        ),
         handoff_builder=_create_action(
             window,
             "Deliver / Handoff Builder...",
@@ -596,11 +623,17 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         appearance_group.addAction(action)
         actions.appearance_actions[mode] = action
 
-    mode_group = QActionGroup(window)
-    mode_group.setExclusive(True)
-    mode_group.addAction(actions.manual_mode)
-    mode_group.addAction(actions.ai_mode)
-    actions.mode_actions = {"manual": actions.manual_mode, "ai": actions.ai_mode}
+    toolbar_placement_group = QActionGroup(window)
+    toolbar_placement_group.setExclusive(True)
+    for placement, label in (("floating", "Floating Toolbar (Bottom)"), ("docked", "Docked Toolbar (Top)")):
+        action = _create_action(
+            window,
+            label,
+            slot=lambda _checked=False, selected=placement: window._set_toolbar_placement(selected),
+            checkable=True,
+        )
+        toolbar_placement_group.addAction(action)
+        actions.toolbar_placement_actions[placement] = action
 
     sort_group = QActionGroup(window)
     sort_group.setExclusive(True)

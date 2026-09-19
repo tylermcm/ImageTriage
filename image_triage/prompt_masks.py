@@ -34,10 +34,11 @@ from .ai_model import (
     resolve_birefnet_model_installation,
     resolve_sam_model_installation,
 )
+from .ai_paths import managed_cache_dir
 from .imaging import load_image_for_display
 from .mask_engine_service import default_mask_engine_service
 from .perf import perf_logger
-from .semantic_mask_service import validate_semantic_runtime
+from .semantic_mask_service import validate_mask_runtime
 
 PROMPT_MASK_PREVIEW_EDGE = 1600
 PROMPT_MASK_MODEL_ID = DEFAULT_SAM_MODEL_REPO_ID
@@ -60,13 +61,14 @@ class PromptMaskResult:
 
 
 def default_prompt_mask_cache_root() -> Path:
-    if os.name == "nt":
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-    else:
-        xdg_cache = os.environ.get("XDG_CACHE_HOME")
-        base = Path(xdg_cache) if xdg_cache else Path.home() / ".cache"
-    return base / "image_triage_ai_cache" / "prompt_masks"
+    """Managed cache directory for prompt_masks.
+
+    Resolves through the one canonical managed root so it cannot land inside
+    Store Python's virtualized package cache (docs/ai_runtime_failure_map.md,
+    root cause A). Migration of a previous release's directory happens once,
+    explicitly, in ``ai_model_store.migrate_ai_assets``.
+    """
+    return managed_cache_dir("prompt_masks")
 
 
 def _progress(callback: ProgressCallback | None, message: str) -> None:
@@ -180,7 +182,8 @@ def ensure_prompt_mask(
 
         download_sam_model(model_installation, progress_callback=download_progress)
 
-    validate_semantic_runtime()
+    # Click selection depends on SAM, not on the scene-mask model.
+    validate_mask_runtime("sam_masks")
     stat = source.stat()
     cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns)
     cache_dir = Path(cache_root or default_prompt_mask_cache_root()) / cache_key

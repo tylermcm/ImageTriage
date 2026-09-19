@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QSplitter,
+    QSpacerItem,
     QStackedWidget,
     QStatusBar,
     QStyle,
@@ -232,8 +232,6 @@ from .filtering import (
     ReviewStateFilter,
     SavedFilterPreset,
     active_filter_labels,
-    ai_cull_bucket_label,
-    ai_workflow_tag_label,
     builtin_filter_presets,
     deserialize_saved_filter_preset,
     matches_record_query,
@@ -340,6 +338,7 @@ from .ui import (
     PeopleSearchDialog,
     PrepareTrainingSourcesDialog,
     ResizeDialog,
+    ShareToPhoneDialog,
     TasteCalibrationDialog,
     TrainRankerDialog,
     EvaluationSourceDialog,
@@ -354,7 +353,6 @@ from .ui import (
     save_shortcut_overrides,
     build_app_palette,
     build_app_stylesheet,
-    build_help_button,
     build_main_menu_bar,
     build_main_window_actions,
     build_pin_icon,
@@ -362,6 +360,7 @@ from .ui import (
     clear_window_layout,
     default_theme,
     format_action_tooltip,
+    fit_window_to_available_geometry,
     parse_appearance_mode,
     restore_window_layout,
     resolve_theme,
@@ -369,13 +368,22 @@ from .ui import (
     show_paged_help,
 )
 from .ui.busy_overlay import BusyOverlay
+from .ui.display_metrics import (
+    DisplayProfile,
+    STANDARD_DISPLAY,
+    display_profile_for_preference,
+    normalize_display_profile_preference,
+)
+from .ui.backdrop import paint_backdrop, theme_has_backdrop
+from .ui.breadcrumb import BreadcrumbBar
+from .ui.nav_rail import ICON_PX as NAV_RAIL_ICON_PX, NavRail
 from .ui.sections import SectionHeader
 from .ui.face_groups import FaceGroupsPanel, face_group_photo_paths, load_face_groups
 from .ui.help_topics import library_help_pages, settings_help_pages
 from .ui.menus import add_ai_results_actions
 from .ui.prototype_style import (
-    CompactIconTabBar,
     FolderTreeView,
+    folder_icon_pixmap,
     sidebar_people_icon_pixmap,
     sidebar_projects_icon_pixmap,
 )
@@ -730,11 +738,15 @@ def _path_parent_stem_key(path: str) -> str:
     return f"{parent}|{stem}" if parent and stem else ""
 
 
-# Beyond this the Projects section scrolls rather than growing, so it can
+# Beyond this the Collections section scrolls rather than growing, so it can
 # never crowd the folder tree out of the sidebar.
 _MAX_VISIBLE_PROJECT_ROWS = 6
 _PROJECT_ROW_PX = 34
-_PROJECT_EMPTY_ROW_PX = 42
+# The empty row's stylesheet has a 32px minimum plus 3px vertical padding on
+# each side. Its viewport must include that full 38px box or Qt clips glyphs.
+_PROJECT_EMPTY_ROW_PX = 38
+_NAV_SECTION_GAP_PX = 8
+_PROJECT_HEADER_BODY_GAP_PX = 0
 
 
 def _search_match_path_key(path: str | Path) -> str:
@@ -2557,7 +2569,18 @@ class MainWindow(QMainWindow):
     AI_RESULTS_KEY = "window/ai_results_path"
     AUTO_BRACKET_KEY = "window/auto_bracket_compare"
     APPEARANCE_KEY = "window/appearance"
+    # One-shot switch of existing installs onto the Indigo default.
+    APPEARANCE_INDIGO_MIGRATION_KEY = "window/appearance_indigo_default"
+    TOOLBAR_PLACEMENT_KEY = "ui/toolbar_placement"
+    TOOLBAR_PLACEMENTS = ("floating", "docked")
+    FLOATING_TOOLBAR_BOTTOM_MARGIN = 14
+    FLOATING_TOOLBAR_SIDE_MARGIN = 24
+    # Clear space kept between the floating toolbar and the last card row
+    # once the grid is scrolled to the end, and the depth of the fade above it.
+    FLOATING_TOOLBAR_ROW_GAP = 12
+    FLOATING_TOOLBAR_FADE_DEPTH = 120
     UI_GAMMA_KEY = "view/ui_gamma"
+    INTERFACE_SIZE_KEY = "view/interface_size"
     GEOMETRY_KEY = "window/geometry"
     STATE_KEY = "window/state"
     SESSION_KEY = "workflow/session"
@@ -2716,6 +2739,15 @@ class MainWindow(QMainWindow):
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT = 0.965
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN = 0.500
     AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX = 0.995
+    LEFT_NAV_PAGE_KEY = "ui/left_nav_page"
+    PINNED_TOOLS_KEY = "ui/pinned_tools"
+    DEFAULT_PINNED_TOOLS = ("command_palette", "open_in_photoshop", "compare", "keyboard_shortcuts")
+    # key, label, icon id (see _left_nav_icon), tooltip. Order is the rail's top-to-bottom order.
+    LEFT_NAV_DESTINATIONS = (
+        ("folders", "Library", "folder", "Drives and folders"),
+        ("faces", "Faces", "people", "Face groups"),
+        ("collections", "Collections", "collections", "Collections"),
+    )
     WORKSPACE_TOOLBAR_DEFAULTS = {
         "manual": ("open_folder", "undo", "review", "view", "filters", "accept_selection", "reject_selection", "selection_count", "search", "address"),
         "ai": (
@@ -2733,48 +2765,6 @@ class MainWindow(QMainWindow):
             "address",
         ),
     }
-    RAIL_TOOL_LAYOUT_KEY = "left_rail"
-    RAIL_TOOL_DEFAULTS = (
-        "command_palette",
-        "advanced_filters",
-        "show_hidden_folders",
-        "keyboard_shortcuts",
-        "batch_resize",
-    )
-    RAIL_TOOL_ALLOWED_ITEMS = (
-        "command_palette",
-        "advanced_filters",
-        "clear_filters",
-        "show_hidden_folders",
-        "keyboard_shortcuts",
-        "batch_rename",
-        "batch_resize",
-        "batch_convert",
-        "handoff_builder",
-        "send_to_editor",
-        "best_of_set",
-        "open_in_photoshop",
-        "reveal_in_explorer",
-        "run_ai_culling",
-        "apply_ai_culling",
-        "sort_ai_semantic_folders",
-        "reset_ai_review_cache",
-        "load_saved_ai",
-        "load_ai_results",
-        "clear_ai_results",
-        "open_ai_report",
-        "next_ai_pick",
-        "next_unreviewed_ai_pick",
-        "compare_ai_group",
-        "performance_logging",
-        "open_performance_logs",
-    )
-    AI_ACTIVITY_TAG_SPECS = (
-        ("bucket:ai_pick", "Winner", "#46bd78"),
-        ("bucket:reject", "Reject", "#d65a67"),
-        ("bucket:needs_review", "Review", "#d28735"),
-        ("workflow:ai_miss", "AI Miss", "#d7547a"),
-    )
     # Items the top bar renders as fixed chrome (nav glyphs, path combo, search)
     # rather than in the customizable centre action cluster, so they are skipped
     # when mirroring the editable layout into the top bar.
@@ -2809,7 +2799,7 @@ class MainWindow(QMainWindow):
         "new_folder": "New Folder",
         "zen_mode": "Zen",
         "save_filter_preset": "Save Search",
-        "projects": "Projects",
+        "projects": "Collections",
         "catalog": "Catalog",
         "performance_logging": "Perf",
         "open_performance_logs": "Logs",
@@ -2842,6 +2832,19 @@ class MainWindow(QMainWindow):
     # Kept renderable for existing saved layouts, but omitted from the picker.
     # ``quick_filter`` opens the exact same menu as the clearer ``filters`` item.
     TOPBAR_PICKER_HIDDEN_ITEMS = frozenset({"quick_filter"})
+    TOOLBAR_PICKER_SECTION_ORDER = (
+        "Review",
+        "AI",
+        "Search & Filter",
+        "View",
+        "Selection",
+        "Files",
+        "Workflow",
+        "Collections",
+        "Catalog",
+        "Utilities",
+        "Layout",
+    )
     # Filled chrome glyphs that should render as a clean solid silhouette
     # (no stroke carve-out) because their key feature is an open appendage:
     # E721 = Search (magnifier handle), E9D2 = AI/Activity (picture).
@@ -2884,6 +2887,8 @@ class MainWindow(QMainWindow):
             "batch_rename",
             "batch_resize",
             "batch_convert",
+            "share_to_phone",
+            "share_queue",
             "handoff_builder",
             "send_to_editor",
             "best_of_set",
@@ -2935,6 +2940,8 @@ class MainWindow(QMainWindow):
             "batch_rename",
             "batch_resize",
             "batch_convert",
+            "share_to_phone",
+            "share_queue",
             "handoff_builder",
             "send_to_editor",
             "best_of_set",
@@ -2980,6 +2987,8 @@ class MainWindow(QMainWindow):
         "batch_rename": "Batch Rename",
         "batch_resize": "Batch Resize",
         "batch_convert": "Batch Convert",
+        "share_to_phone": "Share to Phone",
+        "share_queue": "Posting Queue",
         "handoff_builder": "Handoff",
         "send_to_editor": "Send To Editor",
         "best_of_set": "Best Of",
@@ -3024,7 +3033,7 @@ class MainWindow(QMainWindow):
         "new_folder": "New Folder",
         "zen_mode": "Zen Mode",
         "save_filter_preset": "Save Search",
-        "projects": "Projects",
+        "projects": "Collections",
         "catalog": "Catalog",
         "performance_logging": "Performance Logging",
         "open_performance_logs": "Performance Logs",
@@ -3048,6 +3057,8 @@ class MainWindow(QMainWindow):
         "batch_rename": ("E8AC", None),
         "batch_resize": ("E799", None),
         "batch_convert": ("EE71", None),
+        "share_to_phone": ("E72D", None),
+        "share_queue": ("E823", None),
         "handoff_builder": ("E7B8", None),
         "send_to_editor": ("E7AC", None),
         "best_of_set": ("E735", None),
@@ -3099,16 +3110,18 @@ class MainWindow(QMainWindow):
         "more": ("E712", None),
     }
 
-    def __init__(self, launch_target: str | None = None) -> None:
+    def __init__(self, launch_target: str | None = None, *, quick_view: bool = False) -> None:
         super().__init__()
         self._startup_launch_target = normalize_filesystem_path(launch_target) if launch_target else ""
+        self._quick_view_mode = bool(quick_view and self._startup_launch_target)
+        self._pending_quick_view_path = self._startup_launch_target if self._quick_view_mode else ""
+        self._quick_view_source_overrides: dict[str, str] = {}
         self._pending_folder_focus_path = ""
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
         self._settings = QSettings()
         self._startup_window_state = "normal"
         self._startup_window_state_fixup_applied = False
-        self._left_rail_items = list(self.RAIL_TOOL_DEFAULTS)
         self._workspace_toolbar_layouts = self._load_workspace_toolbar_layouts()
         # Slot grid backing the top-bar cluster: per mode, a fixed-length list
         # where each entry is an item id or None (a blank cell). Source of truth
@@ -3158,9 +3171,22 @@ class MainWindow(QMainWindow):
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
         self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
         self._workspace_toolbar_overflow_update_pending: set[str] = set()
-        self._appearance_mode = parse_appearance_mode(self._settings.value(self.APPEARANCE_KEY, AppearanceMode.DARK.value, str))
+        if not self._settings.value(self.APPEARANCE_INDIGO_MIGRATION_KEY, False, bool):
+            self._settings.setValue(self.APPEARANCE_KEY, AppearanceMode.INDIGO.value)
+            self._settings.setValue(self.APPEARANCE_INDIGO_MIGRATION_KEY, True)
+        self._appearance_mode = parse_appearance_mode(
+            self._settings.value(self.APPEARANCE_KEY, AppearanceMode.INDIGO.value, str)
+        )
+        self._toolbar_placement = self._normalize_toolbar_placement(
+            self._settings.value(self.TOOLBAR_PLACEMENT_KEY, "floating", str)
+        )
         self._ui_gamma = normalize_ui_gamma(self._settings.value(self.UI_GAMMA_KEY, 1.0, float))
+        self._interface_size = normalize_display_profile_preference(
+            self._settings.value(self.INTERFACE_SIZE_KEY, "automatic", str)
+        )
         self._theme = None
+        self._display_profile: DisplayProfile | None = None
+        self._display_profile_update_pending = False
         self._child_sync_state_path = self._prepare_child_sync_state_path()
         self._child_processes: dict[int, ChildAppProcess] = {}
         self._child_process_timer = QTimer(self)
@@ -3266,6 +3292,10 @@ class MainWindow(QMainWindow):
         self._active_ai_run_start_perf = 0.0
         self._active_ai_runtime_task: AIRuntimeInstallTask | None = None
         self._active_ai_model_task: AIModelDownloadTask | None = None
+        self._active_ai_readiness_task: QRunnable | None = None
+        self._active_ai_bundle_task: QRunnable | None = None
+        self._active_ai_repair_task: QRunnable | None = None
+        self._last_ai_readiness_results: dict[str, object] = {}
         self._active_update_check_task: AppUpdateCheckTask | None = None
         self._active_update_download_task: AppUpdateDownloadTask | None = None
         self._update_progress_dialog: QProgressDialog | None = None
@@ -3691,6 +3721,44 @@ class MainWindow(QMainWindow):
         self.folder_tree.viewport().setAcceptDrops(True)
         self.folder_tree.viewport().installEventFilter(self)
 
+        # Drives sit in their own flat list; the Folders tree below is rooted at
+        # the drive holding the current folder (see _sync_drive_sections).
+        self.drive_list = FolderTreeView()
+        self.drive_list.setObjectName("driveList")
+        self.drive_list.setModel(self.folder_model)
+        self.drive_list.setRootIndex(QModelIndex())
+        self.drive_list.setHeaderHidden(True)
+        self.drive_list.header().hide()
+        self.drive_list.setMouseTracking(True)
+        for column in range(1, self.folder_model.columnCount()):
+            self.drive_list.hideColumn(column)
+        self.drive_list.set_drives_only(True)
+        self.drive_list.clicked.connect(self._handle_drive_selected)
+        self._drive_list_fit_timer = QTimer(self)
+        self._drive_list_fit_timer.setSingleShot(True)
+        self._drive_list_fit_timer.setInterval(0)
+        self._drive_list_fit_timer.timeout.connect(self.drive_list.fit_height_to_rows)
+        self.folder_model.rowsInserted.connect(lambda *_args: self._drive_list_fit_timer.start())
+        self.folder_model.rowsRemoved.connect(lambda *_args: self._drive_list_fit_timer.start())
+        self.folder_model.layoutChanged.connect(lambda *_args: self._drive_list_fit_timer.start())
+        self._drive_list_fit_timer.start()
+
+        self.drives_refresh_button = self._build_left_rail_plus_button(tooltip="Refresh drives")
+        self.drives_refresh_button.setProperty("fluentGlyph", "E72C")
+        self.drives_refresh_button.clicked.connect(self._refresh_drive_list)
+        self.drives_refresh_button.setIconSize(QSize(14, 14))
+        self.drives_refresh_button.setFixedSize(24, 24)
+        self.drives_header = SectionHeader("Drives", trailing=self.drives_refresh_button)
+        self.drives_header.setProperty("sectionRole", "drives")
+        self.drives_header.toggled.connect(self.drive_list.setVisible)
+        self.folders_add_button = self._build_left_rail_plus_button(tooltip="New folder in the current folder")
+        self.folders_add_button.clicked.connect(lambda _checked=False: self.actions.new_folder.trigger())
+        self.folders_add_button.setIconSize(QSize(14, 14))
+        self.folders_add_button.setFixedSize(24, 24)
+        self.folders_header = SectionHeader("Folders", trailing=self.folders_add_button)
+        self.folders_header.setProperty("sectionRole", "folders")
+        self.folders_header.toggled.connect(self.folder_tree.setVisible)
+
         self.favorites_label = QLabel("Favorites")
         self.favorites_label.setObjectName("sectionLabel")
 
@@ -3743,14 +3811,14 @@ class MainWindow(QMainWindow):
         face_groups_layout.addWidget(self.face_groups_search)
         face_groups_layout.addWidget(self.face_groups_panel)
 
-        # Projects are the library store's virtual collections, which until now
-        # only existed behind a menu. They sit beside Favorites because they are
-        # the same kind of thing: a way to navigate the library, not a command.
+        # Collections are saved, cross-folder sets of image-bundle references.
+        # They sit beside Favorites because they are a way to navigate the
+        # library, not a command or a duplicate copy of the source files.
         self.projects_add_button = self._build_left_rail_plus_button(
-            tooltip="New project from the current selection"
+            tooltip="New collection from the current selection"
         )
         self.projects_header = SectionHeader(
-            "Projects",
+            "Collections",
             icon=QIcon(sidebar_projects_icon_pixmap(21, sidebar_accent.name())),
             trailing=self.projects_add_button,
             collapsible=False,
@@ -3777,89 +3845,62 @@ class MainWindow(QMainWindow):
         library_header_layout.setContentsMargins(0, 0, 0, 0)
         library_header_layout.setSpacing(8)
         library_header_layout.addWidget(self.library_label, 1)
-        library_help_button = build_help_button(self, tooltip="Open library, collection, and catalog help")
-        library_help_button.clicked.connect(self._show_library_help)
-        library_header_layout.addWidget(library_help_button, 0)
 
-        self.left_ai_activity_buttons: dict[str, tuple[QToolButton, QToolButton]] = {}
-        self.left_ai_activity_panel = self._build_generated_ai_activity_panel()
-        self.left_ai_activity_panel.hide()
         self.left_settings_bar = self._build_generated_left_settings_bar()
-        self.left_task_rail = self._build_generated_left_task_rail()
 
-        library_stack = QWidget()
-        library_stack.setObjectName("libraryStack")
-        library_stack_layout = QVBoxLayout(library_stack)
-        library_stack_layout.setContentsMargins(0, 0, 0, 0)
-        library_stack_layout.setSpacing(8)
-        self.left_mode_tabs = CompactIconTabBar(icon_text_gap=10)
-        self.left_mode_tabs.setObjectName("leftModeTabs")
-        self.left_mode_tabs.addTab(
-            self._fluent_toolbar_icon(
-                "E8B9", color=sidebar_accent, primary_size=38
-            ),
-            "Browse",
-        )
-        self.left_mode_tabs.addTab(
-            self._fluent_toolbar_icon(
-                "E9D2", color=sidebar_muted, primary_size=38
-            ),
-            "AI / Activity",
-        )
-        self.left_mode_tabs.setIconSize(QSize(20, 20))
-        self.left_mode_tabs.setExpanding(True)
-        self.left_mode_tabs.setDrawBase(False)
-        self.left_mode_tabs.setUsesScrollButtons(False)
-        self.left_mode_tabs.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.left_mode_tabs.currentChanged.connect(self._handle_left_mode_tab_changed)
+        # Each rail destination owns the whole pane beside the rail rather than
+        # sharing its height with the others.
+        folders_page = self._build_left_nav_page()
+        folders_layout = folders_page.layout()
+        folders_layout.addWidget(self.favorites_label)
+        folders_layout.addWidget(self.favorites_list)
+        folders_layout.addWidget(self.favorites_divider)
+        library_header.hide()
+        folders_layout.addWidget(self.drives_header)
+        folders_layout.addWidget(self.drive_list, 0)
+        folders_layout.addSpacing(6)
+        folders_layout.addWidget(self.folders_header)
+        folders_layout.addWidget(self.folder_tree, 1)
 
-        # Fixed top: favorites + folders header.
-        library_stack_layout.addWidget(self.favorites_label)
-        library_stack_layout.addWidget(self.favorites_list)
-        library_stack_layout.addWidget(self.favorites_divider)
-        library_stack_layout.addWidget(library_header)
+        faces_page = self._build_left_nav_page()
+        faces_layout = faces_page.layout()
+        faces_layout.addWidget(self.face_groups_header)
+        faces_layout.addSpacing(_NAV_SECTION_GAP_PX)
+        faces_layout.addWidget(self.face_groups_body, 1)
+        faces_layout.addStretch(0)
 
-        # The folder tree and the Review Controls pane share a draggable divider
-        # so the user can trade vertical space between them.
-        self.left_body_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.left_body_splitter.setObjectName("leftBodySplitter")
-        self.left_body_splitter.setChildrenCollapsible(False)
-        self.left_body_splitter.setHandleWidth(2)
-        self.left_body_splitter.addWidget(self.folder_tree)
+        collections_page = self._build_left_nav_page()
+        collections_layout = collections_page.layout()
+        collections_layout.addWidget(self.projects_header)
+        collections_layout.addWidget(self.projects_list, 1)
+        collections_layout.addStretch(0)
 
-        self.review_controls_pane = QWidget()
-        self.review_controls_pane.setObjectName("reviewControlsPane")
-        self._review_controls_layout = QVBoxLayout(self.review_controls_pane)
-        self._review_controls_layout.setContentsMargins(0, 0, 0, 0)
-        self._review_controls_layout.setSpacing(8)
-        self._review_controls_layout.addWidget(self.left_mode_tabs)
-        self._review_controls_layout.addWidget(self.left_ai_activity_panel)
+        self.left_nav_pages = QStackedWidget()
+        self.left_nav_pages.setObjectName("leftNavPages")
+        self._left_nav_page_widgets = {
+            "folders": folders_page,
+            "faces": faces_page,
+            "collections": collections_page,
+        }
+        for page in self._left_nav_page_widgets.values():
+            self.left_nav_pages.addWidget(page)
 
-        self.left_nav_body = QWidget()
-        self.left_nav_body.setObjectName("leftNavBody")
-        nav_layout = QVBoxLayout(self.left_nav_body)
-        nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(8)
-        self._nav_layout = nav_layout
-
-        self._review_controls_layout.addWidget(self.left_nav_body, 1)
-        # Quick Actions are appended once self.actions exists (see below).
-        self.left_body_splitter.addWidget(self.review_controls_pane)
-        # Folders and the Browse / AI pane share the available height equally.
-        self.left_body_splitter.setStretchFactor(0, 1)
-        self.left_body_splitter.setStretchFactor(1, 1)
-        self.left_body_splitter.setSizes([500, 500])
-
-        library_stack_layout.addWidget(self.left_body_splitter, 1)
+        self.left_nav_rail = NavRail()
+        for key, label, glyph, tooltip in self.LEFT_NAV_DESTINATIONS:
+            self.left_nav_rail.add_destination(key, label, glyph, tooltip=tooltip)
+        self.left_nav_rail.set_icon_factory(self._left_nav_icon)
+        self.left_nav_rail.current_changed.connect(self._show_left_nav_page)
+        saved_page = str(self._settings.value(self.LEFT_NAV_PAGE_KEY, "folders") or "folders")
+        self._show_left_nav_page(saved_page if saved_page in self._left_nav_page_widgets else "folders")
 
         # The settings bar is flush to the bottom edge of the panel card (no gap),
-        # so it sits in its own column below the padded library stack.
+        # so it sits in its own column below the swapped page.
         right_column = QWidget()
         right_column.setObjectName("libraryRightColumn")
         right_column_layout = QVBoxLayout(right_column)
         right_column_layout.setContentsMargins(0, 0, 0, 0)
         right_column_layout.setSpacing(0)
-        right_column_layout.addWidget(library_stack, 1)
+        right_column_layout.addWidget(self.left_nav_pages, 1)
         right_column_layout.addWidget(self.left_settings_bar, 0)
 
         self.left_panel = QWidget()
@@ -3868,7 +3909,7 @@ class MainWindow(QMainWindow):
         left_layout = QHBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
-        left_layout.addWidget(self.left_task_rail, 0)
+        left_layout.addWidget(self.left_nav_rail, 0)
         left_layout.addWidget(right_column, 1)
         self._refresh_favorites_panel()
 
@@ -3903,6 +3944,7 @@ class MainWindow(QMainWindow):
 
         self.actions = build_main_window_actions(self)
         apply_shortcut_overrides(self.actions)
+        self._build_left_rail_pinned_tools()
         # zen_mode binding is owned by a QShortcut below so the QAction itself
         # must clear its default sequence to avoid double-fire.
         self.actions.zen_mode.setShortcut(QKeySequence())
@@ -3919,7 +3961,6 @@ class MainWindow(QMainWindow):
         self._register_shortcut_targets()
         self._apply_shortcut_overrides()
         self._build_record_filter_actions()
-        self._rebuild_left_rail()
         self.projects_add_button.clicked.connect(
             lambda _checked=False: self.actions.create_virtual_collection.trigger()
         )
@@ -3929,9 +3970,6 @@ class MainWindow(QMainWindow):
         self.projects_list.itemActivated.connect(self._handle_project_activated)
         self.projects_list.itemClicked.connect(self._handle_project_activated)
         self.projects_list.customContextMenuRequested.connect(self._show_projects_context_menu)
-        self.face_groups_header.toggled.connect(lambda _on: self._relayout_nav_sections())
-        self.projects_header.toggled.connect(lambda _on: self._relayout_nav_sections())
-        self._relayout_nav_sections()
         self.face_groups_panel.group_activated.connect(self._handle_face_group_activated)
         self.face_groups_panel.browse_all_requested.connect(
             lambda: self.actions.manage_people.trigger()
@@ -4073,6 +4111,8 @@ class MainWindow(QMainWindow):
         self.workspace_bar_drag_handle.installEventFilter(self)
         workspace_bar_layout.addWidget(self.workspace_bar_drag_handle, 0, Qt.AlignmentFlag.AlignVCenter)
         workspace_bar_layout.addWidget(self.mode_tabs, 0, Qt.AlignmentFlag.AlignVCenter)
+        # AI Review is retired; the tabs stay only as the manual-mode state holder.
+        self.mode_tabs.hide()
         workspace_bar_layout.addWidget(self.toolbar_stack, 1)
         workspace_bar_layout.addWidget(self.workspace_bar_chrome, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._refresh_mode_tabs_width()
@@ -4129,6 +4169,10 @@ class MainWindow(QMainWindow):
         self.inspector_panel.swap_side_requested.connect(self.workspace_docks.swap_sides)
         self.inspector_panel.close_requested.connect(lambda: self.workspace_docks.hide_panel("inspector"))
         self.inspector_panel.face_cycle_requested.connect(self._cycle_inspector_face_preview)
+        self.inspector_panel.previous_requested.connect(lambda: self.grid.step_current(-1))
+        self.inspector_panel.next_requested.connect(lambda: self.grid.step_current(1))
+        self.inspector_panel.analyze_requested.connect(lambda: self.actions.run_ai_culling.trigger())
+        self.inspector_panel.compare_requested.connect(lambda: self.actions.compare_mode.trigger())
         self._refresh_workspace_preset_menu()
         self._refresh_workflow_recipe_menu()
         self._refresh_collections_menu()
@@ -4159,9 +4203,13 @@ class MainWindow(QMainWindow):
         menu_corner_layout = QHBoxLayout(self.menu_corner_widget)
         menu_corner_layout.setContentsMargins(4, 0, 8, 0)
         menu_corner_layout.setSpacing(2)
-        menu_corner_layout.addWidget(self.update_download_button)
         menu_corner_layout.addWidget(self.zen_menu_pin_button)
         self.menuBar().setCornerWidget(self.menu_corner_widget, Qt.Corner.TopRightCorner)
+        # The app bar's Menu button replaces the classic menu bar. Hidden menus
+        # lose their shortcuts, so every menu action is also registered on the
+        # window itself.
+        self._adopt_menu_bar_shortcuts()
+        self.menuBar().hide()
         self._refresh_update_button_state()
         self._zen_menu_animation = QPropertyAnimation(self.menuBar(), b"maximumHeight", self)
         self._zen_menu_animation.setDuration(145)
@@ -4196,13 +4244,15 @@ class MainWindow(QMainWindow):
         self.central_container = container
         self.central_container.installEventFilter(self)
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         self.app_top_bar = self._build_prototype_top_bar()
         self._apply_chrome_icon_scale()
         layout.addWidget(self.app_top_bar, 0)
         layout.addWidget(self.workspace_docks.shell, 1)
         self.setCentralWidget(container)
+        self.browser_stack.installEventFilter(self)
+        self.browser_stack.currentChanged.connect(lambda _index: self._position_floating_toolbar())
         self._ai_setup_overlay = BusyOverlay(container)
         self._ai_setup_overlay.attach_to(container)
         self.zen_hint_overlay = QLabel("Zen Mode  |  F11 or Esc to exit", container)
@@ -4214,6 +4264,7 @@ class MainWindow(QMainWindow):
         self.zen_hint_hide_timer.timeout.connect(self.zen_hint_overlay.hide)
         self.summary_strip.hide()
         self._apply_default_workspace()
+        self._apply_display_profile()
         QTimer.singleShot(0, self._restore_details_view_state)
 
         status = QStatusBar()
@@ -4236,6 +4287,7 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.cache_pipeline_label)
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
+        self._apply_toolbar_placement()
         self._refresh_catalog_status_indicator()
         self._refresh_adapter_status_indicator()
         self._refresh_filter_toolbar_menu()
@@ -4297,7 +4349,7 @@ class MainWindow(QMainWindow):
         self._handle_mode_tab_changed(self.mode_tabs.currentIndex())
         self._update_action_states()
         QTimer.singleShot(0, self._finish_startup_restore)
-        if self._check_updates_on_startup:
+        if self._check_updates_on_startup and not self._quick_view_mode:
             QTimer.singleShot(2500, self._check_for_updates_on_startup)
 
     def _build_section_label(self, text: str) -> QLabel:
@@ -4350,6 +4402,38 @@ class MainWindow(QMainWindow):
         painter.drawLine(17, 50, 47, 50)
         painter.end()
         return QIcon(pixmap)
+
+    def _pane_toggle_icon(self, side: str) -> QIcon:
+        """Return a mirrored panel glyph whose bright side means visible."""
+        theme = getattr(self, "_theme", None) or default_theme()
+
+        def draw(outline: QColor, panel: QColor) -> QPixmap:
+            pixmap = QPixmap(64, 64)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(outline, 3)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRect(8, 12, 47, 39), 4, 4)
+            painter.fillRect(QRect(12, 16, 13, 31), panel)
+            painter.end()
+            if side == "right":
+                return pixmap.transformed(QTransform().scale(-1, 1))
+            return pixmap
+
+        icon = QIcon()
+        colors = (
+            (QIcon.Mode.Normal, theme.text_muted.qcolor(), theme.text_muted.qcolor()),
+            (QIcon.Mode.Active, theme.text_secondary.qcolor(), theme.text_secondary.qcolor()),
+            (QIcon.Mode.Disabled, theme.text_disabled.qcolor(), theme.text_disabled.qcolor()),
+        )
+        for mode, outline, inactive_panel in colors:
+            icon.addPixmap(draw(outline, inactive_panel), mode, QIcon.State.Off)
+            active_panel = theme.text_primary.qcolor() if mode != QIcon.Mode.Disabled else inactive_panel
+            icon.addPixmap(draw(outline, active_panel), mode, QIcon.State.On)
+        return icon
 
     def _refresh_update_button_state(self) -> None:
         button = getattr(self, "update_download_button", None)
@@ -4429,7 +4513,7 @@ class MainWindow(QMainWindow):
         return menu
 
     def _build_projects_toolbar_menu(self) -> QMenu:
-        menu = QMenu("Projects", self)
+        menu = QMenu("Collections", self)
         menu.addAction(self.actions.create_virtual_collection)
         menu.addAction(self.actions.add_selection_to_collection)
         menu.addAction(self.actions.remove_selection_from_collection)
@@ -4601,6 +4685,7 @@ class MainWindow(QMainWindow):
         nav_layout = QHBoxLayout(nav_cluster)
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(self.TOPBAR_SLOT_SPACING)
+        self._topbar_nav_layout = nav_layout
 
         def make_labeled_nav_button(item_id: str, label: str, tooltip: str) -> QToolButton:
             button = QToolButton(nav_cluster)
@@ -4612,8 +4697,36 @@ class MainWindow(QMainWindow):
             nav_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
             return button
 
-        menu_button = make_labeled_nav_button("menu", "Menu", "Menu")
-        menu_button.clicked.connect(lambda _checked=False, anchor=menu_button: self._show_main_menu_popup(anchor))
+        # Menu floats centred over the navigation rail (it is placed by hand,
+        # outside the layout) and a spacer starts the breadcrumb at the library
+        # pane's edge; _align_app_bar_to_library keeps both lined up.
+        self.app_menu_slot = QWidget(bar)
+        menu_slot_layout = QHBoxLayout(self.app_menu_slot)
+        menu_slot_layout.setContentsMargins(0, 0, 0, 0)
+        self.app_menu_button = QToolButton(self.app_menu_slot)
+        self.app_menu_button.setObjectName("appMenuButton")
+        self.app_menu_button.setText("Menu")
+        self.app_menu_button.setToolTip("Menu")
+        self.app_menu_button.setIcon(self._topbar_nav_icon("menu"))
+        self.app_menu_button.setIconSize(QSize(16, 16))
+        self.app_menu_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.app_menu_button.setAutoRaise(True)
+        self.app_menu_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.app_menu_button.clicked.connect(
+            lambda _checked=False: self._show_main_menu_popup(self.app_menu_button)
+        )
+        menu_slot_layout.addWidget(self.app_menu_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self._app_bar_crumb_spacer = QSpacerItem(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        layout.addItem(self._app_bar_crumb_spacer)
+
+        self.app_crumb_stack = QStackedWidget(bar)
+        self.app_crumb_stack.setObjectName("appBreadcrumbStack")
+        self.app_crumb_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.app_breadcrumb = BreadcrumbBar(self.app_crumb_stack)
+        self.app_breadcrumb.segment_clicked.connect(self._handle_breadcrumb_segment_clicked)
+        self.app_breadcrumb.edit_requested.connect(self._begin_breadcrumb_path_edit)
+        self.app_crumb_stack.addWidget(self.app_breadcrumb)
+        layout.addWidget(self.app_crumb_stack, 1)
 
         open_button = make_labeled_nav_button("open", "Open", self.actions.open_folder.toolTip())
         open_button.clicked.connect(lambda _checked=False: self.actions.open_folder.trigger())
@@ -4644,27 +4757,67 @@ class MainWindow(QMainWindow):
             lambda target=undo_button, action=self.actions.undo: target.setToolTip(action.toolTip())
         )
 
-        layout.addWidget(nav_cluster, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        layout.addSpacing(6)
-        # Filename search takes the directory bar's old (left) position.
         self.topbar_search_field = self._build_search_field()
-        self.topbar_search_field.setMinimumWidth(250)
-        self.topbar_search_field.setMaximumWidth(450)
+        self.topbar_search_field.setMinimumWidth(180)
+        self.topbar_search_field.setMaximumWidth(16777215)
         self.topbar_search_field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.topbar_search_field.textChanged.connect(
             lambda text: self._handle_search_text_changed(text, source="topbar")
         )
-        layout.addWidget(self.topbar_search_field, 0)
+        self.app_search_box = QFrame(bar)
+        self.app_search_box.setObjectName("appSearchBox")
+        self.app_search_box.setMaximumWidth(self.APP_SEARCH_MAX_WIDTH)
+        self.app_search_box.setMinimumWidth(240)
+        self.app_search_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        search_layout = QHBoxLayout(self.app_search_box)
+        search_layout.setContentsMargins(10, 0, 6, 0)
+        search_layout.setSpacing(6)
+        search_glyph = QLabel("\uE721", self.app_search_box)
+        search_glyph.setObjectName("appSearchGlyph")
+        search_layout.addWidget(search_glyph, 0, Qt.AlignmentFlag.AlignVCenter)
+        search_layout.addWidget(self.topbar_search_field, 1)
+        palette_hint = QToolButton(self.app_search_box)
+        palette_hint.setObjectName("appSearchKeyHint")
+        palette_hint.setText("Ctrl K")
+        palette_hint.setToolTip("Command palette (Ctrl+K)")
+        palette_hint.setAutoRaise(True)
+        palette_hint.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        palette_hint.setCursor(Qt.CursorShape.PointingHandCursor)
+        palette_hint.clicked.connect(lambda _checked=False: self._open_command_palette(context="main"))
+        search_layout.addWidget(palette_hint, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.app_search_box, 1)
+        update_button = getattr(self, "update_download_button", None)
+        if update_button is not None:
+            layout.addWidget(update_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.app_settings_button = QToolButton(bar)
+        self.app_settings_button.setObjectName("appSettingsButton")
+        self.app_settings_button.setToolTip("Settings")
+        self.app_settings_button.setProperty("fluentGlyph", "E713")
+        self.app_settings_button.setIcon(self._fluent_filled_icon("E713", self._chrome_icon_color()))
+        self.app_settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.app_settings_button.setAutoRaise(True)
+        self.app_settings_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.app_settings_button.setFixedSize(32, 32)
+        self.app_settings_button.clicked.connect(lambda _checked=False: self._show_settings())
+        self._left_settings_buttons.append((self.app_settings_button, 18))
+        layout.addWidget(self.app_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        layout.addSpacing(10)
         self.topbar_action_stack = self._build_topbar_action_stack()
         self._configure_toolbar_context_target(self.topbar_action_stack, "workspace")
-        layout.addWidget(self.topbar_action_stack, 1)
+        self.toolbar_strip = self._build_toolbar_strip(nav_cluster, self.topbar_action_stack)
 
-        # Thumbnail zoom slider takes the search field's old position (drives the
-        # grid column count: left = more/smaller, right = fewer/larger).
-        zoom_cluster = QWidget(bar)
+        # Zoom and the panel toggles travel together: into the status bar when
+        # the toolbar floats, onto the end of the docked toolbar otherwise.
+        self.view_controls = QWidget()
+        self.view_controls.setObjectName("viewControls")
+        self.view_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        view_controls_layout = QHBoxLayout(self.view_controls)
+        view_controls_layout.setContentsMargins(0, 0, 0, 0)
+        view_controls_layout.setSpacing(6)
+
+        # Thumbnail zoom slider (drives the grid column count: left =
+        # more/smaller, right = fewer/larger).
+        zoom_cluster = QWidget(self.view_controls)
         zoom_cluster.setObjectName("topbarZoomCluster")
         # The toolbar-edit HUD anchors itself just left of this cluster.
         self.topbar_zoom_cluster = zoom_cluster
@@ -4689,8 +4842,8 @@ class MainWindow(QMainWindow):
         zoom_layout.addWidget(zoom_small, 0)
         zoom_layout.addWidget(self.topbar_zoom_slider, 0)
         zoom_layout.addWidget(zoom_large, 0)
-        layout.addWidget(zoom_cluster, 0)
-        layout.addSpacing(10)
+        view_controls_layout.addWidget(zoom_cluster, 0)
+        view_controls_layout.addSpacing(6)
 
         # Directory bar takes the zoom's old (right) position.
         self.topbar_path_combo = self._build_path_combo(mode="topbar")
@@ -4702,23 +4855,268 @@ class MainWindow(QMainWindow):
         )
         if _topbar_path_line_edit is not None:
             _topbar_path_line_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        layout.addWidget(self.topbar_path_combo, 0)
-        layout.addSpacing(8)
+            _topbar_path_line_edit.installEventFilter(self)
+            _topbar_path_line_edit.returnPressed.connect(
+                lambda: QTimer.singleShot(0, self._end_breadcrumb_path_edit)
+            )
+        self.topbar_path_combo.setMaximumWidth(16777215)
+        self.topbar_path_combo.activated.connect(lambda _index: QTimer.singleShot(0, self._end_breadcrumb_path_edit))
+        # The editable path box hides behind the breadcrumb until asked for.
+        self.app_crumb_stack.addWidget(self.topbar_path_combo)
+        self.app_crumb_stack.setCurrentWidget(self.app_breadcrumb)
 
-        for glyph, tooltip, key in (
-            ("◫", "Show or hide the library panel", "library"),
-            ("◧", "Show or hide the inspector panel", "inspector"),
+        self._topbar_pane_buttons: dict[str, QToolButton] = {}
+        for side, tooltip, key in (
+            ("left", "Show or hide the library panel", "library"),
+            ("right", "Show or hide the inspector panel", "inspector"),
         ):
-            toggle = make_icon_button(glyph, tooltip)
+            toggle = QToolButton(self.view_controls)
+            toggle.setObjectName("appTopBarPaneButton")
+            toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            toggle.setAutoRaise(True)
+            toggle.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            toggle.setFixedSize(38, 38)
+            toggle.setIconSize(QSize(24, 24))
+            toggle.setIcon(self._pane_toggle_icon(side))
+            toggle.setToolTip(tooltip)
+            toggle.setAccessibleName(tooltip)
             action = self.workspace_docks.toggle_actions.get(key)
             if action is not None:
                 toggle.setCheckable(True)
                 toggle.setChecked(action.isChecked())
                 toggle.clicked.connect(lambda _checked=False, target=action: target.trigger())
                 action.toggled.connect(toggle.setChecked)
-            layout.addWidget(toggle)
+            self._topbar_pane_buttons[key] = toggle
+            view_controls_layout.addWidget(toggle)
 
+        for watched in (self.left_nav_rail, self.left_nav_pages, bar):
+            watched.installEventFilter(self)
         return bar
+
+    APP_SEARCH_MAX_WIDTH = 430
+    # Breadcrumb offset from the library pane's edge so the first segment's
+    # text (after its button padding) lines up with the pane's section labels.
+    APP_BREADCRUMB_INSET = -4
+
+    def _align_app_bar_to_library(self) -> None:
+        """Centre Menu over the rail and start the breadcrumb at the library
+        pane's content edge; the spacer is corrected from the measured position
+        after each layout pass."""
+        self._app_bar_align_pending = False
+        bar = getattr(self, "app_top_bar", None)
+        rail = getattr(self, "left_nav_rail", None)
+        pages = getattr(self, "left_nav_pages", None)
+        if bar is None or rail is None or pages is None or not bar.isVisible():
+            return
+        layout = bar.layout()
+        origin = bar.mapTo(self, QPoint(0, 0)).x()
+        menu_width = self.app_menu_button.sizeHint().width()
+        if rail.isVisible() and rail.width() > 0:
+            slot_x = rail.mapTo(self, QPoint(0, 0)).x() - origin
+            slot_width = max(menu_width, rail.width())
+            crumb_target = pages.mapTo(self, QPoint(0, 0)).x() - origin + self.APP_BREADCRUMB_INSET
+        else:
+            slot_x = layout.contentsMargins().left()
+            slot_width = menu_width
+            crumb_target = slot_x + menu_width + 12
+        self.app_menu_slot.setGeometry(slot_x, 0, slot_width, bar.height())
+        self.app_menu_slot.raise_()
+        current = self._app_bar_crumb_spacer.sizeHint().width()
+        gap = max(0, current + crumb_target - self.app_crumb_stack.x())
+        if gap != current:
+            self._app_bar_crumb_spacer.changeSize(gap, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+            layout.invalidate()
+            layout.activate()
+            self._schedule_app_bar_alignment()
+
+    def _schedule_app_bar_alignment(self) -> None:
+        if getattr(self, "_app_bar_align_pending", False):
+            return
+        self._app_bar_align_pending = True
+        QTimer.singleShot(0, self._align_app_bar_to_library)
+
+    def _refresh_breadcrumb(self) -> None:
+        self._sync_drive_sections()
+        crumb = getattr(self, "app_breadcrumb", None)
+        if crumb is None:
+            return
+        if self._scope_kind == "folder" and self._current_folder:
+            crumb.set_path(self._current_folder)
+        else:
+            crumb.set_label(self._scope_display_label())
+
+    def _handle_breadcrumb_segment_clicked(self, path: str) -> None:
+        if path and os.path.normcase(os.path.normpath(path)) != os.path.normcase(os.path.normpath(self._current_folder or "")):
+            self._select_folder(path)
+
+    def _begin_breadcrumb_path_edit(self) -> None:
+        combo = self.topbar_path_combo
+        self.app_crumb_stack.setCurrentWidget(combo)
+        line_edit = combo.lineEdit()
+        if line_edit is not None:
+            line_edit.setFocus(Qt.FocusReason.MouseFocusReason)
+            line_edit.selectAll()
+
+    def _end_breadcrumb_path_edit(self) -> None:
+        stack = getattr(self, "app_crumb_stack", None)
+        if stack is None or stack.currentWidget() is self.app_breadcrumb:
+            return
+        stack.setCurrentWidget(self.app_breadcrumb)
+        self._refresh_breadcrumb()
+
+    def _maybe_end_breadcrumb_path_edit(self) -> None:
+        # Focus can hop to the folder-suggestion popup while typing; only
+        # fold back to the breadcrumb once focus has really left the path box.
+        combo = self.topbar_path_combo
+        focused = QApplication.focusWidget()
+        if QApplication.activePopupWidget() is not None:
+            return
+        if focused is not None and (focused is combo or combo.isAncestorOf(focused)):
+            return
+        self._end_breadcrumb_path_edit()
+
+    def _size_view_controls(self) -> None:
+        """Compact zoom + panel toggles for the status bar; full size on the
+        docked toolbar."""
+        controls = getattr(self, "view_controls", None)
+        if controls is None:
+            return
+        compact = self._toolbar_placement == "floating"
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        for button in getattr(self, "_topbar_pane_buttons", {}).values():
+            if compact:
+                button.setFixedSize(24, 22)
+                button.setIconSize(QSize(16, 16))
+            else:
+                hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+                hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
+                button.setFixedSize(hover_width, hover_height)
+                button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
+        slider = getattr(self, "topbar_zoom_slider", None)
+        if slider is not None:
+            slider.setFixedWidth(92 if compact else profile.topbar_zoom_width)
+
+    def _build_toolbar_strip(self, nav_cluster: QWidget, action_stack: QWidget) -> QFrame:
+        """The customizable button bar as one movable unit.
+
+        It shares the ``appTopBar`` object name so the top-bar button rules
+        style it; ``toolbarPlacement`` picks the docked row or floating dock
+        surface. ``_apply_toolbar_placement`` parents and positions it.
+        """
+        strip = QFrame()
+        strip.setObjectName("appTopBar")
+        strip.setProperty("toolbarPlacement", self._toolbar_placement)
+        strip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        strip_layout = QHBoxLayout(strip)
+        strip_layout.setContentsMargins(8, 4, 8, 4)
+        strip_layout.setSpacing(WORKSPACE_METRICS.space_6)
+        nav_cluster.setParent(strip)
+        strip_layout.addWidget(nav_cluster, 0, Qt.AlignmentFlag.AlignVCenter)
+        divider = QFrame(strip)
+        divider.setObjectName("toolbarStripDivider")
+        divider.setFixedSize(1, 30)
+        strip_layout.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
+        action_stack.setParent(strip)
+        strip_layout.addWidget(action_stack, 1)
+        self._toolbar_strip_layout = strip_layout
+        return strip
+
+    @classmethod
+    def _normalize_toolbar_placement(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in cls.TOOLBAR_PLACEMENTS else "floating"
+
+    def _set_toolbar_placement(self, placement: str) -> None:
+        normalized = self._normalize_toolbar_placement(placement)
+        if normalized == self._toolbar_placement:
+            return
+        self._toolbar_placement = normalized
+        self._settings.setValue(self.TOOLBAR_PLACEMENT_KEY, normalized)
+        self._apply_toolbar_placement()
+        self._update_action_states()
+
+    def _apply_toolbar_placement(self) -> None:
+        strip = getattr(self, "toolbar_strip", None)
+        center_layout = getattr(self, "workspace_center_layout", None)
+        browser_stack = getattr(self, "browser_stack", None)
+        if strip is None or center_layout is None or browser_stack is None:
+            return
+        floating = self._toolbar_placement == "floating"
+        strip.setProperty("toolbarPlacement", self._toolbar_placement)
+        center_layout.removeWidget(strip)
+        controls = getattr(self, "view_controls", None)
+        status = self.statusBar() if controls is not None else None
+        if controls is not None and status is not None:
+            status.removeWidget(controls)
+            self._toolbar_strip_layout.removeWidget(controls)
+            if floating:
+                status.insertPermanentWidget(0, controls, 0)
+            else:
+                self._toolbar_strip_layout.addWidget(controls, 0, Qt.AlignmentFlag.AlignVCenter)
+            controls.show()
+            self._size_view_controls()
+        if floating:
+            strip.setParent(browser_stack.parentWidget())
+            shadow = QGraphicsDropShadowEffect(strip)
+            shadow.setBlurRadius(36)
+            shadow.setOffset(0, 12)
+            shadow.setColor(QColor(0, 0, 0, 150))
+            strip.setGraphicsEffect(shadow)
+            strip.show()
+            self._position_floating_toolbar()
+        else:
+            strip.setGraphicsEffect(None)
+            strip.setMinimumWidth(0)
+            strip.setMaximumWidth(16777215)
+            center_layout.insertWidget(0, strip)
+            strip.show()
+            self.grid.set_bottom_overlay(0, 0)
+            self.details_view.set_bottom_overlay_reserve(0)
+        strip.style().unpolish(strip)
+        strip.style().polish(strip)
+        strip.update()
+
+    def _floating_toolbar_width(self, available: int, *, expanded: bool = False) -> int:
+        """Size the dock to the slots in use so it hugs its buttons; while
+        editing it opens to the full width so there is room to drop items."""
+        if expanded or self._toolbar_edit_mode:
+            return max(0, available)
+        layout = self._toolbar_strip_layout
+        margins = layout.contentsMargins()
+        fixed = margins.left() + margins.right()
+        for index in range(layout.count()):
+            widget = layout.itemAt(index).widget()
+            if widget is None or widget is self.topbar_action_stack:
+                continue
+            fixed += max(widget.sizeHint().width(), widget.minimumWidth()) + layout.spacing()
+        slots = list(getattr(self, "_topbar_slots", {}).get("manual") or [])
+        used = 0
+        for index, item_id in enumerate(slots):
+            if item_id:
+                used = index + 1
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        cell = max(profile.topbar_slot_cell_min, profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin)
+        spacing = max(0, profile.topbar_slot_spacing)
+        # Half a cell of slack so rounding in the layout never drops the last
+        # slot into the More menu.
+        stack_width = used * cell + max(0, used - 1) * spacing + cell // 2
+        return max(0, min(available, fixed + stack_width))
+
+    def _position_floating_toolbar(self, *, expanded: bool = False) -> None:
+        strip = getattr(self, "toolbar_strip", None)
+        browser_stack = getattr(self, "browser_stack", None)
+        if strip is None or browser_stack is None or self._toolbar_placement != "floating":
+            return
+        area = browser_stack.geometry()
+        margin = self.FLOATING_TOOLBAR_BOTTOM_MARGIN
+        width = self._floating_toolbar_width(area.width() - 2 * self.FLOATING_TOOLBAR_SIDE_MARGIN, expanded=expanded)
+        height = strip.sizeHint().height()
+        strip.setFixedWidth(width)
+        strip.setGeometry(area.x() + (area.width() - width) // 2, area.bottom() + 1 - margin - height, width, height)
+        strip.raise_()
+        reserve = height + margin + self.FLOATING_TOOLBAR_ROW_GAP
+        self.grid.set_bottom_overlay(reserve, reserve + self.FLOATING_TOOLBAR_FADE_DEPTH)
+        self.details_view.set_bottom_overlay_reserve(height + margin)
 
     def _build_topbar_action_stack(self) -> QStackedWidget:
         """Mode-aware action cluster mirrored from the editable toolbar layout.
@@ -4764,7 +5162,7 @@ class MainWindow(QMainWindow):
             "sort": ("Sort", self._build_sort_toolbar_menu),
             "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
             "ai_results": ("AI Results", self._build_ai_results_menu),
-            "projects": ("Projects", self._build_projects_toolbar_menu),
+            "projects": ("Collections", self._build_projects_toolbar_menu),
             "catalog": ("Catalog", self._build_catalog_toolbar_menu),
         }
 
@@ -4818,9 +5216,11 @@ class MainWindow(QMainWindow):
         No action, no click behaviour — it just occupies a cell."""
         holder = QWidget()
         holder.setObjectName("topbarDividerCell")
-        holder.setFixedSize(self.TOPBAR_SLOT_BUTTON_WIDTH, self.TOPBAR_BUTTON_HEIGHT)
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        holder.setFixedSize(profile.topbar_slot_button_width, profile.topbar_button_height)
         layout = QHBoxLayout(holder)
-        layout.setContentsMargins(0, 7, 0, 7)
+        vertical_margin = max(5, round(profile.topbar_button_height * 0.21))
+        layout.setContentsMargins(0, vertical_margin, 0, vertical_margin)
         layout.setSpacing(0)
         line = QFrame(holder)
         line.setObjectName("topbarDividerLine")
@@ -4874,12 +5274,13 @@ class MainWindow(QMainWindow):
 
     def _apply_topbar_button_style(self, button: QToolButton, icon: QIcon) -> None:
         """Place every glyph and caption in identical fixed-height rows."""
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
         caption = button.text()
         button.setMinimumSize(0, 0)
         button.setMaximumSize(16777215, 16777215)
         button.setObjectName("appTopBarIconButton")
-        hover_width = self.TOPBAR_SLOT_BUTTON_WIDTH + 2 * self.TOPBAR_HOVER_MARGIN
-        hover_height = self.TOPBAR_BUTTON_HEIGHT + 2 * self.TOPBAR_HOVER_MARGIN
+        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+        hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
         button.setFixedSize(hover_width, hover_height)
         button.setAccessibleName(caption)
         button.setProperty("topbarCaption", caption)
@@ -4892,10 +5293,10 @@ class MainWindow(QMainWindow):
         content.setObjectName("appTopBarButtonContent")
         content.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         content.setGeometry(
-            self.TOPBAR_HOVER_MARGIN,
-            self.TOPBAR_HOVER_MARGIN,
-            self.TOPBAR_SLOT_BUTTON_WIDTH,
-            self.TOPBAR_BUTTON_HEIGHT,
+            profile.topbar_hover_margin,
+            profile.topbar_hover_margin,
+            profile.topbar_slot_button_width,
+            profile.topbar_button_height,
         )
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -4906,17 +5307,40 @@ class MainWindow(QMainWindow):
         glyph.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         glyph.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         glyph.setIcon(icon)
-        glyph.setIconSize(QSize(22, 22))
+        glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
         glyph.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        glyph.setFixedSize(self.TOPBAR_SLOT_BUTTON_WIDTH, 22)
+        glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
         layout.addWidget(glyph, 0, Qt.AlignmentFlag.AlignHCenter)
 
         caption_label = QLabel(caption, content)
         caption_label.setObjectName("appTopBarButtonCaption")
         caption_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         caption_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        caption_label.setFixedSize(self.TOPBAR_SLOT_BUTTON_WIDTH, 12)
+        caption_label.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
         layout.addWidget(caption_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+    @staticmethod
+    def _resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
+        """Resize an existing composite top-bar button without rebuilding it."""
+
+        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+        hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
+        button.setFixedSize(hover_width, hover_height)
+        content = button.findChild(QWidget, "appTopBarButtonContent")
+        if content is not None:
+            content.setGeometry(
+                profile.topbar_hover_margin,
+                profile.topbar_hover_margin,
+                profile.topbar_slot_button_width,
+                profile.topbar_button_height,
+            )
+        glyph = button.findChild(QToolButton, "appTopBarGlyph")
+        if glyph is not None:
+            glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
+            glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
+        caption = button.findChild(QLabel, "appTopBarButtonCaption")
+        if caption is not None:
+            caption.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
 
     def _topbar_nav_icon(self, item_id: str) -> QIcon:
         glyphs = self.TOPBAR_NAV_FLUENT_ICONS.get(item_id)
@@ -4955,8 +5379,6 @@ class MainWindow(QMainWindow):
 
     def _apply_chrome_icon_scale(self) -> None:
         """Restore the standard icon scale for fixed chrome controls."""
-        for button, base in getattr(self, "_left_rail_buttons", ()):
-            button.setIconSize(QSize(base, base))
         for button, base in getattr(self, "_left_settings_buttons", ()):
             button.setIconSize(QSize(base, base))
         for button, base in getattr(self, "_topbar_nav_buttons", ()):
@@ -5000,13 +5422,24 @@ class MainWindow(QMainWindow):
     def _topbar_visible_slot_count(self) -> int:
         stack = getattr(self, "topbar_action_stack", None)
         width = stack.width() if isinstance(stack, QWidget) else 0
-        return self._topbar_visible_slot_count_for_width(width)
+        profile = getattr(self, "_display_profile", None)
+        if profile is None:
+            return self._topbar_visible_slot_count_for_width(width)
+        available = int(width or 0)
+        if available <= 0:
+            return max(1, min(self.TOPBAR_INITIAL_VISIBLE_SLOTS, self.TOPBAR_SLOT_COUNT))
+        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+        cell = max(profile.topbar_slot_cell_min, hover_width)
+        spacing = max(0, profile.topbar_slot_spacing)
+        count = (available + spacing) // (cell + spacing)
+        return max(1, min(self.TOPBAR_SLOT_COUNT, int(count)))
 
     def _configure_topbar_grid_columns(self, grid: QGridLayout, visible_slots: int) -> None:
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
         for col in range(self.TOPBAR_SLOT_COUNT):
             active = col < visible_slots
             grid.setColumnStretch(col, 1 if active else 0)
-            grid.setColumnMinimumWidth(col, self.TOPBAR_SLOT_CELL_MIN if active else 0)
+            grid.setColumnMinimumWidth(col, profile.topbar_slot_cell_min if active else 0)
 
     def _rebuild_topbar_action_stack(self, mode: str | None = None) -> None:
         layouts = getattr(self, "_topbar_action_layouts", None)
@@ -5066,6 +5499,8 @@ class MainWindow(QMainWindow):
             self._topbar_slot_widgets[target] = slot_widgets
         if logger.enabled:
             logger.duration("toolbar.rebuild_stack", (time.perf_counter() - start) * 1000.0, widgets=built)
+        if getattr(self, "_toolbar_placement", "docked") == "floating" and getattr(self, "toolbar_strip", None) is not None:
+            QTimer.singleShot(0, self._position_floating_toolbar)
 
     def _normalize_topbar_slot_button(self, widget: QWidget) -> None:
         # One uniform width so every cell reads the same regardless of whether
@@ -5149,7 +5584,141 @@ class MainWindow(QMainWindow):
         return "detailed"
 
     # -- Resolution-aware card-style policy --------------------------------
+    def _schedule_display_profile_update(self) -> None:
+        if self._display_profile_update_pending:
+            return
+        self._display_profile_update_pending = True
+        QTimer.singleShot(0, self._apply_display_profile)
+
+    def _apply_display_profile(self) -> None:
+        self._display_profile_update_pending = False
+        container = getattr(self, "central_container", None)
+        width = int(container.width()) if container is not None and container.width() > 0 else int(self.width())
+        height = int(container.height()) if container is not None and container.height() > 0 else int(self.height())
+        profile = display_profile_for_preference(width, height, self._interface_size)
+        if profile == self._display_profile:
+            return
+        self._display_profile = profile
+
+        if container is not None:
+            layout = container.layout()
+            if layout is not None:
+                # Edge-to-edge shell: panels meet at hairlines, no outer gutter.
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(0)
+        docks = getattr(self, "workspace_docks", None)
+        if docks is not None:
+            docks.apply_display_profile(profile)
+        self._apply_main_chrome_display_profile(profile)
+        preview = getattr(self, "preview", None)
+        if preview is not None and hasattr(preview, "apply_display_profile"):
+            preview.apply_display_profile(profile)
+
+    def _apply_main_chrome_display_profile(self, profile: DisplayProfile) -> None:
+        """Apply bounded profile metrics to the production window chrome."""
+
+        bar = getattr(self, "app_top_bar", None)
+        if bar is not None and bar.layout() is not None:
+            bar.layout().setContentsMargins(
+                profile.shell_margin,
+                max(4, profile.shell_margin - 2),
+                profile.shell_margin + 2,
+                max(4, profile.shell_margin - 2),
+            )
+            bar.layout().setSpacing(profile.inspector_spacing)
+        search = getattr(self, "topbar_search_field", None)
+        if search is not None:
+            search.setMinimumWidth(profile.topbar_search_min_width)
+            search.setMaximumWidth(profile.topbar_search_max_width)
+        zoom = getattr(self, "topbar_zoom_slider", None)
+        if zoom is not None:
+            zoom.setFixedWidth(profile.topbar_zoom_width)
+        path = getattr(self, "topbar_path_combo", None)
+        if path is not None:
+            path.setMinimumWidth(profile.topbar_path_min_width)
+            path.setMaximumWidth(profile.topbar_path_max_width)
+        for button, _base in getattr(self, "_topbar_nav_buttons", ()):
+            button.setFixedSize(profile.topbar_nav_button_size, profile.topbar_nav_button_size)
+            font = button.font()
+            font.setPixelSize(profile.topbar_nav_font_size)
+            button.setFont(font)
+        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
+            self._resize_topbar_button(button, profile)
+        for button in getattr(self, "_topbar_pane_buttons", {}).values():
+            hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
+            hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
+            button.setFixedSize(hover_width, hover_height)
+            button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
+        nav_layout = getattr(self, "_topbar_nav_layout", None)
+        if nav_layout is not None:
+            nav_layout.setSpacing(profile.topbar_slot_spacing)
+        for grid in getattr(self, "_topbar_action_layouts", {}).values():
+            grid.setHorizontalSpacing(profile.topbar_slot_spacing)
+        if getattr(self, "_topbar_action_layouts", None):
+            self._rebuild_topbar_action_stack()
+        self._size_view_controls()
+        search_field = getattr(self, "topbar_search_field", None)
+        if search_field is not None:
+            search_field.setMinimumWidth(180)
+            search_field.setMaximumWidth(16777215)
+        if path is not None:
+            path.setMaximumWidth(16777215)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._schedule_display_profile_update()
+
+    def _paint_grid_backdrop(self, painter: QPainter, rect: QRect) -> None:
+        theme = self._theme
+        if theme is None:
+            return
+        origin = self.grid.viewport().mapTo(self, QPoint(0, 0))
+        paint_backdrop(painter, theme, self.size(), origin, rect)
+
+    def _drive_glyph_icon(self, path: str) -> QIcon | None:
+        """Fluent drive glyphs (disk, removable card, network share) in the
+        theme's meter colour, instead of the shell's drive icons."""
+        if not path:
+            return None
+        drive_type = 3
+        if os.name == "nt":
+            try:
+                drive_type = int(ctypes.windll.kernel32.GetDriveTypeW(os.path.splitdrive(path)[0] + "\\"))  # type: ignore[attr-defined]
+            except (AttributeError, OSError, ValueError):
+                drive_type = 3
+        glyph = {2: "E7F8", 4: "E968"}.get(drive_type, "EDA2")
+        theme = self._theme or default_theme()
+        colour = theme.accent_hover.qcolor()
+        cache = self.__dict__.setdefault("_drive_glyph_icon_cache", {})
+        key = (glyph, colour.rgba())
+        if key not in cache:
+            pixmap = QPixmap(64, 64)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            font = QFont("Segoe Fluent Icons")
+            font.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
+            font.setPixelSize(56)
+            painter.setFont(font)
+            painter.setPen(colour)
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, chr(int(glyph, 16)))
+            painter.end()
+            cache[key] = self._trim_icon_transparency(QIcon(pixmap), padding=2)
+        return cache[key]
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        theme = self._theme
+        primary = getattr(theme, "backdrop_glow_primary", None)
+        if theme is None or primary is None:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        paint_backdrop(painter, theme, self.size(), QPoint(0, 0), self.rect())
+        painter.end()
+
     def _display_class(self) -> str:
+        # Card detail depends chiefly on usable height. A narrow window should
+        # condense its chrome without unexpectedly forcing photo-only cards.
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return "high"
@@ -5195,6 +5764,7 @@ class MainWindow(QMainWindow):
     def _post_show_display_setup(self) -> None:
         # Runs once the window is up: warn if on a small display, and re-apply the
         # policy live when moved to another screen or the resolution changes.
+        self._apply_display_profile()
         self._apply_display_style_policy(show_warning=True)
         handle = self.windowHandle()
         if handle is not None:
@@ -5209,11 +5779,19 @@ class MainWindow(QMainWindow):
             screen.geometryChanged.connect(
                 self._handle_display_change, Qt.ConnectionType.UniqueConnection
             )
+            screen.availableGeometryChanged.connect(
+                self._handle_display_change, Qt.ConnectionType.UniqueConnection
+            )
+            screen.logicalDotsPerInchChanged.connect(
+                self._handle_display_change, Qt.ConnectionType.UniqueConnection
+            )
         except (TypeError, RuntimeError):
             pass
 
     def _handle_display_change(self, _arg=None) -> None:
         self._connect_screen_geometry_signal()
+        self._schedule_display_profile_update()
+        QTimer.singleShot(0, lambda: fit_window_to_available_geometry(self))
         self._apply_display_style_policy(show_warning=True)
 
     def _maybe_warn_small_display(self) -> None:
@@ -5402,24 +5980,22 @@ class MainWindow(QMainWindow):
     def _refresh_themed_chrome_icons(self) -> None:
         self.__dict__.pop("_fluent_toolbar_icon_cache", None)
 
-        add_button = getattr(self, "_left_rail_add_button", None)
-        if add_button is not None:
-            add_button.setIcon(self._fluent_toolbar_icon("E710", color=self._chrome_icon_color()))
-        for item_id, value in getattr(self, "_left_rail_action_buttons", {}).items():
-            button = value[0]
-            button.setIcon(self._workspace_toolbar_icon(item_id))
-
         for button, _base in getattr(self, "_left_settings_buttons", ()):
             glyph = button.property("fluentGlyph")
             if isinstance(glyph, str) and glyph:
                 button.setIcon(self._fluent_filled_icon(glyph, self._chrome_icon_color()))
 
         self._refresh_left_sidebar_icons()
+        menu_button = getattr(self, "app_menu_button", None)
+        if menu_button is not None:
+            menu_button.setIcon(self._topbar_nav_icon("menu"))
 
         for button, item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
             glyph = button.findChild(QToolButton, "appTopBarGlyph")
             if glyph is not None:
                 glyph.setIcon(self._topbar_nav_icon(item_id))
+        for key, button in getattr(self, "_topbar_pane_buttons", {}).items():
+            button.setIcon(self._pane_toggle_icon("left" if key == "library" else "right"))
 
         for widgets in getattr(self, "_workspace_toolbar_item_widgets", {}).values():
             for item_id, widget in widgets.items():
@@ -5439,14 +6015,26 @@ class MainWindow(QMainWindow):
     def _refresh_left_sidebar_icons(self) -> None:
         theme = getattr(self, "_theme", None) or default_theme()
         accent = theme.accent.qcolor()
-        selected = theme.selection_outline.qcolor()
         muted = theme.text_muted.qcolor()
-        folder_tree = getattr(self, "folder_tree", None)
-        if isinstance(folder_tree, FolderTreeView):
-            folder_tree.set_navigation_colors(
+        for tree in (getattr(self, "folder_tree", None), getattr(self, "drive_list", None)):
+            if not isinstance(tree, FolderTreeView):
+                continue
+            tree.set_navigation_colors(
                 theme.selection_fill.qcolor(),
                 theme.input_hover_bg.qcolor(),
             )
+            # Drive meters: accent into the backdrop's second glow when the
+            # theme has one (Indigo: violet into teal), plain accent otherwise.
+            fill_start = theme.meter_start.qcolor() if theme.meter_start else accent
+            fill_end = theme.meter_end.qcolor() if theme.meter_end else accent
+            tree.set_usage_bar_colors(theme.text_primary.with_alpha(22).qcolor(), fill_start, fill_end)
+            self.__dict__.pop("_drive_glyph_icon_cache", None)
+            tree.set_drive_icon_provider(self._drive_glyph_icon)
+        if getattr(self, "left_rail_add_button", None) is not None:
+            self._rebuild_pinned_tools()
+        refresh_button = getattr(self, "drives_refresh_button", None)
+        if refresh_button is not None:
+            refresh_button.setIcon(self._fluent_toolbar_icon("E72C", color=muted))
         face_header = getattr(self, "face_groups_header", None)
         if face_header is not None:
             face_header.set_icon(QIcon(sidebar_people_icon_pixmap(21, accent.name())))
@@ -5456,6 +6044,7 @@ class MainWindow(QMainWindow):
         for button in (
             getattr(self, "face_groups_add_button", None),
             getattr(self, "projects_add_button", None),
+            getattr(self, "folders_add_button", None),
         ):
             if button is not None:
                 button.setIcon(
@@ -5464,29 +6053,9 @@ class MainWindow(QMainWindow):
         search_action = getattr(self, "_face_groups_search_action", None)
         if search_action is not None:
             search_action.setIcon(self._fluent_toolbar_icon("E721", color=muted))
-        tabs = getattr(self, "left_mode_tabs", None)
-        if tabs is not None and tabs.count() >= 2:
-            selected_index = tabs.currentIndex()
-            if isinstance(tabs, CompactIconTabBar):
-                selected_text = theme.text_primary.qcolor()
-                hover_text = theme.text_secondary.qcolor()
-                tabs.set_text_colors(muted, selected_text, hover_text)
-            tabs.setTabIcon(
-                0,
-                self._fluent_toolbar_icon(
-                    "E8B9",
-                    color=selected if selected_index == 0 else muted,
-                    primary_size=38,
-                ),
-            )
-            tabs.setTabIcon(
-                1,
-                self._fluent_toolbar_icon(
-                    "E9D2",
-                    color=selected if selected_index == 1 else muted,
-                    primary_size=38,
-                ),
-            )
+        rail = getattr(self, "left_nav_rail", None)
+        if rail is not None:
+            rail.refresh_icons()
 
     def _configure_workspace_toolbar_button(self, button: QToolButton, *, item_id: str, text: str) -> None:
         style = self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text"))
@@ -5530,6 +6099,144 @@ class MainWindow(QMainWindow):
         button.setFixedSize(24, 24)
         return button
 
+    def _build_left_nav_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("libraryStack")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        return page
+
+    def _left_nav_icon(self, icon_id: str, selected: bool) -> QIcon:
+        # The same drawn icons the page headers use, so the rail and the page it
+        # opens match and nothing depends on a glyph being present in the font.
+        theme = getattr(self, "_theme", None) or default_theme()
+        colour = (theme.accent if selected else theme.text_muted).qcolor().name()
+        painter = {
+            "folder": folder_icon_pixmap,
+            "people": sidebar_people_icon_pixmap,
+            "collections": sidebar_projects_icon_pixmap,
+        }.get(icon_id, folder_icon_pixmap)
+        return QIcon(painter(NAV_RAIL_ICON_PX, colour))
+
+    def _show_left_nav_page(self, key: str) -> None:
+        page = getattr(self, "_left_nav_page_widgets", {}).get(key)
+        if page is None:
+            return
+        self.left_nav_pages.setCurrentWidget(page)
+        if self.left_nav_rail.current() != key:
+            self.left_nav_rail.set_current(key, emit=False)
+        self._settings.setValue(self.LEFT_NAV_PAGE_KEY, key)
+
+    def _build_left_rail_pinned_tools(self) -> None:
+        """Pinned tools under the rail destinations, with a + at the rail's
+        foot that pins any toolbar command. Right-click a pin to unpin it."""
+        section = QWidget()
+        section.setObjectName("leftRailPinned")
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.setSpacing(4)
+        divider = QFrame(section)
+        divider.setObjectName("leftRailDivider")
+        divider.setFixedSize(44, 1)
+        layout.addWidget(divider, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(4)
+        label = QLabel("PINNED", section)
+        label.setObjectName("leftRailSectionLabel")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._left_rail_pinned_layout = QVBoxLayout()
+        self._left_rail_pinned_layout.setContentsMargins(0, 0, 0, 0)
+        self._left_rail_pinned_layout.setSpacing(4)
+        layout.addLayout(self._left_rail_pinned_layout)
+        self.left_rail_pinned = section
+        self.left_nav_rail.add_section(section)
+
+        add_button = QToolButton()
+        add_button.setObjectName("leftRailAddButton")
+        add_button.setToolTip("Pin a tool")
+        add_button.setAutoRaise(True)
+        add_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        add_button.setFixedSize(40, 40)
+        add_button.setIconSize(QSize(24, 24))
+        add_button.clicked.connect(lambda _checked=False: self._show_pin_tool_menu(add_button))
+        self.left_rail_add_button = add_button
+        self.left_nav_rail.set_footer(add_button)
+        self._rebuild_pinned_tools()
+
+    def _pinned_tool_ids(self) -> list[str]:
+        raw = self._settings.value(self.PINNED_TOOLS_KEY, None)
+        if raw is None:
+            return list(self.DEFAULT_PINNED_TOOLS)
+        try:
+            values = json.loads(raw) if isinstance(raw, str) else list(raw)
+        except (TypeError, ValueError):
+            return list(self.DEFAULT_PINNED_TOOLS)
+        return [str(value) for value in values if isinstance(value, str) and value]
+
+    def _set_pinned_tool_ids(self, ids: list[str]) -> None:
+        self._settings.setValue(self.PINNED_TOOLS_KEY, json.dumps(ids))
+        self._rebuild_pinned_tools()
+
+    def _rebuild_pinned_tools(self) -> None:
+        layout = getattr(self, "_left_rail_pinned_layout", None)
+        if layout is None:
+            return
+        self._clear_layout_items(layout, delete_widgets=True)
+        specs = self._workspace_toolbar_action_specs()
+        theme = getattr(self, "_theme", None) or default_theme()
+        color = theme.text_secondary.qcolor()
+        pinned = [item_id for item_id in self._pinned_tool_ids() if item_id in specs]
+        for item_id in pinned:
+            action, label = specs[item_id]
+            button = QToolButton()
+            button.setObjectName("leftRailToolButton")
+            button.setIcon(self._workspace_toolbar_icon(item_id, color=color))
+            button.setIconSize(QSize(22, 22))
+            button.setFixedSize(38, 34)
+            button.setAutoRaise(True)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            button.setToolTip(action.toolTip() or label)
+            button.setAccessibleName(label)
+            button.clicked.connect(lambda _checked=False, target=action: target.trigger())
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda _pos, target=item_id, anchor=button: self._show_pinned_tool_context_menu(target, anchor)
+            )
+            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.left_rail_pinned.setVisible(bool(pinned))
+        self.left_rail_add_button.setIcon(
+            self._fluent_toolbar_icon("E710", color=self._chrome_icon_color())
+        )
+
+    def _show_pinned_tool_context_menu(self, item_id: str, anchor: QWidget) -> None:
+        menu = QMenu(self)
+        unpin = menu.addAction("Unpin")
+        chosen = menu.exec(anchor.mapToGlobal(QPoint(anchor.width(), 0)))
+        if chosen is unpin:
+            self._set_pinned_tool_ids([value for value in self._pinned_tool_ids() if value != item_id])
+
+    def _show_pin_tool_menu(self, anchor: QWidget) -> None:
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        pinned = self._pinned_tool_ids()
+        specs = self._workspace_toolbar_action_specs()
+        for item_id, (action, label) in sorted(specs.items(), key=lambda entry: entry[1][1].casefold()):
+            entry = menu.addAction(self._workspace_toolbar_icon(item_id, color=self._chrome_icon_color()), label)
+            entry.setCheckable(True)
+            entry.setChecked(item_id in pinned)
+            entry.setToolTip(action.toolTip())
+            entry.setData(item_id)
+        chosen = menu.exec(anchor.mapToGlobal(QPoint(anchor.width(), 0)))
+        if chosen is None:
+            return
+        item_id = str(chosen.data())
+        if item_id in pinned:
+            pinned.remove(item_id)
+        else:
+            pinned.append(item_id)
+        self._set_pinned_tool_ids(pinned)
+
     def _build_left_rail_plus_button(
         self, parent: QWidget | None = None, *, tooltip: str
     ) -> QToolButton:
@@ -5544,260 +6251,6 @@ class MainWindow(QMainWindow):
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.setFixedSize(30, 30)
         return button
-
-    def _build_generated_left_task_rail(self) -> QWidget:
-        rail = QWidget()
-        rail.setObjectName("generatedLeftTaskRail")
-        rail.setFixedWidth(42)
-        layout = QVBoxLayout(rail)
-        layout.setContentsMargins(6, 8, 6, 8)
-        layout.setSpacing(8)
-        self._left_rail_buttons: list[tuple[QToolButton, int]] = []
-        self._left_rail_action_buttons: dict[str, tuple[QToolButton, QAction, str]] = {}
-        self._left_rail_tool_host = QWidget(rail)
-        self._left_rail_tool_layout = QVBoxLayout(self._left_rail_tool_host)
-        self._left_rail_tool_layout.setContentsMargins(0, 0, 0, 0)
-        self._left_rail_tool_layout.setSpacing(8)
-        layout.addWidget(self._left_rail_tool_host, 0, Qt.AlignmentFlag.AlignHCenter)
-        layout.addStretch(1)
-
-        self._left_rail_add_button = self._build_left_rail_plus_button(
-            rail, tooltip="Add rail tool"
-        )
-        self._left_rail_add_button.clicked.connect(self._open_rail_tool_picker)
-        self._left_rail_buttons.append((self._left_rail_add_button, 22))
-        layout.addWidget(self._left_rail_add_button, 0, Qt.AlignmentFlag.AlignHCenter)
-        return rail
-
-    def _rail_tool_action_specs(self) -> dict[str, tuple[QAction, str]]:
-        if self.actions is None:
-            return {}
-        specs = dict(self._workspace_toolbar_action_specs())
-        specs.update(
-            {
-                "performance_logging": (self.actions.performance_logging, "Performance"),
-                "open_performance_logs": (self.actions.open_performance_log_folder, "Perf Logs"),
-            }
-        )
-        return specs
-
-    def _normalize_rail_tool_items(self, raw_items: list[object] | tuple[object, ...]) -> list[str]:
-        allowed = set(self.RAIL_TOOL_ALLOWED_ITEMS)
-        normalized: list[str] = []
-        for item in raw_items:
-            if not isinstance(item, str) or item not in allowed or item in normalized:
-                continue
-            normalized.append(item)
-        return normalized
-
-    def _rebuild_left_rail(self) -> None:
-        layout = getattr(self, "_left_rail_tool_layout", None)
-        if layout is None:
-            return
-        self._clear_layout_items(layout, delete_widgets=True)
-        self._left_rail_buttons = []
-        self._left_rail_action_buttons = {}
-        specs = self._rail_tool_action_specs()
-        self._left_rail_items = self._normalize_rail_tool_items(self._left_rail_items)
-        for item_id in self._left_rail_items:
-            spec = specs.get(item_id)
-            if spec is None:
-                continue
-            action, label = spec
-            button = QToolButton(self._left_rail_tool_host)
-            button.setObjectName("generatedLeftRailButton")
-            button.setIcon(self._workspace_toolbar_icon(item_id))
-            button.setIconSize(QSize(20, 20))
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            button.setText("")
-            button.clicked.connect(lambda _checked=False, source=action: source.trigger())
-            button.setAutoRaise(True)
-            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            button.setFixedSize(30, 30)
-            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            button.customContextMenuRequested.connect(
-                lambda point, selected=item_id, target=button: self._show_left_rail_item_menu(
-                    selected,
-                    target.mapToGlobal(point),
-                )
-            )
-            self._left_rail_buttons.append((button, 20))
-            self._left_rail_action_buttons[item_id] = (button, action, label)
-            self._sync_left_rail_action_button(button, action, label)
-            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
-        add_button = getattr(self, "_left_rail_add_button", None)
-        if add_button is not None:
-            self._left_rail_buttons.append((add_button, 20))
-        self._apply_chrome_icon_scale()
-
-    def _sync_left_rail_action_button(self, button: QToolButton, action: QAction, label: str) -> None:
-        try:
-            button.setEnabled(action.isEnabled())
-            button.setCheckable(action.isCheckable())
-            if action.isCheckable():
-                with QSignalBlocker(button):
-                    button.setChecked(action.isChecked())
-            button.setToolTip(action.toolTip() or label)
-        except RuntimeError:
-            return
-
-    def _refresh_left_rail_action_buttons(self) -> None:
-        for button, action, label in getattr(self, "_left_rail_action_buttons", {}).values():
-            self._sync_left_rail_action_button(button, action, label)
-
-    def _save_left_rail_items(self) -> None:
-        self._left_rail_items = self._normalize_rail_tool_items(self._left_rail_items)
-        self._save_workspace_toolbar_layouts()
-
-    def _pin_left_rail_tool(self, item_id: str, *, replace_item_id: str | None = None) -> None:
-        if item_id not in self.RAIL_TOOL_ALLOWED_ITEMS:
-            return
-        items = self._normalize_rail_tool_items(self._left_rail_items)
-        if replace_item_id in items:
-            replace_index = items.index(replace_item_id)
-            items.pop(replace_index)
-            if item_id in items:
-                items.remove(item_id)
-            items.insert(replace_index, item_id)
-        elif item_id not in items:
-            items.append(item_id)
-        self._left_rail_items = items
-        self._save_left_rail_items()
-        self._rebuild_left_rail()
-
-    def _unpin_left_rail_tool(self, item_id: str) -> None:
-        items = [item for item in self._normalize_rail_tool_items(self._left_rail_items) if item != item_id]
-        self._left_rail_items = items
-        self._save_left_rail_items()
-        self._rebuild_left_rail()
-
-    def _move_left_rail_tool(self, item_id: str, direction: int) -> None:
-        items = self._normalize_rail_tool_items(self._left_rail_items)
-        if item_id not in items:
-            return
-        index = items.index(item_id)
-        target = index + direction
-        if target < 0 or target >= len(items):
-            return
-        items[index], items[target] = items[target], items[index]
-        self._left_rail_items = items
-        self._save_left_rail_items()
-        self._rebuild_left_rail()
-
-    def _reset_left_rail_tools(self) -> None:
-        self._left_rail_items = list(self.RAIL_TOOL_DEFAULTS)
-        self._save_left_rail_items()
-        self._rebuild_left_rail()
-
-    def _show_left_rail_item_menu(self, item_id: str, global_pos: QPoint) -> None:
-        items = self._normalize_rail_tool_items(self._left_rail_items)
-        if item_id not in items:
-            return
-        label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
-        index = items.index(item_id)
-        menu = QMenu(self)
-        replace_action = menu.addAction(f"Replace {label}...")
-        move_up_action = menu.addAction("Move Up")
-        move_down_action = menu.addAction("Move Down")
-        menu.addSeparator()
-        unpin_action = menu.addAction(f"Unpin {label}")
-        reset_action = menu.addAction("Reset Rail")
-        move_up_action.setEnabled(index > 0)
-        move_down_action.setEnabled(index < len(items) - 1)
-        chosen = menu.exec(global_pos)
-        if chosen == replace_action:
-            self._open_rail_tool_picker(replace_item_id=item_id)
-        elif chosen == move_up_action:
-            self._move_left_rail_tool(item_id, -1)
-        elif chosen == move_down_action:
-            self._move_left_rail_tool(item_id, 1)
-        elif chosen == unpin_action:
-            self._unpin_left_rail_tool(item_id)
-        elif chosen == reset_action:
-            self._reset_left_rail_tools()
-
-    def _build_rail_tool_picker_commands(self, *, replace_item_id: str | None = None) -> list[PaletteCommand]:
-        pinned = set(self._normalize_rail_tool_items(self._left_rail_items))
-        specs = self._rail_tool_action_specs()
-        commands: list[PaletteCommand] = []
-        for item_id in self.RAIL_TOOL_ALLOWED_ITEMS:
-            if item_id in pinned and item_id != replace_item_id:
-                continue
-            spec = specs.get(item_id)
-            if spec is None:
-                continue
-            action, fallback_label = spec
-            label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, fallback_label)
-            keywords = (
-                item_id.replace("_", " "),
-                action.text().replace("&", ""),
-                action.toolTip(),
-                action.statusTip(),
-            )
-            commands.append(
-                PaletteCommand(
-                    id=f"rail.{item_id}",
-                    title=label,
-                    subtitle="Pinned Tool Shelf",
-                    section="Tools",
-                    keywords=tuple(part for part in keywords if part),
-                    callback=lambda selected=item_id, replace=replace_item_id: self._pin_left_rail_tool(
-                        selected,
-                        replace_item_id=replace,
-                    ),
-                )
-            )
-        return commands
-
-    def _ensure_rail_tool_picker_dialog(self) -> CommandPaletteDialog:
-        dialog = getattr(self, "_rail_tool_picker_dialog", None)
-        if isinstance(dialog, CommandPaletteDialog):
-            return dialog
-        dialog = CommandPaletteDialog(
-            [],
-            recent_command_ids=(),
-            title="Add Rail Tool",
-            placeholder="Search tools",
-            hint="Enter pins the selected tool.",
-            card_size=QSize(520, 420),
-            parent=self,
-        )
-        dialog.finished.connect(self._handle_rail_tool_picker_finished)
-        self._rail_tool_picker_dialog = dialog
-        return dialog
-
-    def _open_rail_tool_picker(self, _checked: bool = False, *, replace_item_id: str | None = None) -> None:
-        if self._active_command_palette is not None and self._active_command_palette.isVisible():
-            return
-        dialog = self._ensure_rail_tool_picker_dialog()
-        dialog.configure(
-            self._build_rail_tool_picker_commands(replace_item_id=replace_item_id),
-            title="Replace Rail Tool" if replace_item_id else "Add Rail Tool",
-            placeholder="Search tools",
-            hint="Enter pins the selected tool.",
-            card_size=QSize(520, 420),
-        )
-        dialog.set_prominent(False)
-        self._command_palette_open = True
-        self._active_command_palette = dialog
-        self._set_command_palette_shortcuts_enabled(False)
-        dialog.present()
-
-    def _handle_rail_tool_picker_finished(self, result: int) -> None:
-        dialog = self.sender()
-        if not isinstance(dialog, CommandPaletteDialog):
-            self._command_palette_open = False
-            self._active_command_palette = None
-            self._set_command_palette_shortcuts_enabled(True)
-            return
-        self._command_palette_open = False
-        self._active_command_palette = None
-        self._set_command_palette_shortcuts_enabled(True)
-        if result != dialog.DialogCode.Accepted:
-            return
-        command = dialog.selected_command
-        if command is not None:
-            command.callback()
 
     def _build_generated_left_settings_bar(self) -> QWidget:
         bar = QFrame()
@@ -5832,76 +6285,6 @@ class MainWindow(QMainWindow):
         add_button("E713", "Settings", self._show_settings)
         return bar
 
-    def _build_generated_ai_activity_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("leftAiActivityPanel")
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-
-        title = QLabel("AI Output Tags")
-        title.setObjectName("leftPreviewTitle")
-        layout.addWidget(title)
-
-        tag_grid = QGridLayout()
-        tag_grid.setContentsMargins(0, 4, 0, 0)
-        tag_grid.setHorizontalSpacing(10)
-        tag_grid.setVerticalSpacing(6)
-
-        self.left_ai_activity_buttons = {}
-        for row_idx, (tag_key, label_text, color_hex) in enumerate(self.AI_ACTIVITY_TAG_SPECS):
-            swatch = QToolButton(panel)
-            swatch.setObjectName("leftAiActivitySwatch")
-            swatch.setProperty("aiColor", color_hex)
-            swatch.setToolTip(f"Filter {label_text}")
-            swatch.setCheckable(True)
-            swatch.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            swatch.setFixedSize(16, 16)
-            swatch.clicked.connect(lambda _checked=False, selected=tag_key: self._toggle_ai_activity_tag_filter(selected))
-
-            label = QToolButton(panel)
-            label.setObjectName("leftAiActivityTextButton")
-            label.setText(label_text)
-            label.setToolTip(f"Filter {label_text}")
-            label.setCheckable(True)
-            label.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            label.setAutoRaise(True)
-            label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-            label.clicked.connect(lambda _checked=False, selected=tag_key: self._toggle_ai_activity_tag_filter(selected))
-
-            self.left_ai_activity_buttons[tag_key] = (swatch, label)
-            self._set_ai_activity_swatch_style(swatch, checked=False)
-            tag_grid.addWidget(swatch, row_idx, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            tag_grid.addWidget(label, row_idx, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
-        tag_grid.setColumnStretch(1, 0)
-        tag_grid.setColumnStretch(2, 1)
-        layout.addLayout(tag_grid)
-        layout.addStretch(1)
-        return panel
-
-    def _set_ai_activity_swatch_style(self, swatch: QToolButton, *, checked: bool) -> None:
-        color = str(swatch.property("aiColor") or "#8a909a")
-        border = "#eef4ff" if checked else "rgba(255, 255, 255, 0.28)"
-        swatch.setStyleSheet(
-            "QToolButton {"
-            f"background-color: {color};"
-            f"border: 1px solid {border};"
-            "border-radius: 3px;"
-            "padding: 0px;"
-            "}"
-        )
-
-    def _ai_activity_tag_label(self, tag_key: str) -> str:
-        if tag_key.startswith("bucket:"):
-            try:
-                return ai_cull_bucket_label(AICullBucket(tag_key.split(":", 1)[1]))
-            except ValueError:
-                return ""
-        if tag_key.startswith("workflow:"):
-            return ai_workflow_tag_label(tag_key.split(":", 1)[1])
-        return ""
-
     def _active_ai_activity_tag_key(self) -> str:
         if self._filter_query.ai_cull_bucket is not None:
             return f"bucket:{self._filter_query.ai_cull_bucket.value}"
@@ -5909,42 +6292,6 @@ class MainWindow(QMainWindow):
         if workflow_tag:
             return f"workflow:{workflow_tag}"
         return ""
-
-    def _toggle_ai_activity_tag_filter(self, tag_key: str) -> None:
-        if self._active_ai_activity_tag_key() == tag_key:
-            self._filter_query.ai_cull_bucket = None
-            self._filter_query.ai_workflow_tag = ""
-            label_text = ""
-        elif tag_key.startswith("bucket:"):
-            try:
-                self._filter_query.ai_cull_bucket = AICullBucket(tag_key.split(":", 1)[1])
-            except ValueError:
-                return
-            self._filter_query.ai_workflow_tag = ""
-            label_text = self._ai_activity_tag_label(tag_key)
-        elif tag_key.startswith("workflow:"):
-            workflow_tag = tag_key.split(":", 1)[1]
-            if not ai_workflow_tag_label(workflow_tag):
-                return
-            self._filter_query.ai_cull_bucket = None
-            self._filter_query.ai_workflow_tag = workflow_tag
-            label_text = self._ai_activity_tag_label(tag_key)
-        else:
-            return
-        self._apply_filter_query_change()
-        if not label_text:
-            self.statusBar().showMessage("Cleared AI tag filter")
-        else:
-            self.statusBar().showMessage(f"Filtered AI tag: {label_text}")
-
-    def _sync_left_ai_activity_filter_buttons(self) -> None:
-        active_tag = self._active_ai_activity_tag_key()
-        for tag_key, (swatch, label) in getattr(self, "left_ai_activity_buttons", {}).items():
-            checked = tag_key == active_tag
-            for button in (swatch, label):
-                with QSignalBlocker(button):
-                    button.setChecked(checked)
-            self._set_ai_activity_swatch_style(swatch, checked=checked)
 
     def _build_workspace_toolbar_overflow_button(self, mode: str) -> QToolButton:
         menu = QMenu(self)
@@ -6034,6 +6381,8 @@ class MainWindow(QMainWindow):
             "batch_rename": (self.actions.batch_rename_selection, "Rename"),
             "batch_resize": (self.actions.batch_resize_selection, "Resize"),
             "batch_convert": (self.actions.batch_convert_selection, "Convert"),
+            "share_to_phone": (self.actions.share_to_phone, "Phone Share"),
+            "share_queue": (self.actions.share_queue, "Post Queue"),
             "handoff_builder": (self.actions.handoff_builder, "Handoff"),
             "send_to_editor": (self.actions.send_to_editor_pipeline, "Editor"),
             "best_of_set": (self.actions.best_of_set_auto_assembly, "Best Of"),
@@ -6099,7 +6448,7 @@ class MainWindow(QMainWindow):
             "sort": ("Sort", self._build_sort_toolbar_menu),
             "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
             "ai_results": ("AI Results", self._build_ai_results_menu),
-            "projects": ("Projects", self._build_projects_toolbar_menu),
+            "projects": ("Collections", self._build_projects_toolbar_menu),
             "catalog": ("Catalog", self._build_catalog_toolbar_menu),
         }
         for item_id, (text, factory) in menu_factories.items():
@@ -6136,11 +6485,6 @@ class MainWindow(QMainWindow):
             raw_items = raw_layouts.get(mode)
             if isinstance(raw_items, list):
                 layouts[mode] = self._normalize_workspace_toolbar_items(mode, raw_items)
-        raw_rail_items = raw_layouts.get(self.RAIL_TOOL_LAYOUT_KEY)
-        if isinstance(raw_rail_items, list):
-            self._left_rail_items = self._normalize_rail_tool_items(raw_rail_items)
-        else:
-            self._left_rail_items = self._normalize_rail_tool_items(self._left_rail_items)
         if legacy_primary_items:
             self._merge_legacy_primary_toolbar_items(layouts, legacy_primary_items)
         self._ensure_workspace_toolbar_migrations(layouts)
@@ -6213,7 +6557,6 @@ class MainWindow(QMainWindow):
 
     def _save_workspace_toolbar_layouts(self) -> None:
         toolbars = {mode: list(items) for mode, items in self._workspace_toolbar_layouts.items()}
-        toolbars[self.RAIL_TOOL_LAYOUT_KEY] = self._normalize_rail_tool_items(self._left_rail_items)
         slots = {
             mode: list(getattr(self, "_topbar_slots", {}).get(mode, ()))
             for mode in self.WORKSPACE_TOOLBAR_DEFAULTS
@@ -6699,6 +7042,15 @@ class MainWindow(QMainWindow):
             self.topbar_action_stack.setCurrentIndex(index)
         if hasattr(self, "mode_tabs") and self.mode_tabs.currentIndex() != index:
             self.mode_tabs.setCurrentIndex(index)
+        if self._toolbar_placement == "floating":
+            # Open the dock to full width first so the edit grid has empty
+            # slots to drop into, then rebuild the cluster at that width.
+            self._position_floating_toolbar(expanded=True)
+            self.toolbar_strip.layout().activate()
+            self._rebuild_topbar_action_stack(normalized)
+            page, grid = self._inplace_edit_toolbar_widgets(normalized)
+            if page is None or grid is None:
+                return
         self._toolbar_edit_mode = True
         self._toolbar_edit_active_mode = normalized
         logger = perf_logger()
@@ -6868,9 +7220,7 @@ class MainWindow(QMainWindow):
         sections = {
             "Review": {
                 "review", "open_preview", "compare", "winner_ladder_mode", "auto_advance",
-                "burst_groups", "burst_stacks", "accept_selection", "reject_selection",
-                "keep_selection", "move_selection", "move_selection_to_new_folder",
-                "delete_selection", "restore_selection",
+                "burst_groups", "burst_stacks",
             },
             "AI": {
                 "run_ai_culling", "quick_rerank_ai_culling", "apply_ai_culling",
@@ -6880,18 +7230,27 @@ class MainWindow(QMainWindow):
                 "next_unreviewed_ai_pick", "compare_ai_group", "dispute_current_ai_result",
                 "review_ai_disagreements",
             },
-            "View": {"view", "columns", "sort", "show_hidden_folders", "zen_mode"},
-            "Filters": {"filters", "advanced_filters", "clear_filters", "save_filter_preset"},
-            "Files": {
-                "new_folder", "rename_selection", "reveal_in_explorer", "open_in_photoshop",
-                "batch_rename", "batch_resize", "batch_convert",
+            "Search & Filter": {
+                "search", "filters", "advanced_filters", "clear_filters", "save_filter_preset",
             },
-            "Projects": {"projects"},
+            "View": {"view", "columns", "sort", "show_hidden_folders", "zen_mode"},
+            "Selection": {
+                "selection_count", "accept_selection", "reject_selection", "keep_selection",
+                "move_selection", "move_selection_to_new_folder", "delete_selection",
+                "restore_selection",
+            },
+            "Files": {
+                "open_folder", "refresh_folder", "new_folder", "rename_selection",
+                "reveal_in_explorer", "open_in_photoshop", "batch_rename", "batch_resize",
+                "batch_convert",
+            },
+            "Collections": {"projects"},
             "Catalog": {"catalog"},
-            "Workflow": {"handoff_builder", "send_to_editor", "best_of_set"},
-            "Utilities": {"command_palette", "keyboard_shortcuts"},
+            "Workflow": {"share_to_phone", "share_queue", "handoff_builder", "send_to_editor", "best_of_set"},
+            "Utilities": {"command_palette", "keyboard_shortcuts", "undo"},
+            "Layout": {"divider", "address"},
         }
-        return next((section for section, items in sections.items() if item_id in items), "Toolbar")
+        return next((section for section, items in sections.items() if item_id in items), "Utilities")
 
     def _add_toolbar_item_inplace(self, item_id: str) -> None:
         mode = "ai" if (self._toolbar_edit_active_mode or self._ui_mode) == "ai" else "manual"
@@ -6950,6 +7309,15 @@ class MainWindow(QMainWindow):
                     callback=lambda selected=item_id: self._add_toolbar_item_inplace(selected),
                 )
             )
+        section_positions = {
+            section: index for index, section in enumerate(self.TOOLBAR_PICKER_SECTION_ORDER)
+        }
+        commands.sort(
+            key=lambda command: (
+                section_positions.get(command.section, len(section_positions)),
+                command.title.casefold(),
+            )
+        )
         return commands
 
     def _ensure_toolbar_item_picker_dialog(self) -> CommandPaletteDialog:
@@ -6984,6 +7352,7 @@ class MainWindow(QMainWindow):
             card_size=QSize(520, 420),
             accept_on_click=True,
             compact_rows=True,
+            group_by_section=True,
             anchor_widget=self._toolbar_edit_hud_add_button,
         )
         dialog.set_prominent(False)
@@ -7815,6 +8184,7 @@ class MainWindow(QMainWindow):
         register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
         register_action("ai.compare_group", self.actions.compare_ai_group, label="Compare Current AI Group", section="AI")
         register_action("workflow.handoff_builder", self.actions.handoff_builder, label="Deliver / Handoff Builder", section="Workflow")
+        register_action("workflow.share_to_phone", self.actions.share_to_phone, label="Share to Phone", section="Workflow")
         register_action("workflow.send_to_editor", self.actions.send_to_editor_pipeline, label="Send To Editor", section="Workflow")
         register_action("workflow.best_of", self.actions.best_of_set_auto_assembly, label="Best-of-Set Auto Assembly", section="Workflow")
         register_action("workflow.save_workspace", self.actions.save_workspace_preset, label="Save Current Workspace Preset", section="Workflow")
@@ -7908,6 +8278,9 @@ class MainWindow(QMainWindow):
             return
         self.workflow_recipe_menu.clear()
         self.workflow_recipe_menu.setTitle("Run Recipe")
+        self.workflow_recipe_menu.addAction(self.actions.share_to_phone)
+        self.workflow_recipe_menu.addAction(self.actions.share_queue)
+        self.workflow_recipe_menu.addSeparator()
         self.workflow_recipe_menu.addAction(self.actions.handoff_builder)
         self.workflow_recipe_menu.addAction(self.actions.send_to_editor_pipeline)
         self.workflow_recipe_menu.addSeparator()
@@ -7975,44 +8348,6 @@ class MainWindow(QMainWindow):
             return _memory_path_key(self._current_folder)
         return f"{self._scope_kind}:{self._scope_id or self._scope_label.casefold()}"
 
-    def _nav_sections(self):
-        return (
-            (
-                self.face_groups_header,
-                getattr(self, "face_groups_body", self.face_groups_panel),
-            ),
-            (self.projects_header, self.projects_list),
-        )
-
-    def _relayout_nav_sections(self) -> None:
-        """Stack the sections from the top in a fixed order; only space moves.
-
-        A collapsed section stays exactly where it sits in the order and shrinks
-        to its header, so the free space an expanded neighbour claims always
-        comes off the bottom of the pane. Rebuilt on every toggle because the
-        expanded body needs the layout's stretch and a collapsed one must not
-        hold on to it.
-        """
-        layout = getattr(self, "_nav_layout", None)
-        if layout is None:
-            return
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(self.left_nav_body)
-
-        for header, body in self._nav_sections():
-            layout.addWidget(header)
-            header.setVisible(True)
-            expanded = header.is_expanded()
-            body.setVisible(expanded)
-            if expanded:
-                layout.addWidget(body, 1)
-        # Soaks up whatever the bodies cannot use: they are capped at the height
-        # of their own rows, so a short list must not be stretched to fill.
-        layout.addStretch(0)
-
     def _face_groups_db_path(self):
         paths = self._aiculler_paths_for_current_folder()
         if paths is None:
@@ -8057,9 +8392,13 @@ class MainWindow(QMainWindow):
             item.setSizeHint(QSize(0, _PROJECT_ROW_PX))
             panel.addItem(item)
         if not collections:
-            empty = QListWidgetItem("No projects\nin this library")
+            # Keep the empty state close to its section header.  The previous
+            # two-line, vertically-centred row left a conspicuous blank band
+            # above the only visible text (and QListWidget elided the newline
+            # anyway, so it still appeared as a single line).
+            empty = QListWidgetItem("No collections yet.")
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
-            empty.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            empty.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             empty.setSizeHint(QSize(0, _PROJECT_EMPTY_ROW_PX))
             panel.addItem(empty)
         self._update_projects_height()
@@ -8095,7 +8434,7 @@ class MainWindow(QMainWindow):
         menu.addAction(self.actions.add_selection_to_collection)
         if collection_id:
             menu.addSeparator()
-            open_action = menu.addAction("Open project")
+            open_action = menu.addAction("Open collection")
             open_action.triggered.connect(
                 lambda _checked=False, target=collection_id: self._open_virtual_collection(target)
             )
@@ -8263,6 +8602,8 @@ class MainWindow(QMainWindow):
             add_action_command("tools.performance_logging", self.actions.performance_logging, section="Tools", subtitle=self._toggle_state_text(self._performance_logging_enabled), keywords=("diagnostics", "profiler", "performance log", "speed"))
             add_action_command("tools.open_performance_logs", self.actions.open_performance_log_folder, section="Tools", keywords=("diagnostics", "profiler", "logs", "performance"))
             add_action_command("workflow.handoff_builder", self.actions.handoff_builder, section="Workflow", keywords=("delivery", "handoff", "export workflow"))
+            add_action_command("workflow.share_to_phone", self.actions.share_to_phone, section="Workflow", keywords=("phone", "qr", "social", "share", "transfer"))
+            add_action_command("workflow.share_queue", self.actions.share_queue, section="Workflow", keywords=("posting queue", "social", "transferred", "posted"))
             add_action_command("workflow.send_to_editor", self.actions.send_to_editor_pipeline, section="Workflow", keywords=("retouch", "editor queue", "send to editor"))
             add_action_command("workflow.best_of", self.actions.best_of_set_auto_assembly, section="Workflow", keywords=("best of", "shortlist", "auto assembly"))
             add_action_command("workflow.keyboard_shortcuts", self.actions.keyboard_shortcuts, section="Workflow", keywords=("shortcuts", "keyboard mapping"))
@@ -8334,27 +8675,6 @@ class MainWindow(QMainWindow):
             add_action_command("help.advanced_help", self.actions.advanced_help, section="Help", keywords=("advanced help", "reference", "guide"))
             add_action_command("help.check_updates", self.actions.check_for_updates, section="Help", keywords=("update", "installer", "new version", "upgrade"))
             add_action_command("help.about", self.actions.about, section="Help", keywords=("about", "version"))
-
-            commands.append(
-                PaletteCommand(
-                    id="mode.manual",
-                    title="Switch To Manual Review",
-                    subtitle="Current mode" if self._ui_mode == "manual" else "",
-                    section="Workspace",
-                    keywords=("manual mode", "review mode"),
-                    callback=lambda: self._set_ui_mode("manual"),
-                )
-            )
-            commands.append(
-                PaletteCommand(
-                    id="mode.ai",
-                    title="Switch To AI Review",
-                    subtitle="Current mode" if self._ui_mode == "ai" else "",
-                    section="Workspace",
-                    keywords=("ai mode", "ai review"),
-                    callback=lambda: self._set_ui_mode("ai"),
-                )
-            )
 
             for mode, action in self.actions.appearance_actions.items():
                 label = appearance_mode_label(mode)
@@ -8857,6 +9177,7 @@ class MainWindow(QMainWindow):
         if self.workspace_docks is not None:
             self.workspace_docks.apply_theme(self._theme)
         self.grid.apply_theme(self._theme)
+        self.grid.set_backdrop_painter(self._paint_grid_backdrop if theme_has_backdrop(self._theme) else None)
         self.preview.apply_theme(self._theme)
         self._refresh_mode_tabs_width()
         self._schedule_workspace_toolbar_overflow_update("manual")
@@ -9074,9 +9395,12 @@ class MainWindow(QMainWindow):
             self._startup_launch_target = ""
         else:
             self._startup_launch_target = ""
+            if self._quick_view_mode:
+                self._show_main_window_after_quick_view_failure()
             self._load_start_folder()
             self._restore_ai_results()
-        QTimer.singleShot(0, self._maybe_prompt_for_ai_setup)
+        if not self._quick_view_mode:
+            QTimer.singleShot(0, self._maybe_prompt_for_ai_setup)
 
     def _managed_ai_model_installation(self) -> AIModelInstallation:
         runtime_installation = self._ai_runtime.model_installation
@@ -9598,7 +9922,8 @@ class MainWindow(QMainWindow):
         heading.setObjectName("aiSetupTitle")
         hero_layout.addWidget(heading)
         subheading = QLabel(
-            "Choose a runtime. Image Triage installs the matching packages and AI culling models together.",
+            "Choose a runtime. Image Triage installs the matching packages, editor masking support, "
+            "and AI culling models together.",
             hero,
         )
         subheading.setWordWrap(True)
@@ -9630,20 +9955,20 @@ class MainWindow(QMainWindow):
             detail_label.setObjectName("aiSetupMuted")
             detail_label.setWordWrap(True)
             card_layout.addWidget(detail_label)
-            download_mb = estimate_ai_runtime_download_size_mb(
-                variant, include_dino=False
-            )
-            installed_mb = estimate_ai_runtime_installed_size_mb(
-                variant, include_dino=False
-            )
+            download_mb = estimate_ai_runtime_download_size_mb(variant, include_dino=True)
+            installed_mb = estimate_ai_runtime_installed_size_mb(variant, include_dino=True)
             sizes = QLabel(
                 f"{download_mb / 1024:.1f} GB download  ·  {installed_mb / 1024:.1f} GB on disk",
                 card,
             )
             sizes.setObjectName("aiSetupProfileTitle")
             card_layout.addWidget(sizes)
-            if variant in runtime_status.installed_variants:
+            if variant in runtime_status.dino_installed_variants:
                 installed = QLabel("Installed", card)
+                installed.setObjectName("aiSetupMuted")
+                card_layout.addWidget(installed)
+            elif variant in runtime_status.installed_variants:
+                installed = QLabel("Core installed; masking support will be added", card)
                 installed.setObjectName("aiSetupMuted")
                 card_layout.addWidget(installed)
             card_layout.addStretch(1)
@@ -9717,13 +10042,13 @@ class MainWindow(QMainWindow):
         runtime_variant = (
             AI_RUNTIME_CPU_VARIANT if cpu_radio.isChecked() else AI_RUNTIME_GPU_VARIANT
         )
-        runtime_ready = (
-            runtime_variant in runtime_status.installed_variants
-        )
+        # The compact ONNX profile is sufficient for culling, but the editor's
+        # mask engines also require the shared PyTorch/Transformers bundle.
+        runtime_ready = runtime_variant in runtime_status.dino_installed_variants
         return AISetupSelection(
             install_runtime=not runtime_ready,
             runtime_variant=runtime_variant,
-            include_dino_runtime=False,
+            include_dino_runtime=True,
             download_aiculler_clip_model=clip_missing,
             download_aiculler_topiq_model=topiq_missing,
             download_aiculler_face_model=face_missing,
@@ -9925,9 +10250,31 @@ class MainWindow(QMainWindow):
         self._prompt_for_ai_model_install(automatic=False)
         return False
 
+    def _migrate_managed_ai_assets(self) -> None:
+        from .ai_model_store import migrate_ai_assets, recover_interrupted_activations
+
+        try:
+            moved = migrate_ai_assets()
+            recovered = recover_interrupted_activations()
+        except OSError as exc:
+            self.statusBar().showMessage(f"Could not move the AI cache to its new location: {exc}")
+            return
+        if recovered:
+            self.statusBar().showMessage(
+                f"Recovered {len(recovered)} interrupted AI model installation(s)."
+            )
+        elif moved:
+            self.statusBar().showMessage(
+                f"Moved {len(moved)} AI cache folder(s) to the new managed location."
+            )
+
     def _maybe_prompt_for_ai_setup(self) -> None:
         if not getattr(sys, "frozen", False):
             return
+        # Adopt a previous release's model and cache directories before asking
+        # the user to download anything. This is the one deliberate migration
+        # point; resolving a managed path never moves files by itself.
+        self._migrate_managed_ai_assets()
         runtime_missing = not self._ai_runtime_available()
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
@@ -9961,7 +10308,7 @@ class MainWindow(QMainWindow):
                 or semantic_model_missing
             ),
             default_install_runtime=runtime_missing,
-            default_include_dino_runtime=False,
+            default_include_dino_runtime=True,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
@@ -9984,7 +10331,7 @@ class MainWindow(QMainWindow):
             self._start_ai_runtime_install(
                 selection.runtime_variant,
                 force=force_runtime,
-                include_dino=False,
+                include_dino=selection.include_dino_runtime,
                 download_aiculler_clip_after=selection.download_aiculler_clip_model,
                 download_aiculler_topiq_after=selection.download_aiculler_topiq_model,
                 download_aiculler_face_after=selection.download_aiculler_face_model,
@@ -10023,7 +10370,7 @@ class MainWindow(QMainWindow):
             allow_runtime=False,
             allow_model=True,
             default_install_runtime=False,
-            default_include_dino_runtime=False,
+            default_include_dino_runtime=True,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
@@ -10049,7 +10396,7 @@ class MainWindow(QMainWindow):
             allow_runtime=True,
             allow_model=False,
             default_install_runtime=True,
-            default_include_dino_runtime=False,
+            default_include_dino_runtime=True,
             default_download_aiculler_clip_model=False,
             default_download_aiculler_topiq_model=False,
             default_download_aiculler_face_model=False,
@@ -10092,6 +10439,7 @@ class MainWindow(QMainWindow):
                 variant_choice,
             ]
             cwd = workspace_root
+        command.extend(["--install-root", str(install_root)])
         if force:
             command.append("--force")
         if not include_dino:
@@ -10170,11 +10518,12 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_face_download_after_runtime = False
         self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
-        self._set_ai_setup_busy(None)
-        QMessageBox.information(
-            self,
-            "AI Setup Complete",
-            f"The {ai_runtime_variant_label(variant_choice)} AI runtime is ready.",
+        # The installer exiting zero does not prove any capability works, and
+        # the runtime alone is not the whole selected feature set: finish the
+        # remaining model bundles, then verify what was actually installed.
+        self._start_ai_capability_bundles(
+            title="AI Setup",
+            context=f"The {ai_runtime_variant_label(variant_choice)} AI runtime was installed.",
         )
 
     def _handle_ai_runtime_install_failed(self, message: str) -> None:
@@ -10233,6 +10582,233 @@ class MainWindow(QMainWindow):
                 components.append((label, resolved, size))
                 seen.add(resolved)
         return components
+
+    # ------------------------------------------------------------------
+    # Capability readiness, repair and diagnostics
+    # ------------------------------------------------------------------
+
+    def _selected_ai_capabilities(self) -> tuple[str, ...]:
+        """Which capabilities this installation is expected to provide.
+
+        This is the same set ``Set Up AI`` installs, so verification can never
+        demand something setup never downloaded. Torch-only features drop out
+        when the user installed the compact base runtime, and DINO stays opt-in.
+        """
+        from .ai_manifest import setup_capabilities
+
+        status = self._managed_ai_runtime_status()
+        has_torch = bool(set(status.installed_variants) & set(status.dino_installed_variants))
+        return setup_capabilities(include_torch=has_torch)
+
+    def _start_ai_readiness_check(
+        self,
+        *,
+        busy_message: str,
+        title: str,
+        context: str = "",
+        deep_models: bool = False,
+        thorough: bool = False,
+    ) -> None:
+        from .ui.ai_readiness import AIReadinessTask
+
+        if self._active_ai_readiness_task is not None:
+            self.statusBar().showMessage("An AI readiness check is already running.")
+            return
+        task = AIReadinessTask(
+            capability_keys=self._selected_ai_capabilities(),
+            deep_models=deep_models,
+            use_cache=False,
+            thorough=thorough,
+        )
+        task.signals.progress.connect(
+            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.finished.connect(
+            lambda results: self._handle_ai_readiness_finished(results, title, context),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            self._handle_ai_readiness_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._active_ai_readiness_task = task
+        self._set_ai_setup_busy(busy_message)
+        self.statusBar().showMessage(busy_message)
+        self._ai_model_pool.start(task)
+
+    def _start_ai_capability_bundles(self, *, title: str, context: str = "") -> None:
+        """Download any model bundle the selected capabilities still need."""
+        from .ui.ai_readiness import AIBundleInstallTask
+
+        capabilities = self._selected_ai_capabilities()
+        if not capabilities or self._active_ai_bundle_task is not None:
+            self._verify_ai_setup(title=title, context=context)
+            return
+        task = AIBundleInstallTask(capabilities)
+        task.signals.progress.connect(
+            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.finished.connect(
+            lambda _installed: self._handle_ai_bundle_install_finished(title, context),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            lambda message: self._handle_ai_bundle_install_failed(message, title, context),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._active_ai_bundle_task = task
+        self._set_ai_setup_busy("Downloading AI models...")
+        self.statusBar().showMessage("Downloading AI models...")
+        self._ai_model_pool.start(task)
+
+    def _handle_ai_bundle_install_finished(self, title: str, context: str) -> None:
+        self._active_ai_bundle_task = None
+        self._invalidate_ai_runtime_status_cache()
+        self._verify_ai_setup(title=title, context=context)
+
+    def _handle_ai_bundle_install_failed(self, message: str, title: str, context: str) -> None:
+        self._active_ai_bundle_task = None
+        # A download failure still leaves whatever succeeded, so report the
+        # real per-capability state rather than a bare error.
+        self.statusBar().showMessage(f"Some AI models could not be downloaded: {message}")
+        self._verify_ai_setup(title=title, context=context)
+
+    def _verify_ai_setup(self, *, title: str, context: str = "") -> None:
+        self._start_ai_readiness_check(
+            busy_message="Verifying AI setup...", title=title, context=context
+        )
+
+    def _handle_ai_readiness_finished(
+        self,
+        results: dict,
+        title: str,
+        context: str,
+    ) -> None:
+        from .ui.ai_readiness import AIReadinessDialog, summarize
+
+        self._active_ai_readiness_task = None
+        self._active_ai_repair_task = None
+        self._invalidate_ai_runtime_status_cache()
+        self._refresh_ai_runtime_preferences()
+        self._set_ai_setup_busy(None)
+        self._update_action_states()
+        self._update_ai_toolbar_state()
+        self._last_ai_readiness_results = dict(results)
+        summary = summarize(results)
+        self.statusBar().showMessage(summary)
+        if results and all(health.ready for health in results.values()) and context:
+            QMessageBox.information(self, title, f"{context}\n\n{summary}")
+            return
+        AIReadinessDialog(results, parent=self, title=title).exec()
+
+    def _handle_ai_readiness_failed(self, message: str) -> None:
+        self._active_ai_readiness_task = None
+        self._set_ai_setup_busy(None)
+        self._update_action_states()
+        QMessageBox.warning(self, "AI Readiness", message)
+        self.statusBar().showMessage("The AI readiness check could not run.")
+
+    def _check_ai_readiness(self) -> None:
+        """Demo Ready: prove every selected AI feature works, right now.
+
+        This is the one place that pays for the full proof — model weights are
+        loaded and a forward pass is run for every selected capability, so it
+        can take a couple of minutes on a cold machine.
+        """
+        self._start_ai_readiness_check(
+            busy_message="Checking AI readiness (this can take a few minutes)...",
+            title="AI Readiness",
+            deep_models=True,
+            thorough=True,
+        )
+
+    def _repair_ai_components(self) -> None:
+        from .ui.ai_readiness import AIRepairTask
+
+        if self._active_ai_repair_task is not None or self._active_ai_readiness_task is not None:
+            self.statusBar().showMessage("An AI operation is already running.")
+            return
+        capabilities = self._selected_ai_capabilities()
+        if not capabilities:
+            QMessageBox.information(
+                self,
+                "Repair AI",
+                "There is no AI runtime installed yet. Run Set Up AI first.",
+            )
+            return
+        confirmed = QMessageBox.question(
+            self,
+            "Repair AI",
+            "Image Triage will verify every installed AI model and re-download "
+            "anything that is missing or damaged.\n\nThis can take several minutes.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok,
+        )
+        if confirmed != QMessageBox.StandardButton.Ok:
+            return
+        task = AIRepairTask(capabilities)
+        task.signals.progress.connect(
+            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.finished.connect(
+            self._handle_ai_repair_finished, Qt.ConnectionType.QueuedConnection
+        )
+        task.signals.failed.connect(
+            self._handle_ai_repair_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._active_ai_repair_task = task
+        self._set_ai_setup_busy("Repairing AI...")
+        self.statusBar().showMessage("Repairing AI...")
+        self._ai_model_pool.start(task)
+
+    def _handle_ai_repair_finished(self, results: dict, runtime_required: bool) -> None:
+        self._active_ai_repair_task = None
+        if runtime_required:
+            # Model repair cannot rebuild damaged packages; offer the operation
+            # that can instead of leaving the user to guess.
+            self._set_ai_setup_busy(None)
+            self._update_action_states()
+            choice = QMessageBox.question(
+                self,
+                "Repair AI",
+                "The downloaded models are now correct, but the AI runtime packages "
+                "themselves are damaged and have to be reinstalled.\n\n"
+                "Reinstall the AI runtime now?",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Ok,
+            )
+            if choice == QMessageBox.StandardButton.Ok:
+                status = self._managed_ai_runtime_status()
+                self._start_ai_runtime_install(
+                    status.preferred_variant,
+                    force=True,
+                    include_dino=bool(status.dino_installed_variants),
+                )
+                return
+        self._handle_ai_readiness_finished(results, "Repair AI", "Repair finished.")
+
+    def _handle_ai_repair_failed(self, message: str) -> None:
+        self._active_ai_repair_task = None
+        self._set_ai_setup_busy(None)
+        self._update_action_states()
+        QMessageBox.warning(self, "Repair AI", message)
+        self.statusBar().showMessage("AI repair failed.")
+
+    def _copy_ai_diagnostics(self) -> None:
+        """Put a redacted support bundle on the clipboard and save it to disk."""
+        from .ai_health import ai_health
+
+        service = ai_health()
+        results = self._last_ai_readiness_results or None
+        text = service.diagnostics_text(results)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text, mode=clipboard.Mode.Clipboard)
+        try:
+            path = service.write_diagnostics(results)
+        except OSError as exc:
+            self.statusBar().showMessage(f"Diagnostics copied, but could not be saved: {exc}")
+            return
+        self.statusBar().showMessage(f"AI diagnostics copied and saved to {path}")
 
     def _uninstall_ai_components(self) -> None:
         if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
@@ -10460,11 +11036,9 @@ class MainWindow(QMainWindow):
         self._refresh_ai_runtime_preferences()
         self._update_action_states()
         self._update_ai_toolbar_state()
-        self.statusBar().showMessage("AI setup complete.")
-        QMessageBox.information(
-            self,
-            "AI Setup Complete",
-            "The AI runtime and culling models are ready.",
+        self._start_ai_capability_bundles(
+            title="AI Setup",
+            context="The AI runtime and culling models were installed.",
         )
 
     def _handle_ai_model_download_failed(self, message: str) -> None:
@@ -10511,6 +11085,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._sync_zoom_slider_from_grid)
         if self._startup_window_state in {"maximized", "fullscreen"}:
             QTimer.singleShot(0, self._apply_startup_window_state_fixup)
+        else:
+            # The saved/default client rectangle was clamped before show. Run
+            # once more now that Windows has reported the real frame/title bar,
+            # keeping the complete window above the taskbar.
+            QTimer.singleShot(0, lambda: fit_window_to_available_geometry(self))
 
     def _clear_startup_focus(self) -> None:
         focused = self.focusWidget()
@@ -10580,6 +11159,52 @@ class MainWindow(QMainWindow):
                 return True
         self.statusBar().showMessage(f"Launch target not found: {normalized}")
         return False
+
+    def _record_and_index_for_loaded_path(self, path: str) -> tuple[int, ImageRecord] | None:
+        target_key = _memory_path_key(path)
+        if not target_key:
+            return None
+        for index, record in enumerate(self._records):
+            if record.is_folder:
+                continue
+            if any(_memory_path_key(candidate) == target_key for candidate in record.stack_paths):
+                return index, record
+        return None
+
+    def _maybe_open_startup_quick_view(self) -> bool:
+        target = self._pending_quick_view_path
+        if not self._quick_view_mode or not target or self.preview.isVisible():
+            return False
+        match = self._record_and_index_for_loaded_path(target)
+        if match is None:
+            return False
+        index, record = match
+        self._quick_view_source_overrides[record.path] = target
+        self.grid.set_current_index(index)
+        self._pending_quick_view_path = ""
+        self._open_preview(index)
+        return True
+
+    def _show_main_window_after_quick_view_failure(self) -> None:
+        if not self._quick_view_mode:
+            return
+        target = self._pending_quick_view_path
+        self._quick_view_mode = False
+        self._pending_quick_view_path = ""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if target:
+            self.statusBar().showMessage(f"Could not open {Path(target).name} in the quick viewer.")
+
+    def _finish_quick_view_attempt_if_ready(self) -> None:
+        if (
+            self._quick_view_mode
+            and self._pending_quick_view_path
+            and not self._scan_in_progress
+            and not self._records_view_chunk_active()
+        ):
+            self._show_main_window_after_quick_view_failure()
 
     def _folder_drive_root(self, folder: str | None = None) -> str:
         target = folder or self._current_folder
@@ -10750,6 +11375,54 @@ class MainWindow(QMainWindow):
         if folder:
             self._load_folder(folder)
 
+    def _handle_drive_selected(self, index) -> None:
+        if not index.isValid():
+            return
+        self.folder_tree.setRootIndex(index)
+        self.folder_tree.clearSelection()
+        self.folder_tree.setCurrentIndex(QModelIndex())
+        self.drive_list.clearSelection()
+        self._handle_tree_selection(index)
+
+    def _refresh_drive_list(self) -> None:
+        delegate = self.drive_list.itemDelegate()
+        cache = getattr(delegate, "_usage_cache", None)
+        if isinstance(cache, dict):
+            cache.clear()
+        self.drive_list.viewport().update()
+        self._drive_list_fit_timer.start()
+
+    @staticmethod
+    def _drive_root_for(folder: str) -> str:
+        drive, _rest = os.path.splitdrive(os.path.normpath(folder)) if folder else ("", "")
+        if not drive:
+            return ""
+        return drive if drive.startswith("\\") else drive + os.sep
+
+    def _sync_drive_sections(self) -> None:
+        """Root the Folders tree at the current folder's drive and open the
+        path down to it, without changing which row is selected."""
+        tree = getattr(self, "folder_tree", None)
+        if tree is None or not hasattr(self, "drive_list"):
+            return
+        folder = self._current_folder if self._scope_kind == "folder" else ""
+        drive_root = self._drive_root_for(folder or "")
+        if not drive_root:
+            return
+        root_index = self.folder_model.index(drive_root)
+        if not root_index.isValid():
+            return
+        if tree.rootIndex() != root_index:
+            tree.setRootIndex(root_index)
+        target = self.folder_model.index(folder)
+        ancestors: list[QModelIndex] = []
+        parent = target.parent() if target.isValid() else QModelIndex()
+        while parent.isValid() and parent != root_index:
+            ancestors.append(parent)
+            parent = parent.parent()
+        for ancestor in reversed(ancestors):
+            tree.expand(ancestor)
+
     def _handle_favorite_activated(self, item: QListWidgetItem) -> None:
         folder = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(folder, str) and os.path.isdir(folder):
@@ -10787,6 +11460,21 @@ class MainWindow(QMainWindow):
                     self._position_toolbar_edit_hud()
                 if event.type() == QEvent.Type.Resize and hasattr(self, "zen_hint_overlay"):
                     self._position_zen_hint_overlay()
+            if watched is getattr(self, "browser_stack", None) and event.type() in (QEvent.Type.Resize, QEvent.Type.Move):
+                self._position_floating_toolbar()
+            if watched in (
+                getattr(self, "left_nav_rail", None),
+                getattr(self, "left_nav_pages", None),
+                getattr(self, "app_top_bar", None),
+            ) and event.type() in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show, QEvent.Type.Hide):
+                self._schedule_app_bar_alignment()
+            path_combo = getattr(self, "topbar_path_combo", None)
+            if path_combo is not None and watched is path_combo.lineEdit():
+                if event.type() == QEvent.Type.FocusOut:
+                    QTimer.singleShot(120, self._maybe_end_breadcrumb_path_edit)
+                elif event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                    self._end_breadcrumb_path_edit()
+                    return True
             if hasattr(self, "topbar_action_stack") and watched is self.topbar_action_stack:
                 if event.type() == QEvent.Type.Resize:
                     self._update_topbar_overflow(self._ui_mode)
@@ -12274,17 +12962,20 @@ class MainWindow(QMainWindow):
         self._update_action_states()
 
     def _set_ui_mode(self, mode: str) -> None:
-        target_index = 1 if mode == "ai" else 0
-        if self.mode_tabs.currentIndex() != target_index:
-            self.mode_tabs.setCurrentIndex(target_index)
+        # AI Review is retired: the app always runs in manual review. Callers
+        # that still ask for "ai" (AI workflow entry points) land in manual mode.
+        if self.mode_tabs.currentIndex() != 0:
+            self.mode_tabs.setCurrentIndex(0)
             return
-        self._handle_mode_tab_changed(target_index)
-
-    def _handle_left_mode_tab_changed(self, index: int) -> None:
-        self._refresh_left_sidebar_icons()
-        self._set_ui_mode("ai" if index == 1 else "manual")
+        self._handle_mode_tab_changed(0)
 
     def _handle_mode_tab_changed(self, index: int) -> None:
+        if index != 0:
+            # Anything that still flips the hidden mode tabs to AI (toolbar
+            # editing, AI toolbar buttons) is pulled back to manual here.
+            with QSignalBlocker(self.mode_tabs):
+                self.mode_tabs.setCurrentIndex(0)
+            index = 0
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         step_start = start
@@ -12309,13 +13000,6 @@ class MainWindow(QMainWindow):
             return now
 
         self._ui_mode = target_mode
-        left_tabs = getattr(self, "left_mode_tabs", None)
-        if left_tabs is not None and left_tabs.currentIndex() != index:
-            with QSignalBlocker(left_tabs):
-                left_tabs.setCurrentIndex(index)
-        left_ai_activity_panel = getattr(self, "left_ai_activity_panel", None)
-        if left_ai_activity_panel is not None:
-            left_ai_activity_panel.setVisible(target_mode == "ai")
         self.toolbar_stack.setCurrentIndex(index)
         action_stack = getattr(self, "topbar_action_stack", None)
         if action_stack is not None:
@@ -12969,7 +13653,6 @@ class MainWindow(QMainWindow):
         for mode, action in self._ai_state_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(self._filter_query.ai_state == mode)
-        self._sync_left_ai_activity_filter_buttons()
 
     def _current_visible_record_path(self) -> str | None:
         current_record = self._record_at(self.grid.current_index())
@@ -13443,14 +14126,13 @@ class MainWindow(QMainWindow):
             self.actions.performance_logging.setChecked(self._performance_logging_enabled)
         if self._performance_logging_enabled and not perf_logger().is_writing:
             perf_logger().set_enabled(True, reason="action_state_resync")
-        with QSignalBlocker(self.actions.mode_actions["manual"]):
-            self.actions.mode_actions["manual"].setChecked(self._ui_mode == "manual")
-        with QSignalBlocker(self.actions.mode_actions["ai"]):
-            self.actions.mode_actions["ai"].setChecked(self._ui_mode == "ai")
 
         for mode, action in self.actions.appearance_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(self._appearance_mode == mode)
+        for placement, action in self.actions.toolbar_placement_actions.items():
+            with QSignalBlocker(action):
+                action.setChecked(self._toolbar_placement == placement)
         for mode, action in self.actions.sort_actions.items():
             with QSignalBlocker(action):
                 action.setChecked(self._sort_mode == mode)
@@ -13537,6 +14219,8 @@ class MainWindow(QMainWindow):
         self.actions.remove_catalog_folder.setEnabled(bool(catalog_roots))
         self.actions.refresh_catalog.setEnabled(bool(catalog_roots) and self._active_catalog_task is None)
         self.actions.rebuild_folder_catalog_cache.setEnabled(has_physical_folder and not self._scan_in_progress)
+        self.actions.share_to_phone.setEnabled(has_selection and not in_recycle_folder)
+        self.actions.share_queue.setEnabled(True)
         self.actions.handoff_builder.setEnabled(has_selection and has_physical_folder and not in_recycle_folder)
         self.actions.send_to_editor_pipeline.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.best_of_set_auto_assembly.setEnabled(bool(self._records) and (self._ai_bundle is not None or self._review_intelligence is not None))
@@ -13555,7 +14239,6 @@ class MainWindow(QMainWindow):
         self._refresh_update_button_state()
         self._refresh_tool_mode_ui()
         self._refresh_directory_navigation_buttons()
-        self._refresh_left_rail_action_buttons()
         if self._toolbar_edit_mode:
             self._set_workspace_toolbar_controls_enabled(False)
         if logger.enabled:
@@ -13698,7 +14381,7 @@ class MainWindow(QMainWindow):
     ) -> VirtualCollection | None:
         collections = self._library_store.list_collections()
         if not collections:
-            self.statusBar().showMessage("Create a virtual collection first.")
+            self.statusBar().showMessage("Create a collection first.")
             return None
         labels: list[str] = []
         label_to_id: dict[str, str] = {}
@@ -13888,7 +14571,7 @@ class MainWindow(QMainWindow):
         confirmation = QMessageBox.question(
             self,
             "Delete Collection?",
-            f"Delete the virtual collection \"{collection.name}\"?\n\nThis does not delete any files.",
+            f"Delete the collection \"{collection.name}\"?\n\nThis does not delete any files.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -14004,6 +14687,19 @@ class MainWindow(QMainWindow):
             self._refresh_workflow_recipe_menu()
         result = dialog.result_data()
         self._run_workflow_recipe(result.recipe, destination_root=result.destination_root, records=records)
+
+    def _open_share_to_phone(self, _checked: bool = False) -> None:
+        records = self._selected_records_for_workflow()
+        sources = tuple(self._workflow_export_sources_for_records(records))
+        if not sources:
+            self.statusBar().showMessage("Select one or more exportable images before sharing to a phone.")
+            return
+        dialog = ShareToPhoneDialog(sources, parent=self)
+        self._exec_dialog_with_geometry(dialog, "share_to_phone")
+
+    def _open_share_queue(self, _checked: bool = False) -> None:
+        dialog = ShareToPhoneDialog((), show_queue=True, parent=self)
+        self._exec_dialog_with_geometry(dialog, "share_to_phone")
 
     def _open_send_to_editor_pipeline(self) -> None:
         recipe = next((item for item in built_in_workflow_recipes() if item.key == "send_to_editor"), None)
@@ -17413,6 +18109,25 @@ class MainWindow(QMainWindow):
             topbar_up.setEnabled(bool(parent_folder))
             topbar_up.setToolTip(up_tooltip)
 
+    def _adopt_menu_bar_shortcuts(self) -> None:
+        pending = list(self.menuBar().actions())
+        seen: set[int] = set()
+        while pending:
+            action = pending.pop()
+            if id(action) in seen:
+                continue
+            seen.add(id(action))
+            try:
+                submenu = action.menu()
+                if submenu is not None:
+                    pending.extend(submenu.actions())
+                elif not action.isSeparator() and action.shortcuts() and action not in QWidget.actions(self):
+                    self.addAction(action)
+            except RuntimeError:
+                # Rebuilt-on-open menus (recent folders, presets) can already
+                # have dropped their entries; none of those carry shortcuts.
+                continue
+
     def _show_main_menu_popup(self, anchor: QWidget) -> None:
         """Pop up the application's menu-bar menus from the top-bar ☰ button."""
         menu = QMenu(self)
@@ -17509,6 +18224,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Recent folder no longer exists.")
 
     def _refresh_recent_folder_combos(self) -> None:
+        self._refresh_breadcrumb()
         current_text = self._scope_display_label()
         current_folder = self._current_folder if self._scope_kind == "folder" and self._current_folder else ""
         for combo in (
@@ -17911,6 +18627,13 @@ class MainWindow(QMainWindow):
         self._resume_background_indexing()
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
+        if self._quick_view_mode:
+            self._quick_view_mode = False
+            self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+            return
         if not self._preview_navigation_dirty:
             return
         self._preview_navigation_dirty = False
@@ -17963,7 +18686,7 @@ class MainWindow(QMainWindow):
         if record is None:
             return None
         annotation = self._annotations.get(record.path, SessionAnnotation())
-        displayed_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else self._preview_source_path(record)
+        displayed_path = self._displayed_preview_source_path(index, record)
         edited_candidates = self._ordered_edited_candidates(record, displayed_path)
         edited_path = edited_candidates[0] if edited_candidates else ""
         return PreviewEntry(
@@ -19626,6 +20349,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
             if self._folder_watch_refresh_pending:
                 self._folder_watch_refresh_timer.start(250)
+            self._maybe_open_startup_quick_view()
+            self._finish_quick_view_attempt_if_ready()
             self._pending_folder_focus_path = ""
             self._maybe_start_semantic_index(records)
             if logger.enabled:
@@ -19648,6 +20373,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Refreshed {self._current_folder}")
         if self._folder_watch_refresh_pending:
             self._folder_watch_refresh_timer.start(250)
+        self._finish_quick_view_attempt_if_ready()
         self._pending_folder_focus_path = ""
         self._maybe_start_semantic_index(records)
         if logger.enabled:
@@ -19728,6 +20454,7 @@ class MainWindow(QMainWindow):
         self._catalog_load_detail = message
         self._refresh_catalog_status_indicator()
         self.statusBar().showMessage(f"Could not scan {self._current_folder}: {message}")
+        self._show_main_window_after_quick_view_failure()
         if self._folder_watch_refresh_pending:
             self._folder_watch_refresh_timer.start(450)
 
@@ -21641,7 +22368,6 @@ class MainWindow(QMainWindow):
                 self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
             self._refresh_ai_state()
         if same_folder:
-            self.mode_tabs.setCurrentIndex(1)
             self.statusBar().showMessage(
                 f"AI review complete. Loaded {Path(html_report_path).name}"
             )
@@ -21774,18 +22500,6 @@ class MainWindow(QMainWindow):
             if source_path:
                 self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
             self._refresh_ai_state()
-            if switch_to_ai_tab:
-                if self.mode_tabs.currentIndex() != 1:
-                    self.mode_tabs.setCurrentIndex(1)
-                else:
-                    # Already on the AI tab: setCurrentIndex(1) is a no-op so
-                    # _handle_mode_tab_changed doesn't fire and the freshly
-                    # loaded bundle never gets surfaced through
-                    # set_show_ai_annotations(True). Push it through ourselves
-                    # so AI Pick / confidence-bucket badges actually paint.
-                    self._ui_mode = "ai"
-                    self.grid.set_show_ai_annotations(True)
-                    self.grid.viewport().update()
         if success_message:
             self.statusBar().showMessage(success_message)
 
@@ -22973,6 +23687,8 @@ class MainWindow(QMainWindow):
             category_info=category_info,
             category_profile=category_profile,
         )
+        if current_record is not None and index is not None and index >= 0:
+            self.inspector_panel.set_position(*self.grid.visible_position(index))
         if logger.enabled:
             logger.duration(
                 "window.update_inspector_context",
@@ -23280,20 +23996,20 @@ class MainWindow(QMainWindow):
         self.summary_unreviewed.setText(f"Unreviewed: {remaining}")
         self._update_ai_summary()
 
+        # The breadcrumb names the folder, so the status line only counts.
+        gap = " "
+        reviewed = max(0, count - remaining)
+        tally = f"{count:,} photos{gap}{reviewed:,} reviewed · {accepted:,} winners · {rejected:,} rejected"
         if count == 0:
-            self.statusBar().showMessage(f"{scope_label} | 0 images | {remaining} unreviewed")
+            self.statusBar().showMessage("0 photos")
             return
 
         selected_indexes = self.grid.selected_indexes()
         if len(selected_indexes) > 1:
-            focused = max(0, index) + 1
-            self.statusBar().showMessage(
-                f"{scope_label} | {count} images | {len(selected_indexes)} selected | focus {focused}/{count} | {remaining} unreviewed"
-            )
+            self.statusBar().showMessage(f"{tally}{gap}{len(selected_indexes):,} selected")
             return
 
-        selected = max(0, index) + 1
-        message = f"{scope_label} | {count} images | {selected}/{count} selected | {remaining} unreviewed"
+        message = tally
         record = self._record_at(index)
         preferred_path = self.grid.displayed_variant_path(index) if record and record.has_variant_stack else ""
         ai_result = self._ai_result_for_record(record, preferred_path=preferred_path)
@@ -23363,14 +24079,14 @@ class MainWindow(QMainWindow):
                 4. **Preview** — `Space` or `Enter`.
                 5. **Run batch actions** — right-click or the **Tools** menu for rename, resize, convert, and archive.
                 6. **Organize by drag and drop** — drop onto folders or favorites; hold `Ctrl` to copy instead of move.
-                7. **Toggle burst views** — **`View > Burst Groups`** tags likely burst sequences, or **`View > Burst Stacks`** opens a stacked burst navigator in the main viewer.
-                8. **Explore AI** — open **`Help > AI Guide`** for AI review, culling, and training.
+                7. **Toggle burst views** — **`View > Review View > Smart Groups`** marks likely burst sequences, while **Smart Stacks** collapses similar frames behind one representative.
+                8. **Explore AI** — open **`Help > AI Guide`** for scoring, review, and applying clear decisions.
 
                 ## Need more?
 
                 - **`Help > AI Guide`** — the full AI workflow.
                 - **`Help > Advanced Help`** — broader controls and shortcuts.
-                - The **`?`** button in the AI Workflow Center, Settings, Library, Catalog, Collections, and Workflow dialogs — focused, step-by-step help.
+                - Help or **`?`** buttons in the AI Workflow Center, Settings, Catalog, Collections, and Workflow dialogs — focused, step-by-step help.
                 """
             ),
         )
@@ -23433,7 +24149,7 @@ class MainWindow(QMainWindow):
                 5. Press **`Ctrl+Alt+P`** to jump to the next AI top pick.
                 6. Press **`Ctrl+Alt+G`** to compare the current AI group.
                 7. Choose **`AI > Run And Apply > Apply AI Decisions`** to auto-file only the clearest winners and rejects.
-                8. Later, use **`AI > Load Saved AI For Folder`** to reopen cached results without rerunning the model.
+                8. Later, use **Load Saved** on the AI task rail, or find **Load Saved AI For Folder** in the Command Palette, to reopen cached results without rerunning the models.
 
                 ## AI review tags
 
@@ -23486,8 +24202,8 @@ class MainWindow(QMainWindow):
                 - Drag on empty space to marquee-select, like File Explorer
                 - Drag selected thumbnails onto folders or favorites to move them
                 - Hold `Ctrl` while dragging to copy instead of move
-                - **`View > Burst Groups`** highlights likely capture bursts in the grid as a toggle, not a permanent regrouping
-                - **`View > Burst Stacks`** adds stacked burst visuals plus burst cycling in the main viewer with `[` and `]`
+                - **`View > Review View > Smart Groups`** highlights likely capture bursts in the grid as a toggle, not a permanent regrouping
+                - **`View > Review View > Smart Stacks`** adds stacked burst visuals plus burst cycling in the main viewer with `[` and `]`
 
                 ## Core review
 
@@ -23498,7 +24214,6 @@ class MainWindow(QMainWindow):
                 - `M` moves to a folder
                 - `Delete` trashes
                 - `Ctrl+Z` undoes the last change
-                - `0`-`5` rates
                 - `T` tags
                 - `C` toggles compare
 
@@ -23508,8 +24223,8 @@ class MainWindow(QMainWindow):
                 - Batch tools use the checkbox mode in the grid
                 - Resize and Convert are also available from the image right-click menu
                 - RAW files are skipped for Resize and Convert
-                - The **`AI > Adapter Training`** menu holds the label review, training, evaluation, and ranking flow
-                - Long AI tasks show centered progress dialogs, and **Stats For Nerds** opens the live training log
+                - The **AI Workflow Center** shows setup, Cull & Score, result review, and applying decisions in order
+                - Long AI tasks show progress and a detailed activity log when that option is enabled in Settings
 
                 ## Preview
 
@@ -23526,10 +24241,10 @@ class MainWindow(QMainWindow):
 
                 - Right-click folders or favorites to create, rename, move, delete, or favorite them
                 - Recent destinations appear in the copy and move menus for faster sorting
-                - The Library panel **`?`** explains favorites, virtual collections, and catalog search
+                - The Library panel's bottom **Help** button explains favorites, collections, and catalog search
                 - Workflow dialogs include their own **`?`** help for recipes, content mode, transfer mode, and saved recipes
-                - Settings includes a **`?`** help button for the AI, DINO, and pHash sections
-                - **AI Review** lets you run AI review, apply AI culling, or load saved AI results for the current folder
+                - Settings includes a **Settings Guide** button for General, Interface, folders, AI Culling, Duplicates, and Shortcuts
+                - **AI Review** lets you inspect results, apply clear decisions, or load saved results for the current folder
                 - **`Help > AI Guide`** is the dedicated walkthrough for the AI side of the app
                 - `Ctrl+Alt+P` jumps to the next AI top pick
                 - `Ctrl+Alt+G` compares the current AI group
@@ -23746,6 +24461,7 @@ class MainWindow(QMainWindow):
             loupe_card_style=self._effective_loupe_card_style,
             allowed_card_styles=self._allowed_card_styles(),
             ui_gamma=self._ui_gamma,
+            interface_size=self._interface_size,
             free_smooth_scroll_enabled=self._free_smooth_scroll_enabled,
             preview_preload_batch_size=self._preview_preload_batch_size,
             show_hidden_folders=self._show_hidden_folders,
@@ -23776,6 +24492,7 @@ class MainWindow(QMainWindow):
             reset_layout_callback=self._reset_window_layout,
             shortcut_overrides=load_shortcut_overrides(),
             initial_section=initial_section,
+            display_profile=self._display_profile or STANDARD_DISPLAY,
             parent=self,
         )
         if self._exec_dialog_with_geometry(dialog, "settings_compact") != dialog.DialogCode.Accepted:
@@ -23797,6 +24514,8 @@ class MainWindow(QMainWindow):
         card_style_changed = self._normalize_loupe_card_style(result.loupe_card_style) != self._effective_loupe_card_style
         new_ui_gamma = normalize_ui_gamma(result.ui_gamma)
         ui_gamma_changed = abs(new_ui_gamma - self._ui_gamma) > 1e-3
+        new_interface_size = normalize_display_profile_preference(result.interface_size)
+        interface_size_changed = new_interface_size != self._interface_size
         free_scroll_changed = result.free_smooth_scroll_enabled != self._free_smooth_scroll_enabled
         new_preview_preload_batch_size = self._normalize_preview_preload_batch_size(result.preview_preload_batch_size)
         preview_preload_changed = new_preview_preload_batch_size != self._preview_preload_batch_size
@@ -23825,6 +24544,7 @@ class MainWindow(QMainWindow):
         if card_style_changed:
             self._loupe_card_style = self._normalize_loupe_card_style(result.loupe_card_style)
         self._ui_gamma = new_ui_gamma
+        self._interface_size = new_interface_size
         self._free_smooth_scroll_enabled = result.free_smooth_scroll_enabled
         self._preview_preload_batch_size = new_preview_preload_batch_size
         self._show_hidden_folders = result.show_hidden_folders
@@ -23865,6 +24585,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.DELETE_MODE_KEY, self._delete_mode.value)
         self._settings.setValue(self.LOUPE_CARD_STYLE_KEY, self._loupe_card_style)
         self._settings.setValue(self.UI_GAMMA_KEY, self._ui_gamma)
+        self._settings.setValue(self.INTERFACE_SIZE_KEY, self._interface_size)
         self._settings.setValue(self.FREE_SMOOTH_SCROLL_KEY, self._free_smooth_scroll_enabled)
         self._settings.setValue(self.PREVIEW_PRELOAD_BATCH_SIZE_KEY, self._preview_preload_batch_size)
         self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
@@ -23898,6 +24619,9 @@ class MainWindow(QMainWindow):
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         if ui_gamma_changed:
             self._apply_appearance()
+        if interface_size_changed:
+            self._display_profile = None
+            self._apply_display_profile()
         self.folder_model.setFilter(self._folder_tree_filter())
         self.folder_tree.set_single_drive_expansion_enabled(
             self._single_drive_expansion_enabled
@@ -23935,6 +24659,14 @@ class MainWindow(QMainWindow):
                 "gallery": "Gallery",
             }.get(self._loupe_card_style, self._loupe_card_style)
             self.statusBar().showMessage(f"Card style set to {label}")
+        elif interface_size_changed:
+            label = {
+                "automatic": "Automatic",
+                "compact": "Compact",
+                "standard": "Comfortable",
+                "spacious": "Large",
+            }.get(self._interface_size, self._interface_size)
+            self.statusBar().showMessage(f"Interface size set to {label}")
         elif free_scroll_changed:
             state = "enabled" if self._free_smooth_scroll_enabled else "disabled"
             self.statusBar().showMessage(f"Free smooth scrolling {state}")
@@ -24696,12 +25428,20 @@ class MainWindow(QMainWindow):
     def _preview_source_path(self, record: ImageRecord) -> str:
         return record.path
 
+    def _displayed_preview_source_path(self, index: int, record: ImageRecord) -> str:
+        override = self._quick_view_source_overrides.get(record.path, "")
+        if override:
+            return override
+        if record.has_variant_stack:
+            return self.grid.displayed_variant_path(index)
+        return self._preview_source_path(record)
+
     def _preview_entries_for(self, index: int) -> tuple[list[PreviewEntry], int, int]:
         record = self._record_at(index)
         if record is None:
             return [], self._compare_count, index
         annotation = self._annotations.get(record.path, SessionAnnotation())
-        displayed_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else self._preview_source_path(record)
+        displayed_path = self._displayed_preview_source_path(index, record)
         edited_candidates = self._ordered_edited_candidates(record, displayed_path)
         edited_path = edited_candidates[0] if edited_candidates else ""
         if not self._compare_enabled:
@@ -24732,7 +25472,7 @@ class MainWindow(QMainWindow):
         entries: list[PreviewEntry] = []
         for item_index, record in enumerate(self._records[start:end], start=start):
             annotation = self._annotations.get(record.path, SessionAnnotation())
-            displayed_path = self.grid.displayed_variant_path(item_index) if record.has_variant_stack else self._preview_source_path(record)
+            displayed_path = self._displayed_preview_source_path(item_index, record)
             edited_candidates = self._ordered_edited_candidates(record, displayed_path)
             edited_path = edited_candidates[0] if edited_candidates else ""
             entries.append(
@@ -25852,6 +26592,7 @@ class MainWindow(QMainWindow):
         if self._pending_folder_scroll_value is not None:
             QTimer.singleShot(0, self._restore_pending_folder_scroll)
         step_start = log_step("records_view.finalize.pending_scroll", step_start, has_pending_scroll=self._pending_folder_scroll_value is not None)
+        self._maybe_open_startup_quick_view()
         if logger.enabled:
             logger.duration(
                 "records_view.finalize",
@@ -25941,6 +26682,7 @@ class MainWindow(QMainWindow):
             self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=True)
         elif post_load_enrichment == "start":
             self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=False)
+        self._finish_quick_view_attempt_if_ready()
         if logger.enabled:
             logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=True)
 

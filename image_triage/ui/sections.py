@@ -121,9 +121,11 @@ class SectionHeader(QWidget):
         self.chevron.set_expanded(self._expanded)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        # The trailing control keeps its own clicks (e.g. "new project").
-        if self._trailing is not None and self._trailing.geometry().contains(
-            event.position().toPoint()
+        # The trailing control keeps its own clicks (e.g. "new collection").
+        if (
+            self._trailing is not None
+            and self._trailing.isVisible()
+            and self._trailing.geometry().contains(event.position().toPoint())
         ):
             super().mousePressEvent(event)
             return

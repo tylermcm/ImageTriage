@@ -143,5 +143,69 @@ class AIPythonRunnerTests(unittest.TestCase):
         self.assertEqual(recorded_calls, [(321, 654)])
 
 
+
+class ManagedRuntimeHardFailTests(unittest.TestCase):
+    """A managed-runtime failure must abort, not fall through to other packages."""
+
+    def test_a_resolver_failure_raises_instead_of_returning_empty(self) -> None:
+        runner = _load_runner_module()
+        # The resolver is imported inside the function, so patch it at source.
+        with patch(
+            "image_triage.ai_runtime_packages.resolve_ai_runtime_site_packages",
+            side_effect=RuntimeError("metadata unreadable"),
+        ):
+            with patch.dict(
+                os.environ, {"IMAGE_TRIAGE_AI_PROFILE": "gpu-abc"}, clear=False
+            ):
+                with self.assertRaises(runner.ManagedRuntimeError):
+                    runner._cached_runtime_site_packages(device="cuda")
+
+    def test_an_absent_profile_aborts_when_the_parent_pinned_one(self) -> None:
+        runner = _load_runner_module()
+        with patch.object(runner, "_managed_runtime_required", return_value=True), patch(
+            "image_triage.ai_runtime_packages.resolve_ai_runtime_site_packages",
+            return_value=(),
+        ):
+            with self.assertRaises(runner.ManagedRuntimeError):
+                runner._cached_runtime_site_packages(device="cpu")
+
+    def test_a_bare_invocation_stays_permissive(self) -> None:
+        # A script that needs no third-party AI package may still run.
+        runner = _load_runner_module()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("IMAGE_TRIAGE_AI_PROFILE", None)
+            with patch(
+                "image_triage.ai_runtime_packages.resolve_ai_runtime_site_packages",
+                return_value=(),
+            ):
+                self.assertEqual(runner._cached_runtime_site_packages(device="cpu"), ())
+
+    def test_bundled_packages_may_not_shadow_the_managed_runtime(self) -> None:
+        runner = _load_runner_module()
+        original = list(sys.path)
+        try:
+            managed = Path("C:/managed/site-packages")
+            bundled = Path("C:/app/ai_site_packages")
+            # Bundled ahead of managed is the ordering that must be rejected.
+            sys.path.insert(0, str(managed))
+            sys.path.insert(0, str(bundled))
+            with self.assertRaises(RuntimeError):
+                runner._assert_runtime_precedence([managed], [bundled])
+        finally:
+            sys.path[:] = original
+
+    def test_the_parent_pinned_device_wins_over_the_command_line(self) -> None:
+        runner = _load_runner_module()
+        original_argv = list(sys.argv)
+        try:
+            sys.argv = ["runner", "script.py", "--device", "cpu"]
+            with patch.dict(
+                os.environ, {"IMAGE_TRIAGE_AI_SELECTED_DEVICE": "cuda:1"}, clear=False
+            ):
+                self.assertEqual(runner._requested_device_from_argv(), "cuda:1")
+        finally:
+            sys.argv = original_argv
+
+
 if __name__ == "__main__":
     unittest.main()
