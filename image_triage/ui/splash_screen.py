@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
-
+from ..fonts import ui_font
 
 _BACKGROUND_PATH = Path(__file__).resolve().parent / "assets" / "splash_background-v7.png"
 _BACKGROUND_ASPECT = 1633 / 963
@@ -89,7 +89,7 @@ class StartupSplash(QWidget):
         bar_y = 849 * scale
         bar_height = max(8.0, 25 * scale)
 
-        status_font = QFont("Segoe UI")
+        status_font = ui_font()
         status_font.setPixelSize(max(12, round(25 * scale)))
         painter.setFont(status_font)
         painter.setPen(QColor("#b9c9e2"))
@@ -120,7 +120,7 @@ class StartupSplash(QWidget):
             painter.drawRoundedRect(fill, inner.height() / 2, inner.height() / 2)
 
         if self.version_text:
-            version_font = QFont("Segoe UI")
+            version_font = ui_font()
             version_font.setPixelSize(max(11, round(20 * scale)))
             painter.setFont(version_font)
             painter.setPen(QColor("#9caac2"))

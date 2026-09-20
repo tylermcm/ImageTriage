@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
+from ..fonts import UI_FONT_STACK
+
 
 CHECKBOX_CHECK_ASSET = (Path(__file__).resolve().parent / "assets" / "checkbox_check.png").as_posix()
 
@@ -120,11 +122,11 @@ def _indigo_theme() -> ThemePalette:
         text_secondary=ColorToken(190, 194, 206),
         text_muted=ColorToken(141, 147, 163),
         text_disabled=ColorToken(85, 91, 106),
-        accent=ColorToken(139, 123, 255),
-        accent_hover=ColorToken(164, 152, 255),
-        accent_soft=ColorToken(139, 123, 255, 46),
-        selection_fill=ColorToken(139, 123, 255, 46),
-        selection_outline=ColorToken(160, 148, 255),
+        accent=ColorToken(76, 141, 255),
+        accent_hover=ColorToken(111, 164, 255),
+        accent_soft=ColorToken(76, 141, 255, 46),
+        selection_fill=ColorToken(76, 141, 255, 46),
+        selection_outline=ColorToken(120, 170, 255),
         success=ColorToken(255, 107, 154),
         success_soft=ColorToken(92, 34, 56, 222),
         warning=ColorToken(230, 180, 80),
@@ -136,7 +138,7 @@ def _indigo_theme() -> ThemePalette:
         badge_text=ColorToken(244, 246, 250),
         backdrop_glow_primary=ColorToken(29, 26, 58),
         backdrop_glow_secondary=ColorToken(15, 42, 51),
-        meter_start=ColorToken(108, 92, 255),
+        meter_start=ColorToken(76, 141, 255),
         meter_end=ColorToken(79, 209, 197),
     )
 
@@ -550,6 +552,9 @@ def build_app_palette(theme: ThemePalette) -> QPalette:
 def build_app_stylesheet(theme: ThemePalette) -> str:
     metrics = WORKSPACE_METRICS
     return f"""
+        QWidget {{
+            font-family: {UI_FONT_STACK};
+        }}
         QMainWindow {{
             background-color: {theme.window_bg.css};
             color: {theme.text_primary.css};
@@ -1074,7 +1079,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border-radius: {metrics.radius_7}px;
             padding: 0px;
             color: {theme.text_secondary.css};
-            font-family: "Segoe UI Symbol", "Segoe UI";
+            font-family: "Segoe UI Symbol", {UI_FONT_STACK};
         }}
         QToolButton#appTopBarButton:hover {{
             background-color: {theme.input_hover_bg.css};
@@ -1285,7 +1290,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#libraryPanelContent QTreeView,
         QWidget#libraryPanelContent QTabBar,
         QWidget#libraryPanelContent QToolButton {{
-            font-family: "Segoe UI", "Segoe UI Variable Text";
+            font-family: {UI_FONT_STACK};
             letter-spacing: 0px;
         }}
         QWidget#leftNavRail {{
@@ -1778,7 +1783,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#toolbarEditHudHint {{
             color: {theme.text_primary.css};
-            font-family: "Segoe UI", "Segoe UI Variable Text";
+            font-family: {UI_FONT_STACK};
             font-size: 13px;
             font-weight: 700;
             padding-right: 8px;
@@ -1922,7 +1927,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#paneTitle {{
             color: {theme.text_primary.css};
-            font-family: "Segoe UI Variable Display", "Segoe UI";
+            font-family: "Segoe UI Variable Display", {UI_FONT_STACK};
             font-size: 13px;
             font-weight: 750;
             letter-spacing: 0px;
@@ -1939,7 +1944,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border: 1px solid transparent;
             border-radius: {metrics.radius_7}px;
             color: {theme.text_secondary.css};
-            font-family: "Segoe UI Symbol", "Segoe UI Variable Display", "Segoe UI";
+            font-family: "Segoe UI Symbol", "Segoe UI Variable Display", {UI_FONT_STACK};
             font-size: 13px;
             font-weight: 600;
             padding: 0px;
@@ -2457,7 +2462,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#commandPaletteTitle {{
             color: {theme.text_primary.css};
-            font-family: "Segoe UI", "Segoe UI Variable Text";
+            font-family: {UI_FONT_STACK};
             font-size: 14px;
             font-weight: 600;
             min-height: 20px;
@@ -2762,6 +2767,12 @@ def _flat_shell_rules(theme: ThemePalette) -> str:
         QSplitter#workspaceSplitter::handle {{
             background-color: transparent;
         }}
+        QSplitter#workspaceSplitter::handle:horizontal {{
+            width: 1px;
+        }}
+        QSplitter#workspaceSplitter::handle:vertical {{
+            height: 1px;
+        }}
         QTreeView#driveList, QTreeView#folderTree {{
             background-color: transparent;
             border: none;
@@ -2868,6 +2879,22 @@ def _app_bar_rules(theme: ThemePalette) -> str:
             color: {theme.text_muted.css};
             font-size: 10px;
             padding: 0px 6px;
+        }}
+        QToolButton#appWindowButton, QToolButton#appWindowCloseButton {{
+            background-color: transparent;
+            border: none;
+            border-radius: 0px;
+            color: {theme.text_secondary.css};
+            font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+            font-size: 10px;
+        }}
+        QToolButton#appWindowButton:hover {{
+            background-color: {theme.text_primary.with_alpha(20).css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#appWindowCloseButton:hover {{
+            background-color: #c42b1c;
+            color: #ffffff;
         }}
         QToolButton#appSearchKeyHint:hover {{
             color: {theme.text_primary.css};

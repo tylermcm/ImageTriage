@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from image_triage.fonts import UI_FONT_STACK
 from image_triage.ui.theme import (
     WORKSPACE_METRICS,
     AppearanceMode,
@@ -22,7 +23,7 @@ def test_library_sidebar_uses_the_application_font_stack() -> None:
 
     assert "QWidget#libraryPanelContent QTreeView" in stylesheet
     assert "QWidget#libraryPanelContent QTabBar" in stylesheet
-    assert 'font-family: "Segoe UI", "Segoe UI Variable Text";' in stylesheet
+    assert f"font-family: {UI_FONT_STACK};" in stylesheet
 
 
 def test_indigo_is_the_default_application_palette() -> None:

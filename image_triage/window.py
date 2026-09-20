@@ -10,6 +10,7 @@ to hold the reusable backend logic whenever a behavior can be isolated cleanly.
 """
 
 import ctypes
+import ctypes.wintypes
 import csv
 import json
 import os
@@ -376,16 +377,22 @@ from .ui.display_metrics import (
 )
 from .ui.backdrop import paint_backdrop, theme_has_backdrop
 from .ui.breadcrumb import BreadcrumbBar
+from .ui import layout_ratios
 from .ui.nav_rail import ICON_PX as NAV_RAIL_ICON_PX, NavRail
 from .ui.sections import SectionHeader
 from .ui.face_groups import FaceGroupsPanel, face_group_photo_paths, load_face_groups
 from .ui.help_topics import library_help_pages, settings_help_pages
 from .ui.menus import add_ai_results_actions
 from .ui.prototype_style import (
+    NAV_ICON_ASSETS,
+    TOOL_ICON_ASSETS,
     FolderTreeView,
     folder_icon_pixmap,
+    library_icon_pixmap,
+    nav_icon_pixmap,
     sidebar_people_icon_pixmap,
     sidebar_projects_icon_pixmap,
+    tool_icon_pixmap,
 )
 from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
 
@@ -2742,10 +2749,23 @@ class MainWindow(QMainWindow):
     LEFT_NAV_PAGE_KEY = "ui/left_nav_page"
     PINNED_TOOLS_KEY = "ui/pinned_tools"
     DEFAULT_PINNED_TOOLS = ("command_palette", "open_in_photoshop", "compare", "keyboard_shortcuts")
+    # Share of its box each rail painter actually inks, measured off the drawn
+    # pixmaps. The design's glyphs fill theirs, so the rail divides by these to
+    # land every mark at the same visual size.
+    NAV_ICON_INK_FILL = {
+        "folder": 0.63,
+        "library": 0.91,
+        "faces": 0.71,
+        "people": 0.71,
+        "collections": 0.75,
+    }
+    # A Fluent glyph inks about half the 64px pixmap it is centred in, so the
+    # pinned tools ask for a correspondingly larger box to reach the same mark.
+    FLUENT_ICON_INK_FILL = 0.53
     # key, label, icon id (see _left_nav_icon), tooltip. Order is the rail's top-to-bottom order.
     LEFT_NAV_DESTINATIONS = (
-        ("folders", "Library", "folder", "Drives and folders"),
-        ("faces", "Faces", "people", "Face groups"),
+        ("folders", "Library", "library", "Drives and folders"),
+        ("faces", "Faces", "faces", "Face groups"),
         ("collections", "Collections", "collections", "Collections"),
     )
     WORKSPACE_TOOLBAR_DEFAULTS = {
@@ -3112,6 +3132,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self, launch_target: str | None = None, *, quick_view: bool = False) -> None:
         super().__init__()
+        # Windows: our app bar is the title bar (see nativeEvent), so drop the
+        # system caption but keep a resizable, snappable frame.
+        self._custom_frame = os.name == "nt"
+        if self._custom_frame:
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
         self._startup_launch_target = normalize_filesystem_path(launch_target) if launch_target else ""
         self._quick_view_mode = bool(quick_view and self._startup_launch_target)
         self._pending_quick_view_path = self._startup_launch_target if self._quick_view_mode else ""
@@ -3889,6 +3914,7 @@ class MainWindow(QMainWindow):
         for key, label, glyph, tooltip in self.LEFT_NAV_DESTINATIONS:
             self.left_nav_rail.add_destination(key, label, glyph, tooltip=tooltip)
         self.left_nav_rail.set_icon_factory(self._left_nav_icon)
+        self._apply_left_rail_label_colors()
         self.left_nav_rail.current_changed.connect(self._show_left_nav_page)
         saved_page = str(self._settings.value(self.LEFT_NAV_PAGE_KEY, "folders") or "folders")
         self._show_left_nav_page(saved_page if saved_page in self._left_nav_page_widgets else "folders")
@@ -4165,6 +4191,7 @@ class MainWindow(QMainWindow):
         self._apply_workspace_bar_position()
 
         self.workspace_docks = build_workspace_docks(self, self.left_panel, self.inspector_panel, center_column)
+        self.workspace_docks.on_user_resized_panels = self._remember_user_pane_widths
         self.inspector_panel.popout_requested.connect(lambda: self.workspace_docks.pop_out_panel("inspector"))
         self.inspector_panel.swap_side_requested.connect(self.workspace_docks.swap_sides)
         self.inspector_panel.close_requested.connect(lambda: self.workspace_docks.hide_panel("inspector"))
@@ -4801,6 +4828,23 @@ class MainWindow(QMainWindow):
         self.app_settings_button.clicked.connect(lambda _checked=False: self._show_settings())
         self._left_settings_buttons.append((self.app_settings_button, 18))
         layout.addWidget(self.app_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._window_control_buttons: dict[str, QToolButton] = {}
+        if getattr(self, "_custom_frame", False):
+            layout.addSpacing(6)
+            for key, glyph, tooltip, handler in (
+                ("minimize", "\uE921", "Minimize", self.showMinimized),
+                ("maximize", "\uE922", "Maximize", self._toggle_maximized),
+                ("close", "\uE8BB", "Close", self.close),
+            ):
+                control = QToolButton(bar)
+                control.setObjectName("appWindowCloseButton" if key == "close" else "appWindowButton")
+                control.setText(glyph)
+                control.setToolTip(tooltip)
+                control.setAutoRaise(True)
+                control.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                control.clicked.connect(lambda _checked=False, target=handler: target())
+                self._window_control_buttons[key] = control
+                layout.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.topbar_action_stack = self._build_topbar_action_stack()
         self._configure_toolbar_context_target(self.topbar_action_stack, "workspace")
@@ -4897,6 +4941,263 @@ class MainWindow(QMainWindow):
     # Breadcrumb offset from the library pane's edge so the first segment's
     # text (after its button padding) lines up with the pane's section labels.
     APP_BREADCRUMB_INSET = -4
+
+    # -- window frame (Windows) -------------------------------------------
+
+    WINDOW_RESIZE_BORDER = 6
+
+    def _toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _sync_window_control_glyphs(self) -> None:
+        control = getattr(self, "_window_control_buttons", {}).get("maximize")
+        if control is None:
+            return
+        maximized = self.isMaximized()
+        control.setText("\uE923" if maximized else "\uE922")
+        control.setToolTip("Restore" if maximized else "Maximize")
+
+    def changeEvent(self, event) -> None:  # type: ignore[override]
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_window_control_glyphs()
+
+    def _apply_native_frame_styles(self) -> None:
+        """Give the frameless window back a thick frame and caption style so
+        Windows still resizes, snaps and animates it; nativeEvent then hides the
+        caption area and routes the app bar as the drag region."""
+        if not getattr(self, "_custom_frame", False):
+            return
+        try:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            hwnd = int(self.winId())
+            gwl_style = -16
+            ws_thickframe, ws_caption = 0x00040000, 0x00C00000
+            ws_minimizebox, ws_maximizebox, ws_sysmenu = 0x00020000, 0x00010000, 0x00080000
+            get_style = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
+            set_style = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+            style = get_style(hwnd, gwl_style)
+            set_style(hwnd, gwl_style, (style | ws_thickframe | ws_minimizebox | ws_maximizebox | ws_sysmenu) & ~ws_caption)
+            # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010)
+        except (AttributeError, OSError, ValueError):
+            self._custom_frame = False
+
+    @staticmethod
+    def _monitor_work_area(hwnd: int):
+        """The RECT of the monitor's work area (screen minus the taskbar)."""
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.wintypes.DWORD),
+                ("rcMonitor", ctypes.wintypes.RECT),
+                ("rcWork", ctypes.wintypes.RECT),
+                ("dwFlags", ctypes.wintypes.DWORD),
+            ]
+
+        try:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+            info = MonitorInfo()
+            info.cbSize = ctypes.sizeof(MonitorInfo)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                return None
+            return info.rcWork
+        except (AttributeError, OSError, ValueError):
+            return None
+
+    def _is_window_drag_point(self, local: QPoint) -> bool:
+        bar = getattr(self, "app_top_bar", None)
+        if bar is None or not bar.isVisible():
+            return False
+        if not bar.geometry().contains(bar.parentWidget().mapFrom(self, local)):
+            return False
+        child = self.childAt(local)
+        return child in (
+            bar,
+            getattr(self, "app_menu_slot", None),
+            getattr(self, "app_crumb_stack", None),
+            getattr(self, "app_breadcrumb", None),
+            getattr(self, "central_container", None),
+        )
+
+    def nativeEvent(self, event_type, message):  # type: ignore[override]
+        if not getattr(self, "_custom_frame", False) or bytes(event_type) != b"windows_generic_MSG":
+            return super().nativeEvent(event_type, message)
+        try:
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+        except (TypeError, ValueError):
+            return super().nativeEvent(event_type, message)
+        wm_nccalcsize, wm_nchittest = 0x0083, 0x0084
+        if msg.message == wm_nccalcsize and msg.wParam:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            # Ask Windows, not Qt: Qt's window state lags this message. A
+            # maximized frameless window can overhang the screen by the frame
+            # thickness, so keep the client area inside the monitor's work area
+            # instead of trimming a rect that already fits.
+            if user32.IsZoomed(msg.hWnd):
+                work_area = self._monitor_work_area(msg.hWnd)
+                if work_area is not None:
+                    rect = ctypes.wintypes.RECT.from_address(msg.lParam)
+                    rect.left = max(rect.left, work_area.left)
+                    rect.top = max(rect.top, work_area.top)
+                    rect.right = min(rect.right, work_area.right)
+                    rect.bottom = min(rect.bottom, work_area.bottom)
+            return True, 0
+        if msg.message == wm_nchittest:
+            x = ctypes.c_short(msg.lParam & 0xFFFF).value
+            y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+            ratio = max(1.0, self.devicePixelRatioF())
+            local = self.mapFromGlobal(QPoint(round(x / ratio), round(y / ratio)))
+            if not (self.isMaximized() or self.isFullScreen()):
+                border = self.WINDOW_RESIZE_BORDER
+                left = local.x() < border
+                right = local.x() >= self.width() - border
+                top = local.y() < border
+                bottom = local.y() >= self.height() - border
+                if top and left:
+                    return True, 13
+                if top and right:
+                    return True, 14
+                if bottom and left:
+                    return True, 16
+                if bottom and right:
+                    return True, 17
+                if left:
+                    return True, 10
+                if right:
+                    return True, 11
+                if top:
+                    return True, 12
+                if bottom:
+                    return True, 15
+            if self._is_window_drag_point(local):
+                return True, 2  # HTCAPTION: drag, snap, double-click maximize
+        return super().nativeEvent(event_type, message)
+
+    # -- proportional layout ----------------------------------------------
+
+    PANE_RATIOS_KEY = "ui/pane_width_ratios"
+    # Early builds saved transient start-up widths as if they were drags.
+    PANE_RATIOS_RESET_KEY = "ui/pane_width_ratios_reset_v3"
+
+    def _pane_width_ratios(self) -> dict[str, float]:
+        defaults = {"library": layout_ratios.LIBRARY_PANEL_W, "inspector": layout_ratios.INSPECTOR_W}
+        if not self._settings.value(self.PANE_RATIOS_RESET_KEY, False, bool):
+            self._settings.setValue(self.PANE_RATIOS_RESET_KEY, True)
+            self._settings.remove(self.PANE_RATIOS_KEY)
+            return defaults
+        raw = self._settings.value(self.PANE_RATIOS_KEY, "", str)
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            stored = {}
+        for key in defaults:
+            value = stored.get(key) if isinstance(stored, dict) else None
+            if isinstance(value, (int, float)) and 0.05 <= float(value) <= 0.5:
+                defaults[key] = float(value)
+        return defaults
+
+    def _remember_user_pane_widths(self, left: int, right: int) -> None:
+        # The splitter reports moves when it is merely re-laid out too, so only
+        # record a width the user is actually dragging.
+        if QApplication.mouseButtons() == Qt.MouseButton.NoButton:
+            return
+        width = max(1, self.width())
+        ratios = self._pane_width_ratios()
+        if left > 0:
+            ratios["library"] = round(left / width, 4)
+        if right > 0:
+            ratios["inspector"] = round(right / width, 4)
+        self._settings.setValue(self.PANE_RATIOS_KEY, json.dumps(ratios))
+
+    def _schedule_layout_ratio_update(self) -> None:
+        if getattr(self, "_layout_ratio_update_pending", False):
+            return
+        self._layout_ratio_update_pending = True
+        QTimer.singleShot(0, self._apply_layout_ratios)
+
+    def _apply_layout_ratios(self) -> None:
+        """Resolve the shell's proportions (layout_ratios) against the
+        current window size."""
+        self._layout_ratio_update_pending = False
+        width, height = self.width(), self.height()
+        if width <= 0 or height <= 0 or not hasattr(self, "app_top_bar"):
+            return
+        px = layout_ratios.ratio_px
+        self.app_top_bar.setFixedHeight(px(layout_ratios.TOP_BAR_H, height, minimum=36))
+        for control in getattr(self, "_window_control_buttons", {}).values():
+            control.setFixedSize(round(self.app_top_bar.height() * 0.9), self.app_top_bar.height())
+        search_width = px(layout_ratios.SEARCH_W, width, minimum=200)
+        self.app_search_box.setMinimumWidth(min(240, search_width))
+        self.app_search_box.setMaximumWidth(search_width)
+        self.left_nav_rail.apply_width(px(layout_ratios.RAIL_W, width, minimum=56))
+        self._apply_left_rail_metrics()
+        drive_row = px(layout_ratios.DRIVE_ROW_H, height, minimum=34)
+        folder_text = px(layout_ratios.FOLDER_TEXT_H, height, minimum=layout_ratios.MIN_TEXT_PX)
+        drive_text = px(layout_ratios.DRIVE_TEXT_H, height, minimum=layout_ratios.MIN_TEXT_PX)
+        for tree in (self.drive_list, self.folder_tree):
+            tree.set_drive_row_height(drive_row)
+            tree.set_text_sizes(folder_text, drive_text)
+        self.left_settings_bar.setFixedHeight(px(layout_ratios.SETTINGS_BAR_H, height, minimum=40))
+        if self.workspace_docks is not None:
+            # Hairline dividers: the panes' shares are measured edge to edge, so
+            # a wide handle would eat into the grid.
+            self.workspace_docks.splitter.setHandleWidth(1)
+            self.workspace_docks.apply_width_ratios(self._pane_width_ratios(), width)
+        if self.inspector_panel is not None:
+            self.inspector_panel.set_ai_box_size(
+                px(layout_ratios.AI_BOX_W, width, minimum=180),
+                px(layout_ratios.AI_BOX_H, height, minimum=120),
+            )
+        base = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        caption_scale = self._toolbar_profile().topbar_glyph_size / max(1, base.topbar_glyph_size)
+        self.toolbar_strip.setStyleSheet(
+            f"QLabel#appTopBarButtonCaption {{ font-size: {round(10 * caption_scale)}px; }}"
+            if caption_scale > 1.01
+            else ""
+        )
+        if not self._toolbar_edit_mode:
+            self._rebuild_topbar_action_stack()
+            toolbar_profile = self._toolbar_profile()
+            for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
+                self._resize_topbar_button(button, toolbar_profile)
+        self._position_floating_toolbar()
+        self._schedule_app_bar_alignment()
+
+    def _toolbar_profile(self) -> DisplayProfile:
+        """Button metrics for the customizable bar. Floating, the buttons grow
+        to fill the dock's proportional height while still fitting its width."""
+        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        if getattr(self, "_toolbar_placement", "docked") != "floating" or self.height() <= 0:
+            return profile
+        margins = getattr(self, "_toolbar_strip_layout", None)
+        vertical = (margins.contentsMargins().top() + margins.contentsMargins().bottom()) if margins else 8
+        button_height = layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_H, self.height()) - vertical - 2 * profile.topbar_hover_margin
+        height_scale = max(1.0, button_height / max(1, profile.topbar_button_height))
+        items = len(getattr(self, "_topbar_labeled_nav_buttons", ())) + max(1, self._used_toolbar_slot_count())
+        dock_width = layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_W, self.width())
+        cell = max(profile.topbar_slot_cell_min, profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin)
+        width_scale = max(1.0, (dock_width - 40) / max(1, items * (cell + profile.topbar_slot_spacing)))
+        scale = min(height_scale, width_scale)
+        return replace(
+            profile,
+            topbar_button_height=max(profile.topbar_button_height, round(button_height)),
+            topbar_slot_button_width=round(profile.topbar_slot_button_width * scale),
+            topbar_slot_cell_min=round(profile.topbar_slot_cell_min * scale),
+            topbar_glyph_size=round(profile.topbar_glyph_size * scale),
+            topbar_caption_height=round(profile.topbar_caption_height * scale),
+        )
+
+    def _used_toolbar_slot_count(self) -> int:
+        used = 0
+        for index, item_id in enumerate(getattr(self, "_topbar_slots", {}).get("manual") or []):
+            if item_id:
+                used = index + 1
+        return used
 
     def _align_app_bar_to_library(self) -> None:
         """Centre Menu over the rail and start the breadcrumb at the library
@@ -5033,6 +5334,11 @@ class MainWindow(QMainWindow):
         self._toolbar_placement = normalized
         self._settings.setValue(self.TOOLBAR_PLACEMENT_KEY, normalized)
         self._apply_toolbar_placement()
+        self._rebuild_topbar_action_stack()
+        profile = self._toolbar_profile()
+        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
+            self._resize_topbar_button(button, profile)
+        self._schedule_layout_ratio_update()
         self._update_action_states()
 
     def _apply_toolbar_placement(self) -> None:
@@ -5068,6 +5374,8 @@ class MainWindow(QMainWindow):
             strip.setGraphicsEffect(None)
             strip.setMinimumWidth(0)
             strip.setMaximumWidth(16777215)
+            strip.setMinimumHeight(0)
+            strip.setMaximumHeight(16777215)
             center_layout.insertWidget(0, strip)
             strip.show()
             self.grid.set_bottom_overlay(0, 0)
@@ -5077,30 +5385,11 @@ class MainWindow(QMainWindow):
         strip.update()
 
     def _floating_toolbar_width(self, available: int, *, expanded: bool = False) -> int:
-        """Size the dock to the slots in use so it hugs its buttons; while
-        editing it opens to the full width so there is room to drop items."""
+        """The dock is a fixed share of the window width; while editing it
+        opens to the full width so there is room to drop items."""
         if expanded or self._toolbar_edit_mode:
             return max(0, available)
-        layout = self._toolbar_strip_layout
-        margins = layout.contentsMargins()
-        fixed = margins.left() + margins.right()
-        for index in range(layout.count()):
-            widget = layout.itemAt(index).widget()
-            if widget is None or widget is self.topbar_action_stack:
-                continue
-            fixed += max(widget.sizeHint().width(), widget.minimumWidth()) + layout.spacing()
-        slots = list(getattr(self, "_topbar_slots", {}).get("manual") or [])
-        used = 0
-        for index, item_id in enumerate(slots):
-            if item_id:
-                used = index + 1
-        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
-        cell = max(profile.topbar_slot_cell_min, profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin)
-        spacing = max(0, profile.topbar_slot_spacing)
-        # Half a cell of slack so rounding in the layout never drops the last
-        # slot into the More menu.
-        stack_width = used * cell + max(0, used - 1) * spacing + cell // 2
-        return max(0, min(available, fixed + stack_width))
+        return max(0, min(available, layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_W, self.width())))
 
     def _position_floating_toolbar(self, *, expanded: bool = False) -> None:
         strip = getattr(self, "toolbar_strip", None)
@@ -5110,8 +5399,9 @@ class MainWindow(QMainWindow):
         area = browser_stack.geometry()
         margin = self.FLOATING_TOOLBAR_BOTTOM_MARGIN
         width = self._floating_toolbar_width(area.width() - 2 * self.FLOATING_TOOLBAR_SIDE_MARGIN, expanded=expanded)
-        height = strip.sizeHint().height()
+        height = layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_H, self.height(), minimum=strip.minimumSizeHint().height())
         strip.setFixedWidth(width)
+        strip.setFixedHeight(height)
         strip.setGeometry(area.x() + (area.width() - width) // 2, area.bottom() + 1 - margin - height, width, height)
         strip.raise_()
         reserve = height + margin + self.FLOATING_TOOLBAR_ROW_GAP
@@ -5274,7 +5564,7 @@ class MainWindow(QMainWindow):
 
     def _apply_topbar_button_style(self, button: QToolButton, icon: QIcon) -> None:
         """Place every glyph and caption in identical fixed-height rows."""
-        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        profile = self._toolbar_profile()
         caption = button.text()
         button.setMinimumSize(0, 0)
         button.setMaximumSize(16777215, 16777215)
@@ -5422,7 +5712,7 @@ class MainWindow(QMainWindow):
     def _topbar_visible_slot_count(self) -> int:
         stack = getattr(self, "topbar_action_stack", None)
         width = stack.width() if isinstance(stack, QWidget) else 0
-        profile = getattr(self, "_display_profile", None)
+        profile = self._toolbar_profile() if getattr(self, "_display_profile", None) is not None else None
         if profile is None:
             return self._topbar_visible_slot_count_for_width(width)
         available = int(width or 0)
@@ -5432,10 +5722,14 @@ class MainWindow(QMainWindow):
         cell = max(profile.topbar_slot_cell_min, hover_width)
         spacing = max(0, profile.topbar_slot_spacing)
         count = (available + spacing) // (cell + spacing)
+        if getattr(self, "_toolbar_placement", "docked") == "floating" and not self._toolbar_edit_mode:
+            # The dock is a fixed share of the window: spread the buttons in
+            # use across it instead of leaving empty cells at the end.
+            count = min(count, max(1, self._used_toolbar_slot_count()))
         return max(1, min(self.TOPBAR_SLOT_COUNT, int(count)))
 
     def _configure_topbar_grid_columns(self, grid: QGridLayout, visible_slots: int) -> None:
-        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        profile = self._toolbar_profile()
         for col in range(self.TOPBAR_SLOT_COUNT):
             active = col < visible_slots
             grid.setColumnStretch(col, 1 if active else 0)
@@ -5506,9 +5800,11 @@ class MainWindow(QMainWindow):
         # One uniform width so every cell reads the same regardless of whether
         # the button shows an icon or text (text elides at this width).
         if isinstance(widget, QToolButton):
-            widget.setFixedWidth(
-                self.TOPBAR_SLOT_BUTTON_WIDTH + 2 * self.TOPBAR_HOVER_MARGIN
-            )
+            profile = self._toolbar_profile()
+            if widget.findChild(QWidget, "appTopBarButtonContent") is not None:
+                self._resize_topbar_button(widget, profile)
+            else:
+                widget.setFixedWidth(profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin)
 
     def _add_topbar_overflow_entry(self, menu: QMenu, item_id: str) -> None:
         popup_specs = self._topbar_popup_specs()
@@ -5621,9 +5917,9 @@ class MainWindow(QMainWindow):
         if bar is not None and bar.layout() is not None:
             bar.layout().setContentsMargins(
                 profile.shell_margin,
-                max(4, profile.shell_margin - 2),
-                profile.shell_margin + 2,
-                max(4, profile.shell_margin - 2),
+                0,
+                0 if getattr(self, "_window_control_buttons", None) else profile.shell_margin + 2,
+                0,
             )
             bar.layout().setSpacing(profile.inspector_spacing)
         search = getattr(self, "topbar_search_field", None)
@@ -5642,8 +5938,9 @@ class MainWindow(QMainWindow):
             font = button.font()
             font.setPixelSize(profile.topbar_nav_font_size)
             button.setFont(font)
+        toolbar_profile = self._toolbar_profile()
         for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-            self._resize_topbar_button(button, profile)
+            self._resize_topbar_button(button, toolbar_profile)
         for button in getattr(self, "_topbar_pane_buttons", {}).values():
             hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
             hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
@@ -5667,6 +5964,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._schedule_display_profile_update()
+        self._schedule_layout_ratio_update()
 
     def _paint_grid_backdrop(self, painter: QPainter, rect: QRect) -> None:
         theme = self._theme
@@ -6030,6 +6328,7 @@ class MainWindow(QMainWindow):
             tree.set_usage_bar_colors(theme.text_primary.with_alpha(22).qcolor(), fill_start, fill_end)
             self.__dict__.pop("_drive_glyph_icon_cache", None)
             tree.set_drive_icon_provider(self._drive_glyph_icon)
+        self._apply_left_rail_label_colors()
         if getattr(self, "left_rail_add_button", None) is not None:
             self._rebuild_pinned_tools()
         refresh_button = getattr(self, "drives_refresh_button", None)
@@ -6112,12 +6411,53 @@ class MainWindow(QMainWindow):
         # opens match and nothing depends on a glyph being present in the font.
         theme = getattr(self, "_theme", None) or default_theme()
         colour = (theme.accent if selected else theme.text_muted).qcolor().name()
+        # Sized to the rail, so the mark grows with it instead of being
+        # upscaled from a fixed pixmap.
+        rail = getattr(self, "left_nav_rail", None)
+        size = rail.metrics().icon_px if rail is not None else NAV_RAIL_ICON_PX
+        supplied = nav_icon_pixmap(
+            icon_id, self._nav_icon_box(icon_id, size), colour, ratio=self._icon_ratio()
+        )
+        if supplied is not None:
+            return QIcon(supplied)
         painter = {
             "folder": folder_icon_pixmap,
+            "library": library_icon_pixmap,
+            "faces": sidebar_people_icon_pixmap,
             "people": sidebar_people_icon_pixmap,
             "collections": sidebar_projects_icon_pixmap,
         }.get(icon_id, folder_icon_pixmap)
-        return QIcon(painter(NAV_RAIL_ICON_PX, colour))
+        return QIcon(painter(self._nav_icon_box(icon_id, size), colour))
+
+    def _apply_left_rail_label_colors(self) -> None:
+        """Give the rail the same two colours its icons are tinted with."""
+        rail = getattr(self, "left_nav_rail", None)
+        if rail is None:
+            return
+        theme = getattr(self, "_theme", None) or default_theme()
+        rail.set_label_colors(theme.text_muted.qcolor(), theme.accent.qcolor())
+
+    def _icon_ratio(self) -> int:
+        """The device pixel ratio supplied artwork should be rasterised at.
+
+        Building at a fixed 2x and letting Qt shrink it again on a 1x display
+        resamples the art twice, which turns a thin outline to mush; one pass
+        straight to the size it will be drawn at keeps it sharp.
+        """
+        try:
+            return max(1, round(self.devicePixelRatioF()))
+        except (AttributeError, RuntimeError):
+            return 1
+
+    def _nav_icon_box(self, icon_id: str, icon_px: int) -> int:
+        """The icon box that puts this mark's ink at ``icon_px``.
+
+        Supplied artwork is trimmed and fitted to its box, so it needs no
+        correction; the drawn painters each pad by their own amount.
+        """
+        if icon_id in NAV_ICON_ASSETS:
+            return icon_px
+        return round(icon_px / self.NAV_ICON_INK_FILL.get(icon_id, 1.0))
 
     def _show_left_nav_page(self, key: str) -> None:
         page = getattr(self, "_left_nav_page_widgets", {}).get(key)
@@ -6145,6 +6485,9 @@ class MainWindow(QMainWindow):
         label.setObjectName("leftRailSectionLabel")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._left_rail_divider = divider
+        self._left_rail_section_label = label
+        self._left_rail_section_layout = layout
         self._left_rail_pinned_layout = QVBoxLayout()
         self._left_rail_pinned_layout.setContentsMargins(0, 0, 0, 0)
         self._left_rail_pinned_layout.setSpacing(4)
@@ -6163,6 +6506,71 @@ class MainWindow(QMainWindow):
         self.left_rail_add_button = add_button
         self.left_nav_rail.set_footer(add_button)
         self._rebuild_pinned_tools()
+        self._apply_left_rail_metrics()
+
+    def _apply_left_rail_metrics(self) -> None:
+        """Size the pinned block to the rail, so the divider, the PINNED
+        caption and the tool buttons keep the design's proportions alongside
+        the destinations above them."""
+        rail = getattr(self, "left_nav_rail", None)
+        if rail is None:
+            return
+        metrics = rail.metrics()
+        # Give each destination an icon box wide enough that its drawn ink
+        # reaches the design's mark size (the painters pad by different amounts).
+        for key, _label, icon_id, _tooltip in self.LEFT_NAV_DESTINATIONS:
+            button = rail.button(key)
+            if button is None:
+                continue
+            box = self._nav_icon_box(icon_id, metrics.icon_px)
+            button.setIconSize(QSize(box, box))
+        divider = getattr(self, "_left_rail_divider", None)
+        if divider is not None:
+            divider.setFixedSize(metrics.divider_width, 1)
+        label = getattr(self, "_left_rail_section_label", None)
+        if label is not None:
+            # A widget sheet beats the application sheet, which pins this size.
+            label.setStyleSheet(f"font-size: {metrics.section_label_px}px;")
+        section_layout = getattr(self, "_left_rail_section_layout", None)
+        if section_layout is not None:
+            section_layout.setContentsMargins(0, metrics.section_gap, 0, 0)
+            section_layout.setSpacing(metrics.tool_gap)
+        pinned_layout = getattr(self, "_left_rail_pinned_layout", None)
+        if pinned_layout is not None:
+            pinned_layout.setSpacing(metrics.tool_gap)
+        theme = getattr(self, "_theme", None) or default_theme()
+        tool_colour = theme.text_secondary.qcolor()
+        for button, item_id in getattr(self, "_left_rail_tool_buttons", ()):
+            # Supplied artwork is trimmed and fitted, so it needs no fill
+            # correction; a Fluent glyph inks only part of its pixmap.
+            if item_id in TOOL_ICON_ASSETS:
+                box = metrics.tool_icon_px
+            else:
+                box = round(metrics.tool_icon_px / self.FLUENT_ICON_INK_FILL)
+            box = min(box, metrics.tool_width, metrics.tool_height)
+            supplied = tool_icon_pixmap(
+                item_id, box, tool_colour.name(), ratio=self._icon_ratio()
+            )
+            button.setIcon(
+                QIcon(supplied)
+                if supplied is not None
+                else self._workspace_toolbar_icon(item_id, color=tool_colour)
+            )
+            button.setFixedSize(metrics.tool_width, metrics.tool_height)
+            button.setIconSize(QSize(box, box))
+            button.setStyleSheet(
+                f"QToolButton#leftRailToolButton {{ border-radius: {metrics.tool_radius}px; }}"
+            )
+        add_button = getattr(self, "left_rail_add_button", None)
+        if add_button is not None:
+            add_box = min(
+                round(metrics.add_icon_px / self.FLUENT_ICON_INK_FILL), metrics.add_size
+            )
+            add_button.setFixedSize(metrics.add_size, metrics.add_size)
+            add_button.setIconSize(QSize(add_box, add_box))
+            add_button.setStyleSheet(
+                f"QToolButton#leftRailAddButton {{ border-radius: {metrics.tool_radius}px; }}"
+            )
 
     def _pinned_tool_ids(self) -> list[str]:
         raw = self._settings.value(self.PINNED_TOOLS_KEY, None)
@@ -6184,17 +6592,16 @@ class MainWindow(QMainWindow):
             return
         self._clear_layout_items(layout, delete_widgets=True)
         specs = self._workspace_toolbar_action_specs()
-        theme = getattr(self, "_theme", None) or default_theme()
-        color = theme.text_secondary.qcolor()
         pinned = [item_id for item_id in self._pinned_tool_ids() if item_id in specs]
+        self._left_rail_tool_buttons = []
         for item_id in pinned:
             action, label = specs[item_id]
             button = QToolButton()
             button.setObjectName("leftRailToolButton")
-            button.setIcon(self._workspace_toolbar_icon(item_id, color=color))
-            button.setIconSize(QSize(22, 22))
-            button.setFixedSize(38, 34)
+            # The icon and its size are set by _apply_left_rail_metrics below,
+            # which knows the rail's width and whether artwork is installed.
             button.setAutoRaise(True)
+            self._left_rail_tool_buttons.append((button, item_id))
             button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             button.setToolTip(action.toolTip() or label)
             button.setAccessibleName(label)
@@ -6208,6 +6615,7 @@ class MainWindow(QMainWindow):
         self.left_rail_add_button.setIcon(
             self._fluent_toolbar_icon("E710", color=self._chrome_icon_color())
         )
+        self._apply_left_rail_metrics()
 
     def _show_pinned_tool_context_menu(self, item_id: str, anchor: QWidget) -> None:
         menu = QMenu(self)
@@ -9309,7 +9717,9 @@ class MainWindow(QMainWindow):
             self.STATE_KEY,
             self.workspace_docks,
         )
-        self._startup_window_state = window_state
+        # The layout is proportioned to a maximized window, so that is how it
+        # opens (a saved fullscreen session still reopens fullscreen).
+        self._startup_window_state = window_state if window_state == "fullscreen" else "maximized"
         if not restored:
             self._apply_default_workspace()
 
@@ -11077,6 +11487,9 @@ class MainWindow(QMainWindow):
         if self._startup_window_state_fixup_applied:
             return
         self._startup_window_state_fixup_applied = True
+        self._apply_native_frame_styles()
+        self._sync_window_control_glyphs()
+        self._schedule_layout_ratio_update()
         # Don't auto-focus/select any control on startup (the path bar used to
         # grab focus and highlight its text).
         QTimer.singleShot(0, self._clear_startup_focus)

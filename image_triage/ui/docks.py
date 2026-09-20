@@ -972,6 +972,14 @@ class WorkspacePanel(QWidget):
         if self._mode == "expanded":
             self._apply_expanded_constraints()
 
+    def set_ratio_width(self, width: int) -> None:
+        """Adopt a proportional width with bounds loose enough to allow it."""
+        self._minimum_expanded_width = max(120, round(width * 0.55))
+        self._maximum_expanded_width = max(self._minimum_expanded_width, round(width * 1.9))
+        self._expanded_width = width
+        if self._mode == "expanded":
+            self._apply_expanded_constraints()
+
     def reset_display_width(self) -> None:
         """Return to the active profile's default width during layout reset."""
 
@@ -1086,6 +1094,7 @@ class WorkspaceDocks:
             tab_widget.setMovable(True)
         self._default_sizes = [self.library.expanded_width, 1240, self.inspector.expanded_width]
         self._active_display_profile: DisplayProfile | None = None
+        self._applying_width_ratios = False
         self._wiring_complete = False
 
         for key, panel in self._panel_map.items():
@@ -1434,10 +1443,30 @@ class WorkspaceDocks:
             return
         self.hide_panel(key)
 
+    def apply_width_ratios(self, ratios: dict[str, float], total_width: int) -> None:
+        """Size docked panels as shares of ``total_width``. Bounds follow the
+        target so a proportional width is never clamped by a pixel limit."""
+        self._applying_width_ratios = True
+        try:
+            for key, ratio in ratios.items():
+                panel = self._panel_map.get(key)
+                if panel is None or ratio <= 0:
+                    continue
+                width = max(120, round(total_width * ratio))
+                panel.set_ratio_width(width)
+            self._rebalance_sizes()
+        finally:
+            self._applying_width_ratios = False
+
     def _remember_panel_widths(self) -> None:
         sizes = self.splitter.sizes()
         if len(sizes) != 3:
             return
+        # Only a real drag counts: re-layouts while applying the proportions
+        # would otherwise save a transient width as the user's choice.
+        callback = getattr(self, "on_user_resized_panels", None)
+        if callable(callback) and not getattr(self, "_applying_width_ratios", False):
+            callback(sizes[0], sizes[2])
         for panel in self._panels_for_side("left"):
             if panel.mode == "expanded" and sizes[0] > TAB_WIDTH:
                 panel.set_expanded_width(sizes[0], user_adjusted=True)
@@ -1936,6 +1965,9 @@ class InspectorPanel(QWidget):
         self._theme = default_theme()
         self._display_profile = STANDARD_DISPLAY
         self._sections: dict[str, InspectorSection] = {}
+        # Pixel heights that replace SECTION_HEIGHTS (e.g. the AI card sized
+        # as a share of the window).
+        self._section_height_overrides: dict[str, int] = {}
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -2218,6 +2250,30 @@ class InspectorPanel(QWidget):
         layout.addWidget(section)
         return rows, section
 
+    def set_ai_box_size(self, width: int, height: int) -> None:
+        """Size the AI analysis card; its section grows to hold it."""
+        self._ai_box_target = (max(120, width), max(80, height))
+        body_layout = self.ai_stack.parentWidget().layout()
+        if body_layout is not None:
+            body_layout.setAlignment(self.ai_stack, Qt.AlignmentFlag.AlignHCenter)
+        self._fit_ai_box()
+        header = self.ai_section.header.height() or INSPECTOR_SECTION_HEADER_HEIGHT
+        self._section_height_overrides["ai_analysis"] = header + max(80, height) + 16
+        self._sync_section_heights()
+
+    def _fit_ai_box(self) -> None:
+        """Target size, narrowed to the pane's room so the card never widens
+        the inspector's content past its edge."""
+        target = getattr(self, "_ai_box_target", None)
+        if target is None:
+            return
+        width, height = target
+        room = self.details_scroll.viewport().width() - 2 * max(8, round(12 * self._display_profile.scale))
+        fitted = max(120, min(width, room)) if room > 0 else width
+        placeholder = self.ai_stack.widget(0)
+        placeholder.setFixedSize(fitted, height)
+        self.ai_stack.setFixedWidth(fitted)
+
     def set_position(self, position: int, count: int) -> None:
         """Show where the current photo sits in the grid (``10 / 48``)."""
         shown = position > 0 and count > 0
@@ -2242,11 +2298,11 @@ class InspectorPanel(QWidget):
             index = layout.indexOf(section)
             if index >= 0:
                 layout.setStretch(index, 0)
+            natural = self._section_height_overrides.get(key)
+            if natural is None:
+                natural = round(self.SECTION_HEIGHTS[key] * self._display_profile.scale)
             height = (
-                max(
-                    section.header.height(),
-                    round(self.SECTION_HEIGHTS[key] * self._display_profile.scale),
-                )
+                max(section.header.height(), natural)
                 if section.is_expanded()
                 else section.header.height()
             )
@@ -2468,6 +2524,7 @@ class InspectorPanel(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._sync_property_label_widths()
+        self._fit_ai_box()
         self._sync_inspector_geometry()
 
     def _sync_inspector_geometry(self) -> None:

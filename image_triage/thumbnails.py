@@ -276,6 +276,11 @@ class ThumbnailManager(QObject):
             self._drain_timer.stop()
 
 
+# Placeholder tiles are painted on worker threads, where resolving the variable
+# UI family can block; the plain family needs no font-database work there.
+WORKER_FONT_FAMILY = "Segoe UI"
+
+
 def _placeholder_thumbnail(path: str, target_size: QSize, message: str) -> QImage:
     width = max(96, target_size.width() if target_size.isValid() else 256)
     height = max(96, target_size.height() if target_size.isValid() else 192)
@@ -312,12 +317,12 @@ def _placeholder_thumbnail(path: str, target_size: QSize, message: str) -> QImag
     painter.drawLine(card.right() - fold, card.top() + fold, card.right(), card.top() + fold)
 
     painter.setPen(QColor("#d8e2ef"))
-    title_font = QFont("Segoe UI", max(13, min(width, height) // 7), QFont.Weight.Bold)
+    title_font = QFont(WORKER_FONT_FAMILY, max(13, min(width, height) // 7), QFont.Weight.Bold)
     painter.setFont(title_font)
     painter.drawText(card.adjusted(8, 10, -8, -card.height() // 2), Qt.AlignmentFlag.AlignCenter, headline)
 
     painter.setPen(QColor("#aebbd0"))
-    detail_font = QFont("Segoe UI", max(8, min(width, height) // 16))
+    detail_font = QFont(WORKER_FONT_FAMILY, max(8, min(width, height) // 16))
     painter.setFont(detail_font)
     painter.drawText(
         card.adjusted(10, card.height() // 2 - 8, -10, -10),

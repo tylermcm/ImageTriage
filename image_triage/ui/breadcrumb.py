@@ -2,8 +2,9 @@
 
 Each ancestor is a flat button (click to open that folder); the current folder
 is the last, bold segment. When the trail is wider than the space it has, the
-leading segments collapse into a "…" button whose menu lists them. A click on
-the empty space after the trail asks the host to swap in the editable path box.
+leading segments collapse into a "…" button whose menu lists them. Clicking the
+current folder asks the host to swap in the editable path box. On Windows the
+empty space after the trail is part of the window's drag area.
 """
 from __future__ import annotations
 
@@ -50,7 +51,7 @@ class BreadcrumbBar(QWidget):
         self.setObjectName("appBreadcrumb")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.IBeamCursor)
-        self.setToolTip("Click a folder to open it, or click empty space to type a path")
+        self.setToolTip("Click a folder to open it, or the current folder to type a path")
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(4)
@@ -111,7 +112,11 @@ class BreadcrumbBar(QWidget):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.setToolTip(path)
-        button.clicked.connect(lambda _checked=False, target=path: self.segment_clicked.emit(target))
+        if current:
+            button.setToolTip("Type a path")
+            button.clicked.connect(lambda _checked=False: self.edit_requested.emit())
+        else:
+            button.clicked.connect(lambda _checked=False, target=path: self.segment_clicked.emit(target))
         return button
 
     def _ellipsis_button(self, hidden: list[tuple[str, str]]) -> QToolButton:
