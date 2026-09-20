@@ -26,7 +26,7 @@ from PySide6.QtGui import (
 )
 
 from .prototype_style import folder_icon_pixmap
-
+from ..fonts import ui_font
 
 _ACTION_ICON_FILES: dict[str, Path] = {
     "heart": Path(__file__).resolve().parent / "assets" / "loupe_heart.png",
@@ -683,7 +683,7 @@ def gallery_card_filename_hit_rect(rect: QRect, filename: str, *, show_actions: 
         name_right_limit = rect.right() - edge
     name_left = rect.left() + max(1, round(2 * chrome_scale))
     available_width = max(1, name_right_limit - name_left)
-    name_font = QFont("Segoe UI", max(11, round(12 * chrome_scale)))
+    name_font = ui_font(max(11, round(12 * chrome_scale)))
     metrics = QFontMetrics(name_font)
     rendered = metrics.elidedText(filename, Qt.TextElideMode.ElideRight, available_width)
     rendered_width = min(available_width, metrics.horizontalAdvance(rendered))
@@ -771,7 +771,7 @@ def paint_gallery_card(
         name_right_limit = rect.right() - edge
 
     name_left = rect.left() + max(1, round(2 * chrome_scale))
-    name_font = QFont("Segoe UI", max(11, round(12 * chrome_scale)))
+    name_font = ui_font(max(11, round(12 * chrome_scale)))
     name_rect = QRect(name_left, strip_top, max(1, name_right_limit - name_left), strip)
     _draw_elided_text(painter, name_rect, data.filename, name_font, filename_color or QColor(154, 160, 166))
 
@@ -935,7 +935,7 @@ def grid_card_filename_is_elided(
             compact_overlay=compact_overlay,
         )
         inset = _compact_corner_inset(scale)
-        font = QFont("Segoe UI", max(9, round(13 * scale)), QFont.Weight.DemiBold)
+        font = ui_font(max(9, round(13 * scale)), QFont.Weight.DemiBold)
         width = hits.favorite.left() - max(6, round(8 * scale)) - (rect.left() + inset)
         if width < round(QFontMetrics(font).averageCharWidth() * 4.5):
             return True
@@ -952,8 +952,8 @@ def grid_card_filename_is_elided(
     hits = _action_button_rects(design_rect, design_rect, scale, chrome_width)
     margin = max(12, round(14 * scale))
     body_left = design_rect.left() + margin
-    meta_font = QFont("Segoe UI", max(8, round(9 * scale)))
-    status_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
+    meta_font = ui_font(max(8, round(9 * scale)))
+    status_font = ui_font(max(8, round(9 * scale)), QFont.Weight.DemiBold)
     status_text_width = max(
         QFontMetrics(meta_font).horizontalAdvance(data.position_text),
         QFontMetrics(status_font).horizontalAdvance(data.status_text),
@@ -963,7 +963,7 @@ def grid_card_filename_is_elided(
     side_left = design_rect.right() - margin - side_width
     body_right = min(hits.favorite.left(), side_left) - max(12, round(17 * scale))
     width = max(48, body_right - body_left)
-    name_font = QFont("Segoe UI", max(11, round(13 * scale)), QFont.Weight.DemiBold)
+    name_font = ui_font(max(11, round(13 * scale)), QFont.Weight.DemiBold)
     return QFontMetrics(name_font).horizontalAdvance(filename) > width
 
 
@@ -978,7 +978,7 @@ def gallery_card_filename_is_elided(rect: QRect, data: GridCardData) -> bool:
     else:
         name_right_limit = rect.right() - edge
     name_left = rect.left() + max(1, round(2 * chrome_scale))
-    name_font = QFont("Segoe UI", max(11, round(12 * chrome_scale)))
+    name_font = ui_font(max(11, round(12 * chrome_scale)))
     return QFontMetrics(name_font).horizontalAdvance(filename) > max(1, name_right_limit - name_left)
 
 
@@ -1162,9 +1162,9 @@ def _metadata_text_top(card_rect: QRect, scale: float, chrome_width: int | None 
     scrim can be anchored to where the text actually sits rather than a fixed
     fraction of the card height.
     """
-    name_font = QFont("Segoe UI", max(11, round(13 * scale)), QFont.Weight.DemiBold)
-    exif_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.Normal)
-    meta_font = QFont("Segoe UI", max(8, round(9 * scale)))
+    name_font = ui_font(max(11, round(13 * scale)), QFont.Weight.DemiBold)
+    exif_font = ui_font(max(8, round(9 * scale)), QFont.Weight.Normal)
+    meta_font = ui_font(max(8, round(9 * scale)))
     name_h = QFontMetrics(name_font).height()
     exif_h = QFontMetrics(exif_font).height()
     meta_h = QFontMetrics(meta_font).height()
@@ -1187,9 +1187,9 @@ def _right_stack_vertical_positions(
     """
 
     basis = _footer_basis_for_width(_chrome_size_width(card_rect, chrome_width))
-    name_font = QFont("Segoe UI", max(11, round(13 * scale)), QFont.Weight.DemiBold)
-    meta_font = QFont("Segoe UI", max(8, round(9 * scale)))
-    status_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
+    name_font = ui_font(max(11, round(13 * scale)), QFont.Weight.DemiBold)
+    meta_font = ui_font(max(8, round(9 * scale)))
+    status_font = ui_font(max(8, round(9 * scale)), QFont.Weight.DemiBold)
     name_metrics = QFontMetrics(name_font)
     meta_metrics = QFontMetrics(meta_font)
     status_metrics = QFontMetrics(status_font)
@@ -1283,7 +1283,7 @@ def _paint_badges(
     basis = _footer_basis_for_width(size_width)
     edge_inset = max(12, round(14 * scale))
     font_size = max(8, round(9 * scale))
-    font = QFont("Segoe UI", font_size, QFont.Weight.DemiBold)
+    font = ui_font(font_size, QFont.Weight.DemiBold)
     badge_height = max(1, round(basis * 0.069))
     duplicate_width = max(1, round(size_width * 0.261))
     ai_width = max(1, round(size_width * 0.161))
@@ -1321,7 +1321,7 @@ def _paint_badges(
         )
 
     if data.tags:
-        tag_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
+        tag_font = ui_font(max(8, round(9 * scale)), QFont.Weight.DemiBold)
         tag_gap = max(5, round(6 * scale))
         rail_y = top
         if data.duplicate_visible and data.duplicate_text:
@@ -1507,7 +1507,7 @@ def _paint_compact_badges(
     if show_text:
         # Text pills only when both fit between the insets without touching;
         # otherwise fall back to the icon-only chips so nothing ever clips.
-        font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
+        font = ui_font(max(7, round(8 * scale)), QFont.Weight.DemiBold)
         needed = 0
         if data.duplicate_visible and data.duplicate_text:
             needed += _badge_natural_width(data.duplicate_text, font, scale)
@@ -1531,7 +1531,7 @@ def _paint_compact_badges(
         rail_x = image_rect.left() + inset
         hit_rects = _compact_action_button_rects(card_rect, image_rect, scale)
         rail_bottom = hit_rects.favorite.top() - tag_gap
-        tag_font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
+        tag_font = ui_font(max(7, round(8 * scale)), QFont.Weight.DemiBold)
         pill_height = _tag_pill_height(tag_font, scale)
         entry_height = pill_height if show_text else chip
         for text, kind in tag_entries:
@@ -1544,7 +1544,7 @@ def _paint_compact_badges(
             rail_y += entry_height + tag_gap
 
     if show_text:
-        font = QFont("Segoe UI", max(7, round(8 * scale)), QFont.Weight.DemiBold)
+        font = ui_font(max(7, round(8 * scale)), QFont.Weight.DemiBold)
         badge_height = max(round(24 * scale), QFontMetrics(font).height() + max(7, round(8 * scale)))
         if data.duplicate_visible and data.duplicate_text:
             _paint_badge(
@@ -1665,10 +1665,10 @@ def _paint_bottom_overlay(
     reject_rect = QRect(hit_rects.reject)
     body_left = image_rect.left() + margin
 
-    name_font = QFont("Segoe UI", max(11, round(13 * scale)), QFont.Weight.DemiBold)
-    exif_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.Normal)
-    meta_font = QFont("Segoe UI", max(8, round(9 * scale)))
-    status_font = QFont("Segoe UI", max(8, round(9 * scale)), QFont.Weight.DemiBold)
+    name_font = ui_font(max(11, round(13 * scale)), QFont.Weight.DemiBold)
+    exif_font = ui_font(max(8, round(9 * scale)), QFont.Weight.Normal)
+    meta_font = ui_font(max(8, round(9 * scale)))
+    status_font = ui_font(max(8, round(9 * scale)), QFont.Weight.DemiBold)
 
     name_metrics = QFontMetrics(name_font)
     exif_metrics = QFontMetrics(exif_font)
@@ -1862,7 +1862,7 @@ def _paint_compact_overlay(
     painter.save()
     if show_filename and layout == "right" and data.filename:
         inset = _compact_corner_inset(scale)
-        name_font = QFont("Segoe UI", max(9, round(13 * scale)), QFont.Weight.DemiBold)
+        name_font = ui_font(max(9, round(13 * scale)), QFont.Weight.DemiBold)
         name_left = image_rect.left() + inset
         name_width = favorite_rect.left() - max(6, round(8 * scale)) - name_left
         # Skip the filename entirely once the row is too tight for even a few
