@@ -49,7 +49,8 @@ from .ui.grid_card_renderer import (
     _paint_spark_icon,
 )
 from .ui.prototype_style import folder_icon_pixmap
-from .ui.theme import ThemePalette, default_theme
+from .ui.theme import default_theme, ThemePalette
+from .fonts import ui_font
 
 
 _AI_RESULT_MISSING = object()
@@ -244,14 +245,14 @@ class ThumbnailGridView(QAbstractScrollArea):
         # module defaults.
         self._compact_column_threshold = COMPACT_COLUMN_THRESHOLD
         self._plain_photo_column_threshold = PLAIN_PHOTO_COLUMN_THRESHOLD
-        self._title_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
-        self._meta_font = QFont("Segoe UI", 9)
-        self._review_title_font = QFont("Segoe UI", 11, QFont.Weight.DemiBold)
-        self._review_capture_font = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
-        self._review_meta_font = QFont("Segoe UI", 9)
-        self._review_badge_font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
-        self._placeholder_font = QFont("Segoe UI", 11)
-        self._empty_font = QFont("Segoe UI", 14)
+        self._title_font = ui_font(10, QFont.Weight.DemiBold)
+        self._meta_font = ui_font(9)
+        self._review_title_font = ui_font(11, QFont.Weight.DemiBold)
+        self._review_capture_font = ui_font(10, QFont.Weight.DemiBold)
+        self._review_meta_font = ui_font(9)
+        self._review_badge_font = ui_font(9, QFont.Weight.DemiBold)
+        self._placeholder_font = ui_font(11)
+        self._empty_font = ui_font(14)
         self._border_active = QColor("#2ed58e")
         self._border_selected = QColor("#39454a")
         self._border_idle = QColor("#252a31")
