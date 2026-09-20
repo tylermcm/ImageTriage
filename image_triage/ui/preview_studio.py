@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ..fonts import ui_font
 
 # --- Palette (the app's approved dark tokens) -------------------------------
 GROUND = "#070707"
@@ -373,7 +374,7 @@ class FilmstripThumb(QWidget):
             painter.setBrush(QColor(self._tag))
             painter.drawEllipse(QPoint(rect.left() + 9, rect.top() + 9), 4, 4)
 
-        painter.setFont(QFont("Segoe UI", 8))
+        painter.setFont(ui_font(8))
         painter.setPen(QColor("#dfe6ee"))
         painter.drawText(
             rect.adjusted(0, 0, -6, -3),

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from .prototype_style import folder_icon_pixmap
+from ..fonts import ui_font
 
 if TYPE_CHECKING:
     from ..models import ImageRecord, SessionAnnotation
@@ -255,7 +256,7 @@ class PrototypeThumbnailWall(QWidget):
         self._badge_size = NORMAL_METRICS.card_badge
         self._checkbox_size = NORMAL_METRICS.card_checkbox
         self._card_radius = NORMAL_METRICS.card_radius
-        self._font = QFont("Segoe UI", NORMAL_METRICS.card_font_size)
+        self._font = ui_font(NORMAL_METRICS.card_font_size)
         self.setObjectName("prototypeThumbnailWall")
         self.setMinimumWidth(420)
         self.setMinimumHeight(640)
@@ -280,7 +281,7 @@ class PrototypeThumbnailWall(QWidget):
         self._badge_size = metrics.card_badge
         self._checkbox_size = metrics.card_checkbox
         self._card_radius = metrics.card_radius
-        self._font = QFont("Segoe UI", metrics.card_font_size)
+        self._font = ui_font(metrics.card_font_size)
         self.setMinimumWidth(max(300, self._margin * 2 + 2 * self._card_width + self._gap))
         self._sync_minimum_height()
         if changed:

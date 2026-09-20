@@ -9,6 +9,7 @@ standalone prototype (`generated_prototype.py`) and the live `MainWindow`.
 
 from __future__ import annotations
 
+from pathlib import Path
 import time
 
 from PySide6.QtCore import (
@@ -21,7 +22,7 @@ from PySide6.QtCore import (
     QStorageInfo,
     Qt,
 )
-from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QFileIconProvider,
     QStyle,
@@ -82,6 +83,174 @@ def folder_icon_pixmap(size: int = 16, color: str = PROTO_FOLDER_COLOR) -> QPixm
     painter.setPen(pen)
     painter.setBrush(folder)
     painter.drawPath(path)
+    painter.end()
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
+# --- Supplied rail marks -----------------------------------------------------
+# The rail's icons, as delivered artwork rather than drawn paths. Each is one
+# mark centred in a 64px frame with its own margin, so they are trimmed to
+# their ink before use and every mark lands at the same weight.
+NAV_ICON_ASSETS = {
+    "library": "nav_library.png",
+    "faces": "nav_faces.png",
+    "duplicates": "nav_duplicates.png",
+    "groups": "nav_groups.png",
+    "collections": "nav_collections.png",
+}
+
+# The rail's pinned tools, keyed by the toolbar item they run.
+TOOL_ICON_ASSETS = {
+    "command_palette": "tool_command_palette.png",
+    "batch_rename": "tool_batch_rename.png",
+    "batch_resize": "tool_batch_resize.png",
+    "keyboard_shortcuts": "tool_keyboard_shortcuts.png",
+}
+
+_ASSET_DIR = Path(__file__).resolve().parent / "assets"
+_icon_sources: dict[str, "QImage | None"] = {}
+_icon_cache: dict[tuple[str, int, str, int], QPixmap] = {}
+
+
+def _icon_source(name: str | None) -> "QImage | None":
+    """The trimmed ink mask for artwork file ``name``, or None if not installed."""
+    if not name:
+        return None
+    if name in _icon_sources:
+        return _icon_sources[name]
+    image = None
+    path = _ASSET_DIR / name
+    if path.is_file():
+        loaded = QImage(str(path))
+        if not loaded.isNull():
+            image = _ink_mask(loaded)
+    _icon_sources[name] = image
+    return image
+
+
+def _ink_mask(image: "QImage") -> "QImage | None":
+    """A coverage mask for artwork drawn as light strokes, trimmed to its ink.
+
+    The delivered marks keep their interior opaque and dark rather than clear,
+    and they are rendered with subpixel antialiasing that tints every edge, so
+    neither the alpha nor the colour is usable on its own. Coverage is taken
+    from how light each pixel is, scaled by its alpha and normalised to the
+    brightest stroke in the file, which drops the dark interior to nothing and
+    keeps the stroke at full strength.
+    """
+    source = image.convertToFormat(QImage.Format.Format_ARGB32)
+    width, height = source.width(), source.height()
+    coverage: list[list[int]] = []
+    peak = 1
+    for y in range(height):
+        row = []
+        for x in range(width):
+            colour = source.pixelColor(x, y)
+            value = max(colour.red(), colour.green(), colour.blue())
+            ink = value * colour.alpha() // 255
+            peak = max(peak, ink)
+            row.append(ink)
+        coverage.append(row)
+
+    mask = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    mask.fill(Qt.GlobalColor.transparent)
+    left, top = width, height
+    right = bottom = -1
+    for y in range(height):
+        for x in range(width):
+            ink = min(255, coverage[y][x] * 255 // peak)
+            if ink <= 8:
+                continue
+            # Premultiplied white, so scaling below stays free of fringes.
+            mask.setPixel(x, y, (ink << 24) | (ink << 16) | (ink << 8) | ink)
+            left, top = min(left, x), min(top, y)
+            right, bottom = max(right, x), max(bottom, y)
+    if right < 0:
+        return None
+    return mask.copy(QRect(left, top, right - left + 1, bottom - top + 1))
+
+
+def nav_icon_pixmap(icon_id: str, box: int, color: str, *, ratio: int = 2) -> QPixmap | None:
+    """The supplied mark for a rail destination. See :func:`asset_icon_pixmap`."""
+    return asset_icon_pixmap(NAV_ICON_ASSETS.get(icon_id), box, color, ratio=ratio)
+
+
+def tool_icon_pixmap(item_id: str, box: int, color: str, *, ratio: int = 2) -> QPixmap | None:
+    """The supplied mark for a pinned tool. See :func:`asset_icon_pixmap`."""
+    return asset_icon_pixmap(TOOL_ICON_ASSETS.get(item_id), box, color, ratio=ratio)
+
+
+def asset_icon_pixmap(name: str | None, box: int, color: str, *, ratio: int = 2) -> QPixmap | None:
+    """A supplied mark, tinted ``color`` and fitted to a ``box``-pixel square.
+
+    The mark is scaled by its longer side so it fills the box the way a glyph
+    fills its em, then centred. Returns None when no artwork is installed under
+    ``name``, leaving the caller to fall back to a drawn or glyph icon.
+    """
+    if not name:
+        return None
+    box = max(1, int(box))
+    key = (name, box, color, ratio)
+    cached = _icon_cache.get(key)
+    if cached is not None:
+        return cached
+    source = _icon_source(name)
+    if source is None:
+        return None
+    side = box * ratio
+    scaled = source.scaled(
+        side,
+        side,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    pixmap = QPixmap(side, side)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.drawImage(
+        (side - scaled.width()) // 2, (side - scaled.height()) // 2, scaled
+    )
+    # Keep the mark's coverage, take its colour from the theme.
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(pixmap.rect(), QColor(color))
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    _icon_cache[key] = pixmap
+    return pixmap
+
+
+def library_icon_pixmap(size: int = 20, color: str = SIDEBAR_ACCENT_COLOR) -> QPixmap:
+    """Three book spines, the last one leaning, as the rail's Library mark."""
+    scale = 2
+    s = size * scale
+    pixmap = QPixmap(s, s)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    unit = s / 20.0
+    # Outlined spines, as the design draws them: the stroke is centred on the
+    # path, so every rectangle below is already inset by half its width.
+    stroke = 1.8 * unit
+    pen = QPen(QColor(color), stroke)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    radius = 1.1 * unit
+    painter.drawRoundedRect(
+        QRectF(0.90 * unit, 2.40 * unit, 4.20 * unit, 15.70 * unit), radius, radius
+    )
+    painter.drawRoundedRect(
+        QRectF(7.40 * unit, 2.40 * unit, 4.20 * unit, 15.70 * unit), radius, radius
+    )
+    # The third leans off the end of the shelf.
+    painter.save()
+    painter.translate(12.8 * unit, 19.0 * unit)
+    painter.rotate(13.0)
+    painter.drawRoundedRect(
+        QRectF(0.90 * unit, -13.10 * unit, 2.40 * unit, 12.20 * unit), radius, radius
+    )
+    painter.restore()
     painter.end()
     pixmap.setDevicePixelRatio(scale)
     return pixmap
@@ -173,6 +342,8 @@ class FolderTreeView(QTreeView):
         self._usage_track = QColor(58, 66, 77, 210)
         self._usage_fill = (QColor("#5b9cff"), QColor("#5b9cff"))
         self._drive_icon_provider = None
+        self._drive_row_height: int | None = None
+        self._drive_text_px: int | None = None
         self.expanded.connect(self._handle_index_expanded)
 
     def set_drives_only(self, enabled: bool) -> None:
@@ -201,6 +372,33 @@ class FolderTreeView(QTreeView):
 
     def usage_bar_colors(self) -> tuple[QColor, tuple[QColor, QColor]]:
         return self._usage_track, self._usage_fill
+
+    def set_drive_row_height(self, height: int | None) -> None:
+        """Pitch of the drive rows (name to name); None keeps the default."""
+        self._drive_row_height = int(height) if height else None
+        self.scheduleDelayedItemsLayout()
+        if self._drives_only:
+            self.fit_height_to_rows()
+
+    def drive_row_height(self) -> int | None:
+        return self._drive_row_height
+
+    def set_text_sizes(self, folder_px: int, drive_px: int) -> None:
+        """Row text sizes: folders take the view font, drives their own."""
+        folder_px = max(1, int(folder_px))
+        font = self.font()
+        font.setPixelSize(folder_px)
+        self.setFont(font)
+        # A widget stylesheet outranks the application one, which pins the
+        # folder tree's font-size.
+        self.setStyleSheet(f"font-size: {folder_px}px;")
+        self._drive_text_px = max(1, int(drive_px))
+        self.scheduleDelayedItemsLayout()
+        if self._drives_only:
+            self.fit_height_to_rows()
+
+    def drive_text_px(self) -> int | None:
+        return self._drive_text_px
 
     def set_drive_icon_provider(self, provider) -> None:
         """``provider(path) -> QIcon | None`` replaces the shell's drive icons."""
@@ -390,6 +588,8 @@ class _FolderTreeDelegate(QStyledItemDelegate):
 
     DRIVE_ROW_HEIGHT = 36
     FOLDER_ROW_HEIGHT = 26
+    METER_GAP = 5
+    METER_HEIGHT = 4
     _USAGE_CACHE_SECONDS = 30.0
 
     def __init__(self, tree: FolderTreeView) -> None:
@@ -399,7 +599,13 @@ class _FolderTreeDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index) -> QSize:  # type: ignore[override]
         hint = super().sizeHint(option, index)
-        height = self.DRIVE_ROW_HEIGHT if self._is_drive(index) else self.FOLDER_ROW_HEIGHT
+        if self._is_drive(index):
+            drive_px = self._tree.drive_text_px() or max(1, option.font.pixelSize())
+            block = round(drive_px * 1.4) + self.METER_GAP + self.METER_HEIGHT
+            height = max(self._tree.drive_row_height() or self.DRIVE_ROW_HEIGHT, block + 8)
+        else:
+            # Folder rows follow their text so larger type never clips.
+            height = max(self.FOLDER_ROW_HEIGHT, round(self._tree.font().pixelSize() * 1.7))
         return QSize(max(0, hint.width()), height)
 
     def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
@@ -429,12 +635,22 @@ class _FolderTreeDelegate(QStyledItemDelegate):
         if not drive_icon.isNull():
             drive_icon.paint(painter, icon_rect, Qt.AlignmentFlag.AlignCenter)
 
+        # Name and meter sit as one block centred in the row, sized from the
+        # drive text so the meter never rides up into the name.
+        drive_px = self._tree.drive_text_px() or max(1, option.font.pixelSize())
+        text_height = round(drive_px * 1.4)
+        block_height = text_height + self.METER_GAP + self.METER_HEIGHT
+        block_top = rect.top() + max(0, (rect.height() - block_height) // 2)
         text_left = icon_rect.right() + 9
-        text_rect = QRect(text_left, rect.top(), max(0, rect.right() - text_left - 6), 20)
+        text_rect = QRect(text_left, block_top, max(0, rect.right() - text_left - 6), text_height)
         color_role = QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text
         painter.setPen(option.palette.color(color_role))
-        painter.setFont(option.font)
-        label = option.fontMetrics.elidedText(
+        drive_font = QFont(option.font)
+        drive_px = self._tree.drive_text_px()
+        if drive_px:
+            drive_font.setPixelSize(drive_px)
+        painter.setFont(drive_font)
+        label = QFontMetrics(drive_font).elidedText(
             option.text, Qt.TextElideMode.ElideRight, text_rect.width()
         )
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
@@ -445,7 +661,12 @@ class _FolderTreeDelegate(QStyledItemDelegate):
             ratio = self._drive_usage_ratio(index)
             if ratio is not None:
                 track, (fill_start, fill_end) = self._tree.usage_bar_colors()
-                bar = QRectF(text_left, rect.top() + 25, max(24, rect.right() - text_left - 7), 4)
+                bar = QRectF(
+                    text_left,
+                    block_top + text_height + self.METER_GAP,
+                    max(24, rect.right() - text_left - 7),
+                    self.METER_HEIGHT,
+                )
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(track)
                 painter.drawRoundedRect(bar, 2, 2)
