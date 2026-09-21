@@ -110,10 +110,10 @@ LABEL_RATIO = 11 / DESIGN_RAIL_PX           # 16px  label text size
 SECTION_GAP_RATIO = 8 / DESIGN_RAIL_PX      # 12px  space above the divider
 DIVIDER_RATIO = 44 / DESIGN_RAIL_PX         # 65px  divider line width
 SECTION_LABEL_RATIO = 10 / DESIGN_RAIL_PX   # 16px  "PINNED" caption size
-TOOL_GAP_RATIO = 5 / DESIGN_RAIL_PX        # 15px  space between tool buttons
+TOOL_GAP_RATIO = 6 / DESIGN_RAIL_PX        # 15px  space between tool buttons
 TOOL_W_RATIO = 34 / DESIGN_RAIL_PX          # 53px  tool button width
 TOOL_H_RATIO = 30 / DESIGN_RAIL_PX          # 50px  tool button height
-TOOL_ICON_RATIO = 20 / DESIGN_RAIL_PX       # 29px  tool mark size. Clamped to
+TOOL_ICON_RATIO = 16 / DESIGN_RAIL_PX       # 29px  tool mark size. Clamped to
                                             #       the button, so raise TOOL_H
                                             #       to go much past this.
 TOOL_RADIUS_RATIO = 8 / DESIGN_RAIL_PX      # 12px  tool button corners

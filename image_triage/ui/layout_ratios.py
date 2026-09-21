@@ -22,7 +22,7 @@ from __future__ import annotations
 # --- Widths (share of window width) -----------------------------------------
 # Rail + folder pane + grid + inspector together make up the window.
 RAIL_W = 0.035                  # left icon rail
-LIBRARY_PANE_W = 0.85          # drives/folders pane beside the rail
+LIBRARY_PANE_W = 0.085         # drives/folders pane beside the rail
 INSPECTOR_W = 0.11              # right-hand inspector pane
 FLOATING_TOOLBAR_W = 0.426       # floating button bar over the grid
 SEARCH_W = 0.22                 # search bar in the top bar
