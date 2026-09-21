@@ -15,6 +15,7 @@ CHECKBOX_CHECK_ASSET = (Path(__file__).resolve().parent / "assets" / "checkbox_c
 
 
 class AppearanceMode(str, Enum):
+    SLATE = "slate"
     INDIGO = "indigo"
     DARK = "dark"
     MIDNIGHT = "midnight"
@@ -100,6 +101,49 @@ class ThemePalette:
     # the accent throughout.
     meter_start: ColorToken | None = None
     meter_end: ColorToken | None = None
+
+
+def _slate_theme() -> ThemePalette:
+    """The design's own palette: flat neutral surfaces under a blue accent.
+
+    Each surface is the exact value the layout was drawn with, so no glow sits
+    behind the chrome; leaving the backdrop glows unset keeps every panel
+    opaque instead of washing it with white (see ``_backdrop_rules``).
+    """
+    return ThemePalette(
+        name="slate",
+        is_dark=True,
+        window_bg=ColorToken(14, 15, 17),       # #0e0f11 grid background
+        chrome_bg=ColorToken(20, 21, 23),       # #141517 rail, menu bar, status bar
+        toolbar_bg=ColorToken(23, 24, 26),      # #17181a floating button bar
+        panel_bg=ColorToken(24, 25, 28),        # #18191c drives/folders and inspector
+        panel_alt_bg=ColorToken(22, 23, 25),    # #161719 settings bar
+        raised_bg=ColorToken(32, 34, 38),       # #202226 search bar
+        input_bg=ColorToken(20, 21, 23),
+        input_hover_bg=ColorToken(38, 40, 44),
+        border=ColorToken(38, 40, 44),
+        border_muted=ColorToken(30, 32, 36),
+        text_primary=ColorToken(231, 233, 236),
+        text_secondary=ColorToken(196, 201, 208),
+        text_muted=ColorToken(138, 144, 154),
+        text_disabled=ColorToken(93, 99, 108),
+        accent=ColorToken(76, 141, 255),
+        accent_hover=ColorToken(111, 164, 255),
+        accent_soft=ColorToken(76, 141, 255, 46),
+        selection_fill=ColorToken(28, 40, 60),  # #1c283c rail button highlight
+        selection_outline=ColorToken(120, 170, 255),
+        success=ColorToken(224, 86, 122),
+        success_soft=ColorToken(92, 34, 56, 222),
+        warning=ColorToken(232, 193, 90),
+        warning_soft=ColorToken(88, 68, 24, 222),
+        danger=ColorToken(217, 83, 79),
+        danger_soft=ColorToken(96, 34, 38, 222),
+        image_bg=ColorToken(14, 15, 17),
+        badge_bg=ColorToken(12, 13, 20, 224),
+        badge_text=ColorToken(244, 246, 250),
+        meter_start=ColorToken(76, 141, 255),
+        meter_end=ColorToken(79, 209, 197),
+    )
 
 
 def _indigo_theme() -> ThemePalette:
@@ -404,6 +448,7 @@ def parse_appearance_mode(raw: str | AppearanceMode | None) -> AppearanceMode:
 
 def appearance_profile_modes(*, include_auto: bool = True) -> tuple[AppearanceMode, ...]:
     modes = (
+        AppearanceMode.SLATE,
         AppearanceMode.INDIGO,
         AppearanceMode.DARK,
         AppearanceMode.MIDNIGHT,
@@ -420,6 +465,7 @@ def appearance_profile_modes(*, include_auto: bool = True) -> tuple[AppearanceMo
 
 def appearance_mode_label(mode: AppearanceMode) -> str:
     labels = {
+        AppearanceMode.SLATE: "Slate",
         AppearanceMode.INDIGO: "Indigo",
         AppearanceMode.DARK: "Dark",
         AppearanceMode.MIDNIGHT: "Midnight",
@@ -447,6 +493,8 @@ def _system_prefers_dark(app: QApplication) -> bool:
 
 
 def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
+    if mode == AppearanceMode.SLATE:
+        return _slate_theme()
     if mode == AppearanceMode.INDIGO:
         return _indigo_theme()
     if mode == AppearanceMode.DARK:
@@ -467,7 +515,7 @@ def resolve_theme(mode: AppearanceMode, app: QApplication) -> ThemePalette:
 
 
 def default_theme() -> ThemePalette:
-    return _indigo_theme()
+    return _slate_theme()
 
 
 def contrast_ratio(foreground: ColorToken, background: ColorToken) -> float:
@@ -1069,7 +1117,10 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border-top-left-radius: 0px;
         }}
         QWidget#appTopBar {{
-            background-color: {theme.toolbar_bg.css};
+            /* Chrome, like the rail and status bar it lines up with. The
+               floating toolbar is a QFrame with the same name and takes
+               toolbar_bg instead (see _toolbar_placement_rules). */
+            background-color: {theme.chrome_bg.css};
             border: none;
             border-radius: 0px;
         }}
@@ -1178,12 +1229,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLabel#topbarZoomIconSmall {{
             color: {theme.text_muted.css};
             font-family: "Segoe UI Symbol";
-            font-size: 13px;
+            font-size: 18px;
         }}
         QLabel#topbarZoomIconLarge {{
             color: {theme.text_muted.css};
             font-family: "Segoe UI Symbol";
-            font-size: 18px;
+            font-size: 24px;
         }}
         QWidget#appTopBar QToolButton#appTopBarActionButton,
         QWidget#appTopBar QToolButton#workspacePresetsButton {{
@@ -1582,9 +1633,10 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.border.css};
             color: {theme.text_secondary.css};
         }}
+        /* Sizes here are fallbacks only: the window sets them from
+           layout_ratios on every resize (_apply_inspector_text_ratios). */
         QLabel#inspectorSectionTitle {{
             color: {theme.text_muted.css};
-            font-size: 10px;
             font-weight: 600;
             padding: 0px;
         }}
@@ -1606,9 +1658,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#inspectorKey {{
             color: {theme.text_muted.css};
-            font-size: 11px;
-            min-width: 96px;
-            max-width: 96px;
         }}
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};
@@ -2042,8 +2091,8 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         /* Match the mode tabs while retaining enough weight to outrank rows. */
         QLabel#navSectionTitle {{
             color: {theme.text_primary.css};
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 16px;
+            font-weight: 555;
         }}
         /* Rows hug their 34px portrait; the custom widget owns the columns for
            the name, count, and trailing navigation chevron. */
@@ -2705,9 +2754,6 @@ def _inspector_rules(theme: ThemePalette) -> str:
             color: {theme.text_muted.css};
             font-size: 12px;
         }}
-        QLabel#inspectorKey {{
-            font-size: 12px;
-        }}
         QFrame#inspectorAiPlaceholder {{
             background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {theme.accent.with_alpha(51).css}, stop:1 {glow_css});
             border: 1px solid {theme.accent.with_alpha(64).css};
@@ -2778,7 +2824,7 @@ def _flat_shell_rules(theme: ThemePalette) -> str:
             border: none;
         }}
         QFrame#leftSettingsBar {{
-            background-color: {theme.text_primary.with_alpha(8).css};
+            background-color: {theme.panel_alt_bg.css};
             border-top: 1px solid {theme.border_muted.css};
         }}
         QWidget#inspectorBody, QWidget#inspectorDetailsBody, QScrollArea#inspectorScrollArea,
@@ -2855,7 +2901,7 @@ def _app_bar_rules(theme: ThemePalette) -> str:
             font-size: 8px;
         }}
         QFrame#appSearchBox {{
-            background-color: {theme.text_primary.with_alpha(15).css};
+            background-color: {theme.raised_bg.css};
             border: 1px solid transparent;
             border-radius: 8px;
             min-height: 30px;
@@ -2915,7 +2961,7 @@ def _toolbar_placement_rules(theme: ThemePalette) -> str:
             border-radius: 0px;
         }}
         QFrame#appTopBar[toolbarPlacement="floating"] {{
-            background-color: {theme.panel_bg.with_alpha(214).css};
+            background-color: {theme.toolbar_bg.css};
             border: 1px solid {theme.text_primary.with_alpha(26).css};
             border-radius: 12px;
         }}

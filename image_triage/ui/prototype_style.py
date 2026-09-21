@@ -56,6 +56,9 @@ PROTO_DRIVE_COLOR = "#8f9bb0"      # flat drive icon steel
 PROTO_DRIVE_LED_COLOR = "#5ad17e"  # drive activity LED accent
 SIDEBAR_ACCENT_COLOR = "#579bff"
 
+# How many drives the Drives list shows before it stops growing and scrolls.
+MAX_VISIBLE_DRIVES = 5
+
 
 def folder_icon_pixmap(size: int = 16, color: str = PROTO_FOLDER_COLOR) -> QPixmap:
     """A plain, flat single-tone folder icon with the classic angled tab.
@@ -344,6 +347,9 @@ class FolderTreeView(QTreeView):
         self._drive_icon_provider = None
         self._drive_row_height: int | None = None
         self._drive_text_px: int | None = None
+        # Usage-bar sizes; the window replaces these from layout_ratios.
+        self._meter_height = 4
+        self._meter_gap = 5
         self.expanded.connect(self._handle_index_expanded)
 
     def set_drives_only(self, enabled: bool) -> None:
@@ -352,8 +358,10 @@ class FolderTreeView(QTreeView):
         self.setItemsExpandable(not self._drives_only)
         self.setExpandsOnDoubleClick(not self._drives_only)
         if self._drives_only:
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            # The vertical policy belongs to fit_height_to_rows, which knows
+            # whether the list overflows the row cap.
+            self.fit_height_to_rows()
         self.updateGeometry()
 
     def setRootIndex(self, index: QModelIndex) -> None:  # type: ignore[override]
@@ -400,6 +408,22 @@ class FolderTreeView(QTreeView):
     def drive_text_px(self) -> int | None:
         return self._drive_text_px
 
+    def set_meter_metrics(self, height: int, gap: int) -> None:
+        """Thickness of each drive's usage bar and its gap below the name."""
+        height, gap = max(1, int(height)), max(0, int(gap))
+        if (height, gap) == (self._meter_height, self._meter_gap):
+            return
+        self._meter_height, self._meter_gap = height, gap
+        self.scheduleDelayedItemsLayout()
+        if self._drives_only:
+            self.fit_height_to_rows()
+
+    def meter_height(self) -> int:
+        return self._meter_height
+
+    def meter_gap(self) -> int:
+        return self._meter_gap
+
     def set_drive_icon_provider(self, provider) -> None:
         """``provider(path) -> QIcon | None`` replaces the shell's drive icons."""
         self._drive_icon_provider = provider
@@ -411,14 +435,26 @@ class FolderTreeView(QTreeView):
 
     def fit_height_to_rows(self) -> None:
         """Drives-only lists size to their rows so the Folders section below
-        gets the rest of the pane."""
+        gets the rest of the pane.
+
+        Past :data:`MAX_VISIBLE_DRIVES` rows the list stops growing and scrolls
+        instead, so a machine with many drives cannot crowd out the folders.
+        """
         model = self.model()
         if model is None:
             return
         root = self.rootIndex()
+        rows = model.rowCount(root)
+        visible = min(rows, MAX_VISIBLE_DRIVES) if self._drives_only else rows
         height = 0
-        for row in range(model.rowCount(root)):
+        for row in range(visible):
             height += max(0, self.sizeHintForRow(row))
+        overflowing = self._drives_only and rows > MAX_VISIBLE_DRIVES
+        self.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if overflowing
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         frame = 2 * self.frameWidth()
         self.setFixedHeight(max(0, height) + frame + 2)
 
@@ -588,8 +624,8 @@ class _FolderTreeDelegate(QStyledItemDelegate):
 
     DRIVE_ROW_HEIGHT = 36
     FOLDER_ROW_HEIGHT = 26
-    METER_GAP = 5
-    METER_HEIGHT = 4
+    # The usage bar's thickness and gap live on the tree (meter_height/gap) so
+    # the window can size them from layout_ratios.
     _USAGE_CACHE_SECONDS = 30.0
 
     def __init__(self, tree: FolderTreeView) -> None:
@@ -601,7 +637,7 @@ class _FolderTreeDelegate(QStyledItemDelegate):
         hint = super().sizeHint(option, index)
         if self._is_drive(index):
             drive_px = self._tree.drive_text_px() or max(1, option.font.pixelSize())
-            block = round(drive_px * 1.4) + self.METER_GAP + self.METER_HEIGHT
+            block = round(drive_px * 1.4) + self._tree.meter_gap() + self._tree.meter_height()
             height = max(self._tree.drive_row_height() or self.DRIVE_ROW_HEIGHT, block + 8)
         else:
             # Folder rows follow their text so larger type never clips.
@@ -639,7 +675,7 @@ class _FolderTreeDelegate(QStyledItemDelegate):
         # drive text so the meter never rides up into the name.
         drive_px = self._tree.drive_text_px() or max(1, option.font.pixelSize())
         text_height = round(drive_px * 1.4)
-        block_height = text_height + self.METER_GAP + self.METER_HEIGHT
+        block_height = text_height + self._tree.meter_gap() + self._tree.meter_height()
         block_top = rect.top() + max(0, (rect.height() - block_height) // 2)
         text_left = icon_rect.right() + 9
         text_rect = QRect(text_left, block_top, max(0, rect.right() - text_left - 6), text_height)
@@ -649,6 +685,7 @@ class _FolderTreeDelegate(QStyledItemDelegate):
         drive_px = self._tree.drive_text_px()
         if drive_px:
             drive_font.setPixelSize(drive_px)
+        drive_font.setWeight(QFont.Weight.DemiBold)   # drive name weight: 600
         painter.setFont(drive_font)
         label = QFontMetrics(drive_font).elidedText(
             option.text, Qt.TextElideMode.ElideRight, text_rect.width()
@@ -663,9 +700,9 @@ class _FolderTreeDelegate(QStyledItemDelegate):
                 track, (fill_start, fill_end) = self._tree.usage_bar_colors()
                 bar = QRectF(
                     text_left,
-                    block_top + text_height + self.METER_GAP,
+                    block_top + text_height + self._tree.meter_gap(),
                     max(24, rect.right() - text_left - 7),
-                    self.METER_HEIGHT,
+                    self._tree.meter_height(),
                 )
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(track)

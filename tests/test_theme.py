@@ -26,9 +26,23 @@ def test_library_sidebar_uses_the_application_font_stack() -> None:
     assert f"font-family: {UI_FONT_STACK};" in stylesheet
 
 
-def test_indigo_is_the_default_application_palette() -> None:
-    assert default_theme().name == "indigo"
-    assert appearance_profile_modes()[0] == AppearanceMode.INDIGO
+def test_slate_is_the_default_application_palette() -> None:
+    assert default_theme().name == "slate"
+    assert appearance_profile_modes()[0] == AppearanceMode.SLATE
+
+
+def test_slate_paints_the_designs_surfaces_flat() -> None:
+    """Slate is specified as exact surface colours, so it carries no backdrop
+    glow; the glows would otherwise wash every chrome surface with white."""
+    theme = resolve_theme(AppearanceMode.SLATE, QApplication.instance() or QApplication([]))
+    assert theme.backdrop_glow_primary is None
+    assert theme.window_bg.css == "rgb(14, 15, 17)"      # grid
+    assert theme.chrome_bg.css == "rgb(20, 21, 23)"      # rail, menu bar, status bar
+    assert theme.panel_bg.css == "rgb(24, 25, 28)"       # library pane and inspector
+    assert theme.toolbar_bg.css == "rgb(23, 24, 26)"     # floating button bar
+    assert theme.panel_alt_bg.css == "rgb(22, 23, 25)"   # settings bar
+    assert theme.raised_bg.css == "rgb(32, 34, 38)"      # search bar
+    assert theme.selection_fill.css == "rgb(28, 40, 60)"  # rail button highlight
 
 
 def test_only_backdrop_themes_turn_the_window_chrome_translucent() -> None:
