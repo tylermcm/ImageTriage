@@ -397,6 +397,21 @@ from .ui.prototype_style import (
 from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
 
 
+# TEMPORARY: the window is translucent so it can be laid over the design
+# reference while the layout ratios are tuned. Set this back to 1.0 when done;
+# IMAGE_TRIAGE_OPACITY overrides it without editing (e.g. 1 for opaque).
+WINDOW_OPACITY = 1
+
+
+def _window_opacity() -> float:
+    raw = os.environ.get("IMAGE_TRIAGE_OPACITY")
+    try:
+        value = float(raw) if raw else WINDOW_OPACITY
+    except ValueError:
+        value = WINDOW_OPACITY
+    return min(1.0, max(0.1, value))
+
+
 @dataclass(slots=True)
 class UndoAction:
     """Captures the minimum state needed to reverse one destructive user action."""
@@ -2578,14 +2593,14 @@ class MainWindow(QMainWindow):
     APPEARANCE_KEY = "window/appearance"
     # One-shot switch of existing installs onto the Indigo default.
     APPEARANCE_INDIGO_MIGRATION_KEY = "window/appearance_indigo_default"
+    # One-shot switch of existing installs onto the Slate default.
+    APPEARANCE_SLATE_MIGRATION_KEY = "window/appearance_slate_default"
     TOOLBAR_PLACEMENT_KEY = "ui/toolbar_placement"
     TOOLBAR_PLACEMENTS = ("floating", "docked")
-    FLOATING_TOOLBAR_BOTTOM_MARGIN = 14
-    FLOATING_TOOLBAR_SIDE_MARGIN = 24
-    # Clear space kept between the floating toolbar and the last card row
-    # once the grid is scrolled to the end, and the depth of the fade above it.
-    FLOATING_TOOLBAR_ROW_GAP = 12
-    FLOATING_TOOLBAR_FADE_DEPTH = 120
+    # The floating bar's bottom margin, inner padding, row gap and fade are
+    # FLOATING_TOOLBAR_*_H in layout_ratios.py. This one stays: it only caps the
+    # bar's width against a narrow grid and never moves it (the bar is centred).
+    FLOATING_TOOLBAR_SIDE_MARGIN = 75
     UI_GAMMA_KEY = "view/ui_gamma"
     INTERFACE_SIZE_KEY = "view/interface_size"
     GEOMETRY_KEY = "window/geometry"
@@ -3196,11 +3211,11 @@ class MainWindow(QMainWindow):
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
         self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
         self._workspace_toolbar_overflow_update_pending: set[str] = set()
-        if not self._settings.value(self.APPEARANCE_INDIGO_MIGRATION_KEY, False, bool):
-            self._settings.setValue(self.APPEARANCE_KEY, AppearanceMode.INDIGO.value)
-            self._settings.setValue(self.APPEARANCE_INDIGO_MIGRATION_KEY, True)
+        if not self._settings.value(self.APPEARANCE_SLATE_MIGRATION_KEY, False, bool):
+            self._settings.setValue(self.APPEARANCE_KEY, AppearanceMode.SLATE.value)
+            self._settings.setValue(self.APPEARANCE_SLATE_MIGRATION_KEY, True)
         self._appearance_mode = parse_appearance_mode(
-            self._settings.value(self.APPEARANCE_KEY, AppearanceMode.INDIGO.value, str)
+            self._settings.value(self.APPEARANCE_KEY, AppearanceMode.SLATE.value, str)
         )
         self._toolbar_placement = self._normalize_toolbar_placement(
             self._settings.value(self.TOOLBAR_PLACEMENT_KEY, "floating", str)
@@ -4732,11 +4747,13 @@ class MainWindow(QMainWindow):
         menu_slot_layout.setContentsMargins(0, 0, 0, 0)
         self.app_menu_button = QToolButton(self.app_menu_slot)
         self.app_menu_button.setObjectName("appMenuButton")
+        # Icon only: the text is kept for the tooltip and screen readers.
         self.app_menu_button.setText("Menu")
         self.app_menu_button.setToolTip("Menu")
+        self.app_menu_button.setAccessibleName("Menu")
         self.app_menu_button.setIcon(self._topbar_nav_icon("menu"))
         self.app_menu_button.setIconSize(QSize(16, 16))
-        self.app_menu_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.app_menu_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.app_menu_button.setAutoRaise(True)
         self.app_menu_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.app_menu_button.clicked.connect(
@@ -5113,6 +5130,9 @@ class MainWindow(QMainWindow):
         if right > 0:
             ratios["inspector"] = round(right / width, 4)
         self._settings.setValue(self.PANE_RATIOS_KEY, json.dumps(ratios))
+        # The inspector's label column is a share of the pane, so it has to
+        # follow a drag as well as a window resize.
+        self._apply_inspector_text_ratios(width, max(1, self.height()))
 
     def _schedule_layout_ratio_update(self) -> None:
         if getattr(self, "_layout_ratio_update_pending", False):
@@ -5134,6 +5154,10 @@ class MainWindow(QMainWindow):
         search_width = px(layout_ratios.SEARCH_W, width, minimum=200)
         self.app_search_box.setMinimumWidth(min(240, search_width))
         self.app_search_box.setMaximumWidth(search_width)
+        self._apply_chrome_text_ratios(width, height)
+        # Before the toolbar profile below: its button height reads the floating
+        # bar's padding, which this sets.
+        self._apply_chrome_size_ratios(width, height)
         self.left_nav_rail.apply_width(px(layout_ratios.RAIL_W, width, minimum=56))
         self._apply_left_rail_metrics()
         drive_row = px(layout_ratios.DRIVE_ROW_H, height, minimum=34)
@@ -5153,6 +5177,8 @@ class MainWindow(QMainWindow):
                 px(layout_ratios.AI_BOX_W, width, minimum=180),
                 px(layout_ratios.AI_BOX_H, height, minimum=120),
             )
+            # After the splitter, so the label column measures the settled pane.
+            self._apply_inspector_text_ratios(width, height)
         base = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
         caption_scale = self._toolbar_profile().topbar_glyph_size / max(1, base.topbar_glyph_size)
         self.toolbar_strip.setStyleSheet(
@@ -5284,10 +5310,17 @@ class MainWindow(QMainWindow):
             return
         compact = self._toolbar_placement == "floating"
         profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
+        # Status-bar sizes come from layout_ratios (STATUS_*, ZOOM_*); docked on
+        # the toolbar, the controls take the toolbar's own button metrics.
+        px = layout_ratios.ratio_px
+        height = max(1, self.height())
+        floor = layout_ratios.MIN_GLYPH_PX
+        toggle_box = px(layout_ratios.STATUS_TOGGLE_BOX_H, height, minimum=16)
+        toggle_icon = px(layout_ratios.STATUS_TOGGLE_ICON_H, height, minimum=floor)
         for button in getattr(self, "_topbar_pane_buttons", {}).values():
             if compact:
-                button.setFixedSize(24, 22)
-                button.setIconSize(QSize(16, 16))
+                button.setFixedSize(toggle_box, toggle_box)
+                button.setIconSize(QSize(toggle_icon, toggle_icon))
             else:
                 hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
                 hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
@@ -5295,7 +5328,52 @@ class MainWindow(QMainWindow):
                 button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
         slider = getattr(self, "topbar_zoom_slider", None)
         if slider is not None:
-            slider.setFixedWidth(92 if compact else profile.topbar_zoom_width)
+            slider_width = px(layout_ratios.ZOOM_SLIDER_W, max(1, self.width()), minimum=48)
+            slider.setFixedWidth(slider_width if compact else profile.topbar_zoom_width)
+
+        # The slider's line and handle, and the magnifiers either side of it.
+        track = px(layout_ratios.ZOOM_TRACK_H, height, minimum=1)
+        handle = px(layout_ratios.ZOOM_HANDLE_H, height, minimum=4)
+        sheet = (
+            "QSlider#topbarZoomSlider::groove:horizontal"
+            f" {{ height: {track}px; border-radius: {max(0, track // 2)}px; }}"
+            " QSlider#topbarZoomSlider::handle:horizontal"
+            f" {{ width: {handle}px; height: {handle}px;"
+            f" margin: -{max(0, (handle - track) // 2)}px 0px;"
+            f" border-radius: {handle // 2}px; }}"
+            " QLabel#topbarZoomIconSmall"
+            f" {{ font-size: {px(layout_ratios.ZOOM_ICON_SMALL_H, height, minimum=floor)}px; }}"
+            " QLabel#topbarZoomIconLarge"
+            f" {{ font-size: {px(layout_ratios.ZOOM_ICON_LARGE_H, height, minimum=floor)}px; }}"
+        )
+        if controls.styleSheet() != sheet:
+            controls.setStyleSheet(sheet)
+
+        # Gaps: inside the zoom cluster, and the spacer between it and the toggles.
+        icon_gap = px(layout_ratios.ZOOM_ICON_GAP_H, height, minimum=0)
+        controls_gap = px(layout_ratios.STATUS_CONTROLS_GAP_H, height, minimum=0)
+        cluster = getattr(self, "topbar_zoom_cluster", None)
+        if cluster is not None and cluster.layout() is not None:
+            cluster.layout().setSpacing(icon_gap)
+        layout = controls.layout()
+        if layout is not None:
+            layout.setSpacing(controls_gap)
+            for index in range(layout.count()):
+                spacer = layout.itemAt(index).spacerItem()
+                if spacer is not None:
+                    spacer.changeSize(controls_gap, 0)
+            layout.invalidate()
+
+        # The status bar's text labels: their widest allowed width.
+        width = max(1, self.width())
+        for name, ratio in (
+            ("filter_summary_label", layout_ratios.STATUS_FILTER_W),
+            ("catalog_status_label", layout_ratios.STATUS_CATALOG_W),
+            ("cache_pipeline_label", layout_ratios.STATUS_PIPELINE_W),
+        ):
+            label = getattr(self, name, None)
+            if label is not None:
+                label.setMaximumWidth(px(ratio, width, minimum=80))
 
     def _build_toolbar_strip(self, nav_cluster: QWidget, action_stack: QWidget) -> QFrame:
         """The customizable button bar as one movable unit.
@@ -5397,15 +5475,19 @@ class MainWindow(QMainWindow):
         if strip is None or browser_stack is None or self._toolbar_placement != "floating":
             return
         area = browser_stack.geometry()
-        margin = self.FLOATING_TOOLBAR_BOTTOM_MARGIN
+        px = layout_ratios.ratio_px
+        floor = layout_ratios.MIN_GLYPH_PX
+        margin = px(layout_ratios.FLOATING_TOOLBAR_BOTTOM_H, self.height(), minimum=floor)
+        row_gap = px(layout_ratios.FLOATING_TOOLBAR_ROW_GAP_H, self.height(), minimum=0)
+        fade = px(layout_ratios.FLOATING_TOOLBAR_FADE_H, self.height(), minimum=0)
         width = self._floating_toolbar_width(area.width() - 2 * self.FLOATING_TOOLBAR_SIDE_MARGIN, expanded=expanded)
-        height = layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_H, self.height(), minimum=strip.minimumSizeHint().height())
+        height = px(layout_ratios.FLOATING_TOOLBAR_H, self.height(), minimum=strip.minimumSizeHint().height())
         strip.setFixedWidth(width)
         strip.setFixedHeight(height)
         strip.setGeometry(area.x() + (area.width() - width) // 2, area.bottom() + 1 - margin - height, width, height)
         strip.raise_()
-        reserve = height + margin + self.FLOATING_TOOLBAR_ROW_GAP
-        self.grid.set_bottom_overlay(reserve, reserve + self.FLOATING_TOOLBAR_FADE_DEPTH)
+        reserve = height + margin + row_gap
+        self.grid.set_bottom_overlay(reserve, reserve + fade)
         self.details_view.set_bottom_overlay_reserve(height + margin)
 
     def _build_topbar_action_stack(self) -> QStackedWidget:
@@ -6428,6 +6510,220 @@ class MainWindow(QMainWindow):
             "collections": sidebar_projects_icon_pixmap,
         }.get(icon_id, folder_icon_pixmap)
         return QIcon(painter(self._nav_icon_box(icon_id, size), colour))
+
+    def _apply_chrome_text_ratios(self, width: int, height: int) -> None:
+        """Size the top bar's text and the pane headings from layout_ratios.
+
+        Each goes on through the widget's own stylesheet, which outranks the
+        application one where these sizes would otherwise be pinned.
+        """
+        px = layout_ratios.ratio_px
+        floor = layout_ratios.MIN_TEXT_PX
+
+        def text_px(ratio: float) -> int:
+            return px(ratio, height, minimum=floor)
+
+        # The Menu button is icon only, so it has no text size (MENU_ICON_H).
+        glyph_floor = layout_ratios.MIN_GLYPH_PX
+
+        def glyph_px(ratio: float) -> int:
+            return px(ratio, height, minimum=glyph_floor)
+
+        crumb = getattr(self, "app_breadcrumb", None)
+        if crumb is not None:
+            # Named selectors, not a bare font-size: a bare one cascades into the
+            # chevrons between folders and swells them to the text size.
+            sheet = (
+                "QToolButton#breadcrumbSegment, QToolButton#breadcrumbCurrent,"
+                " QLabel#breadcrumbCurrentLabel"
+                f" {{ font-size: {text_px(layout_ratios.BREADCRUMB_TEXT_H)}px; }}"
+                " QLabel#breadcrumbChevron"
+                f" {{ font-size: {glyph_px(layout_ratios.BREADCRUMB_CHEVRON_H)}px; }}"
+            )
+            if crumb.styleSheet() != sheet:
+                crumb.setStyleSheet(sheet)
+        search_box = getattr(self, "app_search_box", None)
+        if search_box is not None:
+            search_height = px(layout_ratios.SEARCH_H, height, minimum=24)
+            field_px = text_px(layout_ratios.SEARCH_TEXT_H)
+            sheet = (
+                f"QFrame#appSearchBox {{ min-height: {search_height}px;"
+                f" max-height: {search_height}px; }}"
+                f" QLineEdit#workspaceSearchField {{ font-size: {field_px}px; }}"
+                " QLabel#appSearchGlyph"
+                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_GLYPH_H)}px; }}"
+                " QToolButton#appSearchKeyHint"
+                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_HINT_H)}px; }}"
+            )
+            if search_box.styleSheet() != sheet:
+                search_box.setStyleSheet(sheet)
+        heading_px = text_px(layout_ratios.SECTION_TITLE_H)
+        for header in (
+            getattr(self, "drives_header", None),
+            getattr(self, "folders_header", None),
+            getattr(self, "face_groups_header", None),
+            getattr(self, "projects_header", None),
+        ):
+            title = getattr(header, "title", None)
+            if title is not None:
+                self._set_widget_font_px(title, heading_px)
+
+    def _apply_chrome_size_ratios(self, width: int, height: int) -> None:
+        """Size the shell's icons, buttons and spacing from layout_ratios.
+
+        Covers what the text ratios do not: the top bar's icons and window
+        buttons, the pane headings, the drive meters and folder tree, the
+        settings strip, the floating bar's padding and the status text.
+        """
+        px = layout_ratios.ratio_px
+        g_floor = layout_ratios.MIN_GLYPH_PX
+
+        def glyph(ratio: float) -> int:
+            return px(ratio, height, minimum=g_floor)
+
+        def size(button: QToolButton | None, box: int | None, icon: int) -> None:
+            if button is None:
+                return
+            if box is not None:
+                button.setFixedSize(box, box)
+            button.setIconSize(QSize(icon, icon))
+
+        # Top bar
+        size(getattr(self, "app_menu_button", None), None, glyph(layout_ratios.MENU_ICON_H))
+        size(
+            getattr(self, "app_settings_button", None),
+            glyph(layout_ratios.TOP_GEAR_BOX_H),
+            glyph(layout_ratios.TOP_GEAR_ICON_H),
+        )
+        update_button = getattr(self, "update_download_button", None)
+        if update_button is not None:
+            update_button.setFixedSize(
+                glyph(layout_ratios.UPDATE_BOX_W_H), glyph(layout_ratios.UPDATE_BOX_H)
+            )
+            update_icon = glyph(layout_ratios.UPDATE_ICON_H)
+            update_button.setIconSize(QSize(update_icon, update_icon))
+        window_glyph = glyph(layout_ratios.WINDOW_BUTTON_GLYPH_H)
+        for control in getattr(self, "_window_control_buttons", {}).values():
+            self._set_widget_font_px(control, window_glyph)
+
+        # Drives / Folders headings, and their refresh / + buttons
+        header_height = glyph(layout_ratios.SECTION_HEADER_H)
+        chevron = glyph(layout_ratios.SECTION_CHEVRON_H)
+        for header in (
+            getattr(self, "drives_header", None),
+            getattr(self, "folders_header", None),
+            getattr(self, "face_groups_header", None),
+            getattr(self, "projects_header", None),
+        ):
+            if header is None:
+                continue
+            sheet = f"QWidget#navSectionHeader {{ min-height: {header_height}px; }}"
+            if header.styleSheet() != sheet:
+                header.setStyleSheet(sheet)
+            header.chevron.setFixedSize(chevron, chevron)
+        section_box = glyph(layout_ratios.SECTION_BUTTON_BOX_H)
+        section_icon = glyph(layout_ratios.SECTION_BUTTON_ICON_H)
+        for button in (
+            getattr(self, "drives_refresh_button", None),
+            getattr(self, "folders_add_button", None),
+        ):
+            size(button, section_box, section_icon)
+
+        # Drive meters and the folder tree
+        meter = glyph(layout_ratios.DRIVE_METER_H)
+        meter_gap = px(layout_ratios.DRIVE_METER_GAP_H, height, minimum=0)
+        for tree in (getattr(self, "drive_list", None), getattr(self, "folder_tree", None)):
+            if tree is not None:
+                tree.set_meter_metrics(meter, meter_gap)
+        folder_tree = getattr(self, "folder_tree", None)
+        if folder_tree is not None:
+            folder_icon = glyph(layout_ratios.FOLDER_ICON_H)
+            folder_tree.setIconSize(QSize(folder_icon, folder_icon))
+            folder_tree.setIndentation(glyph(layout_ratios.FOLDER_INDENT_H))
+
+        # Settings strip under the folder pane (the top-bar gear is sized above)
+        strip_box = glyph(layout_ratios.SETTINGS_BUTTON_BOX_H)
+        strip_icon = glyph(layout_ratios.SETTINGS_ICON_H)
+        top_gear = getattr(self, "app_settings_button", None)
+        for button, _base in getattr(self, "_left_settings_buttons", ()):
+            if button is not top_gear:
+                size(button, strip_box, strip_icon)
+        settings_bar = getattr(self, "left_settings_bar", None)
+        if settings_bar is not None and settings_bar.layout() is not None:
+            pad = glyph(layout_ratios.SETTINGS_PAD_H)
+            settings_bar.layout().setContentsMargins(pad, pad, pad, pad)
+            settings_bar.layout().setSpacing(glyph(layout_ratios.SETTINGS_GAP_H))
+
+        # Floating bar padding (its margin, row gap and fade are positional,
+        # applied in _position_floating_toolbar)
+        strip_layout = getattr(self, "_toolbar_strip_layout", None)
+        if strip_layout is not None:
+            pad_x = px(layout_ratios.FLOATING_TOOLBAR_PAD_X_H, height, minimum=0)
+            pad_y = px(layout_ratios.FLOATING_TOOLBAR_PAD_Y_H, height, minimum=0)
+            strip_layout.setContentsMargins(pad_x, pad_y, pad_x, pad_y)
+
+        # Zoom slider, pane toggles and label widths in the status bar
+        self._size_view_controls()
+
+        # Status bar text (the three permanent labels share one object name)
+        status_px = px(layout_ratios.STATUS_TEXT_H, height, minimum=layout_ratios.MIN_TEXT_PX)
+        # The message on the far left ("Ready", "Update available") is drawn by
+        # the status bar itself, not a label, so it takes the bar's own font.
+        status_bar = self.statusBar()
+        status_sheet = f"QStatusBar {{ font-size: {status_px}px; }}"
+        if status_bar.styleSheet() != status_sheet:
+            status_bar.setStyleSheet(status_sheet)
+        for label in (
+            getattr(self, "filter_summary_label", None),
+            getattr(self, "catalog_status_label", None),
+            getattr(self, "cache_pipeline_label", None),
+        ):
+            if label is not None:
+                self._set_widget_font_px(label, status_px)
+
+    def _apply_inspector_text_ratios(self, width: int, height: int) -> None:
+        """Size the inspector's own text and its label column.
+
+        One sheet on the panel root, which every row inherits, so rows built
+        later for a new photo pick the sizes up without being visited.
+        """
+        panel = getattr(self, "inspector_panel", None)
+        if panel is None:
+            return
+        px = layout_ratios.ratio_px
+        floor = layout_ratios.MIN_TEXT_PX
+        title = px(layout_ratios.INSPECTOR_TITLE_H, height, minimum=floor)
+        aside = px(layout_ratios.INSPECTOR_ASIDE_H, height, minimum=floor)
+        key = px(layout_ratios.INSPECTOR_KEY_H, height, minimum=floor)
+        value = px(layout_ratios.INSPECTOR_VALUE_H, height, minimum=floor)
+        preview = px(layout_ratios.INSPECTOR_PREVIEW_H, height, minimum=floor)
+        # The label column is a share of the pane, so it keeps its proportion
+        # as the pane is resized rather than eating a narrow inspector.
+        pane = panel.width() or px(layout_ratios.INSPECTOR_W, width, minimum=200)
+        key_width = max(48, round(layout_ratios.INSPECTOR_KEY_W * pane))
+        chip = px(layout_ratios.INSPECTOR_CHIP_TEXT_H, height, minimum=floor)
+        nav = px(layout_ratios.INSPECTOR_NAV_H, height, minimum=layout_ratios.MIN_GLYPH_PX)
+        analyze = px(layout_ratios.ANALYZE_BUTTON_H, height, minimum=20)
+        sheet = (
+            f"QLabel#inspectorAiChip {{ font-size: {chip}px; }}"
+            f"QToolButton#inspectorNavButton {{ font-size: {nav}px; }}"
+            f"QPushButton#inspectorAnalyzeButton {{ min-height: {analyze}px; }}"
+            f"QLabel#inspectorSectionTitle {{ font-size: {title}px; }}"
+            f"QLabel#inspectorSectionAside {{ font-size: {aside}px; }}"
+            f"QLabel#inspectorKey {{ font-size: {key}px;"
+            f" min-width: {key_width}px; max-width: {key_width}px; }}"
+            f"QLabel#inspectorValue {{ font-size: {value}px; }}"
+            f"QLabel#inspectorPreviewName, QLabel#inspectorPreviewPosition"
+            f" {{ font-size: {preview}px; }}"
+        )
+        if panel.styleSheet() != sheet:
+            panel.setStyleSheet(sheet)
+
+    @staticmethod
+    def _set_widget_font_px(widget: QWidget, size: int) -> None:
+        sheet = f"font-size: {size}px;"
+        if widget.styleSheet() != sheet:
+            widget.setStyleSheet(sheet)
 
     def _apply_left_rail_label_colors(self) -> None:
         """Give the rail the same two colours its icons are tinted with."""
@@ -9720,6 +10016,10 @@ class MainWindow(QMainWindow):
         # The layout is proportioned to a maximized window, so that is how it
         # opens (a saved fullscreen session still reopens fullscreen).
         self._startup_window_state = window_state if window_state == "fullscreen" else "maximized"
+        # TEMPORARY: translucent so the window can be laid over the design
+        # reference while the ratios are tuned. Set WINDOW_OPACITY back to 1.0
+        # (or run with IMAGE_TRIAGE_OPACITY=1) when that is done.
+        self.setWindowOpacity(_window_opacity())
         if not restored:
             self._apply_default_workspace()
 
@@ -18546,7 +18846,35 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         for action in self.menuBar().actions():
             menu.addAction(action)
+        # Text size from MENU_ITEM_TEXT_H. Only this dropdown and its submenus
+        # (the hidden menu bar's menus, reachable only from here) take it;
+        # right-click menus elsewhere keep the default.
+        size = layout_ratios.ratio_px(
+            layout_ratios.MENU_ITEM_TEXT_H, max(1, self.height()), minimum=layout_ratios.MIN_TEXT_PX
+        )
+        self._size_menu_tree(menu, f"QMenu {{ font-size: {size}px; }}")
         menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
+
+    def _size_menu_tree(self, menu: QMenu, sheet: str, seen: set[int] | None = None) -> None:
+        seen = set() if seen is None else seen
+        if id(menu) in seen:
+            return
+        seen.add(id(menu))
+        # Some menus built for the hidden menu bar are torn down and rebuilt,
+        # leaving wrappers whose C++ side is gone; skip those instead of raising.
+        try:
+            if menu.styleSheet() != sheet:
+                menu.setStyleSheet(sheet)
+            actions = menu.actions()
+        except RuntimeError:
+            return
+        for action in actions:
+            try:
+                submenu = action.menu()
+            except RuntimeError:
+                continue
+            if isinstance(submenu, QMenu):
+                self._size_menu_tree(submenu, sheet, seen)
 
     def _navigate_to_parent_folder(self) -> None:
         target = self._parent_folder_for_navigation()
