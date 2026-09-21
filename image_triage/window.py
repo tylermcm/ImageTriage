@@ -385,14 +385,15 @@ from .ui.help_topics import library_help_pages, settings_help_pages
 from .ui.menus import add_ai_results_actions
 from .ui.prototype_style import (
     NAV_ICON_ASSETS,
-    TOOL_ICON_ASSETS,
     FolderTreeView,
     folder_icon_pixmap,
     library_icon_pixmap,
     nav_icon_pixmap,
     sidebar_people_icon_pixmap,
     sidebar_projects_icon_pixmap,
-    tool_icon_pixmap,
+    rail_tool_pixmap,
+    tool_icon_mark,
+    trim_to_alpha,
 )
 from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
 
@@ -4963,6 +4964,33 @@ class MainWindow(QMainWindow):
 
     WINDOW_RESIZE_BORDER = 6
 
+    def showMaximized(self) -> None:  # type: ignore[override]
+        # Once the frameless window is on screen, Qt "maximizes" it by stretching
+        # it over the work area, which Windows still treats as a restored window:
+        # rounded corners, a light 1px border, and corners that click through to
+        # whatever is behind. Have Windows maximize it for real instead.
+        if getattr(self, "_custom_frame", False) and self.isVisible():
+            try:
+                ctypes.windll.user32.ShowWindow(int(self.winId()), 3)  # type: ignore[attr-defined]  # SW_MAXIMIZE
+                return
+            except (AttributeError, OSError):
+                pass
+        super().showMaximized()
+
+    def showNormal(self) -> None:  # type: ignore[override]
+        # The other half of showMaximized: Qt would only resize the window,
+        # leaving Windows still treating it as maximized.
+        if getattr(self, "_custom_frame", False) and self.isVisible():
+            try:
+                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+                hwnd = int(self.winId())
+                if user32.IsZoomed(hwnd):
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    return
+            except (AttributeError, OSError):
+                pass
+        super().showNormal()
+
     def _toggle_maximized(self) -> None:
         if self.isMaximized():
             self.showNormal()
@@ -5026,6 +5054,45 @@ class MainWindow(QMainWindow):
         except (AttributeError, OSError, ValueError):
             return None
 
+    @staticmethod
+    def _fit_maximized_to_work_area(hwnd: int, minmaxinfo_address: int) -> None:
+        """Set a WM_GETMINMAXINFO reply's maximized size and position to the
+        work area of the window's monitor."""
+
+        class MinMaxInfo(ctypes.Structure):
+            _fields_ = [
+                ("ptReserved", ctypes.wintypes.POINT),
+                ("ptMaxSize", ctypes.wintypes.POINT),
+                ("ptMaxPosition", ctypes.wintypes.POINT),
+                ("ptMinTrackSize", ctypes.wintypes.POINT),
+                ("ptMaxTrackSize", ctypes.wintypes.POINT),
+            ]
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.wintypes.DWORD),
+                ("rcMonitor", ctypes.wintypes.RECT),
+                ("rcWork", ctypes.wintypes.RECT),
+                ("dwFlags", ctypes.wintypes.DWORD),
+            ]
+
+        try:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+            info = MonitorInfo()
+            info.cbSize = ctypes.sizeof(MonitorInfo)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                return
+            work, bounds = info.rcWork, info.rcMonitor
+            mmi = MinMaxInfo.from_address(minmaxinfo_address)
+            # Position is relative to the monitor, size is the work area's.
+            mmi.ptMaxPosition.x = work.left - bounds.left
+            mmi.ptMaxPosition.y = work.top - bounds.top
+            mmi.ptMaxSize.x = work.right - work.left
+            mmi.ptMaxSize.y = work.bottom - work.top
+        except (AttributeError, OSError, ValueError):
+            return
+
     def _is_window_drag_point(self, local: QPoint) -> bool:
         bar = getattr(self, "app_top_bar", None)
         if bar is None or not bar.isVisible():
@@ -5048,7 +5115,13 @@ class MainWindow(QMainWindow):
             msg = ctypes.wintypes.MSG.from_address(int(message))
         except (TypeError, ValueError):
             return super().nativeEvent(event_type, message)
-        wm_nccalcsize, wm_nchittest = 0x0083, 0x0084
+        wm_nccalcsize, wm_nchittest, wm_getminmaxinfo = 0x0083, 0x0084, 0x0024
+        if msg.message == wm_getminmaxinfo:
+            # Maximize onto the monitor's work area exactly. Left alone, Windows
+            # overhangs it by the frame thickness, and Qt then misplaces the
+            # client area when it works out the frame margins.
+            self._fit_maximized_to_work_area(msg.hWnd, msg.lParam)
+            return super().nativeEvent(event_type, message)
         if msg.message == wm_nccalcsize and msg.wParam:
             user32 = ctypes.windll.user32  # type: ignore[attr-defined]
             # Ask Windows, not Qt: Qt's window state lags this message. A
@@ -6318,35 +6391,9 @@ class MainWindow(QMainWindow):
             return cached
 
         def render(primary_color: QColor, secondary_color: QColor) -> QPixmap:
-            pixmap = QPixmap(64, 64)
-            pixmap.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-
-            def draw_glyph(glyph: str, *, x: int, y: int, size: int, selected_color: QColor) -> None:
-                font_family = "Segoe MDL2 Assets" if len(glyph) > 2 else "Segoe UI"
-                font = QFont(font_family, size, QFont.Weight.DemiBold if len(glyph) <= 2 else QFont.Weight.Normal)
-                font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-                painter.setFont(font)
-                painter.setPen(selected_color)
-                if len(glyph) > 2:
-                    text = chr(int(glyph, 16))
-                else:
-                    text = glyph
-                painter.drawText(QRect(x, y, 64 - x, 64 - y), Qt.AlignmentFlag.AlignCenter, text)
-
-            draw_glyph(
-                primary,
-                x=0,
-                y=0,
-                size=primary_size if len(primary) > 2 else 24,
-                selected_color=primary_color,
+            return self._render_fluent_glyphs(
+                primary, secondary, primary_color, secondary_color, primary_size=primary_size
             )
-            if secondary:
-                draw_glyph(secondary, x=30, y=30, size=19, selected_color=secondary_color)
-            painter.end()
-            return pixmap
 
         pixmap = render(color, accent)
         icon = QIcon(pixmap)
@@ -6356,6 +6403,93 @@ class MainWindow(QMainWindow):
         icon.addPixmap(render(disabled, disabled), QIcon.Mode.Disabled)
         cache[cache_key] = icon
         return icon
+
+    @staticmethod
+    def _render_fluent_glyphs(
+        primary: str,
+        secondary: str | None,
+        primary_color: QColor,
+        secondary_color: QColor,
+        *,
+        primary_size: int = 31,
+        scale: int = 1,
+    ) -> QPixmap:
+        """A toolbar glyph (and its corner badge) on a 64px canvas, or ``scale``
+        times that for callers that trim and resample it."""
+        extent = 64 * scale
+        pixmap = QPixmap(extent, extent)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+
+        def draw_glyph(glyph: str, *, x: int, y: int, size: int, selected_color: QColor) -> None:
+            font_family = "Segoe MDL2 Assets" if len(glyph) > 2 else "Segoe UI"
+            font = QFont(font_family, size * scale, QFont.Weight.DemiBold if len(glyph) <= 2 else QFont.Weight.Normal)
+            font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+            painter.setFont(font)
+            painter.setPen(selected_color)
+            if len(glyph) > 2:
+                text = chr(int(glyph, 16))
+            else:
+                text = glyph
+            x, y = x * scale, y * scale
+            painter.drawText(QRect(x, y, extent - x, extent - y), Qt.AlignmentFlag.AlignCenter, text)
+
+        draw_glyph(
+            primary,
+            x=0,
+            y=0,
+            size=primary_size if len(primary) > 2 else 24,
+            selected_color=primary_color,
+        )
+        if secondary:
+            draw_glyph(secondary, x=30, y=30, size=19, selected_color=secondary_color)
+        painter.end()
+        return pixmap
+
+    def _rail_tool_icon(self, item_id: str, box: int, max_side: int) -> tuple[QIcon, int]:
+        """A pinned tool's icon at the terminal mark's size, and the icon size
+        to show it at. Artwork and glyphs alike are trimmed to their ink first
+        (see rail_tool_pixmap), so every pin lands at the same weight."""
+        theme = getattr(self, "_theme", None) or default_theme()
+        ratio = self._icon_ratio()
+        colour = theme.text_secondary.qcolor()
+        disabled = theme.text_muted.qcolor() if not theme.is_dark else theme.text_disabled.qcolor()
+        # Glyph colours match _fluent_toolbar_icon's normal, hover and disabled.
+        states = (
+            (QIcon.Mode.Normal, colour, theme.accent.qcolor()),
+            (QIcon.Mode.Active, theme.text_primary.qcolor(), theme.accent_hover.qcolor()),
+            (QIcon.Mode.Disabled, disabled, disabled),
+        )
+        cache = self.__dict__.setdefault("_rail_tool_icon_cache", {})
+        key = (item_id, box, max_side, ratio, tuple((a.rgba(), b.rgba()) for _mode, a, b in states))
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        mark = tool_icon_mark(item_id)
+        glyphs = self.WORKSPACE_TOOLBAR_FLUENT_ICONS.get(item_id)
+        if mark is not None:
+            pixmap, side = rail_tool_pixmap(mark, box, ratio=ratio, max_side=max_side, tint=colour.name())
+            result = (QIcon(pixmap), side)
+        elif glyphs is not None:
+            icon = QIcon()
+            side = box
+            for mode, primary_colour, secondary_colour in states:
+                # Drawn large so trimming and resampling keep the strokes crisp.
+                drawn = self._render_fluent_glyphs(
+                    glyphs[0], glyphs[1], primary_colour, secondary_colour, scale=4
+                ).toImage()
+                trimmed = trim_to_alpha(drawn)
+                if trimmed is None:
+                    continue
+                pixmap, side = rail_tool_pixmap(trimmed, box, ratio=ratio, max_side=max_side)
+                icon.addPixmap(pixmap, mode)
+            result = (icon, side)
+        else:
+            result = (QIcon(), box)
+        cache[key] = result
+        return result
 
     def _refresh_themed_chrome_icons(self) -> None:
         self.__dict__.pop("_fluent_toolbar_icon_cache", None)
@@ -6834,26 +6968,14 @@ class MainWindow(QMainWindow):
         pinned_layout = getattr(self, "_left_rail_pinned_layout", None)
         if pinned_layout is not None:
             pinned_layout.setSpacing(metrics.tool_gap)
-        theme = getattr(self, "_theme", None) or default_theme()
-        tool_colour = theme.text_secondary.qcolor()
         for button, item_id in getattr(self, "_left_rail_tool_buttons", ()):
-            # Supplied artwork is trimmed and fitted, so it needs no fill
-            # correction; a Fluent glyph inks only part of its pixmap.
-            if item_id in TOOL_ICON_ASSETS:
-                box = metrics.tool_icon_px
-            else:
-                box = round(metrics.tool_icon_px / self.FLUENT_ICON_INK_FILL)
-            box = min(box, metrics.tool_width, metrics.tool_height)
-            supplied = tool_icon_pixmap(
-                item_id, box, tool_colour.name(), ratio=self._icon_ratio()
+            # Every pin, artwork or glyph, is sized to match the terminal mark.
+            icon, side = self._rail_tool_icon(
+                item_id, metrics.tool_icon_px, min(metrics.tool_width, metrics.tool_height)
             )
-            button.setIcon(
-                QIcon(supplied)
-                if supplied is not None
-                else self._workspace_toolbar_icon(item_id, color=tool_colour)
-            )
+            button.setIcon(icon)
             button.setFixedSize(metrics.tool_width, metrics.tool_height)
-            button.setIconSize(QSize(box, box))
+            button.setIconSize(QSize(side, side))
             button.setStyleSheet(
                 f"QToolButton#leftRailToolButton {{ border-radius: {metrics.tool_radius}px; }}"
             )

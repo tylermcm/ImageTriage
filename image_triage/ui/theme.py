@@ -2845,6 +2845,9 @@ def _flat_shell_rules(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
             border-radius: 8px;
+            /* The general QToolButton padding would leave the icon only the
+               button's width less 16px, capping it below TOOL_ICON_RATIO. */
+            padding: 0px;
         }}
         QToolButton#leftRailToolButton:hover, QToolButton#leftRailAddButton:hover {{
             background-color: {theme.input_hover_bg.css};
