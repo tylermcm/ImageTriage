@@ -9,6 +9,7 @@ standalone prototype (`generated_prototype.py`) and the live `MainWindow`.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import time
 
@@ -22,7 +23,7 @@ from PySide6.QtCore import (
     QStorageInfo,
     Qt,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBitmap, QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QRegion
 from PySide6.QtWidgets import (
     QFileIconProvider,
     QStyle,
@@ -179,9 +180,75 @@ def nav_icon_pixmap(icon_id: str, box: int, color: str, *, ratio: int = 2) -> QP
     return asset_icon_pixmap(NAV_ICON_ASSETS.get(icon_id), box, color, ratio=ratio)
 
 
-def tool_icon_pixmap(item_id: str, box: int, color: str, *, ratio: int = 2) -> QPixmap | None:
-    """The supplied mark for a pinned tool. See :func:`asset_icon_pixmap`."""
-    return asset_icon_pixmap(TOOL_ICON_ASSETS.get(item_id), box, color, ratio=ratio)
+def tool_icon_mark(item_id: str) -> "QImage | None":
+    """The trimmed ink mask of a pinned tool's supplied artwork, if installed."""
+    return _icon_source(TOOL_ICON_ASSETS.get(item_id))
+
+
+# --- Rail tool sizing ----------------------------------------------------------
+# Every mark that can be pinned to the rail, supplied artwork or glyph, is fitted
+# to the Command palette (terminal) mark's footprint: trimmed to its ink, then
+# scaled as large as it can go without running past the terminal's ink width or
+# height. So no pin is wider or taller than the terminal; a wide mark matches
+# its width, a tall one its height.
+RAIL_TOOL_REFERENCE = "command_palette"
+RAIL_TOOL_REFERENCE_ASPECT = 31 / 27    # the terminal's ink, if not installed
+
+
+def rail_tool_ink_size(width: float, height: float, box: int) -> tuple[float, float]:
+    """The ink size, in logical pixels, for a ``width`` x ``height`` mark in ``box``."""
+    reference = _icon_source(TOOL_ICON_ASSETS.get(RAIL_TOOL_REFERENCE))
+    if reference is not None:
+        aspect = reference.width() / reference.height()
+    else:
+        aspect = RAIL_TOOL_REFERENCE_ASPECT
+    # The terminal fits its box by its longer side.
+    ref_w, ref_h = (box, box / aspect) if aspect >= 1 else (box * aspect, box)
+    width, height = max(1.0, width), max(1.0, height)
+    scale = min(ref_w / width, ref_h / height)
+    return width * scale, height * scale
+
+
+def trim_to_alpha(image: QImage) -> "QImage | None":
+    """``image`` cropped to its visible pixels, or None if it has none."""
+    rect = QRegion(QBitmap.fromImage(image.createAlphaMask())).boundingRect()
+    return None if rect.isEmpty() else image.copy(rect)
+
+
+def rail_tool_pixmap(
+    mark: QImage, box: int, *, ratio: int = 2, max_side: int | None = None, tint: str | None = None
+) -> tuple[QPixmap, int]:
+    """``mark`` (already trimmed to its ink) sized to match the terminal mark.
+
+    Returns the pixmap and the square icon size to show it at. ``max_side``
+    caps that size, for a button smaller than the mark; ``tint`` recolours a
+    coverage mask such as supplied artwork, leaving a coloured glyph as drawn.
+    """
+    ink_w, ink_h = rail_tool_ink_size(mark.width(), mark.height(), box)
+    longest = max(ink_w, ink_h)
+    side = max(1, math.ceil(longest))
+    if max_side is not None:
+        side = max(1, min(side, int(max_side)))
+    shrink = min(1.0, side / longest)
+    target_w = max(1, round(ink_w * shrink * ratio))
+    target_h = max(1, round(ink_h * shrink * ratio))
+    scaled = mark.scaled(
+        target_w,
+        target_h,
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    canvas = side * ratio
+    pixmap = QPixmap(canvas, canvas)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.drawImage((canvas - target_w) // 2, (canvas - target_h) // 2, scaled)
+    if tint is not None:
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(pixmap.rect(), QColor(tint))
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap, side
 
 
 def asset_icon_pixmap(name: str | None, box: int, color: str, *, ratio: int = 2) -> QPixmap | None:

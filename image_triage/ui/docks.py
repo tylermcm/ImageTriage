@@ -191,6 +191,32 @@ class InspectorPropertyRow(QWidget):
         widget.update()
 
 
+class _ElidedLabel(QLabel):
+    """A one-line label that ends in "..." when its text is wider than the
+    label, showing the full text as a tooltip instead."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._full_text = text
+
+    def setText(self, text: str) -> None:  # type: ignore[override]
+        self._full_text = text
+        self.setToolTip(text)
+        super().setText(text)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        # Let the row squeeze it right down; the text elides instead of clipping.
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, rect.width())
+        painter = QPainter(self)
+        self.style().drawItemText(
+            painter, rect, int(self.alignment()), self.palette(), self.isEnabled(), text, self.foregroundRole()
+        )
+
+
 class _InspectorScrollArea(QScrollArea):
     """Wheel-smoothed scrolling for overflowing inspector content."""
 
@@ -2045,7 +2071,7 @@ class InspectorPanel(QWidget):
         name_row = QHBoxLayout()
         name_row.setContentsMargins(2, 0, 2, 0)
         name_row.setSpacing(6)
-        self.preview_name = QLabel("", self.preview_card)
+        self.preview_name = _ElidedLabel("", self.preview_card)
         self.preview_name.setObjectName("inspectorPreviewName")
         self.preview_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.preview_previous_button = self._make_header_button("\u2039", "Previous photo", "inspectorNavButton")
