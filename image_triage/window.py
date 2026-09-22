@@ -3161,6 +3161,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
         self._settings = QSettings()
+        self._load_pane_width_ratios()
         self._startup_window_state = "normal"
         self._startup_window_state_fixup_applied = False
         self._workspace_toolbar_layouts = self._load_workspace_toolbar_layouts()
@@ -4208,6 +4209,7 @@ class MainWindow(QMainWindow):
 
         self.workspace_docks = build_workspace_docks(self, self.left_panel, self.inspector_panel, center_column)
         self.workspace_docks.on_user_resized_panels = self._remember_user_pane_widths
+        self.workspace_docks.width_ratios_provider = self._pane_width_ratios
         self.inspector_panel.popout_requested.connect(lambda: self.workspace_docks.pop_out_panel("inspector"))
         self.inspector_panel.swap_side_requested.connect(self.workspace_docks.swap_sides)
         self.inspector_panel.close_requested.connect(lambda: self.workspace_docks.hide_panel("inspector"))
@@ -5174,22 +5176,32 @@ class MainWindow(QMainWindow):
     # Early builds saved transient start-up widths as if they were drags.
     PANE_RATIOS_RESET_KEY = "ui/pane_width_ratios_reset_v3"
 
-    def _pane_width_ratios(self) -> dict[str, float]:
-        defaults = {"library": layout_ratios.LIBRARY_PANEL_W, "inspector": layout_ratios.INSPECTOR_W}
+    def _load_pane_width_ratios(self) -> None:
+        """Make the widths the user last dragged to the live layout_ratios
+        values. Runs before the shell is built, so nothing sizes from the
+        defaults first and then jumps."""
         if not self._settings.value(self.PANE_RATIOS_RESET_KEY, False, bool):
             self._settings.setValue(self.PANE_RATIOS_RESET_KEY, True)
             self._settings.remove(self.PANE_RATIOS_KEY)
-            return defaults
+            return
         raw = self._settings.value(self.PANE_RATIOS_KEY, "", str)
         try:
             stored = json.loads(raw) if raw else {}
         except (TypeError, ValueError):
             stored = {}
-        for key in defaults:
-            value = stored.get(key) if isinstance(stored, dict) else None
-            if isinstance(value, (int, float)) and 0.05 <= float(value) <= 0.5:
-                defaults[key] = float(value)
-        return defaults
+        if not isinstance(stored, dict):
+            return
+
+        def usable(value) -> float | None:
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+            return float(value) if ok else None
+
+        # Out-of-range values are clamped, never discarded: discarding one put
+        # the pane back to its default on every launch.
+        layout_ratios.set_pane_widths(usable(stored.get("library")), usable(stored.get("inspector")))
+
+    def _pane_width_ratios(self) -> dict[str, float]:
+        return {"library": layout_ratios.LIBRARY_PANEL_W, "inspector": layout_ratios.INSPECTOR_W}
 
     def _remember_user_pane_widths(self, left: int, right: int) -> None:
         # The splitter reports moves when it is merely re-laid out too, so only
@@ -5197,11 +5209,11 @@ class MainWindow(QMainWindow):
         if QApplication.mouseButtons() == Qt.MouseButton.NoButton:
             return
         width = max(1, self.width())
-        ratios = self._pane_width_ratios()
-        if left > 0:
-            ratios["library"] = round(left / width, 4)
-        if right > 0:
-            ratios["inspector"] = round(right / width, 4)
+        layout_ratios.set_pane_widths(
+            left / width if left > 0 else None,
+            right / width if right > 0 else None,
+        )
+        ratios = {key: round(value, 4) for key, value in self._pane_width_ratios().items()}
         self._settings.setValue(self.PANE_RATIOS_KEY, json.dumps(ratios))
         # The inspector's label column is a share of the pane, so it has to
         # follow a drag as well as a window resize.
@@ -10138,6 +10150,11 @@ class MainWindow(QMainWindow):
         # The layout is proportioned to a maximized window, so that is how it
         # opens (a saved fullscreen session still reopens fullscreen).
         self._startup_window_state = window_state if window_state == "fullscreen" else "maximized"
+        if self._startup_window_state == "maximized":
+            # Maximized before the first show, so the window appears at its
+            # final size and the panes are laid out once, not at the restored
+            # size first and again after a maximize.
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
         # TEMPORARY: translucent so the window can be laid over the design
         # reference while the ratios are tuned. Set WINDOW_OPACITY back to 1.0
         # (or run with IMAGE_TRIAGE_OPACITY=1) when that is done.
@@ -11911,7 +11928,8 @@ class MainWindow(QMainWindow):
         self._startup_window_state_fixup_applied = True
         self._apply_native_frame_styles()
         self._sync_window_control_glyphs()
-        self._schedule_layout_ratio_update()
+        # Now, not on a timer: the first frame is drawn at the live ratios.
+        self._apply_layout_ratios()
         # Don't auto-focus/select any control on startup (the path bar used to
         # grab focus and highlight its text).
         QTimer.singleShot(0, self._clear_startup_focus)
@@ -11957,11 +11975,18 @@ class MainWindow(QMainWindow):
 
         if self.isFullScreen():
             self.showNormal()
-        if not self.isMaximized():
-            self.showMaximized()
-            return
-        if os.name == "nt":
-            self.showNormal()
+        # Ask Windows rather than Qt, whose state can say maximized while the
+        # frameless window is only stretched. No restore-then-maximize toggle:
+        # showMaximized goes through Windows now, and a toggle just redraws the
+        # shell at the restored size for a frame.
+        if getattr(self, "_custom_frame", False):
+            try:
+                zoomed = bool(ctypes.windll.user32.IsZoomed(int(self.winId())))  # type: ignore[attr-defined]
+            except (AttributeError, OSError):
+                zoomed = self.isMaximized()
+        else:
+            zoomed = self.isMaximized()
+        if not zoomed:
             self.showMaximized()
 
     def _load_start_folder(self) -> None:

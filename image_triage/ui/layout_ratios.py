@@ -130,6 +130,30 @@ INSPECTOR_KEY_W = 0.34          # width of the row label column
 # The library panel holds the rail and the drives pane side by side.
 LIBRARY_PANEL_W = RAIL_W + LIBRARY_PANE_W
 
+# --- Pane widths the user can drag -------------------------------------------
+# LIBRARY_PANEL_W and INSPECTOR_W above are live: the window loads the widths
+# the user last dragged to into them before building anything, and updates
+# them in place on every drag, so the whole shell sizes from one value. The
+# shipped proportions stay here as the defaults.
+DEFAULT_LIBRARY_PANEL_W = LIBRARY_PANEL_W
+DEFAULT_INSPECTOR_W = INSPECTOR_W
+PANE_MIN_W = 0.03               # a dragged pane is kept within these shares
+PANE_MAX_W = 0.6                # of the window
+
+
+def set_pane_widths(library: float | None = None, inspector: float | None = None) -> None:
+    """Replace the live pane widths, clamped to PANE_MIN_W..PANE_MAX_W."""
+    global LIBRARY_PANEL_W, INSPECTOR_W
+    if library is not None:
+        LIBRARY_PANEL_W = min(PANE_MAX_W, max(PANE_MIN_W, float(library)))
+    if inspector is not None:
+        INSPECTOR_W = min(PANE_MAX_W, max(PANE_MIN_W, float(inspector)))
+
+
+def reset_pane_widths() -> None:
+    """Put the live pane widths back to the shipped defaults."""
+    set_pane_widths(DEFAULT_LIBRARY_PANEL_W, DEFAULT_INSPECTOR_W)
+
 
 def ratio_px(ratio: float, extent: int, *, minimum: int = 0) -> int:
     """Pixels for ``ratio`` of ``extent``, never below ``minimum``."""
