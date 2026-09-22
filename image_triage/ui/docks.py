@@ -9,6 +9,7 @@ from PySide6.QtCore import (
     QByteArray,
     QEasingCurve,
     QEvent,
+    QObject,
     QPoint,
     QPropertyAnimation,
     QRect,
@@ -1082,6 +1083,20 @@ class WorkspacePanel(QWidget):
         return alignment
 
 
+class _SplitterResizeWatch(QObject):
+    """Re-applies the live pane ratios whenever the main splitter changes size,
+    before it lays its panes out, so no frame is drawn at stale widths."""
+
+    def __init__(self, docks: "WorkspaceDocks") -> None:
+        super().__init__(docks.splitter)
+        self._docks = docks
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Type.Resize:
+            self._docks.reapply_width_ratios()
+        return False
+
+
 class WorkspaceDocks:
     def __init__(self, shell: QWidget, splitter: QSplitter, library: WorkspacePanel, inspector: WorkspacePanel) -> None:
         self.shell = shell
@@ -1138,6 +1153,12 @@ class WorkspaceDocks:
             self.toggle_actions[key] = action
 
         self.splitter.splitterMoved.connect(self._remember_panel_widths)
+        # Returns the live pane shares of the window (layout_ratios); set by
+        # the window. While set, every resize and display-profile pass sizes
+        # the panes from it.
+        self.width_ratios_provider = None
+        self._resize_watch = _SplitterResizeWatch(self)
+        self.splitter.installEventFilter(self._resize_watch)
         self._wiring_complete = True
         self.reset_layout()
 
@@ -1173,6 +1194,8 @@ class WorkspaceDocks:
         self.inspector.apply_display_profile(profile)
         self._default_sizes = [self.library.expanded_width, 1240, self.inspector.expanded_width]
         self._rebalance_sizes()
+        # The profile's pixel widths are only a fallback; the live ratios win.
+        self.reapply_width_ratios()
 
     def save_state(self) -> dict[str, Any]:
         panels_state: dict[str, Any] = {}
@@ -1469,6 +1492,15 @@ class WorkspaceDocks:
             return
         self.hide_panel(key)
 
+    def reapply_width_ratios(self) -> None:
+        provider = getattr(self, "width_ratios_provider", None)
+        if not callable(provider) or self._applying_width_ratios:
+            return
+        window = self.shell.window()
+        total = window.width() if window is not None else self.splitter.width()
+        if total > 0:
+            self.apply_width_ratios(provider(), total)
+
     def apply_width_ratios(self, ratios: dict[str, float], total_width: int) -> None:
         """Size docked panels as shares of ``total_width``. Bounds follow the
         target so a proportional width is never clamped by a pixel limit."""
@@ -1509,7 +1541,12 @@ class WorkspaceDocks:
             docked = [panel for panel in self._panels_for_side(side) if panel.mode in {"expanded", "collapsed"}]
             self._apply_column_width_constraints(column, docked)
             column.setVisible(bool(docked))
-        total = max(sum(self.splitter.sizes()), self.splitter.width(), 1200)
+        # The splitter's real width once it is on screen. Its old sizes can
+        # add up to more than that mid-resize, and Qt would then shrink every
+        # pane proportionally instead of giving the change to the grid.
+        handles = self.splitter.handleWidth() * max(0, self.splitter.count() - 1)
+        laid_out = self.splitter.width() - handles if self.splitter.isVisible() else 0
+        total = laid_out if laid_out > 0 else max(sum(self.splitter.sizes()), self.splitter.width(), 1200)
         left = self._side_width("left")
         right = self._side_width("right")
         center = max(720, total - left - right)
