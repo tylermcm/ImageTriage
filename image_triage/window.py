@@ -339,7 +339,6 @@ from .ui import (
     PeopleSearchDialog,
     PrepareTrainingSourcesDialog,
     ResizeDialog,
-    ShareToPhoneDialog,
     TasteCalibrationDialog,
     TrainRankerDialog,
     EvaluationSourceDialog,
@@ -377,6 +376,7 @@ from .ui.display_metrics import (
 )
 from .ui.backdrop import paint_backdrop, theme_has_backdrop
 from .ui.breadcrumb import BreadcrumbBar
+from .pocketdrop import PocketDropPanel
 from .ui import layout_ratios
 from .ui.nav_rail import ICON_PX as NAV_RAIL_ICON_PX, NavRail
 from .ui.sections import SectionHeader
@@ -389,6 +389,7 @@ from .ui.prototype_style import (
     folder_icon_pixmap,
     library_icon_pixmap,
     nav_icon_pixmap,
+    pocketdrop_icon_pixmap,
     sidebar_people_icon_pixmap,
     sidebar_projects_icon_pixmap,
     rail_tool_pixmap,
@@ -2774,6 +2775,7 @@ class MainWindow(QMainWindow):
         "faces": 0.71,
         "people": 0.71,
         "collections": 0.75,
+        "pocketdrop": 0.9,
     }
     # A Fluent glyph inks about half the 64px pixmap it is centred in, so the
     # pinned tools ask for a correspondingly larger box to reach the same mark.
@@ -2783,6 +2785,7 @@ class MainWindow(QMainWindow):
         ("folders", "Library", "library", "Drives and folders"),
         ("faces", "Faces", "faces", "Face groups"),
         ("collections", "Collections", "collections", "Collections"),
+        ("pocketdrop", "PocketDrop", "pocketdrop", "Send files to and from your phone"),
     )
     WORKSPACE_TOOLBAR_DEFAULTS = {
         "manual": ("open_folder", "undo", "review", "view", "filters", "accept_selection", "reject_selection", "selection_count", "search", "address"),
@@ -2924,7 +2927,6 @@ class MainWindow(QMainWindow):
             "batch_resize",
             "batch_convert",
             "share_to_phone",
-            "share_queue",
             "handoff_builder",
             "send_to_editor",
             "best_of_set",
@@ -2977,7 +2979,6 @@ class MainWindow(QMainWindow):
             "batch_resize",
             "batch_convert",
             "share_to_phone",
-            "share_queue",
             "handoff_builder",
             "send_to_editor",
             "best_of_set",
@@ -3023,8 +3024,7 @@ class MainWindow(QMainWindow):
         "batch_rename": "Batch Rename",
         "batch_resize": "Batch Resize",
         "batch_convert": "Batch Convert",
-        "share_to_phone": "Share to Phone",
-        "share_queue": "Posting Queue",
+        "share_to_phone": "PocketDrop",
         "handoff_builder": "Handoff",
         "send_to_editor": "Send To Editor",
         "best_of_set": "Best Of",
@@ -3093,8 +3093,7 @@ class MainWindow(QMainWindow):
         "batch_rename": ("E8AC", None),
         "batch_resize": ("E799", None),
         "batch_convert": ("EE71", None),
-        "share_to_phone": ("E72D", None),
-        "share_queue": ("E823", None),
+        "share_to_phone": ("E8EA", None),
         "handoff_builder": ("E7B8", None),
         "send_to_editor": ("E7AC", None),
         "best_of_set": ("E735", None),
@@ -3917,12 +3916,17 @@ class MainWindow(QMainWindow):
         collections_layout.addWidget(self.projects_list, 1)
         collections_layout.addStretch(0)
 
+        # PocketDrop fills its page edge to edge: it lays itself out and paints
+        # its own background, exactly as in the standalone app.
+        self.pocketdrop_panel = PocketDropPanel()
+
         self.left_nav_pages = QStackedWidget()
         self.left_nav_pages.setObjectName("leftNavPages")
         self._left_nav_page_widgets = {
             "folders": folders_page,
             "faces": faces_page,
             "collections": collections_page,
+            "pocketdrop": self.pocketdrop_panel,
         }
         for page in self._left_nav_page_widgets.values():
             self.left_nav_pages.addWidget(page)
@@ -6654,6 +6658,7 @@ class MainWindow(QMainWindow):
             "faces": sidebar_people_icon_pixmap,
             "people": sidebar_people_icon_pixmap,
             "collections": sidebar_projects_icon_pixmap,
+            "pocketdrop": pocketdrop_icon_pixmap,
         }.get(icon_id, folder_icon_pixmap)
         return QIcon(painter(self._nav_icon_box(icon_id, size), colour))
 
@@ -6909,6 +6914,12 @@ class MainWindow(QMainWindow):
         if self.left_nav_rail.current() != key:
             self.left_nav_rail.set_current(key, emit=False)
         self._settings.setValue(self.LEFT_NAV_PAGE_KEY, key)
+
+    def _show_pocketdrop_page(self) -> None:
+        docks = getattr(self, "workspace_docks", None)
+        if docks is not None and docks.library.mode != "expanded":
+            docks.expand_panel("library")
+        self._show_left_nav_page("pocketdrop")
 
     def _build_left_rail_pinned_tools(self) -> None:
         """Pinned tools under the rail destinations, with a + at the rail's
@@ -7219,8 +7230,7 @@ class MainWindow(QMainWindow):
             "batch_rename": (self.actions.batch_rename_selection, "Rename"),
             "batch_resize": (self.actions.batch_resize_selection, "Resize"),
             "batch_convert": (self.actions.batch_convert_selection, "Convert"),
-            "share_to_phone": (self.actions.share_to_phone, "Phone Share"),
-            "share_queue": (self.actions.share_queue, "Post Queue"),
+            "share_to_phone": (self.actions.share_to_phone, "PocketDrop"),
             "handoff_builder": (self.actions.handoff_builder, "Handoff"),
             "send_to_editor": (self.actions.send_to_editor_pipeline, "Editor"),
             "best_of_set": (self.actions.best_of_set_auto_assembly, "Best Of"),
@@ -8084,7 +8094,7 @@ class MainWindow(QMainWindow):
             },
             "Collections": {"projects"},
             "Catalog": {"catalog"},
-            "Workflow": {"share_to_phone", "share_queue", "handoff_builder", "send_to_editor", "best_of_set"},
+            "Workflow": {"share_to_phone", "handoff_builder", "send_to_editor", "best_of_set"},
             "Utilities": {"command_palette", "keyboard_shortcuts", "undo"},
             "Layout": {"divider", "address"},
         }
@@ -9022,7 +9032,7 @@ class MainWindow(QMainWindow):
         register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
         register_action("ai.compare_group", self.actions.compare_ai_group, label="Compare Current AI Group", section="AI")
         register_action("workflow.handoff_builder", self.actions.handoff_builder, label="Deliver / Handoff Builder", section="Workflow")
-        register_action("workflow.share_to_phone", self.actions.share_to_phone, label="Share to Phone", section="Workflow")
+        register_action("workflow.share_to_phone", self.actions.share_to_phone, label="Send to PocketDrop", section="Workflow")
         register_action("workflow.send_to_editor", self.actions.send_to_editor_pipeline, label="Send To Editor", section="Workflow")
         register_action("workflow.best_of", self.actions.best_of_set_auto_assembly, label="Best-of-Set Auto Assembly", section="Workflow")
         register_action("workflow.save_workspace", self.actions.save_workspace_preset, label="Save Current Workspace Preset", section="Workflow")
@@ -9117,7 +9127,6 @@ class MainWindow(QMainWindow):
         self.workflow_recipe_menu.clear()
         self.workflow_recipe_menu.setTitle("Run Recipe")
         self.workflow_recipe_menu.addAction(self.actions.share_to_phone)
-        self.workflow_recipe_menu.addAction(self.actions.share_queue)
         self.workflow_recipe_menu.addSeparator()
         self.workflow_recipe_menu.addAction(self.actions.handoff_builder)
         self.workflow_recipe_menu.addAction(self.actions.send_to_editor_pipeline)
@@ -9440,8 +9449,7 @@ class MainWindow(QMainWindow):
             add_action_command("tools.performance_logging", self.actions.performance_logging, section="Tools", subtitle=self._toggle_state_text(self._performance_logging_enabled), keywords=("diagnostics", "profiler", "performance log", "speed"))
             add_action_command("tools.open_performance_logs", self.actions.open_performance_log_folder, section="Tools", keywords=("diagnostics", "profiler", "logs", "performance"))
             add_action_command("workflow.handoff_builder", self.actions.handoff_builder, section="Workflow", keywords=("delivery", "handoff", "export workflow"))
-            add_action_command("workflow.share_to_phone", self.actions.share_to_phone, section="Workflow", keywords=("phone", "qr", "social", "share", "transfer"))
-            add_action_command("workflow.share_queue", self.actions.share_queue, section="Workflow", keywords=("posting queue", "social", "transferred", "posted"))
+            add_action_command("workflow.share_to_phone", self.actions.share_to_phone, section="Workflow", keywords=("phone", "qr", "pocketdrop", "share", "transfer", "send"))
             add_action_command("workflow.send_to_editor", self.actions.send_to_editor_pipeline, section="Workflow", keywords=("retouch", "editor queue", "send to editor"))
             add_action_command("workflow.best_of", self.actions.best_of_set_auto_assembly, section="Workflow", keywords=("best of", "shortlist", "auto assembly"))
             add_action_command("workflow.keyboard_shortcuts", self.actions.keyboard_shortcuts, section="Workflow", keywords=("shortcuts", "keyboard mapping"))
@@ -15080,7 +15088,6 @@ class MainWindow(QMainWindow):
         self.actions.refresh_catalog.setEnabled(bool(catalog_roots) and self._active_catalog_task is None)
         self.actions.rebuild_folder_catalog_cache.setEnabled(has_physical_folder and not self._scan_in_progress)
         self.actions.share_to_phone.setEnabled(has_selection and not in_recycle_folder)
-        self.actions.share_queue.setEnabled(True)
         self.actions.handoff_builder.setEnabled(has_selection and has_physical_folder and not in_recycle_folder)
         self.actions.send_to_editor_pipeline.setEnabled(has_selection and has_physical_folder and not in_recycle_folder and not in_winners_folder)
         self.actions.best_of_set_auto_assembly.setEnabled(bool(self._records) and (self._ai_bundle is not None or self._review_intelligence is not None))
@@ -15548,18 +15555,21 @@ class MainWindow(QMainWindow):
         result = dialog.result_data()
         self._run_workflow_recipe(result.recipe, destination_root=result.destination_root, records=records)
 
-    def _open_share_to_phone(self, _checked: bool = False) -> None:
-        records = self._selected_records_for_workflow()
-        sources = tuple(self._workflow_export_sources_for_records(records))
-        if not sources:
-            self.statusBar().showMessage("Select one or more exportable images before sharing to a phone.")
+    def _send_selection_to_pocketdrop(self, _checked: bool = False) -> None:
+        """Add the selected files to PocketDrop and bring its page forward."""
+        paths = [record.path for record in self._selected_records_for_workflow() if record.path]
+        if not paths:
+            self.statusBar().showMessage("Select one or more files to send with PocketDrop.")
             return
-        dialog = ShareToPhoneDialog(sources, parent=self)
-        self._exec_dialog_with_geometry(dialog, "share_to_phone")
-
-    def _open_share_queue(self, _checked: bool = False) -> None:
-        dialog = ShareToPhoneDialog((), show_queue=True, parent=self)
-        self._exec_dialog_with_geometry(dialog, "share_to_phone")
+        panel = getattr(self, "pocketdrop_panel", None)
+        if panel is None or not panel.available:
+            detail = panel.error if panel is not None else ""
+            self.statusBar().showMessage(f"PocketDrop isn't available. {detail}".strip())
+            return
+        self._show_pocketdrop_page()
+        panel.add_paths(paths)
+        noun = "file" if len(paths) == 1 else "files"
+        self.statusBar().showMessage(f"Added {len(paths)} {noun} to PocketDrop")
 
     def _open_send_to_editor_pipeline(self) -> None:
         recipe = next((item for item in built_in_workflow_recipes() if item.key == "send_to_editor"), None)

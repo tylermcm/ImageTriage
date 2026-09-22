@@ -392,6 +392,32 @@ def sidebar_projects_icon_pixmap(
     return pixmap
 
 
+def pocketdrop_icon_pixmap(size: int = 20, color: str = SIDEBAR_ACCENT_COLOR) -> QPixmap:
+    """Outlined phone carrying PocketDrop's download arrow, for the rail."""
+    scale = 2
+    s = size * scale
+    pixmap = QPixmap(s, s)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    unit = s / 20.0
+    pen = QPen(QColor(color), 1.6 * unit)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    # The stroke is centred on the path, so the body is inset by half of it.
+    painter.drawRoundedRect(QRectF(4.8 * unit, 1.8 * unit, 10.4 * unit, 16.4 * unit), 2.4 * unit, 2.4 * unit)
+    painter.drawLine(QPointF(10.0 * unit, 6.0 * unit), QPointF(10.0 * unit, 12.2 * unit))
+    painter.drawPolyline(
+        QPolygonF([QPointF(7.4 * unit, 9.8 * unit), QPointF(10.0 * unit, 12.4 * unit), QPointF(12.6 * unit, 9.8 * unit)])
+    )
+    painter.drawLine(QPointF(8.6 * unit, 15.2 * unit), QPointF(11.4 * unit, 15.2 * unit))
+    painter.end()
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
 class FolderTreeView(QTreeView):
     """Folder tree with compact custom rows and direct expand/collapse clicks."""
 

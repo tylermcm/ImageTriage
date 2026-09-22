@@ -733,73 +733,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.accent.css};
         }}
-        QDialog#sharePhoneDialog {{
-            background-color: {theme.panel_bg.css};
-            color: {theme.text_primary.css};
-        }}
-        QLabel#sharePhoneSubtitle {{
-            color: {theme.text_secondary.css};
-        }}
-        QLabel#sharePhoneHint,
-        QLabel#sharePhoneFooterNote {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-        }}
-        QTabWidget#sharePhoneTabs::pane {{
-            background-color: transparent;
-            border: none;
-            border-top: 1px solid {theme.border_muted.css};
-        }}
-        QTabWidget#sharePhoneTabs[resultMode="true"]::pane {{
-            border-top: none;
-        }}
-        QTabWidget#sharePhoneTabs::tab-bar {{
-            alignment: left;
-        }}
-        QTabWidget#sharePhoneTabs QTabBar::tab {{
-            background-color: transparent;
-            border: none;
-            border-bottom: 2px solid transparent;
-            color: {theme.text_muted.css};
-            font-weight: 600;
-            margin-right: 20px;
-            padding: 3px 1px 7px 1px;
-        }}
-        QTabWidget#sharePhoneTabs QTabBar::tab:hover:!selected {{
-            color: {theme.text_secondary.css};
-        }}
-        QTabWidget#sharePhoneTabs QTabBar::tab:selected {{
-            border-bottom-color: {theme.accent.css};
-            color: {theme.text_primary.css};
-        }}
-        QFrame#sharePhoneSelectionCard {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 9px;
-        }}
-        QLabel#sharePhoneSelectionIcon {{
-            background-color: {theme.accent_soft.css};
-            border-radius: 8px;
-            color: {theme.accent.css};
-        }}
-        QLabel#sharePhoneSelectionCount {{
-            color: {theme.text_primary.css};
-            font-size: 13px;
-            font-weight: 650;
-        }}
-        QLabel#sharePhoneSelectionSource {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-        }}
-        QProgressBar#sharePhoneProgress {{
-            background-color: {theme.raised_bg.css};
-            border: none;
-            border-radius: 3px;
-        }}
-        QProgressBar#sharePhoneProgress::chunk {{
-            background-color: {theme.accent.css};
-            border-radius: 3px;
-        }}
         QFrame#phoneShareConnectionCard {{
             background-color: transparent;
             border: none;
@@ -881,105 +814,6 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#phoneShareLinkButton:hover {{
             background-color: transparent;
             color: {theme.accent_hover.css};
-        }}
-        QToolButton#sharePhoneIconButton {{
-            color: {theme.text_secondary.css};
-            padding: 0px;
-        }}
-        QTableWidget#sharePhoneQueueTable {{
-            alternate-background-color: {theme.input_bg.css};
-            background-color: {theme.input_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 9px;
-            color: {theme.text_primary.css};
-            outline: none;
-            selection-background-color: transparent;
-            selection-color: {theme.text_primary.css};
-        }}
-        QTableWidget#sharePhoneQueueTable::item {{
-            border-bottom: 1px solid {theme.border_muted.css};
-            padding-left: 10px;
-            padding-right: 8px;
-        }}
-        QTableWidget#sharePhoneQueueTable::item:selected {{
-            background-color: {theme.selection_fill.css};
-            color: {theme.text_primary.css};
-        }}
-        QTableWidget#sharePhoneQueueTable QHeaderView::section {{
-            background-color: {theme.input_bg.css};
-            border: none;
-            border-bottom: 1px solid {theme.border_muted.css};
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 650;
-            padding: 7px 10px;
-        }}
-        QWidget#sharePhoneStatusCell {{
-            background-color: transparent;
-        }}
-        QLabel#sharePhoneStatusChip {{
-            background-color: {theme.raised_bg.css};
-            border-radius: 9px;
-            color: {theme.text_secondary.css};
-            font-size: 11px;
-            font-weight: 600;
-            padding: 2px 8px;
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="transferred"] {{
-            background-color: {theme.accent_soft.css};
-            color: {theme.accent.css};
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="posted"] {{
-            background-color: {theme.success_soft.css};
-            color: {theme.success.css};
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="failed"] {{
-            background-color: {theme.danger_soft.css};
-            color: {theme.danger.css};
-        }}
-        QLabel#sharePhoneStatusChip[shareStatus="archived"] {{
-            color: {theme.text_muted.css};
-        }}
-        QFrame#sharePhoneEmptyState {{
-            background-color: {theme.input_bg.css};
-            border: 1px dashed {theme.border.css};
-            border-radius: 9px;
-        }}
-        QLabel#sharePhoneEmptyIcon {{
-            color: {theme.text_muted.css};
-        }}
-        QLabel#sharePhoneEmptyTitle {{
-            color: {theme.text_primary.css};
-            font-size: 13px;
-            font-weight: 650;
-        }}
-        QPushButton#sharePhoneSecondaryButton,
-        QPushButton#sharePhoneGhostButton,
-        QPushButton#sharePhoneDangerButton {{
-            font-weight: 600;
-            min-height: 30px;
-            padding: 1px 14px;
-        }}
-        QPushButton#sharePhoneGhostButton,
-        QPushButton#sharePhoneDangerButton {{
-            background-color: transparent;
-            border-color: transparent;
-            color: {theme.text_secondary.css};
-        }}
-        QPushButton#sharePhoneDangerButton {{
-            color: {theme.danger.css};
-        }}
-        QPushButton#sharePhoneGhostButton:hover {{
-            background-color: {theme.input_hover_bg.css};
-            color: {theme.text_primary.css};
-        }}
-        QPushButton#sharePhoneDangerButton:hover {{
-            background-color: {theme.danger_soft.css};
-        }}
-        QPushButton#sharePhoneGhostButton:disabled,
-        QPushButton#sharePhoneDangerButton:disabled {{
-            background-color: transparent;
-            color: {theme.text_disabled.css};
         }}
         QComboBox {{
             background-color: {theme.input_bg.css};
@@ -2286,8 +2120,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.panel_bg.css};
             color: {theme.text_primary.css};
         }}
-        QLabel#collectionDialogTitle,
-        QLabel#sharePhoneTitle {{
+        QLabel#collectionDialogTitle {{
             color: {theme.text_primary.css};
             font-size: 18px;
             font-weight: 700;
@@ -2301,35 +2134,28 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-weight: 600;
             padding: 4px 9px;
         }}
-        QLabel#collectionFieldLabel,
-        QLabel#sharePhoneFieldLabel {{
+        QLabel#collectionFieldLabel {{
             color: {theme.text_secondary.css};
             font-size: 11px;
             font-weight: 650;
         }}
         QLineEdit#collectionNameField,
-        QComboBox#collectionPurposeCombo,
-        QLineEdit#sharePhoneField,
-        QComboBox#sharePhoneSizeCombo {{
+        QComboBox#collectionPurposeCombo {{
             min-height: 30px;
         }}
-        QComboBox#collectionPurposeCombo,
-        QComboBox#sharePhoneSizeCombo {{
+        QComboBox#collectionPurposeCombo {{
             padding-right: 30px;
         }}
-        QComboBox#collectionPurposeCombo::drop-down,
-        QComboBox#sharePhoneSizeCombo::drop-down {{
+        QComboBox#collectionPurposeCombo::drop-down {{
             border: none;
             width: 28px;
         }}
-        QComboBox#collectionPurposeCombo::down-arrow,
-        QComboBox#sharePhoneSizeCombo::down-arrow {{
+        QComboBox#collectionPurposeCombo::down-arrow {{
             image: none;
             width: 0px;
             height: 0px;
         }}
-        QTextEdit#collectionDescriptionField,
-        QTextEdit#sharePhoneCaptionField {{
+        QTextEdit#collectionDescriptionField {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 7px;
@@ -2337,67 +2163,47 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             padding: 7px 9px;
             selection-background-color: {theme.selection_fill.css};
         }}
-        QTextEdit#collectionDescriptionField:hover,
-        QTextEdit#sharePhoneCaptionField:hover {{
+        QTextEdit#collectionDescriptionField:hover {{
             background-color: {theme.input_hover_bg.css};
         }}
-        QTextEdit#collectionDescriptionField:focus,
-        QTextEdit#sharePhoneCaptionField:focus {{
+        QTextEdit#collectionDescriptionField:focus {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.accent.css};
         }}
         QPushButton#collectionCancelButton,
-        QPushButton#collectionPrimaryButton,
-        QPushButton#sharePhoneCancelButton,
-        QPushButton#sharePhonePrimaryButton {{
+        QPushButton#collectionPrimaryButton {{
             min-height: 30px;
             padding: 1px 14px;
             font-weight: 650;
         }}
-        QPushButton#collectionCancelButton,
-        QPushButton#sharePhoneCancelButton,
-        QPushButton#sharePhonePrimaryButton[quiet="true"] {{
+        QPushButton#collectionCancelButton {{
             background-color: transparent;
             border-color: {theme.border.css};
             color: {theme.text_secondary.css};
         }}
-        QPushButton#collectionCancelButton:hover,
-        QPushButton#sharePhoneCancelButton:hover,
-        QPushButton#sharePhonePrimaryButton[quiet="true"]:hover {{
+        QPushButton#collectionCancelButton:hover {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.border.css};
             color: {theme.text_primary.css};
         }}
-        QPushButton#collectionPrimaryButton,
-        QPushButton#sharePhonePrimaryButton,
-        QPushButton#sharePhoneCancelButton[emphasis="true"] {{
+        QPushButton#collectionPrimaryButton {{
             background-color: rgb(20, 115, 230);
             border-color: rgb(20, 115, 230);
             color: rgb(255, 255, 255);
         }}
-        QPushButton#collectionPrimaryButton:hover,
-        QPushButton#sharePhonePrimaryButton:hover,
-        QPushButton#sharePhoneCancelButton[emphasis="true"]:hover {{
+        QPushButton#collectionPrimaryButton:hover {{
             background-color: rgb(43, 131, 235);
             border-color: rgb(43, 131, 235);
             color: rgb(255, 255, 255);
         }}
-        QPushButton#collectionPrimaryButton:pressed,
-        QPushButton#sharePhonePrimaryButton:pressed,
-        QPushButton#sharePhoneCancelButton[emphasis="true"]:pressed {{
+        QPushButton#collectionPrimaryButton:pressed {{
             background-color: rgb(13, 98, 202);
             border-color: rgb(13, 98, 202);
         }}
-        QPushButton#collectionPrimaryButton:disabled,
-        QPushButton#sharePhonePrimaryButton:disabled {{
+        QPushButton#collectionPrimaryButton:disabled {{
             background-color: {theme.raised_bg.css};
             border-color: {theme.border_muted.css};
             color: {theme.text_disabled.css};
-        }}
-        QPushButton#sharePhonePrimaryButton[quiet="true"]:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
-            color: {theme.text_primary.css};
         }}
         QLabel#secondaryText {{
             color: {theme.text_secondary.css};
