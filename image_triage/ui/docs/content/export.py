@@ -12,31 +12,39 @@ CATEGORY = DocCategory(
 
 ARTICLES = [
     DocArticle(
-        id="share-to-phone",
-        title="Share to Phone",
+        id="pocketdrop",
+        title="PocketDrop",
         category="export",
-        summary="Prepare a private package and transfer it to a phone over the local network.",
-        keywords=("share", "phone", "qr", "social", "caption", "alt text", "posting queue"),
+        summary="Move files and notes between this computer and your phone by scanning a QR code.",
+        keywords=("pocketdrop", "phone", "qr", "share", "send", "transfer", "wifi", "anywhere", "offline", "receive"),
         markdown="""
-        # Share to Phone
+        # PocketDrop
 
-        **Share to Phone** prepares social-ready JPEG copies and makes them available to a phone on the same local network. Image Triage does not upload the package to a cloud service or connect to a social account.
+        **PocketDrop** moves files and text between this computer and a phone, in either direction, by scanning a QR code. The phone needs no app and no account. Open it from the **PocketDrop** button on the left rail.
 
-        1. Select one or more images.
-        2. Open **Workflow > Share to Phone**.
-        3. Choose a package name, destination label, size, caption, and optional alt text.
-        4. Select **Prepare & Share**, then scan the QR code from the phone.
-        5. Download the complete package or individual images and copy the caption.
+        ## Send to your phone
 
-        Prepared copies preserve the original framing, remove embedded metadata, and never modify the source files. The local link expires after 30 minutes or when the Share to Phone window closes.
+        1. Select images in the grid and choose **Workflow > Send to PocketDrop** (Ctrl+Alt+P), or drop files, folders or text onto the PocketDrop panel. **Add files**, **Folder** and **Paste** (Ctrl+V) work too.
+        2. Scan the QR code with the phone's camera.
+        3. Download single files, or **Download all** as one zip that keeps folder structure.
 
-        If the phone times out while **Open on This PC** works, Windows is blocking the local-network connection. For a trusted home network, set the Windows network profile to **Private**, then use **Allow on Private Networks**. Image Triage's firewall rule is limited to TCP port 45873 and devices on the local subnet; it does not open sharing on Public networks.
+        The original files are shared as they are. Nothing is copied, converted or uploaded to a cloud service.
 
-        ## Posting queue
+        ## Receive from your phone
 
-        The posting queue records packages as **Ready**, **Transferred**, or **Posted**. A download can be detected automatically. Because no social account is connected, **Posted** is always a manual confirmation.
+        The phone page has **Send to** this computer: pick photos, videos, any files, or a note. Received files are saved to `Downloads/PocketDrop` (change it from the **⋯** menu) and appear at the top of the panel. Click a file to show it in its folder, or a note to copy it.
 
-        Use **Share Again** to rebuild a package from its original sources. Deleting a queue entry removes its prepared copies but never removes the originals.
+        ## Ways to connect
+
+        - **Same Wi-Fi**: a direct transfer over your local network, and the fastest.
+        - **Anywhere**: a temporary Cloudflare link, so a phone on mobile data can connect. Anyone with an active Anywhere link can download what you share until it expires, so PocketDrop asks before turning it on. Sending files back to this computer needs the separate receive code shown in the panel.
+        - **Offline** (Windows): PocketDrop creates a temporary Wi-Fi network to join first, falling back to Bluetooth when the PC has no Wi-Fi adapter.
+
+        ## Links and privacy
+
+        Every link carries a random token and changes on its own: when PocketDrop starts, every minute while nothing is shared, and after 15 minutes without phone activity. **New link** in the **⋯** menu revokes the current one immediately, and links end when Image Triage closes.
+
+        If a phone on the same Wi-Fi can't connect, Windows may be blocking the connection. Allow Image Triage on **Private** networks when Windows asks, and make sure your network profile is set to Private.
         """,
     ),
     DocArticle(

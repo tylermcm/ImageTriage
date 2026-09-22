@@ -149,6 +149,7 @@ class FreezeAssetLayout:
                 str(ROOT / "image_triage" / "ui" / "assets" / "checkbox_check.png"),
                 "lib/image_triage/ui/assets/checkbox_check.png",
             ),
+            *_pocketdrop_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
             (str(CLI_EDITOR_PACKAGE_ROOT), "lib/photo_terminal"),
             (str(ROOT / "image_triage" / "birefnet_worker.py"), "ai_workers/birefnet_worker.py"),
@@ -162,6 +163,18 @@ class FreezeAssetLayout:
         if self.bundle_ai_site_packages:
             include_files.append((str(self.ai_site_packages_stage_root), "ai_site_packages"))
         return include_files
+
+
+def _pocketdrop_include_files() -> list[tuple[str, str]]:
+    """PocketDrop's native library, beside the package that loads it
+    (image_triage/pocketdrop/_bridge.py). Build it first with
+    native/pocketdrop/build_windows.bat."""
+    if os.name != "nt":
+        return []
+    dll = ROOT / "image_triage" / "pocketdrop" / "pocketdrop.dll"
+    if not dll.is_file():
+        raise FileNotFoundError(f"{dll} is missing. Run native\\pocketdrop\\build_windows.bat before freezing.")
+    return [(str(dll), "lib/image_triage/pocketdrop/pocketdrop.dll")]
 
 
 def read_project_version() -> str:

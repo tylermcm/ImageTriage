@@ -141,13 +141,17 @@ PANE_MIN_W = 0.03               # a dragged pane is kept within these shares
 PANE_MAX_W = 0.6                # of the window
 
 
+def _clamp_pane(value: float) -> float:
+    return min(PANE_MAX_W, max(PANE_MIN_W, float(value)))
+
+
 def set_pane_widths(library: float | None = None, inspector: float | None = None) -> None:
     """Replace the live pane widths, clamped to PANE_MIN_W..PANE_MAX_W."""
     global LIBRARY_PANEL_W, INSPECTOR_W
     if library is not None:
-        LIBRARY_PANEL_W = min(PANE_MAX_W, max(PANE_MIN_W, float(library)))
+        LIBRARY_PANEL_W = _clamp_pane(library)
     if inspector is not None:
-        INSPECTOR_W = min(PANE_MAX_W, max(PANE_MIN_W, float(inspector)))
+        INSPECTOR_W = _clamp_pane(inspector)
 
 
 def reset_pane_widths() -> None:

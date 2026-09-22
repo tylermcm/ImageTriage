@@ -43,7 +43,6 @@ from .people_dialog import PeopleSearchDialog
 from .photo_editor_panel import PhotoEditorPanel
 from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, TrainingSourcesDialog
 from .resize_dialog import ResizeDialog
-from .share_to_phone_dialog import ShareToPhoneDialog
 from .train_ranker_dialog import TrainRankerDialog
 from .theme import (
     AppearanceMode,
@@ -103,7 +102,6 @@ __all__ = [
     "PhotoEditorPanel",
     "PrepareTrainingSourcesDialog",
     "ResizeDialog",
-    "ShareToPhoneDialog",
     "ThemePalette",
     "WORKSPACE_METRICS",
     "WorkspaceMetrics",

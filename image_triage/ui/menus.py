@@ -178,7 +178,6 @@ def build_main_menu_bar(
 
     workflow_menu = menu_bar.addMenu("&Workflow")
     workflow_menu.addAction(actions.share_to_phone)
-    workflow_menu.addAction(actions.share_queue)
     workflow_menu.addSeparator()
     workflow_menu.addAction(actions.handoff_builder)
     workflow_menu.addAction(actions.send_to_editor_pipeline)
