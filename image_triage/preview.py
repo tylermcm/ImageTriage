@@ -17,9 +17,11 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMenu,
     QPushButton,
     QScrollArea,
+    QSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -58,8 +60,10 @@ from .ui.crop_overlay import CropOverlay
 from .ui.mask_overlay import MaskOverlay
 from .ui.retouch_overlay import RetouchOverlay
 from .ui.photo_editor_panel import EditRecipe, PhotoEditorPanel
+from .ui.icons import build_symbol_icon
 from .ui.display_metrics import DisplayProfile, STANDARD_DISPLAY
 from .ui import preview_studio as studio
+from .ui import popout_layout_ratios as popout_ratios
 from .ui.theme import ThemePalette, default_theme
 
 COMPARE_COUNTS = (2, 3, 5, 7, 9)
@@ -87,6 +91,7 @@ class PreviewEntry:
     source_path: str
     winner: bool = False
     reject: bool = False
+    rating: int = 0
     photoshop: bool = False
     edited_path: str = ""
     edited_candidates: tuple[str, ...] = ()
@@ -421,9 +426,9 @@ class PreviewPane(QWidget):
             # floats on the ground.
             self.setStyleSheet("QWidget#previewPane { background-color: transparent; border: none; }")
             self.scroll_area.setStyleSheet(
-                f"QScrollArea {{ background-color: {studio.GROUND}; border: none; }}"
+                "QScrollArea { background-color: #090a0b; border: none; }"
             )
-            self.image_label.setStyleSheet(f"background-color: {studio.GROUND}; color: {studio.TEXT_MUTE};")
+            self.image_label.setStyleSheet("background-color: #090a0b; color: #6f7680;")
             return
         if not self._frame_visible:
             self.setStyleSheet(
@@ -612,6 +617,7 @@ class FullScreenPreview(QDialog):
     FITS_STF_PRESET_KEY = "preview/fits_stf_preset"
     INSPECTOR_VISIBLE_KEY = "preview/inspector_visible"
     FILMSTRIP_THUMB_HEIGHT_KEY = "preview/filmstrip_thumb_height"
+    FILMSTRIP_THUMB_RATIO_KEY = "preview/filmstrip_thumb_ratio"
     FILMSTRIP_COLLAPSED_KEY = "preview/filmstrip_collapsed"
     navigation_requested = Signal(int)
     compare_mode_changed = Signal(bool)
@@ -625,6 +631,7 @@ class FullScreenPreview(QDialog):
     delete_requested = Signal(str)
     move_requested = Signal(str)
     tag_requested = Signal(str)
+    rating_requested = Signal(str, int)
     winner_ladder_choice_requested = Signal(str)
     winner_ladder_skip_requested = Signal()
     closed = Signal()
@@ -683,6 +690,8 @@ class FullScreenPreview(QDialog):
         self._pending_right_close = False
         self._auto_advance_enabled = True
         self._winner_ladder_mode = False
+        self._collection_browse_mode = False
+        self._collection_saved_inspector_checked = False
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
         self._subject_warm_pool = QThreadPool(self)
@@ -1131,6 +1140,9 @@ class FullScreenPreview(QDialog):
 
     def _studio_stylesheet_full(self) -> str:
         scope = self.STUDIO_SCOPE
+        px = popout_ratios.ratio_px
+        height = max(1, self.height())
+        type_px = lambda ratio, minimum=popout_ratios.MIN_TEXT_PX: px(ratio, height, minimum=minimum)
         extra = f"""
             QToolButton#studioToolButton {{
                 background: {studio.SURFACE_3}; border: 1px solid {studio.LINE}; color: {studio.TEXT};
@@ -1154,9 +1166,6 @@ class FullScreenPreview(QDialog):
             QFrame#editorToolRail {{
                 background: #232323; border: none; border-right: 1px solid #1a1a1a;
                 border-top-left-radius: 6px; border-bottom-left-radius: 6px;
-            }}
-            QFrame#editorToolRailDivider {{
-                background: #1a1a1a; border: none; margin-left: 7px; margin-right: 7px;
             }}
             QToolButton#editorToolRailButton {{
                 background: transparent; border: none; border-radius: 5px;
@@ -1566,11 +1575,112 @@ class FullScreenPreview(QDialog):
                 subcontrol-position: right center; subcontrol-origin: padding;
             }}
         """
+        mockup_css = f"""
+            QFrame#mockupPathBar {{ background: #15171a; border: none; border-bottom: 1px solid #25282d; }}
+            QPushButton#mockupLibraryButton, QPushButton#mockupWindowButton,
+            QToolButton#mockupWindowButton,
+            QPushButton#mockupEditorMenu {{ background: transparent; border: none; color: #b4bac2; padding: 2px 7px; }}
+            QToolButton#mockupWindowButton {{ border-left: 1px solid #272a2f; border-radius: 0px; }}
+            QPushButton#mockupLibraryButton:hover, QPushButton#mockupWindowButton:hover,
+            QToolButton#mockupWindowButton:hover,
+            QPushButton#mockupEditorMenu:hover {{ background: #292b2f; }}
+            QLabel#mockupBreadcrumb {{ color: #b4bac2; font-size: {type_px(popout_ratios.PATH_TEXT_H)}px; font-weight: 400; }}
+            QFrame#navPill {{ background: transparent; border: none; border-radius: 0px; }}
+            QLabel#navCount {{ color: #c5cad0; font-size: {type_px(popout_ratios.PATH_TEXT_H)}px; min-width: 42px; }}
+            QPushButton#navArrow {{ background: transparent; color: #aeb5c0; border: none; font-size: 14px; }}
+            QFrame#mockupActionBar {{ background: #141619; border: none; }}
+            QFrame#mockupActionBar QToolButton#studioToolButton,
+            QFrame#mockupActionBar QToolButton#mockupDisabledAction {{
+                background: transparent; border: none; border-radius: 3px;
+                color: #c6cbd1; padding: 0px; font-size: {type_px(popout_ratios.ACTION_TEXT_H)}px;
+                min-width: 0px; min-height: 0px;
+            }}
+            QFrame#mockupActionBar QToolButton#studioToolButton:hover {{ background: #292c32; }}
+            QFrame#mockupActionBar QToolButton#studioToolButton:checked {{ background: #223453; color: #fff; }}
+            QFrame#mockupActionBar QToolButton#studioToolButton:disabled,
+            QFrame#mockupActionBar QToolButton#mockupDisabledAction {{ color: #747b87; }}
+            QPushButton#mockupZoomButton {{ background: #25282d; border: 1px solid #3a3f46; border-radius: 4px;
+                color: #d9dde1; padding: 1px; font-size: {type_px(popout_ratios.ACTION_TEXT_H)}px; }}
+            QPushButton#mockupZoomButton:hover {{ background: #363a41; }}
+            QSlider#mockupZoomSlider::groove:horizontal {{ height: 2px; background: #454b53; border-radius: 1px; }}
+            QSlider#mockupZoomSlider::sub-page:horizontal {{ background: #4c87ec; }}
+            QSlider#mockupZoomSlider::handle:horizontal {{ background: #dce0e5; width: 9px;
+                height: 9px; margin: -4px 0; border-radius: 5px; }}
+            QToolButton#mockupMoreButton, QPushButton#mockupEditButton {{
+                background: transparent; border: none; border-radius: 4px;
+                color: #dbe0e9; padding: 1px; font-size: {type_px(popout_ratios.ACTION_TEXT_H)}px;
+                min-width: 0px; min-height: 0px;
+            }}
+            QToolButton#mockupMoreButton:hover, QPushButton#mockupEditButton:hover {{ background: #292c32; }}
+            QToolButton#mockupMoreButton::menu-indicator,
+            QToolButton#mockupWindowButton::menu-indicator {{ image: none; width: 0px; }}
+            QPushButton#mockupEditButton:checked {{ color: #7eb0ff; background: transparent; }}
+            QPushButton#mockupLayoutButton {{ background: transparent; color: #97a4b8;
+                border: none; padding: 4px; font-size: 17px; min-width: 22px; }}
+            QPushButton#mockupLayoutButton:hover {{ background: #2a2e34; }}
+            QPushButton#mockupLayoutButton:checked {{ color: #74a8ff; }}
+            QFrame#mockupMetadataBar {{ background: #141619; border: none;
+                border-top: 1px solid #24272c; border-bottom: 1px solid #24272c; min-height: 0px; }}
+            QLabel#mockupFilename {{ color: #74808c; font-size: {type_px(popout_ratios.INFO_TEXT_H)}px; font-weight: 400; }}
+            QLabel#mockupCapture {{ color: #74808c; font-size: {type_px(popout_ratios.SECONDARY_TEXT_H)}px; }}
+            QLabel#mockupEdited {{ color: #75a4f5; font-size: {type_px(popout_ratios.SECONDARY_TEXT_H)}px; }}
+            QFrame#mockupRating {{ background: transparent; border: none; }}
+            QPushButton#mockupKeep, QPushButton#mockupReject {{ background: transparent;
+                border: 1px solid #4f5660; border-radius: 11px; color: #aab0bb;
+                font-size: {type_px(popout_ratios.EDITOR_TITLE_TEXT_H)}px; padding: 0px; }}
+            QPushButton#mockupKeep:checked {{ color: #f1749e; border-color: #8a3b5a; }}
+            QPushButton#mockupReject:checked {{ color: #ef7777; border-color: #8c4444; }}
+            QFrame#filmstrip {{ background: #1b1e21; border: none; border-radius: 0px; }}
+            QFrame#mockupStatusBar {{ background: #1b1e21; border: none;
+                min-height: 0px; }}
+            QFrame#mockupStatusBar QLabel {{ color: #74808c; font-size: {type_px(popout_ratios.STATUS_TEXT_H)}px; }}
+            QFrame#rail {{ background: #17191c; border: none; border-left: 1px solid #2a2d32; border-radius: 0px; }}
+            QFrame#photoEditorPanel {{ background: #17191c; border: none; border-radius: 0px; }}
+            QWidget#photoEditorColumn, QStackedWidget#photoEditorStack,
+            QWidget#photoEditorBody, QScrollArea#photoEditorScrollArea,
+            QScrollArea#photoEditorScrollArea QWidget {{ background: #17191c; }}
+            QFrame#mockupEditorHeader {{ background: #17191c; border: none;
+                border-bottom: 1px solid #2a2d32; min-height: 0px; }}
+            QLabel#mockupEditorTitle {{ color: #e8eaed; font-size: {type_px(popout_ratios.EDITOR_TITLE_TEXT_H)}px; font-weight: 600; }}
+            QFrame#mockupHistogram {{ background: #17191c; border: none;
+                border-bottom: 1px solid #24282d; }}
+            QFrame#mockupHistogram QLabel {{ color: #7f8790; font-size: {type_px(popout_ratios.SECONDARY_TEXT_H)}px; }}
+            QFrame#editorToolRail {{ background: #15171a; border: none; border-left: 1px solid #111214;
+                border-radius: 0px; }}
+            QFrame#photoEditorPanel QToolButton#editorToolRailButton {{ background: transparent;
+                color: #aab0b8; border: none; border-radius: 0px;
+                padding: 0px; font-size: {type_px(popout_ratios.TOOL_TEXT_H, minimum=9)}px; }}
+            QFrame#photoEditorPanel QToolButton#editorToolRailButton:hover {{ background: #292e37; color: #fff; }}
+            QFrame#photoEditorPanel QToolButton#editorToolRailButton:checked {{
+                background: #223453; color: #ffffff; border: none; border-left: 2px solid #7eb0ff; border-radius: 0px; }}
+            QFrame#photoEditorPanel QPushButton#editorSectionHeader {{
+                background: #17191c; color: #d9dce0; border: none;
+                border-top: 1px solid #24282d; border-radius: 0px; padding: 0px 14px;
+                min-height: {px(popout_ratios.EDITOR_SECTION_H, height, minimum=28)}px;
+                max-height: {px(popout_ratios.EDITOR_SECTION_H, height, minimum=28)}px; text-align: left;
+                font-size: {type_px(popout_ratios.EDITOR_SECTION_TEXT_H)}px; font-weight: 700; }}
+            QFrame#photoEditorPanel QLabel#editorControlLabel {{ color: #c4c8cd; font-size: {type_px(popout_ratios.EDITOR_CONTROL_TEXT_H)}px; }}
+            QFrame#photoEditorPanel QSpinBox#editorNumber,
+            QFrame#photoEditorPanel QDoubleSpinBox#editorNumber {{
+                color: #b7bdc5; background: #202328; border: 1px solid #30343a;
+                border-radius: 3px; padding: 0px 2px; min-width: 0px; max-width: 9999px;
+                min-height: 0px; max-height: 9999px; font-size: {type_px(popout_ratios.EDITOR_CONTROL_TEXT_H)}px; }}
+            QFrame#photoEditorPanel QSlider::groove:horizontal {{ height: 2px; background: #50555c; border-radius: 0px; }}
+            QFrame#photoEditorPanel QSlider::sub-page:horizontal {{ background: #6f767f; }}
+            QFrame#photoEditorPanel QSlider::handle:horizontal {{ width: 8px; height: 8px;
+                margin: -3px 0; border-radius: 4px; background: #e1e4e7; }}
+            QFrame#photoEditorPanel QComboBox {{ background: #202328; border: 1px solid #30343a;
+                border-radius: 3px; color: #c8cdd3; font-size: {type_px(popout_ratios.EDITOR_CONTROL_TEXT_H)}px; }}
+            QFrame#photoEditorFooter {{ background: #16181b; border: none;
+                border-top: 1px solid #2a2d32; border-radius: 0px; }}
+            QFrame#photoEditorPanel QPushButton#editorPrimaryButton {{
+                background: #4d8df7; border: 1px solid #4d8df7; border-radius: 4px; color: white; }}
+        """
         return (
-            f"{scope} {{ background-color: {studio.GROUND}; color: {studio.TEXT}; }}\n"
-            f"{scope} QWidget {{ font-family: 'Segoe UI'; font-size: 12px; }}\n"
+            f"{scope} {{ background-color: #0e0f11; color: #e8eaed; }}\n"
+            f"{scope} QWidget {{ font-family: 'Segoe UI'; font-size: 11px; }}\n"
             + studio.studio_stylesheet(scope=scope)
-            + studio.scope_stylesheet(extra, scope)
+            + studio.scope_stylesheet(extra + mockup_css, scope)
         )
 
     def _studio_toggle_style(self) -> str:
@@ -1631,8 +1741,8 @@ class FullScreenPreview(QDialog):
         rail = getattr(self, "_studio_rail", None)
         if rail is not None:
             rail.setStyleSheet(
-                f"QFrame#rail {{ background: {studio.SURFACE_1};"
-                f" border: 1px solid {studio.LINE}; border-radius: {studio.CARD_RADIUS}px; }}"
+                "QFrame#rail { background: #17191c; border: none;"
+                " border-left: 1px solid #2a2d32; border-radius: 0px; }"
             )
         self.compare_count_combo.setStyleSheet(self._studio_combo_style())
         self.focus_assist_color_combo.setStyleSheet(self._studio_combo_style(narrow=True))
@@ -1650,6 +1760,8 @@ class FullScreenPreview(QDialog):
         for pane in self._panes:
             pane.set_studio(True)
             pane.apply_theme(self._theme)
+        if hasattr(self, "_mockup_metadata_bar"):
+            self._apply_mockup_metrics()
 
     def _studio_group_label(self, text: str) -> QLabel:
         label = QLabel(text.upper())
@@ -1687,10 +1799,38 @@ class FullScreenPreview(QDialog):
         return frame
 
     def _toggle_studio_inspector(self, shown: bool) -> None:
+        if self._collection_browse_mode:
+            with QSignalBlocker(self.inspector_toggle):
+                self.inspector_toggle.setChecked(self._collection_saved_inspector_checked)
+            self._studio_rail.hide()
+            return
         rail = getattr(self, "_studio_rail", None)
         if rail is not None:
             rail.setVisible(shown)
+        toggle = getattr(self, "_mockup_editor_toggle", None)
+        if toggle is not None:
+            toggle.setChecked(shown)
         self._settings.setValue(self.INSPECTOR_VISIBLE_KEY, shown)
+        self._sync_mask_overlay()
+
+    def set_collection_browse_mode(self, enabled: bool) -> None:
+        """Keep the popout useful for inspection without review or editing."""
+        if enabled and not self._collection_browse_mode:
+            self._collection_saved_inspector_checked = self.inspector_toggle.isChecked()
+        self._collection_browse_mode = bool(enabled)
+        if not hasattr(self, "_studio_rail"):
+            return
+        self._studio_rail.setVisible(not enabled and self.inspector_toggle.isChecked())
+        self.photo_editor_panel.setEnabled(not enabled)
+        for button in (self.inspector_toggle, self._mockup_editor_toggle,
+                       self.command_palette_button):
+            button.setEnabled(not enabled)
+        self.photoshop_button.setEnabled(not enabled and self._photoshop_available)
+        for widget in (self._mockup_rating, self._mockup_keep, self._mockup_reject):
+            widget.setVisible(not enabled)
+        for pane in self._panes:
+            pane.heart_button.setVisible(not enabled)
+            pane.reject_button.setVisible(not enabled)
         self._sync_mask_overlay()
 
     def _sync_editor_overlays(self) -> None:
@@ -1732,10 +1872,53 @@ class FullScreenPreview(QDialog):
 
     def _build_studio_toolbar(self) -> QFrame:
         toolbar = QFrame()
-        toolbar.setObjectName("toolbar")
+        toolbar.setObjectName("mockupPathBar")
         layout = QHBoxLayout(toolbar)
-        layout.setContentsMargins(9, 6, 9, 6)
-        layout.setSpacing(9)
+        layout.setContentsMargins(12, 3, 12, 3)
+        layout.setSpacing(12)
+
+        library = QPushButton("←  Library")
+        library.setObjectName("mockupLibraryButton")
+        library.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        library.clicked.connect(self.close)
+        layout.addWidget(library)
+        self._mockup_breadcrumb = QLabel("Preview")
+        self._mockup_breadcrumb.setObjectName("mockupBreadcrumb")
+        layout.addWidget(self._mockup_breadcrumb, 1)
+        layout.addWidget(self._build_studio_nav_pill())
+        settings_menu = QMenu(toolbar)
+        settings_menu.addAction("Open commands", self.command_palette_requested.emit)
+        settings_menu.addAction("Toggle filmstrip", lambda: self._filmstrip.toggle_collapsed())
+        settings_menu.addAction(
+            "Toggle editor", lambda: self.inspector_toggle.setChecked(not self.inspector_toggle.isChecked())
+        )
+        settings_menu.addAction("Fit image", self._set_fit_mode)
+        settings_menu.addAction("100% zoom", lambda: self._set_manual_zoom(1.0))
+        settings_menu.addAction("Toggle focus peaking", self.toggle_focus_assist_command)
+        settings_button = QToolButton(toolbar)
+        settings_button.setObjectName("mockupWindowButton")
+        settings_button.setText("⚙")
+        settings_button.setToolTip("Preview options")
+        settings_button.setMenu(settings_menu)
+        settings_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        settings_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mockup_settings_button = settings_button
+        layout.addWidget(settings_button)
+        settings_menu.addAction("Close preview", self.close)
+        return toolbar
+
+    def _toggle_mockup_maximized(self) -> None:
+        if self.isMaximized() or self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _build_studio_actionbar(self) -> QFrame:
+        toolbar = QFrame()
+        toolbar.setObjectName("mockupActionBar")
+        layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setSpacing(3)
 
         # Rename the re-parented header buttons so the main window's app-level
         # stylesheet (which cascades into child dialogs and pins
@@ -1750,19 +1933,75 @@ class FullScreenPreview(QDialog):
         ):
             button.setObjectName("studioToolButton")
 
-        layout.addWidget(self._studio_group_label("Review"))
-        layout.addWidget(self.compare_toggle_button)
-        layout.addWidget(self.auto_bracket_button)
-        layout.addWidget(self.before_after_button)
+        for button, symbol, label in (
+            (self.compare_toggle_button, "▦", "Compare"),
+            (self.auto_bracket_button, "▣", "Bracket"),
+            (self.before_after_button, "◧", "Before"),
+            (self.photoshop_button, "▢", "Photoshop"),
+            (self.command_palette_button, "⌨", "Command"),
+        ):
+            button.setText(label)
+            button.setIcon(build_symbol_icon(symbol, QColor(studio.TEXT), pixel_size=18, font_size=15))
+            button.setIconSize(QSize(18, 18))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            if not button.toolTip():
+                button.setToolTip(label)
+            layout.addWidget(button)
+        self._mockup_undo = QToolButton()
+        self._mockup_undo.setText("Undo")
+        self._mockup_undo.setObjectName("mockupDisabledAction")
+        self._mockup_undo.setEnabled(False)
+        self._mockup_undo.setToolTip("Editor undo is not available yet")
+        self._mockup_redo = QToolButton()
+        self._mockup_redo.setText("Redo")
+        self._mockup_redo.setObjectName("mockupDisabledAction")
+        self._mockup_redo.setEnabled(False)
+        for button, symbol in ((self._mockup_undo, "↶"), (self._mockup_redo, "↷")):
+            button.setIcon(build_symbol_icon(symbol, QColor(studio.TEXT_MUTE), pixel_size=18, font_size=16))
+            button.setIconSize(QSize(18, 18))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            layout.addWidget(button)
         layout.addWidget(self.compare_count_combo)
-        layout.addWidget(self._studio_divider())
-        layout.addWidget(self._studio_group_label("Edit"))
-        layout.addWidget(self.next_edit_button)
-        layout.addWidget(self.photoshop_button)
-        # Background and Lens Blur used to open floating popouts from here; they
-        # are rail pages in the editor panel now.
-        layout.addWidget(self.command_palette_button)
         layout.addStretch(1)
+        self.next_edit_button.setIcon(build_symbol_icon("◧", QColor(studio.TEXT), pixel_size=18, font_size=15))
+        self.next_edit_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.next_edit_button.setToolTip("Cycle edited variant")
+        layout.addWidget(self.next_edit_button)
+        fit_button = QPushButton("Fit")
+        fit_button.setObjectName("mockupZoomButton")
+        fit_button.setToolTip("Fit image")
+        fit_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        fit_button.clicked.connect(self._set_fit_mode)
+        layout.addWidget(fit_button)
+        actual_button = QPushButton("1:1")
+        actual_button.setObjectName("mockupZoomButton")
+        actual_button.setToolTip("100% zoom")
+        actual_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        actual_button.clicked.connect(lambda: self._set_manual_zoom(1.0))
+        layout.addWidget(actual_button)
+        self._mockup_zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._mockup_zoom_slider.setObjectName("mockupZoomSlider")
+        self._mockup_zoom_slider.setRange(0, 100)
+        self._mockup_zoom_slider.setValue(35)
+        self._mockup_zoom_slider.setFixedWidth(100)
+        self._mockup_zoom_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mockup_zoom_slider.sliderReleased.connect(self._apply_mockup_zoom_slider)
+        layout.addWidget(self._mockup_zoom_slider)
+        more_menu = QMenu(toolbar)
+        more_menu.addAction("Fit image", self._set_fit_mode)
+        more_menu.addAction("100% zoom", lambda: self._set_manual_zoom(1.0))
+        more_menu.addAction("Toggle focus peaking", self.toggle_focus_assist_command)
+        more_menu.addAction("Toggle filmstrip", self._filmstrip.toggle_collapsed)
+        more_menu.addAction("Open commands", self.command_palette_requested.emit)
+        more_button = QToolButton(toolbar)
+        more_button.setObjectName("mockupMoreButton")
+        more_button.setIcon(build_symbol_icon("⋯", QColor(studio.TEXT), pixel_size=18, font_size=18))
+        more_button.setToolTip("More preview actions")
+        more_button.setMenu(more_menu)
+        more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        more_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(more_button)
+        more_button.hide()
 
         self.inspector_toggle = QPushButton("Editor")
         self.inspector_toggle.setObjectName("toolBtn")
@@ -1773,16 +2012,42 @@ class FullScreenPreview(QDialog):
         self.inspector_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.inspector_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.inspector_toggle.toggled.connect(self._toggle_studio_inspector)
+        self.inspector_toggle.setObjectName("mockupEditButton")
+        self.inspector_toggle.setText("")
+        self.inspector_toggle.setIcon(build_symbol_icon("✎", QColor(studio.TEXT), pixel_size=18, font_size=16))
+        self.inspector_toggle.setToolTip("Show or hide editor")
         layout.addWidget(self.inspector_toggle)
-        layout.addWidget(self._build_studio_nav_pill())
-
-        close_btn = QPushButton("✕")
-        close_btn.setObjectName("ghostBtn")
-        close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn)
+        self._mockup_filmstrip_toggle = QPushButton(toolbar)
+        self._mockup_filmstrip_toggle.setObjectName("mockupLayoutButton")
+        self._mockup_filmstrip_toggle.setIcon(build_symbol_icon("◧", QColor(studio.TEXT), pixel_size=18, font_size=15))
+        self._mockup_filmstrip_toggle.setToolTip("Show or hide filmstrip")
+        self._mockup_filmstrip_toggle.setCheckable(True)
+        self._mockup_filmstrip_toggle.setChecked(not self._filmstrip.is_collapsed())
+        self._mockup_filmstrip_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mockup_filmstrip_toggle.clicked.connect(self._filmstrip.toggle_collapsed)
+        layout.addWidget(self._mockup_filmstrip_toggle)
+        self._mockup_filmstrip_toggle.hide()
+        self._mockup_editor_toggle = QPushButton(toolbar)
+        self._mockup_editor_toggle.setObjectName("mockupLayoutButton")
+        self._mockup_editor_toggle.setIcon(build_symbol_icon("▣", QColor(studio.TEXT), pixel_size=18, font_size=15))
+        self._mockup_editor_toggle.setToolTip("Show or hide editor")
+        self._mockup_editor_toggle.setCheckable(True)
+        self._mockup_editor_toggle.setChecked(self.inspector_toggle.isChecked())
+        self._mockup_editor_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mockup_editor_toggle.clicked.connect(
+            lambda: self.inspector_toggle.setChecked(self._mockup_editor_toggle.isChecked())
+        )
+        layout.addWidget(self._mockup_editor_toggle)
+        self._mockup_editor_toggle.hide()
+        self._mockup_misc_action_buttons = (fit_button, actual_button, more_button, self.inspector_toggle)
         return toolbar
+
+    def _apply_mockup_zoom_slider(self) -> None:
+        value = self._mockup_zoom_slider.value()
+        if value <= 3:
+            self._set_fit_mode()
+        else:
+            self._set_manual_zoom(0.25 * (32 ** (value / 100)))
 
     def _build_studio_rail(self) -> QFrame:
         """Build the popout editor rail.
@@ -1794,13 +2059,52 @@ class FullScreenPreview(QDialog):
         rail = QFrame()
         rail.setObjectName("rail")
         profile = self._display_profile
-        rail.setFixedWidth(profile.editor_content_width + profile.editor_tool_rail_width)
+        rail.setFixedWidth(popout_ratios.ratio_px(popout_ratios.EDITOR_W, self.width(), minimum=270))
         layout = QVBoxLayout(rail)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self.photo_editor_panel = PhotoEditorPanel(rail)
         self.photo_editor_panel.apply_display_profile(profile)
+        self.photo_editor_panel.use_popout_mockup_layout()
+        editor_column = self.photo_editor_panel._editor_column
+        editor_layout = editor_column.layout()
+        editor_header = QFrame(editor_column)
+        editor_header.setObjectName("mockupEditorHeader")
+        self._mockup_editor_header = editor_header
+        editor_header_layout = QHBoxLayout(editor_header)
+        editor_header_layout.setContentsMargins(12, 5, 12, 5)
+        self._mockup_editor_title = QLabel("Adjust", editor_header)
+        self._mockup_editor_title.setObjectName("mockupEditorTitle")
+        editor_header_layout.addWidget(self._mockup_editor_title)
+        editor_header_layout.addStretch(1)
+        editor_menu = QPushButton("•••", editor_header)
+        editor_menu.setObjectName("mockupEditorMenu")
+        editor_menu.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        editor_menu.clicked.connect(self.command_palette_requested.emit)
+        editor_header_layout.addWidget(editor_menu)
+        editor_layout.insertWidget(0, editor_header)
+        self.photo_editor_panel.editor_stack.currentChanged.connect(
+            lambda index: self._mockup_editor_title.setText(
+                self.photo_editor_panel.RAIL_TOOLS[index][1]
+                if 0 <= index < len(self.photo_editor_panel.RAIL_TOOLS) else "Edit"
+            )
+        )
+        histogram_frame = QFrame(editor_column)
+        histogram_frame.setObjectName("mockupHistogram")
+        self._mockup_histogram_frame = histogram_frame
+        histogram_layout = QVBoxLayout(histogram_frame)
+        histogram_layout.setContentsMargins(12, 8, 12, 7)
+        histogram_layout.setSpacing(3)
+        histogram_layout.addWidget(self.histogram_widget)
+        histogram_caption = QHBoxLayout()
+        self._mockup_shadow_label = QLabel("Shadows —", histogram_frame)
+        self._mockup_highlight_label = QLabel("Highlights —", histogram_frame)
+        histogram_caption.addWidget(self._mockup_shadow_label)
+        histogram_caption.addStretch(1)
+        histogram_caption.addWidget(self._mockup_highlight_label)
+        histogram_layout.addLayout(histogram_caption)
+        editor_layout.insertWidget(1, histogram_frame)
         self.photo_editor_panel.recipe_changed.connect(self._handle_editor_recipe_changed)
         self.photo_editor_panel.status_changed.connect(self._handle_editor_status_changed)
         self.photo_editor_panel.saved.connect(self._handle_editor_sidecar_saved)
@@ -1869,10 +2173,11 @@ class FullScreenPreview(QDialog):
         self._display_profile = profile
         rail = getattr(self, "_studio_rail", None)
         if rail is not None:
-            rail.setFixedWidth(profile.editor_content_width + profile.editor_tool_rail_width)
+            rail.setFixedWidth(popout_ratios.ratio_px(popout_ratios.EDITOR_W, self.width(), minimum=270))
         panel = getattr(self, "photo_editor_panel", None)
         if panel is not None:
             panel.apply_display_profile(profile)
+        self._apply_mockup_metrics()
         if self.isVisible():
             self._render_all()
 
@@ -1885,12 +2190,8 @@ class FullScreenPreview(QDialog):
 
         rail = self._build_studio_rail()
         self._studio_rail = rail
-        # Every studio surface (toolbar, image stage, rail, filmstrip) floats as
-        # a rounded panel on a uniform 8px gutter (matching the main window's
-        # central container inset). Below the toolbar the body is two columns:
-        # the image stage stacked over the filmstrip on the left, and the
-        # full-height editor rail on the right — so the filmstrip ends at the
-        # rail's left edge instead of running across the whole bottom.
+        # The mockup is a contiguous workstation: breadcrumb across the top,
+        # image and controls on the left, editing controls to the right.
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         self._content_layout.setSpacing(8)
         self.panes_layout.setContentsMargins(0, 0, 0, 0)
@@ -1899,16 +2200,30 @@ class FullScreenPreview(QDialog):
             widget.hide()
 
         layout = self.layout()
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        # Child controls grow with the viewport; their current (large-window)
+        # minimum-size hint must not prevent the dialog shrinking again.
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         layout.replaceWidget(self.header_widget, toolbar)
         self.header_widget.hide()
         self.info_label.hide()
 
         self._filmstrip_current = 0
         self._filmstrip = studio.Filmstrip(focus="middle")
+        self._filmstrip.mockup_chrome = True
+        saved_thumb_ratio = self._settings.value(self.FILMSTRIP_THUMB_RATIO_KEY, None, float)
+        if saved_thumb_ratio is None and self._settings.contains(self.FILMSTRIP_THUMB_HEIGHT_KEY):
+            # The former pixel preference has no saved viewport dimensions.
+            # Interpret it at the mockup's reference height once, then keep
+            # the resulting proportion for subsequent resizes.
+            saved_thumb_ratio = self._settings.value(self.FILMSTRIP_THUMB_HEIGHT_KEY, 83, int) / 1191
+        self._mockup_filmstrip_ratio = (
+            float(saved_thumb_ratio) if saved_thumb_ratio and saved_thumb_ratio > 0
+            else popout_ratios.FILMSTRIP_THUMB_H
+        )
         self._filmstrip.restore_layout(
-            self._settings.value(self.FILMSTRIP_THUMB_HEIGHT_KEY, studio.Filmstrip.DEFAULT_THUMB_H, int),
+            round(max(1, self.height()) * self._mockup_filmstrip_ratio),
             self._settings.value(self.FILMSTRIP_COLLAPSED_KEY, False, bool),
         )
         self._filmstrip.layout_changed.connect(self._save_filmstrip_layout)
@@ -1917,17 +2232,22 @@ class FullScreenPreview(QDialog):
         body = QWidget(self)
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(8)
+        body_layout.setSpacing(0)
         left_column = QWidget(body)
         left_layout = QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
+        left_layout.setSpacing(0)
         layout.replaceWidget(self.content_widget, body)
         layout.setStretchFactor(body, 1)
+        self._studio_actionbar = self._build_studio_actionbar()
         left_layout.addWidget(self.content_widget, 1)
+        self._mockup_metadata_bar = self._build_mockup_metadata_bar()
+        left_layout.addWidget(self._mockup_metadata_bar)
         left_layout.addWidget(self._filmstrip)
         body_layout.addWidget(left_column, 1)
         body_layout.addWidget(rail)
+        self._mockup_status_bar = self._build_mockup_status_bar()
+        self._filmstrip.set_footer(self._mockup_status_bar)
         # Apply the persisted editor rail visibility now that the rail exists.
         rail.setVisible(self.inspector_toggle.isChecked())
         # Debounce for async thumbnail arrivals so a burst of thumbnail_ready
@@ -1938,9 +2258,178 @@ class FullScreenPreview(QDialog):
         self._filmstrip_refresh_timer.timeout.connect(self._refresh_studio_filmstrip)
 
         self._apply_studio_theme()
+        self._apply_mockup_metrics()
         # Reflect initial state into the freshly-built Studio controls
         # (gray-outs, segmented selections, card summaries).
         self._sync_preview_controls()
+
+    def _build_mockup_metadata_bar(self) -> QFrame:
+        bar = QFrame(self)
+        bar.setObjectName("mockupMetadataBar")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 8, 0)
+        row.setSpacing(4)
+        row.addWidget(self._studio_actionbar, 1)
+        self._mockup_filename = QLabel("", bar)
+        self._mockup_filename.setObjectName("mockupFilename")
+        self._mockup_capture = QLabel("", bar)
+        self._mockup_capture.setObjectName("mockupCapture")
+        self._mockup_edited = QLabel("", bar)
+        self._mockup_edited.setObjectName("mockupEdited")
+        self._mockup_rating = QFrame(bar)
+        self._mockup_rating.setObjectName("mockupRating")
+        rating_row = QHBoxLayout(self._mockup_rating)
+        rating_row.setContentsMargins(0, 0, 0, 0)
+        rating_row.setSpacing(0)
+        self._mockup_star_buttons: list[QPushButton] = []
+        for value in range(1, 6):
+            star = QPushButton("★", self._mockup_rating)
+            star.setFixedSize(17, 26)
+            star.setToolTip(f"Rate {value} star{'s' if value != 1 else ''}")
+            star.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            star.clicked.connect(lambda _checked=False, rating=value: self._request_mockup_rating(rating))
+            rating_row.addWidget(star)
+            self._mockup_star_buttons.append(star)
+        row.addWidget(self._mockup_rating)
+        self._mockup_keep = QPushButton("♥", bar)
+        self._mockup_keep.setObjectName("mockupKeep")
+        self._mockup_keep.setCheckable(True)
+        self._mockup_keep.setToolTip("Mark the current photo as a winner")
+        self._mockup_keep.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mockup_keep.clicked.connect(self._handle_mockup_keep)
+        row.addWidget(self._mockup_keep)
+        self._mockup_reject = QPushButton("×", bar)
+        self._mockup_reject.setObjectName("mockupReject")
+        self._mockup_reject.setCheckable(True)
+        self._mockup_reject.setToolTip("Reject the current photo")
+        self._mockup_reject.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mockup_reject.clicked.connect(self._handle_mockup_reject)
+        row.addWidget(self._mockup_reject)
+        return bar
+
+    def _build_mockup_status_bar(self) -> QFrame:
+        bar = QFrame(self)
+        bar.setObjectName("mockupStatusBar")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(12, 2, 12, 2)
+        row.setSpacing(14)
+        self._mockup_image_size = QLabel("", bar)
+        self._mockup_zoom = QLabel("Fit", bar)
+        self._mockup_edits_count = QLabel("", bar)
+        self._mockup_render_state = QLabel("", bar)
+        for widget in (self._mockup_filename, self._mockup_image_size, self._mockup_capture):
+            row.addWidget(widget)
+        row.addStretch(1)
+        for widget in (self._mockup_zoom, self._mockup_edits_count,
+                       self._mockup_edited, self._mockup_render_state):
+            widget.hide()
+        return bar
+
+    def _apply_mockup_metrics(self) -> None:
+        if not hasattr(self, "_mockup_metadata_bar"):
+            return
+        width, height = max(1, self.width()), max(1, self.height())
+        px = popout_ratios.ratio_px
+        type_signature = tuple(px(ratio, height, minimum=popout_ratios.MIN_TEXT_PX) for ratio in (
+            popout_ratios.PATH_TEXT_H, popout_ratios.ACTION_TEXT_H, popout_ratios.INFO_TEXT_H,
+            popout_ratios.SECONDARY_TEXT_H, popout_ratios.STATUS_TEXT_H,
+            popout_ratios.EDITOR_TITLE_TEXT_H, popout_ratios.EDITOR_SECTION_TEXT_H,
+            popout_ratios.EDITOR_CONTROL_TEXT_H,
+        )) + (px(popout_ratios.TOOL_TEXT_H, height, minimum=9),)
+        if type_signature != getattr(self, "_mockup_type_signature", None):
+            self._mockup_type_signature = type_signature
+            self.setStyleSheet(self._studio_stylesheet_full())
+        self._studio_toolbar.setFixedHeight(px(popout_ratios.PATH_BAR_H, height, minimum=24))
+        action_row_height = px(popout_ratios.ACTION_BAR_H, height, minimum=28)
+        self._studio_actionbar.setFixedHeight(action_row_height)
+        self._mockup_metadata_bar.setFixedHeight(action_row_height)
+        self._mockup_status_bar.setFixedHeight(px(popout_ratios.STATUS_BAR_H, height, minimum=12))
+        self._mockup_editor_header.setFixedHeight(px(popout_ratios.EDITOR_HEADER_H, height, minimum=40))
+        self._mockup_histogram_frame.setFixedHeight(px(popout_ratios.HISTOGRAM_FRAME_H, height, minimum=120))
+        self._studio_rail.setFixedWidth(px(popout_ratios.EDITOR_W, width, minimum=270))
+        self.photo_editor_panel.apply_popout_mockup_metrics(width, height)
+        self.histogram_widget.setFixedHeight(px(popout_ratios.HISTOGRAM_PLOT_H, height, minimum=70))
+        self._content_layout.setContentsMargins(
+            px(popout_ratios.STAGE_SIDE_W, width),
+            px(popout_ratios.STAGE_TOP_H, height),
+            px(popout_ratios.STAGE_SIDE_W, width),
+            px(popout_ratios.STAGE_BOTTOM_H, height),
+        )
+        self._studio_toolbar.layout().setContentsMargins(px(popout_ratios.PATH_GUTTER_W, width, minimum=7), 2, px(popout_ratios.PATH_GUTTER_W, width, minimum=7), 2)
+        self._studio_toolbar.layout().setSpacing(px(0.0059, width, minimum=6))
+        self._mockup_settings_button.setFixedWidth(px(popout_ratios.SETTINGS_BUTTON_W, width, minimum=34))
+        self._studio_actionbar.layout().setContentsMargins(px(popout_ratios.ACTION_GUTTER_W, width, minimum=5), 2, px(popout_ratios.ACTION_GUTTER_W, width, minimum=5), 2)
+        self._studio_actionbar.layout().setSpacing(px(0.0015, width, minimum=2))
+        self._mockup_metadata_bar.layout().setContentsMargins(0, 0, px(popout_ratios.METADATA_GUTTER_W, width, minimum=8), 0)
+        self._mockup_metadata_bar.layout().setSpacing(px(0.002, width, minimum=3))
+        self._mockup_status_bar.layout().setContentsMargins(px(0.0059, width, minimum=7), 1, px(0.0059, width, minimum=7), 1)
+        self._mockup_editor_header.layout().setContentsMargins(px(0.0059, width, minimum=7), 2, px(0.0059, width, minimum=7), 2)
+        self._mockup_histogram_frame.layout().setContentsMargins(
+            px(popout_ratios.HISTOGRAM_GUTTER_W, width, minimum=7),
+            px(0.0067, height, minimum=5),
+            px(popout_ratios.HISTOGRAM_GUTTER_W, width, minimum=7),
+            px(0.0059, height, minimum=4),
+        )
+        self._mockup_zoom_slider.setFixedWidth(px(popout_ratios.ZOOM_SLIDER_W, width, minimum=52))
+        action_icon = px(popout_ratios.ACTION_ICON_H, height, minimum=11)
+        for button in (self.compare_toggle_button, self.auto_bracket_button, self.before_after_button,
+                       self.photoshop_button, self.command_palette_button, self._mockup_undo,
+                       self._mockup_redo, self.next_edit_button):
+            button.setIconSize(QSize(action_icon, action_icon))
+            button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
+                                px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
+        for button in self._mockup_misc_action_buttons:
+            button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
+                                px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
+            button.setIconSize(QSize(action_icon, action_icon))
+        for button in (self._mockup_filmstrip_toggle, self._mockup_editor_toggle):
+            button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
+                                px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
+            button.setIconSize(QSize(action_icon, action_icon))
+        compact = width - self._studio_rail.width() < 800
+        self._mockup_undo.setVisible(not compact)
+        self._mockup_redo.setVisible(not compact)
+        star_h = px(popout_ratios.RATING_STAR_H, height, minimum=17)
+        for star in self._mockup_star_buttons:
+            star.setFixedSize(px(0.0083, width, minimum=14), star_h)
+        rating = self._entries[min(self._focused_slot, len(self._entries) - 1)].rating if self._entries else 0
+        self._set_mockup_rating(rating)
+        action_w = px(popout_ratios.RATING_ACTION_W, width, minimum=18)
+        action_h = px(popout_ratios.RATING_ACTION_H, height, minimum=18)
+        for button in (self._mockup_keep, self._mockup_reject):
+            button.setFixedSize(action_w, action_h)
+        self._filmstrip.MIN_THUMB_H = px(popout_ratios.FILMSTRIP_MIN_THUMB_H, height, minimum=32)
+        self._filmstrip.MAX_THUMB_H = px(popout_ratios.FILMSTRIP_MAX_THUMB_H, height, minimum=96)
+        self._filmstrip.set_mockup_metrics(width, height)
+        target_height = round(height * self._mockup_filmstrip_ratio)
+        if self._filmstrip.thumb_height() != target_height:
+            self._filmstrip.restore_layout(target_height, self._filmstrip.is_collapsed())
+        else:
+            self._filmstrip._apply_strip_height()
+
+    def _handle_mockup_keep(self) -> None:
+        if self._entries:
+            self._handle_heart_clicked(self._focused_slot)
+
+    def _handle_mockup_reject(self) -> None:
+        if self._entries:
+            self._handle_reject_clicked(self._focused_slot)
+
+    def _request_mockup_rating(self, rating: int) -> None:
+        if self._entries:
+            entry = self._entries[min(self._focused_slot, len(self._entries) - 1)]
+            self.rating_requested.emit(entry.record.path, 0 if entry.rating == rating else rating)
+
+    def _set_mockup_rating(self, rating: int) -> None:
+        star_size = popout_ratios.ratio_px(popout_ratios.ACTION_ICON_H, self.height(), minimum=11)
+        for value, star in enumerate(self._mockup_star_buttons, start=1):
+            selected = value <= rating
+            star.setText("★" if selected else "☆")
+            color = "#f2c858" if selected else "#858c95"
+            star.setStyleSheet(
+                f"QPushButton {{ background: transparent; border: none; color: {color};"
+                f" font-size: {star_size}px; padding: 0px; }}"
+            )
 
     def set_browse_context(
         self,
@@ -1997,8 +2486,13 @@ class FullScreenPreview(QDialog):
             )
 
     def _save_filmstrip_layout(self) -> None:
+        self._mockup_filmstrip_ratio = self._filmstrip.thumb_height() / max(1, self.height())
+        self._settings.setValue(self.FILMSTRIP_THUMB_RATIO_KEY, self._mockup_filmstrip_ratio)
         self._settings.setValue(self.FILMSTRIP_THUMB_HEIGHT_KEY, self._filmstrip.thumb_height())
         self._settings.setValue(self.FILMSTRIP_COLLAPSED_KEY, self._filmstrip.is_collapsed())
+        toggle = getattr(self, "_mockup_filmstrip_toggle", None)
+        if toggle is not None:
+            toggle.setChecked(not self._filmstrip.is_collapsed())
 
     def _handle_studio_filmstrip_selected(self, index: int) -> None:
         delta = index - getattr(self, "_filmstrip_current", 0)
@@ -2256,7 +2750,10 @@ class FullScreenPreview(QDialog):
     def _sync_preview_controls(self) -> None:
         edited_candidates = self._edited_candidates_for_entry(self._source_entries[0]) if self._source_entries else ()
         before_after_visible = (not self._compare_mode) and len(self._source_entries) == 1 and bool(edited_candidates)
-        self.before_after_button.setVisible(before_after_visible)
+        self.before_after_button.setVisible(
+            before_after_visible or getattr(self, "_studio_layout_active", False)
+        )
+        self.before_after_button.setEnabled(before_after_visible)
         self.compare_count_combo.setVisible(self._compare_mode)
         self.focus_assist_button.setText("On" if self._focus_assist_enabled else "Off")
         self.focus_assist_background_button.setText("Dimmed" if self._focus_assist_dim_background else "Original")
@@ -2441,8 +2938,11 @@ class FullScreenPreview(QDialog):
 
     def set_photoshop_available(self, available: bool) -> None:
         self._photoshop_available = available
-        self.photoshop_button.setEnabled(available)
-        if available:
+        self.photoshop_button.setEnabled(available and not self._collection_browse_mode)
+        if getattr(self, "_studio_layout_active", False):
+            self.photoshop_button.setText("Photoshop")
+            self.photoshop_button.setToolTip("Open in Photoshop" if available else "Photoshop not found")
+        elif available:
             self.photoshop_button.setText("Photoshop")
         else:
             self.photoshop_button.setText("Photoshop Not Found")
@@ -2476,6 +2976,9 @@ class FullScreenPreview(QDialog):
         self._rebuild_entries()
         self._sync_editor_to_focused_entry()
         self._sync_preview_controls()
+        if self._collection_browse_mode:
+            self.set_collection_browse_mode(True)
+        self._update_info_label()
         fullscreen_reapplied = False
         window_activated = False
         if not was_visible:
@@ -2557,7 +3060,10 @@ class FullScreenPreview(QDialog):
         widget = self.childAt(position)
         if widget is None:
             return True
-        for name in ("_studio_toolbar", "_studio_rail", "_filmstrip"):
+        for name in (
+            "_studio_toolbar", "_studio_actionbar", "_studio_rail",
+            "_mockup_metadata_bar", "_filmstrip", "_mockup_status_bar",
+        ):
             surface = getattr(self, name, None)
             if surface is not None and (
                 widget is surface or surface.isAncestorOf(widget)
@@ -2706,6 +3212,9 @@ class FullScreenPreview(QDialog):
             self._set_fit_mode()
             event.accept()
             return
+        if self._collection_browse_mode:
+            event.accept()
+            return
         if key == Qt.Key.Key_W and review_shortcut_allowed:
             path = self._focused_path()
             if path:
@@ -2763,6 +3272,8 @@ class FullScreenPreview(QDialog):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        if getattr(self, "_studio_layout_active", False):
+            self._apply_mockup_metrics()
         self._apply_header_overflow()
         self._render_all()
 
@@ -2780,6 +3291,8 @@ class FullScreenPreview(QDialog):
         self.auto_bracket_mode_changed.emit(checked)
 
     def _handle_photoshop_button_clicked(self) -> None:
+        if self._collection_browse_mode:
+            return
         path = self._focused_photoshop_path()
         if path and self._photoshop_available:
             self.photoshop_requested.emit(path)
@@ -2880,6 +3393,9 @@ class FullScreenPreview(QDialog):
             pane.scroll_area.viewport().installEventFilter(self)
             pane.heart_button.clicked.connect(lambda _checked=False, slot=len(self._panes): self._handle_heart_clicked(slot))
             pane.reject_button.clicked.connect(lambda _checked=False, slot=len(self._panes): self._handle_reject_clicked(slot))
+            if self._collection_browse_mode:
+                pane.heart_button.hide()
+                pane.reject_button.hide()
             self._watched_widgets[pane.image_label] = len(self._panes)
             self._watched_widgets[pane.scroll_area.viewport()] = len(self._panes)
             self._panes.append(pane)
@@ -2927,6 +3443,7 @@ class FullScreenPreview(QDialog):
                 source_path=before_path,
                 winner=entry.winner,
                 reject=entry.reject,
+                rating=entry.rating,
                 photoshop=entry.photoshop,
                 edited_path=edited_path,
                 edited_candidates=edited_candidates,
@@ -2942,6 +3459,7 @@ class FullScreenPreview(QDialog):
                 source_path=edited_path,
                 winner=entry.winner,
                 reject=entry.reject,
+                rating=entry.rating,
                 photoshop=entry.photoshop,
                 edited_path=edited_path,
                 edited_candidates=edited_candidates,
@@ -3266,6 +3784,7 @@ class FullScreenPreview(QDialog):
                         self._render_pane(request.slot)
                         if request.slot == self._focused_slot:
                             self._schedule_analysis_panel_update()
+                            self._update_mockup_image_info()
                 processed += 1
                 continue
             if state == "ready":
@@ -3318,6 +3837,8 @@ class FullScreenPreview(QDialog):
                             self._schedule_analysis_panel_update()
                     elif request.slot == self._focused_slot and metadata is not None:
                         self._schedule_analysis_panel_update()
+                    if request.slot == self._focused_slot:
+                        self._update_mockup_image_info()
                 else:
                     if self._current_images[request.slot].isNull():
                         self._show_failed(request.slot, payload[0])
@@ -3683,6 +4204,7 @@ class FullScreenPreview(QDialog):
         # The pane keeps showing the previous frame until the result arrives.
         self._editor_recipe = recipe
         self._editor_recipe_version += 1
+        self._update_info_label()
         self._editor_preview_cache.clear()
         self._focus_assist_cache.clear()
         if (
@@ -4019,6 +4541,13 @@ class FullScreenPreview(QDialog):
 
         entry = self._entries[self._focused_slot]
         stats = self._inspection_stats_for_slot(self._focused_slot)
+        if hasattr(self, "_mockup_shadow_label"):
+            self._mockup_shadow_label.setText(
+                f"Shadows {stats.shadow_clip_pct:.0f}%" if stats.width > 0 else "Shadows —"
+            )
+            self._mockup_highlight_label.setText(
+                f"Highlights {stats.highlight_clip_pct:.0f}%" if stats.width > 0 else "Highlights —"
+            )
         title = Path(entry.source_path).name
         if entry.label:
             title = f"{entry.label} | {title}"
@@ -4090,6 +4619,9 @@ class FullScreenPreview(QDialog):
         slack = 0 if getattr(self, "_studio_layout_active", False) else 8
         width = max(1, viewport.width() - slack)
         height = max(1, viewport.height() - slack)
+        if (getattr(self, "_studio_layout_active", False) and len(self._entries) <= 1
+                and not self._compare_mode):
+            width = min(width, popout_ratios.ratio_px(popout_ratios.PHOTO_MAX_W, self.width()))
         return QSize(width, height)
 
     def _decode_target_size(self, slot: int) -> QSize:
@@ -4546,6 +5078,8 @@ class FullScreenPreview(QDialog):
             pane.set_active(index == self._focused_slot)
 
     def _handle_heart_clicked(self, slot: int) -> None:
+        if self._collection_browse_mode:
+            return
         if not 0 <= slot < len(self._entries):
             return
         self._set_focused_slot(slot)
@@ -4554,6 +5088,8 @@ class FullScreenPreview(QDialog):
             self.navigation_requested.emit(1)
 
     def _handle_reject_clicked(self, slot: int) -> None:
+        if self._collection_browse_mode:
+            return
         if not 0 <= slot < len(self._entries):
             return
         self._set_focused_slot(slot)
@@ -4691,7 +5227,7 @@ class FullScreenPreview(QDialog):
     def toggle_focus_assist_background_command(self) -> None:
         self.set_focus_assist_dim_background(not self._focus_assist_dim_background)
 
-    def set_annotation_state(self, path: str, winner: bool, reject: bool) -> None:
+    def set_annotation_state(self, path: str, winner: bool, reject: bool, rating: int | None = None) -> None:
         updated = False
         for collection_name in ("_source_entries", "_entries"):
             collection = getattr(self, collection_name)
@@ -4703,6 +5239,7 @@ class FullScreenPreview(QDialog):
                     source_path=entry.source_path,
                     winner=winner,
                     reject=reject,
+                    rating=entry.rating if rating is None else rating,
                     photoshop=entry.photoshop,
                     edited_path=entry.edited_path,
                     edited_candidates=entry.edited_candidates,
@@ -4729,6 +5266,7 @@ class FullScreenPreview(QDialog):
                     source_path=entry.source_path,
                     winner=entry.winner,
                     reject=entry.reject,
+                    rating=entry.rating,
                     photoshop=entry.photoshop,
                     edited_path=edited_candidates[0] if edited_candidates else "",
                     edited_candidates=edited_candidates,
@@ -4750,6 +5288,7 @@ class FullScreenPreview(QDialog):
                 self._update_info_label()
 
     def _update_info_label(self) -> None:
+        self._update_mockup_image_info()
         if not self._entries:
             self._update_header_summary()
             self.info_label.clear()
@@ -4796,6 +5335,52 @@ class FullScreenPreview(QDialog):
         self.info_label.setText(
             f"{prefix}{confidence_hint}{review_hint}{workflow_hint}  |  {mode}{focus_hint}{loupe_hint}{focus_assist_hint}{fits_hint}{auto_advance_hint}  |  {nav_hint}, wheel/Z zoom, L loupe, Alt+L cycle loupe, F focus assist, Shift+F cycles colors, use the inspection card for peaking controls, drag to pan, Tab focus, W/X/K/Delete/M/0-5/T actions, C compare, 0 to fit"
         )
+
+    def _update_mockup_image_info(self) -> None:
+        if not hasattr(self, "_mockup_filename"):
+            return
+        if not self._entries:
+            self._mockup_breadcrumb.setText("Preview")
+            for widget in (self._mockup_filename, self._mockup_capture, self._mockup_edited,
+                           self._mockup_image_size, self._mockup_edits_count, self._mockup_render_state):
+                widget.clear()
+            self._set_mockup_rating(0)
+            self._mockup_keep.setChecked(False)
+            self._mockup_reject.setChecked(False)
+            return
+        slot = min(self._focused_slot, len(self._entries) - 1)
+        entry = self._entries[slot]
+        path = Path(entry.source_path)
+        trail = [part for part in path.parts[-4:] if part not in ("\\", "/")]
+        self._mockup_breadcrumb.setText("  ›  ".join(trail))
+        self._mockup_filename.setText(entry.record.name)
+        metadata = self._current_metadata[slot] if slot < len(self._current_metadata) else EMPTY_METADATA
+        capture = " · ".join(part for part in (
+            metadata.exposure, metadata.aperture, metadata.iso,
+            metadata.focal_length, metadata.camera,
+        ) if part)
+        self._mockup_capture.setText(capture)
+        self._mockup_edited.setText("●  Edited" if self._editor_edits_active() else "")
+        rating = max(0, min(5, entry.rating))
+        self._set_mockup_rating(rating)
+        self._mockup_keep.setChecked(entry.winner)
+        self._mockup_reject.setChecked(entry.reject)
+        image = self._current_images[slot] if slot < len(self._current_images) else QImage()
+        width = metadata.width or image.width()
+        height = metadata.height or image.height()
+        self._mockup_image_size.setText(f"{width:,} × {height:,}" if width and height else "")
+        self._mockup_zoom.setText(
+            f"Zoom {int(round(self._zoom_scale * 100))}%" if self._manual_zoom else "Fit"
+        )
+        defaults = asdict(EditRecipe())
+        adjusted = sum(
+            1 for key, value in asdict(self._editor_recipe).items()
+            if value != defaults[key]
+        )
+        self._mockup_edits_count.setText(
+            f"{adjusted} adjustment{'s' if adjusted != 1 else ''}" if adjusted else ""
+        )
+        self._mockup_render_state.setText("●  Preview rendered" if not image.isNull() else "Loading preview…")
 
     def winner_ladder_mode_enabled(self) -> bool:
         return self._winner_ladder_mode

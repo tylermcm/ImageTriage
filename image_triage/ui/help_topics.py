@@ -298,6 +298,16 @@ def collection_help_pages() -> tuple[HelpPage, ...]:
             """,
         ),
         HelpPage(
+            "Create and Edit",
+            """
+            # Build a collection
+
+            Choose **Create Collection** to enter collection mode. Check images as you search, sort, filter, and browse folders. Checked images stay in the set even when they are no longer visible. Double-click an image away from its checkbox to inspect it in the popout viewer.
+
+            Choose **Save Collection** to name the set, or **Cancel** to discard the picks. To change an existing set, choose **Edit Collection Items**; its current images start checked, and saving applies your changes.
+            """,
+        ),
+        HelpPage(
             "Good Uses",
             """
             # Good uses for collections

@@ -63,6 +63,11 @@ def _qcolor(values) -> QColor:
     return QColor.fromRgbF(r, g, b, a)
 
 
+# PocketDrop's own page colour (BG in native/pocketdrop/src/ui/ui.cpp). The host
+# swaps it for the window's pane colour so the page matches Library and Faces.
+POCKETDROP_BG = QColor(0x0F, 0x0F, 0x13)
+
+
 def _qrect(values) -> QRectF:
     left, top, right, bottom = pd.floats(values, 4)
     return QRectF(left, top, right - left, bottom - top)
@@ -109,6 +114,8 @@ class PocketDropView(QWidget):
         self._icons: dict[str, object] = {}
         self._icon_provider = QFileIconProvider()
         self._settings = QSettings()
+        # The page colour PocketDrop's background is drawn in; see set_background.
+        self._background = QColor(POCKETDROP_BG)
 
         self._slow = QTimer(self)
         self._slow.setInterval(SLOW_TICK_MS)
@@ -218,7 +225,7 @@ class PocketDropView(QWidget):
     def paintEvent(self, event) -> None:  # type: ignore[override]
         if not self._host:
             painter = QPainter(self)
-            painter.fillRect(self.rect(), QColor("#0f0f13"))
+            painter.fillRect(self.rect(), self._background)
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -306,23 +313,46 @@ class PocketDropView(QWidget):
         pointer = bool(self._host) and bool(self._lib.pd_wants_pointer(self._host))
         self.setCursor(Qt.CursorShape.PointingHandCursor if pointer else Qt.CursorShape.ArrowCursor)
 
+    # -- page colour -----------------------------------------------------------
+
+    def set_background(self, color: QColor) -> None:
+        """Draw PocketDrop's page in ``color`` instead of its own near-black.
+
+        Every paint in PocketDrop's background colour is swapped, not just the
+        clear: it also rings the "received" badges in it so they look cut out
+        of the page, and those rings have to follow or they show as outlines.
+        """
+        color = QColor(color)
+        if color == self._background:
+            return
+        self._background = color
+        self.update()
+
+    def _color(self, values) -> QColor:
+        color = _qcolor(values)
+        if color.rgb() == POCKETDROP_BG.rgb():
+            swapped = QColor(self._background)
+            swapped.setAlphaF(color.alphaF())
+            return swapped
+        return color
+
     # -- pd_gfx ----------------------------------------------------------------
 
     def _g_clear(self, _ctx, color) -> None:
-        self._painter.fillRect(self.rect(), _qcolor(color))
+        self._painter.fillRect(self.rect(), self._color(color))
 
     def _g_fill_rect(self, _ctx, rect, color) -> None:
-        self._painter.fillRect(_qrect(rect), _qcolor(color))
+        self._painter.fillRect(_qrect(rect), self._color(color))
 
     def _g_fill_round(self, _ctx, rect, radius, color) -> None:
         p = self._painter
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(_qcolor(color))
+        p.setBrush(self._color(color))
         p.drawRoundedRect(_qrect(rect), radius, radius)
 
     def _g_stroke_round(self, _ctx, rect, radius, color, width, dashed) -> None:
         p = self._painter
-        pen = QPen(_qcolor(color), width)
+        pen = QPen(self._color(color), width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         if dashed:
@@ -336,14 +366,14 @@ class PocketDropView(QWidget):
     def _g_fill_circle(self, _ctx, x, y, radius, color) -> None:
         p = self._painter
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(_qcolor(color))
+        p.setBrush(self._color(color))
         p.drawEllipse(QPointF(x, y), radius, radius)
 
     def _g_gradient_round(self, _ctx, rect, radius, start, end) -> None:
         area = _qrect(rect)
         gradient = QLinearGradient(area.topLeft(), area.bottomRight())
-        gradient.setColorAt(0.0, _qcolor(start))
-        gradient.setColorAt(1.0, _qcolor(end))
+        gradient.setColorAt(0.0, self._color(start))
+        gradient.setColorAt(1.0, self._color(end))
         p = self._painter
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(gradient)
@@ -356,7 +386,7 @@ class PocketDropView(QWidget):
             path.lineTo(xy[index * 2], xy[index * 2 + 1])
         if closed:
             path.closeSubpath()
-        pen = QPen(_qcolor(color), width)
+        pen = QPen(self._color(color), width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p = self._painter
@@ -370,7 +400,7 @@ class PocketDropView(QWidget):
         content = metrics.elidedText(pd.text(value), Qt.TextElideMode.ElideRight, max(0.0, area.width()))
         p = self._painter
         p.setFont(self._fonts[font])
-        p.setPen(_qcolor(color))
+        p.setPen(self._color(color))
         p.drawText(area, int(_ALIGN[align] | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine), content)
 
     def _g_measure(self, _ctx, value, font) -> float:
@@ -564,6 +594,11 @@ class PocketDropPanel(QWidget):
     @property
     def available(self) -> bool:
         return self.view is not None
+
+    def set_background(self, color: QColor) -> None:
+        """Match the page to the window's other panes (see PocketDropView)."""
+        if self.view is not None:
+            self.view.set_background(color)
 
     def add_paths(self, paths: list[str]) -> bool:
         if self.view is None:

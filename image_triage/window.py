@@ -3687,6 +3687,10 @@ class MainWindow(QMainWindow):
         self._shortcut_overrides = self._load_shortcut_overrides()
         self._shortcut_targets: dict[str, ShortcutTarget] = {}
         self._active_tool_mode = ""
+        self._collection_mode = ""
+        self._collection_target_id = ""
+        self._collection_previous_view = "grid"
+        self._collection_previous_inspector_enabled = True
         self._visible_burst_groups: list[tuple[int, ...]] = []
         self._burst_group_map: dict[str, BurstVisualInfo] = {}
         self._apply_saved_ai_training_preferences()
@@ -3916,9 +3920,11 @@ class MainWindow(QMainWindow):
         collections_layout.addWidget(self.projects_list, 1)
         collections_layout.addStretch(0)
 
-        # PocketDrop fills its page edge to edge: it lays itself out and paints
-        # its own background, exactly as in the standalone app.
+        # PocketDrop fills its page edge to edge and lays itself out as in the
+        # standalone app, but its background is drawn in the pane colour so the
+        # page matches Library and Faces (_apply_pocketdrop_background).
         self.pocketdrop_panel = PocketDropPanel()
+        self._apply_pocketdrop_background()
 
         self.left_nav_pages = QStackedWidget()
         self.left_nav_pages.setObjectName("leftNavPages")
@@ -4191,6 +4197,28 @@ class MainWindow(QMainWindow):
         tool_mode_layout.addWidget(self.tool_mode_cancel_button)
         self.tool_mode_bar.hide()
 
+        self.collection_mode_bar = QWidget()
+        self.collection_mode_bar.setObjectName("workspaceControls")
+        collection_mode_layout = QHBoxLayout(self.collection_mode_bar)
+        collection_mode_layout.setContentsMargins(12, 8, 12, 8)
+        collection_mode_layout.setSpacing(10)
+        self.collection_mode_title = QLabel("Collection Mode")
+        self.collection_mode_title.setObjectName("sectionLabel")
+        self.collection_mode_help = QLabel("Check images as you search, filter, and browse folders.")
+        self.collection_mode_help.setObjectName("secondaryText")
+        self.collection_mode_count = QLabel("0 images checked")
+        self.collection_mode_count.setObjectName("secondaryText")
+        self.collection_mode_save_button = QPushButton("Save Collection")
+        self.collection_mode_cancel_button = QPushButton("Cancel")
+        self.collection_mode_save_button.clicked.connect(self._save_collection_mode)
+        self.collection_mode_cancel_button.clicked.connect(self._cancel_collection_mode)
+        collection_mode_layout.addWidget(self.collection_mode_title)
+        collection_mode_layout.addWidget(self.collection_mode_help, 1)
+        collection_mode_layout.addWidget(self.collection_mode_count)
+        collection_mode_layout.addWidget(self.collection_mode_save_button)
+        collection_mode_layout.addWidget(self.collection_mode_cancel_button)
+        self.collection_mode_bar.hide()
+
         center_column = QWidget()
         center_column.setObjectName("workspaceCenterColumn")
         center_layout = QVBoxLayout(center_column)
@@ -4207,6 +4235,7 @@ class MainWindow(QMainWindow):
         self.adapter_review_banner.hide()
         center_layout.addWidget(self.workspace_bar)
         center_layout.addWidget(self.tool_mode_bar)
+        center_layout.addWidget(self.collection_mode_bar)
         center_layout.addWidget(self.adapter_review_banner)
         center_layout.addWidget(self.browser_stack, 1)
         self._apply_workspace_bar_position()
@@ -4343,6 +4372,8 @@ class MainWindow(QMainWindow):
         self._refresh_recent_folder_combos()
 
         self.grid.current_changed.connect(self._handle_current_changed)
+        self.grid.collection_selection_changed.connect(self._refresh_collection_mode_ui)
+        self.grid.collection_cancel_requested.connect(self._cancel_collection_mode)
         self.grid.preview_requested.connect(self._open_preview)
         self.grid.delete_requested.connect(self._delete_record)
         self.grid.keep_requested.connect(self._keep_record)
@@ -4380,6 +4411,7 @@ class MainWindow(QMainWindow):
         self.preview.delete_requested.connect(self._handle_preview_delete_requested)
         self.preview.move_requested.connect(self._handle_preview_move_requested)
         self.preview.tag_requested.connect(self._handle_preview_tag_requested)
+        self.preview.rating_requested.connect(self._handle_preview_rating_requested)
         self.preview.winner_ladder_choice_requested.connect(self._handle_preview_winner_ladder_choice)
         self.preview.winner_ladder_skip_requested.connect(self._handle_preview_winner_ladder_skip)
         self.preview.closed.connect(self._handle_preview_closed)
@@ -5122,6 +5154,17 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return super().nativeEvent(event_type, message)
         wm_nccalcsize, wm_nchittest, wm_getminmaxinfo = 0x0083, 0x0084, 0x0024
+        wm_entersizemove, wm_exitsizemove = 0x0231, 0x0232
+        if msg.message == wm_entersizemove:
+            # The user has started dragging the window's edge or title bar:
+            # resizes now come in a stream, so relayout is coalesced until done.
+            self._in_size_move = True
+            return super().nativeEvent(event_type, message)
+        if msg.message == wm_exitsizemove:
+            self._in_size_move = False
+            self._schedule_display_profile_update()
+            self._schedule_layout_ratio_update()
+            return super().nativeEvent(event_type, message)
         if msg.message == wm_getminmaxinfo:
             # Maximize onto the monitor's work area exactly. Left alone, Windows
             # overhangs it by the frame thickness, and Qt then misplaces the
@@ -6134,8 +6177,30 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._schedule_display_profile_update()
-        self._schedule_layout_ratio_update()
+        if (
+            getattr(self, "_in_size_move", False)
+            or not self.isVisible()
+            or getattr(self, "_laying_out_on_resize", False)
+        ):
+            # A live drag sends many resizes a frame; coalesce them. (Before the
+            # first show the size is provisional, and showEvent lays out.)
+            self._schedule_display_profile_update()
+            self._schedule_layout_ratio_update()
+            return
+        # A one-off resize -- the startup maximize, a maximize or restore, a
+        # snap -- is laid out now, before Qt paints it. Deferring it drew one
+        # frame with every size worked out for the previous window size, which
+        # is the jump seen on every launch.
+        # Guarded: a layout pass that nudges the window's minimum size can
+        # resize it from inside the pass; that nested resize is coalesced.
+        self._laying_out_on_resize = True
+        try:
+            self._display_profile_update_pending = True
+            self._apply_display_profile()
+            self._layout_ratio_update_pending = True
+            self._apply_layout_ratios()
+        finally:
+            self._laying_out_on_resize = False
 
     def _paint_grid_backdrop(self, painter: QPainter, rect: QRect) -> None:
         theme = self._theme
@@ -6561,6 +6626,7 @@ class MainWindow(QMainWindow):
             self.__dict__.pop("_drive_glyph_icon_cache", None)
             tree.set_drive_icon_provider(self._drive_glyph_icon)
         self._apply_left_rail_label_colors()
+        self._apply_pocketdrop_background()
         if getattr(self, "left_rail_add_button", None) is not None:
             self._rebuild_pinned_tools()
         refresh_button = getattr(self, "drives_refresh_button", None)
@@ -6876,6 +6942,15 @@ class MainWindow(QMainWindow):
         if widget.styleSheet() != sheet:
             widget.setStyleSheet(sheet)
 
+    def _apply_pocketdrop_background(self) -> None:
+        """Paint the PocketDrop page in the same colour as the Library and
+        Faces pages beside it."""
+        panel = getattr(self, "pocketdrop_panel", None)
+        if panel is None:
+            return
+        theme = getattr(self, "_theme", None) or default_theme()
+        panel.set_background(theme.panel_bg.qcolor())
+
     def _apply_left_rail_label_colors(self) -> None:
         """Give the rail the same two colours its icons are tinted with."""
         rail = getattr(self, "left_nav_rail", None)
@@ -7059,6 +7134,8 @@ class MainWindow(QMainWindow):
         self._apply_left_rail_metrics()
 
     def _show_pinned_tool_context_menu(self, item_id: str, anchor: QWidget) -> None:
+        if self._collection_mode:
+            return
         menu = QMenu(self)
         unpin = menu.addAction("Unpin")
         chosen = menu.exec(anchor.mapToGlobal(QPoint(anchor.width(), 0)))
@@ -7066,6 +7143,8 @@ class MainWindow(QMainWindow):
             self._set_pinned_tool_ids([value for value in self._pinned_tool_ids() if value != item_id])
 
     def _show_pin_tool_menu(self, anchor: QWidget) -> None:
+        if self._collection_mode:
+            return
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         pinned = self._pinned_tool_ids()
@@ -9349,6 +9428,9 @@ class MainWindow(QMainWindow):
             self._update_action_states()
 
     def _open_command_palette(self, _checked: bool = False, *, context: str | None = None) -> None:
+        if self._collection_mode:
+            self.statusBar().showMessage("Finish collection mode before using commands.")
+            return
         palette_context = context or ("preview" if self.preview.isVisible() and self.preview.isActiveWindow() else "main")
         if self._active_command_palette is not None and self._active_command_palette.isVisible():
             return
@@ -11125,8 +11207,23 @@ class MainWindow(QMainWindow):
                 f"Moved {len(moved)} AI cache folder(s) to the new managed location."
             )
 
+    def _startup_splash_visible(self) -> bool:
+        from .ui.splash_screen import StartupSplash
+
+        return any(
+            isinstance(widget, StartupSplash) and widget.isVisible()
+            for widget in QApplication.topLevelWidgets()
+        )
+
     def _maybe_prompt_for_ai_setup(self) -> None:
         if not getattr(sys, "frozen", False):
+            return
+        # Wait for the window to be on screen and the splash gone. This used to
+        # run while main.py pumped events behind the splash, which stays on top:
+        # the modal dialog opened hidden underneath it and the first launch sat
+        # on the splash forever, waiting for an answer nobody could see.
+        if not self.isVisible() or self._startup_splash_visible():
+            QTimer.singleShot(250, self._maybe_prompt_for_ai_setup)
             return
         # Adopt a previous release's model and cache directories before asking
         # the user to download anything. This is the one deliberate migration
@@ -12226,6 +12323,8 @@ class MainWindow(QMainWindow):
         return True
 
     def _show_toolbar_context_menu(self, mode: str, global_pos) -> None:
+        if self._collection_mode:
+            return
         target_mode = mode if mode in self.WORKSPACE_TOOLBAR_DEFAULTS else self._ui_mode
         menu = QMenu(self)
         action = self.actions.customize_workspace_toolbar if self.actions is not None else None
@@ -12438,6 +12537,9 @@ class MainWindow(QMainWindow):
             QEvent.Type.Drop,
         }:
             return None
+        if self._collection_mode:
+            event.ignore()
+            return True
         if event_type == QEvent.Type.DragLeave:
             return False
 
@@ -12511,6 +12613,12 @@ class MainWindow(QMainWindow):
         self._show_folder_context_menu(folder, self.favorites_list.viewport().mapToGlobal(point), is_favorite=True)
 
     def _show_folder_context_menu(self, folder: str, global_pos, *, is_favorite: bool) -> None:
+        if self._collection_mode:
+            menu = QMenu(self)
+            open_action = menu.addAction("Open")
+            if menu.exec(global_pos) == open_action:
+                self._select_folder(folder)
+            return
         menu = QMenu(self)
         open_action = menu.addAction("Open")
         explorer_label = "Open In File Explorer" if os.name == "nt" else "Open In File Manager"
@@ -14612,6 +14720,8 @@ class MainWindow(QMainWindow):
 
     def _set_browser_view_mode(self, mode: str) -> None:
         normalized = self._normalize_browser_view_mode(mode)
+        if self._collection_mode and normalized != "grid":
+            return
         if self._browser_view_mode == normalized and getattr(self, "browser_stack", None) is not None:
             self.browser_stack.setCurrentIndex(1 if normalized == "details" else 0)
             self._sync_details_view_from_grid()
@@ -14738,6 +14848,8 @@ class MainWindow(QMainWindow):
         self._set_zen_mode(bool(checked))
 
     def _handle_zen_toggle_shortcut(self) -> None:
+        if self._collection_mode:
+            return
         self._set_zen_mode(not self._zen_mode_enabled)
 
     def _handle_zen_escape_shortcut(self) -> None:
@@ -14810,6 +14922,8 @@ class MainWindow(QMainWindow):
 
     def _set_zen_mode(self, enabled: bool) -> None:
         enabled = bool(enabled)
+        if enabled and self._collection_mode:
+            return
         if self._zen_mode_enabled == enabled:
             self._update_action_states()
             return
@@ -14899,7 +15013,7 @@ class MainWindow(QMainWindow):
             if self.preview.isVisible():
                 for path in changed_paths:
                     annotation = self._annotations.get(path, SessionAnnotation())
-                    self.preview.set_annotation_state(path, annotation.winner, annotation.reject)
+                    self.preview.set_annotation_state(path, annotation.winner, annotation.reject, annotation.rating)
             return
         self.grid.set_annotations(self._annotations)
         self.details_view.set_annotations(self._annotations)
@@ -15077,8 +15191,8 @@ class MainWindow(QMainWindow):
         )
         self.actions.dispute_current_ai_result.setEnabled(can_dispute_current_ai)
         self.actions.review_ai_disagreements.setEnabled(self._ai_bundle is not None)
-        self.actions.create_virtual_collection.setEnabled(current_record is not None)
-        self.actions.add_selection_to_collection.setEnabled(current_record is not None and bool(collections))
+        self.actions.create_virtual_collection.setEnabled(True)
+        self.actions.add_selection_to_collection.setEnabled(bool(collections))
         self.actions.remove_selection_from_collection.setEnabled(current_record is not None and bool(collections))
         self.actions.delete_virtual_collection.setEnabled(bool(collections))
         self.actions.browse_catalog.setEnabled(bool(catalog_roots))
@@ -15108,6 +15222,8 @@ class MainWindow(QMainWindow):
         self._refresh_directory_navigation_buttons()
         if self._toolbar_edit_mode:
             self._set_workspace_toolbar_controls_enabled(False)
+        if self._collection_mode:
+            self._limit_actions_for_collection_mode()
         if logger.enabled:
             logger.duration(
                 "window.update_action_states",
@@ -15116,6 +15232,33 @@ class MainWindow(QMainWindow):
                 view=self._browser_view_mode,
                 records=len(self._records),
             )
+
+    def _limit_actions_for_collection_mode(self) -> None:
+        """Leave image-finding controls available while blocking review/edit actions."""
+        allowed = (
+            self.actions.open_folder,
+            self.actions.refresh_folder,
+            self.actions.open_preview,
+            self.actions.show_hidden_folders,
+            self.actions.grid_view,
+            self.actions.browse_catalog,
+            self.actions.refresh_catalog,
+            self.actions.advanced_filters,
+            self.actions.clear_filters,
+            *self.actions.sort_actions.values(),
+            *self.actions.filter_actions.values(),
+            *self.actions.ai_state_actions.values(),
+            *self.actions.column_actions.values(),
+        )
+        for field_name in self.actions.__dataclass_fields__:
+            value = getattr(self.actions, field_name)
+            if isinstance(value, QAction):
+                if value not in allowed:
+                    value.setEnabled(False)
+            elif isinstance(value, dict):
+                for action in value.values():
+                    if isinstance(action, QAction) and action not in allowed:
+                        action.setEnabled(False)
 
     def _selected_records_for_actions(self) -> list[ImageRecord]:
         current_index = self.grid.current_index()
@@ -15323,9 +15466,88 @@ class MainWindow(QMainWindow):
         return resolved, missing
 
     def _create_virtual_collection_from_selection(self) -> None:
-        paths = self._selected_record_paths_for_library()
+        self._begin_collection_mode("create")
+
+    def _begin_collection_mode(self, mode: str, *, collection: VirtualCollection | None = None) -> None:
+        if self._collection_mode:
+            return
+        if self._zen_mode_enabled:
+            self._set_zen_mode(False)
+        if self._active_tool_mode or self.grid.tool_checkbox_mode():
+            self._cancel_tool_mode(show_message=False)
+        self.grid.clear_adapter_review_mode()
+        self._collection_previous_view = self._browser_view_mode
+        self._collection_previous_inspector_enabled = self.inspector_panel.isEnabled()
+        self._collection_mode = mode
+        self._collection_target_id = collection.id if collection is not None else ""
+        self.grid.set_collection_checkbox_mode(True, paths=collection.item_paths if collection is not None else ())
+        self.grid.clear_selection(keep_current=True)
+        self.preview.set_collection_browse_mode(True)
+        self.inspector_panel.setEnabled(False)
+        self._set_browser_view_mode("grid")
+        self._refresh_collection_mode_ui()
+        self._update_action_states()
+        self.statusBar().showMessage("Collection mode: check images across folders, then save or cancel.")
+
+    def _refresh_collection_mode_ui(self) -> None:
+        if not self._collection_mode:
+            return
+        count = len(self.grid.collection_paths())
+        self.collection_mode_bar.show()
+        self.collection_mode_count.setText(f"{count} image{'s' if count != 1 else ''} checked")
+        if self._collection_mode == "create":
+            self.collection_mode_title.setText("New Collection")
+            self.collection_mode_save_button.setText("Save Collection")
+            self.collection_mode_save_button.setEnabled(count > 0)
+        else:
+            collection = self._library_store.load_collection(self._collection_target_id)
+            self.collection_mode_title.setText(f"Edit: {collection.name}" if collection else "Edit Collection")
+            self.collection_mode_save_button.setText("Save Changes")
+            self.collection_mode_save_button.setEnabled(collection is not None)
+
+    def _cancel_collection_mode(self, checked: bool = False, *, show_message: bool = True) -> None:
+        del checked
+        if not self._collection_mode:
+            return
+        previous_view = self._collection_previous_view
+        self._collection_mode = ""
+        self._collection_target_id = ""
+        self.grid.set_collection_checkbox_mode(False)
+        self.preview.set_collection_browse_mode(False)
+        self.inspector_panel.setEnabled(self._collection_previous_inspector_enabled)
+        self.collection_mode_bar.hide()
+        self._set_browser_view_mode(previous_view)
+        self._update_action_states()
+        if show_message:
+            self.statusBar().showMessage("Collection mode canceled; no collection changes were saved.")
+
+    def _save_collection_mode(self, checked: bool = False) -> None:
+        del checked
+        if not self._collection_mode:
+            return
+        paths = self.grid.collection_paths()
+        if self._collection_mode == "edit":
+            collection = self._library_store.load_collection(self._collection_target_id)
+            if collection is None:
+                self.statusBar().showMessage("That collection is no longer available.")
+                return
+            saved = self._library_store.replace_collection_paths(collection.id, paths)
+            if saved is None:
+                self.statusBar().showMessage("The collection could not be saved. Your picks are still checked.")
+                return
+            self._cancel_collection_mode(show_message=False)
+            if getattr(self, "_scope_kind", "") == "collection" and self._scope_id == saved.id:
+                records, _missing = self._resolve_records_for_paths(saved.item_paths)
+                self._load_virtual_scope_records(
+                    records,
+                    scope_kind="collection",
+                    scope_id=saved.id,
+                    scope_label=f"Collection: {saved.name}",
+                )
+            self._refresh_collections_menu()
+            self.statusBar().showMessage(f"Saved collection: {saved.name} ({saved.item_count} items)")
+            return
         if not paths:
-            self.statusBar().showMessage("Select one or more images before creating a collection.")
             return
         dialog = CollectionEditDialog(selection_count=len(paths), parent=self)
         if self._exec_dialog_with_geometry(dialog, "collection_edit") != dialog.DialogCode.Accepted:
@@ -15364,6 +15586,7 @@ class MainWindow(QMainWindow):
             )
         self._refresh_collections_menu()
         if collection is not None:
+            self._cancel_collection_mode(show_message=False)
             self.statusBar().showMessage(f"Saved collection: {collection.name} ({collection.item_count} items)")
 
     def _open_virtual_collection(self, collection_id: str) -> None:
@@ -15386,17 +15609,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded collection {collection.name} ({len(records)} available, {missing} missing)")
 
     def _add_selection_to_virtual_collection(self) -> None:
-        paths = self._selected_record_paths_for_library()
-        if not paths:
-            self.statusBar().showMessage("Select one or more images before adding them to a collection.")
-            return
-        collection = self._choose_virtual_collection(title="Add To Collection", prompt="Collection")
+        collection = self._choose_virtual_collection(title="Edit Collection Items", prompt="Collection")
         if collection is None:
             return
-        updated = self._library_store.add_paths_to_collection(collection.id, paths)
-        self._refresh_collections_menu()
-        if updated is not None:
-            self.statusBar().showMessage(f"Added {len(paths)} item(s) to {updated.name}")
+        self._begin_collection_mode("edit", collection=collection)
 
     def _remove_selection_from_virtual_collection(self) -> None:
         paths = self._selected_record_paths_for_library()
@@ -19431,25 +19647,29 @@ class MainWindow(QMainWindow):
                 self._open_preview(index)
 
     def _handle_preview_winner_requested(self, path: str) -> None:
+        if self._collection_mode:
+            return
         index = self._record_index_for_path(path)
         if index is None:
             return
         anchor_path = self.preview.anchor_path() or path
         self._toggle_winner(index, advance_override=False, current_path_override=anchor_path)
         annotation = self._annotations.get(path, SessionAnnotation())
-        self.preview.set_annotation_state(path, annotation.winner, annotation.reject)
+        self.preview.set_annotation_state(path, annotation.winner, annotation.reject, annotation.rating)
         anchor_index = self._record_index_for_path(anchor_path)
         if anchor_index is not None:
             self.grid.set_current_index(anchor_index)
 
     def _handle_preview_reject_requested(self, path: str) -> None:
+        if self._collection_mode:
+            return
         index = self._record_index_for_path(path)
         if index is None:
             return
         anchor_path = self.preview.anchor_path() or path
         self._toggle_reject(index, advance_override=False, current_path_override=anchor_path)
         annotation = self._annotations.get(path, SessionAnnotation())
-        self.preview.set_annotation_state(path, annotation.winner, annotation.reject)
+        self.preview.set_annotation_state(path, annotation.winner, annotation.reject, annotation.rating)
         anchor_index = self._record_index_for_path(anchor_path)
         if anchor_index is not None:
             self.grid.set_current_index(anchor_index)
@@ -19478,6 +19698,45 @@ class MainWindow(QMainWindow):
 
     def _handle_preview_tag_requested(self, path: str) -> None:
         self._dispatch_preview_action(path, self._tag_record, preserve_anchor=True)
+
+    def _handle_preview_rating_requested(self, path: str, rating: int) -> None:
+        if self._collection_mode:
+            return
+        index = self._record_index_for_path(path)
+        record = self._record_at(index) if index is not None else None
+        if record is None:
+            return
+        annotation = self._annotations.setdefault(record.path, SessionAnnotation())
+        previous = self._annotation_snapshot(annotation)
+        next_rating = max(0, min(5, int(rating)))
+        if previous.rating == next_rating:
+            return
+        annotation.rating = next_rating
+        self._push_undo(
+            UndoAction(
+                kind="annotation",
+                primary_path=record.path,
+                original_winner=previous.winner,
+                original_reject=previous.reject,
+                original_photoshop=previous.photoshop,
+                rating=previous.rating,
+                tags=previous.tags,
+                original_review_round=previous.review_round,
+                folder=self._current_folder,
+                source_paths=self._record_paths(record),
+                session_id=self._session_id,
+                winner_mode=self._winner_mode.value,
+            )
+        )
+        self._queue_annotation_persist(record, previous_annotation=previous)
+        self._sync_annotation_to_global_adapter_label(record, annotation)
+        self._capture_annotation_feedback(record, previous, annotation, source_mode="rating")
+        self._apply_review_count_delta(previous, annotation)
+        self._apply_annotation_change_effects(
+            [record.path], current_path=self.preview.anchor_path() or path,
+            counts_already_updated=True,
+        )
+        self.preview.set_annotation_state(path, annotation.winner, annotation.reject, annotation.rating)
 
     def _handle_preview_winner_ladder_choice(self, path: str) -> None:
         state = self._winner_ladder_state
@@ -19592,6 +19851,7 @@ class MainWindow(QMainWindow):
             source_path=displayed_path,
             winner=annotation.winner,
             reject=annotation.reject,
+            rating=annotation.rating,
             edited_path=edited_path,
             edited_candidates=tuple(edited_candidates),
             label=label,
@@ -24821,6 +25081,7 @@ class MainWindow(QMainWindow):
                     source_path=displayed_path,
                     winner=annotation.winner,
                     reject=annotation.reject,
+                    rating=annotation.rating,
                     edited_path=edited_path,
                     edited_candidates=tuple(edited_candidates),
                     label=f"AI {label}" if label else "AI",
@@ -25641,6 +25902,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Emptied recycle bin for {self._current_folder}")
 
     def _open_preview_image_in_photoshop(self, path: str) -> None:
+        if self._collection_mode:
+            return
         if not path or not self._photoshop_executable:
             return
         open_in_photoshop(path)
@@ -26310,7 +26573,7 @@ class MainWindow(QMainWindow):
             if annotation.reject:
                 return preview_studio.REJECT
             if annotation.winner:
-                return preview_studio.KEEPER
+                return "#ee719e"
         result = self._ai_result_for_record(record)
         if result is not None and result.is_top_pick:
             return preview_studio.INFO
@@ -26349,6 +26612,7 @@ class MainWindow(QMainWindow):
                     source_path=displayed_path,
                     winner=annotation.winner,
                     reject=annotation.reject,
+                    rating=annotation.rating,
                     edited_path=edited_path,
                     edited_candidates=tuple(edited_candidates),
                     ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
@@ -26379,6 +26643,7 @@ class MainWindow(QMainWindow):
                     source_path=displayed_path,
                     winner=annotation.winner,
                     reject=annotation.reject,
+                    rating=annotation.rating,
                     edited_path=edited_path,
                     edited_candidates=tuple(edited_candidates),
                     ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
@@ -26705,6 +26970,8 @@ class MainWindow(QMainWindow):
         return moved
 
     def _handle_record_drop(self, primary_paths: list[str], destination_dir: str, *, copy_requested: bool) -> None:
+        if self._collection_mode:
+            return
         normalized_destination = normalize_filesystem_path(destination_dir)
         if not normalized_destination or not os.path.isdir(normalized_destination):
             return
@@ -26791,6 +27058,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
 
     def _dispatch_preview_action(self, path: str, handler, *, preserve_anchor: bool = True) -> None:
+        if self._collection_mode:
+            return
         index = self._record_index_for_path(path)
         if index is None:
             return
