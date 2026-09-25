@@ -476,12 +476,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         create_virtual_collection=_create_action(
             window,
-            "Create Collection From Selection...",
+            "Create Collection...",
             slot=window._create_virtual_collection_from_selection,
         ),
         add_selection_to_collection=_create_action(
             window,
-            "Add Selection To Collection...",
+            "Edit Collection Items...",
             slot=window._add_selection_to_virtual_collection,
         ),
         remove_selection_from_collection=_create_action(

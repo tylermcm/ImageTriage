@@ -146,6 +146,8 @@ class ThumbnailGridView(QAbstractScrollArea):
     dispute_chord_cancelled = Signal()  # chord timed out or unrelated key pressed
     context_menu_requested = Signal(int, object)
     selection_changed = Signal()
+    collection_selection_changed = Signal()
+    collection_cancel_requested = Signal()
 
     def __init__(self, thumbnail_manager: ThumbnailManager, parent=None) -> None:
         super().__init__(parent)
@@ -192,6 +194,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._selection_anchor = -1
         self._tool_checkbox_mode = False
         self._tool_tile_toggle_mode = False
+        self._collection_checkbox_mode = False
+        self._collection_paths: dict[str, str] = {}
         self._free_smooth_scroll_enabled = False
         self._action_mode = "normal"
         self._show_ai_annotations = False
@@ -530,7 +534,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._display_aspect_ratio_by_path.clear()
         self._clear_pixmap_cache()
         self._current_index = 0 if items else -1
-        self._selected_indexes = {0} if items else set()
+        self._selected_indexes = {0} if items and not self._collection_checkbox_mode else set()
         self._selection_anchor = self._current_index
         self._reset_pointer_interaction(clear_marquee=True)
         self._hovered_index = -1
@@ -1041,6 +1045,38 @@ class ThumbnailGridView(QAbstractScrollArea):
     def tool_checkbox_mode(self) -> bool:
         return self._tool_checkbox_mode
 
+    def set_collection_checkbox_mode(self, enabled: bool, *, paths: tuple[str, ...] = ()) -> None:
+        """Keep collection picks by file path, independent of the visible folder."""
+        self._collection_checkbox_mode = bool(enabled)
+        self._collection_paths = {_fast_path_key(path): path for path in paths} if enabled else {}
+        self._hovered_checkbox_index = -1
+        self.viewport().unsetCursor()
+        self.viewport().update()
+        self.collection_selection_changed.emit()
+
+    def collection_checkbox_mode(self) -> bool:
+        return self._collection_checkbox_mode
+
+    def collection_paths(self) -> tuple[str, ...]:
+        return tuple(self._collection_paths.values())
+
+    def collection_path_checked(self, path: str) -> bool:
+        return _fast_path_key(path) in self._collection_paths
+
+    def toggle_collection_index(self, index: int) -> None:
+        if not self._collection_checkbox_mode or not 0 <= index < len(self._items):
+            return
+        record = self._items[index]
+        if record.is_folder:
+            return
+        key = _fast_path_key(record.path)
+        if key in self._collection_paths:
+            del self._collection_paths[key]
+        else:
+            self._collection_paths[key] = record.path
+        self._update_selection_tiles({index})
+        self.collection_selection_changed.emit()
+
     def clear_selection(self, *, keep_current: bool = True) -> None:
         previous_selection = set(self._selected_indexes)
         self._selected_indexes = set()
@@ -1295,6 +1331,17 @@ class ThumbnailGridView(QAbstractScrollArea):
         index = self._index_at(point.x(), point.y())
         self._press_pos = point
         self._press_index = index
+        if self._collection_checkbox_mode:
+            if index >= 0:
+                rect = self._item_rect(index)
+                if not self._items[index].is_folder and self._checkbox_rect(rect).contains(point):
+                    self.toggle_collection_index(index)
+                    self._press_on_interactive_control = True
+                else:
+                    self._set_current_index(index)
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            event.accept()
+            return
         if index < 0:
             action_index = self._gallery_action_index_at(point.x(), point.y())
             if action_index >= 0:
@@ -1407,6 +1454,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             if index >= 0:
                 rect = self._item_rect(index)
                 record = self._items[index]
+                if self._collection_checkbox_mode and not record.is_folder and self._checkbox_rect(rect).contains(point):
+                    event.accept()
+                    return
                 if (
                     self._left_arrow_rect(rect, record).contains(point)
                     or self._right_arrow_rect(rect, record).contains(point)
@@ -1421,6 +1471,9 @@ class ThumbnailGridView(QAbstractScrollArea):
         super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self._collection_checkbox_mode:
+            event.accept()
+            return
         point = event.pos()
         index = self._index_at(point.x(), point.y())
         if index < 0:
@@ -1473,6 +1526,23 @@ class ThumbnailGridView(QAbstractScrollArea):
             self._autoscroll_pointer_y = point.y()
             if (point - self._autoscroll_origin).manhattanLength() >= QApplication.startDragDistance():
                 self._autoscroll_press_moved = True
+            event.accept()
+            return
+        if self._collection_checkbox_mode:
+            point = event.position().toPoint()
+            index = self._index_at(point.x(), point.y())
+            hovered_checkbox = (
+                index
+                if index >= 0 and not self._items[index].is_folder
+                and self._checkbox_rect(self._item_rect(index)).contains(point)
+                else -1
+            )
+            previous = self._hovered_checkbox_index
+            self._hovered_checkbox_index = hovered_checkbox
+            self.viewport().setCursor(QCursor(
+                Qt.CursorShape.PointingHandCursor if hovered_checkbox >= 0 else Qt.CursorShape.ArrowCursor
+            ))
+            self._update_selection_tiles({previous, hovered_checkbox})
             event.accept()
             return
         if event.buttons() & Qt.MouseButton.LeftButton:
@@ -1631,6 +1701,35 @@ class ThumbnailGridView(QAbstractScrollArea):
         super().leaveEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._collection_checkbox_mode:
+            key = event.key()
+            if key == Qt.Key.Key_Escape:
+                self.collection_cancel_requested.emit()
+            elif key == Qt.Key.Key_Space:
+                self.toggle_collection_index(self._current_index)
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self._current_index >= 0:
+                    self.preview_requested.emit(self._current_index)
+            elif key in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down,
+                         Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
+                if self._visible_item_indexes:
+                    slot = self._current_visible_slot()
+                    step = self._columns
+                    last = len(self._visible_item_indexes) - 1
+                    page = max(1, self.viewport().height() // max(1, self._row_height())) * step
+                    next_slot = {
+                        Qt.Key.Key_Left: max(0, slot - 1),
+                        Qt.Key.Key_Right: min(last, slot + 1),
+                        Qt.Key.Key_Up: max(0, slot - step),
+                        Qt.Key.Key_Down: min(last, slot + step),
+                        Qt.Key.Key_Home: 0,
+                        Qt.Key.Key_End: last,
+                        Qt.Key.Key_PageUp: max(0, slot - page),
+                        Qt.Key.Key_PageDown: min(last, slot + page),
+                    }[key]
+                    self._set_current_index(self._visible_item_indexes[next_slot])
+            event.accept()
+            return
         if self._autoscroll_active and event.key() == Qt.Key.Key_Escape:
             self._stop_autoscroll()
             event.accept()
@@ -2009,6 +2108,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             hover_favorite=index == self._hovered_winner_index,
             hover_reject=index == self._hovered_reject_index,
             immersive=self._loupe_card_style == "immersive",
+            show_actions=not self._collection_checkbox_mode,
             **common,
         )
 
@@ -2251,7 +2351,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         elif not use_new_grid_card:
             # Legacy card only: the shared renderer draws these as its own
             # tag rail (GridCardData.tags), uniform with the card design.
-            left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode else 0)
+            left_badge_x = image_rect.left() + 10 + (32 if self._tool_checkbox_mode or self._collection_checkbox_mode else 0)
             left_badge_y = image_rect.top() + 10
             if is_rejected:
                 self._paint_state_badge(
@@ -2283,11 +2383,11 @@ class ThumbnailGridView(QAbstractScrollArea):
                 )
                 left_badge_y += 30
 
-        if self._tool_checkbox_mode:
+        if (self._tool_checkbox_mode or self._collection_checkbox_mode) and not record.is_folder:
             self._paint_tool_checkbox(
                 painter,
                 self._checkbox_rect(rect),
-                checked=is_selected,
+                checked=self.collection_path_checked(record.path) if self._collection_checkbox_mode else is_selected,
                 hovered=index == self._hovered_checkbox_index,
             )
 
@@ -2375,7 +2475,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             title = painter.fontMetrics().elidedText(title, Qt.TextElideMode.ElideRight, title_text_rect.width())
             painter.drawText(title_text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
 
-            if not record.is_folder and not self._adapter_review_mode:
+            if not record.is_folder and not self._adapter_review_mode and not self._collection_checkbox_mode:
                 self._paint_winner_button(
                     painter,
                     self._winner_button_rect(rect),
@@ -2760,7 +2860,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             )
         painter.restore()
 
-        if not record.is_folder and not self._adapter_review_mode:
+        if not record.is_folder and not self._adapter_review_mode and not self._collection_checkbox_mode:
             self._paint_review_action_button(
                 painter,
                 winner_rect,

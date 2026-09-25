@@ -41,8 +41,11 @@ class PreviewRightClickCloseTests(unittest.TestCase):
     def test_studio_ui_surfaces_are_not_close_targets(self) -> None:
         for surface in (
             self.preview._studio_toolbar,
+            self.preview._studio_actionbar,
             self.preview._studio_rail,
+            self.preview._mockup_metadata_bar,
             self.preview._filmstrip,
+            self.preview._mockup_status_bar,
         ):
             with self.subTest(surface=surface.objectName()):
                 point = _center_in_dialog(surface, self.preview)

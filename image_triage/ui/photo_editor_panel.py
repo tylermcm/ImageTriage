@@ -12,7 +12,7 @@ import math
 
 import numpy as np
 
-from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QSize, QSettings, Qt, QSignalBlocker, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QRunnable, QSize, QSettings, Qt, QSignalBlocker, QThreadPool, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -35,6 +35,7 @@ from ..editor_geometry import (
 )
 from ..perf import perf_logger
 from .display_metrics import DisplayProfile, STANDARD_DISPLAY
+from . import popout_layout_ratios as popout_ratios
 from .mask_overlay import build_group_strength, compose_mask_overlay
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -59,6 +60,9 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QStackedWidget,
+    QStyle,
+    QStyleOptionToolButton,
+    QStylePainter,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -1239,6 +1243,7 @@ class _AdjustmentRow(QWidget):
             title = QLabel(label, self)
             title.setObjectName("editorControlLabel")
             self.expander = None
+        self._title_widget = title
 
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1249,6 +1254,20 @@ class _AdjustmentRow(QWidget):
         layout.addWidget(self.slider, 1, 0, 1, 2)
         self.slider.valueChanged.connect(self._handle_slider_changed)
         self.value_box.valueChanged.connect(self._handle_box_changed)
+
+    def use_popout_inline_layout(self) -> None:
+        """Match the mockup's single-line label / slider / value arrangement."""
+        layout = self.layout()
+        for widget in (self._title_widget, self.slider, self.value_box):
+            layout.removeWidget(widget)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(0)
+        layout.addWidget(self._title_widget, 0, 0)
+        layout.addWidget(self.slider, 0, 1)
+        layout.addWidget(self.value_box, 0, 2)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 0)
+        layout.setColumnStretch(2, 0)
 
     def _handle_expand_toggled(self, expanded: bool) -> None:
         if self.expander is not None:
@@ -1419,6 +1438,42 @@ class _ColorWheel(QWidget):
         super().mouseReleaseEvent(event)
 
 
+class _CenteredRailToolButton(QToolButton):
+    """Paint the popout's icon and label as one centered, closely spaced pair."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.tight_icon_label = False
+
+    def _icon_label_rects(self) -> tuple[QRect, QRect]:
+        icon_side = min(self.iconSize().width(), self.iconSize().height(), self.width())
+        label_height = self.fontMetrics().height()
+        gap = 1
+        top = (self.height() - icon_side - gap - label_height) // 2
+        icon_rect = QRect((self.width() - icon_side) // 2, top, icon_side, icon_side)
+        label_rect = QRect(0, top + icon_side + gap, self.width(), label_height)
+        return icon_rect, label_rect
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if not self.tight_icon_label:
+            super().paintEvent(event)
+            return
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.icon = QIcon()
+        option.text = ""
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
+        icon_rect, label_rect = self._icon_label_rects()
+        mode = QIcon.Mode.Disabled if not self.isEnabled() else QIcon.Mode.Normal
+        state = QIcon.State.On if self.isChecked() else QIcon.State.Off
+        painter.drawPixmap(icon_rect.topLeft(), self.icon().pixmap(icon_rect.size(), mode, state))
+        painter.setPen(self.palette().buttonText().color())
+        painter.setFont(self.font())
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, self.text())
+        painter.end()
+
+
 class _MaskListRow(QWidget):
     """A mask list row. Clicking the name/blank area selects the row; the trash
     button is a real child that handles its own clicks. (The container is NOT
@@ -1469,9 +1524,8 @@ class PhotoEditorPanel(QFrame):
     PAGE_PRESETS = 7
     RAIL_WIDTH = 46
 
-    # (page, label, tooltip, glyph, group). The group only decides where the
-    # hairline separators fall, so tools read as categories rather than a
-    # single undifferentiated stack of icons.
+    # (page, label, tooltip, glyph, group). Group records the tool category;
+    # it does not add gaps or divider lines to the popout rail.
     RAIL_TOOLS: tuple[tuple[int, str, str, str, int], ...] = (
         (PAGE_ADJUST, "Adjust", "Tone, color and effects", "adjust", 0),
         (PAGE_CROP, "Crop", "Crop, straighten and flip", "crop", 1),
@@ -1482,6 +1536,16 @@ class PhotoEditorPanel(QFrame):
         (PAGE_LENS_BLUR, "Lens Blur", "Depth-of-field blur", "lens-blur", 4),
         (PAGE_PRESETS, "Presets", "Saved editing looks", "presets", 5),
     )
+    POPOUT_RAIL_ICON_FILES = {
+        "adjust": "editor_rail_adjust.png",
+        "crop": "editor_rail_crop.png",
+        "heal": "editor_rail_remove.png",
+        "red-eye": "editor_rail_red_eye.png",
+        "mask": "editor_rail_masks.png",
+        "background": "editor_rail_background_removal.png",
+        "lens-blur": "editor_rail_lens_blur.png",
+        "presets": "editor_rail_presets.png",
+    }
     OVERLAY_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
         ("color", "Color Overlay"),
         ("color-bw", "Color Overlay on B&W"),
@@ -1768,6 +1832,9 @@ class PhotoEditorPanel(QFrame):
 
     def apply_display_profile(self, profile: DisplayProfile) -> None:
         self._display_profile = profile
+        if getattr(self, "_popout_mockup_layout", False):
+            self.apply_popout_mockup_metrics(self.window().width(), self.window().height())
+            return
         rail = getattr(self, "_editor_tool_rail", None)
         if rail is not None:
             rail.setFixedWidth(profile.editor_tool_rail_width)
@@ -1780,10 +1847,144 @@ class PhotoEditorPanel(QFrame):
             button.setIconSize(QSize(profile.editor_tool_icon_size, profile.editor_tool_icon_size))
             button.setFixedSize(profile.editor_tool_button_width, profile.editor_tool_button_height)
 
+    def use_popout_mockup_layout(self) -> None:
+        """Put the labeled tool rail on the outside edge of the popout editor."""
+        self._popout_mockup_layout = True
+        for button, (_page, _label, _tooltip, glyph, _group) in zip(self._mode_buttons, self.RAIL_TOOLS):
+            button.tight_icon_label = True
+            button.setIcon(self._editor_asset_icon(self.POPOUT_RAIL_ICON_FILES[glyph], glyph))
+        self._adjust_scroll.viewport().installEventFilter(self)
+        root = self.layout()
+        root.removeWidget(self._editor_tool_rail)
+        root.addWidget(self._editor_tool_rail)
+        self.apply_popout_mockup_metrics(self.window().width(), self.window().height())
+
+        # The action row follows the mockup's Reset / Save copy / Save order.
+        action_row = self._editor_footer.layout().itemAt(0).layout()
+        for button in (self.reset_button, self.save_button, self.save_copy_button):
+            action_row.removeWidget(button)
+        action_row.addWidget(self.reset_button)
+        action_row.addStretch(1)
+        action_row.addWidget(self.save_copy_button)
+        action_row.addWidget(self.save_button)
+        self.save_copy_button.setText("Save copy")
+        for section in self._adjust_group_sections.values():
+            content = section.layout().itemAt(1).widget().layout()
+            content.setContentsMargins(10, 0, 10, 4)
+            content.setSpacing(0)
+        self._arrange_popout_adjust_sections()
+        for row in self._adjust_body.findChildren(_AdjustmentRow):
+            row.use_popout_inline_layout()
+        QTimer.singleShot(0, self._sync_popout_body_width)
+        # Advanced sections are below the reference view. Their wider tool
+        # controls must not force the visible slider rows past the scrollbar.
+        mixer_index = self._adjust_body_layout.indexOf(self._color_mixer_section)
+        for index in range(mixer_index + 1, self._adjust_body_layout.count()):
+            widget = self._adjust_body_layout.itemAt(index).widget()
+            if widget is not None:
+                widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def _editor_asset_icon(self, filename: str, fallback_glyph: str) -> QIcon:
+        """Fit a supplied PNG's visible artwork into a small editor button."""
+        asset = Path(__file__).resolve().parent / "assets" / filename
+        pixmap = QPixmap(str(asset))
+        if pixmap.isNull():
+            return self._mask_glyph(fallback_glyph)
+        try:
+            with Image.open(asset) as image:
+                bounds = image.getchannel("A").point(lambda alpha: 255 if alpha >= 16 else 0).getbbox()
+        except (OSError, ValueError):
+            return QIcon(pixmap)
+        if bounds is None:
+            return QIcon(pixmap)
+        left, top, right, bottom = bounds
+        side = min(pixmap.width(), pixmap.height(), round(max(right - left, bottom - top) * 1.12))
+        left = max(0, min(pixmap.width() - side, round((left + right - side) / 2)))
+        top = max(0, min(pixmap.height() - side, round((top + bottom - side) / 2)))
+        return QIcon(pixmap.copy(left, top, side, side))
+
+    def _arrange_popout_adjust_sections(self) -> None:
+        """Keep the mockup's short Effects group and disclose finer tools below it."""
+        body = self._adjust_body
+        body_layout = self._adjust_body_layout
+        curve_index = body_layout.indexOf(self._adjust_curve_section)
+        detail, detail_layout = self._section("Detail", body)
+        for key in ("texture", "sharpen", "denoise"):
+            detail_layout.addWidget(self._rows[key])
+        detail.layout().itemAt(0).widget().setChecked(False)
+        body_layout.insertWidget(curve_index + 1, detail)
+
+        vignette, vignette_layout = self._section("Vignette", body)
+        vignette_layout.addWidget(self._rows["vignette"])
+        vignette_layout.addWidget(self._vignette_options)
+        vignette.layout().itemAt(0).widget().setChecked(False)
+        body_layout.insertWidget(curve_index + 2, vignette)
+        self._adjust_curve_section.layout().itemAt(0).widget().setChecked(False)
+
+    def apply_popout_mockup_metrics(self, width: int, height: int) -> None:
+        """Resolve the popout editor's internal proportions on every resize."""
+        if not getattr(self, "_popout_mockup_layout", False):
+            return
+        px = popout_ratios.ratio_px
+        rail = self._editor_tool_rail
+        rail.setFixedWidth(px(popout_ratios.TOOL_RAIL_W, width, minimum=42))
+        layout = rail.layout()
+        side = 0
+        layout.setContentsMargins(side, 0, side, 0)
+        layout.setSpacing(0)
+        button_width = rail.width() - 2 * side
+        button_height = px(popout_ratios.TOOL_BUTTON_H, height, minimum=38)
+        icon_size = px(popout_ratios.TOOL_ICON_H, height, minimum=16)
+        for button, (_page, label, _tooltip, _glyph, _group) in zip(self._mode_buttons, self.RAIL_TOOLS):
+            button.setText("Backdrop" if label == "Background" else label)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            button.setIconSize(QSize(icon_size, icon_size))
+            button.setFixedSize(button_width, button_height)
+        adjust_rows = set(self._adjust_body.findChildren(_AdjustmentRow))
+        for row in self._rows.values():
+            row.setFixedHeight(px(popout_ratios.ADJUSTMENT_ROW_H, height, minimum=28))
+            if row in adjust_rows:
+                row.slider.setFixedWidth(px(popout_ratios.ADJUSTMENT_SLIDER_W, width, minimum=64))
+                row.value_box.setFixedWidth(px(popout_ratios.ADJUSTMENT_VALUE_W, width, minimum=36))
+                row.value_box.setFixedHeight(px(popout_ratios.ADJUSTMENT_VALUE_H, height, minimum=17))
+        for swatch in self._swatch_buttons.values():
+            swatch.setFixedSize(
+                px(popout_ratios.SWATCH_W, width, minimum=14),
+                px(popout_ratios.SWATCH_H, height, minimum=12),
+            )
+        mixer_header = self._color_mixer_section.layout().itemAt(0).widget()
+        self._color_mixer_section.setMinimumHeight(
+            px(0.23, height, minimum=170) if mixer_header.isChecked() else 0
+        )
+        for section in self._adjust_group_sections.values():
+            content = section.layout().itemAt(1).widget().layout()
+            content.setContentsMargins(px(0.0049, width, minimum=6), 0, px(0.0049, width, minimum=6), px(0.0034, height, minimum=3))
+        self._editor_footer.layout().setContentsMargins(
+            px(0.006, width, minimum=7),
+            px(popout_ratios.FOOTER_TOP_H, height, minimum=8),
+            px(0.006, width, minimum=7),
+            px(popout_ratios.FOOTER_BOTTOM_H, height, minimum=7),
+        )
+        self._editor_footer.layout().itemAt(0).layout().setSpacing(px(0.0039, width, minimum=4))
+
+    def _sync_popout_body_width(self) -> None:
+        if not getattr(self, "_popout_mockup_layout", False):
+            return
+        viewport_width = self._adjust_scroll.viewport().width()
+        if viewport_width > 0 and self._adjust_body.width() != viewport_width:
+            self._adjust_body.setFixedWidth(viewport_width)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if (getattr(self, "_popout_mockup_layout", False)
+                and watched is self._adjust_scroll.viewport()
+                and event.type() == QEvent.Type.Resize):
+            QTimer.singleShot(0, self._sync_popout_body_width)
+        return super().eventFilter(watched, event)
+
     def _build_tool_rail(self) -> QFrame:
         """The vertical tool rail down the panel's left edge.
 
-        Every tool lives here, grouped by category — it replaced the old
+        Every tool lives here in one evenly spaced column — it replaced the old
         Adjust/Masks/Presets tab bar, which could not grow past three entries
         without wrapping, and absorbed the Background and Lens Blur buttons
         that used to float in the studio toolbar.
@@ -1797,17 +1998,8 @@ class PhotoEditorPanel(QFrame):
         layout.setContentsMargins(side, max(5, round(6 * profile.scale)), side, max(5, round(6 * profile.scale)))
         layout.setSpacing(2)
         self._mode_buttons: list[QToolButton] = []
-        previous_group: int | None = None
-        for page, label, tooltip, glyph, group in self.RAIL_TOOLS:
-            if previous_group is not None and group != previous_group:
-                divider = QFrame(rail)
-                divider.setObjectName("editorToolRailDivider")
-                divider.setFixedHeight(1)
-                layout.addSpacing(3)
-                layout.addWidget(divider)
-                layout.addSpacing(3)
-            previous_group = group
-            button = QToolButton(rail)
+        for page, label, tooltip, glyph, _group in self.RAIL_TOOLS:
+            button = _CenteredRailToolButton(rail)
             button.setObjectName("editorToolRailButton")
             button.setIcon(self._mask_glyph(glyph))
             button.setIconSize(QSize(profile.editor_tool_icon_size, profile.editor_tool_icon_size))
@@ -2090,6 +2282,7 @@ class PhotoEditorPanel(QFrame):
 
     def _build_adjust_tab(self) -> QWidget:
         scroll = QScrollArea(self)
+        self._adjust_scroll = scroll
         scroll.setObjectName("photoEditorScrollArea")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -2097,12 +2290,16 @@ class PhotoEditorPanel(QFrame):
         body = QWidget(scroll)
         body.setObjectName("photoEditorBody")
         body_layout = QVBoxLayout(body)
+        self._adjust_body = body
+        self._adjust_body_layout = body_layout
+        self._adjust_group_sections: dict[str, QFrame] = {}
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
 
         specs_by_key = {spec[0]: spec for spec in ADJUSTMENT_SPECS}
         for title, keys in ADJUSTMENT_GROUPS:
             section, section_layout = self._section(title, body)
+            self._adjust_group_sections[title] = section
             if title == "Color":
                 profile_row = QHBoxLayout()
                 profile_row.setContentsMargins(0, 0, 0, 4)
@@ -2124,6 +2321,7 @@ class PhotoEditorPanel(QFrame):
             body_layout.addWidget(section)
 
         curve_section, curve_layout = self._section("Curve", body)
+        self._adjust_curve_section = curve_section
         # Tighter than the default section rhythm so the square plot sits close
         # under the channel row — the Curve section is the tallest one.
         curve_layout.setSpacing(4)
@@ -2284,6 +2482,7 @@ class PhotoEditorPanel(QFrame):
 
     def _build_color_mixer_section(self, parent: QWidget) -> QWidget:
         section, layout = self._section("Color Mixer", parent)
+        self._color_mixer_section = section
         self._color_mixer_band = COLOR_MIXER_BANDS[0][0]
         layout.addWidget(
             self._swatch_picker(
@@ -2301,6 +2500,13 @@ class PhotoEditorPanel(QFrame):
             self._color_mixer_rows[band] = rows
             for row in rows:
                 row.setVisible(band == self._color_mixer_band)
+        layout.addStretch(1)
+        header = section.layout().itemAt(0).widget()
+        header.toggled.connect(
+            lambda expanded: section.setMinimumHeight(
+                popout_ratios.ratio_px(0.23, self.window().height(), minimum=170) if expanded else 0
+            )
+        )
         return section
 
     def _set_color_mixer_band(self, band: str) -> None:
@@ -2317,7 +2523,9 @@ class PhotoEditorPanel(QFrame):
         picker_row.setSpacing(4)
         self.point_color_sample_button = QToolButton(section)
         self.point_color_sample_button.setObjectName("editorToolButton")
-        self.point_color_sample_button.setIcon(self._mask_glyph("eyedropper"))
+        self.point_color_sample_button.setIcon(
+            self._editor_asset_icon("editor_point_color_picker.png", "eyedropper")
+        )
         self.point_color_sample_button.setIconSize(QSize(18, 18))
         self.point_color_sample_button.setFixedSize(38, 28)
         self.point_color_sample_button.setToolTip("Sample a color from the photo")
