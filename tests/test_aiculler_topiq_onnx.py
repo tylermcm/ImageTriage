@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import onnx
+import pytest
+
+onnx = pytest.importorskip("onnx")
 from onnx import TensorProto, helper, numpy_helper
 
 from aiculler.topiq_onnx import prepare_topiq_model_for_providers

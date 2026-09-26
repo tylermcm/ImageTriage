@@ -9,6 +9,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
+from image_triage.metadata import EMPTY_METADATA
 from image_triage.models import ImageRecord
 from image_triage.imaging import FitsDisplaySettings
 from image_triage.preview import FullScreenPreview, PreviewEntry, PreviewRequest
@@ -150,7 +151,7 @@ class PreviewPollingTests(unittest.TestCase):
         placeholder = QImage(1200, 800, QImage.Format.Format_RGB32)
         placeholder.fill(0x112233)
         preview._current_images = [QImage()]
-        preview._current_metadata = [None]
+        preview._current_metadata = [EMPTY_METADATA]
         preview._current_placeholder_flags = [False]
         preview._current_image_display_tokens = [()]
         preview._source_versions = [(1, 1)]
@@ -170,7 +171,7 @@ class PreviewPollingTests(unittest.TestCase):
         loaded = QImage(1600, 900, QImage.Format.Format_RGB32)
         loaded.fill(0x445566)
         preview._current_images = [QImage()]
-        preview._current_metadata = [None]
+        preview._current_metadata = [EMPTY_METADATA]
         preview._current_placeholder_flags = [False]
         preview._current_image_display_tokens = [()]
         preview._source_versions = [(1, 1)]
@@ -188,7 +189,7 @@ class PreviewPollingTests(unittest.TestCase):
         )
         preview._result_queue.put(("ready", request, loaded, None))
 
-        with patch.object(preview, "_render_pane") as render_pane, patch.object(preview, "_update_analysis_panel") as update_panel:
+        with patch.object(preview, "_render_pane") as render_pane, patch.object(preview, "_schedule_analysis_panel_update") as update_panel:
             preview._drain_results()
 
         self.assertFalse(preview._current_images[0].isNull())

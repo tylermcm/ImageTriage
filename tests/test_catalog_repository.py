@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PySide6.QtCore import QThreadPool
+
 from image_triage.ai_results import AIBundle, AIConfidenceBucket, AIImageResult, build_ai_bundle_from_results
 from image_triage.catalog import CatalogRepository
 from image_triage.metadata import CaptureMetadata
@@ -151,7 +153,7 @@ class CatalogRepositoryTests(unittest.TestCase):
                 lambda _folder, _token, records, source: finished_payloads.append((list(records), source))
             )
 
-            with patch.object(FolderScanTask, "_catalog", repository), patch.dict(
+            with patch("image_triage.scanner.CatalogRepository", return_value=repository), patch.dict(
                 os.environ,
                 {"IMAGE_TRIAGE_USE_CATALOG_CACHE": "1"},
                 clear=False,
@@ -195,11 +197,12 @@ class CatalogRepositoryTests(unittest.TestCase):
                 lambda _folder, _token, records, source: finished_payloads.append((list(records), source))
             )
 
-            with patch.object(FolderScanTask, "_catalog", repository), patch(
+            with patch("image_triage.scanner.CatalogRepository", return_value=repository), patch(
                 "image_triage.scanner.scan_folder",
                 return_value=live_records,
             ):
                 task.run()
+                QThreadPool.globalInstance().waitForDone(5000)
 
             self.assertEqual([(live_records, "live")], finished_payloads)
             self.assertEqual(live_records, repository.load_folder_records(str(folder_path)))

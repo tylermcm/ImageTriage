@@ -1,0 +1,137 @@
+"""Real-window test harness (WI-0.5).
+
+Builds the genuine ``MainWindow`` offscreen against the sandboxed settings that
+``conftest.py`` installs. Modal dialogs never block: informational ones are
+recorded, questions return a configurable answer, and anything that would call
+``exec()`` fails the test instead of hanging it.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from PySide6.QtCore import QCoreApplication, QSettings, QThreadPool
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
+
+
+@dataclass
+class DialogRecorder:
+    question_answer: QMessageBox.StandardButton = QMessageBox.StandardButton.Yes
+    messages: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+def install_dialog_guards(monkeypatch) -> DialogRecorder:
+    recorder = DialogRecorder()
+
+    def make_message(kind: str):
+        def _message(parent=None, title="", text="", *args, **kwargs):
+            recorder.messages.append((kind, str(title), str(text)))
+            return QMessageBox.StandardButton.Ok
+
+        return staticmethod(_message)
+
+    def _question(parent=None, title="", text="", *args, **kwargs):
+        recorder.messages.append(("question", str(title), str(text)))
+        return recorder.question_answer
+
+    monkeypatch.setattr(QMessageBox, "information", make_message("information"))
+    monkeypatch.setattr(QMessageBox, "warning", make_message("warning"))
+    monkeypatch.setattr(QMessageBox, "critical", make_message("critical"))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_question))
+
+    def _blocked(self, *args, **kwargs):
+        raise AssertionError(f"{type(self).__name__}.exec() would block a headless test")
+
+    monkeypatch.setattr(QDialog, "exec", _blocked)
+    monkeypatch.setattr(QMessageBox, "exec", _blocked)
+    for name in ("getExistingDirectory", "getOpenFileName", "getSaveFileName", "getOpenFileNames"):
+        monkeypatch.setattr(QFileDialog, name, staticmethod(lambda *a, **k: ("", "") if name != "getExistingDirectory" else ""))
+    return recorder
+
+
+def prepare_application() -> QApplication:
+    QCoreApplication.setOrganizationName("Codex")
+    QCoreApplication.setApplicationName("Image Triage")
+    QSettings().clear()
+    return QApplication.instance() or QApplication([])
+
+
+def snapshot_app_state():
+    app = QApplication.instance()
+    return (app.styleSheet(), app.palette(), app.font())
+
+
+def restore_app_state(snapshot) -> None:
+    app = QApplication.instance()
+    stylesheet, palette, font = snapshot
+    app.setStyleSheet(stylesheet)
+    app.setPalette(palette)
+    app.setFont(font)
+
+
+def make_main_window():
+    from image_triage.window import MainWindow
+
+    app = prepare_application()
+    snapshot = snapshot_app_state()
+    window = MainWindow()
+    app.processEvents()
+    restore_app_state(snapshot)
+    return window
+
+
+def dispose_window(window) -> None:
+    app = QApplication.instance()
+    window.close()
+    if app is not None:
+        app.processEvents()
+    QThreadPool.globalInstance().waitForDone(5000)
+    window.deleteLater()
+    if app is not None:
+        app.processEvents()
+
+
+def make_jpegs(directory, names, size=(64, 48)):
+    from pathlib import Path
+
+    from PIL import Image
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for index, name in enumerate(names):
+        path = directory / name
+        Image.new("RGB", size, (30 + index * 40, 80, 120)).save(path, "JPEG")
+        paths.append(str(path))
+    return paths
+
+
+def pump_until(condition, timeout: float = 10.0) -> bool:
+    import time
+
+    app = QApplication.instance()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        if condition():
+            return True
+        time.sleep(0.01)
+    app.processEvents()
+    return bool(condition())
+
+
+def open_folder(window, folder, expected_count: int) -> None:
+    window._load_folder(str(folder))
+    assert pump_until(lambda: len(window._records) == expected_count), (
+        f"folder did not load {expected_count} records (got {len(window._records)})"
+    )
+    QThreadPool.globalInstance().waitForDone(5000)
+
+
+def reset_window_state(window) -> None:
+    """Return a shared MainWindow to a neutral state between tests."""
+    window._undo_stack.clear()
+    window._annotations.clear()
+    window._records = []
+    window._current_folder = ""
+    window._update_action_states()
+    QApplication.processEvents()

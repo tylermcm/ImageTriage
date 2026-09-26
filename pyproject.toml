@@ -19,6 +19,9 @@ dependencies = [
     "tokenizers>=0.15",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 image-triage = "image_triage.main:main"
 

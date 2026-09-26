@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gc
 import json
 import sqlite3
 import sys
@@ -18,6 +19,15 @@ from app.decision_harvest import (
     fetch_decisions,
     harvest_decisions_for_artifacts,
 )
+
+
+class _GcTempDir(tempfile.TemporaryDirectory):
+    """`with sqlite3.connect()` never closes on Python 3.13, so on Windows the
+    db stays locked until GC; collect before the directory is removed."""
+
+    def cleanup(self) -> None:
+        gc.collect()
+        super().cleanup()
 
 
 def _create_test_decision_db(db_path: Path) -> None:
@@ -102,7 +112,7 @@ def _write_clusters_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 class DecisionHarvestTests(unittest.TestCase):
     def test_build_image_index_orders_rows_and_keeps_required_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with _GcTempDir() as temp_dir:
             artifacts_dir = Path(temp_dir) / "labeling_artifacts"
             artifacts_dir.mkdir(parents=True)
             _write_clusters_csv(
@@ -131,7 +141,7 @@ class DecisionHarvestTests(unittest.TestCase):
             self.assertEqual(index[0]["cluster_id"], "cluster_000")
 
     def test_fetch_decisions_returns_only_matching_rows(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with _GcTempDir() as temp_dir:
             db_path = Path(temp_dir) / "decisions.sqlite3"
             _create_test_decision_db(db_path)
             _write_decision(
@@ -152,7 +162,7 @@ class DecisionHarvestTests(unittest.TestCase):
             self.assertTrue(decisions["/photos/a.jpg"]["winner"])
 
     def test_harvest_emits_jsonl_with_decision_state_per_image(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with _GcTempDir() as temp_dir:
             artifacts_dir = Path(temp_dir) / "labeling_artifacts"
             artifacts_dir.mkdir(parents=True)
             image_a = artifacts_dir / "a.jpg"
@@ -226,7 +236,7 @@ class DecisionHarvestTests(unittest.TestCase):
             self.assertEqual(by_id["image_c"]["rating"], 0)
 
     def test_harvest_emits_cluster_labels_with_binary_buckets(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with _GcTempDir() as temp_dir:
             artifacts_dir = Path(temp_dir) / "labeling_artifacts"
             artifacts_dir.mkdir(parents=True)
             image_a = artifacts_dir / "a.jpg"
@@ -292,7 +302,7 @@ class DecisionHarvestTests(unittest.TestCase):
             self.assertEqual(by_cluster["cluster_002"]["reject_image_ids"], [])
 
     def test_harvest_can_skip_cluster_labels_emission(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with _GcTempDir() as temp_dir:
             artifacts_dir = Path(temp_dir) / "labeling_artifacts"
             artifacts_dir.mkdir(parents=True)
             image_a = artifacts_dir / "a.jpg"
@@ -326,7 +336,7 @@ class DecisionHarvestTests(unittest.TestCase):
             self.assertFalse((artifacts_dir.parent / "labels" / "cluster_labels.jsonl").exists())
 
     def test_harvest_with_no_decisions_leaves_existing_cluster_labels_untouched(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with _GcTempDir() as temp_dir:
             artifacts_dir = Path(temp_dir) / "labeling_artifacts"
             artifacts_dir.mkdir(parents=True)
             image_a = artifacts_dir / "a.jpg"
@@ -369,7 +379,7 @@ class DecisionHarvestTests(unittest.TestCase):
             self.assertEqual(existing_cluster_labels.read_text(encoding="utf-8"), previous_payload)
 
     def test_harvest_marks_decision_stale_when_file_changed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with _GcTempDir() as temp_dir:
             artifacts_dir = Path(temp_dir) / "labeling_artifacts"
             artifacts_dir.mkdir(parents=True)
             image_a = artifacts_dir / "a.jpg"
