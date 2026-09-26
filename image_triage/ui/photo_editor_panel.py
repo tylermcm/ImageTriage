@@ -1120,6 +1120,7 @@ class _EditorSlider(_ScrollGuard, QSlider):
         # Click focus, not tab focus: the wheel becomes live once you click,
         # without putting every slider in the tab chain.
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
 
 class _EditorSpinBox(_ScrollGuard, QSpinBox):
@@ -2789,8 +2790,8 @@ class PhotoEditorPanel(QFrame):
 
     def _build_crop_page(self) -> QWidget:
         page, body, layout = self._tool_page(
-            "Crop, straighten and flip. Drag the box on the photo, or drag "
-            "outside it to rotate. The frame stays uncropped while this tool is "
+            "Crop, straighten and flip. Drag the box on the photo. "
+            "The frame stays uncropped while this tool is "
             "open, so the box can be pulled back out. Enter applies the crop."
         )
         self._crop_page_body = body
@@ -3523,6 +3524,21 @@ class PhotoEditorPanel(QFrame):
         else:
             label.setText("Add to mask")
 
+    def histogram_wanted(self) -> bool:
+        """The histogram belongs to the Adjust page and to a mask's own
+        adjustments, and nowhere else."""
+        page = self.editor_stack.currentIndex()
+        if page == self.PAGE_ADJUST:
+            return True
+        if page == self.PAGE_MASKS:
+            stack = getattr(self, "mask_stack", None)
+            return (
+                stack is not None
+                and stack.currentIndex() == self.MASK_PANE_WORK
+                and self._selected_mask_dict() is not None
+            )
+        return False
+
     def _sync_mask_pane_enabled(self) -> None:
         button = getattr(self, "new_mask_button", None)
         if button is not None:
@@ -4089,6 +4105,7 @@ class PhotoEditorPanel(QFrame):
                 opacity_layout.setSpacing(8)
                 opacity_label = QLabel("Opacity", opacity_row)
                 opacity_slider = QSlider(Qt.Orientation.Horizontal, opacity_row)
+                opacity_slider.setCursor(Qt.CursorShape.PointingHandCursor)
                 opacity_slider.setObjectName("overlayOpacitySlider")
                 opacity_slider.setRange(1, 100)
                 opacity_spin = QSpinBox(opacity_row)

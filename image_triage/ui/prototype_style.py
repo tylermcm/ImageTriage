@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     QStorageInfo,
     Qt,
 )
+from PySide6.QtCore import QEvent, QPersistentModelIndex
 from PySide6.QtGui import QBitmap, QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QRegion
 from PySide6.QtWidgets import (
     QFileIconProvider,
@@ -434,6 +435,8 @@ class FolderTreeView(QTreeView):
         self._hovered_row_fill.setAlpha(28)
         self._single_drive_expansion_enabled = True
         self._enforcing_single_expansion = False
+        self._hover_index = QPersistentModelIndex()
+        self.setMouseTracking(True)
         self._drives_only = False
         self._usage_track = QColor(58, 66, 77, 210)
         self._usage_fill = (QColor("#5b9cff"), QColor("#5b9cff"))
@@ -444,6 +447,23 @@ class FolderTreeView(QTreeView):
         self._meter_height = 4
         self._meter_gap = 5
         self.expanded.connect(self._handle_index_expanded)
+
+    def viewportEvent(self, event) -> bool:  # type: ignore[override]
+        # Track the hovered row ourselves: the style's State_MouseOver is not
+        # reliably set on rows painted through drawRow.
+        kind = event.type()
+        if kind in (QEvent.Type.MouseMove, QEvent.Type.HoverMove, QEvent.Type.HoverEnter):
+            position = event.position().toPoint() if hasattr(event, "position") else self.viewport().mapFromGlobal(self.cursor().pos())
+            self._set_hover_index(self.indexAt(position))
+        elif kind in (QEvent.Type.Leave, QEvent.Type.HoverLeave):
+            self._set_hover_index(QModelIndex())
+        return super().viewportEvent(event)
+
+    def _set_hover_index(self, index: QModelIndex) -> None:
+        new = QPersistentModelIndex(index)
+        if new != self._hover_index:
+            self._hover_index = new
+            self.viewport().update()
 
     def set_drives_only(self, enabled: bool) -> None:
         """Show just the top-level drives as a flat, fixed-height list."""
@@ -641,7 +661,7 @@ class FolderTreeView(QTreeView):
         selected = index == self.currentIndex() or bool(
             selection_model is not None and selection_model.isSelected(index)
         )
-        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        hovered = self._hover_index.isValid() and QModelIndex(self._hover_index) == index
         if selected or hovered:
             rect = QRect(option.rect)
             rect.setLeft(self.viewport().rect().left() + 1)

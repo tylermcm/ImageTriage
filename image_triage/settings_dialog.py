@@ -5,19 +5,19 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import textwrap
 
-from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import Property, QRectF, QSignalBlocker, QSize, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QCheckBox as _BaseCheckBox
 from PySide6.QtWidgets import (
-    QCheckBox,
+    QButtonGroup,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QKeySequenceEdit,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -79,6 +79,7 @@ class WorkflowSettingsResult:
     burst_stacks_enabled: bool = False
     catalog_cache_enabled: bool = True
     watch_current_folder: bool = True
+    restore_folder_position: bool = True
     check_updates_on_startup: bool = True
     ai_embed_batch_size: int = 0
     ai_dino_worker_count: int = 4
@@ -95,6 +96,173 @@ class WorkflowSettingsResult:
     # Keybind overrides: attr_name -> chord string. Empty / missing entries
     # mean "use the registered default."
     shortcut_overrides: dict[str, str] = field(default_factory=dict)
+
+
+def _color_property(attribute: str):
+    def getter(self):
+        return getattr(self, attribute)
+
+    def setter(self, value) -> None:
+        setattr(self, attribute, QColor(value))
+        self.update()
+
+    return Property(QColor, getter, setter)
+
+
+class QCheckBox(_BaseCheckBox):
+    """Switch-style check box: the label sits left of a pill toggle.
+
+    Shadows the Qt class inside this module so every setting that was a plain
+    check box becomes a switch without touching its call site. Colours come
+    from the stylesheet (qproperty-*), so the theme stays in charge.
+    """
+
+    _TRACK_W = 40
+    _TRACK_H = 22
+    _KNOB = 16
+    _GAP = 10
+
+    trackOffColor = _color_property("_track_off")
+    trackOnColor = _color_property("_track_on")
+    knobColor = _color_property("_knob_off")
+    knobOnColor = _color_property("_knob_on")
+    labelColor = _color_property("_label")
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._track_off = QColor("#2b323c")
+        self._track_on = QColor("#446fd2")
+        self._knob_off = QColor("#d4dbe5")
+        self._knob_on = QColor("#ffffff")
+        self._label = QColor("#a7b2c0")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        metrics = self.fontMetrics()
+        text_width = metrics.horizontalAdvance(self.text()) if self.text() else 0
+        width = text_width + (self._GAP if text_width else 0) + self._TRACK_W
+        return QSize(width, max(self._TRACK_H, metrics.height()) + 4)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        return self.sizeHint()
+
+    def hitButton(self, pos) -> bool:  # type: ignore[override]
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setOpacity(1.0 if self.isEnabled() else 0.45)
+        rect = self.rect()
+        track = QRectF(
+            rect.right() - self._TRACK_W + 1,
+            rect.center().y() - self._TRACK_H / 2.0 + 0.5,
+            self._TRACK_W,
+            self._TRACK_H,
+        )
+        on = self.isChecked()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._track_on if on else self._track_off)
+        painter.drawRoundedRect(track, self._TRACK_H / 2.0, self._TRACK_H / 2.0)
+        knob_x = track.right() - 3 - self._KNOB if on else track.left() + 3
+        knob = QRectF(knob_x, track.center().y() - self._KNOB / 2.0, self._KNOB, self._KNOB)
+        painter.setBrush(self._knob_on if on else self._knob_off)
+        painter.drawEllipse(knob)
+        if self.text():
+            painter.setPen(self._label)
+            painter.drawText(
+                QRectF(0, 0, track.left() - self._GAP, rect.height()),
+                int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                self.text(),
+            )
+        if self.hasFocus():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(self._track_on, 1.5))
+            painter.drawRoundedRect(track.adjusted(-2, -2, 2, 2), self._TRACK_H / 2.0 + 2, self._TRACK_H / 2.0 + 2)
+
+
+def _paint_nav_glyph(painter: QPainter, kind: str) -> None:
+    """Sidebar icons, drawn on a 24x24 grid (matches the settings mockup)."""
+    if kind == "general":
+        for x1, y1, x2, y2 in ((4, 7, 20, 7), (4, 17, 20, 17), (8, 4, 8, 10), (16, 14, 16, 20)):
+            painter.drawLine(x1, y1, x2, y2)
+    elif kind == "interface":
+        painter.drawRoundedRect(QRectF(4, 5, 16, 14), 2, 2)
+        painter.drawLine(9, 5, 9, 19)
+    elif kind == "library":
+        painter.drawRoundedRect(QRectF(2.5, 9.5, 19, 10), 2.5, 2.5)
+        path = QPainterPath()
+        path.moveTo(3.5, 9.5)
+        path.lineTo(3.5, 7.5)
+        path.lineTo(9.5, 7.5)
+        path.lineTo(11.5, 9.5)
+        painter.drawPath(path)
+    elif kind == "ai":
+        path = QPainterPath()
+        for index, (x, y) in enumerate(((12, 3), (14, 8), (19, 10), (14, 12), (12, 17), (10, 12), (5, 10), (10, 8))):
+            path.moveTo(x, y) if index == 0 else path.lineTo(x, y)
+        path.closeSubpath()
+        painter.drawPath(path)
+        painter.drawLine(18, 16, 18, 20)
+        painter.drawLine(16, 18, 20, 18)
+    elif kind == "duplicates":
+        painter.drawRoundedRect(QRectF(7, 7, 11, 11), 2, 2)
+        painter.drawRoundedRect(QRectF(4, 4, 11, 12), 2, 2)
+    elif kind == "shortcuts":
+        painter.drawRoundedRect(QRectF(3.5, 6, 17, 12), 2, 2)
+        for x1, y1, x2, y2 in ((7, 10, 8, 10), (11, 10, 12, 10), (15, 10, 17, 10), (7, 14, 14, 14)):
+            painter.drawLine(x1, y1, x2, y2)
+
+
+class _NavButton(QPushButton):
+    iconColor = _color_property("_icon")
+    iconActiveColor = _color_property("_icon_on")
+
+    def __init__(self, text: str, kind: str, parent=None) -> None:
+        super().__init__(text, parent)
+        self._kind = kind
+        self._icon = QColor("#8e9aab")
+        self._icon_on = QColor("#79a4ff")
+        self.setObjectName("settingsNavButton")
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        size = 17.0
+        painter.translate(14.0, (self.height() - size) / 2.0)
+        painter.scale(size / 24.0, size / 24.0)
+        pen = QPen(self._icon_on if self.isChecked() else self._icon, 1.7)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        _paint_nav_glyph(painter, self._kind)
+
+
+_NAV_GROUPS = (
+    ("Application", "Application settings", (("General", "general"), ("Interface", "interface"), ("Library & Folders", "library"))),
+    ("Workflow", "Workflow settings", (("AI Culling", "ai"), ("Duplicates", "duplicates"), ("Shortcuts", "shortcuts"))),
+)
+_SECTION_HINTS = {
+    "Review behavior": "Defaults used when a new review starts",
+    "App updates": "Keep Image Triage current automatically",
+    "Appearance": "Scale and presentation",
+    "Navigation and preview": "How browsing feels",
+    "Review flow": "How review moves between images",
+    "Folder browsing": "Remember and refresh locations",
+    "Catalog": "Local browsing acceleration",
+    "Processing": "Performance and visibility",
+    "Result ranges": "Tune how the finished ranking is divided",
+    "Detection": "How similar images are grouped",
+    "Storage and diagnostics": "What is kept between runs",
+}
+_PAGE_DESCRIPTIONS_FALLBACK = {
+    "Shortcuts": "Customize keyboard commands used throughout Image Triage.",
+}
+_CARD_CONTROL_WIDTH = 345
 
 
 def _compact_catalog_summary(summary: str) -> str:
@@ -151,6 +319,7 @@ class WorkflowSettingsDialog(QDialog):
         burst_stacks_enabled: bool = False,
         catalog_cache_enabled: bool = True,
         watch_current_folder: bool = True,
+        restore_folder_position: bool = True,
         check_updates_on_startup: bool = True,
         ai_embed_batch_size: int = 0,
         ai_dino_worker_count: int = 4,
@@ -182,7 +351,14 @@ class WorkflowSettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.setModal(True)
         self.setMinimumSize(profile.settings_min_width, profile.settings_min_height)
-        self.resize(profile.settings_width, profile.settings_height)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        width, height = profile.settings_width, profile.settings_height
+        if available is not None:
+            width = min(width, int(available.width() * 0.94))
+            height = min(height, int(available.height() * 0.94))
+            self.setMinimumSize(min(profile.settings_min_width, width), min(profile.settings_min_height, height))
+        self.resize(width, height)
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
@@ -200,24 +376,105 @@ class WorkflowSettingsDialog(QDialog):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
+        self._page_titles: list[str] = []
+        self._page_descriptions: dict[str, str] = dict(_PAGE_DESCRIPTIONS_FALLBACK)
+        self._nav_buttons: list[_NavButton] = []
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+        self._nav_seen_groups: set[str] = set()
+        self._cards: dict[int, tuple[QVBoxLayout, list[int]]] = {}
+        self._initial_control_state: dict[QWidget, object] = {}
+
         body = QWidget(self)
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
 
-        self.section_list = QListWidget(body)
-        self.section_list.setObjectName("settingsSectionList")
-        self.section_list.setFixedWidth(profile.settings_nav_width)
-        self.section_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.section_list.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.section_list.setFrameShape(QFrame.Shape.NoFrame)
-        self.section_list.setSpacing(2)
+        sidebar = QFrame(body)
+        sidebar.setObjectName("settingsSidebar")
+        sidebar.setFixedWidth(profile.settings_nav_width)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(14, 18, 14, 16)
+        sidebar_layout.setSpacing(0)
 
-        self.pages = QStackedWidget(body)
+        search_box = QFrame(sidebar)
+        search_box.setObjectName("settingsSearchBox")
+        search_layout = QHBoxLayout(search_box)
+        search_layout.setContentsMargins(12, 0, 12, 0)
+        search_layout.setSpacing(9)
+        search_glyph = QLabel("\uE721", search_box)
+        search_glyph.setObjectName("settingsSearchGlyph")
+        search_layout.addWidget(search_glyph)
+        self.search_field = QLineEdit(search_box)
+        self.search_field.setObjectName("settingsSearchField")
+        self.search_field.setPlaceholderText("Search settings")
+        self.search_field.setToolTip("Type a word and press Enter to jump to the first page that mentions it.")
+        self.search_field.returnPressed.connect(self._search_settings)
+        search_layout.addWidget(self.search_field, 1)
+        sidebar_layout.addWidget(search_box)
+        sidebar_layout.addSpacing(18)
+
+        self.nav_layout = QVBoxLayout()
+        self.nav_layout.setContentsMargins(0, 0, 0, 0)
+        self.nav_layout.setSpacing(4)
+        sidebar_layout.addLayout(self.nav_layout)
+        sidebar_layout.addStretch(1)
+
+        help_card = QFrame(sidebar)
+        help_card.setObjectName("settingsHelpCard")
+        help_layout = QVBoxLayout(help_card)
+        help_layout.setContentsMargins(12, 12, 12, 12)
+        help_layout.setSpacing(4)
+        help_title = QLabel("Need a hand?", help_card)
+        help_title.setObjectName("settingsHelpTitle")
+        help_text = QLabel("See what each setting changes and when to use it.", help_card)
+        help_text.setObjectName("settingsHelpText")
+        help_text.setWordWrap(True)
+        self.help_button = QPushButton("Open settings guide", help_card)
+        self.help_button.setObjectName("settingsHelpButton")
+        self.help_button.setToolTip("Open a plain-language guide to these settings")
+        self.help_button.clicked.connect(self._show_help)
+        help_layout.addWidget(help_title)
+        help_layout.addWidget(help_text)
+        help_layout.addSpacing(6)
+        help_layout.addWidget(self.help_button)
+        sidebar_layout.addWidget(help_card)
+
+        main = QWidget(body)
+        main.setObjectName("settingsMain")
+        self._main_layout = QVBoxLayout(main)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
+
+        header = QFrame(main)
+        header.setObjectName("settingsHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(30, 25, 30, 18)
+        header_layout.setSpacing(18)
+        header_copy = QVBoxLayout()
+        header_copy.setSpacing(0)
+        self.header_eyebrow = QLabel("Application settings", header)
+        self.header_eyebrow.setObjectName("settingsEyebrow")
+        self.header_title = QLabel("General", header)
+        self.header_title.setObjectName("settingsTitle")
+        self.header_subtitle = QLabel("", header)
+        self.header_subtitle.setObjectName("settingsSubtitle")
+        self.header_subtitle.setWordWrap(True)
+        header_copy.addWidget(self.header_eyebrow)
+        header_copy.addSpacing(7)
+        header_copy.addWidget(self.header_title)
+        header_copy.addSpacing(7)
+        header_copy.addWidget(self.header_subtitle)
+        header_layout.addLayout(header_copy, 1)
+        self._main_layout.addWidget(header)
+
+        self.pages = QStackedWidget(main)
         self.pages.setObjectName("settingsPages")
         self.pages.setMinimumWidth(profile.settings_pages_min_width)
-        body_layout.addWidget(self.section_list)
-        body_layout.addWidget(self.pages, 1)
+        self._main_layout.addWidget(self.pages, 1)
+
+        body_layout.addWidget(sidebar)
+        body_layout.addWidget(main, 1)
         root_layout.addWidget(body, 1)
 
         self.session_combo = QComboBox()
@@ -287,7 +544,7 @@ class WorkflowSettingsDialog(QDialog):
             "Choose what happens to accepted and deleted images, and manage reusable review presets.",
         )
         self._add_category_heading(general_layout, "Review behavior")
-        self._add_form_row(general_layout, "Session", session_row)
+        self._add_form_row(general_layout, "Session preset", session_row)
         self._add_form_row(general_layout, "Accepted images", self.winner_mode_combo)
         self._add_form_row(general_layout, "Delete behavior", self.delete_mode_combo)
         self._add_category_heading(general_layout, "App updates")
@@ -442,6 +699,13 @@ class WorkflowSettingsDialog(QDialog):
             "Automatically refreshes the current folder when files are added, removed, or renamed outside the app."
         ))
 
+        self.restore_folder_position_checkbox = QCheckBox("Reopen folders where I left off")
+        self.restore_folder_position_checkbox.setChecked(restore_folder_position)
+        self.restore_folder_position_checkbox.setToolTip(_settings_tooltip(
+            "Remembers the photo you were on in each folder, across restarts, and brings it back to the top "
+            "of the view when the folder opens. When off, folders always open at their start."
+        ))
+
         self.catalog_summary_label = QLabel(_compact_catalog_summary(catalog_summary_text))
         self.catalog_summary_label.setWordWrap(True)
         self.catalog_summary_label.setObjectName("mutedText")
@@ -458,6 +722,7 @@ class WorkflowSettingsDialog(QDialog):
             folders_layout, "Folder tree", self.single_drive_expansion_checkbox
         )
         self._add_checkbox_row(folders_layout, "Watch folder", self.watch_current_folder_checkbox)
+        self._add_checkbox_row(folders_layout, "Position", self.restore_folder_position_checkbox)
         self._add_category_heading(folders_layout, "Catalog")
         self._add_checkbox_row(folders_layout, "Catalog cache", self.catalog_cache_checkbox)
         self._add_text_row(folders_layout, "Catalog", self.catalog_summary_label)
@@ -730,25 +995,33 @@ class WorkflowSettingsDialog(QDialog):
 
         footer = QFrame(self)
         footer.setObjectName("settingsFooter")
+        footer.setFixedHeight(62)
         footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(24, 12, 24, 14)
-        footer_layout.setSpacing(8)
-        self.help_button = QPushButton("Settings Guide")
-        self.help_button.setObjectName("settingsHelpButton")
-        self.help_button.setToolTip("Open a plain-language guide to these settings")
-        self.help_button.clicked.connect(self._show_help)
-        footer_layout.addWidget(self.help_button, 0)
-        footer_layout.addStretch(1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        footer_layout.addWidget(buttons)
-        root_layout.addWidget(footer, 0)
-        self.section_list.currentRowChanged.connect(self.pages.setCurrentIndex)
-        self.section_list.setCurrentRow(0)
+        footer_layout.setContentsMargins(30, 0, 20, 0)
+        footer_layout.setSpacing(10)
+        footer_note = QLabel("Changes are applied after you click Save changes.", footer)
+        footer_note.setObjectName("settingsFooterNote")
+        footer_layout.addWidget(footer_note, 1)
+        self.reset_page_button = QPushButton("Reset page", footer)
+        self.reset_page_button.setObjectName("settingsFooterButton")
+        self.reset_page_button.setToolTip("Put this page's settings back to how they were when you opened Settings.")
+        self.reset_page_button.clicked.connect(self._reset_current_page)
+        self.cancel_button = QPushButton("Cancel", footer)
+        self.cancel_button.setObjectName("settingsFooterButton")
+        self.cancel_button.clicked.connect(self.reject)
+        self.save_button = QPushButton("Save changes", footer)
+        self.save_button.setObjectName("settingsPrimaryButton")
+        self.save_button.setDefault(True)
+        self.save_button.clicked.connect(self.accept)
+        footer_layout.addWidget(self.reset_page_button)
+        footer_layout.addWidget(self.cancel_button)
+        footer_layout.addWidget(self.save_button)
+        self._main_layout.addWidget(footer, 0)
+        self._show_page(0)
         if initial_section:
             self._select_section(initial_section)
         self._refresh_preset_dropdown()
+        self._snapshot_controls()
 
     def _show_help(self) -> None:
         show_paged_help(
@@ -764,31 +1037,49 @@ class WorkflowSettingsDialog(QDialog):
         content = QWidget()
         content.setObjectName("settingsPageContent")
         layout = QVBoxLayout(content)
-        profile = self._display_profile
-        layout.setContentsMargins(
-            profile.settings_page_margin_x,
-            profile.settings_page_margin_y,
-            profile.settings_page_margin_x,
-            profile.settings_page_margin_y,
-        )
-        layout.setSpacing(8)
-        content.setMinimumWidth(profile.settings_page_min_width)
-        title_label = QLabel(title)
-        title_label.setObjectName("settingsPageTitle")
-        layout.addWidget(title_label)
+        layout.setContentsMargins(30, 22, 30, 28)
+        layout.setSpacing(0)
         if description:
-            subtitle_label = QLabel(description)
-            subtitle_label.setObjectName("settingsPageSubtitle")
-            subtitle_label.setWordWrap(True)
-            layout.addWidget(subtitle_label)
-        layout.addSpacing(8)
+            self._page_descriptions[title] = description
         scroll.setWidget(content)
         return scroll, layout
 
     def _add_settings_page(self, title: str, page: QWidget) -> None:
-        item = QListWidgetItem(title)
-        self.section_list.addItem(item)
+        group_title, group_kind_icon = "", "general"
+        for name, _eyebrow, entries in _NAV_GROUPS:
+            for entry_title, icon_kind in entries:
+                if entry_title == title:
+                    group_title, group_kind_icon = name, icon_kind
+        if group_title and group_title not in self._nav_seen_groups:
+            self._nav_seen_groups.add(group_title)
+            label = QLabel(group_title.upper())
+            label.setObjectName("settingsNavLabel")
+            if self.nav_layout.count():
+                self.nav_layout.addSpacing(14)
+            self.nav_layout.addWidget(label)
+        index = self.pages.count()
+        button = _NavButton(title.replace("&", "&&"), group_kind_icon)
+        button.clicked.connect(lambda _checked=False, i=index: self._show_page(i))
+        self._nav_group.addButton(button)
+        self.nav_layout.addWidget(button)
+        self._nav_buttons.append(button)
+        self._page_titles.append(title)
         self.pages.addWidget(page)
+
+    def _show_page(self, index: int) -> None:
+        if not 0 <= index < len(self._page_titles):
+            return
+        title = self._page_titles[index]
+        self.pages.setCurrentIndex(index)
+        if index < len(self._nav_buttons):
+            self._nav_buttons[index].setChecked(True)
+        eyebrow = "Application settings"
+        for _name, group_eyebrow, entries in _NAV_GROUPS:
+            if any(entry_title == title for entry_title, _kind in entries):
+                eyebrow = group_eyebrow
+        self.header_eyebrow.setText(eyebrow.upper())
+        self.header_title.setText(title)
+        self.header_subtitle.setText(self._page_descriptions.get(title, ""))
 
     def _select_section(self, title: str) -> None:
         target = title.strip().casefold()
@@ -798,11 +1089,159 @@ class WorkflowSettingsDialog(QDialog):
         }.get(target, target)
         if not target:
             return
-        for row in range(self.section_list.count()):
-            item = self.section_list.item(row)
-            if item is not None and item.text().strip().casefold() == target:
-                self.section_list.setCurrentRow(row)
+        for index, page_title in enumerate(self._page_titles):
+            if page_title.strip().casefold() == target:
+                self._show_page(index)
                 return
+
+    def _search_settings(self) -> None:
+        query = self.search_field.text().strip().casefold()
+        if not query:
+            return
+        for index in range(self.pages.count()):
+            page = self.pages.widget(index)
+            haystack = [self._page_titles[index], self._page_descriptions.get(self._page_titles[index], "")]
+            haystack.extend(label.text() for label in page.findChildren(QLabel))
+            haystack.extend(box.text() for box in page.findChildren(QCheckBox))
+            if query in " ".join(haystack).casefold():
+                self._show_page(index)
+                return
+        self.search_field.selectAll()
+        self.search_field.setToolTip("No settings match that search.")
+
+    # -- reset page ------------------------------------------------------
+    _CONTROL_TYPES = (QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QSlider, QKeySequenceEdit)
+
+    @staticmethod
+    def _read_control(widget: QWidget) -> object:
+        if isinstance(widget, _BaseCheckBox):
+            return widget.isChecked()
+        if isinstance(widget, QComboBox):
+            return widget.currentIndex()
+        if isinstance(widget, QKeySequenceEdit):
+            return widget.keySequence()
+        return widget.value()  # spin boxes and sliders
+
+    @staticmethod
+    def _write_control(widget: QWidget, value: object) -> None:
+        if isinstance(widget, _BaseCheckBox):
+            widget.setChecked(bool(value))
+        elif isinstance(widget, QComboBox):
+            widget.setCurrentIndex(int(value))
+        elif isinstance(widget, QKeySequenceEdit):
+            widget.setKeySequence(value)
+        else:
+            widget.setValue(value)
+
+    def _snapshot_controls(self) -> None:
+        for index in range(self.pages.count()):
+            for widget in self.pages.widget(index).findChildren(QWidget):
+                if isinstance(widget, self._CONTROL_TYPES):
+                    self._initial_control_state[widget] = self._read_control(widget)
+
+    def _reset_current_page(self) -> None:
+        page = self.pages.currentWidget()
+        if page is None:
+            return
+        for widget in page.findChildren(QWidget):
+            if widget in self._initial_control_state and isinstance(widget, self._CONTROL_TYPES):
+                self._write_control(widget, self._initial_control_state[widget])
+
+    # -- cards and rows --------------------------------------------------
+    def _card_layout(self, layout: QVBoxLayout) -> tuple[QVBoxLayout, list[int]]:
+        entry = self._cards.get(id(layout))
+        if entry is None:
+            card = QFrame()
+            card.setObjectName("settingsCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(0, 0, 0, 0)
+            card_layout.setSpacing(0)
+            layout.addWidget(card)
+            entry = (card_layout, [0])
+            self._cards[id(layout)] = entry
+        return entry
+
+    def _append_to_card(self, layout: QVBoxLayout, row: QWidget) -> None:
+        card_layout, count = self._card_layout(layout)
+        if count[0]:
+            divider = QFrame()
+            divider.setObjectName("settingsRowDivider")
+            divider.setFixedHeight(1)
+            card_layout.addWidget(divider)
+        card_layout.addWidget(row)
+        count[0] += 1
+
+    def _add_category_heading(self, layout: QVBoxLayout, title: str) -> None:
+        self._cards.pop(id(layout), None)
+        if layout.count() > 0:
+            layout.addSpacing(22)
+        head = QWidget()
+        head_layout = QHBoxLayout(head)
+        head_layout.setContentsMargins(0, 0, 0, 0)
+        head_layout.setSpacing(15)
+        name = QLabel(title)
+        name.setObjectName("settingsSectionTitle")
+        head_layout.addWidget(name)
+        head_layout.addStretch(1)
+        hint_text = _SECTION_HINTS.get(title, "")
+        if hint_text:
+            hint = QLabel(hint_text)
+            hint.setObjectName("settingsSectionHint")
+            head_layout.addWidget(hint)
+        layout.addWidget(head)
+        layout.addSpacing(10)
+
+    def _add_card_row(self, layout: QVBoxLayout, label_text: str, control: QWidget) -> None:
+        row = QWidget()
+        row.setObjectName("settingsCardRow")
+        row.setMinimumHeight(70)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(16, 14, 16, 14)
+        row_layout.setSpacing(24)
+        tooltip = control.toolTip()
+        if tooltip:
+            row.setToolTip(tooltip)
+        copy = QVBoxLayout()
+        copy.setSpacing(4)
+        title = QLabel(label_text)
+        title.setObjectName("settingsRowTitle")
+        copy.addWidget(title)
+        description = " ".join(tooltip.split())
+        if description:
+            desc = QLabel(description)
+            desc.setObjectName("settingsRowDesc")
+            desc.setWordWrap(True)
+            copy.addWidget(desc)
+        row_layout.addLayout(copy, 1)
+        if isinstance(control, _BaseCheckBox):
+            row_layout.addWidget(control, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        else:
+            control.setMinimumWidth(0)
+            control.setSizePolicy(QSizePolicy.Policy.Expanding, control.sizePolicy().verticalPolicy())
+            if isinstance(control, QComboBox) and not control.isEditable():
+                chevron_layout = QHBoxLayout(control)
+                chevron_layout.setContentsMargins(0, 0, 13, 0)
+                chevron_layout.addStretch(1)
+                chevron = QLabel("", control)
+                chevron.setObjectName("settingsComboChevron")
+                chevron.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                chevron_layout.addWidget(chevron)
+            holder = QWidget()
+            holder.setFixedWidth(_CARD_CONTROL_WIDTH)
+            holder_layout = QHBoxLayout(holder)
+            holder_layout.setContentsMargins(0, 0, 0, 0)
+            holder_layout.addWidget(control, 1)
+            row_layout.addWidget(holder, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._append_to_card(layout, row)
+
+    def _add_form_row(self, layout: QVBoxLayout, label_text: str, field: QWidget) -> None:
+        self._add_card_row(layout, label_text, field)
+
+    def _add_checkbox_row(self, layout: QVBoxLayout, label_text: str, checkbox: QCheckBox) -> None:
+        self._add_card_row(layout, label_text, checkbox)
+
+    def _add_text_row(self, layout: QVBoxLayout, label_text: str, value: QLabel) -> None:
+        self._add_card_row(layout, label_text, value)
 
     def _row_frame(self) -> tuple[QWidget, QHBoxLayout]:
         row = QWidget()
@@ -818,54 +1257,6 @@ class WorkflowSettingsDialog(QDialog):
         layout.setSpacing(profile.settings_row_spacing)
         return row, layout
 
-    _ROW_LABEL_WIDTH = 142
-
-    def _add_category_heading(self, layout: QVBoxLayout, title: str) -> None:
-        if layout.count() > 2:
-            layout.addSpacing(8)
-        heading = QLabel(title)
-        heading.setObjectName("settingsCategoryHeading")
-        layout.addWidget(heading)
-
-    def _add_form_row(self, layout: QVBoxLayout, label_text: str, field: QWidget) -> None:
-        row, row_layout = self._row_frame()
-        label = QLabel(label_text)
-        label.setFixedWidth(self._display_profile.settings_row_label_width)
-        label.setObjectName("settingsRowLabel")
-        tooltip = field.toolTip()
-        if tooltip:
-            label.setToolTip(tooltip)
-            row.setToolTip(tooltip)
-        row_layout.addWidget(label)
-        row_layout.addWidget(field, 1)
-        layout.addWidget(row)
-
-    def _add_checkbox_row(self, layout: QVBoxLayout, label_text: str, checkbox: QCheckBox) -> None:
-        row, row_layout = self._row_frame()
-        label = QLabel(label_text)
-        label.setFixedWidth(self._display_profile.settings_row_label_width)
-        label.setObjectName("settingsRowLabel")
-        tooltip = checkbox.toolTip()
-        if tooltip:
-            label.setToolTip(tooltip)
-            row.setToolTip(tooltip)
-        row_layout.addWidget(label)
-        row_layout.addWidget(checkbox, 1)
-        layout.addWidget(row)
-
-    def _add_text_row(self, layout: QVBoxLayout, label_text: str, value: QLabel) -> None:
-        row, row_layout = self._row_frame()
-        label = QLabel(label_text)
-        label.setFixedWidth(self._display_profile.settings_row_label_width)
-        label.setObjectName("settingsRowLabel")
-        tooltip = value.toolTip()
-        if tooltip:
-            label.setToolTip(tooltip)
-            row.setToolTip(tooltip)
-        row_layout.addWidget(label)
-        row_layout.addWidget(value, 1)
-        layout.addWidget(row)
-
     def _build_shortcuts_page(self, current_overrides: dict[str, str]) -> QWidget:
         """Build the Shortcuts settings page from SHORTCUT_REGISTRY."""
 
@@ -873,7 +1264,7 @@ class WorkflowSettingsDialog(QDialog):
         hint = QLabel(
             "Click a row's key field and press the new chord. Use the row's "
             "Reset to revert to the default. Conflicts are reported when you "
-            "click OK."
+            "click Save changes."
         )
         hint.setWordWrap(True)
         hint.setObjectName("settingsRowLabel")
@@ -897,15 +1288,14 @@ class WorkflowSettingsDialog(QDialog):
         }
 
         for category, entries in grouped.items():
-            heading = QLabel(category)
-            heading.setObjectName("settingsCategoryHeading")
-            layout.addSpacing(6)
-            layout.addWidget(heading)
+            self._add_category_heading(layout, category)
             for attr_name, default, display in entries:
                 row, row_layout = self._row_frame()
+                row.setObjectName("settingsCardRow")
+                row.setMinimumHeight(56)
                 label = QLabel(display)
                 label.setFixedWidth(self._display_profile.settings_shortcut_label_width)
-                label.setObjectName("settingsRowLabel")
+                label.setObjectName("settingsRowTitle")
                 tooltip = _settings_tooltip(
                     f"Keyboard shortcut for {display}. Default: {default or 'none'}."
                 )
@@ -937,7 +1327,7 @@ class WorkflowSettingsDialog(QDialog):
                 )
                 row_layout.addWidget(reset_button)
 
-                layout.addWidget(row)
+                self._append_to_card(layout, row)
                 self._shortcut_editors[attr_name] = editor
 
         layout.addSpacing(8)
@@ -1160,6 +1550,7 @@ class WorkflowSettingsDialog(QDialog):
             burst_stacks_enabled=self.burst_stacks_checkbox.isChecked(),
             catalog_cache_enabled=self.catalog_cache_checkbox.isChecked(),
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
+            restore_folder_position=self.restore_folder_position_checkbox.isChecked(),
             check_updates_on_startup=self.check_updates_on_startup_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
             ai_dino_worker_count=clamp_ai_dataloader_workers(

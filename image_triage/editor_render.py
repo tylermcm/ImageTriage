@@ -585,6 +585,7 @@ class EditorRenderService(QObject):
         self._latest_seq = 0
         self._active_seq: int | None = None
         self._pending: dict | None = None
+        self._cancel_floor = 0
         self._worker_done.connect(self._on_worker_done)
 
     @property
@@ -632,6 +633,7 @@ class EditorRenderService(QObject):
         self._pending = None
         self._seq += 1
         self._latest_seq = self._seq
+        self._cancel_floor = self._seq
 
     def _start(self, request: dict) -> None:
         self._active_seq = request["seq"]
@@ -655,12 +657,13 @@ class EditorRenderService(QObject):
 
     def _on_worker_done(self, seq: int, source_key: object, image: object) -> None:  # main thread
         self._active_seq = None
-        # Drop stale completions: only deliver a frame that is still the latest
-        # request. A newer request (or a cancel) has bumped _latest_seq past it.
-        if seq == self._latest_seq and isinstance(image, QImage) and not image.isNull():
-            perf_logger().log("editslider.render_delivered", seq=seq)
+        # Only a cancel invalidates a finished frame. A merely-superseded frame
+        # is still shown: when renders take longer than the gap between slider
+        # ticks, dropping it would starve the preview until the drag ends.
+        if seq > self._cancel_floor and isinstance(image, QImage) and not image.isNull():
+            perf_logger().log("editslider.render_delivered", seq=seq, latest=self._latest_seq)
             self.rendered.emit(seq, source_key, image)
-        elif seq != self._latest_seq:
+        elif seq <= self._cancel_floor:
             perf_logger().log("editslider.render_dropped_stale", seq=seq, latest=self._latest_seq)
         if self._pending is not None:
             request = self._pending

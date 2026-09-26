@@ -66,7 +66,7 @@ MIN_TEXT_PX = 11                # floor for every text size above
 # since several of them are meant to be smaller than readable text.
 
 # Top bar
-MENU_ICON_H = 0.01            # hamburger icon beside "Menu"
+MENU_ICON_H = 0.0165           # hamburger icon beside "Menu"
 TOP_GEAR_ICON_H = 0.018        # settings gear beside the window buttons
 TOP_GEAR_BOX_H = 0.025          # its clickable box
 UPDATE_ICON_H = 0.015          # update arrow beside the gear (shows when an

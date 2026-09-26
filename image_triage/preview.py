@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QIcon, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,6 +44,7 @@ from .review_tools import (
     FocusAssistStrength,
     InspectionStats,
     build_focus_assist_image,
+    build_histogram_stats,
     build_inspection_stats,
     focus_assist_color_by_id,
     focus_assist_strength_by_id,
@@ -101,6 +102,27 @@ class PreviewEntry:
     workflow_summary: str = ""
     workflow_details: tuple[str, ...] = ()
     placeholder_image: QImage | None = None
+
+
+class _EditedDiscoverySignals(QObject):
+    done = Signal(str, object)
+
+
+class _EditedDiscoveryTask(QRunnable):
+    """Folder scan for edited variants; on a NAS it can take seconds, so it
+    must never run on the UI thread."""
+
+    def __init__(self, record) -> None:
+        super().__init__()
+        self.record = record
+        self.signals = _EditedDiscoverySignals()
+
+    def run(self) -> None:
+        try:
+            found = discover_edited_paths(self.record)
+        except Exception:
+            found = ()
+        self.signals.done.emit(self.record.path, found)
 
 
 class PreviewTask(QRunnable):
@@ -731,12 +753,14 @@ class FullScreenPreview(QDialog):
         self._poll_round_robin_slot = 0
         self._next_edited_discovery_at = 0.0
         self._edited_discovery_requested = False
+        self._edited_discovery_running = False
         self._edited_discovery_interval_found_s = 8.5
         self._edited_discovery_interval_missing_s = 17.0
         self._edited_discovery_interval_with_candidates_s = 12.0
         self._panes: list[PreviewPane] = []
         self._watched_widgets: dict[object, int] = {}
         self._inspection_stats_cache: dict[tuple[object, ...], InspectionStats] = {}
+        self._histogram_stats_cache: tuple[int, InspectionStats] | None = None
         self._focus_assist_cache: dict[tuple[object, ...], QImage] = {}
         self._editor_recipe = EditRecipe()
         self._editor_recipe_version = 0
@@ -1985,7 +2009,8 @@ class FullScreenPreview(QDialog):
         self._mockup_zoom_slider.setValue(35)
         self._mockup_zoom_slider.setFixedWidth(100)
         self._mockup_zoom_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._mockup_zoom_slider.sliderReleased.connect(self._apply_mockup_zoom_slider)
+        self._mockup_zoom_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mockup_zoom_slider.valueChanged.connect(lambda _value: self._apply_mockup_zoom_slider())
         layout.addWidget(self._mockup_zoom_slider)
         more_menu = QMenu(toolbar)
         more_menu.addAction("Fit image", self._set_fit_mode)
@@ -2106,6 +2131,8 @@ class FullScreenPreview(QDialog):
         histogram_layout.addLayout(histogram_caption)
         editor_layout.insertWidget(1, histogram_frame)
         self.photo_editor_panel.recipe_changed.connect(self._handle_editor_recipe_changed)
+        self.photo_editor_panel.mask_overlay_changed.connect(self._sync_histogram_visibility)
+        self._sync_histogram_visibility()
         self.photo_editor_panel.status_changed.connect(self._handle_editor_status_changed)
         self.photo_editor_panel.saved.connect(self._handle_editor_sidecar_saved)
         self.photo_editor_panel.save_copy_requested.connect(self._handle_editor_save_copy_requested)
@@ -3946,6 +3973,15 @@ class FullScreenPreview(QDialog):
         self._schedule_analysis_panel_update()
         self._update_info_label()
 
+    def _handle_edited_discovery_done(self, path: str, discovered: object) -> None:
+        self._edited_discovery_running = False
+        if not discovered or len(self._source_entries) != 1:
+            return
+        if self._source_entries[0].record.path != path:
+            return
+        self.set_edited_candidates(path, tuple(discovered))
+        self._next_edited_discovery_at = time.monotonic() + self._edited_discovery_interval_found_s
+
     def _poll_source_updates(self) -> None:
         if not self.isVisible() or not self._entries or self._pending_requests > 0:
             return
@@ -3963,13 +3999,15 @@ class FullScreenPreview(QDialog):
             source_entry = self._source_entries[0]
             has_candidates = bool(self._edited_candidates_for_entry(source_entry))
             if self._edited_discovery_requested or not has_candidates:
-                discovered = discover_edited_paths(source_entry.record)
-                if discovered:
-                    self.set_edited_candidates(source_entry.record.path, tuple(discovered))
-                    self._next_edited_discovery_at = now + self._edited_discovery_interval_found_s
-                else:
-                    self._next_edited_discovery_at = now + self._edited_discovery_interval_missing_s
+                if not self._edited_discovery_running:
+                    self._edited_discovery_running = True
+                    task = _EditedDiscoveryTask(source_entry.record)
+                    task.signals.done.connect(
+                        self._handle_edited_discovery_done, Qt.ConnectionType.QueuedConnection
+                    )
+                    self._pool.start(task)
                 self._edited_discovery_requested = False
+                self._next_edited_discovery_at = now + self._edited_discovery_interval_missing_s
             else:
                 self._next_edited_discovery_at = now + self._edited_discovery_interval_with_candidates_s
 
@@ -4084,9 +4122,22 @@ class FullScreenPreview(QDialog):
             viewport_center = self._pane_viewport_center(pane)
             pane.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             pane.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            # Zoom is relative to the loaded image's pixels. An edited frame is
+            # capped at EDITOR_PREVIEW_MAX_EDGE, so size it from the source
+            # (same aspect) or it would lay out smaller and flash out of zoom.
+            layout_size = display_image.size()
+            if 0 <= slot < len(self._current_images):
+                source = self._current_images[slot]
+                if (
+                    not source.isNull()
+                    and source.size() != layout_size
+                    and abs(source.width() * layout_size.height() - source.height() * layout_size.width())
+                    <= max(source.width(), source.height())
+                ):
+                    layout_size = source.size()
             scaled_size = QSize(
-                max(1, int(round(display_image.width() * self._zoom_scale))),
-                max(1, int(round(display_image.height() * self._zoom_scale))),
+                max(1, int(round(layout_size.width() * self._zoom_scale))),
+                max(1, int(round(layout_size.height() * self._zoom_scale))),
             )
             pane.image_label.setText("")
             pane.image_label.setScaledContents(False)
@@ -4212,6 +4263,9 @@ class FullScreenPreview(QDialog):
             and self._focused_slot < len(self._panes)
         ):
             self._request_editor_render(self._focused_slot)
+        if self.photo_editor_panel.histogram_wanted() and not self._editor_edits_active():
+            # Edits were cleared: fall back to the plain image's histogram.
+            self._schedule_analysis_panel_update()
 
     def _request_editor_render(self, slot: int) -> None:
         """Queue an off-thread editor render for ``slot`` (coalesced). When
@@ -4295,7 +4349,15 @@ class FullScreenPreview(QDialog):
             *self._image_cache_key(slot, current),
             *self._editor_state_key(),
         )
-        if tuple(source_key) != tuple(expected_key):
+        # A frame from an older recipe version is still a valid intermediate
+        # during a drag; only reject other mismatches, or versions from the future.
+        got = tuple(source_key)
+        if (
+            len(got) != len(expected_key)
+            or got[:-3] != tuple(expected_key)[:-3]
+            or got[-2:] != tuple(expected_key)[-2:]
+            or got[-3] > expected_key[-3]
+        ):
             return
         self._editor_preview_cache[source_key] = image
         panel = getattr(self, "photo_editor_panel", None)
@@ -4315,6 +4377,8 @@ class FullScreenPreview(QDialog):
             if slot < len(self._rendered_display_keys):
                 self._rendered_display_keys[slot] = None
             self._present_display_image(slot, self._panes[slot], self._entries[slot], display, logger, start)
+        if panel is not None and panel.histogram_wanted():
+            self._schedule_analysis_panel_update(60)
 
     def _handle_editor_status_changed(self, message: str) -> None:
         if message and getattr(self, "_studio_layout_active", False):
@@ -4526,6 +4590,35 @@ class FullScreenPreview(QDialog):
         self._studio_confidence_bar.set_pct(int(round(value)) if value is not None else 0)
         self._studio_confidence_pct.setText(result.display_score_text or "--")
 
+    def _sync_histogram_visibility(self) -> None:
+        frame = getattr(self, "_mockup_histogram_frame", None)
+        panel = getattr(self, "photo_editor_panel", None)
+        if frame is None or panel is None:
+            return
+        wanted = panel.histogram_wanted()
+        if frame.isVisibleTo(frame.parentWidget()) != wanted:
+            frame.setVisible(wanted)
+            if wanted:
+                self._schedule_analysis_panel_update(0)
+
+    def _histogram_stats_for_slot(self, slot: int, base_stats: InspectionStats) -> InspectionStats:
+        """Histogram of what is on screen: the edited frame while edits are
+        active, otherwise the plain image stats."""
+        if slot != self._focused_slot or not self._editor_edits_active():
+            return base_stats
+        presented = self._editor_last_presented
+        if presented is None or not 0 <= slot < len(self._current_images):
+            return base_stats
+        base_key, _bypass, edited = presented
+        if base_key != self._image_cache_key(slot, self._current_images[slot]) or edited.isNull():
+            return base_stats
+        cached = self._histogram_stats_cache
+        if cached is not None and cached[0] == edited.cacheKey():
+            return cached[1]
+        stats = build_histogram_stats(edited)
+        self._histogram_stats_cache = (edited.cacheKey(), stats)
+        return stats
+
     def _update_analysis_panel(self) -> None:
         if not self._entries or not 0 <= self._focused_slot < len(self._entries):
             self.analysis_subtitle_label.setText("Focused image analysis")
@@ -4541,18 +4634,19 @@ class FullScreenPreview(QDialog):
 
         entry = self._entries[self._focused_slot]
         stats = self._inspection_stats_for_slot(self._focused_slot)
+        live_stats = self._histogram_stats_for_slot(self._focused_slot, stats)
         if hasattr(self, "_mockup_shadow_label"):
             self._mockup_shadow_label.setText(
-                f"Shadows {stats.shadow_clip_pct:.0f}%" if stats.width > 0 else "Shadows —"
+                f"Shadows {live_stats.shadow_clip_pct:.0f}%" if live_stats.width > 0 else "Shadows —"
             )
             self._mockup_highlight_label.setText(
-                f"Highlights {stats.highlight_clip_pct:.0f}%" if stats.width > 0 else "Highlights —"
+                f"Highlights {live_stats.highlight_clip_pct:.0f}%" if live_stats.width > 0 else "Highlights —"
             )
         title = Path(entry.source_path).name
         if entry.label:
             title = f"{entry.label} | {title}"
         self.analysis_subtitle_label.setText(title)
-        self.histogram_widget.set_stats(stats)
+        self.histogram_widget.set_stats(live_stats)
 
         if stats.width <= 0 or stats.height <= 0:
             self.inspection_dimensions_label.setText("Loading...")

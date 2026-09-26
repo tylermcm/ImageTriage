@@ -770,11 +770,7 @@ class MaskOverlay(CanvasOverlay):
                 {"assetPath": self._point_preview_path}
             )
             if preview is not None:
-                scaled = preview.scaled(
-                    self.size(),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled = self._source_layer_for_display(preview, gray=True)
                 base = self._display_base_image(self.width(), self.height())
                 painter.drawImage(
                     self.rect(),
@@ -806,6 +802,38 @@ class MaskOverlay(CanvasOverlay):
         if self._busy_message:
             self._paint_busy(painter)
         painter.end()
+
+    def _source_layer_for_display(self, layer: QImage, *, gray: bool = False) -> QImage:
+        """Lay a layer that covers the whole source photo over the displayed
+        frame. With a crop, rotation or straighten in play the frame shows only
+        part of the photo, so a plain stretch to the overlay size misplaces it."""
+        view = self._effective_view()
+        scales = self._scales()
+        if (
+            view is None
+            or view.is_identity()
+            or scales is None
+            or self._source_size is None
+            or layer.isNull()
+        ):
+            return layer.scaled(
+                self.size(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        out = QImage(self.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        out.fill(QColor(0, 0, 0, 255) if gray else Qt.GlobalColor.transparent)
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.scale(scales[0], scales[1])
+        painter.setTransform(view.qtransform(), True)
+        painter.scale(
+            self._source_size[0] / max(1, layer.width()),
+            self._source_size[1] / max(1, layer.height()),
+        )
+        painter.drawImage(0, 0, layer)
+        painter.end()
+        return out.convertToFormat(QImage.Format.Format_Grayscale8) if gray else out
 
     def _display_base_image(self, width: int, height: int) -> QImage | None:
         pixmap_getter = getattr(self._watched, "pixmap", None)
@@ -854,6 +882,7 @@ class MaskOverlay(CanvasOverlay):
             self._overlay_mode,
             int(self._overlay_color.rgba()),
             self._display_base_cache_key(),
+            self._effective_view().freeze() if self._effective_view() is not None else None,
         )
         if key == self._strength_cache_key and self._strength_cache is not None:
             return self._strength_cache
@@ -880,14 +909,30 @@ class MaskOverlay(CanvasOverlay):
         cw = max(1, int(round(self.width() * scale_down)))
         ch = max(1, int(round(self.height() * scale_down)))
         base_image = self._display_base_image(cw, ch)
-        gray = build_group_strength(
-            components,
-            cw,
-            ch,
-            self._source_size,
-            level_scale=1.0,
-            guide_image=base_image,
-        )
+        view = self._effective_view()
+        frame = self._frame_size()
+        if view is not None and not view.is_identity() and frame is not None:
+            # Cropped / straightened / flipped: rasterize in source space, then
+            # put the field through the same affine the pixels took. The edge
+            # guide is display-space, so it is skipped rather than misaligned.
+            gray = mask_strength_qimage(
+                components,
+                cw,
+                ch,
+                self._source_size,
+                guide_image=None,
+                transform=view.qtransform() * QTransform.fromScale(cw / frame[0], ch / frame[1]),
+                transform_source_size=view.source_size,
+            )
+        else:
+            gray = build_group_strength(
+                components,
+                cw,
+                ch,
+                self._source_size,
+                level_scale=1.0,
+                guide_image=base_image,
+            )
         if gray is None:
             return None
         image = compose_mask_overlay(
@@ -936,6 +981,12 @@ class MaskOverlay(CanvasOverlay):
         canvas_width, canvas_height = (float(value) for value in coordinate_size)
         center_x = (x + box_width / 2.0) / canvas_width * self.width()
         subject_top = y / canvas_height * self.height()
+        if self._source_size is not None and self._effective_view() is not None:
+            anchor = self._to_display(
+                (x + box_width / 2.0) / canvas_width * self._source_size[0],
+                y / canvas_height * self._source_size[1],
+            )
+            center_x, subject_top = anchor.x(), anchor.y()
         left = _clamp(
             center_x - SUBJECT_MARKER_PX / 2.0,
             2.0,
@@ -1018,8 +1069,13 @@ class MaskOverlay(CanvasOverlay):
             bitmap = self._subject_candidate_bitmap(candidate)
             if not candidate_id or bitmap is None or bitmap.isNull():
                 continue
-            x = int(_clamp(pos.x() / max(1, self.width()), 0.0, 0.999999) * bitmap.width())
-            y = int(_clamp(pos.y() / max(1, self.height()), 0.0, 0.999999) * bitmap.height())
+            fraction_x, fraction_y = pos.x() / max(1, self.width()), pos.y() / max(1, self.height())
+            if self._source_size is not None and self._effective_view() is not None:
+                source_x, source_y = self._to_source(pos)
+                fraction_x = source_x / max(1, self._source_size[0])
+                fraction_y = source_y / max(1, self._source_size[1])
+            x = int(_clamp(fraction_x, 0.0, 0.999999) * bitmap.width())
+            y = int(_clamp(fraction_y, 0.0, 0.999999) * bitmap.height())
             if int(bitmap.constScanLine(y)[x]) >= 24:
                 return candidate_id
         return None
@@ -1038,11 +1094,7 @@ class MaskOverlay(CanvasOverlay):
             bitmap = self._subject_candidate_bitmap(candidate)
             if bitmap is None or bitmap.isNull():
                 continue
-            scaled = bitmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+            scaled = self._source_layer_for_display(bitmap, gray=True)
             layer = QImage(
                 scaled.width(),
                 scaled.height(),
@@ -1110,9 +1162,21 @@ class MaskOverlay(CanvasOverlay):
     def _paint_scene_hover(self, painter: QPainter) -> None:
         if self._scene_index is None or not self._scene_hover:
             return
-        highlight = self._scene_index.highlight(
-            self._scene_hover, self.width(), self.height()
-        )
+        view = self._effective_view()
+        if view is not None and not view.is_identity() and self._source_size is not None:
+            # Build the tint over the whole photo, then lay it on the frame.
+            longest = max(self._source_size)
+            factor = min(1.0, 1024.0 / max(1, longest))
+            full = self._scene_index.highlight(
+                self._scene_hover,
+                max(1, round(self._source_size[0] * factor)),
+                max(1, round(self._source_size[1] * factor)),
+            )
+            highlight = self._source_layer_for_display(full) if full is not None else None
+        else:
+            highlight = self._scene_index.highlight(
+                self._scene_hover, self.width(), self.height()
+            )
         if highlight is not None:
             painter.drawImage(self.rect(), highlight)
         if self._hover_pos is None:

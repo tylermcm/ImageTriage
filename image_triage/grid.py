@@ -4074,6 +4074,20 @@ class ThumbnailGridView(QAbstractScrollArea):
                 found=False,
             )
 
+    def scroll_index_to_top(self, index: int) -> None:
+        """Scroll so the item's row sits at the top of the viewport."""
+        if not 0 <= index < len(self._items):
+            return
+        try:
+            rect = self._item_rect(index)
+        except Exception:
+            return
+        if rect.isNull():
+            return
+        self._stop_smooth_scroll()
+        bar = self.verticalScrollBar()
+        bar.setValue(max(bar.minimum(), min(bar.maximum(), bar.value() + rect.top() - 12)))
+
     def _ensure_index_visible(self, index: int) -> None:
         if not 0 <= index < len(self._items):
             return

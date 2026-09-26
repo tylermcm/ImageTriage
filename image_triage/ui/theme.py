@@ -1982,6 +1982,778 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-weight: 500;
             padding: 0 2px;
         }}
+        QFrame#settingsSidebar {{
+            background-color: {theme.panel_alt_bg.css};
+            border: none;
+            border-right: 1px solid {theme.border_muted.css};
+        }}
+        QFrame#settingsSearchBox {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 10px;
+            min-height: 36px;
+            max-height: 36px;
+        }}
+        QFrame#settingsSearchBox:focus-within {{
+            border-color: {theme.accent.css};
+        }}
+        QLabel#settingsSearchGlyph {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+            font-size: 13px;
+        }}
+        QLineEdit#settingsSearchField {{
+            background: transparent;
+            border: none;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            min-height: 0px;
+            padding: 0px;
+        }}
+        QLabel#settingsNavLabel {{
+            color: {theme.text_muted.css};
+            font-size: 10px;
+            font-weight: 700;
+            padding: 0px 10px 6px 10px;
+        }}
+        QPushButton#settingsNavButton {{
+            qproperty-iconColor: {theme.text_muted.css};
+            qproperty-iconActiveColor: {theme.accent_hover.css};
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 10px;
+            color: {theme.text_secondary.css};
+            font-size: 13px;
+            min-height: 40px;
+            padding: 0px 12px 0px 42px;
+            text-align: left;
+        }}
+        QPushButton#settingsNavButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QPushButton#settingsNavButton:checked {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.with_alpha(70).css};
+            color: {theme.text_primary.css};
+        }}
+        QFrame#settingsHelpCard {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 11px;
+        }}
+        QLabel#settingsHelpTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#settingsHelpText {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QPushButton#settingsHelpButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            min-height: 30px;
+            padding: 0 12px;
+        }}
+        QPushButton#settingsHelpButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QWidget#settingsMain, QStackedWidget#settingsPages, QWidget#settingsPageContent {{
+            background-color: {theme.window_bg.css};
+        }}
+        QWidget#settingsMain QScrollArea {{
+            background: transparent;
+            border: none;
+        }}
+        QFrame#settingsHeader {{
+            background-color: {theme.window_bg.css};
+            border: none;
+            border-bottom: 1px solid {theme.border_muted.css};
+        }}
+        QLabel#settingsEyebrow {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+            font-weight: 700;
+        }}
+        QLabel#settingsTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 24px;
+            font-weight: 700;
+        }}
+        QLabel#settingsSubtitle {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 12px;
+        }}
+        QLabel#settingsSectionTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#settingsSectionHint {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QFrame#settingsCard {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 13px;
+        }}
+        QWidget#settingsCardRow {{
+            background: transparent;
+            border: none;
+        }}
+        QFrame#settingsRowDivider {{
+            background-color: {theme.border_muted.css};
+            border: none;
+        }}
+        QLabel#settingsRowTitle {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#settingsRowDesc {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QWidget#settingsPageContent QCheckBox {{
+            qproperty-trackOffColor: {theme.border.css};
+            qproperty-trackOnColor: {theme.accent.css};
+            qproperty-knobColor: {theme.text_secondary.css};
+            qproperty-knobOnColor: {theme.text_primary.css};
+            qproperty-labelColor: {theme.text_secondary.css};
+        }}
+        QWidget#settingsCardRow QComboBox,
+        QWidget#settingsCardRow QSpinBox,
+        QWidget#settingsCardRow QDoubleSpinBox,
+        QWidget#settingsCardRow QLineEdit {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 9px;
+            color: {theme.text_primary.css};
+            font-size: 11px;
+            min-height: 30px;
+            padding: 0px 12px;
+        }}
+        QWidget#settingsCardRow QComboBox:hover,
+        QWidget#settingsCardRow QSpinBox:hover,
+        QWidget#settingsCardRow QDoubleSpinBox:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QWidget#settingsCardRow QComboBox:focus,
+        QWidget#settingsCardRow QSpinBox:focus,
+        QWidget#settingsCardRow QLineEdit:focus {{
+            border-color: {theme.accent.css};
+        }}
+        QWidget#settingsCardRow QSpinBox::up-button,
+        QWidget#settingsCardRow QSpinBox::down-button,
+        QWidget#settingsCardRow QDoubleSpinBox::up-button,
+        QWidget#settingsCardRow QDoubleSpinBox::down-button {{
+            border: none;
+            width: 0px;
+        }}
+        QLabel#settingsComboChevron {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+            font-size: 10px;
+        }}
+        QWidget#settingsCardRow QPushButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 9px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            min-height: 30px;
+            padding: 0px 14px;
+        }}
+        QWidget#settingsCardRow QPushButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QWidget#settingsCardRow QSlider::groove:horizontal {{
+            background: {theme.border.css};
+            border-radius: 2px;
+            height: 4px;
+        }}
+        QWidget#settingsCardRow QSlider::sub-page:horizontal {{
+            background: {theme.accent.css};
+            border-radius: 2px;
+        }}
+        QWidget#settingsCardRow QSlider::handle:horizontal {{
+            background: {theme.text_primary.css};
+            border: 3px solid {theme.accent.css};
+            border-radius: 8px;
+            height: 10px;
+            margin: -7px 0;
+            width: 10px;
+        }}
+        QLabel#settingsCategoryHeading {{
+            background: transparent;
+            color: {theme.text_primary.css};
+            font-size: 11px;
+            font-weight: 700;
+            padding: 8px 4px 2px 4px;
+        }}
+        QFrame#settingsPageSeparator {{
+            background-color: {theme.border_muted.css};
+            border: none;
+        }}
+        QLabel#settingsRowLabel {{
+            background: transparent;
+            color: {theme.text_secondary.css};
+            font-size: 12px;
+            font-weight: 500;
+        }}
+        QWidget#settingsRow {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 11px;
+        }}
+        QWidget#settingsRow:hover {{
+            border-color: {theme.border.css};
+        }}
+        QFrame#settingsFooter {{
+            background-color: {theme.panel_alt_bg.css};
+            border: none;
+            border-top: 1px solid {theme.border_muted.css};
+        }}
+        QLabel#settingsFooterNote {{
+            background: transparent;
+            color: {theme.text_muted.css};
+            font-size: 10px;
+        }}
+        QPushButton#settingsFooterButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 9px;
+            color: {theme.text_secondary.css};
+            font-size: 11px;
+            min-height: 34px;
+            padding: 0px 16px;
+        }}
+        QPushButton#settingsFooterButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QPushButton#settingsPrimaryButton {{
+            background-color: {theme.accent.css};
+            border: 1px solid {theme.accent.css};
+            border-radius: 9px;
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            min-height: 34px;
+            padding: 0px 18px;
+        }}
+        QPushButton#settingsPrimaryButton:hover {{
+            background-color: {theme.accent_hover.css};
+            border-color: {theme.accent_hover.css};
+        }}
+        QLabel#inspectorValue {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 500;
+            padding: 0px;
+        }}
+        QLabel#inspectorValue[severity="muted"] {{
+            color: {theme.text_muted.css};
+            font-weight: 400;
+        }}
+        QLabel#inspectorValue[severity="warning"],
+        QLabel#inspectorSeverityIcon[severity="warning"] {{
+            color: {theme.warning.css};
+        }}
+        QLabel#inspectorValue[severity="critical"],
+        QLabel#inspectorSeverityIcon[severity="critical"] {{
+            color: {theme.danger.css};
+        }}
+        QLabel#inspectorValue[emphasis="strong"] {{
+            color: {theme.text_primary.css};
+            font-weight: 600;
+        }}
+        QLabel#inspectorValue[emphasis="secondary"] {{
+            color: {theme.text_secondary.css};
+            font-weight: 450;
+        }}
+        QLabel#inspectorEmptyState {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            padding: 1px 2px 3px 2px;
+        }}
+        QPushButton#inspectorActionButton {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 6px;
+            color: {theme.text_primary.css};
+            min-height: 24px;
+            padding: 4px 8px;
+            text-align: center;
+        }}
+        QPushButton#inspectorActionButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QPushButton#inspectorActionButton:disabled {{
+            color: {theme.text_disabled.css};
+            border-color: {theme.border_muted.css};
+        }}
+        QTreeView#folderTree, QListWidget#favoritesList {{
+            background-color: transparent;
+            border: none;
+            show-decoration-selected: 1;
+        }}
+        QTreeView#folderTree {{
+            font-size: 13px;
+            outline: none;
+        }}
+        QTreeView#folderTree QScrollBar:vertical {{
+            width: 8px;
+        }}
+        QTreeView#folderTree::item, QListWidget#favoritesList::item {{
+            min-height: 25px;
+            padding: 2px 7px;
+            border-radius: 6px;
+            margin: 1px 0px;
+        }}
+        QTreeView#folderTree::item:selected, QListWidget#favoritesList::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QTreeView::branch {{
+            background: transparent;
+        }}
+        QTreeView#folderTree::branch:selected {{
+            background: transparent;
+        }}
+        QTableView#detailsTableView {{
+            background-color: {theme.chrome_bg.css};
+            alternate-background-color: {theme.panel_alt_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 6px;
+            color: {theme.text_primary.css};
+            gridline-color: transparent;
+            outline: none;
+            selection-background-color: {theme.selection_fill.css};
+            selection-color: {theme.text_primary.css};
+        }}
+        QTableView#detailsTableView QTableCornerButton::section {{
+            background-color: {theme.panel_alt_bg.css};
+            border: none;
+            border-top-left-radius: 6px;
+            border-bottom: 1px solid {theme.border.css};
+        }}
+        QTableView#detailsTableView QHeaderView::section:first {{
+            border-top-left-radius: 6px;
+        }}
+        QTableView#detailsTableView QHeaderView::section:last {{
+            border-top-right-radius: 6px;
+        }}
+        QTableView#detailsTableView QHeaderView::section {{
+            min-height: 38px;
+            padding-top: 6px;
+            padding-bottom: 4px;
+        }}
+        QTableView#detailsTableView::item {{
+            border: none;
+            padding: 5px 8px;
+        }}
+        QTableView#detailsTableView::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QLabel#detailsStatusStrip {{
+            background-color: {theme.chrome_bg.css};
+            border-top: 1px solid {theme.border_muted.css};
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            padding: 4px 8px;
+        }}
+        QHeaderView::section {{
+            background-color: {theme.panel_alt_bg.css};
+            color: {theme.text_secondary.css};
+            border: none;
+            border-bottom: 1px solid {theme.border.css};
+            padding: 6px 8px;
+        }}
+        QWidget#summaryStrip {{
+            background-color: {theme.panel_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 12px;
+        }}
+        QWidget#workspaceBar {{
+            background-color: {theme.toolbar_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+        }}
+        QFrame#workspaceBarDivider {{
+            background-color: {theme.border_muted.css};
+            border: none;
+            min-width: 1px;
+            max-width: 1px;
+            min-height: 24px;
+            margin: 2px 0px;
+        }}
+        QWidget#workspaceBarChrome {{
+            background-color: transparent;
+            border: none;
+        }}
+        QLabel#workspaceBarDragHandle {{
+            color: {theme.text_muted.css};
+            font-size: 14px;
+            font-weight: 700;
+            padding: 0px 2px;
+        }}
+        QLabel#workspaceBarDragHandle:hover {{
+            color: {theme.text_secondary.css};
+        }}
+        QFrame#toolbarEditOverlay {{
+            background-color: rgba(0, 0, 0, 132);
+            border: 1px solid {theme.accent_soft.css};
+            border-radius: 12px;
+        }}
+        QFrame#toolbarEditHud {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.accent_soft.css};
+            border-radius: 9px;
+        }}
+        QFrame#toolbarEditHudMarker {{
+            background-color: {theme.accent.css};
+            border: none;
+            border-radius: 2px;
+        }}
+        QLabel#toolbarEditHudHint {{
+            color: {theme.text_primary.css};
+            font-family: {UI_FONT_STACK};
+            font-size: 13px;
+            font-weight: 700;
+            padding-right: 8px;
+        }}
+        QFrame#toolbarEditHud QPushButton {{
+            border: 1px solid {theme.border.css};
+            border-radius: 6px;
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 650;
+            min-height: 28px;
+            padding: 2px 13px;
+        }}
+        QPushButton#toolbarEditHudAdd {{
+            background-color: {theme.panel_alt_bg.css};
+            border-color: {theme.accent_soft.css};
+            color: {theme.accent.css};
+        }}
+        QPushButton#toolbarEditHudAdd:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.accent.css};
+        }}
+        QPushButton#toolbarEditHudReset {{
+            background-color: {theme.panel_alt_bg.css};
+        }}
+        QPushButton#toolbarEditHudReset:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.text_muted.css};
+        }}
+        QPushButton#toolbarEditHudDone {{
+            background-color: {theme.accent.css};
+            border-color: {theme.accent.css};
+            color: {theme.window_bg.css};
+        }}
+        QPushButton#toolbarEditHudDone:hover {{
+            background-color: {theme.accent_hover.css};
+            border-color: {theme.accent_hover.css};
+        }}
+        QFrame#toolbarEditHud QPushButton:focus {{
+            border-color: {theme.selection_outline.css};
+        }}
+        QDialog#toolbarCustomizerDialog {{
+            background-color: {theme.window_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QScrollArea#toolbarCustomizerPreviewScroll {{
+            background-color: transparent;
+            border: none;
+        }}
+        QFrame#toolbarCustomizerPreviewHost {{
+            background-color: transparent;
+            border: none;
+        }}
+        QFrame#toolbarCustomizerPreviewBar {{
+            background-color: {theme.toolbar_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 12px;
+        }}
+        QPushButton#toolbarCustomizerPreviewButton {{
+            background-color: {theme.input_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.text_primary.css};
+            font-weight: 600;
+            min-height: 28px;
+            padding: 4px 12px;
+        }}
+        QPushButton#toolbarCustomizerPreviewButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+        }}
+        QPushButton#toolbarCustomizerPreviewButton:checked {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.css};
+        }}
+        QFrame#toolbarEditSidebar {{
+            background-color: {theme.panel_bg.with_alpha(232).css};
+            border: 1px solid {theme.border.css};
+            border-radius: 10px;
+            min-width: 170px;
+            max-width: 210px;
+        }}
+        QFrame#toolbarEditContent {{
+            background-color: rgba(0, 0, 0, 0);
+            border: none;
+        }}
+        QFrame#toolbarEditChip {{
+            background-color: {theme.panel_bg.with_alpha(218).css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+        }}
+        QLabel#toolbarEditTitle {{
+            color: {theme.text_primary.css};
+            font-size: 12px;
+            font-weight: 700;
+        }}
+        QLabel#toolbarEditHint {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+        }}
+        QToolButton#toolbarEditAddButton, QToolButton#toolbarEditModeButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.text_primary.css};
+            min-height: 24px;
+            padding: 2px 8px;
+        }}
+        QToolButton#toolbarEditModeButton:checked {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.css};
+        }}
+        QToolButton#toolbarEditMoveButton, QToolButton#toolbarEditRemoveButton {{
+            background-color: {theme.raised_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 7px;
+            color: {theme.text_primary.css};
+            min-width: 18px;
+            max-width: 18px;
+            min-height: 18px;
+            max-height: 18px;
+            padding: 0px;
+        }}
+        QToolButton#toolbarEditRemoveButton {{
+            background-color: {theme.danger_soft.css};
+            border-color: {theme.danger.css};
+        }}
+        QPushButton#toolbarEditPaletteButton, QPushButton#toolbarEditResetButton, QPushButton#toolbarEditDoneButton {{
+            border-radius: 8px;
+            min-height: 24px;
+            padding: 3px 8px;
+            text-align: left;
+        }}
+        QPushButton#toolbarEditDoneButton {{
+            background-color: {theme.accent_soft.css};
+            border-color: {theme.accent.css};
+        }}
+        QWidget#workspaceControls {{
+            background-color: transparent;
+            border: none;
+        }}
+        QLabel#paneTitle {{
+            color: {theme.text_primary.css};
+            font-family: "Segoe UI Variable Display", {UI_FONT_STACK};
+            font-size: 13px;
+            font-weight: 750;
+            letter-spacing: 0px;
+            padding: 0 1px 2px 1px;
+        }}
+        QLabel#panelHeaderSubtitle {{
+            color: {theme.text_muted.css};
+            font-size: 11px;
+            font-weight: 600;
+            padding: 0 1px;
+        }}
+        QToolButton#workspacePanelButton, QToolButton#workspacePanelCloseButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: {metrics.radius_7}px;
+            color: {theme.text_secondary.css};
+            font-family: "Segoe UI Symbol", "Segoe UI Variable Display", {UI_FONT_STACK};
+            font-size: 13px;
+            font-weight: 600;
+            padding: 0px;
+        }}
+        QToolButton#workspacePanelButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#workspacePanelButton:pressed {{
+            background-color: {theme.accent_soft.css};
+        }}
+        QToolButton#workspacePanelButton:focus,
+        QToolButton#workspacePanelCloseButton:focus {{
+            border-color: {theme.selection_outline.css};
+        }}
+        QToolButton#zenMenuPinButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 0px;
+            color: {theme.text_secondary.css};
+            margin: 2px 10px 2px 6px;
+            min-width: 30px;
+            min-height: 30px;
+            padding: 0px;
+        }}
+        QToolButton#zenMenuPinButton:hover {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#zenMenuPinButton:checked {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.text_primary.css};
+        }}
+        QWidget#menuCornerWidget {{
+            background-color: transparent;
+        }}
+        QToolButton#updateDownloadButton {{
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            color: {theme.text_muted.css};
+            margin: 1px 2px 1px 4px;
+            padding: 0px;
+        }}
+        QToolButton#updateDownloadButton:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: {theme.border.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#updateDownloadButton[updateAvailable="true"] {{
+            background-color: transparent;
+            border-color: transparent;
+            color: {theme.success.css};
+        }}
+        QToolButton#updateDownloadButton[updateAvailable="true"]:hover {{
+            background-color: {theme.input_hover_bg.css};
+            border-color: transparent;
+            color: {theme.success.css};
+        }}
+        QLabel#zenHintOverlay {{
+            background-color: {theme.badge_bg.css};
+            border: 1px solid {theme.border.css};
+            border-radius: 8px;
+            color: {theme.badge_text.css};
+            font-size: 12px;
+            font-weight: 650;
+            padding: 7px 12px;
+        }}
+        QToolButton#workspacePanelCloseButton:hover {{
+            background-color: {theme.danger_soft.css};
+            border-color: {theme.danger.css};
+            color: {theme.text_primary.css};
+        }}
+        QToolButton#workspacePanelCloseButton:pressed {{
+            background-color: {theme.danger_soft.css};
+            color: {theme.danger.css};
+        }}
+        QWidget#navSectionHeader {{
+            background-color: transparent;
+            border: none;
+            min-height: 40px;
+            padding: 0px 8px;
+        }}
+        QWidget#navSectionHeader[sectionRole="projects"] {{
+            border-top: 1px solid {theme.border_muted.css};
+            min-height: 36px;
+            padding-top: 0px;
+        }}
+        QWidget#navSectionHeader:hover QLabel#navSectionTitle {{
+            color: {theme.text_primary.css};
+        }}
+        /* Match the mode tabs while retaining enough weight to outrank rows. */
+        QLabel#navSectionTitle {{
+            color: {theme.text_primary.css};
+            font-size: 16px;
+            font-weight: 555;
+        }}
+        /* Rows hug their 34px portrait; the custom widget owns the columns for
+           the name, count, and trailing navigation chevron. */
+        QListWidget#faceGroupsList::item {{
+            min-height: 38px;
+            padding: 0px;
+            margin: 0px;
+            border-radius: 6px;
+        }}
+        QListWidget#projectsList::item {{
+            min-height: 32px;
+            padding: 1px 10px 1px 38px;
+            margin: 0px;
+        }}
+        QListWidget#faceGroupsList, QListWidget#projectsList {{
+            background-color: transparent;
+            border: none;
+            outline: none;
+            font-size: 14px;
+        }}
+        QListWidget#faceGroupsList::item:selected,
+        QListWidget#projectsList::item:selected {{
+            background-color: {theme.selection_fill.css};
+            color: {theme.text_primary.css};
+        }}
+        QListWidget#faceGroupsList::item:hover:!selected,
+        QListWidget#projectsList::item:hover:!selected {{
+            background-color: {theme.input_hover_bg.css};
+            color: {theme.text_primary.css};
+        }}
+        QListWidget#faceGroupsList::item:disabled,
+        QListWidget#projectsList::item:disabled {{
+            background-color: transparent;
+            color: {theme.text_muted.css};
+            font-size: 12px;
+            padding: 3px 10px;
+        }}
+        QLineEdit#faceGroupsSearch {{
+            background-color: {theme.input_hover_bg.css};
+            border: 1px solid {theme.border_muted.css};
+            border-radius: 7px;
+            color: {theme.text_primary.css};
+            font-size: 13px;
+            min-height: 34px;
+            padding: 0px 8px;
+        }}
+        QLineEdit#faceGroupsSearch:focus {{
+            border-color: {theme.accent.css};
+        }}
+        QLabel#sectionLabel {{
+            color: {theme.text_muted.css};
+            font-size: 13px;
+            font-weight: 500;
+            padding: 0 2px;
+        }}
         QListWidget#settingsSectionList {{
             background-color: {theme.panel_alt_bg.css};
             border: none;

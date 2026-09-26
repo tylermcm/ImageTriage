@@ -225,6 +225,7 @@ from .phash_prefilter import (
     load_phash_prefilter_decisions,
 )
 from .file_ops import FileMove, copy_paths, create_folder, delete_folder, move_folder, move_paths, rename_bundle_paths, rename_folder, unique_destination
+from .transfer_progress import TransferItem, run_move_transfer
 from .filtering import (
     AIStateFilter,
     FileTypeFilter,
@@ -2613,6 +2614,7 @@ class MainWindow(QMainWindow):
     WORKFLOW_PRESETS_KEY = "workflow/presets"
     CATALOG_CACHE_ENABLED_KEY = "catalog/cache_enabled"
     CATALOG_WATCH_CURRENT_FOLDER_KEY = "catalog/watch_current_folder"
+    RESTORE_FOLDER_POSITION_KEY = "view/restore_folder_position"
     AI_EMBED_BATCH_SIZE_KEY = "ai/embed_batch_size"
     AI_DINO_WORKER_COUNT_KEY = "ai/dino_prefilter/workers"
     AI_REVIEW_DETAIL_PROGRESS_KEY = "ai/review_detail_progress"
@@ -3157,6 +3159,7 @@ class MainWindow(QMainWindow):
         self._pending_quick_view_path = self._startup_launch_target if self._quick_view_mode else ""
         self._quick_view_source_overrides: dict[str, str] = {}
         self._pending_folder_focus_path = ""
+        self._pending_focus_scroll_top = False
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
         self._settings = QSettings()
@@ -3601,6 +3604,7 @@ class MainWindow(QMainWindow):
         self._settings.remove(self.LEGACY_TOOLBAR_STYLE_KEY)
         self._catalog_cache_enabled = self._settings.value(self.CATALOG_CACHE_ENABLED_KEY, True, bool)
         self._watch_current_folder_enabled = self._settings.value(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, True, bool)
+        self._restore_folder_position_enabled = self._settings.value(self.RESTORE_FOLDER_POSITION_KEY, True, bool)
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(
             self._settings.value(self.AI_EMBED_BATCH_SIZE_KEY, self.AI_EMBED_BATCH_SIZE_AUTO, int)
         )
@@ -3906,6 +3910,18 @@ class MainWindow(QMainWindow):
         folders_layout.addSpacing(6)
         folders_layout.addWidget(self.folders_header)
         folders_layout.addWidget(self.folder_tree, 1)
+        folders_layout.addStretch(0)
+        folders_spacer_index = folders_layout.count() - 1
+
+        def sync_folders_stretch(_visible: bool = True) -> None:
+            # Whichever list is open absorbs the free height; when both are
+            # collapsed the spacer does, so headers stack at the top.
+            tree_open = self.folder_tree.isVisibleTo(folders_page)
+            folders_layout.setStretchFactor(self.folder_tree, 1 if tree_open else 0)
+            folders_layout.setStretch(folders_spacer_index, 0 if tree_open else 1)
+
+        self.drives_header.toggled.connect(sync_folders_stretch)
+        self.folders_header.toggled.connect(sync_folders_stretch)
 
         faces_page = self._build_left_nav_page()
         faces_layout = faces_page.layout()
@@ -4624,7 +4640,26 @@ class MainWindow(QMainWindow):
         field.setMinimumWidth(140)
         field.setMaximumWidth(320)
         field.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
+        field.returnPressed.connect(lambda target=field: self._open_directory_from_search(target))
         return field
+
+    def _open_directory_from_search(self, field: QLineEdit) -> None:
+        """Enter on a folder path in a search box opens that folder."""
+        raw = field.text().strip().strip('"')
+        if not raw:
+            return
+        explicit = bool(re.match(r"^(?:[A-Za-z]:|\\|~)", raw))
+        if not explicit and "/" not in raw and "\\" not in raw:
+            return
+        candidate = normalize_filesystem_path(os.path.expanduser(raw))
+        if candidate and os.path.isfile(candidate):
+            candidate = os.path.dirname(candidate)
+        if not candidate or not os.path.isdir(candidate):
+            if explicit:
+                self.statusBar().showMessage(f"Folder not found: {raw}")
+            return
+        field.clear()
+        self._select_folder(candidate)
 
     def _build_path_combo(self, *, mode: str) -> QComboBox:
         combo = QComboBox()
@@ -6614,10 +6649,10 @@ class MainWindow(QMainWindow):
         for tree in (getattr(self, "folder_tree", None), getattr(self, "drive_list", None)):
             if not isinstance(tree, FolderTreeView):
                 continue
-            tree.set_navigation_colors(
-                theme.selection_fill.qcolor(),
-                theme.input_hover_bg.qcolor(),
-            )
+            selected_fill = theme.selection_fill.qcolor()
+            hovered_fill = QColor(selected_fill)
+            hovered_fill.setAlpha(max(1, selected_fill.alpha() // 2))
+            tree.set_navigation_colors(selected_fill, hovered_fill)
             # Drive meters: accent into the backdrop's second glow when the
             # theme has one (Indigo: violet into teal), plain accent otherwise.
             fill_start = theme.meter_start.qcolor() if theme.meter_start else accent
@@ -9145,9 +9180,13 @@ class MainWindow(QMainWindow):
             normalized = normalize_shortcut_text(shortcut)
             target.apply(normalized)
         if self.actions is not None and hasattr(self, "grid"):
+            # The actions carry no default key, so an empty sequence here used to
+            # blank the grid's built-in W / X binds.
+            accept_key = self.actions.accept_selection.shortcut()
+            reject_key = self.actions.reject_selection.shortcut()
             self.grid.set_review_action_shortcuts(
-                self.actions.accept_selection.shortcut(),
-                self.actions.reject_selection.shortcut(),
+                accept_key if not accept_key.isEmpty() else QKeySequence("W"),
+                reject_key if not reject_key.isEmpty() else QKeySequence("X"),
             )
 
     def _apply_command_palette_shortcut(self, shortcut: str) -> None:
@@ -12008,6 +12047,8 @@ class MainWindow(QMainWindow):
         if self._zen_mode_enabled:
             self._set_zen_mode(False)
         self._remember_current_folder_view_state()
+        if self.grid.zoom_mode() == "column":
+            self._settings.setValue(self.VIEW_COLUMNS_KEY, self.grid.current_columns())
         self._folder_watch_refresh_timer.stop()
         if self._folder_watcher.directories():
             self._folder_watcher.removePaths(list(self._folder_watcher.directories()))
@@ -12357,6 +12398,7 @@ class MainWindow(QMainWindow):
         if isinstance(cache, dict):
             cache.clear()
         self.drive_list.viewport().update()
+        self._refresh_folder_tree()
         self._drive_list_fit_timer.start()
 
     @staticmethod
@@ -13912,10 +13954,66 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_folder_tree(self) -> None:
-        current_root = self.folder_model.rootPath()
-        self.folder_model.setRootPath("")
-        if current_root:
-            self.folder_model.setRootPath(current_root)
+        """Re-read the folder tree from disk.
+
+        QFileSystemModel never re-lists a directory it has already populated,
+        and its watcher does not fire on network shares, so new folders stayed
+        invisible. Swapping in a fresh model is the only reliable re-read; the
+        root, expanded branches and current selection are put back afterwards.
+        """
+        tree = self.folder_tree
+        old_model = self.folder_model
+        root_path = old_model.filePath(tree.rootIndex()) if tree.rootIndex().isValid() else ""
+        current_path = old_model.filePath(tree.currentIndex()) if tree.currentIndex().isValid() else ""
+        drive_path = (
+            old_model.filePath(self.drive_list.currentIndex())
+            if self.drive_list.currentIndex().isValid()
+            else ""
+        )
+        expanded: list[str] = []
+
+        def collect(parent: QModelIndex) -> None:
+            for row in range(old_model.rowCount(parent)):
+                child = old_model.index(row, 0, parent)
+                if tree.isExpanded(child):
+                    expanded.append(old_model.filePath(child))
+                    collect(child)
+
+        collect(tree.rootIndex())
+
+        new_model = QFileSystemModel(self)
+        new_model.setFilter(self._folder_tree_filter())
+        new_model.setRootPath("")
+        self.folder_model = new_model
+        tree.setModel(new_model)
+        self.drive_list.setModel(new_model)
+        self.drive_list.setRootIndex(QModelIndex())
+        for column in range(1, new_model.columnCount()):
+            tree.hideColumn(column)
+            self.drive_list.hideColumn(column)
+        new_model.rowsInserted.connect(lambda *_args: self._drive_list_fit_timer.start())
+        new_model.rowsRemoved.connect(lambda *_args: self._drive_list_fit_timer.start())
+        new_model.layoutChanged.connect(lambda *_args: self._drive_list_fit_timer.start())
+        old_model.deleteLater()
+
+        if root_path:
+            root_index = new_model.index(root_path)
+            if root_index.isValid():
+                tree.setRootIndex(root_index)
+        for path in expanded:
+            index = new_model.index(path)
+            if index.isValid():
+                tree.expand(index)
+        if current_path:
+            index = new_model.index(current_path)
+            if index.isValid():
+                tree.setCurrentIndex(index)
+        if drive_path:
+            drive_index = new_model.index(drive_path)
+            if drive_index.isValid():
+                self.drive_list.setCurrentIndex(drive_index)
+        self._sync_drive_sections()
+        self._drive_list_fit_timer.start()
 
     def _handle_sort_changed(self) -> None:
         selected = self._selected_sort_mode()
@@ -19094,9 +19192,9 @@ class MainWindow(QMainWindow):
 
     def _current_folder_view_state(self) -> dict[str, object]:
         state: dict[str, object] = {
-            "columns": self._normalize_column_count(self.columns_combo.currentData()),
             "sort": self._sort_mode.value,
             "scroll": max(0, int(self.grid.current_scroll_value())),
+            "current": self._pending_folder_focus_path or self._current_visible_record_path() or "",
         }
         return state
 
@@ -19113,17 +19211,11 @@ class MainWindow(QMainWindow):
 
     def _apply_folder_view_state(self, folder: str) -> None:
         state = self._folder_view_states.get(_memory_path_key(folder))
+        self._pending_focus_scroll_top = False
         if not state:
             self._pending_folder_scroll_value = None
             return
-        columns = self._normalize_column_count(state.get("columns"))
-        combo_index = self.columns_combo.findData(columns)
-        if combo_index >= 0:
-            with QSignalBlocker(self.columns_combo):
-                self.columns_combo.setCurrentIndex(combo_index)
-        self.grid.set_column_count(columns)
-        self._sync_zoom_slider_from_grid()
-
+        # Column count / zoom is program-wide, not per folder.
         sort_mode = self._sort_mode_from_state(state.get("sort"))
         if sort_mode is not None:
             self._sort_mode = sort_mode
@@ -19131,10 +19223,24 @@ class MainWindow(QMainWindow):
             if combo_index >= 0:
                 with QSignalBlocker(self.sort_combo):
                     self.sort_combo.setCurrentIndex(combo_index)
+        if not self._restore_folder_position_enabled:
+            self._pending_folder_scroll_value = None
+            return
+        saved_current = str(state.get("current") or "")
+        if saved_current and not self._pending_folder_focus_path:
+            self._pending_folder_focus_path = normalize_filesystem_path(saved_current)
+            self._pending_focus_scroll_top = True
+            self._pending_folder_scroll_value = None
+            return
         try:
             self._pending_folder_scroll_value = max(0, int(state.get("scroll", 0)))
         except (TypeError, ValueError):
             self._pending_folder_scroll_value = None
+
+    def _scroll_current_to_top(self, path: str) -> None:
+        index = self._record_index_by_path.get(path)
+        if index is not None:
+            self.grid.scroll_index_to_top(index)
 
     def _restore_pending_folder_scroll(self) -> None:
         if self._pending_folder_scroll_value is None:
@@ -25630,6 +25736,7 @@ class MainWindow(QMainWindow):
             burst_stacks_enabled=self._burst_stacks_enabled,
             catalog_cache_enabled=self._catalog_cache_enabled,
             watch_current_folder=self._watch_current_folder_enabled,
+            restore_folder_position=self._restore_folder_position_enabled,
             check_updates_on_startup=self._check_updates_on_startup,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
             ai_dino_worker_count=self._ai_dino_worker_count_setting,
@@ -25713,6 +25820,7 @@ class MainWindow(QMainWindow):
         self._burst_stacks_enabled = result.burst_stacks_enabled
         self._catalog_cache_enabled = result.catalog_cache_enabled
         self._watch_current_folder_enabled = result.watch_current_folder
+        self._restore_folder_position_enabled = result.restore_folder_position
         self._check_updates_on_startup = result.check_updates_on_startup
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
         self._ai_dino_worker_count_setting = clamp_ai_dataloader_workers(
@@ -25757,6 +25865,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.BURST_STACKS_KEY, self._burst_stacks_enabled)
         self._settings.setValue(self.CATALOG_CACHE_ENABLED_KEY, self._catalog_cache_enabled)
         self._settings.setValue(self.CATALOG_WATCH_CURRENT_FOLDER_KEY, self._watch_current_folder_enabled)
+        self._settings.setValue(self.RESTORE_FOLDER_POSITION_KEY, self._restore_folder_position_enabled)
         self._settings.setValue(self.CHECK_UPDATES_ON_STARTUP_KEY, self._check_updates_on_startup)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
         self._settings.setValue(self.AI_DINO_WORKER_COUNT_KEY, self._ai_dino_worker_count_setting)
@@ -26961,12 +27070,51 @@ class MainWindow(QMainWindow):
         return copied
 
     def _move_records_by_paths(self, primary_paths: list[str], destination_dir: str) -> int:
+        items: list[TransferItem] = []
+        records: dict[int, ImageRecord] = {}
+        for position, path in enumerate(primary_paths):
+            index = self._record_index_for_path(path)
+            record = self._record_at(index) if index is not None else None
+            if record is None:
+                continue
+            items.append(TransferItem(position, record.name, self._record_paths(record)))
+            records[position] = record
+        if not items:
+            return 0
+
+        result = run_move_transfer(
+            self, items, destination_dir, source_label=self._current_folder or ""
+        )
         moved = 0
-        for path in primary_paths:
-            if self._move_record_to_path(path, destination_dir):
-                moved += 1
+        for item in items:
+            moves = result.moved.get(item.key)
+            if moves is None:
+                continue
+            record = records[item.key]
+            self._rekey_annotation_after_move(record, moves)
+            self._push_undo(
+                UndoAction(
+                    kind="move",
+                    primary_path=record.path,
+                    file_moves=moves,
+                    folder=self._current_folder,
+                    session_id=self._session_id,
+                )
+            )
+            index = self._record_index_for_path(record.path)
+            if index is not None:
+                self._remove_record(index)
+            moved += 1
         if moved:
             self._remember_recent_destination(destination_dir)
+        if result.failed:
+            first_key = next(iter(result.failed))
+            QMessageBox.warning(
+                self,
+                "Move Failed",
+                f"Could not move {len(result.failed)} item(s)." + chr(10) + chr(10)
+                + f"{records[first_key].name}: {result.failed[first_key]}",
+            )
         return moved
 
     def _handle_record_drop(self, primary_paths: list[str], destination_dir: str, *, copy_requested: bool) -> None:
@@ -27740,6 +27888,9 @@ class MainWindow(QMainWindow):
                 if index != self.grid.current_index():
                     self.grid.set_current_index(index)
                 restored_current = True
+        if restored_current and self._pending_focus_scroll_top:
+            self._pending_focus_scroll_top = False
+            QTimer.singleShot(0, lambda path=current_path: self._scroll_current_to_top(path))
         if records and not restored_current and structural_changed:
             self.grid.set_current_index(0)
         step_start = log_step("records_view.finalize.current", step_start, restored_current=restored_current)
