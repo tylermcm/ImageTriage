@@ -477,8 +477,10 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
     excluded = {_path_key_fast(path) for path in record.stack_paths}
     candidates: list[ScannedFile] = []
 
-    def add_candidate(entry: os.DirEntry[str]) -> None:
-        scanned = to_scanned_file(entry, EDIT_SUFFIXES)
+    def add_candidate(entry: os.DirEntry[str], parent: str) -> None:
+        # parent is already normalized, so skip the per-file resolve() (one
+        # network round trip per file on UNC paths).
+        scanned = to_scanned_file(entry, EDIT_SUFFIXES, parent_folder=parent)
         if scanned is None or not edit_stem_matches(stem_key, scanned.stem_key):
             return
         if scanned.path_key in excluded:
@@ -489,12 +491,12 @@ def discover_edited_paths(record: ImageRecord) -> tuple[str, ...]:
         with os.scandir(folder) as entries:
             for entry in entries:
                 if entry.is_file(follow_symlinks=False):
-                    add_candidate(entry)
+                    add_candidate(entry, str(folder))
                 elif entry.is_dir(follow_symlinks=False) and entry.name.lower() in EDIT_DIRECTORIES:
                     with os.scandir(entry.path) as child_entries:
                         for child in child_entries:
                             if child.is_file(follow_symlinks=False):
-                                add_candidate(child)
+                                add_candidate(child, entry.path)
     except OSError:
         return ()
 
