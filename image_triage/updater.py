@@ -22,6 +22,7 @@ DEFAULT_UPDATE_FEED_URL = "https://api.github.com/repos/tylermcm/ImageTriage/rel
 UPDATE_FEED_URL_ENV = "IMAGE_TRIAGE_UPDATE_FEED_URL"
 UPDATER_USER_AGENT = f"ImageTriage/{__version__} Updater"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+_SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
 DownloadProgressCallback = Callable[[int, int, str], None]
 
@@ -34,6 +35,11 @@ class UpdateInfo:
     sha256: str = ""
     title: str = ""
     summary: str = ""
+
+    @property
+    def is_verifiable(self) -> bool:
+        """Only an update with a well-formed published SHA-256 may be installed."""
+        return bool(_SHA256_PATTERN.fullmatch(_normalize_sha256(self.sha256)))
 
     @property
     def installer_filename(self) -> str:
@@ -104,6 +110,11 @@ def download_update_installer(
     destination_dir: str | Path | None = None,
     progress_callback: DownloadProgressCallback | None = None,
 ) -> Path:
+    if not update.is_verifiable:
+        raise RuntimeError(
+            "This update does not publish a valid SHA-256 checksum, so it cannot be verified "
+            "and will not be downloaded or installed."
+        )
     destination_root = Path(destination_dir) if destination_dir is not None else Path(tempfile.gettempdir()) / "ImageTriageUpdates"
     destination_root.mkdir(parents=True, exist_ok=True)
     filename = _safe_filename(update.installer_filename)
@@ -135,12 +146,11 @@ def download_update_installer(
         _remove_partial_download(temp_destination)
         raise
 
-    if update.sha256:
-        digest = _sha256_file(temp_destination)
-        expected = _normalize_sha256(update.sha256)
-        if digest.casefold() != expected.casefold():
-            _remove_partial_download(temp_destination)
-            raise RuntimeError(f"Update checksum mismatch. Expected {expected}, got {digest}.")
+    digest = _sha256_file(temp_destination)
+    expected = _normalize_sha256(update.sha256)
+    if digest.casefold() != expected.casefold():
+        _remove_partial_download(temp_destination)
+        raise RuntimeError(f"Update checksum mismatch. Expected {expected}, got {digest}.")
 
     temp_destination.replace(destination)
     return destination

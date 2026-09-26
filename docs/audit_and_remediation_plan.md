@@ -797,7 +797,7 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 |---|---|---|---|---|
 | [ ] | U1 | Hidden menu, ~16 actions in no menu | P | 7.1 |
 | [ ] | U2 | Review keys (corrected N7) | P | 3.2 |
-| [ ] | U3 | `Ctrl+Alt+P` collision | P | 1.1 |
+| [x] | U3 | `Ctrl+Alt+P` collision (fixed in WI-1.1) | P | 1.1 |
 | [ ] | U4 | "Edited" semantics | B (D3) | 5.3 |
 | [ ] | U5 | Duplicates page scope | B (D7) | 4.3, 7.2 |
 | [ ] | U6 | Naming drift (Keeper/Winner intentional) | P / X | 7.2 |
@@ -822,7 +822,7 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | [ ] | E1 | No undo; disabled buttons | I | 5.1 |
 | [ ] | E2 | Edits siloed | B (D3) | 5.3 |
 | [ ] | E4 | CPU-only renderer | D | 8.4 |
-| [ ] | E5 | Header crash (reclassified as fixture) | P | 1.4 |
+| [x] | E5 | Header crash (reclassified as fixture) | P | 1.4 |
 | [ ] | E6 | Click-select add/subtract | P | 5.4 |
 
 ### Settings
@@ -846,8 +846,8 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 |---|---|---|---|---|
 | [ ] | P1 | Winner copy on UI thread | B (D4, 4.1) | 4.1c |
 | [ ] | P2 | Apply AI per-record view rebuild (also the move code) | B | 4.1b |
-| [ ] | P3 | Un-mark deletes blindly | I -> P | 1.2 |
-| [ ] | P4 | Updater hash optional | I (D14) | 1.3 |
+| [x] | P3 | Un-mark deletes blindly | I -> P | 1.2 |
+| [x] | P4 | Updater hash optional | I (D14) | 1.3 |
 | [ ] | P5 | Toolbar rebuild 472 ms | P | 8.1 |
 | [ ] | P6 | Startup / 1,301-line `__init__` | P / B | 8.1, 4.4 |
 | [x] | P7 | Discovery on shared pool (own 1-thread pool, done in WI-0.1) | P | 0.1 |
@@ -884,11 +884,11 @@ Nothing from the audit is dropped. Items judged intentional (A9 split, A12, A13 
 | Done | ID | Decision | Owner | Decided |
 |---|---|---|---|---|
 | [ ] | D1 | Where AI results appear (opt-in setting, inspector only, or dedicated surface) | user | |
-| [ ] | D2 | Fate of legacy engine and DINO | user | |
+| [x] | D2 | Fate of legacy engine and DINO | user | **Decided 2026-09-26: delete.** No archive branch or tag (deliberately unrecoverable) |
 | [ ] | D3 | Meaning of "Edited"; edits in thumbnails and exports | user | |
-| [ ] | D4 | Winner handling defaults and async semantics | user | |
+| [x] | D4 | Winner handling defaults and async semantics | user | **Decided 2026-09-26: keep Copy as an option; the rest is delegated.** Default for new installs and async-with-error-notice are my call at WI-4.1c (link/symlink option stays available for cross-folder collections) |
 | [ ] | D5 | The word "Session" | user | |
-| [ ] | D6 | Shortcut scope; owner of `Ctrl+Alt+P` | user | |
+| [x] | D6 | Shortcut scope; owner of `Ctrl+Alt+P` | user | **Decided 2026-09-26: fully rebindable (including review keys); PocketDrop keeps `Ctrl+Alt+P`.** Next AI Top Pick moved to `Ctrl+Alt+N` (WI-1.1); full rebinding lands in WI-3.2 |
 | [ ] | D7 | Meaning and scope of "Duplicates" | user | |
 | [ ] | D8 | "Catalog" vs "Library" naming | user | |
 | [ ] | D9 | AI v4 direction and AI entry points | user | |
@@ -896,7 +896,7 @@ Nothing from the audit is dropped. Items judged intentional (A9 split, A12, A13 
 | [ ] | D11 | WinUI migration stashes | user | |
 | [ ] | D12 | Editor undo scope | user | |
 | [ ] | D13 | UI prototype in the product | user | |
-| [ ] | D14 | Updater integrity policy | user | |
+| [x] | D14 | Updater integrity policy | user | **Decided 2026-09-26: require a verified hash** |
 | [ ] | D15 | Platform support (Linux/macOS) | user | |
 
 ## 9. Recommended starting point
@@ -988,3 +988,33 @@ No code was modified while producing this plan. The only actions were reads (cod
 - N22: Building `MainWindow` applies an app-wide palette and stylesheet and leaves timers behind. Constructing several in one process is slow (72 s for one late in the suite), so tests must share one instance (the harness does).
 - N23: Two abandoned sandbox folders from killed runs remain in `%TEMP%` (`image_triage_tests_*`); safe to delete by hand.
 - N24: Linux CI is unverified; expect Windows-only assumptions (D15).
+
+### Decisions received (2026-09-26)
+- D2 delete the legacy engine; D4 keep Copy (default and async behaviour delegated to me); D6 fully rebindable, PocketDrop keeps `Ctrl+Alt+P`.
+
+### WI-1.1 `Ctrl+Alt+P` collision: DONE (2026-09-26, uncommitted)
+- `next_ai_pick` default changed to `Ctrl+Alt+N` in `ui/shortcuts.py` (the registry, which is what actually takes effect) and `ui/actions.py`; docs text updated (`ai_culling.py`, `reference.py`, two help texts in `window.py`). PocketDrop keeps `Ctrl+Alt+P`. No user override existed for this key on this machine.
+- The audit's pinned-conflict test was replaced by three guards: no two `MainWindowActions` share a default, no two registry defaults collide, and PocketDrop/next-AI-pick own the intended keys. Mutation check: restoring the duplicate in the registry makes 2 tests fail.
+- Suite: 1526 passed, 5 skipped, 15 xfailed, 0 failed.
+- Finding N25: the default literal in `ui/actions.py` is dead; `_apply_shortcut_overrides` overwrites it from the registry at startup. That is one more symptom of the two-store problem, fixed in WI-3.2. The runtime conflict checker in Settings still covers only the registry rows; extending it belongs with the D6 rebinding work (WI-3.2), not here.
+
+### WI-1.2 Winner un-mark safety: DONE (2026-09-26, uncommitted)
+- Investigation (read-only, from the catalog database, no NAS access): 6 `_winners` folders are cataloged; the 75 files in them all match their parent folder by name and size. No user-added files were found, so the new rule strands nothing that exists today.
+- Change (`window.py`): un-marking now deletes `_winners/<name>` only if it is provably Image Triage's own artifact: a symlink resolving to the source, the same file (hard link), or a copy with the same size and a modification time within 2 s of the source. Otherwise the file is left alone, and the status bar says `Winner removed: <name> (left <file> in _winners: not a copy Image Triage made)`. If the source no longer exists the copy cannot be proven, so it is kept. `_sync_winner_copy(_for_paths)` now returns the names it kept.
+- Behavioural consequence to know about: a copy whose source was modified after marking is now left behind (with the message) rather than deleted. Edits made in the popout do not modify sources, so this should be rare.
+- Tests: the audit hazard test was inverted, and five provenance tests plus a status-message test were added. Mutation check (treat everything as ours): 4 tests fail. Suite: 1531 passed, 5 skipped, 15 xfailed, 0 failed.
+- Not changed: reject/undo/AI-apply callers still ignore the returned "kept" list (no message there), and the async/error-notice behaviour is still WI-4.1c.
+
+### Decisions received (2026-09-26, second batch)
+- D2 confirmed: **delete the legacy engine, no archive branch or tag.** It was deliberately dead and is meant to be unrecoverable. WI-2.4 therefore deletes with no safety branch; the ledger (WI-2.1) still records what was removed and the evidence it was unreferenced.
+- D14: **require a verified hash.** No checksum, no install.
+
+### WI-1.3 Updater integrity: DONE (2026-09-26, uncommitted)
+- Investigation: the live feed (`api.github.com/repos/tylermcm/ImageTriage/releases/latest`) publishes `digest: sha256:...` on its MSI asset, so requiring it does not block the current release.
+- Change (`updater.py`): `UpdateInfo.is_verifiable` (well-formed 64-hex SHA-256). `download_update_installer` now **refuses before any network call** when it is not, and always verifies the hash after download (mismatch still deletes the partial file). `window.py`: when an update is found but unverifiable, the prompt explains why and links the release page instead of offering a download that would fail.
+- Tests: no-checksum is refused with zero network access and no files, malformed checksums are unverifiable, a GitHub payload without a digest is unverifiable, and the window prompt refuses or offers accordingly. Mutation check (removing the guard) fails the test. Suite: 1536 passed, 5 skipped, 15 xfailed, 0 failed.
+- Behavioural consequence: a manifest feed (`IMAGE_TRIAGE_UPDATE_FEED_URL`) or an older release with no digest can no longer be installed through the updater. Assets uploaded before GitHub began computing digests would need re-uploading.
+- Finding N26: the latest release is tagged `V2` while its asset is `Image.Triage-2.1.1-win64.msi`, and the app is 2.2.1. The updater compares the tag digits, so `V2` reads as 2.0 and would never be seen as newer. Future releases need a `vMAJOR.MINOR.PATCH` tag. Not a code defect, but easy to trip on.
+
+### WI-1.4 Popout header fixture: DONE (completed within WI-0.3)
+- The fixture uses `EMPTY_METADATA` and `_update_mockup_image_info` falls back to `EMPTY_METADATA`; `test_preview_polling` passes. Nothing further to do.

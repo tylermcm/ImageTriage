@@ -117,7 +117,7 @@ ARTICLES = [
 
         ## Move through the picks
 
-        - `Ctrl+Alt+P` jumps to the next AI top pick.
+        - `Ctrl+Alt+N` jumps to the next AI top pick.
         - `Ctrl+Alt+G` compares the current AI group so you can choose the best frame.
 
         ## Reading the badges

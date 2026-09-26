@@ -25411,7 +25411,7 @@ class MainWindow(QMainWindow):
                 2. Open **`AI > AI Workflow Center...`** and run **Cull & Score**.
                 3. Wait for extraction, grouping, scoring, and report export to finish.
                 4. The app loads the new results and switches into **AI Review** automatically.
-                5. Press **`Ctrl+Alt+P`** to jump to the next AI top pick.
+                5. Press **`Ctrl+Alt+N`** to jump to the next AI top pick.
                 6. Press **`Ctrl+Alt+G`** to compare the current AI group.
                 7. Choose **`AI > Run And Apply > Apply AI Decisions`** to auto-file only the clearest winners and rejects.
                 8. Later, use **Load Saved** on the AI task rail, or find **Load Saved AI For Folder** in the Command Palette, to reopen cached results without rerunning the models.
@@ -25511,7 +25511,7 @@ class MainWindow(QMainWindow):
                 - Settings includes a **Settings Guide** button for General, Interface, folders, AI Culling, Duplicates, and Shortcuts
                 - **AI Review** lets you inspect results, apply clear decisions, or load saved results for the current folder
                 - **`Help > AI Guide`** is the dedicated walkthrough for the AI side of the app
-                - `Ctrl+Alt+P` jumps to the next AI top pick
+                - `Ctrl+Alt+N` jumps to the next AI top pick
                 - `Ctrl+Alt+G` compares the current AI group
                 """
             ),
@@ -25586,6 +25586,17 @@ class MainWindow(QMainWindow):
 
     def _prompt_for_update_download(self, result: UpdateCheckResult) -> None:
         latest = result.latest
+
+        if not latest.is_verifiable:
+            QMessageBox.warning(
+                self,
+                "Update Cannot Be Verified",
+                f"Image Triage {latest.version} is available, but this release does not publish a "
+                "checksum, so the installer cannot be verified and will not be downloaded."
+                + (f"{chr(10)}{chr(10)}Release page: {latest.release_notes_url}" if latest.release_notes_url else ""),
+            )
+            self.statusBar().showMessage("Update skipped: no checksum published")
+            return
 
         details = [
             f"Image Triage {latest.version} is available.",
@@ -26401,8 +26412,9 @@ class MainWindow(QMainWindow):
         if annotation.winner:
             annotation.reject = False
 
+        kept_in_winners: tuple[str, ...] = ()
         try:
-            self._sync_winner_copy(record, annotation.winner, self._current_folder)
+            kept_in_winners = self._sync_winner_copy(record, annotation.winner, self._current_folder)
         except OSError as exc:
             annotation.winner = previous_winner
             annotation.reject = previous_reject
@@ -26434,7 +26446,10 @@ class MainWindow(QMainWindow):
         if annotation.winner:
             self.statusBar().showMessage(f"Winner added: {record.name}")
         else:
-            self.statusBar().showMessage(f"Winner removed: {record.name}")
+            message = f"Winner removed: {record.name}"
+            if kept_in_winners:
+                message += f" (left {', '.join(kept_in_winners)} in _winners: not a copy Image Triage made)"
+            self.statusBar().showMessage(message)
         if logger.enabled:
             logger.duration("annotation.winner_toggle", (time.perf_counter() - start) * 1000.0, path=record.path, winner=annotation.winner, advance=should_advance)
 
@@ -28410,8 +28425,30 @@ class MainWindow(QMainWindow):
             if os.path.exists(source_path):
                 os.remove(source_path)
 
-    def _sync_winner_copy(self, record: ImageRecord, winner_enabled: bool, folder: str) -> None:
-        self._sync_winner_copy_for_paths(self._record_paths(record), winner_enabled, folder)
+    def _sync_winner_copy(self, record: ImageRecord, winner_enabled: bool, folder: str) -> tuple[str, ...]:
+        return self._sync_winner_copy_for_paths(self._record_paths(record), winner_enabled, folder)
+
+    @staticmethod
+    def _is_app_winner_artifact(source_path: str, destination: str) -> bool:
+        """True only when ``destination`` is provably the copy or link Image
+        Triage made of ``source_path``; a same-named file the user put there is
+        never treated as ours."""
+        try:
+            if os.path.islink(destination):
+                target = os.path.realpath(destination)
+                return os.path.normcase(target) == os.path.normcase(os.path.realpath(source_path))
+            if not os.path.exists(source_path):
+                return False
+            if os.path.samefile(source_path, destination):
+                return True
+            source_stat = os.stat(source_path)
+            copy_stat = os.stat(destination)
+            return (
+                source_stat.st_size == copy_stat.st_size
+                and abs(source_stat.st_mtime_ns - copy_stat.st_mtime_ns) <= 2_000_000_000
+            )
+        except OSError:
+            return False
 
     def _sync_winner_copy_for_paths(
         self,
@@ -28420,12 +28457,14 @@ class MainWindow(QMainWindow):
         folder: str,
         *,
         mode_override: WinnerMode | None = None,
-    ) -> None:
+    ) -> tuple[str, ...]:
+        """Returns the names of files left in ``_winners`` on un-mark because
+        they could not be proven to be Image Triage's own copy."""
         if self._is_winners_folder(folder):
-            return
+            return ()
         winner_mode = mode_override or self._winner_mode
         if winner_mode == WinnerMode.LOGICAL:
-            return
+            return ()
         destination_dir = os.path.join(folder, "_winners")
         if winner_enabled:
             os.makedirs(destination_dir, exist_ok=True)
@@ -28441,12 +28480,18 @@ class MainWindow(QMainWindow):
                     if os.path.exists(copied_path):
                         os.remove(copied_path)
                 raise exc
-            return
+            return ()
 
+        kept: list[str] = []
         for source_path in source_paths:
             destination = os.path.join(destination_dir, Path(source_path).name)
-            if os.path.exists(destination):
+            if not os.path.lexists(destination):
+                continue
+            if self._is_app_winner_artifact(source_path, destination):
                 os.remove(destination)
+            else:
+                kept.append(Path(destination).name)
+        return tuple(kept)
 
     def _create_winner_artifact(self, source_path: str, destination: str, winner_mode: WinnerMode) -> None:
         if winner_mode == WinnerMode.HARDLINK:
