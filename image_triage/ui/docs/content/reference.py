@@ -70,7 +70,7 @@ ARTICLES = [
 
         | Key | Action |
         | --- | --- |
-        | `Ctrl+Alt+P` | Next AI top pick |
+        | `Ctrl+Alt+N` | Next AI top pick |
         | `Ctrl+Alt+G` | Compare current AI group |
         | `Ctrl+Shift+W` | Open the AI Workflow Center |
         | `Ctrl+Shift+Y` | Quick Rerank an unchanged folder |

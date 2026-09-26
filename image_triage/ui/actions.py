@@ -446,7 +446,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Rank Folder With Local Adapter",
             slot=window._rank_aiculler_adapter,
         ),
-        next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+P"),
+        next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+N"),
         next_unreviewed_ai_pick=_create_action(
             window,
             "Next Unreviewed AI Top Pick",

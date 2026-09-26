@@ -42,7 +42,7 @@ SHORTCUT_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     # AI
     ("open_ai_workflow_center", "AI", "Ctrl+Shift+W", "AI Workflow Center..."),
     ("quick_rerank_ai_culling", "AI", "Ctrl+Shift+Y", "Quick Rerank"),
-    ("next_ai_pick", "AI", "Ctrl+Alt+P", "Next AI Top Pick"),
+    ("next_ai_pick", "AI", "Ctrl+Alt+N", "Next AI Top Pick"),
     ("compare_ai_group", "AI", "Ctrl+Alt+G", "Compare Current AI Group"),
     # Workflow / export
     ("handoff_builder", "Workflow", "Ctrl+Alt+H", "Deliver / Handoff Builder..."),

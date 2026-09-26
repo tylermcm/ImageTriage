@@ -1,11 +1,11 @@
 """Characterization of per-folder view state, restore-position, and both shortcut stores (WI-0.5)."""
 from __future__ import annotations
 
+import dataclasses
 import json
 
 from PySide6.QtCore import QSettings
 
-from image_triage.keyboard_mapping import shortcut_conflicts
 from image_triage.ui.shortcuts import (
     SHORTCUT_REGISTRY,
     load_shortcut_overrides,
@@ -134,11 +134,33 @@ def test_window_overrides_loader_survives_garbage(main_window) -> None:
         assert main_window._load_shortcut_overrides() == {}
 
 
-def test_window_bindings_have_a_known_conflict_on_ctrl_alt_p(main_window) -> None:
-    # Audit finding (WI-1.1): two commands share this default key. Pinned so the fix is visible.
-    conflicts = shortcut_conflicts(main_window._shortcut_bindings())
+def test_no_two_actions_share_a_default_shortcut(main_window) -> None:
+    from PySide6.QtGui import QAction
 
-    assert "Ctrl+Alt+P" in conflicts and len(conflicts["Ctrl+Alt+P"]) >= 2
+    owners: dict[str, list[str]] = {}
+    for field in dataclasses.fields(main_window.actions):
+        name, action = field.name, getattr(main_window.actions, field.name)
+        if not isinstance(action, QAction) or action.shortcut().isEmpty():
+            continue
+        owners.setdefault(action.shortcut().toString(), []).append(name)
+    duplicates = {key: names for key, names in owners.items() if len(names) > 1}
+
+    assert duplicates == {}
+
+
+def test_no_two_registry_defaults_collide() -> None:
+    defaults: dict[str, list[str]] = {}
+    for attr, _category, default, _display in SHORTCUT_REGISTRY:
+        if default:
+            defaults.setdefault(default, []).append(attr)
+
+    assert {k: v for k, v in defaults.items() if len(v) > 1} == {}
+
+
+def test_pocketdrop_owns_ctrl_alt_p_and_next_ai_pick_moved(main_window) -> None:
+    assert main_window.actions.share_to_phone.shortcut().toString() == "Ctrl+Alt+P"
+    assert main_window.actions.next_ai_pick.shortcut().toString() == "Ctrl+Alt+N"
+    assert dict((a, d) for a, _c, d, _n in SHORTCUT_REGISTRY)["next_ai_pick"] == "Ctrl+Alt+N"
 
 
 # ---- shortcut store B: ui/shortcuts.py (separate org, one key per action) -----------

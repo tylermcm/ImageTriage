@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 from image_triage import updater
 
@@ -141,6 +142,36 @@ class UpdaterTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
                 updater.download_update_installer(info, destination_dir=temp_dir)
             self.assertFalse((Path(temp_dir) / "ImageTriage-1.2.0.msi").exists())
+
+    def test_update_without_a_checksum_is_refused_before_any_download(self) -> None:
+        info = updater.UpdateInfo(version="1.2.0", installer_url="https://example.test/ImageTriage-1.2.0.msi")
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            updater.urllib.request, "urlopen", side_effect=AssertionError("must not touch the network")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cannot be verified"):
+                updater.download_update_installer(info, destination_dir=temp_dir)
+            self.assertEqual([], list(Path(temp_dir).iterdir()))
+
+    def test_a_malformed_checksum_counts_as_unverifiable(self) -> None:
+        for bad in ("", "abc", "z" * 64, "a" * 63, "sha256:" + "a" * 65):
+            info = updater.UpdateInfo(version="1", installer_url="https://example.test/a.msi", sha256=bad)
+            self.assertFalse(info.is_verifiable, bad)
+        good = updater.UpdateInfo(version="1", installer_url="https://example.test/a.msi", sha256="sha256:" + "A" * 64)
+        self.assertTrue(good.is_verifiable)
+
+    def test_github_release_without_a_digest_is_not_verifiable(self) -> None:
+        info = updater._update_info_from_github_release(
+            {
+                "tag_name": "v2.0.0",
+                "assets": [
+                    {"name": "Image Triage-2.0.0-win64.msi", "browser_download_url": "https://example.test/a.msi"}
+                ],
+            }
+        )
+
+        self.assertEqual("", info.sha256)
+        self.assertFalse(info.is_verifiable)
 
     def test_update_handoff_command_waits_installs_silently_and_restarts(self) -> None:
         command = updater._build_update_handoff_command(

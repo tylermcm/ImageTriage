@@ -65,16 +65,73 @@ def test_existing_winner_file_is_never_overwritten_on_mark(main_window, tmp_path
     assert (winners / "a.jpg").read_bytes() == b"a file that was already here"
 
 
-def test_HAZARD_unmark_deletes_any_same_named_file_in_winners(main_window, tmp_path) -> None:
-    # Current behaviour: un-marking removes whatever sits at _winners/<name>,
-    # even a file the app did not create. WI-1.2 exists to change this.
+def test_unmark_never_deletes_a_same_named_file_the_app_did_not_create(main_window, tmp_path) -> None:
     (src,) = make_jpegs(tmp_path, ["a.jpg"])
     winners = tmp_path / "_winners"
     winners.mkdir()
     (winners / "a.jpg").write_bytes(b"a different photo that shares the name")
-    _sync(main_window, [src], False, tmp_path, WinnerMode.COPY)
+    main_window._winner_mode = WinnerMode.COPY
 
-    assert not (winners / "a.jpg").exists()
+    kept = main_window._sync_winner_copy_for_paths((src,), False, str(tmp_path))
+
+    assert (winners / "a.jpg").read_bytes() == b"a different photo that shares the name"
+    assert kept == ("a.jpg",)
+
+
+def test_unmark_keeps_a_copy_whose_content_size_no_longer_matches_the_source(main_window, tmp_path) -> None:
+    (src,) = make_jpegs(tmp_path, ["a.jpg"])
+    _sync(main_window, [src], True, tmp_path, WinnerMode.COPY)
+    (tmp_path / "_winners" / "a.jpg").write_bytes(b"edited elsewhere")
+
+    kept = main_window._sync_winner_copy_for_paths((src,), False, str(tmp_path))
+
+    assert kept == ("a.jpg",) and (tmp_path / "_winners" / "a.jpg").exists()
+
+
+def test_unmark_keeps_the_file_when_the_source_is_gone(main_window, tmp_path) -> None:
+    (src,) = make_jpegs(tmp_path, ["a.jpg"])
+    _sync(main_window, [src], True, tmp_path, WinnerMode.COPY)
+    os.remove(src)
+
+    kept = main_window._sync_winner_copy_for_paths((src,), False, str(tmp_path))
+
+    assert kept == ("a.jpg",) and (tmp_path / "_winners" / "a.jpg").exists()
+
+
+def test_unmark_removes_an_untouched_copy_and_reports_nothing_kept(main_window, tmp_path) -> None:
+    (src,) = make_jpegs(tmp_path, ["a.jpg"])
+    _sync(main_window, [src], True, tmp_path, WinnerMode.COPY)
+
+    kept = main_window._sync_winner_copy_for_paths((src,), False, str(tmp_path))
+
+    assert kept == () and not (tmp_path / "_winners" / "a.jpg").exists()
+
+
+def test_unmark_removes_a_symlink_that_points_at_the_source(main_window, tmp_path) -> None:
+    (src,) = make_jpegs(tmp_path, ["a.jpg"])
+    winners = tmp_path / "_winners"
+    winners.mkdir()
+    try:
+        os.symlink(src, winners / "a.jpg")
+    except OSError:
+        pytest.skip("symlinks need privileges on this machine")
+
+    kept = main_window._sync_winner_copy_for_paths((src,), False, str(tmp_path))
+
+    assert kept == () and not os.path.lexists(winners / "a.jpg") and os.path.exists(src)
+
+
+def test_toggle_winner_off_tells_the_user_when_it_leaves_a_foreign_file(main_window, tmp_path) -> None:
+    make_jpegs(tmp_path, ["a.jpg"])
+    main_window._winner_mode = WinnerMode.COPY
+    open_folder(main_window, tmp_path, 1)
+    main_window._toggle_winner(0, advance_override=False)
+    (tmp_path / "_winners" / "a.jpg").write_bytes(b"replaced by the user")
+
+    main_window._toggle_winner(0, advance_override=False)
+
+    assert (tmp_path / "_winners" / "a.jpg").read_bytes() == b"replaced by the user"
+    assert "not a copy Image Triage made" in main_window.statusBar().currentMessage()
 
 
 def test_a_failure_part_way_removes_the_copies_already_made(main_window, tmp_path) -> None:
