@@ -815,8 +815,8 @@ class CropFreeRotationTests(unittest.TestCase):
             interactive=True, crop=(100, 75, 300, 225), source_size=(400, 300), aspect=None
         )
 
-    def test_pressing_outside_the_box_starts_a_rotation(self) -> None:
-        self.assertEqual("rotate", self.overlay._hit_test(QPointF(5, 5)))
+    def test_pressing_outside_the_box_is_inert(self) -> None:
+        self.assertIsNone(self.overlay._hit_test(QPointF(5, 5)))
         self.assertEqual("move", self.overlay._hit_test(QPointF(200, 150)))
 
     def test_dragging_outside_the_box_reports_an_angle(self) -> None:

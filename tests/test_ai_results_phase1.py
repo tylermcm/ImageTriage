@@ -467,12 +467,9 @@ class AIResultsPhase1Tests(unittest.TestCase):
     def test_ai_review_tag_definitions_cover_primary_badges(self) -> None:
         definitions = dict(ai_review_tag_definitions())
 
-        self.assertIn("AI Pick", definitions)
-        self.assertIn("Keeper", definitions)
-        self.assertIn("Needs Review", definitions)
-        self.assertIn("Reject", definitions)
-        self.assertIn("Best Frame", definitions)
-        self.assertIn("AI Review", definitions)
+        for tag in ("Winner", "Review", "Reject", "AI Miss"):
+            self.assertIn(tag, definitions)
+            self.assertTrue(definitions[tag].strip())
 
 
 if __name__ == "__main__":

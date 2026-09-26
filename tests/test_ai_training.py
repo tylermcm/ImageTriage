@@ -7,6 +7,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+import pytest
 from pathlib import Path
 from unittest import mock
 from uuid import uuid4
@@ -463,6 +465,8 @@ class AITrainingTests(unittest.TestCase):
                 self.assertTrue(ai_training_source_needs_prepare(folder))
                 self.assertTrue(any("labeled cluster" in issue for issue in issues))
                 self.assertTrue(any("Run Prepare Training Data" in issue for issue in issues))
+
+    @pytest.mark.xfail(strict=True, reason='D2 / WI-2.4-2.6: legacy AI pipeline behaviour; remove or rewrite together with the legacy engine')
 
     def test_registered_training_source_enabled_state_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_sources_") as temp_dir:

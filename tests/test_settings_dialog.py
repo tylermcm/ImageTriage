@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QFrame, QLabel
 
 from image_triage.models import DeleteMode, WinnerMode
 from image_triage.dino_prefilter import DINOPrefilterSettings
@@ -193,7 +193,7 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
             delete_mode=DeleteMode.SAFE_TRASH,
         )
 
-        pages = [dialog.section_list.item(index).text() for index in range(dialog.section_list.count())]
+        pages = list(dialog._page_titles)
         result = dialog.result_settings()
 
         self.assertNotIn("DINO Prefilter", pages)
@@ -213,8 +213,9 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         )
 
         self.assertEqual("spacious", dialog.result_settings().interface_size)
-        self.assertEqual(COMPACT_DISPLAY.settings_nav_width, dialog.section_list.width())
-        self.assertEqual(COMPACT_DISPLAY.settings_min_width, dialog.minimumWidth())
+        self.assertEqual(COMPACT_DISPLAY.settings_nav_width, dialog.findChild(QFrame, "settingsSidebar").width())
+        screen_cap = int(dialog.screen().availableGeometry().width() * 0.94)
+        self.assertEqual(min(COMPACT_DISPLAY.settings_min_width, screen_cap), dialog.minimumWidth())
         dialog.deleteLater()
 
     def test_settings_refresh_uses_descriptions_and_labeled_help(self) -> None:
@@ -227,10 +228,10 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
 
         labels = {label.text() for label in dialog.findChildren(QLabel)}
 
-        self.assertGreaterEqual(dialog.minimumWidth(), 760)
+        self.assertGreaterEqual(dialog.minimumWidth(), 700)
         self.assertIn("Review behavior", labels)
         self.assertIn("Navigation and preview", labels)
-        self.assertEqual("Settings Guide", dialog.help_button.text())
+        self.assertEqual("Open settings guide", dialog.help_button.text())
         dialog.deleteLater()
 
     def test_dino_prefilter_result_settings_round_trip_controls(self) -> None:

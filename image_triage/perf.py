@@ -61,7 +61,33 @@ class PerformanceLogger:
         self.log("perf.disabled", reason=reason)
         self.flush()
         self._enabled = False
+        self._stop_stall_watchdog()
         self._close()
+
+    def _stop_stall_watchdog(self) -> None:
+        if not getattr(self, "_watchdog_started", False):
+            return
+        try:
+            import faulthandler
+            faulthandler.cancel_dump_traceback_later()
+        except Exception:
+            pass
+        timer = getattr(self, "_watchdog_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except RuntimeError:
+                pass
+        trace_file = getattr(self, "_watchdog_file", None)
+        if trace_file is not None:
+            try:
+                trace_file.close()
+            except OSError:
+                pass
+        self._watchdog_timer = None
+        self._watchdog_file = None
+        self._watchdog_started = False
 
     def _start_stall_watchdog(self) -> None:
         """Dump every thread's stack to ui_stall_traces.txt when the GUI thread
@@ -93,6 +119,7 @@ class PerformanceLogger:
         timer.setInterval(100)
         timer.timeout.connect(beat)
         timer.start()
+        self._watchdog_timer = timer
         beat()
 
     def log(self, event: str, **fields: object) -> None:

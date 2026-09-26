@@ -7,6 +7,7 @@ new view stayed blank for as long as the stale pass took to drain.
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -65,8 +66,13 @@ class RepCropSchedulingTests(unittest.TestCase):
         self._temp = tempfile.TemporaryDirectory(prefix="people_crops_test_")
         self.folder = Path(self._temp.name)
         self.dialog = PeopleSearchDialog(_build_library(self.folder))
+        # These tests inspect scheduling state; a worker that finishes before the
+        # assertion (a race) would clear _active_crop_task, so it must not run.
+        self._pool_patch = patch.object(self.dialog._crop_pool, "start")
+        self._pool_patch.start()
 
     def tearDown(self) -> None:
+        self._pool_patch.stop()
         self.dialog._teardown()
         try:
             self._temp.cleanup()

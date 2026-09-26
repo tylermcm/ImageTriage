@@ -716,6 +716,8 @@ class FullScreenPreview(QDialog):
         self._collection_saved_inspector_checked = False
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
+        self._edited_discovery_pool = QThreadPool(self)
+        self._edited_discovery_pool.setMaxThreadCount(1)
         self._subject_warm_pool = QThreadPool(self)
         self._subject_warm_pool.setMaxThreadCount(1)
         self._subject_import_warm_scheduled = False
@@ -4005,7 +4007,7 @@ class FullScreenPreview(QDialog):
                     task.signals.done.connect(
                         self._handle_edited_discovery_done, Qt.ConnectionType.QueuedConnection
                     )
-                    self._pool.start(task)
+                    self._edited_discovery_pool.start(task)
                 self._edited_discovery_requested = False
                 self._next_edited_discovery_at = now + self._edited_discovery_interval_missing_s
             else:
@@ -5448,7 +5450,7 @@ class FullScreenPreview(QDialog):
         trail = [part for part in path.parts[-4:] if part not in ("\\", "/")]
         self._mockup_breadcrumb.setText("  ›  ".join(trail))
         self._mockup_filename.setText(entry.record.name)
-        metadata = self._current_metadata[slot] if slot < len(self._current_metadata) else EMPTY_METADATA
+        metadata = (self._current_metadata[slot] if slot < len(self._current_metadata) else None) or EMPTY_METADATA
         capture = " · ".join(part for part in (
             metadata.exposure, metadata.aperture, metadata.iso,
             metadata.focal_length, metadata.camera,

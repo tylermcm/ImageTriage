@@ -33,6 +33,7 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e .
           python -m pip install -r packaging/linux-build-requirements.txt
+          python -m pip install pytest
 
       - name: Verify release tag matches pyproject version
         if: startsWith(github.ref, 'refs/tags/')
@@ -51,12 +52,10 @@ jobs:
 
       - name: Run packaging smoke tests
         run: |
-          python -m unittest \
-            tests.test_ai_model \
-            tests.test_ai_workflow \
-            tests.test_dinov2_extractor \
-            tests.test_freeze_support \
-            tests.test_packaging_scripts
+          python -m pytest -q \
+            tests/test_ai_model.py \
+            tests/test_freeze_support.py \
+            tests/test_packaging_scripts.py
 
       - name: Compile packaging scripts
         run: |

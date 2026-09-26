@@ -89,7 +89,7 @@ class EditorRenderServiceRaceTests(unittest.TestCase):
     def _req(self, svc, tag):
         svc.request(_solid(0), None, [], base_key=tag, source_key=tag)
 
-    def test_stale_completion_is_dropped_when_newer_is_pending(self) -> None:
+    def test_intermediate_frames_are_delivered_in_order_and_newest_arrives_last(self) -> None:
         backend = _GatedBackend()
         svc, delivered = self._service(backend)
         self._req(svc, ("A",))
@@ -99,9 +99,9 @@ class EditorRenderServiceRaceTests(unittest.TestCase):
         backend.release(("A",))  # A finishes first, but it is now stale
         self.assertTrue(_pump(lambda: backend.has_started(("B",))))
         backend.release(("B",))
-        self.assertTrue(_pump(lambda: delivered))
-        # Only the newest (B) is ever delivered; A is suppressed.
-        self.assertEqual([("B",)], delivered)
+        self.assertTrue(_pump(lambda: len(delivered) >= 2))
+        # Live sliders need every finished frame; only cancel() suppresses one.
+        self.assertEqual([("A",), ("B",)], delivered)
 
     def test_cancel_invalidates_the_in_flight_render(self) -> None:
         backend = _GatedBackend()

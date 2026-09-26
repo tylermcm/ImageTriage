@@ -5,6 +5,8 @@ import sys
 import tempfile
 import textwrap
 import unittest
+
+import pytest
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -268,6 +270,8 @@ class AIWorkflowStreamingTests(unittest.TestCase):
                 runtime = default_ai_workflow_runtime()
 
             self.assertEqual(runtime.python_executable, Path(sys.executable).resolve())
+
+    @pytest.mark.xfail(strict=True, reason='D2 / WI-2.4-2.6: legacy AI pipeline behaviour; remove or rewrite together with the legacy engine')
 
     def test_default_runtime_prefers_generic_bundled_checkpoint_location(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

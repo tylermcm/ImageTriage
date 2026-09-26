@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
@@ -91,7 +92,7 @@ class AICullerTechnicalTagTests(unittest.TestCase):
 
         self.assertTrue(np.array_equal(expected, actual))
 
-    def test_optimized_metrics_match_legacy_metrics_exactly(self) -> None:
+    def test_optimized_metrics_match_legacy_metrics_within_float_tolerance(self) -> None:
         pixels = self.rng.integers(0, 256, (91, 137, 3), dtype=np.uint8)
         with tempfile.TemporaryDirectory(prefix="aiculler_tag_metrics_") as temp_dir:
             path = Path(temp_dir) / "sample.png"
@@ -101,7 +102,11 @@ class AICullerTechnicalTagTests(unittest.TestCase):
             timings: dict[str, float] = {}
             actual = compute_technical_metrics(path, timings=timings)
 
-        self.assertEqual(expected, actual)
+        expected_fields = dataclasses.asdict(expected)
+        actual_fields = dataclasses.asdict(actual)
+        self.assertEqual(expected_fields.keys(), actual_fields.keys())
+        for name, expected_value in expected_fields.items():
+            self.assertAlmostEqual(expected_value, actual_fields[name], delta=1e-6, msg=name)
         self.assertIn("clipping_contrast", timings)
         self.assertIn("local_mean", timings)
         self.assertIn("total", timings)

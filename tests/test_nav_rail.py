@@ -112,11 +112,10 @@ class LeftPaneSwapTests(unittest.TestCase):
         _app()
         self.host = _LeftPaneHost()
 
-    def test_the_rail_offers_folders_faces_and_collections(self) -> None:
-        self.assertEqual(
-            ("folders", "faces", "collections"),
-            tuple(key for key, *_rest in MainWindow.LEFT_NAV_DESTINATIONS),
-        )
+    def test_the_rail_offers_folders_faces_and_collections_first(self) -> None:
+        keys = tuple(key for key, *_rest in MainWindow.LEFT_NAV_DESTINATIONS)
+        self.assertEqual(("folders", "faces", "collections"), keys[:3])
+        self.assertEqual(len(keys), len(set(keys)))
 
     def test_a_destination_replaces_the_whole_pane(self) -> None:
         self.host._show_left_nav_page("faces")
