@@ -135,19 +135,26 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertFalse(hasattr(dialog, "ai_clip_model_combo"))
         dialog.deleteLater()
 
-    def test_result_settings_returns_label_duplicate_threshold(self) -> None:
+    def test_dispute_and_base_score_weight_are_visible_and_round_trip(self) -> None:
         dialog = WorkflowSettingsDialog(
             sessions=["Default"],
             current_session="Default",
             winner_mode=WinnerMode.COPY,
             delete_mode=DeleteMode.SAFE_TRASH,
-            ai_label_near_duplicate_threshold=0.965,
+            ai_dispute_weight=3,
+            ai_base_score_weight_percent=65,
         )
-        dialog.ai_label_near_duplicate_slider.setValue(940)
 
+        labels = {label.text() for label in dialog.findChildren(QLabel)}
+        self.assertIn("Dispute weight", labels)
+        self.assertIn("Base score weight", labels)
+
+        dialog.ai_dispute_weight_spin.setValue(5)
+        dialog.ai_base_score_weight_spin.setValue(20)
         result = dialog.result_settings()
 
-        self.assertEqual(0.940, result.ai_label_near_duplicate_threshold)
+        self.assertEqual(5, result.ai_dispute_weight)
+        self.assertEqual(20, result.ai_base_score_weight_percent)
         dialog.deleteLater()
 
     def test_interface_size_choice_round_trips_and_sizes_dialog_chrome(self) -> None:
