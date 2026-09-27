@@ -2380,14 +2380,6 @@ class InspectorPanel(QWidget):
         layout.invalidate()
         layout.activate()
 
-    def _quick_button(self, text: str, signal: Signal | None) -> QPushButton:
-        button = QPushButton(text, self)
-        button.setObjectName("inspectorActionButton")
-        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        if signal is not None:
-            button.clicked.connect(lambda _checked=False, target=signal: target.emit())
-        return button
-
     def _make_header_button(self, text: str, tooltip: str, object_name: str) -> QToolButton:
         button = QToolButton(self)
         button.setObjectName(object_name)

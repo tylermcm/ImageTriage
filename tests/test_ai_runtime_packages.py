@@ -13,7 +13,7 @@ from image_triage.ai_runtime_packages import (
     AI_RUNTIME_GPU_VARIANT,
     AI_RUNTIME_BASE_REQUIRED_MODULE_NAMES,
     AI_RUNTIME_BASE_REQUIRED_FILES,
-    AI_RUNTIME_DINO_REQUIRED_FILES,
+    AI_RUNTIME_TORCH_REQUIRED_FILES,
     AI_RUNTIME_REQUIRED_MODULE_NAMES,
     default_ai_runtime_install_root,
     build_ai_runtime_pip_install_args,
@@ -60,7 +60,7 @@ def _materialize_runtime_modules(target_dir: Path) -> None:
         "Name: onnxruntime-gpu\nVersion: 1.26.0\n",
         encoding="utf-8",
     )
-    for relative_path, _label in AI_RUNTIME_BASE_REQUIRED_FILES + AI_RUNTIME_DINO_REQUIRED_FILES:
+    for relative_path, _label in AI_RUNTIME_BASE_REQUIRED_FILES + AI_RUNTIME_TORCH_REQUIRED_FILES:
         path = target_dir / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
@@ -205,7 +205,7 @@ class AIRuntimePackageTests(unittest.TestCase):
         embedded_runner.assert_called_once()
         subprocess_run.assert_not_called()
 
-    def test_gpu_runtime_pins_torch_pair_compatible_with_dinov3_transformers(self) -> None:
+    def test_gpu_runtime_pins_a_torch_pair_compatible_with_the_pinned_transformers(self) -> None:
         args = build_ai_runtime_pip_install_args(
             variant=AI_RUNTIME_GPU_VARIANT,
             target_dir=Path("C:/temp/runtime"),
@@ -217,13 +217,13 @@ class AIRuntimePackageTests(unittest.TestCase):
     def test_shipped_locks_never_contain_both_onnxruntime_distributions(self) -> None:
         # Both wheels install the same `onnxruntime` package directory, so a
         # profile holding both has an provider set decided by unpack order.
-        for include_dino in (True, False):
+        for include_torch in (True, False):
             lock = ai_runtime_packages.resolve_lock_file(
-                AI_RUNTIME_GPU_VARIANT, include_dino=include_dino
+                AI_RUNTIME_GPU_VARIANT, include_torch=include_torch
             )
             if lock is None:
                 continue
-            with self.subTest(include_dino=include_dino):
+            with self.subTest(include_torch=include_torch):
                 names = {
                     line.split("==", 1)[0].strip().lower()
                     for line in lock.read_text(encoding="utf-8").splitlines()
@@ -234,13 +234,13 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_shipped_locks_never_contain_both_opencv_distributions(self) -> None:
         for variant in (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT):
-            for include_dino in (True, False):
+            for include_torch in (True, False):
                 lock = ai_runtime_packages.resolve_lock_file(
-                    variant, include_dino=include_dino
+                    variant, include_torch=include_torch
                 )
                 if lock is None:
                     continue
-                with self.subTest(variant=variant, include_dino=include_dino):
+                with self.subTest(variant=variant, include_torch=include_torch):
                     names = {
                         line.split("==", 1)[0].strip().lower()
                         for line in lock.read_text(encoding="utf-8").splitlines()
@@ -251,13 +251,13 @@ class AIRuntimePackageTests(unittest.TestCase):
 
     def test_shipped_locks_hash_every_distribution(self) -> None:
         for variant in (AI_RUNTIME_CPU_VARIANT, AI_RUNTIME_GPU_VARIANT):
-            for include_dino in (True, False):
+            for include_torch in (True, False):
                 lock = ai_runtime_packages.resolve_lock_file(
-                    variant, include_dino=include_dino
+                    variant, include_torch=include_torch
                 )
                 if lock is None:
                     continue
-                with self.subTest(variant=variant, include_dino=include_dino):
+                with self.subTest(variant=variant, include_torch=include_torch):
                     lines = [
                         line.strip()
                         for line in lock.read_text(encoding="utf-8").splitlines()
@@ -272,7 +272,7 @@ class AIRuntimePackageTests(unittest.TestCase):
                         msg=f"{lock.name} has {len(pins)} pins but {len(hashes)} hashes",
                     )
 
-    def test_runtime_install_can_skip_optional_dino_dependencies(self) -> None:
+    def test_runtime_install_can_skip_optional_torch_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             install_root = Path(temp_dir) / "runtime"
             recorded_calls: list[list[str]] = []
@@ -285,13 +285,13 @@ class AIRuntimePackageTests(unittest.TestCase):
 
             status = install_ai_runtime(
                 AI_RUNTIME_CPU_VARIANT,
-                include_dino=False,
+                include_torch=False,
                 install_root=install_root,
                 pip_runner=fake_pip_runner,
             )
 
             self.assertEqual(status.installed_variants, (AI_RUNTIME_CPU_VARIANT,))
-            self.assertEqual(status.dino_installed_variants, ())
+            self.assertEqual(status.torch_installed_variants, ())
             self.assertTrue(
                 any("-base" in str(item) for item in recorded_calls[0]),
                 msg=f"compact install did not use the base set: {recorded_calls[0]}",
@@ -316,20 +316,20 @@ class AIRuntimePackageTests(unittest.TestCase):
 
             compact_status = install_ai_runtime(
                 AI_RUNTIME_CPU_VARIANT,
-                include_dino=False,
+                include_torch=False,
                 install_root=install_root,
                 pip_runner=fake_pip_runner,
             )
             upgraded_status = install_ai_runtime(
                 AI_RUNTIME_CPU_VARIANT,
-                include_dino=True,
+                include_torch=True,
                 install_root=install_root,
                 pip_runner=fake_pip_runner,
             )
 
-            self.assertEqual(compact_status.dino_installed_variants, ())
+            self.assertEqual(compact_status.torch_installed_variants, ())
             self.assertEqual(
-                upgraded_status.dino_installed_variants,
+                upgraded_status.torch_installed_variants,
                 (AI_RUNTIME_CPU_VARIANT,),
             )
             self.assertEqual(len(recorded_calls), 2)
@@ -420,7 +420,7 @@ class AIRuntimePackageTests(unittest.TestCase):
             )
             active_before = original.profiles[AI_RUNTIME_GPU_VARIANT].site_packages_dir
 
-            def fail_validation(_path: Path, _variant: str, _include_dino: bool) -> None:
+            def fail_validation(_path: Path, _variant: str, _include_torch: bool) -> None:
                 raise RuntimeError("synthetic import failure")
 
             with self.assertRaisesRegex(RuntimeError, "synthetic import failure"):
@@ -447,7 +447,7 @@ class AIRuntimePackageTests(unittest.TestCase):
 
             status = install_ai_runtime(
                 AI_RUNTIME_CPU_VARIANT,
-                include_dino=False,
+                include_torch=False,
                 install_root=install_root,
                 pip_runner=fake_runner,
             )
@@ -497,14 +497,14 @@ class AIRuntimePackageTests(unittest.TestCase):
         self.assertLess(
             estimate_ai_runtime_download_size_mb(
                 AI_RUNTIME_GPU_VARIANT,
-                include_dino=False,
+                include_torch=False,
             ),
             estimate_ai_runtime_download_size_mb(AI_RUNTIME_GPU_VARIANT),
         )
         self.assertLess(
             estimate_ai_runtime_installed_size_mb(
                 AI_RUNTIME_CPU_VARIANT,
-                include_dino=False,
+                include_torch=False,
             ),
             estimate_ai_runtime_installed_size_mb(AI_RUNTIME_CPU_VARIANT),
         )
@@ -653,7 +653,7 @@ class AIRuntimePackageTests(unittest.TestCase):
             install_root = Path(temp_dir) / "runtime"
             site_packages = install_root / "profiles" / AI_RUNTIME_CPU_VARIANT / "site-packages"
             _materialize_runtime_modules(site_packages)
-            missing_path = site_packages / AI_RUNTIME_DINO_REQUIRED_FILES[0][0]
+            missing_path = site_packages / AI_RUNTIME_TORCH_REQUIRED_FILES[0][0]
             missing_path.unlink()
 
             status = load_ai_runtime_installation_status(install_root=install_root)

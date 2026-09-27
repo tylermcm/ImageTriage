@@ -106,10 +106,10 @@ The Linux build and the Windows MSI now share the same AI runtime staging logic 
 
 The active CLI-Culler source lives in the in-repo [aiculler package](/Users/tylle/OneDrive/Documents/Playground/aiculler) and is the default AI culler implementation used by the app. CLIP/TOPIQ weights remain outside git; set `IMAGE_TRIAGE_AICULLER_MODEL_ROOT` to point at a local `models` directory when the defaults do not apply.
 
-On first launch, the app offers to download the AI model into:
+On first launch, the app offers to download its AI models into:
 
 ```text
-~/.cache/image_triage_ai_cache/models/DinoV3
+~/.cache/image_triage_ai_cache/models
 ```
 
 If the user skips that step, the older bundled AI pipeline stays unavailable until the model is installed.

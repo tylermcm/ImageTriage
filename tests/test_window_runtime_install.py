@@ -86,11 +86,10 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         selection = AISetupSelection(
             install_runtime=True,
             runtime_variant="gpu",
-            include_dino_runtime=True,
+            include_torch_runtime=True,
             download_aiculler_clip_model=True,
             download_aiculler_topiq_model=True,
             download_aiculler_face_model=True,
-            download_dino_model=True,
             download_semantic_model=False,
         )
 
@@ -103,8 +102,7 @@ class AIRuntimeInstallTaskTests(unittest.TestCase):
         self.assertTrue(started)
         self.assertEqual(1, len(calls))
         _args, kwargs = calls[0]
-        self.assertTrue(kwargs["include_dino"])
-        self.assertFalse(kwargs["download_dino_model_after"])
+        self.assertTrue(kwargs["include_torch"])
         self.assertTrue(kwargs["download_aiculler_clip_after"])
         self.assertTrue(kwargs["download_aiculler_topiq_after"])
         self.assertTrue(kwargs["download_aiculler_face_after"])
