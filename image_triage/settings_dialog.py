@@ -79,7 +79,6 @@ class WorkflowSettingsResult:
     ai_keep_top_percent: int = 10       # % of folder to mark as Keeper
     ai_review_band_percent: int = 10    # % below Keeper cutoff to mark as Review
     ai_base_score_weight_percent: int = 65  # blend weight (0=adapter only, 100=base only)
-    ai_label_near_duplicate_threshold: float = 0.965
     phash_prefilter_settings: PHashPrefilterSettings = field(default_factory=default_phash_prefilter_settings)
     presets: tuple[WorkflowPreset, ...] = ()
     # Keybind overrides: attr_name -> chord string. Empty / missing entries
@@ -317,15 +316,10 @@ class WorkflowSettingsDialog(QDialog):
         ai_keep_top_percent: int = 10,
         ai_review_band_percent: int = 10,
         ai_base_score_weight_percent: int = 65,
-        ai_label_near_duplicate_threshold: float = 0.965,
         phash_prefilter_settings: PHashPrefilterSettings | None = None,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
         preset_save_callback: Callable[[tuple[WorkflowPreset, ...]], None] | None = None,
-        file_associations_callback: Callable[[], None] | None = None,
-        keyboard_shortcuts_callback: Callable[[], None] | None = None,
-        toolbar_callback: Callable[[], None] | None = None,
-        reset_layout_callback: Callable[[], None] | None = None,
         shortcut_overrides: dict[str, str] | None = None,
         initial_section: str | None = None,
         display_profile: DisplayProfile | None = None,
@@ -795,16 +789,6 @@ class WorkflowSettingsDialog(QDialog):
             "adapter influence borderline calls."
         ))
 
-        self.ai_label_near_duplicate_slider = QSpinBox()
-        self.ai_label_near_duplicate_slider.setRange(500, 995)
-        self.ai_label_near_duplicate_slider.setSingleStep(5)
-        self.ai_label_near_duplicate_slider.setValue(max(500, min(995, int(round(float(ai_label_near_duplicate_threshold) * 1000)))))
-        self.ai_label_near_duplicate_slider.setMinimumWidth(120)
-        self.ai_label_near_duplicate_slider.setToolTip(_settings_tooltip(
-            "Similarity threshold used by legacy adapter label grouping helpers. "
-            "Higher values require images to be closer before they are treated as near-duplicates."
-        ))
-
         ai_page, ai_layout = self._build_settings_page(
             "AI Culling",
             "Tune processing and decide how much of a finished ranking is treated as likely winners or needs review.",
@@ -816,6 +800,9 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(ai_layout, "Likely winners", self.ai_keep_top_spin)
         self._add_form_row(ai_layout, "Review band", self.ai_review_band_spin)
         self._add_form_row(ai_layout, "Cull breakdown", self.ai_cull_summary_label)
+        self._add_category_heading(ai_layout, "Adapter")
+        self._add_form_row(ai_layout, "Dispute weight", self.ai_dispute_weight_spin)
+        self._add_form_row(ai_layout, "Base score weight", self.ai_base_score_weight_spin)
         ai_layout.addStretch(1)
         self._update_ai_cull_summary()
         self._add_settings_page("AI Culling", ai_page)
@@ -1418,7 +1405,6 @@ class WorkflowSettingsDialog(QDialog):
             ai_keep_top_percent=max(1, min(50, int(self.ai_keep_top_spin.value()))),
             ai_review_band_percent=max(0, min(30, int(self.ai_review_band_spin.value()))),
             ai_base_score_weight_percent=max(0, min(100, int(self.ai_base_score_weight_spin.value()))),
-            ai_label_near_duplicate_threshold=max(0.500, min(0.995, int(self.ai_label_near_duplicate_slider.value()) / 1000.0)),
             phash_prefilter_settings=PHashPrefilterSettings(
                 enabled=self.phash_prefilter_enabled_checkbox.isChecked(),
                 hamming_threshold=int(self.phash_hamming_spin.value()),

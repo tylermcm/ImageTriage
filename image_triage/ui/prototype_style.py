@@ -1,10 +1,8 @@
-"""Shared presentation primitives extracted from the UI prototype.
+"""Shared presentation primitives originally extracted from a UI prototype.
 
-These are the reusable, behaviour-free pieces of the generated prototype that
-the real application window adopts during the prototype-to-app migration: the
-exact colour tokens the design was tuned around, and the custom-drawn folder
-icon. Keeping them in one module avoids duplicating the design between the
-standalone prototype (`generated_prototype.py`) and the live `MainWindow`.
+These are the reusable, behaviour-free pieces the real application window
+adopted during the prototype-to-app migration: the exact colour tokens the
+design was tuned around, and the custom-drawn folder icon.
 """
 
 from __future__ import annotations

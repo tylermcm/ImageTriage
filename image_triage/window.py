@@ -761,413 +761,6 @@ class CatalogExecutionContext:
     label: str = ""
 
 
-class ToolbarCustomizerDialog(QDialog):
-    """Interactive preview dialog for editing the manual and AI review toolbars."""
-    MODES = (
-        ("manual", "Manual Review"),
-        ("ai", "AI Review"),
-    )
-
-    def __init__(
-        self,
-        *,
-        layouts: dict[str, list[str]],
-        allowed_items: dict[str, tuple[str, ...]],
-        labels: dict[str, str],
-        current_mode: str,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setObjectName("toolbarCustomizerDialog")
-        self.setWindowTitle("Customize Toolbars")
-        self.resize(940, 240)
-        self.setMinimumWidth(760)
-        self.setSizeGripEnabled(True)
-        self._layouts = {mode: list(items) for mode, items in layouts.items()}
-        self._allowed_items = allowed_items
-        self._labels = labels
-        self._mode = current_mode if current_mode in self._layouts else "manual"
-        self._selected_index = 0 if self._layouts.get(self._mode) else -1
-
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(14, 12, 14, 12)
-        root_layout.setSpacing(10)
-
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(8)
-        header_row.addWidget(QLabel("Toolbar"))
-        self.mode_combo = QComboBox()
-        for mode, label in self.MODES:
-            self.mode_combo.addItem(label, mode)
-        selected_index = self.mode_combo.findData(self._mode)
-        self.mode_combo.setCurrentIndex(max(0, selected_index))
-        self.mode_combo.currentIndexChanged.connect(self._handle_mode_changed)
-        header_row.addWidget(self.mode_combo)
-        header_row.addStretch(1)
-        root_layout.addLayout(header_row)
-
-        self.preview_scroll = QScrollArea()
-        self.preview_scroll.setObjectName("toolbarCustomizerPreviewScroll")
-        self.preview_scroll.setWidgetResizable(True)
-        self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.preview_scroll.setFixedHeight(92)
-        self.preview_frame = QFrame()
-        self.preview_frame.setObjectName("toolbarCustomizerPreviewHost")
-        self.preview_layout = QHBoxLayout(self.preview_frame)
-        self.preview_layout.setContentsMargins(0, 0, 0, 0)
-        self.preview_layout.setSpacing(0)
-        self.preview_scroll.setWidget(self.preview_frame)
-        root_layout.addWidget(self.preview_scroll)
-
-        controls = QHBoxLayout()
-        controls.setContentsMargins(0, 0, 0, 0)
-        controls.setSpacing(8)
-        controls.addWidget(QLabel("Add"))
-        self.add_combo = QComboBox()
-        self.add_combo.setMinimumWidth(220)
-        controls.addWidget(self.add_combo)
-        self.add_button = QPushButton("Add")
-        self.add_button.clicked.connect(self._add_selected_item)
-        controls.addWidget(self.add_button)
-        self.remove_button = QPushButton("Remove")
-        self.remove_button.clicked.connect(self._remove_selected_item)
-        controls.addWidget(self.remove_button)
-        self.move_left_button = QPushButton("Move Left")
-        self.move_left_button.clicked.connect(lambda: self._move_selected_item(-1))
-        controls.addWidget(self.move_left_button)
-        self.move_right_button = QPushButton("Move Right")
-        self.move_right_button.clicked.connect(lambda: self._move_selected_item(1))
-        controls.addWidget(self.move_right_button)
-        self.reset_button = QPushButton("Reset")
-        self.reset_button.clicked.connect(self._reset_current_toolbar)
-        controls.addWidget(self.reset_button)
-        controls.addStretch(1)
-        root_layout.addLayout(controls)
-
-        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        apply_button = self.button_box.button(QDialogButtonBox.StandardButton.Ok)
-        if apply_button is not None:
-            apply_button.setText("Apply")
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        root_layout.addWidget(self.button_box)
-
-        self._preview_index_by_widget: dict[QWidget, int] = {}
-        self._preview_content_width = 0
-        self._refresh()
-
-    def _available_dialog_width(self) -> int:
-        screen = self.screen() or QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-        if screen is None:
-            return 1400
-        return max(760, screen.availableGeometry().width() - 24)
-
-    def _fit_window_to_preview(self) -> None:
-        preview_width = max(
-            self._preview_content_width,
-            self.preview_frame.minimumSizeHint().width(),
-            self.preview_frame.sizeHint().width(),
-        )
-        controls_width = 760
-        target_width = min(self._available_dialog_width(), max(760, preview_width + 34, controls_width))
-        target_width = max(self.width(), target_width)
-        if abs(self.width() - target_width) > 8:
-            self.resize(target_width, self.height())
-
-    def toolbar_layouts(self) -> dict[str, list[str]]:
-        return {mode: list(items) for mode, items in self._layouts.items()}
-
-    def _current_items(self) -> list[str]:
-        return self._layouts.setdefault(self._mode, [])
-
-    def _clear_layout_widgets(self, layout) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    def eventFilter(self, watched, event) -> bool:
-        if event.type() == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget):
-            index = self._preview_index_by_widget.get(watched)
-            if index is not None:
-                self._select_item(index)
-                return True
-        return super().eventFilter(watched, event)
-
-    def _register_preview_selectable(self, widget: QWidget, index: int) -> None:
-        self._preview_index_by_widget[widget] = index
-        widget.installEventFilter(self)
-        for child in widget.findChildren(QWidget):
-            self._preview_index_by_widget[child] = index
-            child.installEventFilter(self)
-
-    def _handle_mode_changed(self) -> None:
-        mode = self.mode_combo.currentData()
-        if isinstance(mode, str):
-            self._mode = mode
-        self._selected_index = 0 if self._current_items() else -1
-        self._refresh()
-
-    def _select_item(self, index: int) -> None:
-        if index < 0 or index >= len(self._current_items()):
-            self._selected_index = -1
-        else:
-            self._selected_index = index
-        self._refresh()
-
-    def _available_items(self) -> list[str]:
-        current = set(self._current_items())
-        return [item for item in self._allowed_items.get(self._mode, ()) if item not in current]
-
-    def _add_selected_item(self) -> None:
-        item = self.add_combo.currentData()
-        if not isinstance(item, str):
-            return
-        items = self._current_items()
-        if item in items:
-            return
-        items.append(item)
-        self._selected_index = len(items) - 1
-        self._refresh()
-
-    def _remove_selected_item(self) -> None:
-        items = self._current_items()
-        if self._selected_index < 0 or self._selected_index >= len(items):
-            return
-        items.pop(self._selected_index)
-        if not items:
-            self._selected_index = -1
-        else:
-            self._selected_index = min(self._selected_index, len(items) - 1)
-        self._refresh()
-
-    def _move_selected_item(self, direction: int) -> None:
-        items = self._current_items()
-        target = self._selected_index + direction
-        if self._selected_index < 0 or target < 0 or target >= len(items):
-            return
-        items[self._selected_index], items[target] = items[target], items[self._selected_index]
-        self._selected_index = target
-        self._refresh()
-
-    def _reset_current_toolbar(self) -> None:
-        default_items = MainWindow.WORKSPACE_TOOLBAR_DEFAULTS.get(self._mode, ())
-        self._layouts[self._mode] = list(default_items)
-        self._selected_index = 0 if self._layouts[self._mode] else -1
-        self._refresh()
-
-    def _preview_button(
-        self,
-        text: str,
-        *,
-        parent: QWidget | None = None,
-        object_name: str = "workspacePresetsButton",
-        min_width: int | None = None,
-        selected: bool = False,
-    ) -> QToolButton:
-        button = QToolButton(parent)
-        button.setObjectName(object_name)
-        button.setText(text)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        button.setCheckable(True)
-        button.setChecked(selected)
-        if min_width is not None:
-            button.setMinimumWidth(min_width)
-        return button
-
-    def _workspace_preview_widget_for_item(self, item_id: str, index: int, parent: QWidget) -> QWidget:
-        selected = index == self._selected_index
-        if item_id == "search":
-            field = QLineEdit(parent)
-            field.setObjectName("workspaceSearchField")
-            field.setClearButtonEnabled(True)
-            field.setPlaceholderText("Search photos, filenames, or people")
-            field.setMinimumWidth(140)
-            field.setMaximumWidth(320)
-            field.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
-            if selected:
-                field.setProperty("toolbarPreviewSelected", True)
-            return field
-        if item_id == "address":
-            label = QComboBox(parent)
-            label.setObjectName("pathComboBox")
-            label.setEditable(True)
-            label.addItem("X:/Photography/China '26/Raw Files")
-            label.setMinimumWidth(280)
-            label.setMaximumWidth(640)
-            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            if selected:
-                label.setProperty("toolbarPreviewSelected", True)
-            return label
-        if item_id == "selection_count":
-            label = QLabel("3 selected", parent)
-            label.setObjectName("toolbarSelectionCount")
-            label.setMinimumWidth(76)
-            if selected:
-                label.setProperty("toolbarPreviewSelected", True)
-            return label
-        if item_id == "filters":
-            return self._preview_button("Filters", parent=parent, object_name="workspaceFiltersButton", selected=selected)
-        if item_id == "ai_status":
-            wrapper = QWidget(parent)
-            wrapper.setObjectName("aiStatusToolbarItem")
-            layout = QHBoxLayout(wrapper)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(8)
-            section = QLabel("AI Status", wrapper)
-            section.setObjectName("sectionLabel")
-            layout.addWidget(section)
-            progress = QProgressBar(wrapper)
-            progress.setRange(0, 1)
-            progress.setValue(0)
-            progress.setFormat("Idle")
-            progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            progress.setTextVisible(True)
-            progress.setMinimumWidth(124)
-            progress.setMaximumWidth(180)
-            progress.setFixedHeight(18)
-            layout.addWidget(progress)
-            status = QLabel("AI cache not loaded", wrapper)
-            status.setObjectName("secondaryText")
-            status.setMaximumWidth(260)
-            layout.addWidget(status)
-            if selected:
-                wrapper.setProperty("toolbarPreviewSelected", True)
-            return wrapper
-
-        text = {
-            "review": "Review",
-            "view": "View",
-            "columns": "Columns",
-            "sort": "Sort",
-            "quick_filter": "Quick Filter",
-            "run_ai_culling": "AI Workflow",
-            "apply_ai_culling": "Apply AI",
-            "reset_ai_review_cache": "Reset AI Cache",
-            "ai_results": "AI Results",
-            "open_folder": "Open",
-            "refresh_folder": "Refresh",
-            "undo": "Undo",
-            "command_palette": "Command",
-            "advanced_filters": "Adv. Filters",
-            "clear_filters": "Clear",
-            "batch_rename": "Rename",
-            "batch_resize": "Resize",
-            "batch_convert": "Convert",
-            "handoff_builder": "Handoff",
-            "send_to_editor": "Editor",
-            "best_of_set": "Best Of",
-            "keyboard_shortcuts": "Shortcuts",
-            "compare": "Compare",
-            "auto_advance": "Auto",
-            "burst_groups": "Groups",
-            "burst_stacks": "Stacks",
-            "show_hidden_folders": "Hidden",
-            "selection_count": "3 selected",
-            "accept_selection": "Winner",
-            "reject_selection": "Reject",
-            "keep_selection": "Keep",
-            "move_selection": "Move",
-            "delete_selection": "Delete",
-            "reveal_in_explorer": "Reveal",
-            "open_in_photoshop": "Photoshop",
-            "load_saved_ai": "Load Saved",
-            "load_ai_results": "Load AI",
-            "clear_ai_results": "Clear AI",
-            "open_ai_report": "Report",
-            "next_ai_pick": "Next Pick",
-            "next_unreviewed_ai_pick": "Next Unreviewed",
-            "compare_ai_group": "AI Compare",
-            "dispute_current_ai_result": "Dispute AI",
-            "review_ai_disagreements": "Disagree",
-            "taste_calibration": "Calibrate",
-        }.get(item_id, self._labels.get(item_id, item_id))
-        return self._preview_button(text, parent=parent, object_name="workspacePresetsButton", selected=selected)
-
-    def _build_workspace_preview(self, items: list[str]) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("workspaceBar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
-
-        tabs = QTabBar(bar)
-        tabs.setObjectName("modeTabs")
-        tabs.addTab("Manual Review")
-        tabs.addTab("AI Review")
-        tabs.setCurrentIndex(1 if self._mode == "ai" else 0)
-        tabs.setExpanding(False)
-        tabs.setDrawBase(False)
-        tabs.setElideMode(Qt.TextElideMode.ElideNone)
-        tabs.setUsesScrollButtons(False)
-        tabs.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        tabs.ensurePolished()
-        tabs.adjustSize()
-        target_width = max(tabs.sizeHint().width(), tabs.minimumSizeHint().width()) + 10
-        tabs.setMinimumWidth(target_width)
-        tabs.setMaximumWidth(target_width)
-        layout.addWidget(tabs, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        controls = QWidget(bar)
-        controls.setObjectName("workspaceControls")
-        controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(8)
-        address_widget: QWidget | None = None
-        has_search = False
-        for index, item_id in enumerate(items):
-            widget = self._workspace_preview_widget_for_item(item_id, index, controls)
-            self._register_preview_selectable(widget, index)
-            if item_id == "address":
-                address_widget = widget
-                continue
-            is_search = item_id == "search"
-            has_search = has_search or is_search
-            controls_layout.addWidget(widget, 1 if is_search else 0)
-        if address_widget is not None:
-            if not has_search:
-                controls_layout.addStretch(1)
-            controls_layout.addWidget(address_widget, 0, Qt.AlignmentFlag.AlignRight)
-        elif not has_search:
-            controls_layout.addStretch(1)
-        layout.addWidget(controls, 1)
-        return bar
-
-    def _refresh(self) -> None:
-        self._preview_index_by_widget.clear()
-        self._clear_layout_widgets(self.preview_layout)
-        items = self._current_items()
-        if self._selected_index >= len(items):
-            self._selected_index = len(items) - 1
-        if items:
-            preview = self._build_workspace_preview(items)
-            preview.ensurePolished()
-            preview.adjustSize()
-            self._preview_content_width = preview.sizeHint().width()
-            self.preview_frame.setMinimumWidth(self._preview_content_width)
-            self.preview_layout.addWidget(preview)
-        else:
-            empty = QLabel("Empty", self.preview_frame)
-            empty.setObjectName("toolbarEditHint")
-            self._preview_content_width = empty.sizeHint().width()
-            self.preview_frame.setMinimumWidth(0)
-            self.preview_layout.addWidget(empty)
-        self.preview_layout.addStretch(1)
-
-        self.add_combo.clear()
-        available_items = self._available_items()
-        for item_id in available_items:
-            self.add_combo.addItem(self._labels.get(item_id, item_id), item_id)
-        self.add_button.setEnabled(bool(available_items))
-        has_selection = 0 <= self._selected_index < len(items)
-        self.remove_button.setEnabled(has_selection)
-        self.move_left_button.setEnabled(has_selection and self._selected_index > 0)
-        self.move_right_button.setEnabled(has_selection and self._selected_index < len(items) - 1)
-        self._fit_window_to_preview()
-
 
 class _DirectorySuggestionController(QObject):
     """Segment-aware folder suggestions for the workspace address field."""
@@ -2692,10 +2285,6 @@ class MainWindow(QMainWindow):
     # compute without oversubscribing ONNX's intra-op thread pool.
     AI_EMBED_BATCH_SIZE_GPU_AUTO = 8
     AI_EMBED_BATCH_SIZE_CPU_AUTO = 4
-    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY = "ai/label_near_duplicate_threshold"
-    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT = 0.965
-    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN = 0.500
-    AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX = 0.995
     LEFT_NAV_PAGE_KEY = "ui/left_nav_page"
     PINNED_TOOLS_KEY = "ui/pinned_tools"
     DEFAULT_PINNED_TOOLS = ("command_palette", "open_in_photoshop", "compare", "keyboard_shortcuts")
@@ -3557,16 +3146,6 @@ class MainWindow(QMainWindow):
         # helpers still read it — keep it as a constant False so they evaluate
         # to a tidy "disabled" path until those helpers go too.
         self._ai_semantic_sidecar_enabled = False
-        # Same for the label-duplicate cosine threshold: only read by a
-        # dead training-prep helper, but cheaper to stub than to thread None
-        # through it. Will be removed alongside the dead pipeline methods.
-        self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(
-            self._settings.value(
-                self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY,
-                self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT,
-                float,
-            )
-        )
         self._phash_prefilter_settings = self._load_phash_prefilter_settings()
         self._catalog_load_source = "idle"
         self._catalog_load_detail = "Ready"
@@ -8679,35 +8258,6 @@ class MainWindow(QMainWindow):
                 "toolbar.end_edit", (time.perf_counter() - end_start) * 1000.0, items=item_count
             )
 
-    def _open_ui_prototype(self, _checked: bool = False) -> None:
-        from .ui.generated_prototype import open_generated_ui_prototype
-
-        open_generated_ui_prototype(self)
-
-    def _show_workspace_toolbar_editor(self, mode: str | None = None) -> None:
-        target_mode = mode if mode in self.WORKSPACE_TOOLBAR_DEFAULTS else self._ui_mode
-        editor_layouts = {
-            toolbar_mode: list(self._workspace_toolbar_layouts.get(toolbar_mode, ()))
-            for toolbar_mode in self.WORKSPACE_TOOLBAR_DEFAULTS
-        }
-        dialog = ToolbarCustomizerDialog(
-            layouts=editor_layouts,
-            allowed_items=self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS,
-            labels=self.WORKSPACE_TOOLBAR_ITEM_LABELS,
-            current_mode=target_mode,
-            parent=self,
-        )
-        if self._exec_dialog_with_geometry(dialog, "toolbar_customizer") != QDialog.DialogCode.Accepted:
-            return
-        updated_layouts = dialog.toolbar_layouts()
-        for toolbar_mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            self._workspace_toolbar_layouts[toolbar_mode] = updated_layouts.get(toolbar_mode, [])
-        self._save_workspace_toolbar_layouts()
-        self._rebuild_workspace_toolbar("manual")
-        self._rebuild_workspace_toolbar("ai")
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("Updated toolbar layout.")
-
     def _hide_workspace_toolbar_editor(self) -> None:
         if not self._toolbar_edit_mode:
             return
@@ -9032,7 +8582,6 @@ class MainWindow(QMainWindow):
         register_action("view.grid_view", self.actions.grid_view, label="Grid View", section="View")
         register_action("view.details_view", self.actions.details_view, label="Details View", section="View")
         register_action("view.zen_mode", self.actions.zen_mode, label="Zen Mode", section="View")
-        register_action("view.ui_prototype", self.actions.open_ui_prototype, label="Open UI Prototype", section="View")
         register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
         register_action("ai.compare_group", self.actions.compare_ai_group, label="Compare Current AI Group", section="AI")
         register_action("workflow.handoff_builder", self.actions.handoff_builder, label="Deliver / Handoff Builder", section="Workflow")
@@ -9500,7 +9049,6 @@ class MainWindow(QMainWindow):
             add_action_command("view.details_next_kept", self.actions.details_next_kept, section="View", keywords=("details next kept", "jump kept", "jump winner"))
             add_action_command("view.details_next_rejected", self.actions.details_next_rejected, section="View", keywords=("details next rejected", "jump rejected"))
             add_action_command("view.zen_mode", self.actions.zen_mode, section="View", subtitle=self._toggle_state_text(self._zen_mode_enabled), keywords=("fullscreen", "focus mode", "hide panels"))
-            add_action_command("view.ui_prototype", self.actions.open_ui_prototype, section="View", keywords=("prototype", "generated ui", "visual mockup"))
             add_action_command("view.burst_groups", self.actions.burst_groups, section="View", subtitle=self._toggle_state_text(self._burst_groups_enabled), keywords=("burst grouping", "burst shots", "toggle bursts", "capture sequence"))
             add_action_command("view.burst_stacks", self.actions.burst_stacks, section="View", subtitle=self._toggle_state_text(self._burst_stacks_enabled), keywords=("smart stacks", "cycle group", "stack shots", "duplicate stack"))
             add_action_command("view.show_hidden_folders", self.actions.show_hidden_folders, section="View", subtitle=self._toggle_state_text(self._show_hidden_folders), keywords=("hidden folders", "show hidden", "dot folders", "system folders"))
@@ -10373,14 +9921,6 @@ class MainWindow(QMainWindow):
             keeper_percentile=keeper_threshold,
             reject_percentile=reject_threshold,
         )
-
-    @classmethod
-    def _normalize_ai_label_near_duplicate_threshold(cls, value: object) -> float:
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            parsed = cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT
-        return max(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN, min(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX, parsed))
 
     def _load_phash_prefilter_settings(self) -> PHashPrefilterSettings:
         defaults = default_phash_prefilter_settings()
@@ -24586,15 +24126,10 @@ class MainWindow(QMainWindow):
             ai_keep_top_percent=self._ai_keep_top_percent_setting,
             ai_review_band_percent=self._ai_review_band_percent_setting,
             ai_base_score_weight_percent=self._ai_base_score_weight_percent_setting,
-            ai_label_near_duplicate_threshold=self._ai_label_near_duplicate_threshold,
             phash_prefilter_settings=self._phash_prefilter_settings,
             catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
             preset_save_callback=persist_workflow_presets,
-            file_associations_callback=self._open_file_associations_dialog,
-            keyboard_shortcuts_callback=self._open_keyboard_shortcuts_dialog,
-            toolbar_callback=self._show_workspace_toolbar_editor,
-            reset_layout_callback=self._reset_window_layout,
             shortcut_overrides=load_shortcut_overrides(),
             initial_section=initial_section,
             display_profile=self._display_profile or STANDARD_DISPLAY,
@@ -24661,7 +24196,6 @@ class MainWindow(QMainWindow):
         self._check_updates_on_startup = result.check_updates_on_startup
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
-        self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(result.ai_label_near_duplicate_threshold)
         self._phash_prefilter_settings = result.phash_prefilter_settings.normalized()
         new_keep_top = self._normalize_ai_keep_top_percent(result.ai_keep_top_percent)
         new_review_band = self._normalize_ai_review_band_percent(result.ai_review_band_percent)
@@ -24704,7 +24238,6 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
         self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
         self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
-        self._settings.setValue(self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY, self._ai_label_near_duplicate_threshold)
         self._save_phash_prefilter_settings(self._phash_prefilter_settings)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
         self._decision_store.touch_session(self._session_id)

@@ -141,9 +141,6 @@ def build_main_menu_bar(
     review_view_menu.addAction(actions.compare_mode)
     review_view_menu.addAction(actions.auto_advance)
 
-    view_menu.addSeparator()
-    view_menu.addAction(actions.open_ui_prototype)
-
     review_menu = menu_bar.addMenu("&Review")
     review_menu.addAction(actions.open_preview)
     review_menu.addAction(actions.winner_ladder_mode)
