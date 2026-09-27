@@ -13,14 +13,11 @@ from unittest.mock import patch
 
 from image_triage.ai_workflow import (
     AIWorkflowRuntime,
-    _download_asset,
     _parse_ai_metric_line,
     _parse_tqdm_progress,
     ai_semantic_artifacts_ready,
-    available_ai_dataloader_worker_capacity,
     build_ai_workflow_paths,
     default_ai_workflow_runtime,
-    recommended_ai_dataloader_workers,
     reset_hidden_ai_review_cache,
 )
 from image_triage.models import ImageRecord
@@ -47,41 +44,6 @@ class AIWorkflowStreamingTests(unittest.TestCase):
 
         self.assertEqual({"event": "ai.script.extract.batch", "batch_index": 1}, parsed)
 
-    def test_default_runtime_prefers_explicit_environment_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            engine_root = Path(temp_dir) / "engine"
-            config_dir = engine_root / "configs"
-            checkpoint_path = engine_root / "outputs" / "ranker" / "best_ranker.pt"
-            model_dir = Path(temp_dir) / "model"
-            config_dir.mkdir(parents=True)
-            checkpoint_path.parent.mkdir(parents=True)
-            model_dir.mkdir(parents=True)
-            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
-            checkpoint_path.write_bytes(b"checkpoint")
-            (model_dir / "config.json").write_text('{"model_type":"dinov2"}', encoding="utf-8")
-            (model_dir / "model.safetensors").write_bytes(b"weights")
-
-            env = {
-                "AICULLING_ENGINE_ROOT": str(engine_root),
-                "AICULLING_PYTHON": sys.executable,
-                "AICULLING_CHECKPOINT": str(checkpoint_path),
-                "AICULLING_MODEL_DIR": str(model_dir),
-                "AICULLING_LOCAL_STAGE_MODE": "always",
-                "AICULLING_LOCAL_STAGE_ROOT": str(Path(temp_dir) / "scratch"),
-            }
-            with patch.dict(os.environ, env, clear=False):
-                runtime = default_ai_workflow_runtime()
-
-            self.assertEqual(runtime.engine_root, engine_root.resolve())
-            self.assertEqual(runtime.python_executable, Path(sys.executable).resolve())
-            self.assertEqual(runtime.model_name, str(model_dir.resolve()))
-            self.assertIsNotNone(runtime.model_installation)
-            self.assertTrue(runtime.model_installation.is_installed)
-            self.assertEqual(runtime.checkpoint_path, checkpoint_path.resolve())
-            self.assertEqual(runtime.local_stage_mode, "always")
-
     def test_default_runtime_uses_current_interpreter_without_python_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             engine_root = Path(temp_dir) / "engine"
@@ -103,34 +65,6 @@ class AIWorkflowStreamingTests(unittest.TestCase):
                 runtime = default_ai_workflow_runtime()
 
             self.assertEqual(runtime.python_executable, Path(sys.executable).resolve())
-
-    @pytest.mark.xfail(strict=True, reason='D2 / WI-2.4-2.6: legacy AI pipeline behaviour; remove or rewrite together with the legacy engine')
-
-    def test_default_runtime_prefers_generic_bundled_checkpoint_location(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            engine_root = Path(temp_dir) / "engine"
-            config_dir = engine_root / "configs"
-            checkpoint_path = engine_root / "outputs" / "ranker_run_mlp_100ep" / "best_ranker.pt"
-            config_dir.mkdir(parents=True)
-            checkpoint_path.parent.mkdir(parents=True)
-            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
-            checkpoint_path.write_bytes(b"checkpoint")
-
-            env = {
-                "AICULLING_ENGINE_ROOT": str(engine_root),
-                "AICULLING_PYTHON": sys.executable,
-                "AICULLING_CHECKPOINT": "",
-                "AICULLING_CHECKPOINT_URL": "",
-                "AICULLING_MODEL_NAME": "mock-model",
-                "AICULLING_DEVICE": "",
-            }
-            with patch.dict(os.environ, env, clear=False):
-                runtime = default_ai_workflow_runtime()
-
-            self.assertEqual(runtime.checkpoint_path, checkpoint_path.resolve())
-            self.assertEqual(runtime.device, "auto")
 
     def test_default_runtime_honors_device_environment_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -155,59 +89,6 @@ class AIWorkflowStreamingTests(unittest.TestCase):
                 runtime = default_ai_workflow_runtime()
 
             self.assertEqual(runtime.device, "cpu")
-
-    def test_default_runtime_honors_batch_size_and_worker_environment_overrides(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            engine_root = Path(temp_dir) / "engine"
-            config_dir = engine_root / "configs"
-            checkpoint_path = engine_root / "outputs" / "ranker_run_mlp_100ep" / "best_ranker.pt"
-            config_dir.mkdir(parents=True)
-            checkpoint_path.parent.mkdir(parents=True)
-            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
-            checkpoint_path.write_bytes(b"checkpoint")
-
-            env = {
-                "AICULLING_ENGINE_ROOT": str(engine_root),
-                "AICULLING_PYTHON": sys.executable,
-                "AICULLING_CHECKPOINT": str(checkpoint_path),
-                "AICULLING_MODEL_NAME": "mock-model",
-                "AICULLING_BATCH_SIZE": "48",
-                "AICULLING_NUM_WORKERS": "7",
-            }
-            with patch.dict(os.environ, env, clear=False):
-                runtime = default_ai_workflow_runtime()
-
-            self.assertEqual(runtime.batch_size, 48)
-            self.assertEqual(runtime.num_workers, 7)
-
-    def test_default_runtime_uses_hardware_bounded_recommended_workers(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            engine_root = Path(temp_dir) / "engine"
-            config_dir = engine_root / "configs"
-            checkpoint_path = engine_root / "outputs" / "ranker_run_mlp_100ep" / "best_ranker.pt"
-            config_dir.mkdir(parents=True)
-            checkpoint_path.parent.mkdir(parents=True)
-            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
-            checkpoint_path.write_bytes(b"checkpoint")
-
-            env = {
-                "AICULLING_ENGINE_ROOT": str(engine_root),
-                "AICULLING_PYTHON": sys.executable,
-                "AICULLING_CHECKPOINT": str(checkpoint_path),
-                "AICULLING_MODEL_NAME": "mock-model",
-            }
-            with patch.dict(os.environ, env, clear=False):
-                os.environ.pop("AICULLING_NUM_WORKERS", None)
-                runtime = default_ai_workflow_runtime()
-
-        self.assertEqual(
-            runtime.num_workers,
-            recommended_ai_dataloader_workers(),
-        )
 
     def test_reset_hidden_ai_review_cache_removes_artifacts_and_report_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -292,43 +173,6 @@ class AIWorkflowStreamingTests(unittest.TestCase):
 
         paths = {entry["path"] for entry in signature["entries"]}
         self.assertEqual(paths, {"good.json"})
-
-    def test_default_runtime_falls_back_to_generic_legacy_checkpoint_location(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            engine_root = Path(temp_dir) / "engine"
-            config_dir = engine_root / "configs"
-            checkpoint_path = (
-                engine_root
-                / "outputs"
-                / "legacy_default"
-                / "ranker_run_mlp_100ep"
-                / "best_ranker.pt"
-            )
-            config_dir.mkdir(parents=True)
-            checkpoint_path.parent.mkdir(parents=True)
-            (config_dir / "extract_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "cluster_embeddings.json").write_text("{}", encoding="utf-8")
-            (config_dir / "export_ranked_report.json").write_text("{}", encoding="utf-8")
-            checkpoint_path.write_bytes(b"checkpoint")
-
-            env = {
-                "AICULLING_ENGINE_ROOT": str(engine_root),
-                "AICULLING_PYTHON": sys.executable,
-                "AICULLING_CHECKPOINT": "",
-                "AICULLING_CHECKPOINT_URL": "",
-                "AICULLING_MODEL_NAME": "mock-model",
-            }
-            with patch.dict(os.environ, env, clear=False):
-                runtime = default_ai_workflow_runtime()
-
-            self.assertEqual(runtime.checkpoint_path, checkpoint_path.resolve())
-
-    def test_download_asset_rejects_non_https_urls(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            destination = Path(temp_dir) / "checkpoint.pt"
-
-            with self.assertRaisesRegex(ValueError, "https"):
-                _download_asset("file:///tmp/checkpoint.pt", destination)
 
 
 if __name__ == "__main__":

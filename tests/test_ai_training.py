@@ -18,20 +18,16 @@ import numpy as np
 from image_triage.ai_training import (
     ai_training_source_needs_prepare,
     build_ai_training_paths,
-    build_general_ai_training_paths,
     diagnose_ranker_fit,
-    list_ranker_runs,
     list_registered_training_sources,
     normalize_ranker_profile,
     prepare_hidden_ai_training_workspace,
-    preview_general_training_pool,
     set_registered_training_source_enabled,
     suggest_training_profile,
 )
 from image_triage.ai_workflow import AIWorkflowRuntime
 from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord
-from image_triage.ai_training import RankerFitDiagnosis, RankerRunInfo
 
 
 class AITrainingTests(unittest.TestCase):
@@ -168,54 +164,6 @@ class AITrainingTests(unittest.TestCase):
         self.assertEqual("underfit", diagnosis.code)
         self.assertEqual("May Be Underfit", diagnosis.label)
 
-    def test_list_ranker_runs_loads_profile_and_fit_diagnosis(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_training_") as temp_dir:
-            folder = Path(temp_dir) / "shots"
-            folder.mkdir(parents=True, exist_ok=True)
-            paths = build_ai_training_paths(folder)
-            run_dir = paths.training_runs_dir / "portrait-run"
-            run_dir.mkdir(parents=True, exist_ok=True)
-            (run_dir / "best_ranker.pt").write_bytes(b"checkpoint")
-            (run_dir / "ranker_run.json").write_text(
-                json.dumps(
-                    {
-                        "run_id": "portrait-run",
-                        "display_name": "Portrait Run",
-                        "created_at": "2026-04-24T12:00:00-06:00",
-                        "pairwise_labels": 120,
-                        "cluster_labels": 18,
-                        "profile_key": "portrait",
-                        "profile_label": "Portrait",
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            (run_dir / "training_metrics.json").write_text(
-                json.dumps(
-                    {
-                        "best_epoch": 2,
-                        "best_validation_pairwise_accuracy": 0.91,
-                        "best_validation_loss": 0.34,
-                        "final_train_loss": 0.11,
-                        "final_validation_loss": 0.51,
-                        "final_validation_pairwise_accuracy": 0.84,
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            (run_dir / "resolved_config.json").write_text(
-                json.dumps({"num_epochs": 10}, indent=2),
-                encoding="utf-8",
-            )
-
-            runs = list_ranker_runs(paths)
-
-            self.assertEqual(1, len(runs))
-            self.assertEqual("Portrait", runs[0].profile_label)
-            self.assertEqual("overfit", runs[0].fit_diagnosis.code)
-
     def test_suggest_training_profile_prefers_astro_for_fits(self) -> None:
         records = [self._record(f"C:/astro/frame_{index:04d}.fits") for index in range(12)]
 
@@ -299,54 +247,6 @@ class AITrainingTests(unittest.TestCase):
                 all_sources = list_registered_training_sources(enabled_only=False)
                 self.assertEqual(1, len(all_sources))
                 self.assertFalse(all_sources[0].enabled)
-
-    def test_preview_general_training_pool_reports_retrain_guidance(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_general_preview_") as temp_dir:
-            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
-                folder = Path(temp_dir) / "folder_a"
-                folder.mkdir(parents=True, exist_ok=True)
-                self._write_training_source(folder, seed=2.0, pairwise_repetitions=30)
-
-                reference_run = RankerRunInfo(
-                    run_id="general-run",
-                    display_name="General Run",
-                    run_dir=Path(temp_dir) / "run",
-                    checkpoint_path=None,
-                    last_checkpoint_path=None,
-                    metrics_path=None,
-                    history_path=None,
-                    resolved_config_path=None,
-                    evaluation_metrics_path=None,
-                    train_log_path=None,
-                    evaluation_log_path=None,
-                    created_at="2026-04-25T12:00:00-06:00",
-                    pairwise_labels=1,
-                    cluster_labels=0,
-                    num_epochs=None,
-                    best_epoch=None,
-                    best_validation_accuracy=None,
-                    best_validation_loss=None,
-                    cluster_top1_hit_rate=None,
-                    reference_bank_path="",
-                    profile_key="general",
-                    profile_label="General Use",
-                    fit_diagnosis=RankerFitDiagnosis(
-                        code="healthy",
-                        label="Looks Healthy",
-                        summary="Balanced.",
-                        remedy="Keep going.",
-                    ),
-                    is_active=True,
-                    is_legacy=False,
-                )
-
-                status = preview_general_training_pool((str(folder),), reference_run=reference_run)
-
-            self.assertEqual(30, status.pairwise_labels)
-            self.assertEqual(1, status.cluster_labels)
-            self.assertGreaterEqual(status.labels_added_since_train, 30)
-            self.assertTrue(status.needs_retrain)
-            self.assertIn("Retraining is recommended", status.guidance_text)
 
 
 if __name__ == "__main__":

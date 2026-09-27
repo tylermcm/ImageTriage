@@ -26,12 +26,7 @@ import re
 
 import numpy as np
 
-from .ai_workflow import (
-    AIWorkflowPaths,
-    ARTIFACTS_DIR_NAME,
-    REPORT_DIR_NAME,
-    build_ai_workflow_paths,
-)
+from .ai_workflow import ARTIFACTS_DIR_NAME, REPORT_DIR_NAME, build_ai_workflow_paths
 from .metadata import CaptureMetadata
 from .models import ImageRecord
 from .ranker_fit import RankerFitDiagnosis, diagnose_ranker_fit
@@ -120,65 +115,8 @@ class AITrainingPaths:
     reference_bank_summary_path: Path
 
 
-@dataclass(slots=True)
-class RankerTrainingOptions:
-    """User-configurable knobs for a training run."""
-    run_name: str = ""
-    profile_key: str = DEFAULT_RANKER_PROFILE_KEY
-    num_epochs: int = 30
-    batch_size: int = 32
-    learning_rate: float = 0.001
-    hidden_dim: int = 0
-    disagreement_oversample_factor: int = 3
-    reference_bank_path: str = ""
-    reference_top_k: int = 3
-    device: str = "auto"
 
 
-
-@dataclass(slots=True, frozen=True)
-class RankerRunInfo:
-    """Summary metadata for one saved ranker run directory."""
-    run_id: str
-    display_name: str
-    run_dir: Path
-    checkpoint_path: Path | None
-    last_checkpoint_path: Path | None
-    metrics_path: Path | None
-    history_path: Path | None
-    resolved_config_path: Path | None
-    evaluation_metrics_path: Path | None
-    train_log_path: Path | None
-    evaluation_log_path: Path | None
-    created_at: str
-    pairwise_labels: int
-    cluster_labels: int
-    num_epochs: int | None
-    best_epoch: int | None
-    best_validation_accuracy: float | None
-    best_validation_loss: float | None
-    cluster_top1_hit_rate: float | None
-    reference_bank_path: str
-    profile_key: str
-    profile_label: str
-    fit_diagnosis: "RankerFitDiagnosis"
-    is_active: bool = False
-    is_legacy: bool = False
-    disagreement_pair_labels: int = 0
-
-
-@dataclass(slots=True, frozen=True)
-class GeneralTrainingPoolStatus:
-    """Status snapshot for the shared General Use label pool."""
-    paths: AITrainingPaths
-    pairwise_labels: int
-    cluster_labels: int
-    source_folders: int
-    labels_added_since_train: int = 0
-    needs_retrain: bool = False
-    guidance_text: str = ""
-    cached: bool = False
-    disagreement_pair_labels: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -307,56 +245,6 @@ def set_registered_training_source_enabled(namespace: str, enabled: bool) -> Non
     _write_label_sources_index()
 
 
-def build_general_ai_training_paths() -> AITrainingPaths:
-    """Resolve the shared General Use training workspace under app data."""
-    root = app_data_root() / GENERAL_TRAINING_ROOT_DIR_NAME / GENERAL_TRAINING_PROFILE_DIR_NAME
-    workflow_paths = AIWorkflowPaths(
-        folder=root,
-        hidden_root=root,
-        artifacts_dir=root / ARTIFACTS_DIR_NAME,
-        report_dir=root / REPORT_DIR_NAME,
-        ranked_export_path=(root / REPORT_DIR_NAME) / "ranked_clusters_export.csv",
-        html_report_path=(root / REPORT_DIR_NAME) / "ranked_clusters_report.html",
-        semantic_export_path=(root / REPORT_DIR_NAME) / "semantic_classifications.csv",
-        semantic_summary_path=(root / REPORT_DIR_NAME) / "semantic_classification_summary.json",
-    )
-    hidden_root = workflow_paths.hidden_root
-    labeling_artifacts_dir = hidden_root / LABELING_ARTIFACTS_DIR_NAME
-    labels_dir = hidden_root / LABELS_DIR_NAME
-    training_dir = hidden_root / TRAINING_DIR_NAME
-    training_runs_dir = training_dir / TRAINING_RUNS_DIR_NAME
-    evaluation_dir = hidden_root / EVALUATION_DIR_NAME
-    reference_bank_dir = hidden_root / REFERENCE_BANK_DIR_NAME
-    return AITrainingPaths(
-        folder=workflow_paths.folder,
-        hidden_root=hidden_root,
-        artifacts_dir=workflow_paths.artifacts_dir,
-        report_dir=workflow_paths.report_dir,
-        ranked_export_path=workflow_paths.ranked_export_path,
-        html_report_path=workflow_paths.html_report_path,
-        labeling_artifacts_dir=labeling_artifacts_dir,
-        labeling_metadata_path=labeling_artifacts_dir / "images.csv",
-        labeling_image_ids_path=labeling_artifacts_dir / "image_ids.json",
-        labeling_clusters_path=labeling_artifacts_dir / "clusters.csv",
-        labels_dir=labels_dir,
-        pairwise_labels_path=labels_dir / PAIRWISE_LABELS_FILENAME,
-        cluster_labels_path=labels_dir / CLUSTER_LABELS_FILENAME,
-        training_dir=training_dir,
-        training_runs_dir=training_runs_dir,
-        active_ranker_path=training_dir / ACTIVE_RANKER_FILENAME,
-        best_checkpoint_path=training_dir / BEST_CHECKPOINT_FILENAME,
-        last_checkpoint_path=training_dir / LAST_CHECKPOINT_FILENAME,
-        training_metrics_path=training_dir / TRAINING_METRICS_FILENAME,
-        training_history_path=training_dir / TRAINING_HISTORY_FILENAME,
-        evaluation_dir=evaluation_dir,
-        evaluation_metrics_path=evaluation_dir / EVALUATION_METRICS_FILENAME,
-        pairwise_breakdown_path=evaluation_dir / PAIRWISE_BREAKDOWN_FILENAME,
-        cluster_breakdown_path=evaluation_dir / CLUSTER_BREAKDOWN_FILENAME,
-        reference_bank_dir=reference_bank_dir,
-        reference_bank_path=reference_bank_dir / REFERENCE_BANK_FILENAME,
-        reference_bank_summary_path=reference_bank_dir / REFERENCE_BANK_SUMMARY_FILENAME,
-    )
-
 
 def prepare_hidden_ai_training_workspace(folder: str | Path) -> AITrainingPaths:
     """Ensure the central per-source training workspace exists and return its paths."""
@@ -456,88 +344,10 @@ def count_disagreement_pair_labels(paths: AITrainingPaths) -> int:
 
 
 
-def preview_general_training_pool(
-    source_folders: list[str] | tuple[str, ...],
-    *,
-    reference_run: RankerRunInfo | None = None,
-) -> GeneralTrainingPoolStatus:
-    """Compute shared-pool counts without rebuilding the pooled artifacts."""
-    paths = build_general_ai_training_paths()
-    sources = _collect_general_training_sources(source_folders)
-    pairwise_total = sum(source["pairwise_labels"] for source in sources)
-    cluster_total = sum(source["cluster_labels"] for source in sources)
-    disagreement_total = sum(source["disagreement_pair_labels"] for source in sources)
-    return _general_training_pool_status(
-        paths=paths,
-        pairwise_total=pairwise_total,
-        cluster_total=cluster_total,
-        disagreement_total=disagreement_total,
-        source_count=len(sources),
-        reference_run=reference_run,
-        cached=False,
-    )
 
 
 
-def resolve_trained_checkpoint(paths: AITrainingPaths) -> Path | None:
-    """Resolve the preferred checkpoint for scoring or evaluation in this workspace."""
-    active_selection = _read_active_ranker_selection(paths)
-    active_checkpoint = _checkpoint_from_active_selection(paths, active_selection)
-    if active_checkpoint is not None:
-        return active_checkpoint
-    for run in list_ranker_runs(paths):
-        if run.checkpoint_path is not None:
-            return run.checkpoint_path
-    return resolve_legacy_trained_checkpoint(paths)
 
-
-def resolve_legacy_trained_checkpoint(paths: AITrainingPaths) -> Path | None:
-    """Fallback to the pre-run-directory checkpoint layout used by older builds."""
-    for candidate in (paths.best_checkpoint_path, paths.last_checkpoint_path):
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def list_ranker_runs(paths: AITrainingPaths) -> tuple[RankerRunInfo, ...]:
-    """List all saved ranker runs, newest first, including the legacy layout."""
-    active_selection = _read_active_ranker_selection(paths)
-    active_checkpoint = _checkpoint_from_active_selection(paths, active_selection)
-    runs: list[RankerRunInfo] = []
-
-    if paths.training_runs_dir.exists():
-        for run_dir in sorted(
-            (item for item in paths.training_runs_dir.iterdir() if item.is_dir()),
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        ):
-            run = _load_ranker_run_info(run_dir, active_checkpoint=active_checkpoint)
-            if run is not None:
-                runs.append(run)
-
-    legacy_run = _load_legacy_ranker_run_info(paths, active_checkpoint=active_checkpoint)
-    if legacy_run is not None:
-        runs.append(legacy_run)
-
-    runs.sort(
-        key=lambda item: (
-            item.created_at,
-            item.run_dir.stat().st_mtime if item.run_dir.exists() else 0.0,
-        ),
-        reverse=True,
-    )
-    return tuple(runs)
-
-
-def find_ranker_run_by_checkpoint(paths: AITrainingPaths, checkpoint_path: str | Path | None) -> RankerRunInfo | None:
-    """Find the recorded run metadata that owns a checkpoint path."""
-    if checkpoint_path is None:
-        return None
-    candidate = Path(checkpoint_path).expanduser()
-    for run in list_ranker_runs(paths):
-        if run.checkpoint_path is not None and _same_path(candidate, run.checkpoint_path):
-            return run
-    return None
 
 
 
@@ -579,212 +389,11 @@ def _coerce_int(value: object) -> int:
 
 
 
-def _read_active_ranker_selection(paths: AITrainingPaths) -> dict[str, object]:
-    if not paths.active_ranker_path.exists():
-        return {}
-    try:
-        data = json.loads(paths.active_ranker_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _checkpoint_from_active_selection(paths: AITrainingPaths, selection: dict[str, object]) -> Path | None:
-    checkpoint_text = str(selection.get("checkpoint_path") or "").strip()
-    if checkpoint_text:
-        candidate = Path(checkpoint_text).expanduser()
-        if candidate.exists():
-            return candidate.resolve()
-    run_id = str(selection.get("run_id") or "").strip()
-    if run_id:
-        candidate = _resolve_run_checkpoint(paths.training_runs_dir / run_id)
-        if candidate is not None:
-            return candidate.resolve()
-    return None
-
-
-def _resolve_run_checkpoint(run_dir: Path) -> Path | None:
-    for candidate in (run_dir / BEST_CHECKPOINT_FILENAME, run_dir / LAST_CHECKPOINT_FILENAME):
-        if candidate.exists():
-            return candidate.resolve()
-    return None
 
 
 
-def _load_ranker_run_info(run_dir: Path, *, active_checkpoint: Path | None) -> RankerRunInfo | None:
-    checkpoint_path = _resolve_run_checkpoint(run_dir)
-    if checkpoint_path is None and not (run_dir / TRAINING_METRICS_FILENAME).exists():
-        return None
-
-    metadata = _read_json_dict(run_dir / RANKER_RUN_METADATA_FILENAME)
-    metrics = _read_json_dict(run_dir / TRAINING_METRICS_FILENAME)
-    resolved_config = _read_json_dict(run_dir / RESOLVED_CONFIG_FILENAME)
-    evaluation_dir = run_dir / EVALUATION_DIR_NAME
-    evaluation_metrics = _read_json_dict(evaluation_dir / EVALUATION_METRICS_FILENAME)
-
-    created_at = str(metadata.get("created_at") or "")
-    if not created_at:
-        created_at = datetime.fromtimestamp(run_dir.stat().st_mtime).astimezone().isoformat(timespec="seconds")
-    reference_bank_path = str(
-        metadata.get("reference_bank_path")
-        or resolved_config.get("reference_bank_path")
-        or ""
-    ).strip()
-    profile_key, profile_label = normalize_ranker_profile(
-        metadata.get("profile_key") or metadata.get("profile_label")
-    )
-    history_path = (run_dir / TRAINING_HISTORY_FILENAME) if (run_dir / TRAINING_HISTORY_FILENAME).exists() else None
-    metrics_path = (run_dir / TRAINING_METRICS_FILENAME) if (run_dir / TRAINING_METRICS_FILENAME).exists() else None
-    fit_diagnosis = load_ranker_fit_diagnosis(
-        metrics_path,
-        history_path,
-        num_epochs=_nested_int(resolved_config, "num_epochs"),
-    )
-
-    cluster_top1 = _nested_float(
-        evaluation_metrics,
-        "cluster_evaluation",
-        "top_k_metrics",
-        "top_1",
-        "hit_rate",
-    )
-    return RankerRunInfo(
-        run_id=str(metadata.get("run_id") or run_dir.name),
-        display_name=str(metadata.get("display_name") or run_dir.name),
-        run_dir=run_dir,
-        checkpoint_path=checkpoint_path,
-        last_checkpoint_path=(run_dir / LAST_CHECKPOINT_FILENAME).resolve() if (run_dir / LAST_CHECKPOINT_FILENAME).exists() else None,
-        metrics_path=metrics_path,
-        history_path=history_path,
-        resolved_config_path=(run_dir / RESOLVED_CONFIG_FILENAME) if (run_dir / RESOLVED_CONFIG_FILENAME).exists() else None,
-        evaluation_metrics_path=(evaluation_dir / EVALUATION_METRICS_FILENAME) if (evaluation_dir / EVALUATION_METRICS_FILENAME).exists() else None,
-        train_log_path=(run_dir / TRAINING_LOG_FILENAME) if (run_dir / TRAINING_LOG_FILENAME).exists() else None,
-        evaluation_log_path=(evaluation_dir / EVALUATION_LOG_FILENAME) if (evaluation_dir / EVALUATION_LOG_FILENAME).exists() else None,
-        created_at=created_at,
-        pairwise_labels=int(metadata.get("pairwise_labels") or metrics.get("label_summary", {}).get("pairwise_labels", 0) or 0),
-        cluster_labels=int(metadata.get("cluster_labels") or metrics.get("label_summary", {}).get("cluster_labels", 0) or 0),
-        num_epochs=_nested_int(resolved_config, "num_epochs"),
-        best_epoch=_nested_int(metrics, "best_epoch"),
-        best_validation_accuracy=_nested_float(metrics, "best_validation_pairwise_accuracy"),
-        best_validation_loss=_nested_float(metrics, "best_validation_loss"),
-        cluster_top1_hit_rate=cluster_top1,
-        reference_bank_path=reference_bank_path,
-        profile_key=profile_key,
-        profile_label=profile_label,
-        fit_diagnosis=fit_diagnosis,
-        is_active=bool(active_checkpoint and checkpoint_path and _same_path(active_checkpoint, checkpoint_path)),
-        is_legacy=False,
-        disagreement_pair_labels=int(
-            metadata.get("disagreement_pair_labels")
-            or metrics.get("label_summary", {}).get("source_mode_distribution", {}).get(AI_DISAGREEMENT_SOURCE_MODE, 0)
-            or 0
-        ),
-    )
 
 
-def _load_legacy_ranker_run_info(paths: AITrainingPaths, *, active_checkpoint: Path | None) -> RankerRunInfo | None:
-    checkpoint_path = resolve_legacy_trained_checkpoint(paths)
-    metrics_path = paths.training_metrics_path if paths.training_metrics_path.exists() else None
-    history_path = paths.training_history_path if paths.training_history_path.exists() else None
-    resolved_config_path = paths.training_dir / RESOLVED_CONFIG_FILENAME
-    evaluation_metrics_path = paths.evaluation_metrics_path if paths.evaluation_metrics_path.exists() else None
-    if checkpoint_path is None and metrics_path is None and history_path is None:
-        return None
-
-    metrics = _read_json_dict(paths.training_metrics_path)
-    resolved_config = _read_json_dict(resolved_config_path)
-    evaluation_metrics = _read_json_dict(paths.evaluation_metrics_path)
-    created_at = datetime.fromtimestamp(paths.training_dir.stat().st_mtime).astimezone().isoformat(timespec="seconds")
-    profile_key, profile_label = normalize_ranker_profile(DEFAULT_RANKER_PROFILE_KEY)
-    fit_diagnosis = load_ranker_fit_diagnosis(
-        metrics_path,
-        history_path,
-        num_epochs=_nested_int(resolved_config, "num_epochs"),
-    )
-    return RankerRunInfo(
-        run_id="legacy",
-        display_name="Legacy Ranker",
-        run_dir=paths.training_dir,
-        checkpoint_path=checkpoint_path,
-        last_checkpoint_path=paths.last_checkpoint_path.resolve() if paths.last_checkpoint_path.exists() else None,
-        metrics_path=metrics_path,
-        history_path=history_path,
-        resolved_config_path=resolved_config_path if resolved_config_path.exists() else None,
-        evaluation_metrics_path=evaluation_metrics_path,
-        train_log_path=(paths.training_dir / TRAINING_LOG_FILENAME) if (paths.training_dir / TRAINING_LOG_FILENAME).exists() else None,
-        evaluation_log_path=(paths.evaluation_dir / EVALUATION_LOG_FILENAME) if (paths.evaluation_dir / EVALUATION_LOG_FILENAME).exists() else None,
-        created_at=created_at,
-        pairwise_labels=int(metrics.get("label_summary", {}).get("pairwise_labels", 0) or 0),
-        cluster_labels=int(metrics.get("label_summary", {}).get("cluster_labels", 0) or 0),
-        num_epochs=_nested_int(resolved_config, "num_epochs"),
-        best_epoch=_nested_int(metrics, "best_epoch"),
-        best_validation_accuracy=_nested_float(metrics, "best_validation_pairwise_accuracy"),
-        best_validation_loss=_nested_float(metrics, "best_validation_loss"),
-        cluster_top1_hit_rate=_nested_float(
-            evaluation_metrics,
-            "cluster_evaluation",
-            "top_k_metrics",
-            "top_1",
-            "hit_rate",
-        ),
-        reference_bank_path=str(resolved_config.get("reference_bank_path") or "").strip(),
-        profile_key=profile_key,
-        profile_label=profile_label,
-        fit_diagnosis=fit_diagnosis,
-        is_active=bool(active_checkpoint and checkpoint_path and _same_path(active_checkpoint, checkpoint_path)),
-        is_legacy=True,
-        disagreement_pair_labels=int(
-            metrics.get("label_summary", {}).get("source_mode_distribution", {}).get(AI_DISAGREEMENT_SOURCE_MODE, 0)
-            or 0
-        ),
-    )
-
-
-def _general_training_pool_status(
-    *,
-    paths: AITrainingPaths,
-    pairwise_total: int,
-    cluster_total: int,
-    disagreement_total: int,
-    source_count: int,
-    reference_run: RankerRunInfo | None,
-    cached: bool,
-) -> GeneralTrainingPoolStatus:
-    previous_pairwise = reference_run.pairwise_labels if reference_run is not None else 0
-    previous_cluster = reference_run.cluster_labels if reference_run is not None else 0
-    labels_added = max(0, pairwise_total - previous_pairwise) + max(0, cluster_total - previous_cluster)
-    needs_retrain = labels_added >= GENERAL_RETRAIN_RECOMMENDATION_MIN_LABELS
-    if source_count <= 0 or (pairwise_total <= 0 and cluster_total <= 0):
-        guidance_text = "General Use has no pooled labels yet. Collect labels in one or more folders first."
-    elif reference_run is None:
-        guidance_text = (
-            f"General Use can train from {source_count} labeled folder(s): "
-            f"{pairwise_total} pairwise, {cluster_total} cluster, "
-            f"and {disagreement_total} AI dispute labels."
-        )
-    elif labels_added <= 0:
-        guidance_text = "General Use is up to date with the pooled labels."
-    elif needs_retrain:
-        guidance_text = (
-            f"General Use has {labels_added} new labels since "
-            f"{reference_run.display_name}. Retraining is recommended."
-        )
-    else:
-        guidance_text = (
-            f"General Use has {labels_added} new labels since "
-            f"{reference_run.display_name}. Wait for a slightly larger batch unless ranking slipped."
-        )
-    return GeneralTrainingPoolStatus(
-        paths=paths,
-        pairwise_labels=pairwise_total,
-        cluster_labels=cluster_total,
-        source_folders=source_count,
-        labels_added_since_train=labels_added,
-        needs_retrain=needs_retrain,
-        guidance_text=guidance_text,
-        cached=cached,
-        disagreement_pair_labels=disagreement_total,
-    )
 
 
 def _central_label_sources_root() -> Path:
@@ -972,49 +581,6 @@ def _collect_labeled_training_cluster_ids(paths: AITrainingPaths) -> set[str]:
 
 
 
-def _collect_general_training_sources(source_folders: list[str] | tuple[str, ...]) -> list[dict[str, object]]:
-    collected: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for folder in source_folders:
-        normalized_folder = _normalize_source_folder(folder)
-        if not normalized_folder:
-            continue
-        folder_key = normalized_folder.casefold()
-        if folder_key in seen:
-            continue
-        seen.add(folder_key)
-        paths = build_ai_training_paths(normalized_folder)
-        if not ai_training_artifacts_ready(paths):
-            continue
-        _register_training_label_source(paths)
-        _migrate_legacy_folder_labels(paths)
-        pairwise_count, cluster_count = count_label_records(paths)
-        disagreement_count = count_disagreement_pair_labels(paths)
-        if pairwise_count <= 0 and cluster_count <= 0:
-            continue
-        collected.append(
-            {
-                "folder": normalized_folder,
-                "paths": paths,
-                "namespace": _general_source_namespace(normalized_folder),
-                "pairwise_labels": pairwise_count,
-                "cluster_labels": cluster_count,
-                "disagreement_pair_labels": disagreement_count,
-                "signatures": tuple(
-                    _path_signature(candidate)
-                    for candidate in (
-                        paths.artifacts_dir / "images.csv",
-                        paths.artifacts_dir / "embeddings.npy",
-                        paths.artifacts_dir / "image_ids.json",
-                        paths.artifacts_dir / "clusters.csv",
-                        paths.pairwise_labels_path,
-                        paths.cluster_labels_path,
-                    )
-                ),
-            }
-        )
-    return collected
-
 
 
 
@@ -1085,26 +651,6 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return []
 
 
-def _read_training_history_rows(path: Path | None) -> list[dict[str, object]]:
-    if path is None or not path.exists():
-        return []
-    try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            return [dict(row) for row in csv.DictReader(handle) if row]
-    except (OSError, csv.Error):
-        return []
-
-
-def load_ranker_fit_diagnosis(
-    metrics_path: Path | None,
-    history_path: Path | None,
-    *,
-    num_epochs: int | None = None,
-) -> RankerFitDiagnosis:
-    """Load metrics/history files and translate them into a user-facing fit summary."""
-    metrics = _read_json_dict(metrics_path) if metrics_path is not None else {}
-    history_rows = _read_training_history_rows(history_path)
-    return diagnose_ranker_fit(metrics=metrics, history_rows=history_rows, num_epochs=num_epochs)
 
 
 def _nested_float(payload: dict[str, object], *keys: str) -> float | None:

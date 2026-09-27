@@ -106,17 +106,9 @@ from .archive_ops import (
 )
 from .annotation_queue import AnnotationPersistenceQueue
 from .ai_training import (
-    GeneralTrainingPoolStatus,
     RankerFitDiagnosis,
-    RankerRunInfo,
-    build_ai_training_paths,
-    build_general_ai_training_paths,
-    find_ranker_run_by_checkpoint,
-    list_registered_training_sources,
     normalize_ranker_profile,
-    preview_general_training_pool,
     prepare_hidden_ai_training_workspace,
-    resolve_trained_checkpoint,
     suggest_training_profile,
 )
 from .ai_workflow import (
@@ -2638,9 +2630,6 @@ class MainWindow(QMainWindow):
     )
     SHORTCUT_OVERRIDES_KEY = "shortcuts/overrides"
     AI_SETUP_PROMPTED_KEY = "ai/setup_prompted"
-    AI_CHECKPOINT_OVERRIDE_KEY = "ai/checkpoint_override"
-    AI_REFERENCE_BANK_KEY = "ai/reference_bank_path"
-    AI_SIGNAL_WEIGHTS_KEY = "ai/culling_signal_weights_path"
     BURST_GROUPS_KEY = "view/burst_groups"
     BURST_STACKS_KEY = "view/burst_stacks"
     AUTO_ADVANCE_KEY = "view/auto_advance"
@@ -3213,8 +3202,6 @@ class MainWindow(QMainWindow):
         self._ai_runtime = default_ai_workflow_runtime()
         if self._ai_runtime.model_installation is not None:
             self._ai_model_installation = self._ai_runtime.model_installation
-        self._default_ai_checkpoint_path = self._ai_runtime.checkpoint_path
-        self._active_reference_bank_path = ""
         self._scan_pool = QThreadPool(self)
         self._scan_pool.setMaxThreadCount(1)
         self._ai_run_pool = QThreadPool(self)
@@ -3633,7 +3620,6 @@ class MainWindow(QMainWindow):
         self._collection_previous_inspector_enabled = True
         self._visible_burst_groups: list[tuple[int, ...]] = []
         self._burst_group_map: dict[str, BurstVisualInfo] = {}
-        self._apply_saved_ai_training_preferences()
         self._command_palette_open = False
         self._active_command_palette: CommandPaletteDialog | None = None
         self._command_palette_dialogs: dict[str, CommandPaletteDialog] = {}
@@ -18410,113 +18396,6 @@ class MainWindow(QMainWindow):
                 command_ids.append(value)
         return command_ids[:12]
 
-    def _apply_saved_ai_training_preferences(self) -> None:
-        checkpoint_override = self._settings.value(self.AI_CHECKPOINT_OVERRIDE_KEY, "", str)
-        if isinstance(checkpoint_override, str) and checkpoint_override:
-            candidate = Path(checkpoint_override).expanduser()
-            if candidate.exists():
-                self._ai_runtime = replace(self._ai_runtime, checkpoint_path=candidate.resolve())
-            else:
-                self._settings.remove(self.AI_CHECKPOINT_OVERRIDE_KEY)
-
-        reference_bank_path = self._settings.value(self.AI_REFERENCE_BANK_KEY, "", str)
-        if isinstance(reference_bank_path, str) and reference_bank_path:
-            candidate = Path(reference_bank_path).expanduser()
-            if candidate.exists():
-                self._active_reference_bank_path = str(candidate.resolve())
-            else:
-                self._settings.remove(self.AI_REFERENCE_BANK_KEY)
-                self._active_reference_bank_path = ""
-
-        signal_weights_path = self._settings.value(self.AI_SIGNAL_WEIGHTS_KEY, "", str)
-        if isinstance(signal_weights_path, str) and signal_weights_path:
-            candidate = Path(signal_weights_path).expanduser()
-            if not candidate.exists():
-                self._settings.remove(self.AI_SIGNAL_WEIGHTS_KEY)
-
-    def _ai_training_paths_for_folder(self, folder: str | None = None):
-        target_folder = folder or self._current_folder
-        if not target_folder:
-            return None
-        try:
-            return build_ai_training_paths(target_folder)
-        except Exception:
-            return None
-
-    def _general_ai_training_paths(self):
-        try:
-            return build_general_ai_training_paths()
-        except Exception:
-            return None
-
-    def _general_training_source_folders(self, folder: str | None = None) -> tuple[str, ...]:
-        candidates: list[str] = []
-        seen: set[str] = set()
-        registered_sources = list_registered_training_sources(enabled_only=False)
-        registered_keys = {
-            normalized_path_key(source.folder)
-            for source in registered_sources
-            if source.folder
-        }
-
-        def add_candidate(value: str) -> None:
-            normalized = normalize_filesystem_path(value)
-            if not normalized or not os.path.isdir(normalized):
-                return
-            key = normalized_path_key(normalized)
-            if key in seen:
-                return
-            seen.add(key)
-            candidates.append(normalized)
-
-        target_folder = folder or self._current_folder
-        if target_folder and normalized_path_key(target_folder) not in registered_keys:
-            add_candidate(target_folder)
-        for source in registered_sources:
-            if source.enabled:
-                add_candidate(source.folder)
-        return tuple(candidates)
-
-    def _active_ranker_run(self, checkpoint_path: Path | None = None) -> RankerRunInfo | None:
-        active_checkpoint = checkpoint_path or self._current_trained_checkpoint_path()
-        if active_checkpoint is None:
-            return None
-        for paths in (self._ai_training_paths_for_folder(), self._general_ai_training_paths()):
-            if paths is None:
-                continue
-            run = find_ranker_run_by_checkpoint(paths, active_checkpoint)
-            if run is not None:
-                return run
-        return None
-
-    def _general_training_pool_status(self, folder: str | None = None) -> GeneralTrainingPoolStatus:
-        active_run = self._active_ranker_run()
-        reference_run = active_run if active_run is not None and active_run.profile_key == "general" else None
-        return preview_general_training_pool(
-            self._general_training_source_folders(folder),
-            reference_run=reference_run,
-        )
-
-    def _current_trained_checkpoint_path(self) -> Path | None:
-        current_checkpoint = self._ai_runtime.checkpoint_path
-        if (
-            current_checkpoint.exists()
-            and normalized_path_key(str(current_checkpoint))
-            != normalized_path_key(str(self._default_ai_checkpoint_path))
-        ):
-            return current_checkpoint
-        paths = self._ai_training_paths_for_folder()
-        if paths is not None:
-            checkpoint = resolve_trained_checkpoint(paths)
-            if checkpoint is not None:
-                return checkpoint
-        general_paths = self._general_ai_training_paths()
-        if general_paths is not None:
-            checkpoint = resolve_trained_checkpoint(general_paths)
-            if checkpoint is not None:
-                return checkpoint
-        return None
-
     def _save_favorites(self) -> None:
         self._settings.setValue(self.FAVORITES_KEY, self._favorites)
 
@@ -21793,7 +21672,6 @@ class MainWindow(QMainWindow):
             probe["phash_available"] = bool(folder and build_phash_prefilter_paths(folder).rows_path.exists())
         except Exception:
             probe["phash_available"] = False
-        probe["active_checkpoint"] = self._current_trained_checkpoint_path()
         self._ai_folder_probe_cache = probe
         return probe
 
@@ -21964,22 +21842,15 @@ class MainWindow(QMainWindow):
             self.ai_status_label.setText("No AI cache for this folder yet")
         step_start = log_step("ai_toolbar_state.status_label", step_start)
 
-        active_checkpoint = ai_probe["active_checkpoint"]
-        step_start = log_step("ai_toolbar_state.active_checkpoint", step_start, has_checkpoint=active_checkpoint is not None)
         runtime_lines = [
             f"Python: {self._ai_runtime.python_executable}",
-            f"Engine: {self._ai_runtime.engine_root}",
             f"Runtime installed: {ai_runtime_ready}",
             f"Semantic model: {self._ai_runtime.semantic_model_name}",
             f"Semantic model installed: {semantic_model_ready}",
-            f"Checkpoint: {active_checkpoint or self._ai_runtime.checkpoint_path}",
             f"Embedding batch size: {self._ai_embed_batch_size_label()}",
             f"CLI-Culler CLIP model: {self._ai_clip_model_variant_label()}",
             f"TOPIQ model installed: {self._aiculler_topiq_model_available()}",
             f"InsightFace models installed: {self._aiculler_face_model_available()}",
-            f"Embedding workers: {self._ai_runtime.num_workers}",
-            f"Local staging: {self._ai_runtime.local_stage_mode}",
-            f"Semantic sidecar: {'enabled' if self._ai_semantic_sidecar_enabled else 'disabled'}",
         ]
         runtime_status = self._managed_ai_runtime_status()
         runtime_lines.append(f"Runtime cache: {runtime_status.directories.root}")
@@ -21997,10 +21868,6 @@ class MainWindow(QMainWindow):
             f"InsightFace model dir: {self._managed_aiculler_face_model_installation().install_dir}"
         )
         runtime_lines.append(f"Managed semantic model dir: {self._managed_semantic_model_installation().install_dir}")
-        if self._active_reference_bank_path:
-            runtime_lines.append(f"Reference bank: {self._active_reference_bank_path}")
-        if self._ai_runtime.local_stage_root is not None:
-            runtime_lines.append(f"Stage root: {self._ai_runtime.local_stage_root}")
         if ai_paths is not None:
             runtime_lines.append(f"Hidden cache: {ai_paths.hidden_root}")
         runtime_lines.append("Tag legend:")
