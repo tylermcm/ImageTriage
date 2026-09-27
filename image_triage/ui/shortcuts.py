@@ -10,7 +10,7 @@ registry and calls setShortcut on each action.
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+from typing import Mapping
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QKeySequence

@@ -1,0 +1,88 @@
+# Whitelist for scripts/reachability_report.py (WI-2.1).
+#
+# Two kinds of line (comments start with #):
+#   bare_name              -> a method name that is called by Qt or by name at
+#                             runtime, so "no references" does not mean dead
+#   path::Class.member     -> a specific identifier (fnmatch wildcards allowed)
+#
+# Every entry must say why. Add entries only after verifying the dynamic use.
+
+# ---- Qt virtual overrides: invoked by the framework, never by name
+paintEvent
+mousePressEvent
+mouseMoveEvent
+mouseReleaseEvent
+mouseDoubleClickEvent
+wheelEvent
+keyPressEvent
+keyReleaseEvent
+resizeEvent
+showEvent
+hideEvent
+closeEvent
+enterEvent
+leaveEvent
+dragEnterEvent
+dragMoveEvent
+dropEvent
+dragLeaveEvent
+contextMenuEvent
+eventFilter
+event
+focusInEvent
+focusOutEvent
+sizeHint
+minimumSizeHint
+changeEvent
+moveEvent
+timerEvent
+nativeEvent
+run
+data
+rowCount
+columnCount
+headerData
+flags
+setData
+index
+createEditor
+paint
+setEditorData
+setModelData
+updateEditorGeometry
+hitButton
+drawRow
+drawBranches
+scrollContentsBy
+viewportEvent
+setRootIndex
+accept
+reject
+done
+initStyleOption
+sizeHintForRow
+selectionChanged
+currentChanged
+rowsInserted
+rowsRemoved
+dataChanged
+filterAcceptsRow
+lessThan
+mimeData
+mimeTypes
+dropMimeData
+supportedDropActions
+setVisible
+focusNextPrevChild
+keyboardSearch
+
+# ---- re-exports reached through a module alias (e.g. popout_ratios.ratio_px)
+image_triage/ui/popout_layout_ratios.py::ratio_px
+
+# ---- signals that are emit-only API or emitted by passing .emit as a callback
+image_triage/preview.py::FullScreenPreview.command_palette_requested   # .emit is passed to clicked.connect / addAction
+image_triage/annotation_queue.py::AnnotationPersistenceQueue.flushed   # emitted; optional observer hook
+image_triage/semantic_index.py::SemanticIndexSignals.batch_ready       # emitted; optional observer hook
+image_triage/transfer_progress.py::TransferWorker.itemDone             # emitted per item; the dialog uses totals/progress
+image_triage/transfer_progress.py::TransferWorker.itemFailed
+image_triage/ui/preview_studio.py::Segmented.selected                  # emitted; callers may connect

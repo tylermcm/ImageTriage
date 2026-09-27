@@ -2013,9 +2013,6 @@ class InspectorPanel(QWidget):
     analyze_requested = Signal()
     reject_requested = Signal()
     compare_requested = Signal()
-    best_of_set_requested = Signal()
-    open_editor_requested = Signal()
-    reveal_requested = Signal()
     popout_requested = Signal()
     swap_side_requested = Signal()
     close_requested = Signal()
@@ -2382,25 +2379,6 @@ class InspectorPanel(QWidget):
         self.details_body.setMinimumHeight(stack_height)
         layout.invalidate()
         layout.activate()
-
-    def _make_quick_actions(self, layout: QVBoxLayout) -> dict[str, QPushButton]:
-        body = QWidget(self)
-        row = QGridLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setHorizontalSpacing(6)
-        row.setVerticalSpacing(6)
-        buttons = {
-            "keep": self._quick_button("Keep", self.keep_requested),
-            "reject": self._quick_button("Reject", self.reject_requested),
-            "editor": self._quick_button("Open in Editor", self.open_editor_requested),
-            "reveal": self._quick_button("Reveal File", self.reveal_requested),
-        }
-        for index, button in enumerate(buttons.values()):
-            row.addWidget(button, index // 2, index % 2)
-        body.setLayout(row)
-        section = InspectorSection("quick_actions", "Quick Actions", body, parent=self)
-        layout.addWidget(section)
-        return buttons
 
     def _quick_button(self, text: str, signal: Signal | None) -> QPushButton:
         button = QPushButton(text, self)
@@ -3053,11 +3031,6 @@ class InspectorPanel(QWidget):
             button.setEnabled(enabled)
 
     @staticmethod
-    def _safe_text(value: object, fallback: str = "-") -> str:
-        text = str(value or "").strip()
-        return text if text and text.lower() not in {"none", "null"} else fallback
-
-    @staticmethod
     def _first_text(*values: object) -> str:
         for value in values:
             text = str(value or "").strip()
@@ -3110,18 +3083,6 @@ class InspectorPanel(QWidget):
             return "Unavailable"
 
     @staticmethod
-    def _quality_level(score: float | None, stats: InspectionStats | None = None) -> str:
-        if stats is not None and stats.width > 0 and stats.detail_valid_tile_count < 4:
-            return "Low-detail frame"
-        if score is None or score <= 0:
-            return "Not analyzed"
-        if score >= 70:
-            return "High"
-        if score >= 40:
-            return "Moderate"
-        return "Low"
-
-    @staticmethod
     def _focus_level(score: float | None, stats: InspectionStats | None = None) -> str:
         if stats is not None and stats.width > 0 and stats.detail_valid_tile_count < 4:
             return "Inconclusive"
@@ -3132,18 +3093,6 @@ class InspectorPanel(QWidget):
         if score >= 40:
             return "Acceptable"
         return "Blur detected"
-
-    @staticmethod
-    def _motion_blur_level(score: float, *, analyzed: bool, stats: InspectionStats | None = None) -> str:
-        if not analyzed:
-            return "Not analyzed"
-        if stats is not None and stats.detail_valid_tile_count < 4:
-            return "Not detected"
-        if score >= 70:
-            return "Possible"
-        if score >= 40:
-            return "Possible"
-        return "Not detected"
 
     @staticmethod
     def _noise_level(score: float, *, analyzed: bool) -> str:
@@ -3164,43 +3113,6 @@ class InspectorPanel(QWidget):
         if stats.shadow_clip_pct >= 4.0 or stats.median_luminance <= 55:
             return "Underexposed"
         return "Properly exposed"
-
-    @staticmethod
-    def _quality_confidence_label(stats: InspectionStats) -> str:
-        if stats.width <= 0 or stats.height <= 0:
-            return "Not analyzed"
-        if stats.detail_valid_tile_count < 4:
-            return "Low"
-        if stats.detail_confidence >= 70:
-            return "Medium"
-        return "Low"
-
-    @staticmethod
-    def _best_candidate_text(ai_result: "AIImageResult | None", workflow_insight: object | None) -> str:
-        if bool(getattr(workflow_insight, "best_in_group", False)):
-            return "Yes"
-        if ai_result is not None and bool(getattr(ai_result, "is_top_pick", False)):
-            return "Yes"
-        if ai_result is not None and getattr(ai_result, "group_size", 0) > 1:
-            return "No"
-        return "-"
-
-    @staticmethod
-    def _worth_editing_text(
-        annotation: "SessionAnnotation | None",
-        ai_result: "AIImageResult | None",
-        workflow_insight: object | None,
-    ) -> str:
-        if annotation is not None:
-            if annotation.winner:
-                return "Yes"
-            if annotation.reject:
-                return "No"
-        if bool(getattr(workflow_insight, "best_in_group", False)):
-            return "Yes"
-        if ai_result is not None and bool(getattr(ai_result, "is_top_pick", False)):
-            return "Yes"
-        return "Not analyzed"
 
 
 def build_workspace_docks(

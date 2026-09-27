@@ -1789,17 +1789,6 @@ class FullScreenPreview(QDialog):
         if hasattr(self, "_mockup_metadata_bar"):
             self._apply_mockup_metrics()
 
-    def _studio_group_label(self, text: str) -> QLabel:
-        label = QLabel(text.upper())
-        label.setObjectName("groupLabel")
-        return label
-
-    def _studio_divider(self) -> QFrame:
-        line = QFrame()
-        line.setObjectName("vline")
-        line.setFixedWidth(1)
-        return line
-
     def _build_studio_nav_pill(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("navPill")
@@ -1932,12 +1921,6 @@ class FullScreenPreview(QDialog):
         layout.addWidget(settings_button)
         settings_menu.addAction("Close preview", self.close)
         return toolbar
-
-    def _toggle_mockup_maximized(self) -> None:
-        if self.isMaximized() or self.isFullScreen():
-            self.showNormal()
-        else:
-            self.showMaximized()
 
     def _build_studio_actionbar(self) -> QFrame:
         toolbar = QFrame()
@@ -2913,9 +2896,6 @@ class FullScreenPreview(QDialog):
 
     def compare_mode(self) -> bool:
         return self._compare_mode
-
-    def compare_count(self) -> int:
-        return self._compare_count
 
     def set_compare_mode(self, enabled: bool) -> None:
         if self._compare_mode == enabled:
@@ -5307,11 +5287,6 @@ class FullScreenPreview(QDialog):
             if self._focus_assist_enabled:
                 self._render_all()
 
-    def cycle_focus_assist_strength(self) -> None:
-        current_index = self.focus_assist_strength_combo.currentIndex()
-        next_index = (current_index + 1) % max(1, self.focus_assist_strength_combo.count())
-        self.focus_assist_strength_combo.setCurrentIndex(next_index)
-
     def focus_assist_dim_background(self) -> bool:
         return self._focus_assist_dim_background
 
@@ -5477,9 +5452,6 @@ class FullScreenPreview(QDialog):
             f"{adjusted} adjustment{'s' if adjusted != 1 else ''}" if adjusted else ""
         )
         self._mockup_render_state.setText("●  Preview rendered" if not image.isNull() else "Loading preview…")
-
-    def winner_ladder_mode_enabled(self) -> bool:
-        return self._winner_ladder_mode
 
     def set_winner_ladder_mode(self, enabled: bool) -> None:
         normalized = bool(enabled)

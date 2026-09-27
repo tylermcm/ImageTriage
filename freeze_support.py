@@ -138,8 +138,8 @@ class FreezeAssetLayout:
             (str(self.ai_stage_root.parent), "ai_runtime"),
             (str(ROOT / "packaging" / "ai_runtime_locks"), "packaging/ai_runtime_locks"),
             (
-                str(ROOT / "image_triage" / "ui" / "assets" / "splash_background-v4.png"),
-                "lib/image_triage/ui/assets/splash_background-v4.png",
+                str(ROOT / "image_triage" / "ui" / "assets" / "splash_background-v7.png"),
+                "lib/image_triage/ui/assets/splash_background-v7.png",
             ),
             (
                 str(ROOT / "image_triage" / "ui" / "assets" / "app_icon-v2.ico"),

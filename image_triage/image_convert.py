@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QRunnable, QSize, Signal
 
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .image_ops import load_image_for_transform, normalized_output_path_key, save_transformed_image
-from .image_resize import OUTPUT_FORMAT_NAMES, WRITABLE_IMAGE_SUFFIXES
+from .image_resize import OUTPUT_FORMAT_NAMES
 
 
 @dataclass(slots=True, frozen=True)
