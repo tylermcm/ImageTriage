@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""External AI culling pipeline orchestration and stage caching.
+"""Shared AI runtime configuration and per-folder AI artifact layout.
 
-This module owns the contract between Image Triage and the separate
-AICullingPipeline runtime. It resolves runtime paths, stages supported images,
-builds deterministic cache keys for each AI stage, and executes the extraction,
-grouping, and report commands on worker threads.
+Resolves the managed Python, model and device settings used by the editor mask
+services and the AI setup flows, and owns the hidden per-folder `.image_triage_ai`
+layout (paths, readiness checks, cache reset). The AI Culler run itself lives in
+`aiculler_workflow`.
 """
 
 import ctypes
@@ -22,7 +22,6 @@ import tempfile
 import time
 import traceback
 import urllib.request
-from urllib.parse import urlparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -52,114 +51,18 @@ TQDM_PROGRESS_PATTERN = re.compile(
 )
 AI_METRIC_PREFIX = "AI_METRIC "
 AI_METRICS_ENV_VAR = "IMAGE_TRIAGE_AI_METRICS"
-AI_RUNTIME_DIR_NAME = "ai_runtime"
 AI_RUNNER_TARGET_NAME = "ai_python_runner.exe" if os.name == "nt" else "ai_python_runner"
 AI_RUNNER_SCRIPT_RELATIVE_PATH = Path("packaging") / "ai_python_runner.py"
-DEFAULT_RANKER_RUN_DIR_NAME = "ranker_run_mlp_100ep"
-DEFAULT_BUNDLED_CHECKPOINT_RELATIVE_PATH = (
-    Path("outputs") / DEFAULT_RANKER_RUN_DIR_NAME / "best_ranker.pt"
-)
-LEGACY_BUNDLED_CHECKPOINT_RELATIVE_PATH = (
-    Path("outputs") / "legacy_default" / DEFAULT_RANKER_RUN_DIR_NAME / "best_ranker.pt"
-)
-REQUIRED_AI_SCRIPT_RELATIVE_PATHS = (
-    "scripts/extract_embeddings.py",
-    "scripts/cluster_embeddings.py",
-    "scripts/export_ranked_report.py",
-)
-RECOMMENDED_AI_DATALOADER_WORKERS = 4
-
 
 @dataclass(slots=True, frozen=True)
 class AIWorkflowRuntime:
-    """Fully resolved runtime configuration for the external AI pipeline."""
-    engine_root: Path
+    """Resolved runtime configuration shared by the managed AI runtime and the mask services."""
     python_executable: Path | None
     model_name: str
-    checkpoint_path: Path
-    extraction_config_path: Path
-    clustering_config_path: Path
-    report_config_path: Path
-    semantic_config_path: Path = Path()
     model_installation: AIModelInstallation | None = None
-    checkpoint_download_url: str | None = None
     device: str = "auto"
     batch_size: int = 16
-    num_workers: int = 4
-    local_stage_mode: str = "auto"
-    local_stage_root: Path | None = None
-    semantic_sidecar_enabled: bool = False
     semantic_model_name: str = "openai/clip-vit-base-patch32"
-    semantic_batch_size: int = 16
-
-    def validate(self) -> None:
-        """Fail fast if the configured runtime cannot actually execute."""
-        missing: list[str] = []
-        for label, path in (
-            ("engine root", self.engine_root),
-            ("extract config", self.extraction_config_path),
-            ("cluster config", self.clustering_config_path),
-            ("report config", self.report_config_path),
-        ):
-            if not path.exists():
-                missing.append(f"{label}: {path}")
-        if self.semantic_sidecar_enabled:
-            if not self.semantic_config_path.exists():
-                missing.append(f"semantic config: {self.semantic_config_path}")
-            semantic_script = self.engine_root / "scripts/classify_images.py"
-            semantic_executable = semantic_script.with_suffix(".exe")
-            if not semantic_executable.exists() and not semantic_script.exists():
-                missing.append(f"semantic tool: {semantic_script}")
-            if not self.semantic_model_name:
-                missing.append("semantic model: (missing)")
-        for script_relative_path in REQUIRED_AI_SCRIPT_RELATIVE_PATHS:
-            script_path = self.engine_root / script_relative_path
-            script_executable = script_path.with_suffix(".exe")
-            if script_executable.exists():
-                continue
-            if not script_path.exists():
-                missing.append(f"ai tool: {script_path}")
-                continue
-            if self.python_executable is None:
-                missing.append("python executable: (missing)")
-            elif not self.python_executable.exists():
-                missing.append(f"python executable: {self.python_executable}")
-        if self.model_installation is not None and not self.model_installation.is_installed:
-            missing.extend(f"ai model: {path}" for path in self.model_installation.missing_files)
-        elif self.model_name:
-            model_path = Path(self.model_name).expanduser()
-            if (
-                model_path.is_absolute()
-                or "/" in self.model_name
-                or "\\" in self.model_name
-                or self.model_name.startswith(".")
-            ):
-                if not model_path.exists():
-                    missing.append(f"ai model: {model_path}")
-                elif model_path.is_dir():
-                    for filename in ("config.json", "model.safetensors"):
-                        candidate = model_path / filename
-                        if not candidate.exists():
-                            missing.append(f"ai model: {candidate}")
-        if not self.checkpoint_path.exists():
-            if self.checkpoint_download_url:
-                try:
-                    _download_asset(self.checkpoint_download_url, self.checkpoint_path)
-                except Exception as exc:
-                    missing.append(f"checkpoint download failed: {exc}")
-            if not self.checkpoint_path.exists():
-                if self.checkpoint_download_url:
-                    missing.append(
-                        f"checkpoint: {self.checkpoint_path} (download from {self.checkpoint_download_url})"
-                    )
-                else:
-                    missing.append(
-                        f"checkpoint: {self.checkpoint_path} (missing; set AICULLING_CHECKPOINT or AICULLING_CHECKPOINT_URL)"
-                    )
-        if self.local_stage_mode not in {"auto", "always", "off"}:
-            raise ValueError("local_stage_mode must be 'auto', 'always', or 'off'.")
-        if missing:
-            raise FileNotFoundError("Missing AI workflow paths:\n" + "\n".join(missing))
 
 
 @dataclass(slots=True, frozen=True)
@@ -180,19 +83,9 @@ class AIWorkflowPaths:
 
 
 def default_ai_workflow_runtime() -> AIWorkflowRuntime:
-    """Resolve the default engine, Python, model, and checkpoint runtime paths."""
+    """Resolve the default Python, model and device runtime configuration."""
     workspace_root = Path(__file__).resolve().parents[1]
     runtime_root = _application_runtime_root(workspace_root)
-    bundled_engine_root = runtime_root / AI_RUNTIME_DIR_NAME / "AICullingPipeline"
-    adjacent_engine_root = runtime_root / "AICullingPipeline"
-    engine_root = _first_existing_path(
-        [
-            os.environ.get("AICULLING_ENGINE_ROOT", ""),
-            str(bundled_engine_root),
-            str(adjacent_engine_root),
-            str(workspace_root / "AICullingPipeline"),
-        ]
-    )
     python_executable = _first_existing_path(
         [
             os.environ.get("AICULLING_PYTHON", ""),
@@ -200,43 +93,17 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
             sys.executable,
         ]
     )
-    cache_root = _default_user_cache_root() / "image_triage_ai_cache"
-    checkpoint_cache_path = cache_root / "checkpoints" / "best_ranker.pt"
-    checkpoint_path = _first_existing_path(
-        [
-            os.environ.get("AICULLING_CHECKPOINT", ""),
-            str(Path(engine_root) / DEFAULT_BUNDLED_CHECKPOINT_RELATIVE_PATH),
-            str(Path(engine_root) / LEGACY_BUNDLED_CHECKPOINT_RELATIVE_PATH),
-            str(checkpoint_cache_path),
-        ]
-    )
-    checkpoint_download_url = (os.environ.get("AICULLING_CHECKPOINT_URL", "") or "").strip() or None
     model_name_override = (os.environ.get("AICULLING_MODEL_NAME", "") or "").strip()
     model_installation = None if model_name_override else resolve_ai_model_installation()
     model_name = model_name_override or (
         model_installation.model_name if model_installation is not None else ""
     )
     batch_size = _positive_int_env("AICULLING_BATCH_SIZE", 16)
-    worker_capacity = available_ai_dataloader_worker_capacity()
-    requested_workers = _nonnegative_int_env(
-        "AICULLING_NUM_WORKERS",
-        recommended_ai_dataloader_workers(worker_capacity),
-    )
-    num_workers = min(worker_capacity, requested_workers) if requested_workers > 0 else 0
-    local_stage_mode = (os.environ.get("AICULLING_LOCAL_STAGE_MODE", "auto") or "auto").strip().lower()
-    local_stage_root = Path(
-        os.environ.get(
-            "AICULLING_LOCAL_STAGE_ROOT",
-            str(cache_root / "stage"),
-        )
-    )
-    semantic_sidecar_enabled = _bool_env("AICULLING_SEMANTIC_SIDECAR", False)
     semantic_model_override = (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
     semantic_installation = resolve_semantic_model_installation()
     semantic_model_name = semantic_model_override or (
         semantic_installation.model_name if semantic_installation.is_installed else DEFAULT_SEMANTIC_MODEL_REPO_ID
     )
-    semantic_batch_size = _positive_int_env("AICULLING_SEMANTIC_BATCH_SIZE", 16)
     runtime_status = load_ai_runtime_installation_status()
     device_override = ai_device_environment_override()
     if device_override is not None:
@@ -248,42 +115,17 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     else:
         device = "auto"
 
-    engine_root_path = Path(engine_root).expanduser().resolve()
     python_path = Path(python_executable).expanduser().resolve() if python_executable else None
     return AIWorkflowRuntime(
-        engine_root=engine_root_path,
         python_executable=python_path,
         model_name=model_name,
-        checkpoint_path=Path(checkpoint_path).expanduser().resolve(),
-        extraction_config_path=engine_root_path / "configs" / "extract_embeddings.json",
-        clustering_config_path=engine_root_path / "configs" / "cluster_embeddings.json",
-        report_config_path=engine_root_path / "configs" / "export_ranked_report.json",
-        semantic_config_path=engine_root_path / "configs" / "semantic_classification.json",
         model_installation=model_installation,
-        checkpoint_download_url=checkpoint_download_url,
         device=device,
         batch_size=batch_size,
-        num_workers=num_workers,
-        local_stage_mode=local_stage_mode,
-        local_stage_root=local_stage_root.expanduser().resolve(),
-        semantic_sidecar_enabled=semantic_sidecar_enabled,
         semantic_model_name=semantic_model_name,
-        semantic_batch_size=semantic_batch_size,
     )
 
 
-
-def available_ai_dataloader_worker_capacity() -> int:
-    """Return the logical processors available to this process."""
-
-    process_cpu_count = getattr(os, "process_cpu_count", None)
-    detected = process_cpu_count() if callable(process_cpu_count) else os.cpu_count()
-    return max(1, int(detected or 1))
-
-
-def recommended_ai_dataloader_workers(capacity: int | None = None) -> int:
-    available = available_ai_dataloader_worker_capacity() if capacity is None else max(1, int(capacity))
-    return min(RECOMMENDED_AI_DATALOADER_WORKERS, available)
 
 
 
@@ -298,26 +140,6 @@ def _positive_int_env(name: str, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
-def _nonnegative_int_env(name: str, default: int) -> int:
-    raw_value = (os.environ.get(name, "") or "").strip()
-    if not raw_value:
-        return default
-    try:
-        parsed = int(raw_value)
-    except ValueError:
-        return default
-    return parsed if parsed >= 0 else default
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    raw_value = (os.environ.get(name, "") or "").strip().casefold()
-    if not raw_value:
-        return default
-    if raw_value in {"1", "true", "yes", "on"}:
-        return True
-    if raw_value in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def ai_device_environment_override() -> str | None:
@@ -479,29 +301,6 @@ def _default_user_cache_root() -> Path:
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
     return Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
 
-
-def _download_asset(source: str, destination: Path) -> None:
-    source_text = source.strip()
-    if not source_text:
-        raise ValueError("download source is empty")
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    source_path = Path(source_text).expanduser()
-    if source_path.exists():
-        shutil.copy2(source_path, destination)
-        return
-
-    parsed = urlparse(source_text)
-    if parsed.scheme != "https":
-        raise ValueError("Checkpoint URL must use https:// or point to an existing local file.")
-
-    temp_destination = destination.with_suffix(destination.suffix + ".download")
-    if temp_destination.exists():
-        temp_destination.unlink(missing_ok=True)
-
-    with urllib.request.urlopen(source_text) as response, temp_destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle)
-    temp_destination.replace(destination)
 
 
 

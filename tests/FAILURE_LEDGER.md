@@ -9,7 +9,6 @@ Run `pytest tests -rx` to list them. Update this file whenever an xfail is added
 | `test_window_catalog_cache` x5 (`apply_startup_window_state_fixup`, `handle_ai_run_finished`, `handle_ai_training_finished`, `load_ai_results_uses_catalog_cache`, `reset_ai_review_cache`; the 2 `run_ai_pipeline` ones were deleted with the legacy runner in WI-2.5) | Stub drift | Hand-built `MainWindow` stand-ins are missing attributes or are not real `QWidget`s. Some cover AI-mode code retired 2026-09-19. | WI-0.5 (real-window harness); AI-mode ones also D2 |
 | `test_topbar_style::test_fluent_icon_has_theme_specific_interaction_states` | Stub drift | `SimpleNamespace` stub lacks `_render_fluent_glyphs`. | WI-0.5 |
 | `test_ai_training::test_registered_training_source_enabled_state_is_persisted` | Legacy pipeline | Legacy training-source behaviour. | D2 / WI-2.4-2.6 |
-| `test_ai_workflow::test_default_runtime_prefers_generic_bundled_checkpoint_location` | Legacy pipeline | Legacy runtime default (`cuda` vs `auto`). | D2 / WI-2.4-2.6 |
 | `test_ai_results_phase1` x5 | Behaviour changed on purpose | AI-Culler foundation pass is observational only and no longer changes bucket assignment. (Pre-existing xfails.) | D2 / AI-mode retirement |
 
 ## Repaired in WI-0.3 (no longer failing)
