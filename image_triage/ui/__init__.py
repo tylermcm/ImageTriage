@@ -41,9 +41,7 @@ from .layout_state import (
 from .menus import build_main_menu_bar
 from .people_dialog import PeopleSearchDialog
 from .photo_editor_panel import PhotoEditorPanel
-from .ranker_manager_dialog import EvaluationSourceDialog, PrepareTrainingSourcesDialog, TrainingSourcesDialog
 from .resize_dialog import ResizeDialog
-from .train_ranker_dialog import TrainRankerDialog
 from .theme import (
     AppearanceMode,
     ColorToken,
@@ -77,7 +75,6 @@ __all__ = [
     "ColorToken",
     "CommandPaletteDialog",
     "ConvertDialog",
-    "EvaluationSourceDialog",
     "FileAssociationsDialog",
     "GuidedAICullPreferencesDialog",
     "GuidedCullPreferences",
@@ -100,13 +97,10 @@ __all__ = [
     "PagedHelpDialog",
     "PeopleSearchDialog",
     "PhotoEditorPanel",
-    "PrepareTrainingSourcesDialog",
     "ResizeDialog",
     "ThemePalette",
     "WORKSPACE_METRICS",
     "WorkspaceMetrics",
-    "TrainRankerDialog",
-    "TrainingSourcesDialog",
     "WorkspaceDocks",
     "build_app_palette",
     "build_app_stylesheet",

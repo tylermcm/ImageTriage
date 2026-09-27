@@ -38,10 +38,6 @@ from .aiculler_workflow import (
     load_adapter_status_summary,
 )
 from .aiculler_global_store import GlobalAdapterLabelStore, default_global_adapter_label_store_path
-from .dino_prefilter import (
-    build_dino_prefilter_paths,
-    default_dino_prefilter_settings,
-)
 from .phash_prefilter import build_phash_prefilter_paths
 
 if TYPE_CHECKING:
@@ -219,20 +215,6 @@ class WorkflowSnapshot:
     global_adapter_version: str = ""
     folder_path: str = ""
     file_count: int = 0
-    dino_enabled: bool = False
-    dino_aggressiveness_percent: int = 85
-    dino_diagnostics_enabled: bool = True
-    dino_report_exists: bool = False
-    dino_rows_exists: bool = False
-    dino_report_created_at: str = ""
-    dino_model_policy: str = "base_model_only"
-    dino_scanned_count: int = 0
-    dino_removed_from_pool_count: int = 0
-    dino_rescued_count: int = 0
-    dino_cache_hit: bool = False
-    dino_reason_counts: tuple[tuple[str, int], ...] = ()
-    dino_rescue_counts: tuple[tuple[str, int], ...] = ()
-    dino_artifact_dir: str = ""
     phash_report_exists: bool = False
     phash_artifact_dir: str = ""
 
@@ -877,19 +859,6 @@ class AIWorkflowCenterDialog(QDialog):
         adapter_models: tuple[dict[str, object], ...] = ()
         global_adapter_models: tuple[dict[str, object], ...] = ()
         global_adapter_version = ""
-        dino_settings = getattr(self._window, "_dino_prefilter_settings", default_dino_prefilter_settings())
-        dino_settings = dino_settings.normalized()
-        dino_report_exists = False
-        dino_rows_exists = False
-        dino_report_created_at = ""
-        dino_model_policy = "base_model_only"
-        dino_scanned_count = 0
-        dino_removed_from_pool_count = 0
-        dino_rescued_count = 0
-        dino_cache_hit = False
-        dino_reason_counts: tuple[tuple[str, int], ...] = ()
-        dino_rescue_counts: tuple[tuple[str, int], ...] = ()
-        dino_artifact_dir = ""
         phash_report_exists = False
         phash_artifact_dir = ""
         if paths is not None:
@@ -928,27 +897,6 @@ class AIWorkflowCenterDialog(QDialog):
                 pending_label_count = len(pending_labels)
             except Exception:
                 pending_label_count = 0
-            try:
-                dino_paths = build_dino_prefilter_paths(paths)
-                dino_artifact_dir = str(dino_paths.artifact_dir)
-                dino_report_exists = dino_paths.report_path.exists()
-                dino_rows_exists = dino_paths.rows_path.exists()
-                if dino_report_exists:
-                    report = json.loads(dino_paths.report_path.read_text(encoding="utf-8"))
-                    counts = report.get("counts") if isinstance(report, dict) else {}
-                    if not isinstance(counts, dict):
-                        counts = {}
-                    dino_report_created_at = str(report.get("created_at") or "")
-                    dino_model_policy = str(report.get("model_policy") or dino_model_policy)
-                    dino_scanned_count = _int_value(counts.get("scanned"))
-                    dino_removed_from_pool_count = _int_value(counts.get("removed_from_pool"))
-                    dino_rescued_count = _int_value(counts.get("rescued"))
-                    dino_cache_hit = bool(report.get("cache_hit"))
-                    dino_reason_counts = _sorted_count_pairs(report.get("reason_counts"))
-                    dino_rescue_counts = _sorted_count_pairs(report.get("rescue_counts"))
-            except Exception:
-                dino_report_exists = False
-                dino_rows_exists = False
             try:
                 phash_paths = build_phash_prefilter_paths(paths)
                 phash_artifact_dir = str(phash_paths.artifact_dir)
@@ -1014,20 +962,6 @@ class AIWorkflowCenterDialog(QDialog):
             global_adapter_version=global_adapter_version,
             folder_path=folder_path,
             file_count=file_count,
-            dino_enabled=dino_settings.enabled,
-            dino_aggressiveness_percent=dino_settings.aggressiveness_percent,
-            dino_diagnostics_enabled=dino_settings.diagnostics_enabled,
-            dino_report_exists=dino_report_exists,
-            dino_rows_exists=dino_rows_exists,
-            dino_report_created_at=dino_report_created_at,
-            dino_model_policy=dino_model_policy,
-            dino_scanned_count=dino_scanned_count,
-            dino_removed_from_pool_count=dino_removed_from_pool_count,
-            dino_rescued_count=dino_rescued_count,
-            dino_cache_hit=dino_cache_hit,
-            dino_reason_counts=dino_reason_counts,
-            dino_rescue_counts=dino_rescue_counts,
-            dino_artifact_dir=dino_artifact_dir,
             phash_report_exists=phash_report_exists,
             phash_artifact_dir=phash_artifact_dir,
         )
@@ -1073,88 +1007,6 @@ class AIWorkflowCenterDialog(QDialog):
                     label="Edit category prompts",
                     callback=lambda: self._invoke("_open_aiculler_categories"),
                     enabled=True,
-                ),
-            ],
-        )
-
-        if not snap.dino_enabled:
-            dino_status = STATUS_DONE
-        elif not snap.runtime_ready or not snap.folder_open:
-            dino_status = STATUS_BLOCKED
-        elif snap.dino_report_exists and snap.dino_rows_exists and snap.dino_scanned_count > 0:
-            dino_status = STATUS_DONE
-        else:
-            dino_status = STATUS_READY
-        dino_metrics: list[tuple[str, str]] = [
-            ("Configured", "Enabled" if snap.dino_enabled else "Disabled"),
-            ("Confidence threshold", f"{snap.dino_aggressiveness_percent}%"),
-            ("Model policy", snap.dino_model_policy or "base_model_only"),
-            ("Diagnostics", "On" if snap.dino_diagnostics_enabled else "Off"),
-        ]
-        if snap.dino_report_exists:
-            dino_metrics.extend(
-                [
-                    ("Last run", snap.dino_report_created_at or "—"),
-                    ("Scanned", str(snap.dino_scanned_count)),
-                    ("Removed from pool", str(snap.dino_removed_from_pool_count)),
-                    ("Rescued", str(snap.dino_rescued_count)),
-                    ("Cache", "Hit" if snap.dino_cache_hit else "Fresh run"),
-                ]
-            )
-            if snap.dino_reason_counts:
-                dino_metrics.append(("Trash reasons", _format_count_pairs(snap.dino_reason_counts)))
-            if snap.dino_rescue_counts:
-                dino_metrics.append(("Protected manual keeps", _format_count_pairs(snap.dino_rescue_counts)))
-        else:
-            dino_metrics.append(("Last run", "No DINO report for this folder."))
-        steps["dino"] = StepSpec(
-            key="dino",
-            title="DINO Prefilter",
-            subtitle="Optional base-model first pass before the AI culler judges the folder.",
-            description=(
-                "Run DINO Prefilter as its own first pass, then review the removed candidates before "
-                "moving to Index & Score. Flagged images stay visible for manual review but do not "
-                "consume downstream AI scoring time."
-            ),
-            status=dino_status,
-            metrics=dino_metrics,
-            actions=[
-                ActionSpec(
-                    label="Open DINO Settings",
-                    callback=lambda: self._invoke("_open_dino_prefilter_settings"),
-                    primary=not snap.dino_enabled,
-                    enabled=True,
-                ),
-                ActionSpec(
-                    label="Run DINO Prefilter",
-                    callback=lambda: self._invoke("_run_dino_prefilter"),
-                    primary=snap.dino_enabled,
-                    enabled=snap.dino_enabled and snap.runtime_ready and snap.folder_open,
-                    tooltip=(
-                        "Enable DINO Prefilter in settings before running this step."
-                        if not snap.dino_enabled
-                        else ""
-                    ),
-                ),
-                ActionSpec(
-                    label="Delete DINO Artifacts",
-                    callback=lambda: self._invoke("_delete_dino_prefilter_artifacts"),
-                    enabled=bool(snap.dino_artifact_dir and snap.dino_report_exists),
-                    tooltip=(
-                        "Runs are written after DINO Prefilter has executed for this folder."
-                        if not snap.dino_report_exists
-                        else ""
-                    ),
-                ),
-                ActionSpec(
-                    label="Delete pHash Artifacts",
-                    callback=lambda: self._invoke("_delete_phash_prefilter_artifacts"),
-                    enabled=bool(snap.phash_artifact_dir and snap.phash_report_exists),
-                    tooltip=(
-                        "pHash artifacts are written after pHash Prefilter has run for this folder."
-                        if not snap.phash_report_exists
-                        else ""
-                    ),
                 ),
             ],
         )
@@ -1259,7 +1111,6 @@ class AIWorkflowCenterDialog(QDialog):
                 ),
             ],
         )
-        steps.pop("dino", None)
         return steps
 
         # Legacy adapter workflow retained below for database compatibility only.

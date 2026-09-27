@@ -23,7 +23,6 @@ def add_ai_results_actions(menu: QMenu, actions: MainWindowActions) -> None:
     for mode in (
         FilterMode.AI_INGESTED,
         FilterMode.AI_PREFILTER_DUMPED,
-        FilterMode.DINO_REMOVED,
     ):
         prefilter_menu.addAction(actions.filter_actions[mode])
     menu.addSeparator()

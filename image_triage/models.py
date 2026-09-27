@@ -161,8 +161,6 @@ class FilterMode(str, Enum):
     AI_DISAGREEMENTS = "AI Disagreements"
     AI_INGESTED = "AI Ingested"
     AI_PREFILTER_DUMPED = "AI Prefilter Dumped"
-    DINO_REMOVED = "DINO Removed"
-    DINO_RESCUED = "DINO Rescued"
 
 
 class WinnerMode(str, Enum):

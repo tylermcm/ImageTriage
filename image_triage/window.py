@@ -88,7 +88,6 @@ from .ai_model import (
     resolve_semantic_model_installation,
 )
 from .ai_runtime_packages import (
-    AI_RUNTIME_BOTH_VARIANT,
     AI_RUNTIME_CPU_VARIANT,
     AI_RUNTIME_GPU_VARIANT,
     AIRuntimeInstallationStatus,
@@ -112,30 +111,24 @@ from .ai_training import (
     RankerRunInfo,
     build_ai_training_paths,
     build_general_ai_training_paths,
-    count_label_records,
     find_ranker_run_by_checkpoint,
     list_registered_training_sources,
-    load_ranker_fit_diagnosis,
     normalize_ranker_profile,
     preview_general_training_pool,
     prepare_hidden_ai_training_workspace,
     resolve_trained_checkpoint,
-    set_registered_training_source_enabled,
     suggest_training_profile,
 )
 from .ai_workflow import (
     AIRunTask,
-    available_ai_dataloader_worker_capacity,
     ai_device_environment_override,
     ai_cluster_artifacts_ready,
     ai_report_artifacts_ready,
     ai_semantic_artifacts_ready,
     build_ai_stage_cache_keys,
     build_ai_workflow_paths,
-    clamp_ai_dataloader_workers,
     default_ai_workflow_runtime,
     existing_hidden_ai_report_dir,
-    recommended_ai_dataloader_workers,
     reset_hidden_ai_review_cache,
 )
 from .ai_workflow_center import AIWorkflowCenterDialog
@@ -143,7 +136,6 @@ from .aiculler_workflow import (
     AICullerAdapterTask,
     AICullerGlobalAdapterTask,
     AICullerRunTask,
-    DINOPrefilterRunTask,
     WINNER_SCORE_FALLBACK_MODEL_VERSION,
     aiculler_db_path,
     aiculler_rerank_readiness,
@@ -180,13 +172,7 @@ from .bursts import find_burst_groups
 from .catalog import CatalogRepository, catalog_cache_env_override
 from .decision_store import DecisionStore
 from .details_view import PhotoDetailsView
-from .dino_prefilter import (
-    DINOPrefilterDecision,
-    DINOPrefilterSettings,
-    build_dino_prefilter_paths,
-    default_dino_prefilter_settings,
-    load_dino_prefilter_decisions,
-)
+from .prefilter_common import PrefilterDecision
 from .phash_prefilter import (
     PHashPrefilterSettings,
     build_phash_prefilter_paths,
@@ -312,12 +298,8 @@ from .ui import (
     MainWindowActions,
     PaletteCommand,
     PeopleSearchDialog,
-    PrepareTrainingSourcesDialog,
     ResizeDialog,
     TasteCalibrationDialog,
-    TrainRankerDialog,
-    EvaluationSourceDialog,
-    TrainingSourcesDialog,
     WORKSPACE_METRICS,
     WorkspaceDocks,
     apply_gamma,
@@ -2590,7 +2572,6 @@ class MainWindow(QMainWindow):
     CATALOG_WATCH_CURRENT_FOLDER_KEY = "catalog/watch_current_folder"
     RESTORE_FOLDER_POSITION_KEY = "view/restore_folder_position"
     AI_EMBED_BATCH_SIZE_KEY = "ai/embed_batch_size"
-    AI_DINO_WORKER_COUNT_KEY = "ai/dino_prefilter/workers"
     AI_REVIEW_DETAIL_PROGRESS_KEY = "ai/review_detail_progress"
     AI_DISPUTE_WEIGHT_KEY = "ai/dispute_weight"
     AI_DISPUTE_WEIGHT_DEFAULT = 3
@@ -2608,12 +2589,6 @@ class MainWindow(QMainWindow):
     AI_BASE_SCORE_WEIGHT_PERCENT_DEFAULT = 65
     AI_BASE_SCORE_WEIGHT_PERCENT_MIN = 0
     AI_BASE_SCORE_WEIGHT_PERCENT_MAX = 100
-    DINO_PREFILTER_ENABLED_KEY = "ai/dino_prefilter/enabled"
-    DINO_PREFILTER_AGGRESSIVENESS_KEY = "ai/dino_prefilter/aggressiveness_percent"
-    DINO_PREFILTER_TECHNICAL_TRASH_KEY = "ai/dino_prefilter/technical_trash"
-    DINO_PREFILTER_DUPLICATE_TRASH_KEY = "ai/dino_prefilter/duplicate_trash"
-    DINO_PREFILTER_LOW_INFORMATION_KEY = "ai/dino_prefilter/low_information"
-    DINO_PREFILTER_DIAGNOSTICS_KEY = "ai/dino_prefilter/diagnostics"
     PHASH_PREFILTER_ENABLED_KEY = "ai/phash_prefilter/enabled"
     PHASH_PREFILTER_HAMMING_THRESHOLD_KEY = "ai/phash_prefilter/hamming_threshold"
     PHASH_PREFILTER_CACHE_ENABLED_KEY = "ai/phash_prefilter/cache_enabled"
@@ -3489,7 +3464,7 @@ class MainWindow(QMainWindow):
         self._taste_profile = TasteProfile()
         self._burst_recommendations: dict[str, BurstRecommendation] = {}
         self._workflow_insights_by_path: dict[str, RecordWorkflowInsight] = {}
-        self._dino_prefilter_decisions_by_path: dict[str, DINOPrefilterDecision] = {}
+        self._prefilter_decisions_by_path: dict[str, PrefilterDecision] = {}
         self._aiculler_ingested_path_keys: set[str] = set()
         self._aiculler_ingested_sibling_keys: set[str] = set()
         self._aiculler_ingested_cache_folder_key = ""
@@ -3582,15 +3557,6 @@ class MainWindow(QMainWindow):
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(
             self._settings.value(self.AI_EMBED_BATCH_SIZE_KEY, self.AI_EMBED_BATCH_SIZE_AUTO, int)
         )
-        self._ai_dino_worker_capacity = available_ai_dataloader_worker_capacity()
-        self._ai_dino_worker_count_setting = clamp_ai_dataloader_workers(
-            self._settings.value(
-                self.AI_DINO_WORKER_COUNT_KEY,
-                recommended_ai_dataloader_workers(self._ai_dino_worker_capacity),
-                int,
-            ),
-            self._ai_dino_worker_capacity,
-        )
         self._ai_clip_model_variant = DEFAULT_AICULLER_CLIP_VARIANT
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(
             self._settings.value(self.AI_DISPUTE_WEIGHT_KEY, self.AI_DISPUTE_WEIGHT_DEFAULT, int)
@@ -3610,12 +3576,12 @@ class MainWindow(QMainWindow):
         self._apply_base_score_blend_to_workflow()
         self._ai_review_detail_progress_enabled = self._settings.value(self.AI_REVIEW_DETAIL_PROGRESS_KEY, False, bool)
         # Stub: the semantic-sidecar setting used to flip a stage count and
-        # gate a DINO-era semantic model. With CLI-Culler driving the pipeline
+        # gate a legacy semantic model. With CLI-Culler driving the pipeline
         # the flag is no longer meaningful, but a couple of legacy status-line
         # helpers still read it — keep it as a constant False so they evaluate
         # to a tidy "disabled" path until those helpers go too.
         self._ai_semantic_sidecar_enabled = False
-        # Same for the DINO label-duplicate cosine threshold: only read by a
+        # Same for the label-duplicate cosine threshold: only read by a
         # dead training-prep helper, but cheaper to stub than to thread None
         # through it. Will be removed alongside the dead pipeline methods.
         self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(
@@ -3625,7 +3591,6 @@ class MainWindow(QMainWindow):
                 float,
             )
         )
-        self._dino_prefilter_settings = self._load_dino_prefilter_settings()
         self._phash_prefilter_settings = self._load_phash_prefilter_settings()
         self._catalog_load_source = "idle"
         self._catalog_load_detail = "Ready"
@@ -7206,14 +7171,6 @@ class MainWindow(QMainWindow):
         add_button("E713", "Settings", self._show_settings)
         return bar
 
-    def _active_ai_activity_tag_key(self) -> str:
-        if self._filter_query.ai_cull_bucket is not None:
-            return f"bucket:{self._filter_query.ai_cull_bucket.value}"
-        workflow_tag = self._filter_query.ai_workflow_tag.strip()
-        if workflow_tag:
-            return f"workflow:{workflow_tag}"
-        return ""
-
     def _build_workspace_toolbar_overflow_button(self, mode: str) -> QToolButton:
         menu = QMenu(self)
         menu.aboutToShow.connect(lambda target=mode: self._populate_workspace_toolbar_overflow_menu(target))
@@ -9576,7 +9533,7 @@ class MainWindow(QMainWindow):
             add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
             add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
             add_action_command("search.clear_filters", self.actions.clear_filters, section="Search", keywords=("reset filters", "clear search"))
-            add_action_command("ai.setup", self.actions.install_ai_runtime, section="AI", keywords=("runtime", "dependencies", "install ai", "pytorch", "models", "clip", "topiq", "dino"))
+            add_action_command("ai.setup", self.actions.install_ai_runtime, section="AI", keywords=("runtime", "dependencies", "install ai", "pytorch", "models", "clip", "topiq"))
             add_action_command("ai.workflow_center", self.actions.open_ai_workflow_center, section="AI", keywords=("workflow center", "ai workflow", "guide", "steps", "wizard"))
             add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run ai culler", "rank images"))
             add_action_command("ai.quick_rerank", self.actions.quick_rerank_ai_culling, section="AI", keywords=("quick rerank", "rerank", "re-rank", "rerun rank", "fast rerank", "rerank only"))
@@ -10456,58 +10413,6 @@ class MainWindow(QMainWindow):
             parsed = cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_DEFAULT
         return max(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MIN, min(cls.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_MAX, parsed))
 
-    @classmethod
-    def _normalize_dino_prefilter_aggressiveness(cls, value: object) -> int:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            parsed = default_dino_prefilter_settings().aggressiveness_percent
-        return max(1, min(100, parsed))
-
-    def _load_dino_prefilter_settings(self) -> DINOPrefilterSettings:
-        defaults = default_dino_prefilter_settings()
-        return DINOPrefilterSettings(
-            # DINO was removed from the active culling workflow. Keep reading
-            # the remaining legacy values so old settings files stay valid.
-            enabled=False,
-            aggressiveness_percent=self._normalize_dino_prefilter_aggressiveness(
-                self._settings.value(
-                    self.DINO_PREFILTER_AGGRESSIVENESS_KEY,
-                    defaults.aggressiveness_percent,
-                    int,
-                )
-            ),
-            technical_trash_enabled=self._settings.value(
-                self.DINO_PREFILTER_TECHNICAL_TRASH_KEY,
-                defaults.technical_trash_enabled,
-                bool,
-            ),
-            duplicate_trash_enabled=self._settings.value(
-                self.DINO_PREFILTER_DUPLICATE_TRASH_KEY,
-                defaults.duplicate_trash_enabled,
-                bool,
-            ),
-            low_information_enabled=self._settings.value(
-                self.DINO_PREFILTER_LOW_INFORMATION_KEY,
-                defaults.low_information_enabled,
-                bool,
-            ),
-            diagnostics_enabled=self._settings.value(
-                self.DINO_PREFILTER_DIAGNOSTICS_KEY,
-                defaults.diagnostics_enabled,
-                bool,
-            ),
-        ).normalized()
-
-    def _save_dino_prefilter_settings(self, settings: DINOPrefilterSettings) -> None:
-        normalized = settings.normalized()
-        self._settings.setValue(self.DINO_PREFILTER_ENABLED_KEY, normalized.enabled)
-        self._settings.setValue(self.DINO_PREFILTER_AGGRESSIVENESS_KEY, normalized.aggressiveness_percent)
-        self._settings.setValue(self.DINO_PREFILTER_TECHNICAL_TRASH_KEY, normalized.technical_trash_enabled)
-        self._settings.setValue(self.DINO_PREFILTER_DUPLICATE_TRASH_KEY, normalized.duplicate_trash_enabled)
-        self._settings.setValue(self.DINO_PREFILTER_LOW_INFORMATION_KEY, normalized.low_information_enabled)
-        self._settings.setValue(self.DINO_PREFILTER_DIAGNOSTICS_KEY, normalized.diagnostics_enabled)
-
     def _load_phash_prefilter_settings(self) -> PHashPrefilterSettings:
         defaults = default_phash_prefilter_settings()
         return PHashPrefilterSettings(
@@ -10617,16 +10522,11 @@ class MainWindow(QMainWindow):
             self._ai_runtime,
             device=device,
             batch_size=self._configured_ai_embed_batch_size(),
-            num_workers=self._ai_dino_worker_count_setting,
             semantic_model_name=semantic_model_name,
         )
 
     def _ai_runtime_available(self) -> bool:
         return self._managed_ai_runtime_status().is_installed
-
-    def _dino_runtime_available(self) -> bool:
-        status = self._managed_ai_runtime_status()
-        return bool(set(status.installed_variants) & set(status.dino_installed_variants))
 
     def _ai_runtime_explanation_text(self) -> str:
         status = self._managed_ai_runtime_status()
@@ -10990,171 +10890,6 @@ class MainWindow(QMainWindow):
             download_aiculler_face_model=face_missing,
             download_dino_model=False,
             download_semantic_model=semantic_missing,
-        )
-
-    def _show_legacy_ai_setup_dialog(
-        self,
-        *,
-        automatic: bool,
-        title: str,
-        prompt_text: str,
-        allow_runtime: bool,
-        allow_model: bool,
-        default_install_runtime: bool,
-        default_include_dino_runtime: bool,
-        default_download_aiculler_clip_model: bool,
-        default_download_aiculler_topiq_model: bool,
-        default_download_aiculler_face_model: bool,
-        default_download_dino_model: bool,
-        default_download_semantic_model: bool,
-    ) -> AISetupSelection | None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setModal(True)
-        dialog.setMinimumWidth(720)
-        dialog.resize(760, 720)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        prompt_label = QLabel(prompt_text, dialog)
-        prompt_label.setWordWrap(True)
-        layout.addWidget(prompt_label)
-
-        runtime_checkbox: QCheckBox | None = None
-        runtime_variant_combo: QComboBox | None = None
-        dino_runtime_checkbox: QCheckBox | None = None
-        if allow_runtime:
-            runtime_checkbox = QCheckBox("Install AI runtime packages now", dialog)
-            runtime_checkbox.setChecked(default_install_runtime)
-            layout.addWidget(runtime_checkbox)
-
-            runtime_variant_label = QLabel("PyTorch profile:", dialog)
-            runtime_variant_combo = QComboBox(dialog)
-            runtime_variant_combo.addItem("GPU (CUDA)", AI_RUNTIME_GPU_VARIANT)
-            runtime_variant_combo.addItem("CPU Only", AI_RUNTIME_CPU_VARIANT)
-            runtime_variant_combo.addItem("Both CPU + GPU", AI_RUNTIME_BOTH_VARIANT)
-            runtime_variant_label.setEnabled(default_install_runtime)
-            runtime_variant_combo.setEnabled(default_install_runtime)
-            runtime_checkbox.toggled.connect(runtime_variant_label.setEnabled)
-            runtime_checkbox.toggled.connect(runtime_variant_combo.setEnabled)
-            layout.addWidget(runtime_variant_label)
-            layout.addWidget(runtime_variant_combo)
-
-            dino_runtime_checkbox = QCheckBox(
-                "Include optional PyTorch model dependencies",
-                dialog,
-            )
-            dino_runtime_checkbox.setToolTip(
-                "Required by DINO and AI subject/background masking."
-            )
-            dino_runtime_checkbox.setChecked(default_include_dino_runtime)
-            dino_runtime_checkbox.setEnabled(default_install_runtime)
-            runtime_checkbox.toggled.connect(dino_runtime_checkbox.setEnabled)
-            layout.addWidget(dino_runtime_checkbox)
-
-            runtime_details = QLabel(self._ai_runtime_explanation_text(), dialog)
-            runtime_details.setWordWrap(True)
-            runtime_details.setEnabled(default_install_runtime)
-            runtime_checkbox.toggled.connect(runtime_details.setEnabled)
-            layout.addWidget(runtime_details)
-
-        dino_model_checkbox: QCheckBox | None = None
-        semantic_model_checkbox: QCheckBox | None = None
-        aiculler_clip_checkbox: QCheckBox | None = None
-        aiculler_topiq_checkbox: QCheckBox | None = None
-        aiculler_face_checkbox: QCheckBox | None = None
-        if allow_model:
-            clip_status = "Installed" if self._aiculler_clip_model_available() else "Missing"
-            topiq_status = "Installed" if self._aiculler_topiq_model_available() else "Missing"
-            face_status = "Installed" if self._aiculler_face_model_available() else "Missing"
-            dino_status = "Installed" if self._ai_model_available() else "Missing"
-            semantic_status = "Installed" if self._semantic_model_available() else "Missing"
-
-            aiculler_clip_checkbox = QCheckBox(
-                f"CLI-Culler CLIP model — {self._ai_clip_model_variant_label()} ({clip_status})",
-                dialog,
-            )
-            aiculler_clip_checkbox.setChecked(default_download_aiculler_clip_model)
-            layout.addWidget(aiculler_clip_checkbox)
-
-            aiculler_clip_details = QLabel(self._aiculler_clip_model_explanation_text(), dialog)
-            aiculler_clip_details.setWordWrap(True)
-            aiculler_clip_details.setEnabled(default_download_aiculler_clip_model)
-            aiculler_clip_checkbox.toggled.connect(aiculler_clip_details.setEnabled)
-            layout.addWidget(aiculler_clip_details)
-
-            aiculler_topiq_checkbox = QCheckBox(f"TOPIQ technical quality model ({topiq_status})", dialog)
-            aiculler_topiq_checkbox.setChecked(default_download_aiculler_topiq_model)
-            layout.addWidget(aiculler_topiq_checkbox)
-
-            aiculler_topiq_details = QLabel(self._aiculler_topiq_model_explanation_text(), dialog)
-            aiculler_topiq_details.setWordWrap(True)
-            aiculler_topiq_details.setEnabled(default_download_aiculler_topiq_model)
-            aiculler_topiq_checkbox.toggled.connect(aiculler_topiq_details.setEnabled)
-            layout.addWidget(aiculler_topiq_details)
-
-            aiculler_face_checkbox = QCheckBox(f"InsightFace face and people models ({face_status})", dialog)
-            aiculler_face_checkbox.setChecked(default_download_aiculler_face_model)
-            layout.addWidget(aiculler_face_checkbox)
-
-            aiculler_face_details = QLabel(self._aiculler_face_model_explanation_text(), dialog)
-            aiculler_face_details.setWordWrap(True)
-            aiculler_face_details.setEnabled(default_download_aiculler_face_model)
-            aiculler_face_checkbox.toggled.connect(aiculler_face_details.setEnabled)
-            layout.addWidget(aiculler_face_details)
-
-            dino_model_checkbox = QCheckBox(f"Optional DINO Prefilter model ({dino_status})", dialog)
-            dino_model_checkbox.setChecked(default_download_dino_model)
-            layout.addWidget(dino_model_checkbox)
-
-            dino_model_details = QLabel(self._ai_model_explanation_text(), dialog)
-            dino_model_details.setWordWrap(True)
-            dino_model_details.setEnabled(default_download_dino_model)
-            dino_model_checkbox.toggled.connect(dino_model_details.setEnabled)
-            layout.addWidget(dino_model_details)
-
-            if self._ai_semantic_sidecar_enabled:
-                semantic_model_checkbox = QCheckBox(f"Semantic CLIP classification model ({semantic_status})", dialog)
-                semantic_model_checkbox.setChecked(default_download_semantic_model)
-                layout.addWidget(semantic_model_checkbox)
-
-                semantic_model_details = QLabel(self._semantic_model_explanation_text(), dialog)
-                semantic_model_details.setWordWrap(True)
-                semantic_model_details.setEnabled(default_download_semantic_model)
-                semantic_model_checkbox.toggled.connect(semantic_model_details.setEnabled)
-                layout.addWidget(semantic_model_details)
-
-        button_box = QDialogButtonBox(dialog)
-        button_box.addButton(
-            "Continue" if automatic else "Start Setup",
-            QDialogButtonBox.ButtonRole.AcceptRole,
-        )
-        button_box.addButton(
-            "Later" if automatic else "Cancel",
-            QDialogButtonBox.ButtonRole.RejectRole,
-        )
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-
-        runtime_variant = (
-            str(runtime_variant_combo.currentData())
-            if runtime_variant_combo is not None
-            else AI_RUNTIME_GPU_VARIANT
-        )
-        return AISetupSelection(
-            install_runtime=bool(runtime_checkbox and runtime_checkbox.isChecked()),
-            runtime_variant=runtime_variant,
-            include_dino_runtime=bool(dino_runtime_checkbox and dino_runtime_checkbox.isChecked()),
-            download_aiculler_clip_model=bool(aiculler_clip_checkbox and aiculler_clip_checkbox.isChecked()),
-            download_aiculler_topiq_model=bool(aiculler_topiq_checkbox and aiculler_topiq_checkbox.isChecked()),
-            download_aiculler_face_model=bool(aiculler_face_checkbox and aiculler_face_checkbox.isChecked()),
-            download_dino_model=bool(dino_model_checkbox and dino_model_checkbox.isChecked()),
-            download_semantic_model=bool(semantic_model_checkbox and semantic_model_checkbox.isChecked()),
         )
 
     def _ensure_ai_runtime_available(self, *, title: str) -> bool:
@@ -13755,24 +13490,6 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
         self._ai_training_progress_dialog = None
 
-    def _open_ai_training_stats_dialog(self) -> None:
-        dialog = self._ai_training_stats_dialog
-        if dialog is None:
-            dialog = AITrainingStatsDialog(parent=self)
-            self._ai_training_stats_dialog = dialog
-        dialog.set_profile(self._ai_training_progress_profile())
-        dialog.set_stage_text(self._ai_training_stage_text or "Waiting for output")
-        dialog.set_run_text(self._ai_training_run_label or "Not started")
-        dialog.set_fit_diagnosis(
-            self._ai_training_fit_label,
-            self._ai_training_fit_summary,
-            self._ai_training_fit_remedy,
-        )
-        dialog.load_lines(self._ai_training_log_lines)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
     def _ai_training_progress_profile(self) -> str:
         context = self._ai_training_context
         action = context.action if context is not None else ""
@@ -13802,28 +13519,6 @@ class MainWindow(QMainWindow):
                 self._ai_training_fit_summary,
                 self._ai_training_fit_remedy,
             )
-
-    def _ranker_fit_diagnosis_for_paths(
-        self,
-        *,
-        checkpoint_path: str | Path | None = None,
-        metrics_path: str | Path | None = None,
-        history_path: str | Path | None = None,
-        folder: str = "",
-    ) -> RankerFitDiagnosis | None:
-        target_folder = folder or self._current_folder
-        if checkpoint_path and target_folder:
-            for training_paths in (self._ai_training_paths_for_folder(target_folder), self._general_ai_training_paths()):
-                if training_paths is None:
-                    continue
-                run = find_ranker_run_by_checkpoint(training_paths, checkpoint_path)
-                if run is not None:
-                    return run.fit_diagnosis
-        metrics_candidate = Path(metrics_path) if metrics_path else None
-        history_candidate = Path(history_path) if history_path else None
-        if metrics_candidate is None and history_candidate is None:
-            return None
-        return load_ranker_fit_diagnosis(metrics_candidate, history_candidate)
 
     def _close_batch_rename_progress_dialog(self) -> None:
         self._close_job_progress_dialog("batch_rename")
@@ -15981,18 +15676,6 @@ class MainWindow(QMainWindow):
             return str(path), -1, -1
         return str(path), int(stat_result.st_size), int(stat_result.st_mtime_ns)
 
-    def _cached_training_label_counts(self, training_paths) -> tuple[int, int]:
-        if training_paths is None:
-            return 0, 0
-        cache_key = (
-            self._path_state_cache_token(training_paths.pairwise_labels_path),
-            self._path_state_cache_token(training_paths.cluster_labels_path),
-        )
-        if cache_key != self._training_label_counts_cache_key:
-            self._training_label_counts_cache = count_label_records(training_paths)
-            self._training_label_counts_cache_key = cache_key
-        return self._training_label_counts_cache
-
     def _invalidate_training_label_counts_cache(self) -> None:
         self._training_label_counts_cache_key = ()
         self._training_label_counts_cache = (0, 0)
@@ -16771,149 +16454,6 @@ class MainWindow(QMainWindow):
         dialog = CategoryPromptsDialog(category_path, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.statusBar().showMessage(f"Saved category prompts to {category_path.name}.")
-
-    def _open_dino_prefilter_settings(self) -> None:
-        self._show_settings(initial_section="DINO Prefilter")
-        self._refresh_ai_workflow_center()
-
-    def _open_dino_prefilter_artifacts(self) -> None:
-        if not self._current_folder:
-            QMessageBox.information(self, "DINO Prefilter", "Open a folder before viewing DINO Prefilter artifacts.")
-            return
-        try:
-            paths = build_dino_prefilter_paths(self._current_folder)
-        except Exception as exc:
-            QMessageBox.warning(self, "DINO Prefilter", f"Could not resolve the DINO Prefilter artifact folder.\n\n{exc}")
-            return
-        if not paths.artifact_dir.exists():
-            QMessageBox.information(
-                self,
-                "DINO Prefilter",
-                "No DINO Prefilter artifacts exist for this folder yet. Run DINO Prefilter first.",
-            )
-            return
-        open_with_default(str(paths.artifact_dir))
-
-    def _delete_dino_prefilter_artifacts(self) -> None:
-        if not self._current_folder:
-            QMessageBox.information(self, "DINO Prefilter", "Open a folder before deleting DINO Prefilter artifacts.")
-            return
-        if self._active_ai_task is not None:
-            self.statusBar().showMessage("Wait for the current AI task to finish before deleting DINO artifacts.")
-            return
-        try:
-            paths = build_dino_prefilter_paths(self._current_folder)
-        except Exception as exc:
-            QMessageBox.warning(self, "DINO Prefilter", f"Could not resolve the DINO Prefilter artifact folder.\n\n{exc}")
-            return
-        if not paths.artifact_dir.exists():
-            QMessageBox.information(
-                self,
-                "DINO Prefilter",
-                "No DINO Prefilter artifacts exist for this folder.",
-            )
-            self._refresh_ai_workflow_center()
-            return
-        message = dedent(
-            f"""
-            Delete DINO Prefilter artifacts for this folder?
-
-            This deletes:
-            - DINO embeddings, cluster outputs, and extraction cache marker
-            - DINO prefilter rows, report, and diagnostics log
-
-            It does not delete AI Culler indexes, adapter labels, pHash artifacts, or images.
-
-            Folder:
-            {paths.artifact_dir}
-            """
-        ).strip()
-        choice = QMessageBox.question(
-            self,
-            "Delete DINO Artifacts",
-            message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if choice != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            shutil.rmtree(paths.artifact_dir, ignore_errors=False)
-        except OSError as exc:
-            QMessageBox.warning(
-                self,
-                "Delete DINO Artifacts",
-                f"Could not delete the DINO Prefilter artifacts.\n\n{exc}",
-            )
-            self.statusBar().showMessage("DINO artifact deletion failed")
-            return
-        self._dino_prefilter_decisions_by_path = {}
-        self.grid.set_dino_prefilter_decisions({})
-        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-        self._apply_records_view(current_path=self._current_visible_record_path())
-        self._update_ai_toolbar_state()
-        self._refresh_ai_workflow_center()
-        self.statusBar().showMessage("Deleted DINO Prefilter artifacts for this folder.")
-
-    def _delete_phash_prefilter_artifacts(self) -> None:
-        if not self._current_folder:
-            QMessageBox.information(self, "pHash Prefilter", "Open a folder before deleting pHash Prefilter artifacts.")
-            return
-        if self._active_ai_task is not None:
-            self.statusBar().showMessage("Wait for the current AI task to finish before deleting pHash artifacts.")
-            return
-        try:
-            paths = build_phash_prefilter_paths(self._current_folder)
-        except Exception as exc:
-            QMessageBox.warning(self, "pHash Prefilter", f"Could not resolve the pHash Prefilter artifact folder.\n\n{exc}")
-            return
-        if not paths.artifact_dir.exists():
-            QMessageBox.information(
-                self,
-                "pHash Prefilter",
-                "No pHash Prefilter artifacts exist for this folder.",
-            )
-            self._refresh_ai_workflow_center()
-            return
-        message = dedent(
-            f"""
-            Delete pHash Prefilter artifacts for this folder?
-
-            This deletes:
-            - pHash duplicate rows, report, diagnostics log, and pHash cache
-
-            It does not delete DINO artifacts, AI Culler indexes, adapter labels, or images.
-
-            Folder:
-            {paths.artifact_dir}
-            """
-        ).strip()
-        choice = QMessageBox.question(
-            self,
-            "Delete pHash Artifacts",
-            message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if choice != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            shutil.rmtree(paths.artifact_dir, ignore_errors=False)
-        except OSError as exc:
-            QMessageBox.warning(
-                self,
-                "Delete pHash Artifacts",
-                f"Could not delete the pHash Prefilter artifacts.\n\n{exc}",
-            )
-            self.statusBar().showMessage("pHash artifact deletion failed")
-            return
-        self._refresh_dino_prefilter_decisions_for_current_folder()
-        self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
-        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-        self._apply_records_view(current_path=self._current_visible_record_path())
-        self._update_ai_toolbar_state()
-        self._refresh_ai_workflow_center()
-        self.statusBar().showMessage("Deleted pHash Prefilter artifacts for this folder.")
 
     def _aiculler_paths_for_current_folder(self):
         if not self._current_folder:
@@ -18897,65 +18437,6 @@ class MainWindow(QMainWindow):
             if not candidate.exists():
                 self._settings.remove(self.AI_SIGNAL_WEIGHTS_KEY)
 
-    def _set_active_ai_checkpoint(self, checkpoint_path: str) -> None:
-        candidate = Path(checkpoint_path).expanduser()
-        if not candidate.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {candidate}")
-        resolved = candidate.resolve()
-        self._ai_runtime = replace(self._ai_runtime, checkpoint_path=resolved)
-        if normalized_path_key(str(resolved)) == normalized_path_key(str(self._default_ai_checkpoint_path)):
-            self._settings.remove(self.AI_CHECKPOINT_OVERRIDE_KEY)
-        else:
-            self._settings.setValue(self.AI_CHECKPOINT_OVERRIDE_KEY, str(resolved))
-
-    def _clear_active_ai_checkpoint_override(self) -> None:
-        self._ai_runtime = replace(self._ai_runtime, checkpoint_path=self._default_ai_checkpoint_path)
-        self._settings.remove(self.AI_CHECKPOINT_OVERRIDE_KEY)
-
-    def _set_active_reference_bank_path(self, reference_bank_path: str) -> None:
-        candidate = Path(reference_bank_path).expanduser()
-        if not candidate.exists():
-            raise FileNotFoundError(f"Reference bank not found: {candidate}")
-        resolved = str(candidate.resolve())
-        self._active_reference_bank_path = resolved
-        self._settings.setValue(self.AI_REFERENCE_BANK_KEY, resolved)
-
-    def _clear_active_reference_bank_path(self) -> None:
-        self._active_reference_bank_path = ""
-        self._settings.remove(self.AI_REFERENCE_BANK_KEY)
-
-    def _active_culling_signal_weights_path(self) -> Path | None:
-        raw_path = self._settings.value(self.AI_SIGNAL_WEIGHTS_KEY, "", str)
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            return None
-        candidate = Path(raw_path).expanduser()
-        if not candidate.exists():
-            self._settings.remove(self.AI_SIGNAL_WEIGHTS_KEY)
-            return None
-        return candidate.resolve()
-
-    def _set_active_culling_signal_weights_path(self, weights_path: str) -> None:
-        candidate = Path(weights_path).expanduser()
-        if not candidate.exists():
-            raise FileNotFoundError(f"Culling signal weights not found: {candidate}")
-        self._settings.setValue(self.AI_SIGNAL_WEIGHTS_KEY, str(candidate.resolve()))
-
-    def _configure_general_training_sources(self) -> None:
-        sources = list_registered_training_sources(enabled_only=False)
-        if not sources:
-            QMessageBox.information(
-                self,
-                "Training Sources",
-                "No central label sources are registered yet.\n\nCollect labels or prepare training data in a folder first.",
-            )
-            return
-        dialog = TrainingSourcesDialog(sources=sources, parent=self)
-        if self._exec_dialog_with_geometry(dialog, "training_sources") != dialog.DialogCode.Accepted:
-            return
-        for namespace, enabled in dialog.selected_enabled_by_namespace().items():
-            set_registered_training_source_enabled(namespace, enabled)
-        self.statusBar().showMessage("Updated General Use training sources.")
-
     def _ai_training_paths_for_folder(self, folder: str | None = None):
         target_folder = folder or self._current_folder
         if not target_folder:
@@ -18964,54 +18445,6 @@ class MainWindow(QMainWindow):
             return build_ai_training_paths(target_folder)
         except Exception:
             return None
-
-    def _harvest_speed_cull_decisions_for_folders(
-        self,
-        folders: Iterable[str],
-    ) -> dict[str, int]:
-        """Bridge Speed Cull DecisionStore entries into cluster_labels.jsonl.
-
-        Called before Train / Evaluate Personal Model so the trainer sees the
-        latest decisions. Empty harvests do not touch existing label files.
-        Returns a mapping of folder → cluster-count harvested (for status text).
-        """
-
-        import sys as _sys
-        from pathlib import Path as _Path
-
-        aiculling_root = _Path(__file__).resolve().parents[1] / "AICullingPipeline"
-        if not aiculling_root.exists():
-            return {}
-        if str(aiculling_root) not in _sys.path:
-            _sys.path.insert(0, str(aiculling_root))
-        try:
-            from app.decision_harvest import harvest_decisions_for_artifacts
-        except Exception:
-            return {}
-
-        results: dict[str, int] = {}
-        seen: set[str] = set()
-        for folder in folders:
-            if not folder:
-                continue
-            key = normalized_path_key(folder)
-            if key in seen:
-                continue
-            seen.add(key)
-            paths = self._ai_training_paths_for_folder(folder)
-            if paths is None or not paths.labeling_artifacts_dir.exists():
-                continue
-            try:
-                summary = harvest_decisions_for_artifacts(
-                    artifacts_dir=paths.labeling_artifacts_dir,
-                    output_path=paths.labels_dir / "decision_labels.jsonl",
-                    cluster_labels_path=paths.labels_dir / "cluster_labels.jsonl",
-                )
-            except Exception:
-                continue
-            if summary.clusters_with_labels:
-                results[folder] = summary.clusters_with_labels
-        return results
 
     def _general_ai_training_paths(self):
         try:
@@ -19067,19 +18500,6 @@ class MainWindow(QMainWindow):
             reference_run=reference_run,
         )
 
-    def _run_uses_training_paths(self, run: RankerRunInfo, paths) -> bool:
-        if paths is None:
-            return False
-        try:
-            return run.run_dir.resolve().is_relative_to(paths.training_dir.resolve())
-        except (AttributeError, OSError, ValueError):
-            try:
-                run_dir = str(run.run_dir.resolve())
-                training_root = str(paths.training_dir.resolve())
-            except OSError:
-                return False
-            return run_dir.casefold().startswith(training_root.casefold())
-
     def _current_trained_checkpoint_path(self) -> Path | None:
         current_checkpoint = self._ai_runtime.checkpoint_path
         if (
@@ -19099,11 +18519,6 @@ class MainWindow(QMainWindow):
             if checkpoint is not None:
                 return checkpoint
         return None
-
-    def _reference_bank_output_dir(self) -> Path:
-        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-        root = Path(app_data) if app_data else (Path.home() / "AppData" / "Local" / "ImageTriage")
-        return root / "ai_training" / "reference_bank"
 
     def _save_favorites(self) -> None:
         self._settings.setValue(self.FAVORITES_KEY, self._favorites)
@@ -21752,39 +21167,6 @@ class MainWindow(QMainWindow):
                 active=self._adapter_review_mode_active(),
             )
 
-    def _show_ai_menu(self) -> None:
-        if self.actions is None:
-            return
-        menu = QMenu(self)
-        menu.addAction(self.actions.install_ai_runtime)
-        menu.addSeparator()
-        run_action = menu.addAction(self.actions.run_ai_culling)
-        menu.addAction(self.actions.quick_rerank_ai_culling)
-        apply_action = menu.addAction(self.actions.apply_ai_culling)
-        semantic_sort_action = menu.addAction(self.actions.sort_ai_semantic_folders)
-        reset_action = menu.addAction(self.actions.reset_ai_review_cache)
-        load_hidden_action = menu.addAction(self.actions.load_saved_ai)
-        load_action = menu.addAction(self.actions.load_ai_results)
-        clear_action = menu.addAction(self.actions.clear_ai_results)
-        report_action = menu.addAction(self.actions.open_ai_report)
-        menu.addAction(self.actions.show_ai_review_summary)
-        tag_legend_action = menu.addAction(self.actions.ai_review_tag_legend)
-        menu.addAction(self.actions.manage_people)
-        menu.addAction(self.actions.taste_calibration)
-        menu.addSeparator()
-        next_pick_action = menu.addAction(self.actions.next_ai_pick)
-        next_unreviewed_pick_action = menu.addAction(self.actions.next_unreviewed_ai_pick)
-        compare_group_action = menu.addAction(self.actions.compare_ai_group)
-        menu.addAction(self.actions.dispute_current_ai_result)
-        menu.addAction(self.actions.review_ai_disagreements)
-        jump_group_top_action = menu.addAction("Jump To AI Top Pick In Group")
-        current_index = self.grid.current_index()
-        current_ai_result = self._ai_result_for_index(current_index)
-        jump_group_top_action.setEnabled(bool(current_ai_result and current_ai_result.group_size > 1))
-        chosen = menu.exec(QCursor.pos())
-        if chosen == jump_group_top_action:
-            self._jump_to_ai_top_pick_in_group()
-
     def _choose_ai_results(self) -> None:
         start_dir = self._settings.value(self.AI_RESULTS_KEY, "", str) or self._current_folder or QDir.homePath()
         folder = QFileDialog.getExistingDirectory(self, "Choose AI Results Folder", start_dir)
@@ -22194,7 +21576,6 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         labels = {
-            "dino": "DINO embeddings and prefilter artifacts",
             "phash": "pHash duplicate artifacts",
             "clip_topiq": "CLIP/TOPIQ scoring artifacts, exports, and report",
         }
@@ -22220,11 +21601,6 @@ class MainWindow(QMainWindow):
             return
         reset_parts: list[str] = []
         try:
-            if "dino" in selected:
-                dino_paths = build_dino_prefilter_paths(self._current_folder)
-                if dino_paths.artifact_dir.exists():
-                    shutil.rmtree(dino_paths.artifact_dir, ignore_errors=False)
-                reset_parts.append("DINO")
             if "phash" in selected:
                 phash_paths = build_phash_prefilter_paths(self._current_folder)
                 if phash_paths.artifact_dir.exists():
@@ -22251,9 +21627,9 @@ class MainWindow(QMainWindow):
             )
             self.statusBar().showMessage("AI review cache reset failed")
             return
-        if "dino" in selected or "phash" in selected:
-            self._refresh_dino_prefilter_decisions_for_current_folder()
-            self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
+        if "phash" in selected:
+            self._refresh_prefilter_decisions_for_current_folder()
+            self.grid.set_prefilter_decisions(self._prefilter_decisions_by_path)
             self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
             self._apply_records_view(current_path=self._current_visible_record_path())
         self._invalidate_ai_folder_probe_cache()
@@ -22274,10 +21650,9 @@ class MainWindow(QMainWindow):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        dino_checkbox = QCheckBox("DINO embeddings and prefilter artifacts")
         phash_checkbox = QCheckBox("pHash duplicate artifacts")
         clip_checkbox = QCheckBox("CLIP/TOPIQ scoring artifacts, exports, and report")
-        for checkbox in (dino_checkbox, phash_checkbox, clip_checkbox):
+        for checkbox in (phash_checkbox, clip_checkbox):
             checkbox.setChecked(False)
             layout.addWidget(checkbox)
 
@@ -22298,11 +21673,11 @@ class MainWindow(QMainWindow):
 
         def sync_enabled() -> None:
             if reset_button is not None:
-                reset_button.setEnabled(dino_checkbox.isChecked() or phash_checkbox.isChecked() or clip_checkbox.isChecked())
+                reset_button.setEnabled(phash_checkbox.isChecked() or clip_checkbox.isChecked())
 
-        for checkbox in (dino_checkbox, phash_checkbox, clip_checkbox):
+        for checkbox in (phash_checkbox, clip_checkbox):
             checkbox.toggled.connect(sync_enabled)
-        remove_all_button.clicked.connect(lambda _checked=False: [checkbox.setChecked(True) for checkbox in (dino_checkbox, phash_checkbox, clip_checkbox)])
+        remove_all_button.clicked.connect(lambda _checked=False: [checkbox.setChecked(True) for checkbox in (phash_checkbox, clip_checkbox)])
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
         layout.addWidget(button_box)
@@ -22310,8 +21685,6 @@ class MainWindow(QMainWindow):
         if self._exec_dialog_with_geometry(dialog, "reset_ai_artifacts") != dialog.DialogCode.Accepted:
             return ()
         selected: list[str] = []
-        if dino_checkbox.isChecked():
-            selected.append("dino")
         if phash_checkbox.isChecked():
             selected.append("phash")
         if clip_checkbox.isChecked():
@@ -22419,10 +21792,6 @@ class MainWindow(QMainWindow):
             probe["aiculler_available"] = bool(folder and aiculler_db_path(build_aiculler_workflow_paths(folder)).exists())
         except Exception:
             probe["aiculler_available"] = False
-        try:
-            probe["dino_available"] = bool(folder and build_dino_prefilter_paths(folder).rows_path.exists())
-        except Exception:
-            probe["dino_available"] = False
         try:
             probe["phash_available"] = bool(folder and build_phash_prefilter_paths(folder).rows_path.exists())
         except Exception:
@@ -22564,14 +21933,9 @@ class MainWindow(QMainWindow):
             aiculler_available = bool(ai_probe["aiculler_available"])
             if FilterMode.AI_INGESTED in self.actions.filter_actions:
                 self.actions.filter_actions[FilterMode.AI_INGESTED].setEnabled(aiculler_available)
-            dino_available = bool(ai_probe["dino_available"])
             phash_available = bool(ai_probe["phash_available"])
-            prefilter_available = dino_available or phash_available
             if FilterMode.AI_PREFILTER_DUMPED in self.actions.filter_actions:
-                self.actions.filter_actions[FilterMode.AI_PREFILTER_DUMPED].setEnabled(prefilter_available)
-            for mode in (FilterMode.DINO_REMOVED, FilterMode.DINO_RESCUED):
-                if mode in self.actions.filter_actions:
-                    self.actions.filter_actions[mode].setEnabled(dino_available)
+                self.actions.filter_actions[FilterMode.AI_PREFILTER_DUMPED].setEnabled(phash_available)
         step_start = log_step("ai_toolbar_state.actions", step_start)
         for mode, action in self._ai_state_actions.items():
             action.setEnabled(ai_loaded or mode == AIStateFilter.ALL)
@@ -22731,11 +22095,8 @@ class MainWindow(QMainWindow):
                 runtime=runtime,
                 paths=paths,
                 records=tuple(record for record in self._all_records if not record.is_folder),
-                run_dino_prefilter=False,
                 run_phash_prefilter=self._phash_prefilter_settings.enabled,
-                dino_prefilter_settings=self._dino_prefilter_settings,
                 phash_prefilter_settings=self._phash_prefilter_settings,
-                dino_runtime=self._ai_runtime,
                 protected_paths=self._manual_ai_protected_paths(),
             )
         except Exception as exc:
@@ -22789,78 +22150,6 @@ class MainWindow(QMainWindow):
                 backend="cli-culler",
             )
 
-    def _run_dino_prefilter(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before running DINO Prefilter.")
-            return
-        if not self._all_records:
-            self.statusBar().showMessage("No images are loaded for the current folder yet.")
-            return
-        if not self._dino_prefilter_settings.enabled:
-            self.statusBar().showMessage("Enable DINO Prefilter before running it.")
-            self._show_settings(initial_section="DINO Prefilter")
-            return
-        if not self._dino_runtime_available():
-            QMessageBox.information(
-                self,
-                "DINO Prefilter",
-                "DINO Prefilter needs the optional DINO runtime dependencies. "
-                "Run AI runtime setup and enable the DINO dependency option.",
-            )
-            self._install_ai_runtime()
-            return
-        if self._active_ai_task is not None:
-            self.statusBar().showMessage("AI review is already running for the current folder")
-            self._show_ai_review_progress_dialog(folder=self._current_folder)
-            return
-
-        try:
-            self._refresh_ai_runtime_preferences()
-            paths = build_aiculler_workflow_paths(self._current_folder)
-            task = DINOPrefilterRunTask(
-                folder=Path(self._current_folder),
-                paths=paths,
-                dino_prefilter_settings=self._dino_prefilter_settings,
-                dino_runtime=self._ai_runtime,
-                phash_prefilter_settings=self._phash_prefilter_settings,
-                records=tuple(self._all_records),
-                protected_paths=self._manual_ai_protected_paths(),
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "DINO Prefilter", f"Could not prepare the DINO Prefilter run.\n\n{exc}")
-            return
-
-        task.signals.started.connect(self._handle_ai_run_started, Qt.ConnectionType.QueuedConnection)
-        task.signals.stage.connect(self._handle_ai_run_stage, Qt.ConnectionType.QueuedConnection)
-        task.signals.progress.connect(self._handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.detail.connect(self._handle_ai_run_detail, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_dino_prefilter_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_ai_run_failed, Qt.ConnectionType.QueuedConnection)
-        task.signals.cancelled.connect(self._handle_ai_run_cancelled, Qt.ConnectionType.QueuedConnection)
-        self._active_ai_task = task
-        self._defer_background_review_work_for_ai(reason="dino_prefilter")
-        self._active_ai_run_start_perf = 0.0
-        self._active_ai_embedding_cache_key = ""
-        self._active_ai_cluster_cache_key = ""
-        self._active_ai_report_cache_key = ""
-        self._active_ai_semantic_cache_key = ""
-        self._ai_stage_index = 0
-        self._ai_stage_total = 1
-        self._ai_stage_message = "Queued DINO Prefilter"
-        self._ai_progress_current = 0
-        self._ai_progress_total = 0
-        self._ai_progress_eta_text = ""
-        self._show_ai_review_progress_dialog(folder=self._current_folder, reset=True)
-        if self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.set_stage(
-                stage_index=self._ai_stage_index,
-                stage_total=self._ai_stage_total,
-                message=self._ai_stage_message,
-            )
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage(f"Queued DINO Prefilter for {self._current_folder}")
-        self._ai_run_pool.start(task)
-
     def _rerank_ai_pipeline(self) -> None:
         if not self._current_folder:
             self.statusBar().showMessage("Choose a folder before reranking.")
@@ -22892,7 +22181,6 @@ class MainWindow(QMainWindow):
                 paths=paths,
                 records=tuple(record for record in self._all_records if not record.is_folder),
                 stages=("rank",),
-                dino_prefilter_settings=self._dino_prefilter_settings,
                 phash_prefilter_settings=self._phash_prefilter_settings,
             )
         except Exception as exc:
@@ -23064,8 +22352,7 @@ class MainWindow(QMainWindow):
                     "Semantic Sort",
                     (
                         "Semantic classifications are missing or incomplete for this folder.\n\n"
-                        "Run Cull & Score again now to generate the semantic classifications? "
-                        "Existing DINO embeddings and clusters will be reused when possible."
+                        "Run Cull & Score again now to generate the semantic classifications?"
                     ),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes,
@@ -23522,32 +22809,6 @@ class MainWindow(QMainWindow):
             self._handle_post_ai_run_bundle_failed, Qt.ConnectionType.QueuedConnection
         )
         QThreadPool.globalInstance().start(task, -50)
-
-    def _handle_dino_prefilter_finished(self, folder: str, artifact_dir: str, report_path: str) -> None:
-        if not self._ai_run_signal_matches_active_task(folder):
-            perf_logger().log("ai.run_signal_ignored", signal="dino_finished", folder=folder, artifact_dir=artifact_dir)
-            return
-        self._active_ai_task = None
-        self._invalidate_ai_folder_probe_cache()
-        self._ai_stage_index = self._ai_stage_total
-        self._ai_stage_message = "DINO Prefilter complete"
-        if self._ai_progress_total <= 0:
-            self._ai_progress_total = 1
-        self._ai_progress_current = self._ai_progress_total
-        self._ai_progress_eta_text = ""
-        self._close_ai_review_progress_dialog()
-        same_folder = self._ai_run_signal_matches_current_folder(folder)
-        if same_folder:
-            current_path = self._current_visible_record_path()
-            self._refresh_dino_prefilter_decisions_for_current_folder()
-            self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
-            self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-            self._apply_records_view(current_path=current_path)
-            self.statusBar().showMessage("DINO Prefilter complete. Review the marked images, then run Index & Score.")
-        self._update_ai_toolbar_state()
-        self._refresh_ai_workflow_center()
-        self._resume_deferred_background_review_work_after_ai(reason="dino_prefilter_finished")
-        self._active_ai_run_start_perf = 0.0
 
     def _handle_post_ai_run_bundle_loaded(
         self,
@@ -24327,30 +23588,24 @@ class MainWindow(QMainWindow):
             return None
         return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(_memory_path_key(record.path))
 
-    def _dino_prefilter_decision_for_record(self, record: ImageRecord | None) -> DINOPrefilterDecision | None:
+    def _prefilter_decision_for_record(self, record: ImageRecord | None) -> PrefilterDecision | None:
         if record is None:
             return None
         for path in record.stack_paths:
-            decision = self._dino_prefilter_decisions_by_path.get(normalized_path_key(path))
+            decision = self._prefilter_decisions_by_path.get(normalized_path_key(path))
             if decision is not None:
                 return decision
         return None
 
-    def _refresh_dino_prefilter_decisions_for_current_folder(self) -> None:
+    def _refresh_prefilter_decisions_for_current_folder(self) -> None:
         if not self._current_folder:
-            self._dino_prefilter_decisions_by_path = {}
+            self._prefilter_decisions_by_path = {}
             return
         try:
-            paths = build_dino_prefilter_paths(self._current_folder)
-            decisions = load_dino_prefilter_decisions(paths)
+            decisions = load_phash_prefilter_decisions(build_phash_prefilter_paths(self._current_folder))
         except Exception:
             decisions = {}
-        try:
-            phash_paths = build_phash_prefilter_paths(self._current_folder)
-            decisions.update(load_phash_prefilter_decisions(phash_paths))
-        except Exception:
-            pass
-        self._dino_prefilter_decisions_by_path = {
+        self._prefilter_decisions_by_path = {
             normalized_path_key(path): decision
             for path, decision in decisions.items()
             if normalized_path_key(path)
@@ -24434,15 +23689,6 @@ class MainWindow(QMainWindow):
             if text and text not in parts:
                 parts.append(text)
         return " | ".join(parts)
-
-    def _load_correction_events_for_current_folder(self) -> None:
-        if not self._current_folder:
-            if self._scope_kind != "folder" and self._all_records:
-                self._correction_events = self._decision_store.load_correction_events(self._session_id)
-            else:
-                self._correction_events = []
-            return
-        self._correction_events = self._decision_store.load_correction_events(self._session_id, self._current_folder)
 
     def _refresh_workflow_insights_cache(
         self,
@@ -25657,15 +24903,12 @@ class MainWindow(QMainWindow):
             restore_folder_position=self._restore_folder_position_enabled,
             check_updates_on_startup=self._check_updates_on_startup,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
-            ai_dino_worker_count=self._ai_dino_worker_count_setting,
-            ai_dino_worker_capacity=self._ai_dino_worker_capacity,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
             ai_dispute_weight=self._ai_dispute_weight_setting,
             ai_keep_top_percent=self._ai_keep_top_percent_setting,
             ai_review_band_percent=self._ai_review_band_percent_setting,
             ai_base_score_weight_percent=self._ai_base_score_weight_percent_setting,
             ai_label_near_duplicate_threshold=self._ai_label_near_duplicate_threshold,
-            dino_prefilter_settings=self._dino_prefilter_settings,
             phash_prefilter_settings=self._phash_prefilter_settings,
             catalog_summary_text=self._catalog_debug_summary(include_current=True),
             presets=self._workflow_presets,
@@ -25715,9 +24958,7 @@ class MainWindow(QMainWindow):
         watch_changed = result.watch_current_folder != self._watch_current_folder_enabled
         update_check_changed = result.check_updates_on_startup != self._check_updates_on_startup
         ai_batch_changed = result.ai_embed_batch_size != self._ai_embed_batch_size_setting
-        ai_dino_workers_changed = result.ai_dino_worker_count != self._ai_dino_worker_count_setting
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
-        dino_prefilter_changed = result.dino_prefilter_settings.normalized() != self._dino_prefilter_settings
         phash_prefilter_changed = result.phash_prefilter_settings.normalized() != self._phash_prefilter_settings
 
         self._session_id = new_session
@@ -25741,13 +24982,8 @@ class MainWindow(QMainWindow):
         self._restore_folder_position_enabled = result.restore_folder_position
         self._check_updates_on_startup = result.check_updates_on_startup
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
-        self._ai_dino_worker_count_setting = clamp_ai_dataloader_workers(
-            result.ai_dino_worker_count,
-            self._ai_dino_worker_capacity,
-        )
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
         self._ai_label_near_duplicate_threshold = self._normalize_ai_label_near_duplicate_threshold(result.ai_label_near_duplicate_threshold)
-        self._dino_prefilter_settings = result.dino_prefilter_settings.normalized()
         self._phash_prefilter_settings = result.phash_prefilter_settings.normalized()
         new_keep_top = self._normalize_ai_keep_top_percent(result.ai_keep_top_percent)
         new_review_band = self._normalize_ai_review_band_percent(result.ai_review_band_percent)
@@ -25786,13 +25022,11 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.RESTORE_FOLDER_POSITION_KEY, self._restore_folder_position_enabled)
         self._settings.setValue(self.CHECK_UPDATES_ON_STARTUP_KEY, self._check_updates_on_startup)
         self._settings.setValue(self.AI_EMBED_BATCH_SIZE_KEY, self._ai_embed_batch_size_setting)
-        self._settings.setValue(self.AI_DINO_WORKER_COUNT_KEY, self._ai_dino_worker_count_setting)
         self._settings.setValue(self.AI_DISPUTE_WEIGHT_KEY, self._ai_dispute_weight_setting)
         self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
         self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
         self._settings.setValue(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self._ai_base_score_weight_percent_setting)
         self._settings.setValue(self.AI_LABEL_NEAR_DUPLICATE_THRESHOLD_KEY, self._ai_label_near_duplicate_threshold)
-        self._save_dino_prefilter_settings(self._dino_prefilter_settings)
         self._save_phash_prefilter_settings(self._phash_prefilter_settings)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
         self._decision_store.touch_session(self._session_id)
@@ -25887,16 +25121,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Startup update checks {state}")
         elif ai_batch_changed:
             self.statusBar().showMessage(f"AI embedding batch size set to {self._ai_embed_batch_size_label()}")
-        elif ai_dino_workers_changed:
-            self.statusBar().showMessage(
-                f"DINO worker count set to {self._ai_dino_worker_count_setting}"
-            )
         elif ai_progress_detail_changed:
             state = "enabled" if self._ai_review_detail_progress_enabled else "disabled"
             self.statusBar().showMessage(f"Detailed AI Review progress {state}")
-        elif dino_prefilter_changed:
-            state = "enabled" if self._dino_prefilter_settings.enabled else "disabled"
-            self.statusBar().showMessage(f"DINO Prefilter {state}")
         elif phash_prefilter_changed:
             state = "enabled" if self._phash_prefilter_settings.enabled else "disabled"
             self.statusBar().showMessage(f"pHash Prefilter {state}")
@@ -27747,10 +26974,10 @@ class MainWindow(QMainWindow):
 
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
         step_start = log_step("records_view.finalize.ai_results", step_start)
-        if self._dino_prefilter_settings.enabled or self._phash_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
-            self._refresh_dino_prefilter_decisions_for_current_folder()
-        self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
-        step_start = log_step("records_view.finalize.dino_prefilter", step_start)
+        if self._phash_prefilter_settings.enabled or self._prefilter_decisions_by_path:
+            self._refresh_prefilter_decisions_for_current_folder()
+        self.grid.set_prefilter_decisions(self._prefilter_decisions_by_path)
+        step_start = log_step("records_view.finalize.prefilter", step_start)
         if not structural_changed:
             self.details_view.refresh_rows()
         step_start = log_step("records_view.finalize.details_refresh", step_start)
@@ -27825,9 +27052,9 @@ class MainWindow(QMainWindow):
         self.details_view.set_records([])
         self._set_annotation_views()
         self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
-        if self._dino_prefilter_settings.enabled or self._phash_prefilter_settings.enabled or self._dino_prefilter_decisions_by_path:
-            self._refresh_dino_prefilter_decisions_for_current_folder()
-        self.grid.set_dino_prefilter_decisions(self._dino_prefilter_decisions_by_path)
+        if self._phash_prefilter_settings.enabled or self._prefilter_decisions_by_path:
+            self._refresh_prefilter_decisions_for_current_folder()
+        self.grid.set_prefilter_decisions(self._prefilter_decisions_by_path)
         self.details_view.refresh_rows()
         self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
         self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
@@ -27980,18 +27207,14 @@ class MainWindow(QMainWindow):
         needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
         needs_ai = needs_ai or self._filter_query.ai_cull_bucket is not None
         needs_aiculler_ingested = self._filter_query.quick_filter == FilterMode.AI_INGESTED
-        needs_dino = self._filter_query.quick_filter in {
-            FilterMode.AI_PREFILTER_DUMPED,
-            FilterMode.DINO_REMOVED,
-            FilterMode.DINO_RESCUED,
-        }
+        needs_prefilter = self._filter_query.quick_filter == FilterMode.AI_PREFILTER_DUMPED
         needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
         needs_workflow = self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
         needs_workflow = needs_workflow or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
         needs_workflow = needs_workflow or bool(self._filter_query.ai_workflow_tag.strip())
         needs_metadata = self._filter_query.requires_metadata
-        if needs_dino:
-            self._refresh_dino_prefilter_decisions_for_current_folder()
+        if needs_prefilter:
+            self._refresh_prefilter_decisions_for_current_folder()
         if needs_aiculler_ingested:
             self._refresh_aiculler_ingested_paths_for_current_folder()
         if not self._filter_query.has_active_filters:
@@ -28006,7 +27229,7 @@ class MainWindow(QMainWindow):
                 workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
                 metadata = self._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
                 is_disputed = self._is_record_disputed(record) if needs_dispute else False
-                dino_decision = self._dino_prefilter_decision_for_record(record) if needs_dino else None
+                prefilter_decision = self._prefilter_decision_for_record(record) if needs_prefilter else None
                 ai_ingested = self._record_was_aiculler_ingested(record) if needs_aiculler_ingested else False
                 if matches_record_query(
                     record,
@@ -28017,7 +27240,7 @@ class MainWindow(QMainWindow):
                     review_insight=review_insight,
                     workflow_insight=workflow_insight,
                     is_disputed=is_disputed,
-                    dino_decision=dino_decision,
+                    prefilter_decision=prefilter_decision,
                     ai_ingested=ai_ingested,
                     search_match_paths=self._unified_search_path_keys,
                     person_match_paths=self._person_filter_paths,
