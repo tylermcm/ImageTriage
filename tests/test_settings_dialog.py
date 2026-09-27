@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QFrame, QLabel
 
 from image_triage.models import DeleteMode, WinnerMode
@@ -120,21 +121,6 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(64, result.ai_embed_batch_size)
         dialog.deleteLater()
 
-    def test_clip_model_precision_is_automatic(self) -> None:
-        dialog = WorkflowSettingsDialog(
-            sessions=["Default"],
-            current_session="Default",
-            winner_mode=WinnerMode.COPY,
-            delete_mode=DeleteMode.SAFE_TRASH,
-            ai_clip_model_variant="fp16",
-        )
-
-        result = dialog.result_settings()
-
-        self.assertEqual("fp32", result.ai_clip_model_variant)
-        self.assertFalse(hasattr(dialog, "ai_clip_model_combo"))
-        dialog.deleteLater()
-
     def test_dispute_and_base_score_weight_are_visible_and_round_trip(self) -> None:
         dialog = WorkflowSettingsDialog(
             sessions=["Default"],
@@ -155,6 +141,34 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
 
         self.assertEqual(5, result.ai_dispute_weight)
         self.assertEqual(20, result.ai_base_score_weight_percent)
+        dialog.deleteLater()
+
+    def test_shortcuts_page_flags_conflicts_across_every_registry_row(self) -> None:
+        """WI-3.2's uniqueness test: the Shortcuts page's own conflict
+        checker (`_collect_shortcut_state`) now covers every unified
+        binding, not just a hand-picked subset."""
+        dialog = WorkflowSettingsDialog(
+            sessions=["Default"],
+            current_session="Default",
+            winner_mode=WinnerMode.COPY,
+            delete_mode=DeleteMode.SAFE_TRASH,
+        )
+
+        # No two defaults collide out of the box.
+        _effective, conflicts = dialog._collect_shortcut_state()
+        self.assertEqual({}, conflicts)
+
+        # Rebinding one action onto another's shortcut is caught.
+        editors = dialog._shortcut_editors
+        target_attr, other_attr = list(editors)[0], list(editors)[1]
+        shared = QKeySequence("Ctrl+Alt+F9")
+        editors[target_attr].setKeySequence(shared)
+        editors[other_attr].setKeySequence(shared)
+
+        _effective, conflicts = dialog._collect_shortcut_state()
+
+        self.assertIn("Ctrl+Alt+F9", conflicts)
+        self.assertEqual({target_attr, other_attr}, set(conflicts["Ctrl+Alt+F9"]))
         dialog.deleteLater()
 
     def test_interface_size_choice_round_trips_and_sizes_dialog_chrome(self) -> None:
@@ -211,6 +225,31 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertFalse(result.cache_enabled)
         self.assertTrue(result.diagnostics_enabled)
         dialog.deleteLater()
+
+    def test_every_settings_result_field_has_a_consumer_in_window_py(self) -> None:
+        """WI-3.3's validation criterion: every field of `WorkflowSettingsResult`
+        is read back somewhere in window.py's settings-accept handler. A
+        source scan, not an import, so this doesn't need a live MainWindow
+        and catches a field that's set but never read (as `ai_clip_model_variant`
+        was before WI-3.3 removed it)."""
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        settings_src = (repo_root / "image_triage" / "settings_dialog.py").read_text(encoding="utf-8")
+        tree = ast.parse(settings_src)
+        fields = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "WorkflowSettingsResult":
+                fields = [n.target.id for n in node.body if isinstance(n, ast.AnnAssign)]
+                break
+        self.assertIsNotNone(fields, "WorkflowSettingsResult class not found")
+        self.assertGreater(len(fields), 0)
+
+        window_src = (repo_root / "image_triage" / "window.py").read_text(encoding="utf-8")
+        missing = [name for name in fields if f"result.{name}" not in window_src]
+
+        self.assertEqual([], missing, f"no `result.<field>` consumer found in window.py for: {missing}")
 
 
 if __name__ == "__main__":

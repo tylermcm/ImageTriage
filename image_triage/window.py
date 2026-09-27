@@ -29,7 +29,7 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 from textwrap import dedent
 
-from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QEventLoop, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSettings, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QEventLoop, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -103,6 +103,7 @@ from .archive_ops import (
     ensure_archive_suffix,
 )
 from .annotation_queue import AnnotationPersistenceQueue
+from .app_identity import migrate_legacy_settings_once, user_settings
 from .ai_training import (
     RankerFitDiagnosis,
     normalize_ranker_profile,
@@ -186,7 +187,6 @@ from .grid import BurstVisualInfo, GridDeltaUpdate, ThumbnailGridView
 from .image_convert import ConvertApplyTask, ConvertOptions, ConvertPlan, ConvertSourceItem
 from .image_resize import ResizeApplyTask, ResizeOptions, ResizePlan, ResizeSourceItem
 from .job_controller import JobController, JobSpec
-from .keyboard_mapping import ShortcutBinding, normalize_shortcut_text, serialize_shortcut_overrides
 from .library_store import (
     CatalogRefreshSummary,
     CatalogRefreshTask,
@@ -281,17 +281,18 @@ from .ui import (
     HandoffBuilderDialog,
     HelpMarkdownDialog,
     InspectorPanel,
-    KeyboardShortcutDialog,
     MainWindowActions,
     PaletteCommand,
     PeopleSearchDialog,
     ResizeDialog,
+    SHORTCUT_REGISTRY,
     TasteCalibrationDialog,
     WORKSPACE_METRICS,
     WorkspaceDocks,
     apply_gamma,
     apply_shortcut_overrides,
     appearance_mode_label,
+    effective_shortcuts,
     load_shortcut_overrides,
     normalize_ui_gamma,
     save_shortcut_overrides,
@@ -677,16 +678,6 @@ class ChildAppProcess:
     """Wraps a spawned companion process so the window can track its lifetime."""
     name: str
     process: subprocess.Popen[str]
-
-
-@dataclass(slots=True)
-class ShortcutTarget:
-    """Describes one configurable shortcut endpoint inside the main window."""
-    id: str
-    label: str
-    section: str
-    default_shortcut: str
-    apply: object
 
 
 def _memory_path_key(path: str) -> str:
@@ -2128,8 +2119,6 @@ class MainWindow(QMainWindow):
     AI_RESULTS_KEY = "window/ai_results_path"
     AUTO_BRACKET_KEY = "window/auto_bracket_compare"
     APPEARANCE_KEY = "window/appearance"
-    # One-shot switch of existing installs onto the Indigo default.
-    APPEARANCE_INDIGO_MIGRATION_KEY = "window/appearance_indigo_default"
     # One-shot switch of existing installs onto the Slate default.
     APPEARANCE_SLATE_MIGRATION_KEY = "window/appearance_slate_default"
     TOOLBAR_PLACEMENT_KEY = "ui/toolbar_placement"
@@ -2171,17 +2160,6 @@ class MainWindow(QMainWindow):
     PHASH_PREFILTER_HAMMING_THRESHOLD_KEY = "ai/phash_prefilter/hamming_threshold"
     PHASH_PREFILTER_CACHE_ENABLED_KEY = "ai/phash_prefilter/cache_enabled"
     PHASH_PREFILTER_DIAGNOSTICS_KEY = "ai/phash_prefilter/diagnostics"
-    TRAIN_RANKER_LAST_RUN_NAME_KEY = "training/ranker_last_run_name"
-    TRAIN_RANKER_LAST_PROFILE_KEY = "training/ranker_last_profile"
-    TRAIN_RANKER_LAST_EPOCHS_KEY = "training/ranker_last_epochs"
-    TRAIN_RANKER_LAST_BATCH_SIZE_KEY = "training/ranker_last_batch_size"
-    TRAIN_RANKER_LAST_LEARNING_RATE_KEY = "training/ranker_last_learning_rate"
-    TRAIN_RANKER_LAST_HIDDEN_DIM_KEY = "training/ranker_last_hidden_dim"
-    TRAIN_RANKER_LAST_DISAGREEMENT_WEIGHT_KEY = "training/ranker_last_disagreement_weight"
-    TRAIN_RANKER_LAST_REFERENCE_PATH_KEY = "training/ranker_last_reference_path"
-    TRAIN_RANKER_LAST_REFERENCE_TOP_K_KEY = "training/ranker_last_reference_top_k"
-    TRAIN_RANKER_LAST_DEVICE_KEY = "training/ranker_last_device"
-    TRAIN_RANKER_LAST_ADVANCED_VISIBLE_KEY = "training/ranker_last_advanced_visible"
     FAST_RATING_HINT_DISABLED_KEY = "workflow/fast_rating_hint_disabled"
     FAST_RATING_HINT_SESSIONS_KEY = "workflow/fast_rating_hint_sessions"
     FAST_RATING_HINT_SIZE_BYTES = 20 * 1024 * 1024
@@ -2217,7 +2195,6 @@ class MainWindow(QMainWindow):
         "best_of_set",
         "keyboard_shortcuts",
     )
-    SHORTCUT_OVERRIDES_KEY = "shortcuts/overrides"
     AI_SETUP_PROMPTED_KEY = "ai/setup_prompted"
     BURST_GROUPS_KEY = "view/burst_groups"
     BURST_STACKS_KEY = "view/burst_stacks"
@@ -2249,6 +2226,10 @@ class MainWindow(QMainWindow):
     DETAILS_SORT_ORDER_KEY = "view/details_sort_order"
     PREVIEW_PRELOAD_BATCH_SIZE_KEY = "preview/preload_batch_size"
     PERFORMANCE_LOGGING_KEY = "diagnostics/performance_logging"
+    # D1 (tentative, flagged for revisit): opt-in, independent of ui_mode
+    # (which is permanently forced to "manual" since the 2026-09-19 AI Review
+    # mode retirement, see docs/ai_mode_retirement.md).
+    SHOW_AI_TAGS_IN_GRID_KEY = "workflow/show_ai_tags_in_grid"
     # Keep diagnostics focused on the active UI investigations so the JSONL log
     # remains readable while still capturing the popout's full loading path.
     # editslider.* stays available for slider-latency profiling under perf logging.
@@ -2682,7 +2663,8 @@ class MainWindow(QMainWindow):
         self._pending_focus_scroll_top = False
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
-        self._settings = QSettings()
+        migrate_legacy_settings_once()
+        self._settings = user_settings()
         self._load_pane_width_ratios()
         self._startup_window_state = "normal"
         self._startup_window_state_fixup_applied = False
@@ -3140,6 +3122,8 @@ class MainWindow(QMainWindow):
         self._apply_cull_thresholds_to_classifier()
         self._apply_base_score_blend_to_workflow()
         self._ai_review_detail_progress_enabled = self._settings.value(self.AI_REVIEW_DETAIL_PROGRESS_KEY, False, bool)
+        self._show_ai_tags_in_grid = self._settings.value(self.SHOW_AI_TAGS_IN_GRID_KEY, False, bool)
+        self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
         # Stub: the semantic-sidecar setting used to flip a stage count and
         # gate a legacy semantic model. With CLI-Culler driving the pipeline
         # the flag is no longer meaningful, but a couple of legacy status-line
@@ -3182,8 +3166,6 @@ class MainWindow(QMainWindow):
         self._saved_workflow_recipes = self._load_saved_workflow_recipes()
         self._saved_workspace_presets = self._load_saved_workspace_presets()
         self._recent_command_ids = self._load_recent_command_ids()
-        self._shortcut_overrides = self._load_shortcut_overrides()
-        self._shortcut_targets: dict[str, ShortcutTarget] = {}
         self._active_tool_mode = ""
         self._collection_mode = ""
         self._collection_target_id = ""
@@ -3507,9 +3489,6 @@ class MainWindow(QMainWindow):
         self.actions = build_main_window_actions(self)
         apply_shortcut_overrides(self.actions)
         self._build_left_rail_pinned_tools()
-        # zen_mode binding is owned by a QShortcut below so the QAction itself
-        # must clear its default sequence to avoid double-fire.
-        self.actions.zen_mode.setShortcut(QKeySequence())
         self._setup_command_palette_shortcuts()
         self._zen_toggle_shortcut = QShortcut(QKeySequence("F11"), self)
         self._zen_toggle_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -3520,8 +3499,10 @@ class MainWindow(QMainWindow):
         self._zen_escape_shortcut.setAutoRepeat(False)
         self._zen_escape_shortcut.setEnabled(False)
         self._zen_escape_shortcut.activated.connect(self._handle_zen_escape_shortcut)
-        self._register_shortcut_targets()
         self._apply_shortcut_overrides()
+        # zen_mode binding is owned by the QShortcut above, so the QAction itself
+        # must clear its sequence (after shortcut overrides apply) to avoid double-fire.
+        self.actions.zen_mode.setShortcut(QKeySequence())
         self._build_record_filter_actions()
         self.projects_add_button.clicked.connect(
             lambda _checked=False: self.actions.create_virtual_collection.trigger()
@@ -3813,7 +3794,7 @@ class MainWindow(QMainWindow):
         self.summary_rejected = QLabel("Rejected: 0")
         self.summary_unreviewed = QLabel("Unreviewed: 0")
         self.summary_ai = QLabel("AI: Off")
-        self.summary_session = QLabel(f"Session: {self._session_id}")
+        self.summary_session = QLabel(f"Profile: {self._session_id}")
         for label in (
             self.summary_total,
             self.summary_selected,
@@ -7411,9 +7392,10 @@ class MainWindow(QMainWindow):
         self._set_workspace_bar_state("minimized")
 
     def _set_workspace_bar_state(self, state: str) -> None:
-        normalized = self._normalize_workspace_bar_state(state)
-        self._workspace_bar_state = normalized
-        self._settings.setValue(self.WORKSPACE_BAR_STATE_KEY, normalized)
+        # Deliberately not persisted: the workspace bar always starts hidden
+        # (see its __init__ comment), so a saved value would never be read
+        # back anyway.
+        self._workspace_bar_state = self._normalize_workspace_bar_state(state)
         self._apply_workspace_bar_state()
 
     def _apply_workspace_bar_state(self) -> None:
@@ -8542,10 +8524,6 @@ class MainWindow(QMainWindow):
         action.setToolTip(hinted_text)
         action.setStatusTip(hinted_text)
 
-    def _set_action_shortcut(self, action: QAction, shortcut: str) -> None:
-        action.setShortcut(QKeySequence(shortcut))
-        self._refresh_action_shortcut_hint(action)
-
     @staticmethod
     def _menu_text_with_hint(text: str, hint: str = "") -> str:
         return f"{text}\t{hint}" if hint else text
@@ -8556,77 +8534,45 @@ class MainWindow(QMainWindow):
         shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
         return self._menu_text_with_hint(text, shortcut_text)
 
-    def _register_shortcut_targets(self) -> None:
-        if self.actions is None:
-            return
-
-        def register_action(binding_id: str, action, *, label: str, section: str) -> None:
-            self._shortcut_targets[binding_id] = ShortcutTarget(
-                id=binding_id,
-                label=label,
-                section=section,
-                default_shortcut=action.shortcut().toString(QKeySequence.SequenceFormat.PortableText),
-                apply=lambda shortcut, target=action: self._set_action_shortcut(target, shortcut),
-            )
-
-        register_action("file.open_folder", self.actions.open_folder, label="Open Folder", section="File")
-        register_action("file.refresh_folder", self.actions.refresh_folder, label="Refresh Folder", section="File")
-        register_action("edit.undo", self.actions.undo, label="Undo", section="Edit")
-        register_action("review.open_preview", self.actions.open_preview, label="Open Preview", section="Review")
-        register_action("review.compare_mode", self.actions.compare_mode, label="Compare Mode", section="Review")
-        register_action("review.accept_selection", self.actions.accept_selection, label="Mark Winner", section="Review")
-        register_action("review.reject_selection", self.actions.reject_selection, label="Reject Selection", section="Review")
-        register_action("review.keep_selection", self.actions.keep_selection, label="Move Selection To _keep", section="Review")
-        register_action("review.move_selection", self.actions.move_selection, label="Move Selection", section="Review")
-        register_action("review.delete_selection", self.actions.delete_selection, label="Delete Selection", section="Review")
-        register_action("view.grid_view", self.actions.grid_view, label="Grid View", section="View")
-        register_action("view.details_view", self.actions.details_view, label="Details View", section="View")
-        register_action("view.zen_mode", self.actions.zen_mode, label="Zen Mode", section="View")
-        register_action("ai.next_top_pick", self.actions.next_ai_pick, label="Next AI Top Pick", section="AI")
-        register_action("ai.compare_group", self.actions.compare_ai_group, label="Compare Current AI Group", section="AI")
-        register_action("workflow.handoff_builder", self.actions.handoff_builder, label="Deliver / Handoff Builder", section="Workflow")
-        register_action("workflow.share_to_phone", self.actions.share_to_phone, label="Send to PocketDrop", section="Workflow")
-        register_action("workflow.send_to_editor", self.actions.send_to_editor_pipeline, label="Send To Editor", section="Workflow")
-        register_action("workflow.best_of", self.actions.best_of_set_auto_assembly, label="Best-of-Set Auto Assembly", section="Workflow")
-        register_action("workflow.save_workspace", self.actions.save_workspace_preset, label="Save Current Workspace Preset", section="Workflow")
-
-        self._shortcut_targets["palette.open"] = ShortcutTarget(
-            id="palette.open",
-            label="Open Command Palette",
-            section="Workspace",
-            default_shortcut="Ctrl+K",
-            apply=self._apply_command_palette_shortcut,
-        )
-
-    def _shortcut_bindings(self) -> list[ShortcutBinding]:
-        bindings: list[ShortcutBinding] = []
-        for binding_id, target in self._shortcut_targets.items():
-            bindings.append(
-                ShortcutBinding(
-                    id=binding_id,
-                    label=target.label,
-                    section=target.section,
-                    default_shortcut=target.default_shortcut,
-                    shortcut=self._shortcut_overrides.get(binding_id, ""),
-                )
-            )
-        bindings.sort(key=lambda item: (item.section.casefold(), item.label.casefold()))
-        return bindings
+    _REVIEW_KEY_BINDING_IDS = (
+        "cycle_burst_previous",
+        "cycle_burst_next",
+        "keep_at_cursor",
+        "move_at_cursor",
+        "tag_at_cursor",
+        "adapter_label_hero",
+        "adapter_label_strong",
+        "adapter_label_maybe",
+        "adapter_label_weak",
+        "adapter_label_reject",
+    )
 
     def _apply_shortcut_overrides(self) -> None:
-        for binding_id, target in self._shortcut_targets.items():
-            shortcut = self._shortcut_overrides.get(binding_id, "") or target.default_shortcut
-            normalized = normalize_shortcut_text(shortcut)
-            target.apply(normalized)
-        if self.actions is not None and hasattr(self, "grid"):
-            # The actions carry no default key, so an empty sequence here used to
-            # blank the grid's built-in W / X binds.
-            accept_key = self.actions.accept_selection.shortcut()
-            reject_key = self.actions.reject_selection.shortcut()
-            self.grid.set_review_action_shortcuts(
-                accept_key if not accept_key.isEmpty() else QKeySequence("W"),
-                reject_key if not reject_key.isEmpty() else QKeySequence("X"),
+        """Push the single shortcut registry (ui/shortcuts.py) onto every
+        surface that reads a keyboard shortcut: QActions, and the raw
+        per-key review commands in grid/details/preview (WI-3.2)."""
+        if self.actions is None:
+            return
+        overrides = load_shortcut_overrides(settings=self._settings)
+        apply_shortcut_overrides(self.actions, overrides)
+        for attr_name, _category, _default, _display in SHORTCUT_REGISTRY:
+            action = getattr(self.actions, attr_name, None)
+            if action is not None:
+                self._refresh_action_shortcut_hint(action)
+
+        review_keys = effective_shortcuts(self._REVIEW_KEY_BINDING_IDS, overrides)
+        winner_shortcut = self.actions.accept_selection.shortcut()
+        reject_shortcut = self.actions.reject_selection.shortcut()
+        for surface in (self.grid, self.details_view.table, self.preview):
+            surface.set_review_action_shortcuts(winner_shortcut, reject_shortcut)
+            surface.set_review_key_shortcuts(review_keys)
+
+        self._apply_command_palette_shortcut(
+            overrides.get(
+                "open_command_palette",
+                self.actions.open_command_palette.shortcut().toString(QKeySequence.SequenceFormat.PortableText),
             )
+        )
 
     def _apply_command_palette_shortcut(self, shortcut: str) -> None:
         sequence = QKeySequence(shortcut)
@@ -8657,26 +8603,6 @@ class MainWindow(QMainWindow):
             self.WORKSPACE_PRESETS_KEY,
             dump_saved_workspace_presets(self._saved_workspace_presets),
         )
-
-    def _load_shortcut_overrides(self) -> dict[str, str]:
-        raw = self._settings.value(self.SHORTCUT_OVERRIDES_KEY, "", str)
-        if not raw:
-            return {}
-        try:
-            payload = json.loads(raw)
-        except (TypeError, ValueError):
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        return {
-            str(binding_id): normalize_shortcut_text(shortcut if isinstance(shortcut, str) else "")
-            for binding_id, shortcut in payload.items()
-            if isinstance(binding_id, str)
-        }
-
-    def _save_shortcut_overrides(self) -> None:
-        payload = serialize_shortcut_overrides(self._shortcut_overrides)
-        self._settings.setValue(self.SHORTCUT_OVERRIDES_KEY, json.dumps(payload))
 
     def _refresh_workflow_recipe_menu(self) -> None:
         if not hasattr(self, "workflow_recipe_menu") or self.workflow_recipe_menu is None:
@@ -13078,7 +13004,7 @@ class MainWindow(QMainWindow):
         if action_stack is not None:
             action_stack.setCurrentIndex(index)
             self._update_topbar_overflow(self._ui_mode)
-        self.grid.set_show_ai_annotations(self._ui_mode == "ai")
+        self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
         self._schedule_workspace_toolbar_overflow_update(self._ui_mode)
         step_start = log_step("mode_switch.chrome", step_start)
         self._refresh_viewport_mode()
@@ -14913,18 +14839,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(summary)
 
     def _open_keyboard_shortcuts_dialog(self) -> None:
-        dialog = KeyboardShortcutDialog(self._shortcut_bindings(), self)
-        if self._exec_dialog_with_geometry(dialog, "keyboard_shortcuts") != dialog.DialogCode.Accepted:
-            return
-        overrides: dict[str, str] = {}
-        for binding in dialog.bindings():
-            normalized = normalize_shortcut_text(binding.shortcut)
-            if normalized:
-                overrides[binding.id] = normalized
-        self._shortcut_overrides = overrides
-        self._save_shortcut_overrides()
-        self._apply_shortcut_overrides()
-        self.statusBar().showMessage("Updated keyboard shortcuts")
+        # Settings > Shortcuts is now the one editor for every rebindable key
+        # (WI-3.2); this used to open a second, separate dialog with its own
+        # store.
+        self._show_settings(initial_section="Shortcuts")
 
     def _save_current_workspace_preset(self) -> None:
         if self.workspace_docks is None:
@@ -24120,6 +24038,9 @@ class MainWindow(QMainWindow):
             watch_current_folder=self._watch_current_folder_enabled,
             restore_folder_position=self._restore_folder_position_enabled,
             check_updates_on_startup=self._check_updates_on_startup,
+            theme=self._appearance_mode.value,
+            performance_logging_enabled=self._performance_logging_enabled,
+            show_ai_tags_in_grid=self._show_ai_tags_in_grid,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
             ai_dispute_weight=self._ai_dispute_weight_setting,
@@ -24142,7 +24063,7 @@ class MainWindow(QMainWindow):
         self._workflow_presets = list(result.presets)
         self._save_workflow_presets()
         save_shortcut_overrides(dict(result.shortcut_overrides))
-        apply_shortcut_overrides(self.actions)
+        self._apply_shortcut_overrides()
         new_session = self._decision_store.ensure_session(result.session_id)
         session_changed = new_session != self._session_id
         winner_changed = result.winner_mode != self._winner_mode
@@ -24194,6 +24115,15 @@ class MainWindow(QMainWindow):
         self._watch_current_folder_enabled = result.watch_current_folder
         self._restore_folder_position_enabled = result.restore_folder_position
         self._check_updates_on_startup = result.check_updates_on_startup
+        new_theme = parse_appearance_mode(result.theme)
+        if new_theme != self._appearance_mode:
+            self._set_appearance_mode(new_theme)
+        if result.performance_logging_enabled != self._performance_logging_enabled:
+            self._handle_performance_logging_toggled(result.performance_logging_enabled)
+        if result.show_ai_tags_in_grid != self._show_ai_tags_in_grid:
+            self._show_ai_tags_in_grid = result.show_ai_tags_in_grid
+            self._settings.setValue(self.SHOW_AI_TAGS_IN_GRID_KEY, self._show_ai_tags_in_grid)
+            self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
         self._phash_prefilter_settings = result.phash_prefilter_settings.normalized()
@@ -24241,7 +24171,7 @@ class MainWindow(QMainWindow):
         self._save_phash_prefilter_settings(self._phash_prefilter_settings)
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
         self._decision_store.touch_session(self._session_id)
-        self.summary_session.setText(f"Session: {self._session_id}")
+        self.summary_session.setText(f"Profile: {self._session_id}")
         self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
         self.preview.set_preload_batch_size(self._preview_preload_batch_size)
         # Apply through the resolution policy so the effective (coerced) style

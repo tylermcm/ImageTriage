@@ -4,13 +4,20 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QImage, QImageReader
 
 
 THUMBNAIL_CACHE_VERSION = 4
+
+# WI-3.5: the disk cache grew unbounded (3.2 GB / 72,860 files with zero
+# eviction, ever). Cap it; eviction is LRU by write time (thumbnails are
+# content-keyed by path/size/mtime, so a file's mtime is when it was last
+# actually (re)created, a reasonable recency proxy without a separate index).
+DEFAULT_THUMBNAIL_CACHE_MAX_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
+_EVICTION_CHECK_INTERVAL = 200  # throttle: check every Nth save, not every save
 
 
 @dataclass(slots=True, frozen=True)
@@ -69,13 +76,24 @@ class MemoryThumbnailCache:
 
 
 class DiskThumbnailCache:
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        max_bytes: int = DEFAULT_THUMBNAIL_CACHE_MAX_BYTES,
+    ) -> None:
         cache_root = root
         if cache_root is None:
             base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
             cache_root = Path(base) / "thumbs"
         self.root = Path(cache_root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.max_bytes = max_bytes
+        self._save_count = 0
+        self._eviction_lock = Lock()
+        # Also sweep once at startup: a cache built up before this cap existed
+        # (or from a previous, larger cap) should trend down over time too,
+        # not only once 200 more thumbnails get saved.
+        self._trigger_background_eviction()
 
     def _file_path(self, key: ThumbnailKey) -> Path:
         digest = key.digest()
@@ -100,3 +118,50 @@ class DiskThumbnailCache:
         target = self._file_path(key)
         target.parent.mkdir(parents=True, exist_ok=True)
         image.save(str(target), "JPEG", quality=88)
+
+        self._save_count += 1
+        if self._save_count % _EVICTION_CHECK_INTERVAL == 0:
+            self._trigger_background_eviction()
+
+    def _trigger_background_eviction(self) -> None:
+        if not self._eviction_lock.acquire(blocking=False):
+            return  # an eviction sweep is already running
+
+        def _run() -> None:
+            try:
+                self.enforce_size_cap()
+            finally:
+                self._eviction_lock.release()
+
+        Thread(target=_run, name="thumbnail-cache-eviction", daemon=True).start()
+
+    def enforce_size_cap(self, max_bytes: int | None = None) -> int:
+        """Delete the least-recently-written thumbnails until the cache is
+        back under its size cap. Returns the number of bytes freed. Safe to
+        call directly (e.g. from a "trim cache now" action); callers on a
+        background thread should prefer `_trigger_background_eviction`."""
+        cap = self.max_bytes if max_bytes is None else max_bytes
+        entries: list[tuple[float, int, Path]] = []
+        total = 0
+        for path in self.root.glob("*/*.jpg"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            total += stat.st_size
+            entries.append((stat.st_mtime, stat.st_size, path))
+
+        if total <= cap:
+            return 0
+
+        entries.sort(key=lambda entry: entry[0])
+        freed = 0
+        for _, size, path in entries:
+            if total - freed <= cap:
+                break
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            freed += size
+        return freed

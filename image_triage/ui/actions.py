@@ -11,6 +11,7 @@ from ..models import FilterMode, SortMode
 from .shortcuts import (
     SHORTCUT_REGISTRY,
     apply_shortcut_overrides,
+    effective_shortcuts,
     load_shortcut_overrides,
     save_shortcut_overrides,
 )
@@ -25,6 +26,7 @@ __all__ = (
     "SHORTCUT_REGISTRY",
     "apply_shortcut_overrides",
     "build_main_window_actions",
+    "effective_shortcuts",
     "format_action_tooltip",
     "load_shortcut_overrides",
     "save_shortcut_overrides",

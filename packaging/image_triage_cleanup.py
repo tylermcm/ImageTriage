@@ -180,7 +180,9 @@ def _cleanup_registry(*, dry_run: bool, output: list[str]) -> None:
     classes_root = r"Software\Classes"
     _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"{classes_root}\Applications\{APP_EXE_NAME}", dry_run=dry_run, output=output)
     _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"{classes_root}\{APP_PROG_ID}", dry_run=dry_run, output=output)
+    _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"Software\{APP_NAME}", dry_run=dry_run, output=output)
     _delete_registry_tree(winreg.HKEY_CURRENT_USER, rf"Software\Codex\{APP_NAME}", dry_run=dry_run, output=output)
+    _delete_registry_tree(winreg.HKEY_CURRENT_USER, r"Software\ImageTriage", dry_run=dry_run, output=output)
     for suffix in SUPPORTED_SUFFIXES:
         _delete_registry_value(
             winreg.HKEY_CURRENT_USER,

@@ -769,7 +769,7 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | [ ] | A7 | Never-instantiated dialogs | R | 2.4 |
 | [ ] | A8 | Editor engine `sys.path` and packaging | I | 4.6 |
 | [ ] | A9, E3 | Two mask rasterisers | I / X (intentional split) | 5.2 |
-| [ ] | A10 | Two shortcut editors | P | 3.2 |
+| [x] | A10 | Two shortcut editors | P | 3.2 |
 | [ ] | A11 | Six progress UIs | P (generic only) | 4.2 |
 | [ ] | A12 | "Catalog" naming | X (systems distinct); label only | 7.2 |
 | [ ] | A13 | Four duplicate mechanisms | X (distinct jobs) / I | 4.3 |
@@ -779,10 +779,10 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | [ ] | A17 | UI as state holder | I | 4.5 |
 | [ ] | A18 | 39 orphan attributes | R | 2.3 |
 | [ ] | A19 | About 10 persistence layers | X (roles differ); document | 3.4 |
-| [ ] | A20 | Organisation "Codex" | I (D10) | 3.1 |
+| [ ] | A20 | Organisation "Codex" | I (D10) | 3.1 (registry identity done 2026-09-27; `QStandardPaths`/cache placement still "Codex", pending 3.5/3.6) |
 | [ ] | A21 | Roaming derived data (corrected N3) | I / D | 3.6 |
-| [ ] | A22 | Two annotation sources | I | 3.4 |
-| [ ] | A23 | Thumbnail cache unbounded (3.2 GB) | P | 3.5 |
+| [x] | A22 | Two annotation sources | I | 3.4 |
+| [x] | A23 | Thumbnail cache unbounded (3.2 GB) | P | 3.5 |
 | [ ] | A24 | Stray tracked root files | R (user-run) | 2.2 |
 | [ ] | A25 | Untracked junk (78 MB exe, onnx) | R (user-run) | 2.2 |
 | [ ] | A26 | Repo inside OneDrive | D (user environment) | none |
@@ -796,13 +796,13 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | Done | ID | Finding | Status | Item |
 |---|---|---|---|---|
 | [ ] | U1 | Hidden menu, ~16 actions in no menu | P | 7.1 |
-| [ ] | U2 | Review keys (corrected N7) | P | 3.2 |
+| [x] | U2 | Review keys (corrected N7) | P | 3.2 |
 | [x] | U3 | `Ctrl+Alt+P` collision (fixed in WI-1.1) | P | 1.1 |
 | [ ] | U4 | "Edited" semantics | B (D3) | 5.3 |
 | [ ] | U5 | Duplicates page scope | B (D7) | 4.3, 7.2 |
 | [ ] | U6 | Naming drift (Keeper/Winner intentional) | P / X | 7.2 |
-| [ ] | U7 | Scattered settings | P | 3.3 |
-| [ ] | U8 | UI prototype in product | R (D13) | 2.8 |
+| [x] | U7 | Scattered settings | P | 3.3 |
+| [x] | U8 | UI prototype in product | R (D13) | 2.8 |
 | [ ] | U9 | Stale docs and text | P | 7.3 |
 
 ### AI and culling
@@ -829,11 +829,11 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 
 | Done | ID | Finding | Status | Item |
 |---|---|---|---|---|
-| [ ] | S1 | Four hidden controls, DINO page | I / R | 2.7, 3.3 |
-| [ ] | S2 | Dead dialog callbacks | R | 2.7 |
-| [ ] | S3 | Dead keys, orphan registry values | R (never delete registry values) | 2.7, 3.1 |
-| [ ] | S4 | Stubbed `_ai_semantic_sidecar_enabled` | R | 2.5 |
-| [ ] | S5 | Missing settings (theme, perf, AI tags) | P | 3.3 |
+| [x] | S1 | Four hidden controls, DINO page | I / R | 2.7, 3.3 |
+| [x] | S2 | Dead dialog callbacks | R | 2.7 |
+| [x] | S3 | Dead keys, orphan registry values | R (never delete registry values) | 2.7, 3.1 |
+| [ ] | S4 | Stubbed `_ai_semantic_sidecar_enabled` | R | 2.5 (investigated in 3.3, deliberately deferred — see log) |
+| [x] | S5 | Missing settings (theme, perf, AI tags) | P | 3.3 |
 | [ ] | S6a | Session preset conflation | B (D5) | 3.4, 7.2 |
 | [ ] | S6b | Winner-copy default | B (D4) | 4.1c |
 | [ ] | S6c | Watch folder on NAS | I | 8.2 |
@@ -870,8 +870,8 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | [x] | N2 | No tests on file mutation (characterization tests, mutation-checked) | P | 0.5 |
 | [ ] | N3 | Store-Python redirect | I | 3.6 |
 | [ ] | N4 | Cache/organisation coupling | I | 3.1, 3.5 |
-| [ ] | N5 | "Session" vocabulary | B (D5) | 3.4 |
-| [ ] | N6 | Prior product decisions | X | D1 |
+| [x] | N5 | "Session" vocabulary | B (D5) | 3.4 |
+| [x] | N6 | Prior product decisions | X | D1 (tentative — see tracker) |
 | [ ] | N9 | The session's own change debt | P | 0.1, 4.1b |
 | [ ] | N10 | Registry orphans | I | 3.1 |
 | [ ] | N11 | WinUI `.pyc` leftovers | R (user-run) | 2.2 |
@@ -883,19 +883,19 @@ Nothing from the audit is dropped. Items judged intentional (A9 split, A12, A13 
 
 | Done | ID | Decision | Owner | Decided |
 |---|---|---|---|---|
-| [ ] | D1 | Where AI results appear (opt-in setting, inspector only, or dedicated surface) | user | |
+| [x] | D1 | Where AI results appear (opt-in setting, inspector only, or dedicated surface) | user | **Decided 2026-09-27 (tentative — flagged for revisit): option A, an opt-in "AI tags in grid" setting.** You said you're still not sure about this one; picked to keep it lean for now rather than leave it blocking WI-3.3. Revisit before treating as final. |
 | [x] | D2 | Fate of legacy engine and DINO | user | **Decided 2026-09-26: delete.** No archive branch or tag (deliberately unrecoverable) |
 | [ ] | D3 | Meaning of "Edited"; edits in thumbnails and exports | user | |
 | [x] | D4 | Winner handling defaults and async semantics | user | **Decided 2026-09-26: keep Copy as an option; the rest is delegated.** Default for new installs and async-with-error-notice are my call at WI-4.1c (link/symlink option stays available for cross-folder collections) |
-| [ ] | D5 | The word "Session" | user | |
+| [x] | D5 | The word "Session" | user | **Decided 2026-09-27: rename the annotation namespace in the UI** (e.g. "Profile"); internal code/schema (`session_id` etc.) stays as-is, per the plan's own "do not alter the schema" guidance for WI-3.4 |
 | [x] | D6 | Shortcut scope; owner of `Ctrl+Alt+P` | user | **Decided 2026-09-26: fully rebindable (including review keys); PocketDrop keeps `Ctrl+Alt+P`.** Next AI Top Pick moved to `Ctrl+Alt+N` (WI-1.1); full rebinding lands in WI-3.2 |
 | [ ] | D7 | Meaning and scope of "Duplicates" | user | |
 | [ ] | D8 | "Catalog" vs "Library" naming | user | |
 | [ ] | D9 | AI v4 direction and AI entry points | user | |
-| [ ] | D10 | Organisation/data migration appetite | user | |
+| [x] | D10 | Organisation/data migration appetite | user | **Decided 2026-09-27: migrate, with cache pinning.** Registry identity unified to `HKCU\Software\Image Triage` in WI-3.1 (2026-09-27); `QStandardPaths` (cache, `decisions.sqlite3`) is untouched pending WI-3.5/3.6 |
 | [ ] | D11 | WinUI migration stashes | user | |
 | [ ] | D12 | Editor undo scope | user | |
-| [ ] | D13 | UI prototype in the product | user | |
+| [x] | D13 | UI prototype in the product | user | **Decided 2026-09-27: delete.** Removed in WI-2.8 (2026-09-27) |
 | [x] | D14 | Updater integrity policy | user | **Decided 2026-09-26: require a verified hash** |
 | [ ] | D15 | Platform support (Linux/macOS) | user | |
 
@@ -1139,3 +1139,86 @@ Your instruction: no DINO anywhere in the code. Result: **`git grep -i dino` fin
 - Added the "Dispute weight" and "Base score weight" rows to the AI Culling settings page (Adapter section), with their existing tooltips.
 - **Tests:** the near-duplicate-threshold test removed (tested only the deleted setting); a new test added covering the two settings now visible and round-tripping. Suite: **1455 passed, 3 skipped, 12 xfailed, 0 failed.**
 - **Done criterion met:** every remaining constructor argument and widget in the settings dialog now has a consumer (reachability report: 0 unused imports, 0 unreferenced methods).
+
+### WI-2.8 UI prototype and dev tooling: DONE (2026-09-27, uncommitted)
+- **D13 decided:** delete, not gate. Deleted `image_triage/ui/generated_prototype.py` (1,543 lines) and `tests/test_ui_prototype.py`.
+- Removed every reference: the `_open_ui_prototype` method, the `open_ui_prototype` action (`ui/actions.py`), its menu item (`ui/menus.py`) and its command-palette entry (`window.py`).
+- `prototype_style.py` kept, per the plan: `FolderTreeView` uses it live. Updated its stale docstring reference to the now-deleted module.
+- **Tests:** suite green, 1450 passed, 3 skipped, 12 xfailed (2 pre-existing `pythonw.exe`-only subprocess-handle failures in `test_aiculler_cli_reports.py`, unrelated: real subprocess spawns fail under the no-console interpreter used to run tests in this environment, not under a normal console Python).
+- `git grep` for `generated_prototype|open_ui_prototype|UIPrototypeWindow` clean outside this log and the ledger.
+
+### WI-3.1 Settings identity and registry inventory: DONE (2026-09-27, uncommitted)
+- **D10 decided:** migrate off "Codex", with cache pinning (option A from the plan), not keep-and-document. Org name for the *registry* identity: "Image Triage", single-level (`HKCU\Software\Image Triage`, no doubled `Image Triage\Image Triage` segment) — your explicit ask.
+- **Scope choice:** `QCoreApplication.setOrganizationName("Codex")` in `main.py` is left as-is for now. It drives two different things: (a) the default `QSettings()` constructor, and (b) `QStandardPaths` (thumbnail cache, `decisions.sqlite3`, `AppLocalData`). This work item only touches (a). Moving (b) is real user-data migration (3.2 GB cache, the annotations DB) and stays scoped to WI-3.5/3.6, matching N4's warning that the two are coupled and shouldn't be done in the same step.
+- **New module `image_triage/app_identity.py`:** the single settings accessor.
+  - `user_settings()` — Windows: constructs `QSettings(r"HKEY_CURRENT_USER\Software\Image Triage", QSettings.Format.NativeFormat)` directly (verified this gives exactly `HKCU\Software\Image Triage` with keys directly under it, not Qt's usual org/app two-level path, and not the `...\OrganizationDefaults` suffix an organization-only constructor produces). Non-Windows falls back to `QSettings("Image Triage", "Image Triage")`.
+  - `legacy_settings_sources()` — read-only handles to the two old identities: `("Codex", "Image Triage")` and the stray `("ImageTriage", "ImageTriage")` `ui/shortcuts.py` used.
+  - `migrate_legacy_settings_once()` — copies every legacy key into the current store on first run (marker-gated, so it's a cheap no-op after that), never overwriting a key already present in the new store. Called from `main.py` and from `MainWindow.__init__` (the latter so tests that build a `MainWindow` directly, bypassing `main.py`, still get it).
+- **Consolidated 6 call sites onto it:** the 4 bare `QSettings()` constructions (`window.py`, `preview.py`, `pocketdrop/panel.py`, `ui/photo_editor_panel.py`) and the stray `ImageTriage/ImageTriage` identity in `ui/shortcuts.py` (deferred import, to keep that module loadable standalone outside the package, per its own docstring constraint). Removed the now-unused `QSettings` imports.
+- **`packaging/image_triage_cleanup.py`** (the uninstall/reset script) updated to also delete the new `Software\Image Triage` registry tree, alongside the still-present old `Software\Codex\Image Triage` and `Software\ImageTriage` trees (so a full uninstall or `--mode uninstall` cleans up whichever identity a given install actually used).
+- **Hermeticity:** the direct-registry-path construction is a call shape `tests/conftest.py`'s sandbox didn't anticipate (it only intercepted the two-arg org/app form). Extended `_HermeticQSettings.__init__` to also redirect any `HKEY_...`-prefixed first argument into its own file inside the sandbox. Added `test_direct_registry_path_qsettings_never_touches_the_real_registry` to `test_hermetic_environment.py` to pin it.
+- **Regression found and fixed during validation:** `test_preview_mockup_layout.py` and `test_pocketdrop.py` used a bare `QSettings()` themselves to seed/clear state before constructing `FullScreenPreview`/`PocketDropPanel` — which now read from a *different* store than the test was clearing, since those classes moved to `user_settings()`. Caused 2 real (reproducible, not flaky) failures: a 1px layout mismatch and a stale-state click-target test. Fixed by switching both test files to `user_settings()` too. `test_char_view_state_and_shortcuts.py::test_the_registry_store_uses_a_different_settings_organisation` pinned the old bug (two different identities) as expected behaviour; rewritten to `test_the_registry_store_now_shares_the_main_settings_identity`, asserting they now match.
+- **`tests/harness.py`** (`prepare_application()`) now clears `user_settings()` and every legacy source between tests, instead of the bare `QSettings()` it used to clear (which, after this change, is no longer what the app reads).
+- New `tests/test_app_identity.py`: round-trip, migration copies legacy keys, migration never overwrites a value already in the current store, migration is a no-op after the first run.
+- Updated `docs/manual_smoke_test.md`'s registry-export step to the new single path, with a note on why the two old exports are now only useful for diagnosing the migration itself.
+- **Tests:** full suite **1458 passed, 3 skipped, 12 xfailed, 0 failed.** Reachability report: 0 unused imports, 0 unreferenced methods (the new module's exports are all referenced).
+- **Not done here (explicitly deferred to WI-3.5/3.6):** the AppData/cache/`decisions.sqlite3` migration off "Codex", and pinning the cache path so the existing 3.2 GB thumbnail cache isn't orphaned.
+
+### WI-3.5 Thumbnail cache policy: DONE (2026-09-27, uncommitted)
+- **Chose option A (lean first):** cap by size with LRU eviction, keep the existing path+size+mtime keying (option B, content-only keying, stays a separate future step per the plan).
+- **Cap: 8 GiB**, your call — current usage is 3.2-3.4 GB, so the cap sits well above today's size and nothing gets evicted immediately; it only bites once real growth outpaces it. Deliberately left as a hardcoded constant (`DEFAULT_THUMBNAIL_CACHE_MAX_BYTES` in `cache.py`) rather than a settings-dialog value: it's a self-healing number nobody needs to tune day-to-day, and exposing it would be scope creep into WI-3.3. Trivial to promote to a setting later if that changes.
+- **`DiskThumbnailCache` (`image_triage/cache.py`):** added `max_bytes`, `enforce_size_cap()` (globs the cache dir, sums sizes, and — only if over the cap — deletes oldest-by-mtime files until back under it; returns bytes freed) and background-thread-triggered, throttled eviction: a non-blocking sweep fires once at construction (so an existing over-cap backlog trends down over time, not only after 200 new saves) and again every 200th `save()` after that. A non-reentrant lock (`_eviction_lock`, `acquire(blocking=False)`) skips triggering a second sweep if one is already running.
+- Mtime-as-recency is a deliberate simplification: since cache keys already bake in path+mtime+file-size, revisiting an unchanged photo is always a load (cache hit), never a rewrite — so a file's on-disk mtime is genuinely "last time this thumbnail was newly created," a reasonable LRU proxy without a separate access-time index.
+- **Tests:** new `tests/test_thumbnail_cache_eviction.py` (no-op under cap, oldest-first eviction, stops once back under cap, background eviction completes and releases its lock without blocking `save()`). Full suite: **1462 passed, 3 skipped, 12 xfailed, 0 failed.**
+
+### WI-3.6 Data placement (Roaming vs Local; Store-Python redirect): INVESTIGATED (2026-09-27); migration deferred, per the plan's own "High risk / investigate first" disposition
+- **Measured live, both execution contexts, 2026-09-27** (not just the audit-time snapshot):
+  - **Store-Python dev environment** (how this session and day-to-day dev work run the app): Windows applies per-package AppData virtualization. `%APPDATA%`/`%LOCALAPPDATA%` physically resolve under `...\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\{Roaming,Local}\...`. All of today's live data is here: `decisions.sqlite3` (89 rows), `global_adapter_labels.sqlite` (594 rows, 2.3 MB `ai_training` folder), thumbnail cache (3.4 GB).
+  - **The frozen/installed MSI app** is an ordinary Win32 executable (built via `.msi_build_venv` + `setup_msi.py bdist_msi`, not a Store package) — it is **not** virtualized, so it reads/writes the genuine `C:\Users\<user>\AppData\...` path directly. This is a physically different location from the dev environment's data.
+  - Confirmed both `decisions.sqlite3` (89 rows) and `global_adapter_labels.sqlite` (594 rows) are currently **byte-identical** between the two locations (row-for-row content hash matches) — no data has silently diverged or been lost between contexts as of today. But nothing keeps them in sync automatically; that's incidental, not structural.
+  - The real (non-virtualized) path's `ai_training` folder is 793 MB — this is the exact stale-copy figure N3 already flagged, confirmed still present and still stale relative to the live 2.3 MB virtualized copy (old bulk workspace/artifact data from before this became a lean adapter-only store).
+- **New finding (N26): a third, independent path identity.** `aiculler_global_store.py::_default_user_data_root()` doesn't use `QStandardPaths` at all — it hand-rolls `USERPROFILE`/`APPDATA` env-var joining to a hardcoded `"ImageTriage"` folder (no "Codex", unrelated to `QCoreApplication`'s organisation name and to both QSettings identities WI-3.1 unified). It's what holds `global_adapter_labels.sqlite` — irreplaceable, 594 labels — plus `library.sqlite3`, `catalog/`, and `scan-cache/`. This is a fourth settings/data identity the audit's A19/A20 findings hadn't separately named; worth its own line item, not silently folded into WI-3.1's registry work (which only covered `QSettings`) or WI-3.5/3.6's `QStandardPaths` scope (which this bypasses entirely).
+- **Classification (per the plan's approach):**
+  - **Irreplaceable:** `decisions.sqlite3` (annotations), `global_adapter_labels.sqlite` (594 labels), `library.sqlite3` + `catalog/` (catalog metadata).
+  - **Derived** (rebuildable, but expensive/annoying to lose): `ai_training/global_adapter` workspace and artifacts, `scan-cache/`, semantic/face indexes.
+  - **Cache** (safe to delete anytime): thumbnail `cache/thumbs` (now capped, WI-3.5), `cache/migration-media`.
+- **Recommendation — do not implicitly relocate anything yet:**
+  1. The org rename's *effect on `QStandardPaths`* (cache, `decisions.sqlite3`, `AppLocalData`) stays deferred exactly as WI-3.1 scoped it: an explicit, tested, one-time migration, not a silent path change from flipping `QCoreApplication.setOrganizationName`. The Store-vs-real-path split adds a second axis of risk on top of the org rename itself: a migration has to work correctly in *both* contexts, or it creates a third copy instead of consolidating two.
+  2. `aiculler_global_store.py`'s hand-rolled path (N26) is a good, smaller, separable next step: switch it to `QStandardPaths` for consistency (matching how every other store resolves its root) with the same read-old/write-new fallback pattern WI-3.1 used for QSettings — before any org-name change, since consistency here doesn't require picking a new name yet. Not done in this pass; flagged for a future work item so it isn't rushed alongside D10's larger migration.
+  3. Any future migration step should re-run this same byte-identity check (or diff row-by-row, not just counts) immediately before touching anything, since "the two copies currently match" is a fact about today, not a guarantee.
+- **Disposition unchanged from the plan: investigate first, defer.** No files moved, no code changed for this work item.
+
+### WI-3.2 Unify shortcuts: DONE (2026-09-27, uncommitted)
+- **Investigated first, per the plan.** Two stores existed: `ui/shortcuts.py` ("Settings > Shortcuts", 23 per-action keys in QSettings) and `window.py`'s own `_shortcut_targets`/`ShortcutTarget` system (21 bindings, one JSON blob), opened from a separate "Keyboard Shortcuts..." dialog (`ui/keyboard_dialog.py`). 13 actions were registered in *both*, under different ID schemes (`open_folder` vs `file.open_folder`), with the window's system applied last at startup — confirming the plan's diagnosis exactly: the window dialog captured its "default" *after* the registry override already landed on the action, so its Reset restored the customised key, not the true default.
+- **Bigger find during investigation:** grid.py's `keyPressEvent` hardcoded ~15 more keys in neither store (arrows, Home/End, PageUp/Down, Escape, Space, Return, Delete, Ctrl+A — navigation/destructive, out of scope by your call — plus `[`/`]`, K, M, T and the 1-5 adapter labels, which are meaningful standalone review commands). Further investigation found K/M/T/W/X *independently* hardcoded two more times, in `details_view.py` (no dynamic mechanism at all) and `preview.py` (entangled with winner-ladder mode, compare mode, loupe and zoom). You chose to extend rebinding to all three surfaces rather than leave Grid inconsistent with Details/Preview.
+- **End state, matching the plan's own target exactly ("one registry ... one store, one editor UI"):**
+  - **One registry:** `SHORTCUT_REGISTRY` in `ui/shortcuts.py` grew from 23 to 41 entries — the 8 window-only actions (`open_preview`, `accept_selection`/`reject_selection` now honestly defaulted to "W"/"X" instead of a runtime fallback, `keep_selection`, `move_selection`, `delete_selection`, `share_to_phone`, `open_command_palette`) plus 10 new entries for the previously-hardcoded review keys (`cycle_burst_previous`/`next`, `keep_at_cursor`, `move_at_cursor`, `tag_at_cursor`, `adapter_label_hero`/`strong`/`maybe`/`weak`/`reject`). Verified zero new collisions among all 41 defaults.
+  - **One store:** the per-key QSettings scheme `ui/shortcuts.py` already had (now under the WI-3.1 identity). New `effective_shortcuts()` helper returns the override-or-default text for the 10 grid-level entries that have no `MainWindowActions` QAction (so `apply_shortcut_overrides` silently skips them, by design).
+  - **One editor UI:** `ui/keyboard_dialog.py` (`KeyboardShortcutDialog`, ~185 lines) deleted. The "Keyboard Shortcuts..." action (a default pinned toolbar tool) keeps its icon, label and command-palette entry — its slot now opens Settings > Shortcuts (`_show_settings(initial_section="Shortcuts")`) instead of the second dialog.
+- **grid.py/details_view.py/preview.py:** each gained a `_review_key_shortcuts: dict[str, QKeySequence]` (defaults matching what was previously literal) and a `set_review_key_shortcuts()` setter; grid's existing `set_review_action_shortcuts`/`_winner_shortcut`/`_reject_shortcut` pattern for W/X was extended to details/preview rather than replaced (kept `test_grid_interactions.py`'s existing W/X tests passing unchanged). The three `_matches_shortcut`/local duplicates were consolidated into one `keyboard_mapping.matches_shortcut()`.
+- **window.py:** replaced `_register_shortcut_targets`/`_shortcut_bindings`/the old `_apply_shortcut_overrides`/`_load_shortcut_overrides`/`_save_shortcut_overrides`/`_set_action_shortcut`/`SHORTCUT_OVERRIDES_KEY`/`ShortcutTarget` with one `_apply_shortcut_overrides()`: applies the registry to every `MainWindowActions` QAction, refreshes each action's tooltip hint (previously only done for the 21 window-managed ones — Settings-page overrides could leave a stale tooltip; now consistent for all 41), computes the 10 grid-level effective values, and pushes both onto `grid`/`details_view.table`/`preview` in one place. Moved the zen-mode QAction-shortcut-clearing line to run *after* shortcut overrides apply (it used to run before the old System B call; now there's only one call, so the ordering had to move to keep zen mode's F11/Esc from double-firing).
+- **Cascaded dead-code removal:** `keyboard_mapping.py`'s `ShortcutBinding`, `normalize_shortcut_text`, `serialize_shortcut_overrides`, `shortcut_conflicts` had no callers left outside the deleted dialog and its own test; removed (kept `matches_shortcut`, now shared by 3 files).
+- **Tests:** removed 4 tests pinning the retired two-store/dialog behaviour; added `test_there_is_now_one_store_for_every_surface` (a rebind saved once reaches the QAction *and* grid/details/preview); added 3 grid tests for the newly-rebindable keys (burst cycle, keep/move/tag, adapter labels); added `test_shortcuts_page_flags_conflicts_across_every_registry_row` to `test_settings_dialog.py` — this is the plan's "uniqueness test", previously missing entirely for the Settings page's own conflict checker (it existed and worked, just had zero coverage). Full suite: **1463 passed, 3 skipped, 12 xfailed, 0 failed.** Reachability: 0 unused imports, 0 unreferenced methods.
+- **Done criterion met:** one store, one editor, no default drift (verified: `accept_selection`/`reject_selection` now carry their real "W"/"X" default directly, no runtime fallback to paper over it), collision checker covers all 41 bindings instead of 23.
+
+### WI-3.4 Annotation persistence semantics: INVESTIGATED, no code fix needed (2026-09-27, uncommitted)
+- **Wrote the precedence spec by tracing the actual code**, then proved it with tests, exactly as the approach asks. `_hydrate_records_batch` (window.py): load the sidecar first (used if non-empty); load the persisted session row; the row wins over the sidecar *only if the row is non-empty*. An empty/absent row falls back to the sidecar.
+- **Investigated whether "a sidecar resurrects a mark cleared in another session" (N5) is real.** Traced every write path: the normal interactive clear goes through `AnnotationPersistenceQueue`, whose worker calls `sync_sidecar_annotation` for every queued change — including empty ones — so a sidecar that already exists gets correctly emptied alongside the store row. **Conclusion: the hypothesized bug does not reproduce for ordinary use.** New tests `test_a_normal_clear_empties_the_sidecar_too_no_resurrection` and `test_a_second_session_does_not_resurrect_a_mark_cleared_in_the_first` pin this.
+- **Found the one place it's structurally possible:** 4 call sites in window.py (`_decision_store.delete_annotation(...)`, all in file-delete/recycle/move flows) bypass the queue entirely, so they don't re-sync the sidecar. But the record they touch is also removed from the grid in the same action, so this is only observable again if the file comes back — e.g. an Undo restoring a deleted file. In that case the mark reappearing via the still-intact sidecar is the desired outcome of the undo, not a resurrection bug. `test_deleting_the_store_row_without_the_queue_leaves_the_sidecar_stale` documents this explicitly, with that reasoning in the test's own docstring.
+- **Did not alter the schema or any persistence code**, per the plan's explicit instruction — the existing precedence logic is correct for what it needs to do.
+- **D5 decided: rename "Session" in the UI.** Scope was narrow — grepped for every user-visible string containing "Session" and found exactly 3 literal occurrences plus 2 tooltips, all describing the same named-preset concept (`session_combo`/`_session_id`). Everything else matching "session" in the codebase is either the *editor's* unrelated mask-editing session (`photo_editor_panel.py`, `edit_storage.py`), a DB table name, or generic English — none of those touched, matching "do not alter the schema." Changed: "Session preset" → "Profile preset" (settings row label), `f"Session: {id}"` → `f"Profile: {id}"` (2 status-bar occurrences), and the 2 tooltips describing the same widget. Internal names (`session_combo`, `_session_id`, `SessionAnnotation`, the `sessions` SQL table) are unchanged.
+- **Tests:** `tests/test_char_annotations.py` grew from 14 to 17 tests, all passing. No test depended on the renamed UI strings.
+
+### WI-3.3 Reconcile Settings with real consumers: DONE (2026-09-27, uncommitted)
+- **D1 decided (tentative, per your explicit flag to revisit): option A**, an opt-in "Show AI tags in grid" setting. Investigation found the actual mechanism worse than the audit described: `grid.set_show_ai_annotations(self._ui_mode == "ai")` looked like a real mode-gated toggle, but `_set_ui_mode` has forced manual unconditionally since the 2026-09-19 AI Review mode retirement (`docs/ai_mode_retirement.md`) — so this was dead-always-`False` code, not a working feature. Added `SHOW_AI_TAGS_IN_GRID_KEY`, wired independently of `_ui_mode` entirely (no mode reintroduced), off by default.
+- **S5 missing settings added:** Theme (dropdown, mirrors the existing View-menu appearance actions — both write `APPEARANCE_KEY` through `_set_appearance_mode`) and Performance logging (checkbox, mirrors the existing Tools-menu action — both write `PERFORMANCE_LOGGING_KEY` through `_handle_performance_logging_toggled`). Both follow the same "Settings is authoritative, menu is a live mirror" pattern this codebase already uses for burst-grouping toggles, so no new duplication was introduced — the menu actions weren't duplicated before this (S5 said "missing", not "duplicated"), and now Settings and the menu read/write the identical setting.
+- **"Processing workers" renamed to "AI batch size"** (S3's label/key mismatch): the tooltip already correctly described it as "how many images the AI prepares at the same time"; only the row label disagreed.
+- **S1-S3 verified already resolved** by earlier phases (WI-2.7 for the hidden controls and dead callbacks; the DINO page is gone). Found and removed 3 more S3-pattern dead keys during a fresh sweep: 11 `TRAIN_RANKER_LAST_*` constants and `APPEARANCE_INDIGO_MIGRATION_KEY` (zero references outside their own declaration), and `WORKSPACE_BAR_STATE_KEY`'s dead `setValue` call (its own `__init__` comment says the workspace bar always starts hidden by design, so the persisted value was provably never read back — not a bug to fix, a write to stop making).
+- **Found and removed a field with zero real consumer:** `WorkflowSettingsResult.ai_clip_model_variant`. window.py never passes it into the dialog and never reads it back; `result_settings()` always returned the hardcoded default regardless of input. An existing test already pinned this as intentional ("precision is automatic"), but a decorative field that a test exists solely to prove is decorative is exactly S1-S3's pattern — removed along with that test.
+- **S4 (`_ai_semantic_sidecar_enabled`) investigated, deliberately deferred:** confirmed it's a hardcoded-`False` stub gating ~9 call sites across several distant methods (AI stage-count ternaries, status-line helpers). Genuinely dead, but simplifying 9 call sites correctly — several of them stage-count ternaries feeding the AI progress UI — is its own careful pass, not something to rush alongside everything else in this item. Left as-is; still flagged in the checklist for a future small work item.
+- **Validation test added, per the plan's explicit ask:** `test_every_settings_result_field_has_a_consumer_in_window_py` — an AST-based scan (not a live dialog) confirming every `WorkflowSettingsResult` field has a `result.<field>` read somewhere in window.py's settings-accept handler. This is what caught `ai_clip_model_variant` in the first place.
+- **Tests:** full suite **1466 passed, 3 skipped, 12 xfailed, 0 failed.** Reachability: 0 unused imports, 0 unreferenced methods.
+- **Done criterion met:** every setting has one home (Settings dialog, mirrored by a menu action where one already existed) and one consumer (enforced by a permanent test, not just true today).
+
+## Phase 3: DONE (2026-09-27)
+All six work items complete: WI-3.1 (settings identity), WI-3.2 (unified shortcuts), WI-3.3 (settings reconciliation), WI-3.4 (annotation semantics + Session rename), WI-3.5 (thumbnail cache cap), WI-3.6 (data placement — investigated, migration deferred). Two things intentionally carried forward rather than rushed: the org-name/QStandardPaths migration for the thumbnail cache and `decisions.sqlite3` (WI-3.6's own risk assessment), and simplifying the 9 `_ai_semantic_sidecar_enabled`-gated call sites (S4, found during WI-3.3, deferred to its own pass). D1 is flagged tentative pending your revisit; every other decision made this phase (D5, D6, D10, D13, D14) is final.

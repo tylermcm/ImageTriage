@@ -181,3 +181,68 @@ def test_precedence_a_stale_store_row_falls_back_to_the_sidecar(store, session, 
     hydrated = _hydrate(store, session, [changed])
 
     assert hydrated[changed.path].winner and not hydrated[changed.path].reject
+
+
+# ---- WI-3.4: does clearing a mark ever let a stale sidecar "resurrect" it? --
+#
+# Investigated per the plan (investigate first; do not alter the schema; fix
+# only if real). Finding: normal interactive clears go through
+# AnnotationPersistenceQueue, which always calls sync_sidecar_annotation —
+# including for an empty result — so the sidecar is correctly emptied
+# alongside the store row. The two tests below pin that this is genuinely
+# race-free. The one place a stale sidecar *can* resurface is window.py's
+# file-delete/move flows, which call `DecisionStore.delete_annotation`
+# directly (bypassing the queue, since the record leaves the view) without
+# re-syncing the sidecar; that path is exercised by the third test below,
+# and the resulting behaviour — an Undo of a delete brings the mark back via
+# the still-intact sidecar — is arguably correct, not a bug, so no
+# production code changed here.
+
+def test_a_normal_clear_empties_the_sidecar_too_no_resurrection(store, session, tmp_path) -> None:
+    record = _record(tmp_path)
+    store.save_annotation(session, record, SessionAnnotation(winner=True))
+    sync_sidecar_annotation(record, SessionAnnotation(winner=True))
+
+    # The interactive "unmark" path: persist an empty annotation and sync
+    # the sidecar in the same step, exactly like AnnotationPersistenceQueue's
+    # worker does for every queued change, clears included.
+    store.save_annotation(session, record, SessionAnnotation())
+    sync_sidecar_annotation(record, SessionAnnotation())
+
+    hydrated = _hydrate(store, session, [record])
+
+    assert record.path not in hydrated or hydrated[record.path].is_empty
+
+
+def test_a_second_session_does_not_resurrect_a_mark_cleared_in_the_first(store, tmp_path) -> None:
+    record = _record(tmp_path)
+    session_a, session_b = "session-a", "session-b"
+    store.save_annotation(session_a, record, SessionAnnotation(winner=True))
+    sync_sidecar_annotation(record, SessionAnnotation(winner=True))
+    store.save_annotation(session_a, record, SessionAnnotation())
+    sync_sidecar_annotation(record, SessionAnnotation())
+
+    hydrated_a = _hydrate(store, session_a, [record])
+    hydrated_b = _hydrate(store, session_b, [record])
+
+    assert record.path not in hydrated_a or hydrated_a[record.path].is_empty
+    assert record.path not in hydrated_b or hydrated_b[record.path].is_empty
+
+
+def test_deleting_the_store_row_without_the_queue_leaves_the_sidecar_stale(store, session, tmp_path) -> None:
+    """Documents window.py's 4 direct `delete_annotation` call sites (file
+    delete/move flows): they skip AnnotationPersistenceQueue, so unlike a
+    normal clear, the sidecar is untouched. A record removed this way is
+    also removed from the grid, so this is only observable again if the
+    file comes back (e.g. Undo restores it) — at which point the mark
+    reappearing via the sidecar is the desired outcome, not a resurrection
+    bug."""
+    record = _record(tmp_path)
+    store.save_annotation(session, record, SessionAnnotation(winner=True))
+    sync_sidecar_annotation(record, SessionAnnotation(winner=True))
+
+    store.delete_annotation(session, record.path)  # what the 4 call sites do; no sidecar sync
+
+    hydrated = _hydrate(store, session, [record])
+
+    assert hydrated[record.path].winner, "the stale sidecar is what makes an Undo-restore bring the mark back"

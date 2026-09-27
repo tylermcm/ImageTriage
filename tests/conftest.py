@@ -42,7 +42,19 @@ try:
         # QSettings("org", "app") always uses the native format (the Windows
         # registry) regardless of setDefaultFormat, so force it onto the INI sandbox.
         def __init__(self, *args, **kwargs):
-            if args and isinstance(args[0], str) and not (len(args) > 1 and not isinstance(args[1], (str, type(None), _qtcore.QObject))):
+            if args and isinstance(args[0], str) and args[0].upper().startswith("HKEY_"):
+                # A direct native-registry-path construction, e.g.
+                # QSettings(r"HKEY_CURRENT_USER\Software\X", QSettings.Format.NativeFormat)
+                # (see image_triage/app_identity.py). Redirect it into its own
+                # file in the sandbox instead of the real registry.
+                parent = args[2] if len(args) > 2 else kwargs.get("parent")
+                safe_name = "".join(ch if ch.isalnum() else "_" for ch in args[0])
+                super().__init__(
+                    str(_settings_dir / f"{safe_name}.ini"),
+                    _RealQSettings.Format.IniFormat,
+                    parent,
+                )
+            elif args and isinstance(args[0], str) and not (len(args) > 1 and not isinstance(args[1], (str, type(None), _qtcore.QObject))):
                 organization = args[0]
                 application = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
                 parent = args[2] if len(args) > 2 else kwargs.get("parent")

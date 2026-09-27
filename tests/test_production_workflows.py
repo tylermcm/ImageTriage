@@ -6,7 +6,6 @@ from pathlib import Path
 
 from image_triage.ai_results import AIBundle, AIConfidenceBucket, AIImageResult
 from image_triage.image_resize import ResizeSourceItem
-from image_triage.keyboard_mapping import ShortcutBinding, serialize_shortcut_overrides, shortcut_conflicts
 from image_triage.models import ImageRecord, SessionAnnotation
 from image_triage.workflows import (
     BEST_OF_BALANCED,
@@ -257,22 +256,6 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertEqual(len(plan.candidates), 2)
         self.assertEqual({candidate.path for candidate in plan.candidates}, {records[0].path, records[2].path})
         self.assertTrue(any("Built 2 proposed best-of pick(s)" in line for line in plan.summary_lines))
-
-    def test_shortcut_conflicts_detect_duplicate_assignments(self) -> None:
-        bindings = [
-            ShortcutBinding(id="review.accept", label="Accept", section="Review", shortcut="Ctrl+1"),
-            ShortcutBinding(id="review.reject", label="Reject", section="Review", shortcut="Ctrl+1"),
-            ShortcutBinding(id="workspace.palette", label="Command Palette", section="Workspace", default_shortcut="Ctrl+K"),
-        ]
-
-        conflicts = shortcut_conflicts(bindings)
-
-        self.assertEqual(conflicts, {"Ctrl+1": ["review.accept", "review.reject"]})
-        self.assertEqual(
-            serialize_shortcut_overrides({"review.accept": " ctrl+1 ", "blank": "", "workspace.palette": "Ctrl+K"}),
-            {"review.accept": "Ctrl+1", "workspace.palette": "Ctrl+K"},
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

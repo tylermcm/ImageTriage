@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QFileInfo, QPointF, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QFileInfo, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -31,6 +31,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QCheckBox, QFileDialog, QFileIconProvider, QLabel, QMenu, QMessageBox, QSizePolicy, QVBoxLayout, QWidget
 
+from ..app_identity import user_settings
 from . import _bridge as pd
 
 SETTINGS_GROUP = "pocketdrop"
@@ -113,7 +114,7 @@ class PocketDropView(QWidget):
         self._metrics = [QFontMetricsF(font) for font in self._fonts]
         self._icons: dict[str, object] = {}
         self._icon_provider = QFileIconProvider()
-        self._settings = QSettings()
+        self._settings = user_settings()
         # The page colour PocketDrop's background is drawn in; see set_background.
         self._background = QColor(POCKETDROP_BG)
 

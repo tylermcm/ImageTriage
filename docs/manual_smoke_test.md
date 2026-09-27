@@ -27,7 +27,8 @@ Baseline numbers (headless, synthetic, from `tests/perf_baselines.py`) are store
 - Re-export the registry keys and re-run the baselines if the item touched settings or persistence:
 
 ```
-reg export "HKCU\Software\Codex\Image Triage" registry_Codex_Image_Triage_<date>.reg /y
-reg export "HKCU\Software\ImageTriage" registry_ImageTriage_<date>.reg /y
+reg export "HKCU\Software\Image Triage" registry_Image_Triage_<date>.reg /y
 py -3.13 -m pytest tests/perf_baselines.py -s -p no:cacheprovider
 ```
+
+(Settings live under one key now, `HKCU\Software\Image Triage`, per WI-3.1. `HKCU\Software\Codex\Image Triage` and `HKCU\Software\ImageTriage` are the old, now-legacy locations settings migrate from on first launch; only worth exporting if you're diagnosing that migration itself.)

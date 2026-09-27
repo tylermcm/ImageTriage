@@ -7,10 +7,11 @@ import urllib.request
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QSettings
+from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
+from image_triage.app_identity import user_settings
 from image_triage.pocketdrop import _bridge
 
 needs_native = pytest.mark.skipif(
@@ -42,7 +43,7 @@ def test_panel_serves_the_phone_page_and_takes_files(tmp_path) -> None:
     from image_triage.pocketdrop import PocketDropPanel
 
     app = _app()
-    QSettings().clear()
+    user_settings().clear()
     panel = PocketDropPanel()
     assert panel.available, panel.error
     view = panel.view
@@ -70,4 +71,4 @@ def test_panel_serves_the_phone_page_and_takes_files(tmp_path) -> None:
         assert not image.isNull() and image.width() > 0
     finally:
         panel.shutdown()
-        QSettings().clear()
+        user_settings().clear()

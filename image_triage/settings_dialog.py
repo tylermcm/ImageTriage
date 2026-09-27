@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .aiculler_workflow import DEFAULT_CLIP_MODEL_VARIANT
 from .models import DeleteMode, WinnerMode
 from .phash_prefilter import (
     PHashPrefilterSettings,
@@ -38,6 +37,7 @@ from .phash_prefilter import (
 from .ui.help_dialog import show_paged_help
 from .ui.help_topics import settings_help_pages
 from .ui.shortcuts import SHORTCUT_REGISTRY
+from .ui.theme import AppearanceMode, appearance_mode_label, appearance_profile_modes, parse_appearance_mode
 from .ui.display_metrics import (
     DisplayProfile,
     STANDARD_DISPLAY,
@@ -72,8 +72,10 @@ class WorkflowSettingsResult:
     watch_current_folder: bool = True
     restore_folder_position: bool = True
     check_updates_on_startup: bool = True
+    theme: str = "auto"
+    performance_logging_enabled: bool = False
+    show_ai_tags_in_grid: bool = False
     ai_embed_batch_size: int = 0
-    ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     ai_review_detail_progress_enabled: bool = False
     ai_dispute_weight: int = 3
     ai_keep_top_percent: int = 10       # % of folder to mark as Keeper
@@ -309,8 +311,10 @@ class WorkflowSettingsDialog(QDialog):
         watch_current_folder: bool = True,
         restore_folder_position: bool = True,
         check_updates_on_startup: bool = True,
+        theme: str = "auto",
+        performance_logging_enabled: bool = False,
+        show_ai_tags_in_grid: bool = False,
         ai_embed_batch_size: int = 0,
-        ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT,
         ai_review_detail_progress_enabled: bool = False,
         ai_dispute_weight: int = 3,
         ai_keep_top_percent: int = 10,
@@ -494,9 +498,34 @@ class WorkflowSettingsDialog(QDialog):
             "Checks the configured GitHub release feed when Image Triage starts. If a newer MSI is available, the top-right download button lights up."
         ))
 
+        self.theme_combo = QComboBox()
+        self.theme_combo.setMinimumWidth(200)
+        self.theme_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        for mode in appearance_profile_modes():
+            self.theme_combo.addItem(appearance_mode_label(mode), mode.value)
+        current_theme_index = self.theme_combo.findData(parse_appearance_mode(theme).value)
+        self.theme_combo.setCurrentIndex(max(0, current_theme_index))
+        self.theme_combo.setToolTip(_settings_tooltip(
+            "The app's colour theme. Also available from the View menu; both change the same setting."
+        ))
+
+        self.performance_logging_checkbox = QCheckBox("Log detailed performance timings")
+        self.performance_logging_checkbox.setChecked(performance_logging_enabled)
+        self.performance_logging_checkbox.setToolTip(_settings_tooltip(
+            "Writes step timings to a JSONL log for diagnosing slowness. Also available from the "
+            "Tools menu; both change the same setting."
+        ))
+
+        self.show_ai_tags_in_grid_checkbox = QCheckBox("Show AI tags on cards in the grid")
+        self.show_ai_tags_in_grid_checkbox.setChecked(show_ai_tags_in_grid)
+        self.show_ai_tags_in_grid_checkbox.setToolTip(_settings_tooltip(
+            "Off by default. When on, AI badges (top pick, confidence, etc.) show on grid cards "
+            "during manual review, not only in the inspector."
+        ))
+
         session_row = QWidget()
         session_row.setToolTip(_settings_tooltip(
-            "Choose or name the settings preset used for this review session."
+            "Choose or name the settings preset used for this review profile."
         ))
         session_layout = QHBoxLayout(session_row)
         session_layout.setContentsMargins(0, 0, 0, 0)
@@ -505,7 +534,7 @@ class WorkflowSettingsDialog(QDialog):
         self.save_preset_button = QPushButton("Save Preset")
         self.save_preset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.save_preset_button.setToolTip(_settings_tooltip(
-            "Save the current General settings under the selected session name."
+            "Save the current General settings under the selected profile name."
         ))
         self.save_preset_button.clicked.connect(self._save_current_preset)
         session_layout.addWidget(self.save_preset_button)
@@ -516,9 +545,13 @@ class WorkflowSettingsDialog(QDialog):
             "Choose what happens to accepted and deleted images, and manage reusable review presets.",
         )
         self._add_category_heading(general_layout, "Review behavior")
-        self._add_form_row(general_layout, "Session preset", session_row)
+        self._add_form_row(general_layout, "Profile preset", session_row)
         self._add_form_row(general_layout, "Accepted images", self.winner_mode_combo)
         self._add_form_row(general_layout, "Delete behavior", self.delete_mode_combo)
+        self._add_category_heading(general_layout, "Appearance & diagnostics")
+        self._add_form_row(general_layout, "Theme", self.theme_combo)
+        self._add_checkbox_row(general_layout, "Performance logging", self.performance_logging_checkbox)
+        self._add_checkbox_row(general_layout, "AI tags in grid", self.show_ai_tags_in_grid_checkbox)
         self._add_category_heading(general_layout, "App updates")
         self._add_checkbox_row(general_layout, "Automatic check", self.check_updates_on_startup_checkbox)
         self.preset_status_label = QLabel("")
@@ -794,7 +827,7 @@ class WorkflowSettingsDialog(QDialog):
             "Tune processing and decide how much of a finished ranking is treated as likely winners or needs review.",
         )
         self._add_category_heading(ai_layout, "Processing")
-        self._add_form_row(ai_layout, "Processing workers", self.ai_embed_batch_size_spin)
+        self._add_form_row(ai_layout, "AI batch size", self.ai_embed_batch_size_spin)
         self._add_checkbox_row(ai_layout, "Detailed progress log", self.ai_review_detail_progress_checkbox)
         self._add_category_heading(ai_layout, "Result ranges")
         self._add_form_row(ai_layout, "Likely winners", self.ai_keep_top_spin)
@@ -1398,8 +1431,10 @@ class WorkflowSettingsDialog(QDialog):
             watch_current_folder=self.watch_current_folder_checkbox.isChecked(),
             restore_folder_position=self.restore_folder_position_checkbox.isChecked(),
             check_updates_on_startup=self.check_updates_on_startup_checkbox.isChecked(),
+            theme=str(self.theme_combo.currentData()),
+            performance_logging_enabled=self.performance_logging_checkbox.isChecked(),
+            show_ai_tags_in_grid=self.show_ai_tags_in_grid_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
-            ai_clip_model_variant=DEFAULT_CLIP_MODEL_VARIANT,
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
             ai_keep_top_percent=max(1, min(50, int(self.ai_keep_top_spin.value()))),

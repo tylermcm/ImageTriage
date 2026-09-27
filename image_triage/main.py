@@ -13,6 +13,7 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QIcon, QImageReader
 from PySide6.QtWidgets import QApplication
 
+from image_triage.app_identity import migrate_legacy_settings_once
 from image_triage.formats import is_image_file_candidate
 from image_triage.updater import current_app_version
 
@@ -52,9 +53,15 @@ def is_quick_view_launch_target(target: str) -> bool:
 
 def main() -> int:
     _configure_windows_app_identity()
+    # QSettings now lives under one identity, HKCU\Software\Image Triage (see
+    # app_identity.py). The organisation name below is intentionally still
+    # "Codex": it also drives QStandardPaths (thumbnail cache,
+    # decisions.sqlite3), and moving those is a separate migration
+    # (WI-3.5/3.6), not this one.
     QCoreApplication.setOrganizationName("Codex")
     QCoreApplication.setApplicationName("Image Triage")
     QCoreApplication.setApplicationVersion(current_app_version())
+    migrate_legacy_settings_once()
     # Large edited derivatives can legitimately exceed Qt's conservative default.
     QImageReader.setAllocationLimit(1024)
 
