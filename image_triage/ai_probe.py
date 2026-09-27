@@ -469,7 +469,6 @@ _TORCH_MODEL_LOADERS: dict[str, tuple[str, str, bool]] = {
     "subject_masks": ("", "AutoModelForImageSegmentation", True),
     "sam_masks": ("Sam2Processor", "Sam2Model", False),
     "depth": ("AutoImageProcessor", "AutoModelForDepthEstimation", False),
-    "dino": ("AutoImageProcessor", "AutoModel", False),
 }
 
 
@@ -488,7 +487,6 @@ def probe_torch_model(
     is what routine UI gating uses. The full load is what Demo Ready and
     post-repair verification run.
     """
-    import torch  # noqa: PLC0415
     import transformers  # noqa: PLC0415
 
     probe_torch(result, requested_device)
@@ -500,7 +498,7 @@ def probe_torch_model(
             str(model_dir),
         )
     result.model_dir = str(model_dir)
-    processor_name, model_name, trust_remote_code = _TORCH_MODEL_LOADERS[capability_key]
+    _processor_name, _model_name, trust_remote_code = _TORCH_MODEL_LOADERS[capability_key]
 
     try:
         config = transformers.AutoConfig.from_pretrained(
@@ -519,67 +517,9 @@ def probe_torch_model(
     if not load_model:
         return
 
-    if capability_key in {"scene_masks", "subject_masks", "sam_masks", "depth"}:
-        _probe_production_torch_worker(
-            result, capability_key, model_dir, result.selected_device
-        )
-        return
-
-    processor = None
-    if processor_name:
-        try:
-            processor = getattr(transformers, processor_name).from_pretrained(
-                str(model_dir), local_files_only=True
-            )
-        except Exception as exc:
-            raise ProbeFailure(
-                STAGE_MODEL,
-                "model_unloadable",
-                f"The {capability_key.replace('_', ' ')} preprocessor could not be loaded.",
-                _short_traceback(exc),
-            ) from exc
-
-    try:
-        model = getattr(transformers, model_name).from_pretrained(
-            str(model_dir), local_files_only=True, trust_remote_code=trust_remote_code
-        )
-        model.to(result.selected_device)
-        model.eval()
-    except Exception as exc:
-        raise ProbeFailure(
-            STAGE_MODEL,
-            "model_unloadable",
-            f"The {capability_key.replace('_', ' ')} model is downloaded but could not be "
-            f"loaded onto {result.selected_device}.",
-            _short_traceback(exc),
-        ) from exc
-
-    # DINO is opt-in and has no standalone worker. Exercise its real processor
-    # and model contract rather than guessing a tensor shape.
-    try:
-        from PIL import Image  # noqa: PLC0415
-
-        if processor is None:
-            raise RuntimeError("The model has no configured image processor.")
-        image = Image.new("RGB", (96, 64), color=(64, 96, 128))
-        inputs = processor(images=image, return_tensors="pt")
-        inputs = {
-            key: value.to(result.selected_device) if hasattr(value, "to") else value
-            for key, value in inputs.items()
-        }
-        with torch.no_grad():
-            model(**inputs)
-        if device_family(result.selected_device) == "cuda":
-            torch.cuda.synchronize(_cuda_index(result.selected_device) or 0)
-    except Exception as exc:
-        raise ProbeFailure(
-            STAGE_INFERENCE,
-            "model_unloadable",
-            f"The {capability_key.replace('_', ' ')} model loaded but could not run on "
-            f"{result.selected_device}.",
-            _short_traceback(exc),
-        ) from exc
-    result.inference_ran = True
+    _probe_production_torch_worker(
+        result, capability_key, model_dir, result.selected_device
+    )
 
 
 def _probe_production_torch_worker(

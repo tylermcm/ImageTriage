@@ -542,7 +542,6 @@ class SetupCapabilityTests(unittest.TestCase):
     def test_the_verified_set_matches_the_installed_set(self) -> None:
         from image_triage.ai_manifest import (
             BASE_CAPABILITIES,
-            OPT_IN_CAPABILITIES,
             TORCH_CAPABILITIES,
             setup_capabilities,
         )
@@ -552,8 +551,6 @@ class SetupCapabilityTests(unittest.TestCase):
 
         self.assertEqual(base, BASE_CAPABILITIES)
         self.assertEqual(full, BASE_CAPABILITIES + TORCH_CAPABILITIES)
-        for key in OPT_IN_CAPABILITIES:
-            self.assertNotIn(key, full, msg=f"{key} is opt-in and must not be verified")
 
     def test_every_setup_capability_has_an_installable_bundle_path(self) -> None:
         from image_triage.ai_manifest import CAPABILITIES, MODEL_BUNDLES, setup_capabilities

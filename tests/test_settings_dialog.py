@@ -150,23 +150,6 @@ class WorkflowSettingsDialogTests(unittest.TestCase):
         self.assertEqual(0.940, result.ai_label_near_duplicate_threshold)
         dialog.deleteLater()
 
-    def test_dino_prefilter_is_not_exposed_in_current_settings(self) -> None:
-        dialog = WorkflowSettingsDialog(
-            sessions=["Default"],
-            current_session="Default",
-            winner_mode=WinnerMode.COPY,
-            delete_mode=DeleteMode.SAFE_TRASH,
-        )
-
-        pages = list(dialog._page_titles)
-        result = dialog.result_settings()
-
-        self.assertNotIn("DINO Prefilter", pages)
-        self.assertIn("AI Culling", pages)
-        self.assertIn("Duplicates", pages)
-        self.assertFalse(hasattr(result, "dino_prefilter_settings"))
-        dialog.deleteLater()
-
     def test_interface_size_choice_round_trips_and_sizes_dialog_chrome(self) -> None:
         dialog = WorkflowSettingsDialog(
             sessions=["Default"],

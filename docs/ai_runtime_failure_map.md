@@ -61,7 +61,7 @@ root did not fix model acquisition.
 
 | Consumer | Check | Required modules |
 | --- | --- | --- |
-| Settings / `MainWindow` | `load_ai_runtime_installation_status` → `_profile_status` (`ai_runtime_packages.py:573`) | base ± DINO, gated on `dino_enabled_variants` |
+| Settings / `MainWindow` | `load_ai_runtime_installation_status` → `_profile_status` (`ai_runtime_packages.py:573`) | base ± DINO, gated on `torch_enabled_variants` |
 | Scene masks | `_resolve_semantic_runtime` (`semantic_mask_service.py:65`) | torch, transformers, safetensors, PIL, numpy |
 | Subject masks | `_resolve_subject_runtime` (`subject_masks.py:435`) | torch, transformers, timm, safetensors |
 | Mask engine host | `_resolve_engine_runtime` (`mask_engine_service.py:586`) | torch, transformers, safetensors, timm, PIL, numpy |
@@ -70,8 +70,8 @@ All three service checks are `(site_dir / name).exists()` — directory presence
 not importability. All four can disagree, and they disagree in a specific,
 reproducible way:
 
-`_profile_status` only requires the DINO module set when the variant appears in
-`dino_enabled_variants`. A `--no-dino` install therefore yields
+`_profile_status` only requires the PyTorch module set when the variant appears in
+`torch_enabled_variants`. A `--no-torch` install therefore yields
 `status.is_installed == True`, Settings reports success, and the editor then
 fails with *"missing scene-mask dependencies: torch, transformers,
 safetensors"*. This is field failure #3, exactly.

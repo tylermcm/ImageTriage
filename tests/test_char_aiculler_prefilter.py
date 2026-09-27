@@ -1,6 +1,6 @@
 """Characterization of the live pHash-only behaviour of AICullerRunTask (WI-2.4 d2).
 
-These pin what must survive when the dormant DINO stage is removed: the stage
+These pin the pHash-only run behaviour: the stage
 sequence the UI sees, and which images reach AI Culler ingest.
 """
 from __future__ import annotations

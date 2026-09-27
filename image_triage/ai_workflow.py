@@ -29,8 +29,6 @@ from typing import TYPE_CHECKING, Callable
 
 from .ai_model import (
     DEFAULT_SEMANTIC_MODEL_REPO_ID,
-    AIModelInstallation,
-    resolve_ai_model_installation,
     resolve_semantic_model_installation,
 )
 from .ai_runtime_packages import load_ai_runtime_installation_status
@@ -58,8 +56,6 @@ AI_RUNNER_SCRIPT_RELATIVE_PATH = Path("packaging") / "ai_python_runner.py"
 class AIWorkflowRuntime:
     """Resolved runtime configuration shared by the managed AI runtime and the mask services."""
     python_executable: Path | None
-    model_name: str
-    model_installation: AIModelInstallation | None = None
     device: str = "auto"
     batch_size: int = 16
     semantic_model_name: str = "openai/clip-vit-base-patch32"
@@ -93,11 +89,6 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
             sys.executable,
         ]
     )
-    model_name_override = (os.environ.get("AICULLING_MODEL_NAME", "") or "").strip()
-    model_installation = None if model_name_override else resolve_ai_model_installation()
-    model_name = model_name_override or (
-        model_installation.model_name if model_installation is not None else ""
-    )
     batch_size = _positive_int_env("AICULLING_BATCH_SIZE", 16)
     semantic_model_override = (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
     semantic_installation = resolve_semantic_model_installation()
@@ -118,8 +109,6 @@ def default_ai_workflow_runtime() -> AIWorkflowRuntime:
     python_path = Path(python_executable).expanduser().resolve() if python_executable else None
     return AIWorkflowRuntime(
         python_executable=python_path,
-        model_name=model_name,
-        model_installation=model_installation,
         device=device,
         batch_size=batch_size,
         semantic_model_name=semantic_model_name,

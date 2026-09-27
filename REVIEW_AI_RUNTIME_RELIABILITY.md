@@ -30,9 +30,9 @@ redirection. So models still landed in
 Four more cache roots (`depth_maps`, `prompt_masks`, `semantic_masks`,
 `subject_masks`) had the same bug.
 
-**Root cause C — `--no-dino` installs reported success.**
+**Root cause C — `--no-torch` installs reported success.**
 `_profile_status` only requires the torch module set when the variant appears in
-`dino_enabled_variants`. A base-only install therefore yields
+`torch_enabled_variants`. A base-only install therefore yields
 `status.is_installed == True`, Settings says "AI Setup Complete", and the editor
 then fails with *"missing scene-mask dependencies: torch, transformers,
 safetensors"*. That is field failure #3 exactly.
@@ -655,7 +655,7 @@ found in your environment: einops, kornia
 Neither is in the managed requirements, and neither is present in either
 installed profile on this machine. BiRefNet loads its own modeling code via
 `trust_remote_code` and imports them directly. Added `einops==0.8.2` and
-`kornia==0.8.3`, added both to `AI_RUNTIME_DINO_REQUIRED_MODULE_NAMES` and to
+`kornia==0.8.3`, added both to `AI_RUNTIME_TORCH_REQUIRED_MODULE_NAMES` and to
 the `subject_masks` capability modules, and regenerated the locks. Verified in a
 scratch directory: with them present BiRefNet loads and completes a forward pass
 (output type `list`). The probe now reports the missing package at the import

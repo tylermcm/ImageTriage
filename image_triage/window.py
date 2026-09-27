@@ -78,13 +78,11 @@ from .ai_model import (
     DEFAULT_AICULLER_CLIP_SIZE_MB,
     DEFAULT_AICULLER_FACE_SIZE_MB,
     DEFAULT_AICULLER_TOPIQ_SIZE_MB,
-    DEFAULT_AI_MODEL_SIZE_MB,
     DEFAULT_SEMANTIC_MODEL_SIZE_MB,
     download_ai_model as download_managed_ai_model,
     resolve_aiculler_clip_model_installation,
     resolve_aiculler_face_model_installation,
     resolve_aiculler_topiq_model_installation,
-    resolve_ai_model_installation,
     resolve_semantic_model_installation,
 )
 from .ai_runtime_packages import (
@@ -658,11 +656,10 @@ class AISetupSelection:
     """Captures the optional AI components the user chose to install."""
     install_runtime: bool
     runtime_variant: str
-    include_dino_runtime: bool
+    include_torch_runtime: bool
     download_aiculler_clip_model: bool
     download_aiculler_topiq_model: bool
     download_aiculler_face_model: bool
-    download_dino_model: bool
     download_semantic_model: bool
 
     @property
@@ -671,7 +668,6 @@ class AISetupSelection:
             self.download_aiculler_clip_model
             or self.download_aiculler_topiq_model
             or self.download_aiculler_face_model
-            or self.download_dino_model
             or self.download_semantic_model
         )
 
@@ -3195,13 +3191,10 @@ class MainWindow(QMainWindow):
         self._preview_preload_timer.setSingleShot(True)
         self._preview_preload_timer.setInterval(120)
         self._preview_preload_timer.timeout.connect(self._run_preview_preload)
-        self._ai_model_installation = resolve_ai_model_installation()
         self._semantic_model_installation = resolve_semantic_model_installation()
         self._aiculler_topiq_model_installation = resolve_aiculler_topiq_model_installation()
         self._aiculler_face_model_installation = resolve_aiculler_face_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
-        if self._ai_runtime.model_installation is not None:
-            self._ai_model_installation = self._ai_runtime.model_installation
         self._scan_pool = QThreadPool(self)
         self._scan_pool.setMaxThreadCount(1)
         self._ai_run_pool = QThreadPool(self)
@@ -3405,7 +3398,6 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_aiculler_face_download_after_runtime = False
-        self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self._current_folder = ""
         self._scope_kind = "folder"
@@ -10278,12 +10270,6 @@ class MainWindow(QMainWindow):
         if not self._quick_view_mode:
             QTimer.singleShot(0, self._maybe_prompt_for_ai_setup)
 
-    def _managed_ai_model_installation(self) -> AIModelInstallation:
-        runtime_installation = self._ai_runtime.model_installation
-        if runtime_installation is not None:
-            return runtime_installation
-        return self._ai_model_installation
-
     def _managed_semantic_model_installation(self) -> AIModelInstallation:
         return self._semantic_model_installation
 
@@ -10511,60 +10497,6 @@ class MainWindow(QMainWindow):
     def _ai_runtime_available(self) -> bool:
         return self._managed_ai_runtime_status().is_installed
 
-    def _ai_runtime_explanation_text(self) -> str:
-        status = self._managed_ai_runtime_status()
-        installed = ", ".join(ai_runtime_variant_label(variant) for variant in status.installed_variants)
-        if not installed:
-            installed = "None yet"
-        gpu_download = estimate_ai_runtime_download_size_mb(AI_RUNTIME_GPU_VARIANT)
-        gpu_installed = estimate_ai_runtime_installed_size_mb(AI_RUNTIME_GPU_VARIANT)
-        cpu_download = estimate_ai_runtime_download_size_mb(AI_RUNTIME_CPU_VARIANT)
-        cpu_installed = estimate_ai_runtime_installed_size_mb(AI_RUNTIME_CPU_VARIANT)
-        actual_size = directory_size_bytes(status.directories.root)
-        actual_line = ""
-        if actual_size > 0:
-            actual_line = f"\nCurrent installed runtime cache: {_format_bytes(actual_size)}"
-        onnx_gpu_line = ""
-        if AI_RUNTIME_GPU_VARIANT in status.installed_variants:
-            onnx_gpu_ready = AI_RUNTIME_GPU_VARIANT in status.onnx_gpu_installed_variants
-            onnx_gpu_line = (
-                "\nGPU ONNX acceleration: Installed"
-                if onnx_gpu_ready
-                else "\nGPU ONNX acceleration: Runtime update required"
-            )
-        return (
-            "Image Triage can install PyTorch and the larger AI support packages on demand.\n\n"
-            "This keeps the MSI much smaller and moves heavy dependencies into your local AI cache. "
-            "The core runtime includes ONNX Runtime, scikit-learn, Pillow, and OpenCV. "
-            "Optional model dependencies add PyTorch, torchvision, transformers, timm, and "
-            "the supporting packages used by DINO and editor masking.\n\n"
-            f"Estimated GPU runtime download: about {gpu_download / 1024:.1f} GB "
-            f"({gpu_installed / 1024:.1f} GB installed)\n"
-            f"Estimated CPU runtime download: about {cpu_download / 1024:.1f} GB "
-            f"({cpu_installed / 1024:.1f} GB installed)\n"
-            f"Current profiles: {installed}\n"
-            f"Install location:\n{status.directories.root}"
-            f"{onnx_gpu_line}"
-            f"{actual_line}"
-        )
-
-    def _ai_model_available(self) -> bool:
-        runtime_installation = self._ai_runtime.model_installation
-        if runtime_installation is not None:
-            return runtime_installation.is_installed
-
-        model_name = (self._ai_runtime.model_name or "").strip()
-        if not model_name:
-            return False
-        path = Path(model_name).expanduser()
-        if path.is_absolute() or "/" in model_name or "\\" in model_name or model_name.startswith("."):
-            if not path.exists():
-                return False
-            if path.is_dir():
-                return (path / "config.json").exists() and (path / "model.safetensors").exists()
-            return True
-        return True
-
     def _semantic_model_available(self) -> bool:
         explicit_model_name = (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
         if explicit_model_name:
@@ -10583,80 +10515,6 @@ class MainWindow(QMainWindow):
     def _aiculler_face_model_available(self) -> bool:
         return self._managed_aiculler_face_model_installation().is_installed
 
-    def _ai_model_explanation_text(self) -> str:
-        installation = self._managed_ai_model_installation()
-        installed_size = directory_size_bytes(installation.install_dir)
-        installed_line = ""
-        if installed_size > 0:
-            installed_line = f"\nCurrent model cache: {_format_bytes(installed_size)}"
-        return (
-            "Image Triage uses a local DINO model for AI review, training-data preparation, "
-            "and reference-bank extraction.\n\n"
-            "Without that model the AI generation and training tools stay disabled, but you can "
-            "still open any AI results that were already generated.\n\n"
-            f"Download size: about {DEFAULT_AI_MODEL_SIZE_MB} MB\n"
-            f"Install location:\n{installation.install_dir}"
-            f"{installed_line}"
-        )
-
-    def _semantic_model_explanation_text(self) -> str:
-        installation = self._managed_semantic_model_installation()
-        installed_size = directory_size_bytes(installation.install_dir)
-        installed_line = ""
-        if installed_size > 0:
-            installed_line = f"\nCurrent semantic model cache: {_format_bytes(installed_size)}"
-        return (
-            "The semantic sidecar uses a local CLIP model to classify images into descriptive "
-            "labels alongside DINO ranking.\n\n"
-            "When the semantic sidecar is enabled, this model is required before running a new "
-            "AI review so the classifier does not start an untracked background download.\n\n"
-            f"Download size: about {DEFAULT_SEMANTIC_MODEL_SIZE_MB} MB\n"
-            f"Install location:\n{installation.install_dir}"
-            f"{installed_line}"
-        )
-
-    def _aiculler_clip_model_explanation_text(self) -> str:
-        installation = self._managed_aiculler_clip_model_installation()
-        installed_size = directory_size_bytes(installation.install_dir)
-        installed_line = ""
-        if installed_size > 0:
-            installed_line = f"\nCurrent CLIP cache: {_format_bytes(installed_size)}"
-        return (
-            "CLI-Culler uses a local CLIP ONNX model for image embeddings and category scoring. "
-            "Image Triage runs the full-precision FP32 export by default and automatically retries "
-            "the paired FP16 export if FP32 cannot initialize.\n\n"
-            f"Download size: about {DEFAULT_AICULLER_CLIP_SIZE_MB} MB\n"
-            f"Install location:\n{installation.install_dir}"
-            f"{installed_line}"
-        )
-
-    def _aiculler_topiq_model_explanation_text(self) -> str:
-        installation = self._managed_aiculler_topiq_model_installation()
-        installed_size = directory_size_bytes(installation.install_dir)
-        installed_line = ""
-        if installed_size > 0:
-            installed_line = f"\nCurrent TOPIQ cache: {_format_bytes(installed_size)}"
-        return (
-            "CLI-Culler uses TOPIQ as an optional technical quality model during ingest.\n\n"
-            f"Download size: about {DEFAULT_AICULLER_TOPIQ_SIZE_MB} MB\n"
-            f"Install location:\n{installation.install_dir}"
-            f"{installed_line}"
-        )
-
-    def _aiculler_face_model_explanation_text(self) -> str:
-        installation = self._managed_aiculler_face_model_installation()
-        installed_size = directory_size_bytes(installation.install_dir)
-        installed_line = ""
-        if installed_size > 0:
-            installed_line = f"\nCurrent face-model cache: {_format_bytes(installed_size)}"
-        return (
-            "CLI-Culler uses these InsightFace models for face quality, eye sharpness, "
-            "estimated gender/age, and local people-search identity vectors. Face data stays local.\n\n"
-            f"Download size: about {DEFAULT_AICULLER_FACE_SIZE_MB} MB\n"
-            f"Install location:\n{installation.install_dir}"
-            f"{installed_line}"
-        )
-
     def _show_ai_setup_dialog(
         self,
         *,
@@ -10666,11 +10524,10 @@ class MainWindow(QMainWindow):
         allow_runtime: bool,
         allow_model: bool,
         default_install_runtime: bool,
-        default_include_dino_runtime: bool,
+        default_include_torch_runtime: bool,
         default_download_aiculler_clip_model: bool,
         default_download_aiculler_topiq_model: bool,
         default_download_aiculler_face_model: bool,
-        default_download_dino_model: bool,
         default_download_semantic_model: bool,
     ) -> AISetupSelection | None:
         """One compact setup flow for the runtime and current culling model set."""
@@ -10680,11 +10537,10 @@ class MainWindow(QMainWindow):
             allow_runtime,
             allow_model,
             default_install_runtime,
-            default_include_dino_runtime,
+            default_include_torch_runtime,
             default_download_aiculler_clip_model,
             default_download_aiculler_topiq_model,
             default_download_aiculler_face_model,
-            default_download_dino_model,
             default_download_semantic_model,
         )
 
@@ -10774,15 +10630,15 @@ class MainWindow(QMainWindow):
             detail_label.setObjectName("aiSetupMuted")
             detail_label.setWordWrap(True)
             card_layout.addWidget(detail_label)
-            download_mb = estimate_ai_runtime_download_size_mb(variant, include_dino=True)
-            installed_mb = estimate_ai_runtime_installed_size_mb(variant, include_dino=True)
+            download_mb = estimate_ai_runtime_download_size_mb(variant, include_torch=True)
+            installed_mb = estimate_ai_runtime_installed_size_mb(variant, include_torch=True)
             sizes = QLabel(
                 f"{download_mb / 1024:.1f} GB download  ·  {installed_mb / 1024:.1f} GB on disk",
                 card,
             )
             sizes.setObjectName("aiSetupProfileTitle")
             card_layout.addWidget(sizes)
-            if variant in runtime_status.dino_installed_variants:
+            if variant in runtime_status.torch_installed_variants:
                 installed = QLabel("Installed", card)
                 installed.setObjectName("aiSetupMuted")
                 card_layout.addWidget(installed)
@@ -10863,15 +10719,14 @@ class MainWindow(QMainWindow):
         )
         # The compact ONNX profile is sufficient for culling, but the editor's
         # mask engines also require the shared PyTorch/Transformers bundle.
-        runtime_ready = runtime_variant in runtime_status.dino_installed_variants
+        runtime_ready = runtime_variant in runtime_status.torch_installed_variants
         return AISetupSelection(
             install_runtime=not runtime_ready,
             runtime_variant=runtime_variant,
-            include_dino_runtime=True,
+            include_torch_runtime=True,
             download_aiculler_clip_model=clip_missing,
             download_aiculler_topiq_model=topiq_missing,
             download_aiculler_face_model=face_missing,
-            download_dino_model=False,
             download_semantic_model=semantic_missing,
         )
 
@@ -10883,15 +10738,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("An AI component install is already running.")
             return False
         self._install_ai_runtime()
-        return False
-
-    def _ensure_ai_model_available(self, *, title: str) -> bool:
-        if self._ai_model_available():
-            return True
-        if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
-            self.statusBar().showMessage("An AI component install is already running.")
-            return False
-        self._prompt_for_ai_model_install(automatic=False)
         return False
 
     def _ensure_semantic_model_available(self, *, title: str) -> bool:
@@ -10977,11 +10823,10 @@ class MainWindow(QMainWindow):
                 or semantic_model_missing
             ),
             default_install_runtime=runtime_missing,
-            default_include_dino_runtime=True,
+            default_include_torch_runtime=True,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_dino_model=False,
             default_download_semantic_model=semantic_model_missing,
         )
         if selection is None:
@@ -11000,11 +10845,10 @@ class MainWindow(QMainWindow):
             self._start_ai_runtime_install(
                 selection.runtime_variant,
                 force=force_runtime,
-                include_dino=selection.include_dino_runtime,
+                include_torch=selection.include_torch_runtime,
                 download_aiculler_clip_after=selection.download_aiculler_clip_model,
                 download_aiculler_topiq_after=selection.download_aiculler_topiq_model,
                 download_aiculler_face_after=selection.download_aiculler_face_model,
-                download_dino_model_after=False,
                 download_semantic_model_after=selection.download_semantic_model,
             )
             return True
@@ -11013,7 +10857,6 @@ class MainWindow(QMainWindow):
                 download_aiculler_clip=selection.download_aiculler_clip_model,
                 download_aiculler_topiq=selection.download_aiculler_topiq_model,
                 download_aiculler_face=selection.download_aiculler_face_model,
-                download_dino=False,
                 download_semantic=selection.download_semantic_model,
                 force=False,
             )
@@ -11039,11 +10882,10 @@ class MainWindow(QMainWindow):
             allow_runtime=False,
             allow_model=True,
             default_install_runtime=False,
-            default_include_dino_runtime=True,
+            default_include_torch_runtime=True,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_dino_model=False,
             default_download_semantic_model=semantic_missing,
         )
         if selection is None:
@@ -11065,11 +10907,10 @@ class MainWindow(QMainWindow):
             allow_runtime=True,
             allow_model=False,
             default_install_runtime=True,
-            default_include_dino_runtime=True,
+            default_include_torch_runtime=True,
             default_download_aiculler_clip_model=False,
             default_download_aiculler_topiq_model=False,
             default_download_aiculler_face_model=False,
-            default_download_dino_model=False,
             default_download_semantic_model=False,
         )
         if selection is None:
@@ -11085,11 +10926,10 @@ class MainWindow(QMainWindow):
         variant_choice: str,
         *,
         force: bool = False,
-        include_dino: bool = True,
+        include_torch: bool = True,
         download_aiculler_clip_after: bool = False,
         download_aiculler_topiq_after: bool = False,
         download_aiculler_face_after: bool = False,
-        download_dino_model_after: bool = False,
         download_semantic_model_after: bool = False,
     ) -> None:
         install_root = self._managed_ai_runtime_status().directories.root
@@ -11111,8 +10951,8 @@ class MainWindow(QMainWindow):
         command.extend(["--install-root", str(install_root)])
         if force:
             command.append("--force")
-        if not include_dino:
-            command.append("--no-dino")
+        if not include_torch:
+            command.append("--no-torch")
         task = AIRuntimeInstallTask(
             command=command,
             cwd=cwd,
@@ -11127,7 +10967,6 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_clip_download_after_runtime = bool(download_aiculler_clip_after)
         self._pending_ai_aiculler_topiq_download_after_runtime = bool(download_aiculler_topiq_after)
         self._pending_ai_aiculler_face_download_after_runtime = bool(download_aiculler_face_after)
-        self._pending_ai_dino_model_download_after_runtime = bool(download_dino_model_after)
         self._pending_ai_semantic_model_download_after_runtime = bool(download_semantic_model_after)
         self._set_ai_setup_busy("Installing AI runtime...")
         self._update_action_states()
@@ -11163,21 +11002,18 @@ class MainWindow(QMainWindow):
             self._pending_ai_aiculler_face_download_after_runtime
             and not self._aiculler_face_model_available()
         )
-        download_dino = self._pending_ai_dino_model_download_after_runtime and not self._ai_model_available()
         download_semantic = (
             self._pending_ai_semantic_model_download_after_runtime and not self._semantic_model_available()
         )
-        if download_aiculler_clip or download_aiculler_topiq or download_aiculler_face or download_dino or download_semantic:
+        if download_aiculler_clip or download_aiculler_topiq or download_aiculler_face or download_semantic:
             self._pending_ai_aiculler_clip_download_after_runtime = False
             self._pending_ai_aiculler_topiq_download_after_runtime = False
             self._pending_ai_aiculler_face_download_after_runtime = False
-            self._pending_ai_dino_model_download_after_runtime = False
             self._pending_ai_semantic_model_download_after_runtime = False
             self._start_ai_model_download(
                 download_aiculler_clip=download_aiculler_clip,
                 download_aiculler_topiq=download_aiculler_topiq,
                 download_aiculler_face=download_aiculler_face,
-                download_dino=download_dino,
                 download_semantic=download_semantic,
                 force=False,
             )
@@ -11185,7 +11021,6 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_aiculler_face_download_after_runtime = False
-        self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         # The installer exiting zero does not prove any capability works, and
         # the runtime alone is not the whole selected feature set: finish the
@@ -11200,7 +11035,6 @@ class MainWindow(QMainWindow):
         self._pending_ai_aiculler_clip_download_after_runtime = False
         self._pending_ai_aiculler_topiq_download_after_runtime = False
         self._pending_ai_aiculler_face_download_after_runtime = False
-        self._pending_ai_dino_model_download_after_runtime = False
         self._pending_ai_semantic_model_download_after_runtime = False
         self._set_ai_setup_busy(None)
         self._update_action_states()
@@ -11232,7 +11066,6 @@ class MainWindow(QMainWindow):
             components.append((f"AI runtime ({profiles})", runtime_root, runtime_size))
 
         model_specs = (
-            ("DINO Prefilter model", self._managed_ai_model_installation().install_dir),
             (
                 "CLI-Culler CLIP model (all downloaded versions)",
                 self._managed_aiculler_clip_model_installation().install_dir,
@@ -11261,12 +11094,12 @@ class MainWindow(QMainWindow):
 
         This is the same set ``Set Up AI`` installs, so verification can never
         demand something setup never downloaded. Torch-only features drop out
-        when the user installed the compact base runtime, and DINO stays opt-in.
+        when the user installed the compact base runtime.
         """
         from .ai_manifest import setup_capabilities
 
         status = self._managed_ai_runtime_status()
-        has_torch = bool(set(status.installed_variants) & set(status.dino_installed_variants))
+        has_torch = bool(set(status.installed_variants) & set(status.torch_installed_variants))
         return setup_capabilities(include_torch=has_torch)
 
     def _start_ai_readiness_check(
@@ -11450,7 +11283,7 @@ class MainWindow(QMainWindow):
                 self._start_ai_runtime_install(
                     status.preferred_variant,
                     force=True,
-                    include_dino=bool(status.dino_installed_variants),
+                    include_torch=bool(status.torch_installed_variants),
                 )
                 return
         self._handle_ai_readiness_finished(results, "Repair AI", "Repair finished.")
@@ -11623,13 +11456,11 @@ class MainWindow(QMainWindow):
         download_aiculler_clip: bool = False,
         download_aiculler_topiq: bool = False,
         download_aiculler_face: bool = False,
-        download_dino: bool = True,
         download_semantic: bool = False,
         force: bool = False,
         force_aiculler_clip: bool | None = None,
         force_aiculler_topiq: bool | None = None,
         force_aiculler_face: bool | None = None,
-        force_dino: bool | None = None,
         force_semantic: bool | None = None,
     ) -> None:
         requests: list[AIModelDownloadRequest] = []
@@ -11655,14 +11486,6 @@ class MainWindow(QMainWindow):
                     label="InsightFace Quality",
                     installation=self._managed_aiculler_face_model_installation(),
                     force=force if force_aiculler_face is None else force_aiculler_face,
-                )
-            )
-        if download_dino:
-            requests.append(
-                AIModelDownloadRequest(
-                    label="DINO Prefilter",
-                    installation=self._managed_ai_model_installation(),
-                    force=force if force_dino is None else force_dino,
                 )
             )
         if download_semantic:
@@ -15651,13 +15474,6 @@ class MainWindow(QMainWindow):
         source_records = self._all_records if records is None else records
         self._records_have_resizable = any(self._record_supports_resize(record) for record in source_records)
         self._records_have_convertible = any(self._record_supports_convert(record) for record in source_records)
-
-    def _path_state_cache_token(self, path: Path) -> tuple[str, int, int]:
-        try:
-            stat_result = path.stat()
-        except OSError:
-            return str(path), -1, -1
-        return str(path), int(stat_result.st_size), int(stat_result.st_mtime_ns)
 
     def _invalidate_training_label_counts_cache(self) -> None:
         self._training_label_counts_cache_key = ()
@@ -21701,14 +21517,12 @@ class MainWindow(QMainWindow):
         ai_loaded = self._ai_bundle is not None
         ai_runtime_ready = self._ai_runtime_available()
         culler_runtime_ready = aiculler_runtime_available()
-        ai_model_ready = self._ai_model_available()
         semantic_model_ready = self._semantic_model_available()
         step_start = log_step(
             "ai_toolbar_state.readiness",
             step_start,
             runtime_ready=ai_runtime_ready,
             culler_ready=culler_runtime_ready,
-            model_ready=ai_model_ready,
             semantic_ready=semantic_model_ready,
         )
         ai_paths = self._hidden_ai_paths_for_current_folder()
