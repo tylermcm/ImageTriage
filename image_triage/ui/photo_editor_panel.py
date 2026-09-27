@@ -12,7 +12,7 @@ import math
 
 import numpy as np
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QRunnable, QSize, QSettings, Qt, QSignalBlocker, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QRunnable, QSize, Qt, QSignalBlocker, QThreadPool, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
+from ..app_identity import user_settings
 from ..editor_geometry import (
     ViewTransform,
     fit_rect_in_quad,
@@ -1621,7 +1622,7 @@ class PhotoEditorPanel(QFrame):
         self._mask_touchup_original_present: set[str] = set()
         self._mask_touchup_original_values: dict[str, Any] = {}
         self._mask_touchup_spins: dict[str, QSpinBox | QDoubleSpinBox] = {}
-        self._settings = QSettings()
+        self._settings = user_settings()
         self._custom_photo_presets = _load_custom_photo_presets(
             self._settings.value(self.CUSTOM_PRESETS_KEY, "", str)
         )

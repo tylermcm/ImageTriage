@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QRunnable, QSize, QSettings, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QIcon, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QRunnable, QSize, QSignalBlocker, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QIcon, QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -28,6 +29,8 @@ from PySide6.QtWidgets import (
 )
 
 from .ai_results import AIImageResult, build_ai_explanation_lines
+from .app_identity import user_settings
+from .keyboard_mapping import matches_shortcut
 from .cache import THUMBNAIL_CACHE_VERSION
 from .formats import FITS_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .imaging import FITS_STF_PRESETS, FitsDisplaySettings, load_image_for_display, sanitize_display_error
@@ -678,7 +681,16 @@ class FullScreenPreview(QDialog):
         self._edited_variant_index = 0
         self._focused_slot = 0
         self._photoshop_available = False
-        self._settings = QSettings()
+        self._winner_shortcut = QKeySequence("W")
+        self._reject_shortcut = QKeySequence("X")
+        # Mirrors grid.py's review-key registry (WI-3.2); brackets and the
+        # 1-5 adapter labels are grid-only, so they're not needed here.
+        self._review_key_shortcuts: dict[str, QKeySequence] = {
+            "keep_at_cursor": QKeySequence("K"),
+            "move_at_cursor": QKeySequence("M"),
+            "tag_at_cursor": QKeySequence("T"),
+        }
+        self._settings = user_settings()
         self._manual_zoom = False
         self._zoom_scale = 1.0
         self._focus_assist_enabled = self._settings.value(self.FOCUS_ASSIST_ENABLED_KEY, False, bool)
@@ -3118,6 +3130,15 @@ class FullScreenPreview(QDialog):
         self.closed.emit()
         super().closeEvent(event)
 
+    def set_review_action_shortcuts(self, winner: QKeySequence | str, reject: QKeySequence | str) -> None:
+        self._winner_shortcut = QKeySequence(winner)
+        self._reject_shortcut = QKeySequence(reject)
+
+    def set_review_key_shortcuts(self, shortcuts: Mapping[str, QKeySequence | str]) -> None:
+        for binding_id, value in shortcuts.items():
+            if binding_id in self._review_key_shortcuts:
+                self._review_key_shortcuts[binding_id] = QKeySequence(value)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
         modifiers = event.modifiers()
@@ -3155,7 +3176,7 @@ class FullScreenPreview(QDialog):
                 self.winner_ladder_choice_requested.emit(self._entries[1].record.path)
                 event.accept()
                 return
-            if key == Qt.Key.Key_W and review_shortcut_allowed:
+            if matches_shortcut(event, self._winner_shortcut):
                 path = self._focused_path()
                 if path:
                     self.winner_ladder_choice_requested.emit(path)
@@ -3224,7 +3245,7 @@ class FullScreenPreview(QDialog):
         if self._collection_browse_mode:
             event.accept()
             return
-        if key == Qt.Key.Key_W and review_shortcut_allowed:
+        if matches_shortcut(event, self._winner_shortcut):
             path = self._focused_path()
             if path:
                 self.winner_requested.emit(path)
@@ -3232,7 +3253,7 @@ class FullScreenPreview(QDialog):
                     self.navigation_requested.emit(1)
                 event.accept()
                 return
-        if key == Qt.Key.Key_X and review_shortcut_allowed:
+        if matches_shortcut(event, self._reject_shortcut):
             path = self._focused_path()
             if path:
                 self.reject_requested.emit(path)
@@ -3240,7 +3261,7 @@ class FullScreenPreview(QDialog):
                     self.navigation_requested.emit(1)
                 event.accept()
                 return
-        if key == Qt.Key.Key_K and review_shortcut_allowed:
+        if matches_shortcut(event, self._review_key_shortcuts["keep_at_cursor"]):
             path = self._focused_path()
             if path:
                 self.keep_requested.emit(path)
@@ -3252,13 +3273,13 @@ class FullScreenPreview(QDialog):
                 self.delete_requested.emit(path)
                 event.accept()
                 return
-        if key == Qt.Key.Key_M and review_shortcut_allowed:
+        if matches_shortcut(event, self._review_key_shortcuts["move_at_cursor"]):
             path = self._focused_path()
             if path:
                 self.move_requested.emit(path)
                 event.accept()
                 return
-        if key == Qt.Key.Key_T and review_shortcut_allowed:
+        if matches_shortcut(event, self._review_key_shortcuts["tag_at_cursor"]):
             path = self._focused_path()
             if path:
                 self.tag_requested.emit(path)

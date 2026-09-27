@@ -4,6 +4,7 @@ import math
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMen
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
+from .keyboard_mapping import matches_shortcut
 from .models import ImageRecord, ImageVariant, SessionAnnotation
 from .perf import perf_logger
 from .scanner import normalized_path_key
@@ -319,6 +321,20 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._hovered_index = -1
         self._winner_shortcut = QKeySequence("W")
         self._reject_shortcut = QKeySequence("X")
+        # Review-action keys unified into the single shortcut registry
+        # (WI-3.2); these defaults match what was previously hardcoded here.
+        self._review_key_shortcuts: dict[str, QKeySequence] = {
+            "cycle_burst_previous": QKeySequence("["),
+            "cycle_burst_next": QKeySequence("]"),
+            "keep_at_cursor": QKeySequence("K"),
+            "move_at_cursor": QKeySequence("M"),
+            "tag_at_cursor": QKeySequence("T"),
+            "adapter_label_hero": QKeySequence("1"),
+            "adapter_label_strong": QKeySequence("2"),
+            "adapter_label_maybe": QKeySequence("3"),
+            "adapter_label_weak": QKeySequence("4"),
+            "adapter_label_reject": QKeySequence("5"),
+        }
         self._press_pos: QPoint | None = None
         self._press_index = -1
         self._press_on_interactive_control = False
@@ -447,12 +463,12 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._winner_shortcut = QKeySequence(winner)
         self._reject_shortcut = QKeySequence(reject)
 
-    @staticmethod
-    def _matches_shortcut(event: QKeyEvent, shortcut: QKeySequence) -> bool:
-        if shortcut.isEmpty():
-            return False
-        event_sequence = QKeySequence(event.keyCombination())
-        return event_sequence.matches(shortcut) == QKeySequence.SequenceMatch.ExactMatch
+    def set_review_key_shortcuts(self, shortcuts: Mapping[str, QKeySequence | str]) -> None:
+        for binding_id, value in shortcuts.items():
+            if binding_id in self._review_key_shortcuts:
+                self._review_key_shortcuts[binding_id] = QKeySequence(value)
+
+    _matches_shortcut = staticmethod(matches_shortcut)
 
     @staticmethod
     def _action_tooltip(label: str, shortcut: QKeySequence) -> str:
@@ -1742,10 +1758,10 @@ class ThumbnailGridView(QAbstractScrollArea):
         if key == Qt.Key.Key_A and modifiers & Qt.KeyboardModifier.ControlModifier:
             self._select_all()
             return
-        if not self._tool_checkbox_mode and review_shortcut_allowed and key == Qt.Key.Key_BracketLeft and self._can_cycle_burst(index):
+        if not self._tool_checkbox_mode and self._matches_shortcut(event, self._review_key_shortcuts["cycle_burst_previous"]) and self._can_cycle_burst(index):
             self._cycle_burst(index, -1)
             return
-        if not self._tool_checkbox_mode and review_shortcut_allowed and key == Qt.Key.Key_BracketRight and self._can_cycle_burst(index):
+        if not self._tool_checkbox_mode and self._matches_shortcut(event, self._review_key_shortcuts["cycle_burst_next"]) and self._can_cycle_burst(index):
             self._cycle_burst(index, 1)
             return
         current_slot = self._current_visible_slot()
@@ -1816,32 +1832,34 @@ class ThumbnailGridView(QAbstractScrollArea):
                 return
             self.delete_requested.emit(index)
             return
-        if key == Qt.Key.Key_K and review_shortcut_allowed:
+        if self._matches_shortcut(event, self._review_key_shortcuts["keep_at_cursor"]):
             if self._items[index].is_folder:
                 return
             self.keep_requested.emit(index)
             return
-        if key == Qt.Key.Key_M and review_shortcut_allowed:
+        if self._matches_shortcut(event, self._review_key_shortcuts["move_at_cursor"]):
             if self._items[index].is_folder:
                 return
             self.move_requested.emit(index)
             return
-        if Qt.Key.Key_1 <= key <= Qt.Key.Key_5 and review_shortcut_allowed:
+        label_map = {
+            "adapter_label_hero": "hero",
+            "adapter_label_strong": "strong",
+            "adapter_label_maybe": "maybe",
+            "adapter_label_weak": "weak",
+            "adapter_label_reject": "reject",
+        }
+        for binding_id, label in label_map.items():
+            if not self._matches_shortcut(event, self._review_key_shortcuts[binding_id]):
+                continue
             if self._items[index].is_folder:
                 return
-            label_map = {
-                Qt.Key.Key_1: "hero",
-                Qt.Key.Key_2: "strong",
-                Qt.Key.Key_3: "maybe",
-                Qt.Key.Key_4: "weak",
-                Qt.Key.Key_5: "reject",
-            }
-            if self._adapter_review_mode and Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
+            if self._adapter_review_mode:
                 if not self._adapter_review_label_controls_enabled:
                     return
-                self._set_adapter_label_for_index(index, label_map[key], emit=True)
-                return
-        if key == Qt.Key.Key_T and review_shortcut_allowed:
+                self._set_adapter_label_for_index(index, label, emit=True)
+            return
+        if self._matches_shortcut(event, self._review_key_shortcuts["tag_at_cursor"]):
             if self._items[index].is_folder:
                 return
             self.tag_requested.emit(index)

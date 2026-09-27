@@ -1,10 +1,12 @@
-"""Characterization of per-folder view state, restore-position, and both shortcut stores (WI-0.5)."""
+"""Characterization of per-folder view state, restore-position, and the
+unified shortcut registry (WI-0.5, unified in WI-3.2)."""
 from __future__ import annotations
 
 import dataclasses
 import json
 
 from PySide6.QtCore import QSettings
+from PySide6.QtGui import QKeySequence
 
 from image_triage.ui.shortcuts import (
     SHORTCUT_REGISTRY,
@@ -117,23 +119,6 @@ def test_restore_position_setting_defaults_on_and_persists(main_window) -> None:
     assert main_window._settings.value(MainWindow.RESTORE_FOLDER_POSITION_KEY, True, bool) is False
 
 
-# ---- shortcut store A: MainWindow (one JSON blob in the main QSettings) --------------
-
-def test_window_overrides_round_trip_and_normalise(main_window) -> None:
-    main_window._shortcut_overrides = {"x_binding": "ctrl+shift+k", "blank": ""}
-    main_window._save_shortcut_overrides()
-
-    saved = json.loads(main_window._settings.value(MainWindow.SHORTCUT_OVERRIDES_KEY, "", str))
-    assert saved == {"x_binding": "Ctrl+Shift+K"}, "blank entries are dropped and text is normalised"
-    assert main_window._load_shortcut_overrides() == {"x_binding": "Ctrl+Shift+K"}
-
-
-def test_window_overrides_loader_survives_garbage(main_window) -> None:
-    for raw in ("", "nope", "[]", "5"):
-        main_window._settings.setValue(MainWindow.SHORTCUT_OVERRIDES_KEY, raw)
-        assert main_window._load_shortcut_overrides() == {}
-
-
 def test_no_two_actions_share_a_default_shortcut(main_window) -> None:
     from PySide6.QtGui import QAction
 
@@ -163,8 +148,6 @@ def test_pocketdrop_owns_ctrl_alt_p_and_next_ai_pick_moved(main_window) -> None:
     assert dict((a, d) for a, _c, d, _n in SHORTCUT_REGISTRY)["next_ai_pick"] == "Ctrl+Alt+N"
 
 
-# ---- shortcut store B: ui/shortcuts.py (separate org, one key per action) -----------
-
 def _registry_attr_with_default():
     return next((attr, default) for attr, _c, default, _d in SHORTCUT_REGISTRY if default)
 
@@ -189,16 +172,28 @@ def test_registry_store_blank_value_resets_to_default(tmp_path) -> None:
     assert load_shortcut_overrides(settings) == {}
 
 
-def test_the_two_stores_are_independent(main_window, tmp_path) -> None:
-    attr, _default = _registry_attr_with_default()
-    save_shortcut_overrides({attr: "Ctrl+Alt+F10"})
+def test_there_is_now_one_store_for_every_surface(main_window) -> None:
+    """WI-3.2: the window's own JSON-blob shortcut store is gone. A rebind
+    saved to the single registry store propagates to the QAction *and* to
+    the grid/details/preview review-key surfaces that used to read a
+    hardcoded literal."""
+    try:
+        save_shortcut_overrides({"keep_at_cursor": "Ctrl+Alt+F10"})
+        main_window._apply_shortcut_overrides()
 
-    assert main_window._load_shortcut_overrides().get(attr) is None
-    assert load_shortcut_overrides().get(attr) == "Ctrl+Alt+F10"
-    save_shortcut_overrides({})
+        assert load_shortcut_overrides().get("keep_at_cursor") == "Ctrl+Alt+F10"
+        expected = QKeySequence("Ctrl+Alt+F10")
+        assert main_window.grid._review_key_shortcuts["keep_at_cursor"] == expected
+        assert main_window.details_view.table._review_key_shortcuts["keep_at_cursor"] == expected
+        assert main_window.preview._review_key_shortcuts["keep_at_cursor"] == expected
+    finally:
+        save_shortcut_overrides({})
+        main_window._apply_shortcut_overrides()
 
 
-def test_the_registry_store_uses_a_different_settings_organisation(main_window) -> None:
-    from image_triage.ui import shortcuts
+def test_the_registry_store_now_shares_the_main_settings_identity(main_window) -> None:
+    from image_triage.app_identity import user_settings
 
-    assert shortcuts._ORG_NAME != main_window._settings.organizationName()
+    settings = user_settings()
+    assert settings.organizationName() == main_window._settings.organizationName()
+    assert settings.applicationName() == main_window._settings.applicationName()

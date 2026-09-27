@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QCoreApplication, QSettings, QThreadPool
+from PySide6.QtCore import QCoreApplication, QThreadPool
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
+
+from image_triage.app_identity import legacy_settings_sources, user_settings
 
 
 @dataclass
@@ -51,7 +53,9 @@ def install_dialog_guards(monkeypatch) -> DialogRecorder:
 def prepare_application() -> QApplication:
     QCoreApplication.setOrganizationName("Codex")
     QCoreApplication.setApplicationName("Image Triage")
-    QSettings().clear()
+    user_settings().clear()
+    for legacy in legacy_settings_sources():
+        legacy.clear()
     return QApplication.instance() or QApplication([])
 
 

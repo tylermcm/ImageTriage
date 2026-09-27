@@ -9,9 +9,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QApplication, QFrame
 
+from image_triage.app_identity import user_settings
 from image_triage.models import ImageRecord
 from image_triage.preview import FullScreenPreview, PreviewEntry
 from image_triage.ui.photo_editor_panel import EditRecipe
@@ -21,7 +22,7 @@ from image_triage.ui import popout_layout_ratios as ratios
 class PreviewMockupLayoutTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = QApplication.instance() or QApplication([])
-        settings = QSettings()
+        settings = user_settings()
         self._saved_preferences = {
             key: settings.value(key)
             for key in (
@@ -42,7 +43,7 @@ class PreviewMockupLayoutTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.preview.close()
-        settings = QSettings()
+        settings = user_settings()
         for key, value in self._saved_preferences.items():
             if value is None:
                 settings.remove(key)
