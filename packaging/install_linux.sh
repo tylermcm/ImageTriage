@@ -25,7 +25,6 @@ Options:
   -h, --help          Show this help text.
 
 Environment overrides:
-  IMAGE_TRIAGE_AI_SOURCE           Override the AICullingPipeline source path.
   IMAGE_TRIAGE_AI_SITE_PACKAGES    Override the AI site-packages source path.
   IMAGE_TRIAGE_AI_STDLIB           Override the AI stdlib source path.
   IMAGE_TRIAGE_AI_DLLS             Override the AI binary modules source path.
@@ -86,7 +85,6 @@ ensure_build_venv() {
 }
 
 build_appimage() {
-  export IMAGE_TRIAGE_AI_SOURCE="${IMAGE_TRIAGE_AI_SOURCE:-$ROOT_DIR/AICullingPipeline}"
   "$VENV_DIR/bin/python" "$ROOT_DIR/setup_linux.py" bdist_appimage
 }
 
