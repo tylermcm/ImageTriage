@@ -120,12 +120,9 @@ from .ai_training import (
     suggest_training_profile,
 )
 from .ai_workflow import (
-    AIRunTask,
     ai_device_environment_override,
-    ai_cluster_artifacts_ready,
     ai_report_artifacts_ready,
     ai_semantic_artifacts_ready,
-    build_ai_stage_cache_keys,
     build_ai_workflow_paths,
     default_ai_workflow_runtime,
     existing_hidden_ai_report_dir,
@@ -3281,7 +3278,7 @@ class MainWindow(QMainWindow):
         self._scan_showed_cached = False
         self._scan_cached_source = ""
         self._active_scan_tasks: dict[int, FolderScanTask] = {}
-        self._active_ai_task: AIRunTask | None = None
+        self._active_ai_task: AICullerRunTask | None = None
         self._active_ai_run_start_perf = 0.0
         self._active_ai_runtime_task: AIRuntimeInstallTask | None = None
         self._active_ai_model_task: AIModelDownloadTask | None = None
