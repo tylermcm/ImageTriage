@@ -348,35 +348,6 @@ class AITrainingTests(unittest.TestCase):
             self.assertTrue(status.needs_retrain)
             self.assertIn("Retraining is recommended", status.guidance_text)
 
-    def test_labeling_ui_ready_handshake_writes_ready_state(self) -> None:
-        module_path = Path("AICullingPipeline/app/labeling/ui.py").resolve()
-        app_root = str(Path("AICullingPipeline").resolve())
-        module_name = "image_triage_labeling_ui_ready_test"
-        ready_path = None
-        sys_path_inserted = False
-        try:
-            if app_root not in sys.path:
-                sys.path.insert(0, app_root)
-                sys_path_inserted = True
-            spec = importlib.util.spec_from_file_location(module_name, module_path)
-            self.assertIsNotNone(spec)
-            assert spec is not None
-            module = importlib.util.module_from_spec(spec)
-            assert spec.loader is not None
-            spec.loader.exec_module(module)
-
-            with tempfile.TemporaryDirectory(prefix="image_triage_label_ready_") as temp_dir:
-                ready_path = Path(temp_dir) / "labeling_ready.json"
-                with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_LABELING_READY_FILE": str(ready_path)}, clear=False):
-                    module._notify_host_ready()
-
-                payload = json.loads(ready_path.read_text(encoding="utf-8"))
-                self.assertEqual("ready", payload["state"])
-        finally:
-            sys.modules.pop(module_name, None)
-            if sys_path_inserted:
-                sys.path.remove(app_root)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,20 +46,6 @@ jobs:
                   f"Tag v{tag_version} does not match pyproject version {project_version}."
               )
 
-      - name: Verify bundled AI runtime source
-        shell: pwsh
-        run: |
-          $requiredPaths = @(
-            "AICullingPipeline/app",
-            "AICullingPipeline/configs",
-            "AICullingPipeline/scripts"
-          )
-          foreach ($path in $requiredPaths) {
-            if (-not (Test-Path $path)) {
-              throw "Missing required MSI build input: $path"
-            }
-          }
-
       - name: Run packaging smoke tests
         run: |
           python -m pytest tests/test_freeze_support.py tests/test_version.py tests/test_updater.py -q

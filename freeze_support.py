@@ -11,28 +11,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage-v2.ico"
 APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage-v2.png"
-AI_STAGE_ROOT = ROOT / "build_assets" / "ai_runtime" / "AICullingPipeline"
 CLI_CULLER_PACKAGE_ROOT = ROOT / "aiculler"
 CLI_EDITOR_PACKAGE_ROOT = ROOT / "cli_editor" / "photo_terminal"
 AI_SITE_PACKAGES_STAGE_ROOT = ROOT / "build_assets" / "ai_site_packages"
 AI_STDLIB_STAGE_ROOT = ROOT / "build_assets" / "ai_stdlib"
 AI_DLLS_STAGE_ROOT = ROOT / "build_assets" / "ai_python_dlls"
 QT_WINDOWS_BINARY_EXCLUDES = ("icu.dll", "icuin.dll", "icuuc.dll", "icudt78.dll")
-STAGE_SCRIPT_NAMES = (
-    "extract_embeddings.py",
-    "cluster_embeddings.py",
-    "export_ranked_report.py",
-)
 AI_SITE_PACKAGES_ENV = "IMAGE_TRIAGE_AI_SITE_PACKAGES"
 AI_STDLIB_ENV = "IMAGE_TRIAGE_AI_STDLIB"
 AI_BINARY_MODULES_ENV_NAMES = ("IMAGE_TRIAGE_AI_DLLS", "IMAGE_TRIAGE_AI_BINARY_MODULES")
-AI_SOURCE_ENV_NAMES = ("IMAGE_TRIAGE_AI_SOURCE", "AICULLING_ENGINE_ROOT")
-DEFAULT_RANKER_RUN_DIR_NAME = "ranker_run_mlp_100ep"
-DEFAULT_RANKER_OUTPUT_RELATIVE_DIR = Path("outputs") / DEFAULT_RANKER_RUN_DIR_NAME
-LEGACY_DEFAULT_RANKER_OUTPUT_RELATIVE_DIR = (
-    Path("outputs") / "legacy_default" / DEFAULT_RANKER_RUN_DIR_NAME
-)
-
 
 def _env_flag(name: str, default: str = "0") -> bool:
     value = os.environ.get(name, default)
@@ -40,9 +27,6 @@ def _env_flag(name: str, default: str = "0") -> bool:
 
 
 BUNDLE_AI_RUNTIME_SITE_PACKAGES = _env_flag("IMAGE_TRIAGE_BUNDLE_AI_RUNTIME_SITE_PACKAGES")
-INCLUDE_LOCAL_BACKBONE = _env_flag("IMAGE_TRIAGE_INCLUDE_LOCAL_MODEL")
-INCLUDE_DEFAULT_RANKER = _env_flag("IMAGE_TRIAGE_INCLUDE_DEFAULT_RANKER")
-
 AI_SITE_PACKAGES_ENTRIES = (
     "numpy",
     "onnxruntime",
@@ -93,41 +77,13 @@ AI_FREEZE_EXCLUDES = (
     "sklearn",
     "sympy",
 )
-SCRIPT_BOOTSTRAP_MARKER = "# image_triage-bootstrap: ensure bundled AI pipeline imports resolve"
-SCRIPT_BOOTSTRAP = f"""{SCRIPT_BOOTSTRAP_MARKER}
-import sys
-from pathlib import Path as _ImageTriageBootstrapPath
-
-
-def _image_triage_add_engine_root_to_path() -> None:
-    cwd = _ImageTriageBootstrapPath.cwd()
-    if (cwd / "app").exists():
-        cwd_text = str(cwd)
-        if cwd_text not in sys.path:
-            sys.path.insert(0, cwd_text)
-        return
-
-    script_dir = _ImageTriageBootstrapPath(__file__).resolve().parent
-    engine_root = script_dir.parent
-    if (engine_root / "app").exists():
-        engine_root_text = str(engine_root)
-        if engine_root_text not in sys.path:
-            sys.path.insert(0, engine_root_text)
-
-
-_image_triage_add_engine_root_to_path()
-del _image_triage_add_engine_root_to_path
-"""
-
 
 @dataclass(frozen=True)
 class FreezeAssetLayout:
-    ai_source: Path
     ai_site_packages_source: Path
     ai_stdlib_source: Path
     ai_binary_modules_source: Path
     bundle_ai_site_packages: bool = BUNDLE_AI_RUNTIME_SITE_PACKAGES
-    ai_stage_root: Path = AI_STAGE_ROOT
     ai_site_packages_stage_root: Path = AI_SITE_PACKAGES_STAGE_ROOT
     ai_stdlib_stage_root: Path = AI_STDLIB_STAGE_ROOT
     ai_binary_modules_stage_root: Path = AI_DLLS_STAGE_ROOT
@@ -135,7 +91,6 @@ class FreezeAssetLayout:
     @property
     def include_files(self) -> list[tuple[str, str]]:
         include_files = [
-            (str(self.ai_stage_root.parent), "ai_runtime"),
             (str(ROOT / "packaging" / "ai_runtime_locks"), "packaging/ai_runtime_locks"),
             (
                 str(ROOT / "image_triage" / "ui" / "assets" / "splash_background-v7.png"),
@@ -191,14 +146,12 @@ def read_project_version() -> str:
 
 
 def resolve_freeze_asset_layout() -> FreezeAssetLayout:
-    ai_source = _first_configured_path(AI_SOURCE_ENV_NAMES) or _discover_ai_source_root()
     ai_site_packages_source = _configured_path(AI_SITE_PACKAGES_ENV) or _default_ai_site_packages_source()
     ai_stdlib_source = _configured_path(AI_STDLIB_ENV) or _default_ai_stdlib_source()
     ai_binary_modules_source = _first_configured_path(
         AI_BINARY_MODULES_ENV_NAMES
     ) or _default_ai_binary_modules_source()
     return FreezeAssetLayout(
-        ai_source=ai_source,
         ai_site_packages_source=ai_site_packages_source,
         ai_stdlib_source=ai_stdlib_source,
         ai_binary_modules_source=ai_binary_modules_source,
@@ -207,7 +160,6 @@ def resolve_freeze_asset_layout() -> FreezeAssetLayout:
 
 def prepare_ai_build_assets(layout: FreezeAssetLayout | None = None) -> FreezeAssetLayout:
     resolved = layout or resolve_freeze_asset_layout()
-    stage_ai_runtime(resolved)
     if resolved.bundle_ai_site_packages:
         stage_ai_site_packages(resolved)
     else:
@@ -234,17 +186,6 @@ def _first_configured_path(env_names: tuple[str, ...]) -> Path | None:
             return candidate
     return None
 
-
-def _discover_ai_source_root() -> Path:
-    candidates = [
-        ROOT / "AICullingPipeline",
-        Path.home() / "Documents" / "GitHub" / "AICullingPipeline",
-        Path.home() / "GitHub" / "AICullingPipeline",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
-    return candidates[0].resolve()
 
 
 def _default_ai_site_packages_source() -> Path:
@@ -299,40 +240,6 @@ def _copy_file(source: Path, target: Path) -> None:
     shutil.copy2(source, target)
 
 
-def _copy_first_existing_file(sources: tuple[Path, ...], target: Path) -> None:
-    for source in sources:
-        if source.exists():
-            _copy_file(source, target)
-            return
-    source_text = "\n".join(str(source) for source in sources)
-    raise FileNotFoundError(f"Missing AI source file. Checked:\n{source_text}")
-
-
-def _inject_stage_script_bootstrap(script_path: Path) -> None:
-    source_text = script_path.read_text(encoding="utf-8")
-    if SCRIPT_BOOTSTRAP_MARKER in source_text:
-        return
-
-    lines = source_text.splitlines(keepends=True)
-    insert_at = 0
-    if lines and lines[0].startswith("#!"):
-        insert_at = 1
-
-    future_import_indexes = [
-        index for index, line in enumerate(lines) if line.startswith("from __future__ import ")
-    ]
-    if future_import_indexes:
-        insert_at = max(future_import_indexes) + 1
-
-    while insert_at < len(lines) and lines[insert_at].strip() == "":
-        insert_at += 1
-
-    updated_lines = list(lines[:insert_at])
-    if updated_lines and not updated_lines[-1].endswith("\n"):
-        updated_lines[-1] = updated_lines[-1] + "\n"
-    updated_lines.extend([SCRIPT_BOOTSTRAP, "\n\n"])
-    updated_lines.extend(lines[insert_at:])
-    script_path.write_text("".join(updated_lines), encoding="utf-8")
 
 
 def _patch_sklearn_distributor_init(site_packages_root: Path) -> None:
@@ -356,55 +263,6 @@ def _patch_sklearn_distributor_init(site_packages_root: Path) -> None:
         encoding="utf-8",
     )
 
-
-def stage_ai_runtime(layout: FreezeAssetLayout) -> None:
-    if not layout.ai_source.exists():
-        raise FileNotFoundError(
-            f"AI source root not found: {layout.ai_source}\n"
-            "Set IMAGE_TRIAGE_AI_SOURCE to the AICullingPipeline path before building."
-        )
-    _reset_directory(layout.ai_stage_root)
-
-    for relative_dir in (
-        Path("app"),
-        Path("configs"),
-        Path("scripts"),
-    ):
-        _copy_tree(layout.ai_source / relative_dir, layout.ai_stage_root / relative_dir)
-
-    if INCLUDE_LOCAL_BACKBONE:
-        _copy_tree(
-            layout.ai_source / "vit_base_patch14_dinov2.lvd142m",
-            layout.ai_stage_root / "vit_base_patch14_dinov2.lvd142m",
-        )
-    else:
-        print(
-            "Skipping bundled DINOv2 backbone directory; the packaged app will download "
-            "the model on demand."
-        )
-
-    if INCLUDE_DEFAULT_RANKER:
-        for checkpoint_name in (
-            "best_ranker.pt",
-            "last_ranker.pt",
-        ):
-            target_relative_file = DEFAULT_RANKER_OUTPUT_RELATIVE_DIR / checkpoint_name
-            _copy_first_existing_file(
-                (
-                    layout.ai_source / target_relative_file,
-                    layout.ai_source / LEGACY_DEFAULT_RANKER_OUTPUT_RELATIVE_DIR / checkpoint_name,
-                ),
-                layout.ai_stage_root / target_relative_file,
-            )
-    else:
-        print(
-            "Skipping bundled default ranker checkpoint; set IMAGE_TRIAGE_INCLUDE_DEFAULT_RANKER=1 "
-            "to include a local checkpoint for private builds."
-        )
-
-    scripts_dir = layout.ai_stage_root / "scripts"
-    for script_name in STAGE_SCRIPT_NAMES:
-        _inject_stage_script_bootstrap(scripts_dir / script_name)
 
 
 def stage_ai_site_packages(layout: FreezeAssetLayout) -> None:
