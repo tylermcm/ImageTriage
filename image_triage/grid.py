@@ -177,7 +177,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._ai_result_cache: dict[str, AIImageResult | None] = {}
         self._review_insights_by_path: dict[str, object] = {}
         self._workflow_insights_by_path: dict[str, object] = {}
-        self._dino_prefilter_decisions_by_path: dict[str, object] = {}
+        self._prefilter_decisions_by_path: dict[str, object] = {}
         self._normalized_path_cache: dict[str, str] = {}
         self._failed_paths: set[str] = set()
         self._failed_messages: dict[str, str] = {}
@@ -840,8 +840,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self._disputed_paths = {_fast_path_key(p) for p in (paths or set()) if p}
         self.viewport().update()
 
-    def set_dino_prefilter_decisions(self, decisions_by_path: dict[str, object]) -> None:
-        self._dino_prefilter_decisions_by_path = {
+    def set_prefilter_decisions(self, decisions_by_path: dict[str, object]) -> None:
+        self._prefilter_decisions_by_path = {
             _fast_path_key(path): decision
             for path, decision in decisions_by_path.items()
             if path
@@ -2322,7 +2322,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             painter.drawText(badge_rect.adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, badge)
 
         workflow_insight = self._workflow_insight_for(record)
-        dino_decision = self._dino_prefilter_decision_for(record)
+        prefilter_decision = self._prefilter_decision_for(record)
 
         if use_loupe_card:
             self._paint_review_top_badges(
@@ -2330,7 +2330,7 @@ class ThumbnailGridView(QAbstractScrollArea):
                 image_rect,
                 burst_info=burst_info,
                 ai_result=ai_result,
-                dino_decision=dino_decision,
+                prefilter_decision=prefilter_decision,
             )
         elif not use_new_grid_card:
             # Legacy card only: the shared renderer draws these as its own
@@ -2593,9 +2593,9 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _workflow_insight_for(self, record: ImageRecord):
         return self._workflow_insights_by_path.get(record.path) or self._workflow_insights_by_path.get(_fast_path_key(record.path))
 
-    def _dino_prefilter_decision_for(self, record: ImageRecord):
+    def _prefilter_decision_for(self, record: ImageRecord):
         for candidate in record.stack_paths:
-            decision = self._dino_prefilter_decisions_by_path.get(_fast_path_key(candidate))
+            decision = self._prefilter_decisions_by_path.get(_fast_path_key(candidate))
             if decision is not None:
                 return decision
         return None
@@ -2654,12 +2654,12 @@ class ThumbnailGridView(QAbstractScrollArea):
         *,
         burst_info: BurstVisualInfo | None,
         ai_result: AIImageResult | None,
-        dino_decision,
+        prefilter_decision,
     ) -> None:
         scale = self._review_scale(image_rect)
         margin = self._review_overlay_margin(image_rect)
         badge_y = image_rect.top() + margin
-        left_text = self._review_group_badge_text(burst_info, dino_decision)
+        left_text = self._review_group_badge_text(burst_info, prefilter_decision)
         if left_text:
             left_rect = self._review_badge_rect(
                 painter, left_text, image_rect.left() + margin, badge_y, scale, icon="duplicate"
@@ -2967,7 +2967,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             width += icon_width + icon_gap
         return QRect(x, y, width, max(26, int(round(26 * scale))))
 
-    def _review_group_badge_text(self, burst_info: BurstVisualInfo | None, dino_decision) -> str:
+    def _review_group_badge_text(self, burst_info: BurstVisualInfo | None, prefilter_decision) -> str:
         # Group/near-duplicate/burst/similar badges are AI annotations: only
         # surfaced in AI Review. Manual review stays clean — the photographer
         # spots duplicates by eye. (A future setting may let the user opt
@@ -2983,9 +2983,9 @@ class ThumbnailGridView(QAbstractScrollArea):
             elif burst_info.kind == "similar":
                 label = "Similar"
             return f"{label} \u00b7 {burst_info.index_in_group}/{burst_info.group_size}"
-        if dino_decision is not None:
-            action = str(getattr(dino_decision, "action", "") or "")
-            reason = str(getattr(dino_decision, "reason", "") or "")
+        if prefilter_decision is not None:
+            action = str(getattr(prefilter_decision, "action", "") or "")
+            reason = str(getattr(prefilter_decision, "reason", "") or "")
             if action in {"quarantine", "remove_from_pool"} and reason == "phash_duplicate_trash":
                 return "Near Duplicate"
         return ""

@@ -16,7 +16,6 @@ from image_triage.ai_workflow import AIWorkflowPaths, AIWorkflowRuntime
 from image_triage.aiculler_workflow import (
     AICullerRunTask,
     AICullerRuntime,
-    DINOPrefilterRunTask,
     SOURCE_AICULLER_ROOT,
     clip_model_variant_options,
     coerce_clip_model_variant,
@@ -30,7 +29,6 @@ from image_triage.aiculler_workflow import (
     _default_aiculler_python,
     _rows_to_gui_output,
 )
-from image_triage.dino_prefilter import DINOPrefilterSettings, build_dino_prefilter_paths, write_dino_prefilter_audit
 from image_triage.models import ImageRecord
 from image_triage.phash_prefilter import (
     PHashPrefilterSettings,
@@ -385,63 +383,6 @@ class AICullerWorkflowTests(unittest.TestCase):
         self.assertEqual(1404, progress[0][3])
         self.assertEqual("_DSC2400.JPG", progress[0][4])
 
-    def test_pool_removal_prefilter_writes_include_file_for_aiculler_ingest(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_dino_pool_") as temp_dir:
-            root = Path(temp_dir)
-            photo_dir = root / "photos"
-            good_path = photo_dir / "good.jpg"
-            bad_path = photo_dir / "bad.jpg"
-            paths = AIWorkflowPaths(
-                folder=photo_dir,
-                hidden_root=photo_dir / ".image_triage_ai",
-                artifacts_dir=photo_dir / ".image_triage_ai" / "artifacts",
-                report_dir=photo_dir / ".image_triage_ai" / "ranker_report",
-                ranked_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_export.csv",
-                html_report_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_report.html",
-                semantic_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_classifications.csv",
-                semantic_summary_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_summary.json",
-            )
-            dino_paths = build_dino_prefilter_paths(paths)
-            write_dino_prefilter_audit(
-                dino_paths,
-                settings=DINOPrefilterSettings(enabled=True),
-                rows=(
-                    {
-                        "path": str(bad_path),
-                        "action": "remove_from_pool",
-                        "reason": "technical_trash",
-                        "score": 0.99,
-                    },
-                ),
-                scanned_count=2,
-                removed_from_pool_count=1,
-                reason_counts={"technical_trash": 1},
-            )
-            runtime = AICullerRuntime(
-                root=root,
-                python_executable=root / "python.exe",
-                cli_entrypoint=root / "aiculler" / "cli.py",
-                clip_vision_model=root / "vision.onnx",
-                clip_text_model=root / "text.onnx",
-                tokenizer=root / "tokenizer.json",
-            )
-            task = AICullerRunTask(
-                folder=paths.folder,
-                records=(
-                    ImageRecord(path=str(good_path), name="good.jpg", size=1, modified_ns=1),
-                    ImageRecord(path=str(bad_path), name="bad.jpg", size=1, modified_ns=1),
-                ),
-                runtime=runtime,
-                paths=paths,
-                dino_prefilter_settings=DINOPrefilterSettings(enabled=True),
-            )
-
-            include_path = task._write_dino_prefilter_include_file()
-
-            self.assertIsNotNone(include_path)
-            assert include_path is not None
-            self.assertEqual(str(good_path), include_path.read_text(encoding="utf-8").strip())
-
     def test_index_score_can_reuse_prefilter_artifacts_without_rerunning_prefilters(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_reuse_prefilters_") as temp_dir:
             root = Path(temp_dir)
@@ -469,156 +410,11 @@ class AICullerWorkflowTests(unittest.TestCase):
                 records=(),
                 runtime=runtime,
                 paths=paths,
-                run_dino_prefilter=False,
                 run_phash_prefilter=False,
-                dino_prefilter_settings=DINOPrefilterSettings(enabled=True),
                 phash_prefilter_settings=PHashPrefilterSettings(enabled=True),
             )
 
-            self.assertEqual((False, False), task._prefilter_stage_flags())
-
-    def test_phash_pool_removal_reduces_deferred_dino_include_file(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_phash_dino_pool_") as temp_dir:
-            root = Path(temp_dir)
-            photo_dir = root / "photos"
-            keeper_path = photo_dir / "keeper.jpg"
-            duplicate_path = photo_dir / "duplicate.jpg"
-            paths = AIWorkflowPaths(
-                folder=photo_dir,
-                hidden_root=photo_dir / ".image_triage_ai",
-                artifacts_dir=photo_dir / ".image_triage_ai" / "artifacts",
-                report_dir=photo_dir / ".image_triage_ai" / "ranker_report",
-                ranked_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_export.csv",
-                html_report_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_report.html",
-                semantic_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_classifications.csv",
-                semantic_summary_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_summary.json",
-            )
-            phash_settings = PHashPrefilterSettings(enabled=True, hamming_threshold=0)
-            run_phash_prefilter_from_signal_rows(
-                (
-                    {
-                        "file_path": str(keeper_path),
-                        "phash_duplicate_score": "0.0",
-                        "best_representative": "1",
-                    },
-                    {
-                        "file_path": str(duplicate_path),
-                        "phash_duplicate_score": "1.0",
-                        "best_representative": "0",
-                    },
-                ),
-                settings=phash_settings,
-                paths=build_phash_prefilter_paths(paths),
-            )
-            runtime = AICullerRuntime(
-                root=root,
-                python_executable=root / "python.exe",
-                cli_entrypoint=root / "aiculler" / "cli.py",
-                clip_vision_model=root / "vision.onnx",
-                clip_text_model=root / "text.onnx",
-                tokenizer=root / "tokenizer.json",
-            )
-            task = AICullerRunTask(
-                folder=photo_dir,
-                records=(
-                    ImageRecord(path=str(keeper_path), name=keeper_path.name, size=1, modified_ns=1),
-                    ImageRecord(path=str(duplicate_path), name=duplicate_path.name, size=1, modified_ns=1),
-                ),
-                runtime=runtime,
-                paths=paths,
-                phash_prefilter_settings=phash_settings,
-            )
-
-            include_path = task._write_dino_extraction_include_file(
-                build_dino_prefilter_paths(paths),
-                apply_phash_removals=True,
-            )
-
-            self.assertIsNotNone(include_path)
-            assert include_path is not None
-            self.assertEqual(str(keeper_path), include_path.read_text(encoding="utf-8").strip())
-
-    def test_standalone_dino_presents_phash_as_foreground_startup(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_phash_foreground_") as temp_dir:
-            root = Path(temp_dir)
-            photo_dir = root / "photos"
-            photo_dir.mkdir()
-            first_path = photo_dir / "first.jpg"
-            second_path = photo_dir / "second.jpg"
-            pixels = np.tile(np.arange(64, dtype=np.uint8), (64, 1))
-            rgb = np.dstack((pixels, pixels, pixels))
-            Image.fromarray(rgb).save(first_path)
-            Image.fromarray(rgb).save(second_path)
-            paths = AIWorkflowPaths(
-                folder=photo_dir,
-                hidden_root=photo_dir / ".image_triage_ai",
-                artifacts_dir=photo_dir / ".image_triage_ai" / "artifacts",
-                report_dir=photo_dir / ".image_triage_ai" / "ranker_report",
-                ranked_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_export.csv",
-                html_report_path=photo_dir / ".image_triage_ai" / "ranker_report" / "ranked_clusters_report.html",
-                semantic_export_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_classifications.csv",
-                semantic_summary_path=photo_dir / ".image_triage_ai" / "ranker_report" / "semantic_summary.json",
-            )
-            dino_runtime = AIWorkflowRuntime(
-                engine_root=root / "engine",
-                python_executable=Path(sys.executable),
-                model_name="mock-dino",
-                checkpoint_path=root / "unused.pt",
-                extraction_config_path=root / "extract.json",
-                clustering_config_path=root / "cluster.json",
-                report_config_path=root / "report.json",
-                batch_size=2,
-                num_workers=0,
-            )
-            task = DINOPrefilterRunTask(
-                folder=photo_dir,
-                paths=paths,
-                dino_prefilter_settings=DINOPrefilterSettings(enabled=True),
-                dino_runtime=dino_runtime,
-                phash_prefilter_settings=PHashPrefilterSettings(
-                    enabled=True,
-                    hamming_threshold=0,
-                ),
-                records=(
-                    ImageRecord(path=str(first_path), name=first_path.name, size=1, modified_ns=1),
-                    ImageRecord(path=str(second_path), name=second_path.name, size=1, modified_ns=1),
-                ),
-                protected_paths=(str(second_path),),
-            )
-            captured: dict[str, object] = {}
-
-            def fake_dino_run(*, extraction_include_file=None, include_ready_file=None) -> None:
-                deadline = time.monotonic() + 5.0
-                while include_ready_file is not None and not include_ready_file.exists() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                captured["include_file"] = extraction_include_file
-                captured["ready_file"] = include_ready_file
-
-            task._run_dino_prefilter = fake_dino_run
-            stages: list[str] = []
-            progress: list[str] = []
-            failures: list[str] = []
-            task.signals.stage.connect(lambda _folder, _index, _total, message: stages.append(message))
-            task.signals.progress.connect(
-                lambda _folder, message, _current, _total, _eta: progress.append(message),
-                Qt.ConnectionType.DirectConnection,
-            )
-            task.signals.failed.connect(lambda _folder, message: failures.append(message))
-
-            task.run()
-
-            self.assertFalse(failures)
-            self.assertEqual("Finding duplicates", stages[0])
-            self.assertTrue(any("duplicates skipped" in message for message in progress))
-            include_file = captured["include_file"]
-            ready_file = captured["ready_file"]
-            self.assertIsInstance(include_file, Path)
-            self.assertIsInstance(ready_file, Path)
-            assert isinstance(include_file, Path)
-            assert isinstance(ready_file, Path)
-            self.assertTrue(ready_file.exists())
-            included = include_file.read_text(encoding="utf-8").splitlines()
-            self.assertEqual([str(second_path)], included)
+            self.assertFalse(task._phash_stage_enabled())
 
     def test_scoped_ingest_prunes_stale_aiculler_database_rows(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_aiculler_prune_") as temp_dir:
@@ -700,98 +496,6 @@ class AICullerWorkflowTests(unittest.TestCase):
                     self.assertEqual([(1,)], rows, table)
             finally:
                 connection.close()
-
-    def test_dino_prefilter_prepass_runs_base_signal_scripts_and_writes_rows(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_dino_prepass_") as temp_dir:
-            root = Path(temp_dir)
-            engine_root = root / "engine"
-            scripts_dir = engine_root / "scripts"
-            config_dir = engine_root / "configs"
-            scripts_dir.mkdir(parents=True)
-            config_dir.mkdir(parents=True)
-            for filename in ("extract_embeddings.json", "cluster_embeddings.json", "export_ranked_report.json"):
-                (config_dir / filename).write_text("{}", encoding="utf-8")
-            (scripts_dir / "extract_embeddings.py").write_text(
-                "from pathlib import Path\n"
-                "import argparse\n"
-                "p=argparse.ArgumentParser(); p.add_argument('--output-dir', type=Path); p.add_argument('--config'); p.add_argument('--input-dir'); p.add_argument('--batch-size'); p.add_argument('--model-name'); p.add_argument('--device'); p.add_argument('--num-workers'); a=p.parse_args(); a.output_dir.mkdir(parents=True, exist_ok=True)\n"
-                "print('extract ok')\n",
-                encoding="utf-8",
-            )
-            (scripts_dir / "cluster_embeddings.py").write_text(
-                "from pathlib import Path\n"
-                "import argparse\n"
-                "p=argparse.ArgumentParser(); p.add_argument('--output-dir', type=Path); p.add_argument('--config'); p.add_argument('--artifacts-dir'); a=p.parse_args(); a.output_dir.mkdir(parents=True, exist_ok=True)\n"
-                "print('cluster ok')\n",
-                encoding="utf-8",
-            )
-            (scripts_dir / "build_culling_signals.py").write_text(
-                "from pathlib import Path\n"
-                "import argparse, csv\n"
-                "p=argparse.ArgumentParser(); p.add_argument('--artifacts-dir'); p.add_argument('--output-dir', type=Path); p.add_argument('--skip-specialists', action='store_true'); a=p.parse_args(); a.output_dir.mkdir(parents=True, exist_ok=True)\n"
-                "with (a.output_dir / 'culling_signals.csv').open('w', encoding='utf-8', newline='') as h:\n"
-                "    w=csv.DictWriter(h, fieldnames=['file_path','group_size','dino_rank','detail','exposure_status','exposure_score']); w.writeheader(); w.writerow({'file_path': str(a.output_dir / 'tail.jpg'), 'group_size':'4', 'dino_rank':'4', 'detail':'0.9', 'exposure_status':'properly_exposed', 'exposure_score':'1.0'})\n"
-                "print('signals ok')\n",
-                encoding="utf-8",
-            )
-            paths = AIWorkflowPaths(
-                folder=root / "photos",
-                hidden_root=root / "photos" / ".image_triage_ai",
-                artifacts_dir=root / "photos" / ".image_triage_ai" / "artifacts",
-                report_dir=root / "photos" / ".image_triage_ai" / "ranker_report",
-                ranked_export_path=root / "photos" / ".image_triage_ai" / "ranker_report" / "ranked_clusters_export.csv",
-                html_report_path=root / "photos" / ".image_triage_ai" / "ranker_report" / "ranked_clusters_report.html",
-                semantic_export_path=root / "photos" / ".image_triage_ai" / "ranker_report" / "semantic_classifications.csv",
-                semantic_summary_path=root / "photos" / ".image_triage_ai" / "ranker_report" / "semantic_summary.json",
-            )
-            dino_runtime = AIWorkflowRuntime(
-                engine_root=engine_root,
-                python_executable=Path(sys.executable),
-                model_name="mock-dino-base",
-                checkpoint_path=root / "unused.pt",
-                extraction_config_path=config_dir / "extract_embeddings.json",
-                clustering_config_path=config_dir / "cluster_embeddings.json",
-                report_config_path=config_dir / "export_ranked_report.json",
-                batch_size=2,
-                num_workers=0,
-            )
-            task = DINOPrefilterRunTask(
-                folder=paths.folder,
-                paths=paths,
-                dino_prefilter_settings=DINOPrefilterSettings(enabled=True, aggressiveness_percent=85),
-                dino_runtime=dino_runtime,
-            )
-            failures: list[str] = []
-            finished: list[tuple[str, str, str]] = []
-            task.signals.failed.connect(lambda folder, message: failures.append(message))
-            task.signals.finished.connect(lambda folder, artifact_dir, report_path: finished.append((folder, artifact_dir, report_path)))
-
-            local_appdata = root / "AppData" / "Local"
-            appdata = root / "AppData" / "Roaming"
-            local_appdata.mkdir(parents=True, exist_ok=True)
-            appdata.mkdir(parents=True, exist_ok=True)
-            env_overrides = {
-                "USERPROFILE": str(root),
-                "HOME": str(root),
-                "LOCALAPPDATA": str(local_appdata),
-                "APPDATA": str(appdata),
-            }
-            previous_env = {key: os.environ.get(key) for key in env_overrides}
-            try:
-                os.environ.update(env_overrides)
-                task.run()
-            finally:
-                for key, value in previous_env.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-
-            dino_paths = build_dino_prefilter_paths(paths)
-            self.assertEqual([], failures)
-            self.assertEqual(1, len(finished))
-            self.assertTrue(dino_paths.report_path.exists())
-            self.assertIn("tail.jpg", dino_paths.rows_path.read_text(encoding="utf-8"))
 
     def test_adapter_model_summaries_include_score_fit_from_mae(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_adapter_summary_") as temp_dir:

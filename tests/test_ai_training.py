@@ -16,24 +16,17 @@ from uuid import uuid4
 import numpy as np
 
 from image_triage.ai_training import (
-    LaunchLabelingAppTask,
-    ai_training_evaluation_issues,
     ai_training_source_needs_prepare,
     build_ai_training_paths,
-    build_labeling_command,
     build_general_ai_training_paths,
     diagnose_ranker_fit,
     list_ranker_runs,
     list_registered_training_sources,
     normalize_ranker_profile,
     prepare_hidden_ai_training_workspace,
-    prepare_general_training_pool,
     preview_general_training_pool,
-    set_active_ranker_selection,
     set_registered_training_source_enabled,
     suggest_training_profile,
-    _write_labeled_training_clusters,
-    _write_labeled_training_include_file,
 )
 from image_triage.ai_workflow import AIWorkflowRuntime
 from image_triage.metadata import CaptureMetadata
@@ -142,29 +135,6 @@ class AITrainingTests(unittest.TestCase):
     def test_normalize_ranker_profile_accepts_labels_and_defaults(self) -> None:
         self.assertEqual(("portrait", "Portrait"), normalize_ranker_profile("Portrait"))
         self.assertEqual(("general", "General Use"), normalize_ranker_profile("unknown-profile"))
-
-    def test_set_active_ranker_selection_persists_profile_metadata(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_training_") as temp_dir:
-            folder = Path(temp_dir) / "shots"
-            folder.mkdir(parents=True, exist_ok=True)
-            paths = build_ai_training_paths(folder)
-            checkpoint_path = paths.training_runs_dir / "portrait-run" / "best_ranker.pt"
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            checkpoint_path.write_bytes(b"checkpoint")
-
-            set_active_ranker_selection(
-                paths,
-                checkpoint_path=checkpoint_path,
-                run_id="portrait-run",
-                display_name="Portrait Run",
-                profile_key="portrait",
-            )
-
-            payload = json.loads(paths.active_ranker_path.read_text(encoding="utf-8"))
-            self.assertEqual("portrait-run", payload["run_id"])
-            self.assertEqual("Portrait Run", payload["display_name"])
-            self.assertEqual("portrait", payload["profile_key"])
-            self.assertEqual("Portrait", payload["profile_label"])
 
     def test_diagnose_ranker_fit_detects_overfit(self) -> None:
         diagnosis = diagnose_ranker_fit(
@@ -310,162 +280,6 @@ class AITrainingTests(unittest.TestCase):
         self.assertEqual("wildlife", suggestion.profile_key)
         self.assertIn("confidence", suggestion.reason.casefold())
 
-    def test_prepare_general_training_pool_merges_folder_local_sources(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_general_training_") as temp_dir:
-            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
-                folder_a = Path(temp_dir) / "folder_a"
-                folder_b = Path(temp_dir) / "folder_b"
-                folder_a.mkdir(parents=True, exist_ok=True)
-                folder_b.mkdir(parents=True, exist_ok=True)
-                self._write_training_source(folder_a, seed=1.0)
-                self._write_training_source(folder_b, seed=10.0)
-
-                status = prepare_general_training_pool((str(folder_a), str(folder_b)))
-                general_paths = build_general_ai_training_paths()
-
-                self.assertEqual(2, status.source_folders)
-                self.assertEqual(2, status.pairwise_labels)
-                self.assertEqual(2, status.cluster_labels)
-                self.assertTrue((general_paths.artifacts_dir / "embeddings.npy").exists())
-
-                image_ids = json.loads((general_paths.artifacts_dir / "image_ids.json").read_text(encoding="utf-8"))
-                self.assertEqual(4, len(image_ids))
-                self.assertEqual(4, len(set(image_ids)))
-
-                with (general_paths.labels_dir / "pairwise_labels.jsonl").open("r", encoding="utf-8") as handle:
-                    pairwise_records = [json.loads(line) for line in handle if line.strip()]
-                self.assertEqual(2, len(pairwise_records))
-                for record in pairwise_records:
-                    self.assertIn(record["image_a_id"], image_ids)
-                    self.assertIn(record["image_b_id"], image_ids)
-                    self.assertIn(record["preferred_image_id"], image_ids)
-                    self.assertNotEqual("cluster_0000", record["cluster_id"])
-
-    def test_labeled_training_include_file_uses_only_labeled_images(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_labeled_include_") as temp_dir:
-            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
-                folder = Path(temp_dir) / "shots"
-                folder.mkdir(parents=True, exist_ok=True)
-                paths = build_ai_training_paths(folder)
-                paths.labeling_artifacts_dir.mkdir(parents=True, exist_ok=True)
-                paths.labels_dir.mkdir(parents=True, exist_ok=True)
-                metadata_rows = [
-                    {"image_id": "img_a", "relative_path": "a.jpg"},
-                    {"image_id": "img_b", "relative_path": "nested/b.jpg"},
-                    {"image_id": "img_unused", "relative_path": "unused.jpg"},
-                ]
-                with paths.labeling_metadata_path.open("w", encoding="utf-8", newline="") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=["image_id", "relative_path"])
-                    writer.writeheader()
-                    writer.writerows(metadata_rows)
-                with paths.pairwise_labels_path.open("w", encoding="utf-8") as handle:
-                    handle.write(
-                        json.dumps(
-                            {
-                                "image_a_id": "img_a",
-                                "image_b_id": "img_b",
-                                "preferred_image_id": "img_a",
-                            }
-                        )
-                        + "\n"
-                    )
-
-                include_file, image_ids = _write_labeled_training_include_file(paths)
-
-                self.assertIsNotNone(include_file)
-                assert include_file is not None
-                self.assertEqual({"img_a", "img_b"}, image_ids)
-                self.assertEqual(["a.jpg", "nested/b.jpg"], include_file.read_text(encoding="utf-8").splitlines())
-
-    def test_labeled_training_clusters_preserve_label_cluster_ids(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_labeled_clusters_") as temp_dir:
-            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
-                folder = Path(temp_dir) / "shots"
-                folder.mkdir(parents=True, exist_ok=True)
-                paths = build_ai_training_paths(folder)
-                paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
-                paths.labeling_artifacts_dir.mkdir(parents=True, exist_ok=True)
-                metadata_rows = [
-                    {
-                        "image_id": "img_a",
-                        "file_path": str(folder / "a.jpg"),
-                        "relative_path": "a.jpg",
-                        "file_name": "a.jpg",
-                        "embedding_index": "0",
-                    },
-                    {
-                        "image_id": "img_b",
-                        "file_path": str(folder / "b.jpg"),
-                        "relative_path": "b.jpg",
-                        "file_name": "b.jpg",
-                        "embedding_index": "1",
-                    },
-                ]
-                with (paths.artifacts_dir / "images.csv").open("w", encoding="utf-8", newline="") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=list(metadata_rows[0].keys()))
-                    writer.writeheader()
-                    writer.writerows(metadata_rows)
-                cluster_rows = [
-                    {
-                        "image_id": "img_a",
-                        "cluster_id": "label_cluster_0007",
-                        "cluster_size": "4",
-                        "cluster_position": "2",
-                        "cluster_reason": "label_candidates_burst",
-                        "file_path": str(folder / "a.jpg"),
-                        "relative_path": "a.jpg",
-                        "file_name": "a.jpg",
-                    },
-                    {
-                        "image_id": "img_b",
-                        "cluster_id": "label_cluster_0007",
-                        "cluster_size": "4",
-                        "cluster_position": "3",
-                        "cluster_reason": "label_candidates_burst",
-                        "file_path": str(folder / "b.jpg"),
-                        "relative_path": "b.jpg",
-                        "file_name": "b.jpg",
-                    },
-                ]
-                with paths.labeling_clusters_path.open("w", encoding="utf-8", newline="") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=list(cluster_rows[0].keys()))
-                    writer.writeheader()
-                    writer.writerows(cluster_rows)
-
-                _write_labeled_training_clusters(paths, {"img_a", "img_b"})
-
-                with (paths.artifacts_dir / "clusters.csv").open("r", encoding="utf-8", newline="") as handle:
-                    output_rows = list(csv.DictReader(handle))
-                self.assertEqual(["label_cluster_0007", "label_cluster_0007"], [row["cluster_id"] for row in output_rows])
-                self.assertEqual(["2", "2"], [row["cluster_size"] for row in output_rows])
-                self.assertEqual(["0", "1"], [row["cluster_position"] for row in output_rows])
-
-    def test_stale_labeled_cluster_artifacts_block_evaluation(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_stale_cluster_eval_") as temp_dir:
-            with mock.patch.dict(os.environ, {"IMAGE_TRIAGE_APPDATA": temp_dir}, clear=False):
-                folder = Path(temp_dir) / "shots"
-                folder.mkdir(parents=True, exist_ok=True)
-                self._write_training_source(folder, seed=1.0)
-                paths = build_ai_training_paths(folder)
-                paths.cluster_labels_path.write_text(
-                    json.dumps(
-                        {
-                            "cluster_id": "label_cluster_0009",
-                            "best_image_ids": ["shared_a"],
-                            "acceptable_image_ids": [],
-                            "reject_image_ids": ["shared_b"],
-                        }
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-
-                issues = ai_training_evaluation_issues(paths)
-
-                self.assertTrue(ai_training_source_needs_prepare(folder))
-                self.assertTrue(any("labeled cluster" in issue for issue in issues))
-                self.assertTrue(any("Run Prepare Training Data" in issue for issue in issues))
-
     @pytest.mark.xfail(strict=True, reason='D2 / WI-2.4-2.6: legacy AI pipeline behaviour; remove or rewrite together with the legacy engine')
 
     def test_registered_training_source_enabled_state_is_persisted(self) -> None:
@@ -533,151 +347,6 @@ class AITrainingTests(unittest.TestCase):
             self.assertGreaterEqual(status.labels_added_since_train, 30)
             self.assertTrue(status.needs_retrain)
             self.assertIn("Retraining is recommended", status.guidance_text)
-
-    def test_build_labeling_command_passes_near_identical_threshold(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="image_triage_label_command_") as temp_dir:
-            root = Path(temp_dir)
-            previous_appdata = os.environ.get("IMAGE_TRIAGE_APPDATA")
-            os.environ["IMAGE_TRIAGE_APPDATA"] = str(root / "appdata")
-            engine_root = root / "engine"
-            (engine_root / "configs").mkdir(parents=True)
-            (engine_root / "configs" / "labeling_app.json").write_text("{}", encoding="utf-8")
-            python_executable = root / "python.exe"
-            python_executable.write_text("", encoding="utf-8")
-            folder = root / "photos"
-            folder.mkdir()
-            runtime = AIWorkflowRuntime(
-                engine_root=engine_root,
-                python_executable=python_executable,
-                model_name="model",
-                checkpoint_path=root / "checkpoint.pt",
-                extraction_config_path=root / "extract.json",
-                clustering_config_path=root / "cluster.json",
-                report_config_path=root / "report.json",
-            )
-
-            try:
-                command = build_labeling_command(runtime, folder=folder, near_identical_threshold=0.94)
-            finally:
-                if previous_appdata is None:
-                    os.environ.pop("IMAGE_TRIAGE_APPDATA", None)
-                else:
-                    os.environ["IMAGE_TRIAGE_APPDATA"] = previous_appdata
-
-            self.assertIn("--near-identical-threshold", command)
-            flag_index = command.index("--near-identical-threshold")
-            self.assertEqual("0.940", command[flag_index + 1])
-
-    def test_launch_labeling_app_task_waits_for_ready_signal(self) -> None:
-        class _FakeProcess:
-            def __init__(self) -> None:
-                self.pid = 4321
-
-            def poll(self):
-                return None
-
-        with tempfile.TemporaryDirectory(prefix="image_triage_label_launch_") as temp_dir:
-            task = LaunchLabelingAppTask(
-                folder=Path(temp_dir),
-                runtime=object(),  # type: ignore[arg-type]
-                annotator_id="LinkFlow",
-                artifacts_dir=Path(temp_dir) / "artifacts",
-            )
-            finished_payloads: list[object] = []
-            failures: list[str] = []
-            task.signals.finished.connect(lambda payload: finished_payloads.append(payload))
-            task.signals.failed.connect(lambda message: failures.append(message))
-
-            def _fake_launch(*_args, ready_file_path=None, **_kwargs):
-                assert ready_file_path is not None
-                Path(ready_file_path).write_text("ready", encoding="utf-8")
-                return _FakeProcess()
-
-            with mock.patch("image_triage.ai_training.launch_labeling_app", side_effect=_fake_launch):
-                task.run()
-
-            self.assertEqual([], failures)
-            self.assertEqual(1, len(finished_payloads))
-            payload = finished_payloads[0]
-            self.assertIsInstance(payload, dict)
-            assert isinstance(payload, dict)
-            self.assertTrue(payload["ready_acknowledged"])
-            self.assertEqual(4321, payload["pid"])
-
-    def test_launch_labeling_app_task_reports_background_start_when_ready_signal_times_out(self) -> None:
-        class _FakeProcess:
-            def __init__(self) -> None:
-                self.pid = 9876
-
-            def poll(self):
-                return None
-
-        with tempfile.TemporaryDirectory(prefix="image_triage_label_launch_") as temp_dir:
-            task = LaunchLabelingAppTask(
-                folder=Path(temp_dir),
-                runtime=object(),  # type: ignore[arg-type]
-                annotator_id="LinkFlow",
-                artifacts_dir=Path(temp_dir) / "artifacts",
-            )
-            finished_payloads: list[object] = []
-            failures: list[str] = []
-            task.signals.finished.connect(lambda payload: finished_payloads.append(payload))
-            task.signals.failed.connect(lambda message: failures.append(message))
-
-            with mock.patch("image_triage.ai_training.launch_labeling_app", return_value=_FakeProcess()), mock.patch(
-                "image_triage.ai_training.LABELING_READY_WAIT_TIMEOUT_SECONDS",
-                0.0,
-            ):
-                task.run()
-
-            self.assertEqual([], failures)
-            self.assertEqual(1, len(finished_payloads))
-            payload = finished_payloads[0]
-            self.assertIsInstance(payload, dict)
-            assert isinstance(payload, dict)
-            self.assertFalse(payload["ready_acknowledged"])
-            self.assertEqual(9876, payload["pid"])
-
-    def test_launch_labeling_app_task_reports_startup_error_details(self) -> None:
-        class _FakeProcess:
-            def __init__(self) -> None:
-                self.pid = 2468
-
-            def poll(self):
-                return None
-
-        with tempfile.TemporaryDirectory(prefix="image_triage_label_launch_") as temp_dir:
-            task = LaunchLabelingAppTask(
-                folder=Path(temp_dir),
-                runtime=object(),  # type: ignore[arg-type]
-                annotator_id="LinkFlow",
-                artifacts_dir=Path(temp_dir) / "artifacts",
-            )
-            finished_payloads: list[object] = []
-            failures: list[str] = []
-            task.signals.finished.connect(lambda payload: finished_payloads.append(payload))
-            task.signals.failed.connect(lambda message: failures.append(message))
-
-            def _fake_launch(*_args, ready_file_path=None, **_kwargs):
-                assert ready_file_path is not None
-                Path(ready_file_path).write_text(
-                    json.dumps(
-                        {
-                            "state": "error",
-                            "message": "Metadata file not found",
-                            "details": "Traceback\\nFileNotFoundError: Metadata file not found",
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                return _FakeProcess()
-
-            with mock.patch("image_triage.ai_training.launch_labeling_app", side_effect=_fake_launch):
-                task.run()
-
-            self.assertEqual([], finished_payloads)
-            self.assertEqual(1, len(failures))
-            self.assertIn("Metadata file not found", failures[0])
 
     def test_labeling_ui_ready_handshake_writes_ready_state(self) -> None:
         module_path = Path("AICullingPipeline/app/labeling/ui.py").resolve()

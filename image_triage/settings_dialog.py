@@ -30,15 +30,6 @@ from PySide6.QtWidgets import (
 )
 
 from .aiculler_workflow import DEFAULT_CLIP_MODEL_VARIANT
-from .ai_workflow import (
-    available_ai_dataloader_worker_capacity,
-    clamp_ai_dataloader_workers,
-    recommended_ai_dataloader_workers,
-)
-from .dino_prefilter import (
-    DINOPrefilterSettings,
-    default_dino_prefilter_settings,
-)
 from .models import DeleteMode, WinnerMode
 from .phash_prefilter import (
     PHashPrefilterSettings,
@@ -82,7 +73,6 @@ class WorkflowSettingsResult:
     restore_folder_position: bool = True
     check_updates_on_startup: bool = True
     ai_embed_batch_size: int = 0
-    ai_dino_worker_count: int = 4
     ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT
     ai_review_detail_progress_enabled: bool = False
     ai_dispute_weight: int = 3
@@ -90,7 +80,6 @@ class WorkflowSettingsResult:
     ai_review_band_percent: int = 10    # % below Keeper cutoff to mark as Review
     ai_base_score_weight_percent: int = 65  # blend weight (0=adapter only, 100=base only)
     ai_label_near_duplicate_threshold: float = 0.965
-    dino_prefilter_settings: DINOPrefilterSettings = field(default_factory=default_dino_prefilter_settings)
     phash_prefilter_settings: PHashPrefilterSettings = field(default_factory=default_phash_prefilter_settings)
     presets: tuple[WorkflowPreset, ...] = ()
     # Keybind overrides: attr_name -> chord string. Empty / missing entries
@@ -322,8 +311,6 @@ class WorkflowSettingsDialog(QDialog):
         restore_folder_position: bool = True,
         check_updates_on_startup: bool = True,
         ai_embed_batch_size: int = 0,
-        ai_dino_worker_count: int = 4,
-        ai_dino_worker_capacity: int | None = None,
         ai_clip_model_variant: str = DEFAULT_CLIP_MODEL_VARIANT,
         ai_review_detail_progress_enabled: bool = False,
         ai_dispute_weight: int = 3,
@@ -331,7 +318,6 @@ class WorkflowSettingsDialog(QDialog):
         ai_review_band_percent: int = 10,
         ai_base_score_weight_percent: int = 65,
         ai_label_near_duplicate_threshold: float = 0.965,
-        dino_prefilter_settings: DINOPrefilterSettings | None = None,
         phash_prefilter_settings: PHashPrefilterSettings | None = None,
         catalog_summary_text: str = "",
         presets: list[WorkflowPreset] | None = None,
@@ -362,15 +348,7 @@ class WorkflowSettingsDialog(QDialog):
         self._presets = list(presets or [])
         self._preset_save_callback = preset_save_callback
         self._updating_session = False
-        dino_settings = (dino_prefilter_settings or default_dino_prefilter_settings()).normalized()
         phash_settings = (phash_prefilter_settings or default_phash_prefilter_settings()).normalized()
-        self._ai_dino_worker_capacity = max(
-            1,
-            int(ai_dino_worker_capacity or available_ai_dataloader_worker_capacity()),
-        )
-        self._ai_dino_recommended_workers = recommended_ai_dataloader_workers(
-            self._ai_dino_worker_capacity
-        )
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -842,107 +820,6 @@ class WorkflowSettingsDialog(QDialog):
         self._update_ai_cull_summary()
         self._add_settings_page("AI Culling", ai_page)
 
-        self.dino_prefilter_enabled_checkbox = QCheckBox("Enable DINO Prefilter")
-        self.dino_prefilter_enabled_checkbox.setChecked(dino_settings.enabled)
-        self.dino_prefilter_enabled_checkbox.setToolTip(_settings_tooltip(
-            "Runs a base-model DINO visual screen before the AI Culler. Off keeps the current AI workflow unchanged."
-        ))
-
-        self.dino_prefilter_aggressiveness_spin = QSpinBox()
-        self.dino_prefilter_aggressiveness_spin.setRange(1, 100)
-        self.dino_prefilter_aggressiveness_spin.setSingleStep(1)
-        self.dino_prefilter_aggressiveness_spin.setSuffix("%")
-        self.dino_prefilter_aggressiveness_spin.setValue(dino_settings.aggressiveness_percent)
-        self.dino_prefilter_aggressiveness_spin.setMinimumWidth(120)
-        self.dino_prefilter_aggressiveness_spin.setToolTip(_settings_tooltip(
-            "How confident DINO must be before it marks an image as trash. "
-            "Higher is more conservative."
-        ))
-
-        self.dino_technical_trash_checkbox = QCheckBox("Technical trash")
-        self.dino_technical_trash_checkbox.setChecked(dino_settings.technical_trash_enabled)
-        self.dino_technical_trash_checkbox.setToolTip(_settings_tooltip(
-            "Allows DINO to mark images with obvious technical failures such as blur or unusable exposure."
-        ))
-        self.dino_duplicate_trash_checkbox = QCheckBox("Duplicate trash")
-        self.dino_duplicate_trash_checkbox.setChecked(dino_settings.duplicate_trash_enabled)
-        self.dino_duplicate_trash_checkbox.setToolTip(_settings_tooltip(
-            "Allows DINO to mark redundant images when a better representative exists."
-        ))
-        self.dino_low_information_checkbox = QCheckBox("Low-information filler")
-        self.dino_low_information_checkbox.setChecked(dino_settings.low_information_enabled)
-        self.dino_low_information_checkbox.setToolTip(_settings_tooltip(
-            "Allows DINO to mark low-content filler frames that are unlikely to be useful."
-        ))
-
-        self.dino_diagnostics_checkbox = QCheckBox("Write per-run diagnostics and audit rows")
-        self.dino_diagnostics_checkbox.setChecked(dino_settings.diagnostics_enabled)
-        self.dino_diagnostics_checkbox.setToolTip(_settings_tooltip(
-            "Writes per-run DINO decisions and reason counts for debugging and threshold tuning."
-        ))
-
-        self.ai_dino_worker_spin = QSpinBox()
-        self.ai_dino_worker_spin.setRange(1, self._ai_dino_worker_capacity)
-        self.ai_dino_worker_spin.setSingleStep(1)
-        self.ai_dino_worker_spin.setValue(
-            clamp_ai_dataloader_workers(
-                ai_dino_worker_count,
-                self._ai_dino_worker_capacity,
-            )
-        )
-        self.ai_dino_worker_spin.setMinimumWidth(120)
-        self.ai_dino_worker_spin.setToolTip(_settings_tooltip(
-            "Image preparation workers used by the DINO Prefilter. Four was fastest in measured Windows testing. "
-            "Higher values can spend more time starting processes than they save during extraction. "
-            "The maximum is limited to the logical processors reported by this computer."
-        ))
-        self.ai_dino_worker_summary_label = QLabel("")
-        self.ai_dino_worker_summary_label.setWordWrap(True)
-        self.ai_dino_worker_summary_label.setObjectName("mutedText")
-        self.ai_dino_worker_summary_label.setStyleSheet("font-size: 11px;")
-        self.ai_dino_worker_spin.valueChanged.connect(self._update_ai_dino_worker_summary)
-
-        dino_page, dino_layout = self._build_settings_page("DINO Prefilter")
-        dino_hint = QLabel(
-            "DINO Prefilter uses the base DINO model only. It is an optional first-pass screen for obvious trash and redundancy; explicit manual winners are always protected."
-        )
-        dino_hint.setWordWrap(True)
-        dino_hint.setObjectName("settingsRowLabel")
-        dino_layout.addWidget(dino_hint)
-        dino_layout.addSpacing(4)
-        self._add_checkbox_row(dino_layout, "DINO Prefilter", self.dino_prefilter_enabled_checkbox)
-        self._add_form_row(dino_layout, "DINO workers", self.ai_dino_worker_spin)
-        self._add_text_row(dino_layout, "Worker guidance", self.ai_dino_worker_summary_label)
-        self._add_form_row(dino_layout, "Trash confidence", self.dino_prefilter_aggressiveness_spin)
-        reason_heading = QLabel("Allowed trash reasons")
-        reason_heading.setObjectName("settingsCategoryHeading")
-        dino_layout.addSpacing(8)
-        dino_layout.addWidget(reason_heading)
-        self._add_checkbox_row(dino_layout, "Technical", self.dino_technical_trash_checkbox)
-        self._add_checkbox_row(dino_layout, "Duplicates", self.dino_duplicate_trash_checkbox)
-        self._add_checkbox_row(dino_layout, "Low information", self.dino_low_information_checkbox)
-        diagnostics_heading = QLabel("Diagnostics")
-        diagnostics_heading.setObjectName("settingsCategoryHeading")
-        dino_layout.addSpacing(8)
-        dino_layout.addWidget(diagnostics_heading)
-        self._add_checkbox_row(dino_layout, "Run diagnostics", self.dino_diagnostics_checkbox)
-        dino_layout.addStretch(1)
-        self._dino_dependent_controls = (
-            self.dino_prefilter_aggressiveness_spin,
-            self.dino_technical_trash_checkbox,
-            self.dino_duplicate_trash_checkbox,
-            self.dino_low_information_checkbox,
-            self.dino_diagnostics_checkbox,
-        )
-        self._update_ai_dino_worker_summary()
-        self.dino_prefilter_enabled_checkbox.toggled.connect(self._set_dino_prefilter_controls_enabled)
-        self._set_dino_prefilter_controls_enabled(self.dino_prefilter_enabled_checkbox.isChecked())
-        # Retain the legacy values for older settings files, but DINO is no
-        # longer part of the current AI workflow or exposed as a settings page.
-        dino_page.setParent(self)
-        dino_page.hide()
-        self._legacy_dino_page = dino_page
-
         self.phash_prefilter_enabled_checkbox = QCheckBox("Enable pHash Prefilter")
         self.phash_prefilter_enabled_checkbox.setChecked(phash_settings.enabled)
         self.phash_prefilter_enabled_checkbox.setToolTip(_settings_tooltip(
@@ -1346,24 +1223,6 @@ class WorkflowSettingsDialog(QDialog):
         for attr_name, editor in self._shortcut_editors.items():
             editor.setKeySequence(QKeySequence(self._shortcut_defaults.get(attr_name, "")))
 
-    def _set_dino_prefilter_controls_enabled(self, enabled: bool) -> None:
-        for control in getattr(self, "_dino_dependent_controls", ()):
-            control.setEnabled(bool(enabled))
-
-    def _update_ai_dino_worker_summary(self) -> None:
-        selected = int(self.ai_dino_worker_spin.value())
-        recommended = self._ai_dino_recommended_workers
-        capacity = self._ai_dino_worker_capacity
-        if selected == recommended:
-            self.ai_dino_worker_summary_label.setText(
-                f"Recommended: {recommended} workers. This computer reports {capacity} logical processors."
-            )
-            return
-        self.ai_dino_worker_summary_label.setText(
-            f"Warning: {recommended} workers is recommended. This computer reports {capacity} logical processors; "
-            "changing this may make DINO runs slower."
-        )
-
     def _set_phash_prefilter_controls_enabled(self, enabled: bool) -> None:
         for control in getattr(self, "_phash_dependent_controls", ()):
             control.setEnabled(bool(enabled))
@@ -1553,10 +1412,6 @@ class WorkflowSettingsDialog(QDialog):
             restore_folder_position=self.restore_folder_position_checkbox.isChecked(),
             check_updates_on_startup=self.check_updates_on_startup_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
-            ai_dino_worker_count=clamp_ai_dataloader_workers(
-                self.ai_dino_worker_spin.value(),
-                self._ai_dino_worker_capacity,
-            ),
             ai_clip_model_variant=DEFAULT_CLIP_MODEL_VARIANT,
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),
@@ -1564,14 +1419,6 @@ class WorkflowSettingsDialog(QDialog):
             ai_review_band_percent=max(0, min(30, int(self.ai_review_band_spin.value()))),
             ai_base_score_weight_percent=max(0, min(100, int(self.ai_base_score_weight_spin.value()))),
             ai_label_near_duplicate_threshold=max(0.500, min(0.995, int(self.ai_label_near_duplicate_slider.value()) / 1000.0)),
-            dino_prefilter_settings=DINOPrefilterSettings(
-                enabled=False,
-                aggressiveness_percent=int(self.dino_prefilter_aggressiveness_spin.value()),
-                technical_trash_enabled=self.dino_technical_trash_checkbox.isChecked(),
-                duplicate_trash_enabled=self.dino_duplicate_trash_checkbox.isChecked(),
-                low_information_enabled=self.dino_low_information_checkbox.isChecked(),
-                diagnostics_enabled=self.dino_diagnostics_checkbox.isChecked(),
-            ).normalized(),
             phash_prefilter_settings=PHashPrefilterSettings(
                 enabled=self.phash_prefilter_enabled_checkbox.isChecked(),
                 hamming_threshold=int(self.phash_hamming_spin.value()),
