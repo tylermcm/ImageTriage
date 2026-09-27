@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .formats import EDIT_PRIORITY, EDIT_SUFFIXES, IMAGE_SUFFIXES, JPEG_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import EDIT_PRIORITY, JPEG_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 
 
 @dataclass(slots=True, frozen=True)

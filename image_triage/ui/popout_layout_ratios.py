@@ -6,7 +6,7 @@ Small readability floors are applied at the call sites.
 For example, ``EDITOR_W = 0.1625`` means 16.25% of the popout's width.
 """
 
-from .layout_ratios import ratio_px
+from .layout_ratios import ratio_px  # re-exported: callers use popout_ratios.ratio_px
 
 # Width ratios: each value is a fraction of the popout window's width.
 EDITOR_W = 0.1625             # Editor and tool rail together; leaves 83.75% for the photo.

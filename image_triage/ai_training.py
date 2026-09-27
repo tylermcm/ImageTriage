@@ -38,7 +38,6 @@ from .ai_workflow import (
     _run_command_with_live_output,
     _should_use_local_staging,
     build_ai_workflow_paths,
-    prepare_hidden_ai_workspace,
     rewrite_extraction_artifact_paths,
     stage_supported_images,
 )

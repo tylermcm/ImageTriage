@@ -85,12 +85,7 @@ from ..editor_copy import (
     validate_save_copy_paths,
 )
 from ..scanner import is_editor_asset_path
-from ..edit_storage import (
-    editor_session_path,
-    ensure_edit_root,
-    migrate_bundle,
-    resolve_session_for_read,
-)
+from ..edit_storage import ensure_edit_root, migrate_bundle, resolve_session_for_read
 from ..semantic_masks import (
     SEMANTIC_MASK_CATEGORIES,
     SEMANTIC_MASK_INVENTORY_REQUEST,
@@ -2214,14 +2209,6 @@ class PhotoEditorPanel(QFrame):
     def _action_button(self, text: str, parent: QWidget) -> QPushButton:
         button = QPushButton(text, parent)
         button.setObjectName("editorActionButton")
-        return button
-
-    def _tool_toggle(self, text: str, parent: QWidget) -> QPushButton:
-        button = QPushButton(text, parent)
-        button.setObjectName("editorToolToggle")
-        button.setCheckable(True)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         return button
 
     def _arm_base_tool(self, mode: str | None) -> None:
@@ -8640,9 +8627,6 @@ class PhotoEditorPanel(QFrame):
         self._brush_paint_mode = None
         self._set_mask_tool("color-range")
         self._set_status("Click the photo to sample a new color")
-
-    def add_color_range_mask(self) -> None:
-        self.arm_color_range_mask()
 
     def handle_overlay_source_clicked(self, x: float, y: float) -> None:
         if self._point_color_sample_armed:

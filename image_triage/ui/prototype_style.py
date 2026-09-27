@@ -27,7 +27,6 @@ from PySide6.QtCore import QEvent, QPersistentModelIndex
 from PySide6.QtGui import QBitmap, QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QRegion
 from PySide6.QtWidgets import (
     QFileIconProvider,
-    QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTreeView,

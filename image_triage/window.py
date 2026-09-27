@@ -63,7 +63,6 @@ from PySide6.QtWidgets import (
     QSpacerItem,
     QStackedWidget,
     QStatusBar,
-    QStyle,
     QTabBar,
     QToolButton,
     QTreeView,
@@ -87,7 +86,6 @@ from .ai_model import (
     resolve_aiculler_topiq_model_installation,
     resolve_ai_model_installation,
     resolve_semantic_model_installation,
-    uninstall_ai_model,
 )
 from .ai_runtime_packages import (
     AI_RUNTIME_BOTH_VARIANT,
@@ -99,7 +97,6 @@ from .ai_runtime_packages import (
     estimate_ai_runtime_download_size_mb,
     estimate_ai_runtime_installed_size_mb,
     load_ai_runtime_installation_status,
-    uninstall_ai_runtime,
 )
 from .archive_ops import (
     EXTRACT_ARCHIVE_FILTER,
@@ -110,44 +107,19 @@ from .archive_ops import (
 )
 from .annotation_queue import AnnotationPersistenceQueue
 from .ai_training import (
-    BuildCullingSignalsTask,
-    BuildReferenceBankTask,
-    EvaluateCullingSignalsTask,
-    EvaluateRankerTask,
     GeneralTrainingPoolStatus,
-    LaunchLabelingAppTask,
-    PrepareLabelingCandidatesTask,
-    PrepareTrainingDataTask,
     RankerFitDiagnosis,
     RankerRunInfo,
-    RankerTrainingOptions,
-    ReferenceBankBuildOptions,
-    ScoreCurrentFolderTask,
-    SIGNAL_COMBINER_WEIGHTS_FILENAME,
-    TrainRankerTask,
-    TuneCullingSignalsTask,
-    TrainingSourceInfo,
-    ai_training_source_needs_prepare,
-    ai_training_artifacts_ready,
-    ai_training_evaluation_issues,
     build_ai_training_paths,
     build_general_ai_training_paths,
-    clear_active_ranker_selection,
-    count_ai_disagreement_events,
-    count_disagreement_pair_labels,
     count_label_records,
     find_ranker_run_by_checkpoint,
-    format_ai_training_evaluation_issues,
     list_registered_training_sources,
-    list_ranker_runs,
-    labeling_artifacts_ready,
     load_ranker_fit_diagnosis,
     normalize_ranker_profile,
     preview_general_training_pool,
-    prepare_general_training_pool,
     prepare_hidden_ai_training_workspace,
     resolve_trained_checkpoint,
-    set_active_ranker_selection,
     set_registered_training_source_enabled,
     suggest_training_profile,
 )
@@ -156,7 +128,6 @@ from .ai_workflow import (
     available_ai_dataloader_worker_capacity,
     ai_device_environment_override,
     ai_cluster_artifacts_ready,
-    ai_embedding_artifacts_ready,
     ai_report_artifacts_ready,
     ai_semantic_artifacts_ready,
     build_ai_stage_cache_keys,
@@ -195,9 +166,7 @@ from .ai_results import (
     AIConfidenceBucket,
     ai_cull_bucket_for_result,
     ai_manual_cull_sort_key,
-    ai_review_badge_label,
     ai_review_tag_definitions,
-    build_ai_explanation_lines,
     find_ai_result_for_record,
     inspect_ai_bundle_source,
     iter_ai_bundle_results,
@@ -245,7 +214,12 @@ from .image_convert import ConvertApplyTask, ConvertOptions, ConvertPlan, Conver
 from .image_resize import ResizeApplyTask, ResizeOptions, ResizePlan, ResizeSourceItem
 from .job_controller import JobController, JobSpec
 from .keyboard_mapping import ShortcutBinding, normalize_shortcut_text, serialize_shortcut_overrides
-from .library_store import CatalogRefreshSummary, CatalogRefreshTask, CatalogRoot, LibraryStore, VirtualCollection
+from .library_store import (
+    CatalogRefreshSummary,
+    CatalogRefreshTask,
+    LibraryStore,
+    VirtualCollection,
+)
 from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
 from .models import DeleteMode, FilterMode, ImageRecord, ImageVariant, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
 from .perceptual_hash import hamming_distance_int
@@ -382,7 +356,7 @@ from .ui import layout_ratios
 from .ui.nav_rail import ICON_PX as NAV_RAIL_ICON_PX, NavRail
 from .ui.sections import SectionHeader
 from .ui.face_groups import FaceGroupsPanel, face_group_photo_paths, load_face_groups
-from .ui.help_topics import library_help_pages, settings_help_pages
+from .ui.help_topics import library_help_pages
 from .ui.menus import add_ai_results_actions
 from .ui.prototype_style import (
     NAV_ICON_ASSETS,
@@ -4454,12 +4428,6 @@ class MainWindow(QMainWindow):
         label.setObjectName("sectionLabel")
         return label
 
-    def _make_action_button(self, action) -> QToolButton:
-        button = QToolButton()
-        button.setDefaultAction(action)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        return button
-
     def _build_popup_button(self, text: str, menu: QMenu) -> QToolButton:
         button = QToolButton()
         button.setObjectName("workspacePresetsButton")
@@ -5924,16 +5892,6 @@ class MainWindow(QMainWindow):
             font = button.font()
             font.setPixelSize(base)
             button.setFont(font)
-
-    @staticmethod
-    def _sync_topbar_action_button(button: QToolButton, action: QAction) -> None:
-        try:
-            button.setEnabled(action.isEnabled())
-            button.setCheckable(action.isCheckable())
-            if action.isCheckable():
-                button.setChecked(action.isChecked())
-        except RuntimeError:
-            pass
 
     def _build_topbar_more_button(self) -> QToolButton:
         button = QToolButton()
@@ -14804,15 +14762,6 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(slider):
                 slider.setValue(value)
 
-    def _sync_columns_combo(self, columns: int) -> None:
-        combo = getattr(self, "columns_combo", None)
-        if combo is None:
-            return
-        index = combo.findData(self._normalize_column_count(columns))
-        if index >= 0 and index != combo.currentIndex():
-            with QSignalBlocker(combo):
-                combo.setCurrentIndex(index)
-
     def _handle_zoom_slider_changed(self, value: int) -> None:
         self._set_column_count(self._zoom_slider_value_to_columns(value), sync_slider=False)
 
@@ -16007,11 +15956,6 @@ class MainWindow(QMainWindow):
         current_index = self.grid.current_index()
         if current_index >= 0:
             self._rename_record_prompt(current_index)
-
-    def _resize_selected_record(self) -> None:
-        current_index = self.grid.current_index()
-        if current_index >= 0:
-            self._resize_record_prompt(current_index)
 
     def _record_supports_resize(self, record: ImageRecord | None) -> bool:
         if record is None or record.is_folder:
@@ -19717,10 +19661,6 @@ class MainWindow(QMainWindow):
             index = self.grid.current_index()
             if index >= 0:
                 self._open_preview(index)
-
-    def _toggle_compare_shortcut(self) -> None:
-        if self.actions is not None:
-            self.actions.compare_mode.trigger()
 
     def _handle_auto_bracket_toggled(self, checked: bool) -> None:
         self._auto_bracket_enabled = checked
@@ -25054,17 +24994,6 @@ class MainWindow(QMainWindow):
         if processed == 0 and not self._inspection_stats_pending_keys:
             self._inspection_stats_drain_timer.stop()
 
-    def _inspection_stats_for_thumbnail(self, record: ImageRecord, display_path: str, thumbnail) -> InspectionStats:
-        cache_key = self._inspection_stats_cache_key(record, display_path, thumbnail)
-        cached = self._inspection_stats_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        stats = build_inspection_stats(thumbnail)
-        if len(self._inspection_stats_cache) >= 2048:
-            self._inspection_stats_cache.clear()
-        self._inspection_stats_cache[cache_key] = stats
-        return stats
-
     def _is_unreviewed_record(self, record: ImageRecord) -> bool:
         annotation = self._annotations.get(record.path, SessionAnnotation())
         return not annotation.winner and not annotation.reject
@@ -25289,22 +25218,6 @@ class MainWindow(QMainWindow):
             message = f"{message} | {' | '.join(ai_parts)}"
         self.statusBar().showMessage(message)
 
-    def _show_help_menu(self) -> None:
-        if self.actions is None:
-            return
-        menu = QMenu(self)
-        help_action = menu.addAction(self.actions.keyboard_help)
-        ai_tag_legend_action = menu.addAction(self.actions.ai_review_tag_legend)
-        settings_action = menu.addAction(self.actions.workflow_settings)
-        load_ai_action = menu.addAction(self.actions.load_ai_results)
-        clear_ai_action = menu.addAction(self.actions.clear_ai_results)
-        open_ai_report_action = menu.addAction(self.actions.open_ai_report)
-        next_ai_pick_action = menu.addAction(self.actions.next_ai_pick)
-        compare_ai_group_action = menu.addAction(self.actions.compare_ai_group)
-        current_ai_result = self._ai_result_for_index(self.grid.current_index())
-        compare_ai_group_action.setEnabled(bool(current_ai_result and current_ai_result.group_size > 1))
-        menu.exec(QCursor.pos())
-
     def _show_markdown_help_dialog(self, *, title: str, markdown: str) -> None:
         dialog = HelpMarkdownDialog(title=title, markdown=markdown, parent=self)
         self._exec_dialog_with_geometry(dialog, f"help_{title}")
@@ -25321,12 +25234,6 @@ class MainWindow(QMainWindow):
         self._show_paged_help_dialog(
             title="Library Help",
             pages=library_help_pages(),
-        )
-
-    def _show_settings_help(self) -> None:
-        self._show_paged_help_dialog(
-            title="Settings Help",
-            pages=settings_help_pages(),
         )
 
     def _show_help(self) -> None:
@@ -26937,32 +26844,6 @@ class MainWindow(QMainWindow):
         self._move_record_to_ai_recycle(index)
         return self._record_index_for_path(path) is None
 
-    def _set_winner_by_path(self, path: str, enabled: bool) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        record = self._record_at(index)
-        if record is None:
-            return False
-        current = self._annotations.get(record.path, SessionAnnotation()).winner
-        if current == enabled:
-            return False
-        self._toggle_winner(index, advance_override=False, current_path_override=record.path)
-        return True
-
-    def _set_reject_by_path(self, path: str, enabled: bool) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        record = self._record_at(index)
-        if record is None:
-            return False
-        current = self._annotations.get(record.path, SessionAnnotation()).reject
-        if current == enabled:
-            return False
-        self._toggle_reject(index, advance_override=False, current_path_override=record.path)
-        return True
-
     def _batch_set_winner(self, records: list[ImageRecord]) -> None:
         if not records:
             return
@@ -27241,19 +27122,6 @@ class MainWindow(QMainWindow):
             self._open_preview(reopen_index)
             return
         self.preview.close()
-
-    def _persist_annotation(self, record: ImageRecord, *, session_id: str | None = None) -> None:
-        self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=[record.path])
-        target_session_id = session_id or self._session_id
-        annotation = self._annotations.get(record.path)
-        if annotation is None:
-            self._decision_store.delete_annotation(target_session_id, record.path)
-        else:
-            self._decision_store.save_annotation(target_session_id, record, annotation)
-        try:
-            sync_sidecar_annotation(record, annotation)
-        except OSError as exc:
-            self.statusBar().showMessage(f"Saved app state, but could not sync XMP for {record.name}: {exc}")
 
     def _record_from_path(self, path: str) -> ImageRecord | None:
         existing = self._all_records_by_path.get(path)
@@ -28305,11 +28173,6 @@ class MainWindow(QMainWindow):
 
     def _copy_bundle(self, source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
         return copy_paths(source_paths, destination_dir)
-
-    def _safe_trash_directory(self) -> str:
-        recycle_root = self._recycle_root_for_folder()
-        recycle_root.mkdir(parents=True, exist_ok=True)
-        return str(recycle_root)
 
     def _recycle_manifest_path(self) -> Path:
         return self._recycle_root_for_folder() / ".image-triage-restore.json"

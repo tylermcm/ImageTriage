@@ -1018,3 +1018,20 @@ No code was modified while producing this plan. The only actions were reads (cod
 
 ### WI-1.4 Popout header fixture: DONE (completed within WI-0.3)
 - The fixture uses `EMPTY_METADATA` and `_update_mockup_image_info` falls back to `EMPTY_METADATA`; `test_preview_polling` passes. Nothing further to do.
+
+### WI-2.2 Repo and asset hygiene: INVESTIGATED (2026-09-26); removals are yours to run
+- Every candidate was checked against code, packaging, CI, tests and docs. The verified list with literal commands is in `docs/repo_hygiene_removals.md`. Summary: four unused splash images (`v2`, `v3`, `v6`, plain; 12.6 MB), the root `minus_sign.png` (byte-identical to the asset the code uses), two zips, two empty `ssh_*.txt`, and an empty `package-lock.json` are safe to `git rm`. `heartbutton.png` and `xbutton.png` stay until D13 (used by `scripts/loupe_card_prototype.py`). `verified.png` (root) looks like source art.
+- The audit's worry about `splash_background-v4.png` is settled: the app uses `-v7`, `freeze_support.py` stages `-v4`, and the built MSI tree contains every splash file because the whole package folder ships. No packaging bug. The v4 include is redundant (WI-4.6).
+- Untracked clutter (your call): a 76 MB unrelated `ES50_EScan2_...exe`, 63 ignored `_tmp_*.png` screenshots, the source-less `image_triage/engine/` folder (only stale `.pyc`), and about 1.1 GB of downloaded models and datasets under `sandboxes/`.
+- Status: waiting on you to run the commands. Nothing was deleted.
+
+### WI-2.3 Peel dead code: rounds 1-2 DONE (2026-09-26, uncommitted)
+- **Round 1, unused imports: 46 removed, 0 left.** One removal broke 74 tests (`popout_layout_ratios.ratio_px`, re-exported and reached through the alias `popout_ratios`); it was restored and whitelisted, and the analysis now checks for that pattern. The 32 `window.py` imports were mostly the AI-training task classes.
+- **Round 2, dead methods: 30 removed** (about 260 lines) from `MainWindow` (12), `FullScreenPreview` (6), `InspectorPanel` (7), `ThumbnailGridView` (3) and `PhotoEditorPanel` (2), plus the cascaded `settings_help_pages` import and three dead `InspectorPanel` signals (`best_of_set_requested`, `open_editor_requested`, `reveal_requested`). Evidence per item: zero references in code, tests, string literals, docs and the non-package trees (`aiculler`, `scripts`, `packaging`, `cli_editor`), and no dynamic method dispatch exists (the two `getattr` loops use attribute names only).
+- Report now: 0 unused imports, 19 unreferenced methods, 5 signals, 47 module defs, plus a new write-only-attribute section (11). Suite: 1538 passed, 5 skipped, 15 xfailed, 0 failed, same as before the deletions.
+- **Deliberately not removed in 2.3:**
+  - **19 methods and 12 module defs** are the AI training, DINO, ranker, checkpoint and reference-bank stack (`_show_legacy_ai_setup_dialog`, `_run_uses_training_paths`, the `ai_training.py` task classes, and so on). They belong to WI-2.4, which validates them against the live AI flows.
+  - **8 methods referenced only by tests**, pending a decision on whether those tests are obsolete.
+  - **11 write-only `MainWindow` attributes** (`_face_index_*`, `_winner_scores_*`, `_correction_events`, `_command_palette_open`, and so on). Their assignments have multiple sites and some side effects (a DB read for `_correction_events`), so they are residual.
+  - **`dispute_*` signals**: the handlers are AI-labelling code, which is WI-2.4.
+- WI-2.3 is therefore "done for the generic code" and hands the AI-specific remainder to 2.4. That is a scoping choice, not a change to the plan.

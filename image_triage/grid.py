@@ -873,24 +873,8 @@ class ThumbnailGridView(QAbstractScrollArea):
         self.viewport().update()
         self._schedule_visible_thumbnail_requests(immediate=True)
 
-    def set_zoom_tile_width(self, width: int) -> None:
-        """Continuous zoom: render tiles at a fixed width, reflowing columns.
-
-        This is what makes the zoom slider feel smooth — the tile size tracks
-        the slider 1:1 instead of snapping to whole-column steps.
-        """
-        self._zoom_mode = "tile"
-        self._zoom_tile_width = max(self.MIN_TILE_WIDTH, min(self.MAX_TILE_WIDTH, int(width)))
-        self._recalculate_metrics()
-        self._update_scrollbar()
-        self.viewport().update()
-        self._schedule_visible_thumbnail_requests(immediate=True)
-
     def current_columns(self) -> int:
         return self._columns
-
-    def current_tile_width(self) -> int:
-        return int(self._tile_width_value)
 
     def zoom_mode(self) -> str:
         return self._zoom_mode
@@ -4127,13 +4111,6 @@ class ThumbnailGridView(QAbstractScrollArea):
             return False
         _, record, variant = single_item
         return path == variant.path or path == record.path
-
-    def _single_visible_item_aspect_ratio(self) -> float | None:
-        single_item = self._single_visible_item()
-        if single_item is None:
-            return None
-        _, record, variant = single_item
-        return self._record_aspect_ratio(record, variant)
 
     def _record_aspect_ratio(self, record: ImageRecord, variant: ImageVariant) -> float | None:
         for candidate in (variant.path, record.path):
