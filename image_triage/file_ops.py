@@ -5,6 +5,24 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from .models import ImageRecord, WinnerMode
+from .xmp import sidecar_bundle_paths
+
+
+def is_unc_path(path: str | None) -> bool:
+    text = str(path or "")
+    return text.startswith("\\\\") and not text.startswith("\\\\?\\") and not text.startswith("\\\\.\\")
+
+
+def unc_share_root(path: str | None) -> str:
+    text = str(path or "").strip()
+    if not is_unc_path(text):
+        return ""
+    parts = text.strip("\\").split("\\")
+    if len(parts) >= 2 and parts[0] and parts[1]:
+        return f"\\\\{parts[0]}\\{parts[1]}\\"
+    return "\\\\"
+
 
 _INVALID_NAME_CHARS = set('<>:"/\\|?*')
 _WINDOWS_RESERVED_NAMES = {
@@ -91,6 +109,111 @@ def copy_paths(source_paths: tuple[str, ...], destination_dir: str) -> tuple[Fil
                 os.remove(created.target_path)
         raise exc
     return tuple(file_copies)
+
+
+def record_paths(record: ImageRecord) -> tuple[str, ...]:
+    """The deduplicated set of on-disk paths (stack members plus sidecars)
+    that a single winner/reject/tag action should apply to together."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for path in (*record.stack_paths, *sidecar_bundle_paths(record)):
+        normalized = os.path.normpath(path).casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(path)
+    return tuple(ordered)
+
+
+def is_app_winner_artifact(source_path: str, destination: str) -> bool:
+    """True only when ``destination`` is provably the copy or link Image
+    Triage made of ``source_path``; a same-named file the user put there is
+    never treated as ours."""
+    try:
+        if os.path.islink(destination):
+            target = os.path.realpath(destination)
+            return os.path.normcase(target) == os.path.normcase(os.path.realpath(source_path))
+        if not os.path.exists(source_path):
+            return False
+        if os.path.samefile(source_path, destination):
+            return True
+        source_stat = os.stat(source_path)
+        copy_stat = os.stat(destination)
+        return (
+            source_stat.st_size == copy_stat.st_size
+            and abs(source_stat.st_mtime_ns - copy_stat.st_mtime_ns) <= 2_000_000_000
+        )
+    except OSError:
+        return False
+
+
+def create_winner_artifact(source_path: str, destination: str, winner_mode: WinnerMode) -> None:
+    if winner_mode == WinnerMode.HARDLINK:
+        link_error: OSError | None = None
+        try:
+            os.link(source_path, destination)
+            return
+        except OSError as exc:
+            link_error = exc
+        try:
+            os.symlink(source_path, destination)
+            return
+        except OSError as exc:
+            raise OSError(
+                f"Could not create a filesystem link for {Path(source_path).name}. "
+                "Use Copy To _winners if this drive does not support links."
+            ) from link_error or exc
+    shutil.copy2(source_path, destination)
+
+
+def sync_winner_copy_for_paths(
+    source_paths: tuple[str, ...],
+    winner_enabled: bool,
+    folder: str,
+    winner_mode: WinnerMode,
+    *,
+    create_artifact=create_winner_artifact,
+    is_artifact=is_app_winner_artifact,
+) -> tuple[str, ...]:
+    """Returns the names of files left in ``_winners`` on un-mark because
+    they could not be proven to be Image Triage's own copy.
+
+    ``create_artifact``/``is_artifact`` default to the module-level
+    functions above; MainWindow passes its own instance methods instead so
+    ``unittest.mock.patch.object(main_window, "_create_winner_artifact", ...)``
+    still works on the real window for fault-injection tests.
+    """
+    if folder and Path(folder).name.lower() == "_winners":
+        return ()
+    if winner_mode == WinnerMode.LOGICAL:
+        return ()
+    destination_dir = os.path.join(folder, "_winners")
+    if winner_enabled:
+        os.makedirs(destination_dir, exist_ok=True)
+        copied_paths: list[str] = []
+        try:
+            for source_path in source_paths:
+                destination = os.path.join(destination_dir, Path(source_path).name)
+                if os.path.exists(source_path) and not os.path.exists(destination):
+                    create_artifact(source_path, destination, winner_mode)
+                    copied_paths.append(destination)
+        except OSError as exc:
+            for copied_path in copied_paths:
+                if os.path.exists(copied_path):
+                    os.remove(copied_path)
+            raise exc
+        return ()
+
+    kept: list[str] = []
+    for source_path in source_paths:
+        destination = os.path.join(destination_dir, Path(source_path).name)
+        if not os.path.lexists(destination):
+            continue
+        if is_artifact(source_path, destination):
+            os.remove(destination)
+        else:
+            kept.append(Path(destination).name)
+    return tuple(kept)
 
 
 def create_folder(parent_dir: str, name: str) -> str:
