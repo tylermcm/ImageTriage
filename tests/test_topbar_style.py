@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMainWindow, QMessag
 from image_triage.ui.actions import format_action_tooltip
 from image_triage.ui.theme import build_app_stylesheet, default_theme
 from image_triage.ui.display_metrics import STANDARD_DISPLAY
+from image_triage.ui.toolbar_menus import ToolbarMenuController
 from image_triage.window import MainWindow
 
 
@@ -322,6 +323,7 @@ class TopbarStyleTests(unittest.TestCase):
     def test_toolbar_group_menus_include_new_workflows(self) -> None:
         host = QMainWindow()
         host.actions = _ActionBag()
+        host._toolbar_menus = ToolbarMenuController(host, host.actions)
 
         review_menu = MainWindow._build_review_toolbar_menu(host)
         projects_menu = MainWindow._build_projects_toolbar_menu(host)

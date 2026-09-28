@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import Counter, deque
 from dataclasses import dataclass, replace
 from hashlib import sha1
@@ -102,7 +103,7 @@ from .archive_ops import (
     archive_format_for_key,
     ensure_archive_suffix,
 )
-from .annotation_queue import AnnotationPersistenceQueue
+from .annotation_queue import AnnotationPersistenceQueue, WinnerSyncRequest
 from .app_identity import migrate_legacy_settings_once, user_settings
 from .ai_training import (
     RankerFitDiagnosis,
@@ -154,7 +155,10 @@ from .ai_results import (
     refine_ai_result_with_review_insight,
     set_cull_thresholds,
 )
-from .batch_rename import BatchRenameApplyTask, BatchRenamePreview
+from .batch_rename import BatchRenamePreview
+from .batch_rename_controller import BatchRenameApplyController, BatchRenameExecutionContext
+from .folder_ops_controller import FolderOpsController
+from .recycle_bin_controller import RecycleBinController
 from .brackets import BracketDetector
 from .bursts import find_burst_groups
 from .catalog import CatalogRepository, catalog_cache_env_override
@@ -167,7 +171,15 @@ from .phash_prefilter import (
     default_phash_prefilter_settings,
     load_phash_prefilter_decisions,
 )
-from .file_ops import FileMove, copy_paths, create_folder, delete_folder, move_folder, move_paths, rename_bundle_paths, rename_folder, unique_destination
+from .file_ops import (
+    FileMove,
+    copy_paths,
+    is_unc_path,
+    move_paths,
+    record_paths,
+    rename_bundle_paths,
+    unique_destination,
+)
 from .transfer_progress import TransferItem, run_move_transfer
 from .filtering import (
     AIStateFilter,
@@ -287,6 +299,7 @@ from .ui import (
     ResizeDialog,
     SHORTCUT_REGISTRY,
     TasteCalibrationDialog,
+    ToolbarMenuController,
     WORKSPACE_METRICS,
     WorkspaceDocks,
     apply_gamma,
@@ -327,7 +340,6 @@ from .ui.nav_rail import ICON_PX as NAV_RAIL_ICON_PX, NavRail
 from .ui.sections import SectionHeader
 from .ui.face_groups import FaceGroupsPanel, face_group_photo_paths, load_face_groups
 from .ui.help_topics import library_help_pages
-from .ui.menus import add_ai_results_actions
 from .ui.prototype_style import (
     NAV_ICON_ASSETS,
     FolderTreeView,
@@ -341,7 +353,7 @@ from .ui.prototype_style import (
     tool_icon_mark,
     trim_to_alpha,
 )
-from .xmp import load_sidecar_annotation, sidecar_bundle_paths, sync_sidecar_annotation
+from .xmp import load_sidecar_annotation
 
 
 # TEMPORARY: the window is translucent so it can be laid over the design
@@ -375,6 +387,10 @@ class UndoAction:
     source_paths: tuple[str, ...] = ()
     session_id: str = ""
     winner_mode: str = ""
+    # Actions pushed from the same batch operation (e.g. one multi-file move)
+    # share a non-empty batch_id, so a single Undo reverses all of them and
+    # does one view refresh, not one per file.
+    batch_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -592,16 +608,6 @@ class UnifiedSearchTask(QRunnable):
 
 
 @dataclass(slots=True)
-class BatchRenameExecutionContext:
-    """Tracks rename-task state that must survive async completion handlers."""
-    preview: BatchRenamePreview
-    folder: str
-    is_current_folder: bool
-    loaded_annotations: dict[str, SessionAnnotation]
-    current_path_before: str | None = None
-
-
-@dataclass(slots=True)
 class ResizeExecutionContext:
     """Stores the active resize plan while the resize worker is running."""
     plan: ResizePlan
@@ -711,21 +717,6 @@ def _search_match_path_key(path: str | Path) -> str:
     if not text:
         return ""
     return os.path.normpath(os.path.abspath(text)).casefold()
-
-
-def _is_unc_path(path: str | None) -> bool:
-    text = str(path or "")
-    return text.startswith("\\\\") and not text.startswith("\\\\?\\") and not text.startswith("\\\\.\\")
-
-
-def _unc_share_root(path: str | None) -> str:
-    text = str(path or "").strip()
-    if not _is_unc_path(text):
-        return ""
-    parts = text.strip("\\").split("\\")
-    if len(parts) >= 2 and parts[0] and parts[1]:
-        return f"\\\\{parts[0]}\\{parts[1]}\\"
-    return "\\\\"
 
 
 def _headless_background_popen_kwargs() -> dict[str, object]:
@@ -2778,6 +2769,8 @@ class MainWindow(QMainWindow):
         self._app_update_pool.setMaxThreadCount(1)
         self._batch_rename_pool = QThreadPool(self)
         self._batch_rename_pool.setMaxThreadCount(1)
+        self._batch_rename = BatchRenameApplyController(self)
+        self._folder_ops = FolderOpsController(self)
         self._resize_pool = QThreadPool(self)
         self._resize_pool.setMaxThreadCount(1)
         self._convert_pool = QThreadPool(self)
@@ -2824,7 +2817,7 @@ class MainWindow(QMainWindow):
         # records so the incremental passes can be restarted on resume.
         self._background_indexing_suspended = False
         self._background_index_records: list[ImageRecord] = []
-        self._drive_type_cache: dict[str, int] = {}
+        self._recycle_bin = RecycleBinController(self)
         self._scan_token = 0
         self._scan_showed_cached = False
         self._scan_cached_source = ""
@@ -2839,7 +2832,6 @@ class MainWindow(QMainWindow):
         self._last_ai_readiness_results: dict[str, object] = {}
         self._active_update_check_task: AppUpdateCheckTask | None = None
         self._active_update_download_task: AppUpdateDownloadTask | None = None
-        self._update_progress_dialog: QProgressDialog | None = None
         self._pending_update_result: UpdateCheckResult | None = None
         self._update_check_silent = False
         self._update_installing = False
@@ -2946,9 +2938,6 @@ class MainWindow(QMainWindow):
         self._ai_training_fit_label = "Pending"
         self._ai_training_fit_summary = "Run training or evaluation to get a simple health check."
         self._ai_training_fit_remedy = ""
-        self._active_batch_rename_task: BatchRenameApplyTask | None = None
-        self._batch_rename_context: BatchRenameExecutionContext | None = None
-        self._batch_rename_progress_dialog: QProgressDialog | None = None
         self._active_resize_task: ResizeApplyTask | None = None
         self._resize_context: ResizeExecutionContext | None = None
         self._resize_progress_dialog: QProgressDialog | None = None
@@ -3187,6 +3176,8 @@ class MainWindow(QMainWindow):
         self._annotation_persistence_queue = AnnotationPersistenceQueue(parent=self)
         self._annotation_persistence_queue.failed.connect(self._handle_annotation_persist_failed)
         self._annotation_persistence_queue.warning.connect(self._handle_annotation_persist_warning)
+        self._annotation_persistence_queue.winner_sync_failed.connect(self._handle_winner_sync_failed)
+        self._annotation_persistence_queue.winner_kept.connect(self._handle_winner_kept)
 
         self._search_apply_timer = QTimer(self)
         self._search_apply_timer.setSingleShot(True)
@@ -3488,6 +3479,7 @@ class MainWindow(QMainWindow):
 
         self.actions = build_main_window_actions(self)
         apply_shortcut_overrides(self.actions)
+        self._toolbar_menus = ToolbarMenuController(self, self.actions)
         self._build_left_rail_pinned_tools()
         self._setup_command_palette_shortcuts()
         self._zen_toggle_shortcut = QShortcut(QKeySequence("F11"), self)
@@ -3929,15 +3921,7 @@ class MainWindow(QMainWindow):
         return label
 
     def _build_popup_button(self, text: str, menu: QMenu) -> QToolButton:
-        button = QToolButton()
-        button.setObjectName("workspacePresetsButton")
-        button.setText(text)
-        button.setToolTip(text)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        button.setMenu(menu)
-        return button
+        return self._toolbar_menus.build_popup_button(text, menu)
 
     def _build_update_download_button(self) -> QToolButton:
         button = QToolButton()
@@ -4040,61 +4024,16 @@ class MainWindow(QMainWindow):
         self._check_for_updates(silent=False)
 
     def _build_review_toolbar_menu(self) -> QMenu:
-        menu = QMenu(self)
-        menu.addAction(self.actions.open_preview)
-        menu.addAction(self.actions.compare_mode)
-        menu.addAction(self.actions.winner_ladder_mode)
-        menu.addAction(self.actions.auto_advance)
-        menu.addSeparator()
-        menu.addAction(self.actions.burst_groups)
-        menu.addAction(self.actions.burst_stacks)
-        menu.addSeparator()
-        menu.addAction(self.actions.manage_people)
-        return menu
+        return self._toolbar_menus.build_review_toolbar_menu()
 
     def _build_view_toolbar_menu(self) -> QMenu:
-        menu = QMenu(self)
-
-        menu.addAction(self.actions.grid_view)
-        menu.addAction(self.actions.details_view)
-        menu.addAction(self.actions.zen_mode)
-        menu.addSeparator()
-
-        quick_filter_menu = menu.addMenu("Quick Filter")
-        for mode in FilterMode:
-            quick_filter_menu.addAction(self.actions.filter_actions[mode])
-
-        sort_menu = menu.addMenu("Sort")
-        for mode in SortMode:
-            sort_menu.addAction(self.actions.sort_actions[mode])
-
-        columns_menu = menu.addMenu("Columns")
-        for count in range(1, 9):
-            columns_menu.addAction(self.actions.column_actions[count])
-
-        menu.addSeparator()
-        menu.addAction(self.actions.show_hidden_folders)
-
-        return menu
+        return self._toolbar_menus.build_view_toolbar_menu()
 
     def _build_projects_toolbar_menu(self) -> QMenu:
-        menu = QMenu("Collections", self)
-        menu.addAction(self.actions.create_virtual_collection)
-        menu.addAction(self.actions.add_selection_to_collection)
-        menu.addAction(self.actions.remove_selection_from_collection)
-        menu.addAction(self.actions.delete_virtual_collection)
-        return menu
+        return self._toolbar_menus.build_projects_toolbar_menu()
 
     def _build_catalog_toolbar_menu(self) -> QMenu:
-        menu = QMenu("Catalog", self)
-        menu.addAction(self.actions.browse_catalog)
-        menu.addSeparator()
-        menu.addAction(self.actions.add_current_folder_to_catalog)
-        menu.addAction(self.actions.add_folder_to_catalog)
-        menu.addAction(self.actions.remove_catalog_folder)
-        menu.addAction(self.actions.refresh_catalog)
-        menu.addAction(self.actions.rebuild_folder_catalog_cache)
-        return menu
+        return self._toolbar_menus.build_catalog_toolbar_menu()
 
     def _build_search_field(self) -> QLineEdit:
         field = QLineEdit()
@@ -6721,27 +6660,16 @@ class MainWindow(QMainWindow):
         return button
 
     def _build_ai_results_menu(self) -> QMenu:
-        menu = QMenu("AI Results And Filters", self)
-        add_ai_results_actions(menu, self.actions)
-        return menu
+        return self._toolbar_menus.build_ai_results_menu()
 
     def _build_columns_toolbar_menu(self) -> QMenu:
-        menu = QMenu("Columns", self)
-        for count in range(1, 9):
-            menu.addAction(self.actions.column_actions[count])
-        return menu
+        return self._toolbar_menus.build_columns_toolbar_menu()
 
     def _build_sort_toolbar_menu(self) -> QMenu:
-        menu = QMenu("Sort", self)
-        for mode in SortMode:
-            menu.addAction(self.actions.sort_actions[mode])
-        return menu
+        return self._toolbar_menus.build_sort_toolbar_menu()
 
     def _build_quick_filter_toolbar_menu(self) -> QMenu:
-        menu = QMenu("Quick Filter", self)
-        for mode in FilterMode:
-            menu.addAction(self.actions.filter_actions[mode])
-        return menu
+        return self._toolbar_menus.build_quick_filter_toolbar_menu()
 
     def _build_workspace_action_button(self, action: QAction, text: str, *, item_id: str) -> QToolButton:
         button = QToolButton()
@@ -8526,13 +8454,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _menu_text_with_hint(text: str, hint: str = "") -> str:
-        return f"{text}\t{hint}" if hint else text
+        return ToolbarMenuController.menu_text_with_hint(text, hint)
 
     def _menu_text_with_action_shortcut(self, text: str, action: QAction | None) -> str:
-        if action is None:
-            return text
-        shortcut_text = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
-        return self._menu_text_with_hint(text, shortcut_text)
+        return self._toolbar_menus.menu_text_with_action_shortcut(text, action)
 
     _REVIEW_KEY_BINDING_IDS = (
         "cycle_burst_previous",
@@ -10863,13 +10788,16 @@ class MainWindow(QMainWindow):
         self._run_ai_uninstall(targets)
 
     def _run_ai_uninstall(self, targets: tuple[tuple[str, Path, int], ...]) -> None:
-        progress = QProgressDialog("Removing AI files…", None, 0, 0, self)
-        progress.setWindowTitle("Uninstall AI Components")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.setCancelButton(None)
+        progress = self._show_job_progress_dialog(
+            key="ai_uninstall",
+            total_steps=1,
+            spec=JobSpec(
+                title="Uninstall AI Components",
+                preparing_label="Removing AI files…",
+                running_label="Removing AI files…",
+            ),
+        )
+        progress.setRange(0, 0)
 
         loop = QEventLoop()
         result: dict[str, object] = {"freed": 0, "removed": [], "failures": []}
@@ -10883,10 +10811,9 @@ class MainWindow(QMainWindow):
 
         task = AIUninstallTask(targets=targets)
         task.signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-        progress.show()
         self._ai_model_pool.start(task)
         loop.exec()
-        progress.close()
+        self._close_job_progress_dialog("ai_uninstall")
 
         # Availability is filesystem-derived, so just drop the cached runtime
         # scan and refresh the action/toolbar enabled states.
@@ -11177,82 +11104,17 @@ class MainWindow(QMainWindow):
         ):
             self._show_main_window_after_quick_view_failure()
 
-    def _folder_drive_root(self, folder: str | None = None) -> str:
-        target = folder or self._current_folder
-        if not target:
-            return ""
-        if _is_unc_path(target):
-            return _unc_share_root(target)
-        try:
-            return Path(target).anchor
-        except (OSError, ValueError):
-            return ""
-
-    def _drive_type(self, root: str) -> int:
-        if not root:
-            return 0
-        if _is_unc_path(root):
-            return 4
-        cache_key = os.path.normpath(root).casefold()
-        cached = self._drive_type_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        try:
-            drive_type = int(ctypes.windll.kernel32.GetDriveTypeW(str(root)))
-        except Exception:
-            drive_type = 0
-        self._drive_type_cache[cache_key] = drive_type
-        return drive_type
-
     def _is_temporary_storage_folder(self, folder: str | None = None) -> bool:
-        return self._drive_type(self._folder_drive_root(folder)) == 2
+        return self._recycle_bin.is_temporary_storage_folder(folder)
 
     def _is_slow_source_folder(self, folder: str | None = None) -> bool:
-        drive_type = self._drive_type(self._folder_drive_root(folder))
-        return drive_type in {2, 4}
+        return self._recycle_bin.is_slow_source_folder(folder)
 
     def _recycle_root_for_folder(self, folder: str | None = None) -> Path:
-        target_folder = folder or self._current_folder
-        if target_folder:
-            target_path = Path(target_folder)
-            recycle_parts: list[str] = []
-            for part in target_path.parts:
-                recycle_parts.append(part)
-                if part.casefold() == "recycle bin":
-                    return Path(*recycle_parts)
-        if self._is_temporary_storage_folder(target_folder):
-            base_folder = Path(target_folder) if target_folder else Path(self._folder_drive_root())
-            parent_folder = base_folder.parent if base_folder.parent != base_folder else base_folder
-            return parent_folder / "recycle bin"
-        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-        root = Path(app_data) if app_data else Path.home() / ".image-triage"
-        return root / "safe-trash"
+        return self._recycle_bin.recycle_root_for_folder(folder)
 
     def _refresh_recycle_button(self, *, update_action_states: bool = True) -> None:
-        if self.actions is None:
-            return
-        if self._scan_in_progress:
-            self.actions.empty_recycle_bin.setEnabled(False)
-            self.actions.empty_recycle_bin.setToolTip("Available after the folder finishes loading.")
-            if update_action_states:
-                self._update_action_states()
-            return
-        if self._is_temporary_storage_folder():
-            recycle_root = self._recycle_root_for_folder()
-            has_contents = recycle_root.exists() and any(recycle_root.iterdir())
-            self.actions.empty_recycle_bin.setEnabled(has_contents)
-            self.actions.empty_recycle_bin.setToolTip(
-                "Permanently delete everything in this folder's local recycle bin."
-            )
-            if update_action_states:
-                self._update_action_states()
-            return
-        self.actions.empty_recycle_bin.setEnabled(False)
-        self.actions.empty_recycle_bin.setToolTip(
-            "Available when browsing a removable drive with items in its Image Triage recycle folder."
-        )
-        if update_action_states:
-            self._update_action_states()
+        self._recycle_bin.refresh_recycle_button(update_action_states=update_action_states)
 
     def _choose_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose Folder", self._current_folder or QDir.homePath())
@@ -11686,210 +11548,19 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _is_filesystem_root(folder: str) -> bool:
-        path = Path(folder)
-        return str(path.parent) == str(path)
-
-    @staticmethod
-    def _folder_is_same_or_descendant(path: str, root_folder: str) -> bool:
-        try:
-            resolved_path = Path(path).resolve(strict=False)
-            resolved_root = Path(root_folder).resolve(strict=False)
-            resolved_path.relative_to(resolved_root)
-            return True
-        except ValueError:
-            return False
-
-    @classmethod
-    def _remap_folder_path(cls, path: str, source_root: str, destination_root: str) -> str:
-        if not cls._folder_is_same_or_descendant(path, source_root):
-            return path
-        resolved_path = Path(path).resolve(strict=False)
-        resolved_root = Path(source_root).resolve(strict=False)
-        relative = resolved_path.relative_to(resolved_root)
-        if not relative.parts:
-            return destination_root
-        return str(Path(destination_root) / relative)
-
-    def _remap_folder_references(self, source_root: str, destination_root: str) -> str:
-        favorites: list[str] = []
-        seen_favorites: set[str] = set()
-        for path in self._favorites:
-            mapped = self._remap_folder_path(path, source_root, destination_root)
-            if not os.path.isdir(mapped):
-                continue
-            key = normalized_path_key(mapped)
-            if key in seen_favorites:
-                continue
-            seen_favorites.add(key)
-            favorites.append(mapped)
-        self._favorites = favorites
-        self._save_favorites()
-        self._refresh_favorites_panel()
-
-        recent_destinations: list[str] = []
-        seen_destinations: set[str] = set()
-        for path in self._recent_destinations:
-            mapped = self._remap_folder_path(path, source_root, destination_root)
-            if not os.path.isdir(mapped):
-                continue
-            key = normalized_path_key(mapped)
-            if key in seen_destinations:
-                continue
-            seen_destinations.add(key)
-            recent_destinations.append(mapped)
-        self._recent_destinations = recent_destinations[:10]
-        self._save_recent_destinations()
-
-        recent_folders: list[str] = []
-        seen_recent_folders: set[str] = set()
-        for path in self._recent_folders:
-            mapped = self._remap_folder_path(path, source_root, destination_root)
-            if not os.path.isdir(mapped):
-                continue
-            key = normalized_path_key(mapped)
-            if key in seen_recent_folders:
-                continue
-            seen_recent_folders.add(key)
-            recent_folders.append(mapped)
-        self._recent_folders = recent_folders[:12]
-        self._save_recent_folders()
-        self._refresh_recent_folder_combos()
-
-        if self._current_folder and self._folder_is_same_or_descendant(self._current_folder, source_root):
-            return self._remap_folder_path(self._current_folder, source_root, destination_root)
-        return destination_root
+        return FolderOpsController.is_filesystem_root(folder)
 
     def _create_folder_prompt(self, parent_folder: str, *, select_created: bool) -> str | None:
-        folder_name, accepted = QInputDialog.getText(
-            self,
-            "New Folder",
-            "Folder name",
-            text="New Folder",
-        )
-        if not accepted:
-            return None
-        folder_name = (folder_name or "").strip()
-        if not folder_name:
-            return None
-        try:
-            created = create_folder(parent_folder, folder_name)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Create Folder Failed", f"Could not create folder.\n\n{exc}")
-            return None
-        self._remember_recent_destination(created)
-        self._refresh_folder_tree()
-        if select_created:
-            self._select_folder(created)
-        self.statusBar().showMessage(f"Created folder: {Path(created).name}")
-        return created
+        return self._folder_ops.create_folder_prompt(parent_folder, select_created=select_created)
 
     def _rename_folder(self, folder: str) -> None:
-        current_name = Path(folder).name
-        new_name, accepted = QInputDialog.getText(
-            self,
-            "Rename Folder",
-            "Folder name",
-            text=current_name,
-        )
-        if not accepted:
-            return
-        new_name = (new_name or "").strip()
-        if not new_name or new_name == current_name:
-            return
-        try:
-            destination = rename_folder(folder, new_name)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Rename Failed", f"Could not rename folder.\n\n{exc}")
-            return
-        target_folder = self._remap_folder_references(folder, destination)
-        self._refresh_folder_tree()
-        self._select_folder(target_folder if os.path.isdir(target_folder) else destination)
-        self.statusBar().showMessage(f"Renamed folder to {new_name}")
+        self._folder_ops.rename_folder(folder)
 
     def _move_folder_prompt(self, folder: str) -> None:
-        destination_parent = QFileDialog.getExistingDirectory(
-            self,
-            "Move Folder",
-            str(Path(folder).parent),
-        )
-        if not destination_parent:
-            return
-        try:
-            destination = move_folder(folder, destination_parent)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Move Folder Failed", f"Could not move folder.\n\n{exc}")
-            return
-        target_folder = self._remap_folder_references(folder, destination)
-        self._remember_recent_destination(str(Path(destination).parent))
-        self._refresh_folder_tree()
-        self._select_folder(target_folder if os.path.isdir(target_folder) else destination)
-        self.statusBar().showMessage(f"Moved folder to {destination}")
+        self._folder_ops.move_folder_prompt(folder)
 
     def _delete_folder_prompt(self, folder: str) -> None:
-        if self._is_filesystem_root(folder):
-            return
-        try:
-            has_contents = any(Path(folder).iterdir())
-        except OSError as exc:
-            QMessageBox.warning(self, "Delete Failed", f"Could not inspect folder.\n\n{exc}")
-            return
-
-        message = f"Delete the empty folder '{Path(folder).name}'?"
-        if has_contents:
-            message = (
-                f"Delete the folder '{Path(folder).name}' and everything inside it?\n\n"
-                "This will permanently remove all contents."
-            )
-        confirmation = QMessageBox.question(
-            self,
-            "Delete Folder",
-            message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirmation != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            delete_folder(folder)
-        except OSError as exc:
-            QMessageBox.warning(self, "Delete Failed", f"Could not delete folder.\n\n{exc}")
-            return
-
-        deleted_key = normalized_path_key(folder)
-        self._favorites = [
-            path
-            for path in self._favorites
-            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
-        ]
-        self._save_favorites()
-        self._refresh_favorites_panel()
-        self._recent_destinations = [
-            path
-            for path in self._recent_destinations
-            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
-        ]
-        self._save_recent_destinations()
-        self._recent_folders = [
-            path
-            for path in self._recent_folders
-            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
-        ]
-        self._save_recent_folders()
-        self._refresh_recent_folder_combos()
-
-        replacement_folder = str(Path(folder).parent)
-        self._refresh_folder_tree()
-        if self._current_folder and (
-            normalized_path_key(self._current_folder) == deleted_key
-            or normalized_path_key(self._current_folder).startswith(deleted_key + os.sep)
-        ):
-            if os.path.isdir(replacement_folder):
-                self._select_folder(replacement_folder)
-            else:
-                self._current_folder = ""
-                self._set_scope_state(kind="folder", scope_id="", label="")
-                self._apply_loaded_records([])
-        self.statusBar().showMessage(f"Deleted folder: {Path(folder).name}")
+        self._folder_ops.delete_folder_prompt(folder)
 
     def _open_batch_rename_dialog(
         self,
@@ -11972,32 +11643,7 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_batch_rename_preview(self, preview: BatchRenamePreview, *, folder: str) -> bool:
-        if not preview.planned_moves:
-            return False
-        if self._active_batch_rename_task is not None:
-            QMessageBox.information(self, "Batch Rename Running", "A batch rename is already in progress.")
-            return False
-        renamed_items = [item for item in preview.items if item.status == "Rename"]
-        is_current_folder = normalized_path_key(folder) == normalized_path_key(self._current_folder)
-        loaded_annotations: dict[str, SessionAnnotation] = {}
-        if not is_current_folder:
-            loaded_annotations = self._decision_store.load_annotations(self._session_id, [item.record for item in renamed_items])
-        self._batch_rename_context = BatchRenameExecutionContext(
-            preview=preview,
-            folder=folder,
-            is_current_folder=is_current_folder,
-            loaded_annotations=loaded_annotations,
-            current_path_before=self._current_visible_record_path() if is_current_folder else None,
-        )
-        task = BatchRenameApplyTask(preview.planned_moves)
-        task.signals.started.connect(self._handle_batch_rename_started, Qt.ConnectionType.QueuedConnection)
-        task.signals.progress.connect(self._handle_batch_rename_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_batch_rename_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_batch_rename_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_batch_rename_task = task
-        self._batch_rename_pool.start(task)
-        self.statusBar().showMessage(f"Applying batch rename for {len(renamed_items)} image bundle(s)...")
-        return True
+        return self._batch_rename.apply_preview(preview, folder=folder)
 
     def _resize_refresh_folder(self, plan: ResizePlan | ConvertPlan) -> str:
         if not self._current_folder:
@@ -12026,7 +11672,6 @@ class MainWindow(QMainWindow):
             return False
         dialog = self._show_resize_progress_dialog(max(1, len(plan.executable_items)))
         dialog.setLabelText("Preparing resize...")
-        QApplication.processEvents()
         self._resize_context = ResizeExecutionContext(
             plan=plan,
             options=options,
@@ -12056,7 +11701,6 @@ class MainWindow(QMainWindow):
             return False
         dialog = self._show_convert_progress_dialog(max(1, len(plan.executable_items)))
         dialog.setLabelText("Preparing conversion...")
-        QApplication.processEvents()
         self._convert_context = ConvertExecutionContext(
             plan=plan,
             options=options,
@@ -12090,7 +11734,6 @@ class MainWindow(QMainWindow):
             return False
         dialog = self._show_workflow_progress_dialog(max(1, len(plan.executable_items)))
         dialog.setLabelText("Preparing workflow export...")
-        QApplication.processEvents()
         destination_root = plan.destination_dir
         if plan.recipe.destination_subfolder:
             destination_root = str(Path(plan.destination_dir).parent)
@@ -12138,7 +11781,6 @@ class MainWindow(QMainWindow):
                 dialog.setLabelText("Packaging archive...")
             else:
                 dialog.setLabelText("Refreshing library...")
-            QApplication.processEvents()
 
         self._active_workflow_export_task = None
         self._workflow_context = None
@@ -12189,7 +11831,6 @@ class MainWindow(QMainWindow):
             return False
         dialog = self._show_catalog_progress_dialog(max(1, len(roots)))
         dialog.setLabelText(label)
-        QApplication.processEvents()
         task = CatalogRefreshTask(roots)
         task.signals.started.connect(self._handle_catalog_refresh_started, Qt.ConnectionType.QueuedConnection)
         task.signals.progress.connect(self._handle_catalog_refresh_progress, Qt.ConnectionType.QueuedConnection)
@@ -12236,61 +11877,6 @@ class MainWindow(QMainWindow):
         self._close_catalog_progress_dialog()
         QMessageBox.warning(self, "Catalog Refresh Failed", f"Could not refresh the global catalog.\n\n{message}")
 
-    def _handle_batch_rename_started(self, total_steps: int) -> None:
-        dialog = self._show_batch_rename_progress_dialog(total_steps)
-        dialog.setLabelText("Preparing batch rename...")
-
-    def _handle_batch_rename_progress(self, current: int, total: int, message: str) -> None:
-        dialog = self._show_batch_rename_progress_dialog(total)
-        self._update_progress_dialog(
-            dialog,
-            current=current,
-            total=total,
-            message=message,
-            default_label="Applying batch rename...",
-        )
-
-    def _handle_batch_rename_finished(self, _applied_moves: object) -> None:
-        context = self._batch_rename_context
-        dialog = self._batch_rename_progress_dialog
-        if dialog is not None:
-            dialog.setRange(0, 0)
-            dialog.setValue(0)
-            dialog.setLabelText("Updating library...")
-            QApplication.processEvents()
-
-        try:
-            if context is not None:
-                self._finalize_batch_rename(context)
-        except Exception as exc:
-            QMessageBox.warning(self, "Batch Rename Finalize Failed", f"The files were renamed, but the library refresh failed.\n\n{exc}")
-        finally:
-            self._active_batch_rename_task = None
-            self._batch_rename_context = None
-            self._close_batch_rename_progress_dialog()
-
-    def _handle_batch_rename_failed(self, message: str) -> None:
-        self._active_batch_rename_task = None
-        self._batch_rename_context = None
-        self._close_batch_rename_progress_dialog()
-        QMessageBox.warning(self, "Batch Rename Failed", f"Could not apply the batch rename.\n\n{message}")
-
-    def _show_batch_rename_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._show_job_progress_dialog(
-            key="batch_rename",
-            total_steps=total_steps,
-            spec=JobSpec(
-                title="Batch Rename",
-                preparing_label="Preparing batch rename...",
-                running_label="Applying batch rename...",
-                indeterminate_label="Updating library...",
-                window_modality=Qt.WindowModality.WindowModal,
-                stays_on_top=False,
-            ),
-        )
-        self._batch_rename_progress_dialog = dialog
-        return dialog
-
     def _handle_resize_started(self, total_steps: int) -> None:
         dialog = self._show_resize_progress_dialog(total_steps)
         dialog.setLabelText("Preparing resize...")
@@ -12313,7 +11899,6 @@ class MainWindow(QMainWindow):
             dialog.setRange(0, 0)
             dialog.setValue(0)
             dialog.setLabelText("Refreshing library...")
-            QApplication.processEvents()
 
         self._active_resize_task = None
         self._resize_context = None
@@ -12354,7 +11939,6 @@ class MainWindow(QMainWindow):
             dialog.setRange(0, 0)
             dialog.setValue(0)
             dialog.setLabelText("Refreshing library...")
-            QApplication.processEvents()
 
         self._active_convert_task = None
         self._convert_context = None
@@ -12407,7 +11991,6 @@ class MainWindow(QMainWindow):
             dialog.setRange(0, 0)
             dialog.setValue(0)
             dialog.setLabelText("Refreshing library...")
-            QApplication.processEvents()
 
         self._active_archive_task = None
         self._archive_context = None
@@ -12791,10 +12374,6 @@ class MainWindow(QMainWindow):
                 self._ai_training_fit_summary,
                 self._ai_training_fit_remedy,
             )
-
-    def _close_batch_rename_progress_dialog(self) -> None:
-        self._close_job_progress_dialog("batch_rename")
-        self._batch_rename_progress_dialog = None
 
     def _center_window_dialog(self, dialog) -> None:
         if dialog is None:
@@ -17762,7 +17341,7 @@ class MainWindow(QMainWindow):
         folder = self._current_folder if self._scope_kind == "folder" else ""
         if not folder:
             return ""
-        if _is_unc_path(folder):
+        if is_unc_path(folder):
             parts = str(folder).strip("\\").split("\\")
             if len(parts) <= 2:
                 return ""
@@ -21437,17 +21016,23 @@ class MainWindow(QMainWindow):
         reject_paths = [record.path for record in reject_records]
         follow_up_paths = tuple(record.path for record in (*keeper_records, *review_records))
 
+        batch_id = uuid.uuid4().hex
         moved_winners = 0
         moved_rejects = 0
+        removed_paths: list[str] = []
         if ai_pick_paths:
             os.makedirs(winners_dir, exist_ok=True)
             for path in ai_pick_paths:
-                if self._move_record_to_path(path, winners_dir):
+                if self._move_record_to_path(path, winners_dir, defer_removal=True, batch_id=batch_id):
                     moved_winners += 1
+                    removed_paths.append(path)
         if reject_paths:
             for path in reject_paths:
-                if self._move_record_to_ai_recycle_by_path(path):
+                if self._move_record_to_ai_recycle_by_path(path, defer_removal=True, batch_id=batch_id):
                     moved_rejects += 1
+                    removed_paths.append(path)
+        if removed_paths:
+            self._remove_records_by_paths(removed_paths)
 
         self.statusBar().showMessage(
             f"Applied AI decisions: moved {moved_winners} AI Pick image(s) to _winners and {moved_rejects} Reject image(s) to the recycle bin."
@@ -23984,24 +23569,19 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Update download failed")
 
     def _show_update_progress_dialog(self) -> QProgressDialog:
-        if self._update_progress_dialog is None:
-            dialog = QProgressDialog(self)
-            dialog.setWindowTitle("Image Triage Update")
-            dialog.setLabelText("Downloading update...")
-            dialog.setCancelButton(None)
-            dialog.setAutoClose(False)
-            dialog.setAutoReset(False)
-            dialog.setMinimumDuration(0)
-            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-            self._update_progress_dialog = dialog
-        return self._update_progress_dialog
+        return self._show_job_progress_dialog(
+            key="app_update",
+            total_steps=1,
+            spec=JobSpec(
+                title="Image Triage Update",
+                preparing_label="Downloading update...",
+                running_label="Downloading update...",
+                window_modality=Qt.WindowModality.ApplicationModal,
+            ),
+        )
 
     def _close_update_progress_dialog(self) -> None:
-        if self._update_progress_dialog is None:
-            return
-        self._update_progress_dialog.close()
-        self._update_progress_dialog.deleteLater()
-        self._update_progress_dialog = None
+        self._close_job_progress_dialog("app_update")
 
     def _reset_window_layout(self) -> None:
         clear_window_layout(self._settings, self.GEOMETRY_KEY, self.STATE_KEY)
@@ -24270,31 +23850,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"pHash Prefilter {state}")
 
     def _empty_recycle_bin(self) -> None:
-        recycle_root = self._recycle_root_for_folder()
-        if not self._is_temporary_storage_folder():
-            self.statusBar().showMessage("Open a removable-drive folder to empty its recycle bin")
-            return
-        if not recycle_root.exists() or not any(recycle_root.iterdir()):
-            self._refresh_recycle_button()
-            self.statusBar().showMessage("Recycle bin is already empty")
-            return
-
-        confirmation = QMessageBox.warning(
-            self,
-            "Empty Recycle Bin?",
-            (
-                "This will permanently delete everything currently stored in this drive's "
-                "local recycle bin.\n\nThis action cannot be undone."
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirmation != QMessageBox.StandardButton.Yes:
-            return
-
-        shutil.rmtree(recycle_root, ignore_errors=False)
-        self._refresh_recycle_button()
-        self.statusBar().showMessage(f"Emptied recycle bin for {self._current_folder}")
+        self._recycle_bin.empty_recycle_bin()
 
     def _open_preview_image_in_photoshop(self, path: str) -> None:
         if self._collection_mode:
@@ -24363,15 +23919,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _record_paths(self, record: ImageRecord) -> tuple[str, ...]:
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for path in (*record.stack_paths, *sidecar_bundle_paths(record)):
-            normalized = os.path.normpath(path).casefold()
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            ordered.append(path)
-        return tuple(ordered)
+        return record_paths(record)
 
     def _remove_record(self, index: int) -> None:
         if not 0 <= index < len(self._records):
@@ -24385,6 +23933,35 @@ class MainWindow(QMainWindow):
         if self._current_folder:
             self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-remove")
         self._apply_records_view(current_path=next_path)
+
+    def _remove_records_by_paths(self, paths: list[str]) -> int:
+        """Remove several records with a single view refresh (WI-4.1b),
+        instead of calling `_remove_record` once per path and rebuilding the
+        view each time. Focus lands on the next surviving record after the
+        last one removed, falling back to the nearest surviving record
+        before the first one removed, matching `_remove_record`'s
+        next-then-previous neighbour preference."""
+        indices = sorted({self._record_index_for_path(path) for path in paths} - {None})
+        if not indices:
+            return 0
+        next_path = self._next_visible_path_after_batch_removal(indices)
+        removed_paths = {self._records[index].path for index in indices}
+        self._all_records = [item for item in self._all_records if item.path not in removed_paths]
+        for path in removed_paths:
+            self._all_records_by_path.pop(path, None)
+        if self._current_folder:
+            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-remove-batch")
+        self._apply_records_view(current_path=next_path)
+        return len(indices)
+
+    def _next_visible_path_after_batch_removal(self, sorted_indices: list[int]) -> str | None:
+        if not self._records:
+            return None
+        for index in range(sorted_indices[-1] + 1, len(self._records)):
+            return self._records[index].path
+        for index in range(sorted_indices[0] - 1, -1, -1):
+            return self._records[index].path
+        return None
 
     def _delete_record(self, index: int) -> None:
         record = self._record_at(index)
@@ -24570,6 +24147,7 @@ class MainWindow(QMainWindow):
         *,
         previous_annotation: SessionAnnotation | None = None,
         session_id: str | None = None,
+        winner_sync: WinnerSyncRequest | None = None,
     ) -> None:
         self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=[record.path])
         target_session = session_id or self._session_id
@@ -24580,6 +24158,21 @@ class MainWindow(QMainWindow):
             record=record,
             session_id=target_session,
             previous_annotation=previous_annotation,
+            winner_sync=winner_sync,
+        )
+
+    def _build_winner_sync_request(
+        self, record: ImageRecord, winner_enabled: bool, folder: str
+    ) -> WinnerSyncRequest | None:
+        """The winner-copy-sync work for one annotation change, queued to run
+        on the background persistence worker instead of blocking the UI."""
+        if self._is_winners_folder(folder):
+            return None
+        return WinnerSyncRequest(
+            winner_enabled=winner_enabled,
+            folder=folder,
+            winner_mode=self._winner_mode,
+            source_paths=self._record_paths(record),
         )
 
     def _handle_annotation_persist_failed(self, path: str, message: str) -> None:
@@ -24596,6 +24189,23 @@ class MainWindow(QMainWindow):
 
     def _handle_annotation_persist_warning(self, path: str, message: str) -> None:
         self.statusBar().showMessage(f"Saved app state for {Path(path).name or path}, but sidecar sync failed: {message}")
+
+    def _handle_winner_sync_failed(self, path: str, message: str) -> None:
+        rollback = self._annotation_persistence_queue.rollback(path)
+        if rollback is None:
+            self.statusBar().showMessage(f"Could not update winner copy for {Path(path).name or path}: {message}")
+            return
+        if rollback.is_empty:
+            self._annotations.pop(path, None)
+        else:
+            self._annotations[path] = rollback
+        self._apply_annotation_change_effects([path], current_path=path)
+        self.statusBar().showMessage(f"Reverted winner state for {Path(path).name or path}: {message}")
+
+    def _handle_winner_kept(self, path: str, kept_csv: str) -> None:
+        self.statusBar().showMessage(
+            f"Winner removed: {Path(path).name or path} (left {kept_csv} in _winners: not a copy Image Triage made)"
+        )
 
     def _annotation_change_affects_active_filter(self) -> bool:
         if bool((self._filter_query.search_text or "").strip()):
@@ -24687,15 +24297,7 @@ class MainWindow(QMainWindow):
         if annotation.winner:
             annotation.reject = False
 
-        kept_in_winners: tuple[str, ...] = ()
-        try:
-            kept_in_winners = self._sync_winner_copy(record, annotation.winner, self._current_folder)
-        except OSError as exc:
-            annotation.winner = previous_winner
-            annotation.reject = previous_reject
-            self._set_annotation_views()
-            QMessageBox.warning(self, "Winner Sync Failed", f"Could not update winner copy for {record.name}.\n\n{exc}")
-            return
+        winner_sync = self._build_winner_sync_request(record, annotation.winner, self._current_folder)
 
         self._push_undo(
             UndoAction(
@@ -24713,7 +24315,7 @@ class MainWindow(QMainWindow):
                 winner_mode=self._winner_mode.value,
             )
         )
-        self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+        self._queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
         self._sync_annotation_to_global_adapter_label(record, annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="winner_toggle")
         self._apply_review_count_delta(previous_annotation, annotation)
@@ -24721,10 +24323,7 @@ class MainWindow(QMainWindow):
         if annotation.winner:
             self.statusBar().showMessage(f"Winner added: {record.name}")
         else:
-            message = f"Winner removed: {record.name}"
-            if kept_in_winners:
-                message += f" (left {', '.join(kept_in_winners)} in _winners: not a copy Image Triage made)"
-            self.statusBar().showMessage(message)
+            self.statusBar().showMessage(f"Winner removed: {record.name}")
         if logger.enabled:
             logger.duration("annotation.winner_toggle", (time.perf_counter() - start) * 1000.0, path=record.path, winner=annotation.winner, advance=should_advance)
 
@@ -24760,15 +24359,11 @@ class MainWindow(QMainWindow):
         if annotation.reject:
             annotation.winner = False
 
-        try:
-            if previous_winner != annotation.winner:
-                self._sync_winner_copy(record, annotation.winner, self._current_folder)
-        except OSError as exc:
-            annotation.winner = previous_winner
-            annotation.reject = previous_reject
-            self._set_annotation_views()
-            QMessageBox.warning(self, "Reject Update Failed", f"Could not update reject state for {record.name}.\n\n{exc}")
-            return
+        winner_sync = (
+            self._build_winner_sync_request(record, annotation.winner, self._current_folder)
+            if previous_winner != annotation.winner
+            else None
+        )
 
         self._push_undo(
             UndoAction(
@@ -24786,7 +24381,7 @@ class MainWindow(QMainWindow):
                 winner_mode=self._winner_mode.value,
             )
         )
-        self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+        self._queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
         self._sync_annotation_to_global_adapter_label(record, annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="reject_toggle")
         self._apply_review_count_delta(previous_annotation, annotation)
@@ -25117,16 +24712,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Copied {record.name} to {destination_dir}")
         return True
 
-    def _move_record_to(self, index: int, destination_dir: str) -> None:
+    def _move_record_to(
+        self, index: int, destination_dir: str, *, defer_removal: bool = False, batch_id: str = ""
+    ) -> bool:
         record = self._record_at(index)
         if record is None:
-            return
+            return False
 
         try:
             moves = self._move_bundle(self._record_paths(record), destination_dir)
         except OSError as exc:
             QMessageBox.warning(self, "Move Failed", f"Could not move {record.name}.\n\n{exc}")
-            return
+            return False
         self._rekey_annotation_after_move(record, moves)
         self._push_undo(
             UndoAction(
@@ -25135,10 +24732,13 @@ class MainWindow(QMainWindow):
                 file_moves=moves,
                 folder=self._current_folder,
                 session_id=self._session_id,
+                batch_id=batch_id,
             )
         )
         self._remember_recent_destination(destination_dir)
-        self._remove_record(index)
+        if not defer_removal:
+            self._remove_record(index)
+        return True
 
     def _restore_record(self, index: int) -> None:
         record = self._record_at(index)
@@ -25159,20 +24759,21 @@ class MainWindow(QMainWindow):
         self._refresh_recycle_button()
         self.statusBar().showMessage(f"Restored {record.name}")
 
-    def _move_record_to_path(self, path: str, destination_dir: str) -> bool:
+    def _move_record_to_path(
+        self, path: str, destination_dir: str, *, defer_removal: bool = False, batch_id: str = ""
+    ) -> bool:
         index = self._record_index_for_path(path)
         if index is None:
             return False
-        self._move_record_to(index, destination_dir)
-        return self._record_index_for_path(path) is None
+        return self._move_record_to(index, destination_dir, defer_removal=defer_removal, batch_id=batch_id)
 
-    def _move_record_to_ai_recycle(self, index: int) -> None:
+    def _move_record_to_ai_recycle(self, index: int, *, defer_removal: bool = False, batch_id: str = "") -> bool:
         record = self._record_at(index)
         if record is None:
-            return
+            return False
         if not self._current_folder:
             self.statusBar().showMessage("Open a real folder to move files into the program recycle bin.")
-            return
+            return False
 
         bundle_paths = self._record_paths(record)
         annotation = self._annotations.get(record.path, SessionAnnotation())
@@ -25181,7 +24782,7 @@ class MainWindow(QMainWindow):
             self._remember_recycle_origins(trash_moves)
         except OSError as exc:
             QMessageBox.warning(self, "Recycle Failed", f"Could not move {record.name} into the program recycle bin.\n\n{exc}")
-            return
+            return False
 
         self._push_undo(
             UndoAction(
@@ -25198,19 +24799,23 @@ class MainWindow(QMainWindow):
                 source_paths=bundle_paths,
                 session_id=self._session_id,
                 winner_mode=self._winner_mode.value,
+                batch_id=batch_id,
             )
         )
         self._decision_store.delete_annotation(self._session_id, record.path)
         self._annotations.pop(record.path, None)
-        self._remove_record(index)
+        if not defer_removal:
+            self._remove_record(index)
         self._refresh_recycle_button()
+        return True
 
-    def _move_record_to_ai_recycle_by_path(self, path: str) -> bool:
+    def _move_record_to_ai_recycle_by_path(
+        self, path: str, *, defer_removal: bool = False, batch_id: str = ""
+    ) -> bool:
         index = self._record_index_for_path(path)
         if index is None:
             return False
-        self._move_record_to_ai_recycle(index)
-        return self._record_index_for_path(path) is None
+        return self._move_record_to_ai_recycle(index, defer_removal=defer_removal, batch_id=batch_id)
 
     def _batch_set_winner(self, records: list[ImageRecord]) -> None:
         if not records:
@@ -25269,14 +24874,11 @@ class MainWindow(QMainWindow):
 
             annotation.winner = target_winner
             annotation.reject = target_reject
-            try:
-                if previous_annotation.winner != annotation.winner:
-                    self._sync_winner_copy(record, annotation.winner, self._current_folder)
-            except OSError:
-                annotation.winner = previous_annotation.winner
-                annotation.reject = previous_annotation.reject
-                failures += 1
-                continue
+            winner_sync = (
+                self._build_winner_sync_request(record, annotation.winner, self._current_folder)
+                if previous_annotation.winner != annotation.winner
+                else None
+            )
 
             undo_actions.append(
                 UndoAction(
@@ -25294,7 +24896,7 @@ class MainWindow(QMainWindow):
                     winner_mode=self._winner_mode.value,
                 )
             )
-            self._queue_annotation_persist(record, previous_annotation=previous_annotation)
+            self._queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
             self._sync_annotation_to_global_adapter_label(record, annotation)
             self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode=source_mode)
             self._apply_review_count_delta(previous_annotation, annotation)
@@ -25349,7 +24951,9 @@ class MainWindow(QMainWindow):
         result = run_move_transfer(
             self, items, destination_dir, source_label=self._current_folder or ""
         )
+        batch_id = uuid.uuid4().hex
         moved = 0
+        moved_paths: list[str] = []
         for item in items:
             moves = result.moved.get(item.key)
             if moves is None:
@@ -25363,12 +24967,13 @@ class MainWindow(QMainWindow):
                     file_moves=moves,
                     folder=self._current_folder,
                     session_id=self._session_id,
+                    batch_id=batch_id,
                 )
             )
-            index = self._record_index_for_path(record.path)
-            if index is not None:
-                self._remove_record(index)
+            moved_paths.append(record.path)
             moved += 1
+        if moved_paths:
+            self._remove_records_by_paths(moved_paths)
         if moved:
             self._remember_recent_destination(destination_dir)
         if result.failed:
@@ -25974,23 +25579,69 @@ class MainWindow(QMainWindow):
             return
 
         action = self._undo_stack.pop()
+        batch = [action]
+        if action.batch_id:
+            while self._undo_stack and self._undo_stack[-1].batch_id == action.batch_id:
+                batch.append(self._undo_stack.pop())
+        batch.reverse()  # undo oldest-pushed-first, matching how they happened
+
         if not self._undo_stack:
             self._update_action_states()
 
+        reload_needed = False
+        undone = 0
         try:
-            if action.kind == "annotation":
-                self._undo_annotation(action)
-            elif action.kind == "move":
-                self._undo_move(action)
-            elif action.kind == "delete":
-                self._undo_delete(action)
+            for item in batch:
+                if item.kind == "annotation":
+                    self._undo_annotation(item)
+                elif item.kind == "move":
+                    if self._undo_move_files(item):
+                        reload_needed = True
+                elif item.kind == "delete":
+                    if self._undo_delete_files(item):
+                        reload_needed = True
+                undone += 1
         except OSError as exc:
-            self._undo_stack.append(action)
+            # Push back whatever this batch hadn't gotten to yet, in the
+            # order they'd be undone next.
+            self._undo_stack.extend(reversed(batch[undone:]))
             self._update_action_states()
+            if reload_needed:
+                self._load_folder(self._current_folder)
             QMessageBox.warning(self, "Undo Failed", f"Could not undo the last action.\n\n{exc}")
             return
 
+        if reload_needed:
+            self._load_folder(self._current_folder)
+        self._show_undo_batch_message(batch)
+
+    def _show_undo_batch_message(self, batch: list[UndoAction]) -> None:
+        if len(batch) == 1:
+            action = batch[0]
+            name = Path(action.primary_path).name
+            if action.kind == "move":
+                self.statusBar().showMessage(f"Undid move: {name}")
+            elif action.kind == "delete":
+                self.statusBar().showMessage(f"Restored {name} from safe trash")
+            elif action.kind == "annotation":
+                self.statusBar().showMessage(f"Undid annotation change: {name}")
+            else:
+                self.statusBar().showMessage(f"Undid {action.kind}: {name}")
+            return
+        kind_labels = {"move": "move", "delete": "restore from safe trash", "annotation": "annotation change"}
+        kind_counts: dict[str, int] = {}
+        for action in batch:
+            kind_counts[action.kind] = kind_counts.get(action.kind, 0) + 1
+        parts = [
+            f"{count} {kind_labels.get(kind, kind)}{'s' if count != 1 else ''}"
+            for kind, count in kind_counts.items()
+        ]
+        self.statusBar().showMessage(f"Undid {len(batch)} action(s): " + ", ".join(parts))
+
     def _undo_annotation(self, action: UndoAction) -> None:
+        previous_annotation = self._annotation_snapshot(
+            self._annotations.get(action.primary_path, SessionAnnotation())
+        )
         annotation = self._annotation_from_action(action)
         if annotation.is_empty:
             self._annotations.pop(action.primary_path, None)
@@ -26001,16 +25652,30 @@ class MainWindow(QMainWindow):
             if action.winner_mode in {mode.name, mode.value}:
                 mode_override = mode
                 break
-        self._sync_winner_copy_for_paths(action.source_paths, action.original_winner, action.folder, mode_override=mode_override)
+        winner_sync = None
+        if not self._is_winners_folder(action.folder):
+            winner_sync = WinnerSyncRequest(
+                winner_enabled=action.original_winner,
+                folder=action.folder,
+                winner_mode=mode_override or self._winner_mode,
+                source_paths=action.source_paths,
+            )
         record = self._all_records_by_path.get(action.primary_path) or self._record_from_path(action.primary_path)
         if record is not None:
-            self._queue_annotation_persist(record, session_id=action.session_id or self._session_id)
+            self._queue_annotation_persist(
+                record,
+                previous_annotation=previous_annotation,
+                session_id=action.session_id or self._session_id,
+                winner_sync=winner_sync,
+            )
             self._sync_annotation_to_global_adapter_label(record, annotation)
         self._set_annotation_views()
         self._apply_records_view(current_path=action.primary_path)
-        self.statusBar().showMessage(f"Undid annotation change: {Path(action.primary_path).name}")
 
-    def _undo_move(self, action: UndoAction) -> None:
+    def _undo_move_files(self, action: UndoAction) -> bool:
+        """Restore this action's files and rekey its annotation. Returns
+        whether the current folder needs reloading to show the result —
+        callers batch this across several actions into one reload."""
         for file_move in action.file_moves:
             target = Path(file_move.target_path)
             original = Path(file_move.source_path)
@@ -26026,11 +25691,12 @@ class MainWindow(QMainWindow):
                 self._annotations[action.primary_path] = annotation
                 self._decision_store.move_annotation(action.session_id or self._session_id, target_primary, restored_record, annotation)
         destination_dirs = {str(Path(file_move.target_path).parent) for file_move in action.file_moves}
-        if self._current_folder == action.folder or self._current_folder in destination_dirs:
-            self._load_folder(self._current_folder)
-        self.statusBar().showMessage(f"Undid move: {Path(action.primary_path).name}")
+        return self._current_folder == action.folder or self._current_folder in destination_dirs
 
-    def _undo_delete(self, action: UndoAction) -> None:
+    def _undo_delete_files(self, action: UndoAction) -> bool:
+        """Restore this action's files and rekey its annotation. Returns
+        whether the current folder needs reloading to show the result —
+        callers batch this across several actions into one reload."""
         for file_move in action.file_moves:
             target = Path(file_move.target_path)
             original = Path(file_move.source_path)
@@ -26050,12 +25716,11 @@ class MainWindow(QMainWindow):
             self._queue_annotation_persist(restored_record, session_id=action.session_id or self._session_id)
 
         if self._current_folder == action.folder:
-            self._load_folder(self._current_folder)
-        else:
-            self._set_annotation_views()
-            self._update_status()
-            self._refresh_recycle_button()
-        self.statusBar().showMessage(f"Restored {Path(action.primary_path).name} from safe trash")
+            return True
+        self._set_annotation_views()
+        self._update_status()
+        self._refresh_recycle_button()
+        return False
 
     def _annotation_from_action(self, action: UndoAction) -> SessionAnnotation:
         return SessionAnnotation(
@@ -26538,104 +26203,14 @@ class MainWindow(QMainWindow):
     def _copy_bundle(self, source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
         return copy_paths(source_paths, destination_dir)
 
-    def _recycle_manifest_path(self) -> Path:
-        return self._recycle_root_for_folder() / ".image-triage-restore.json"
-
-    def _load_recycle_manifest(self) -> dict[str, str]:
-        manifest_path = self._recycle_manifest_path()
-        if not manifest_path.exists():
-            return {}
-        try:
-            return json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-
-    def _save_recycle_manifest(self, data: dict[str, str]) -> None:
-        manifest_path = self._recycle_manifest_path()
-        if not data:
-            if manifest_path.exists():
-                manifest_path.unlink()
-            return
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-
     def _remember_recycle_origins(self, moves: tuple[FileMove, ...]) -> None:
-        if not self._is_recycle_folder() and not self._is_temporary_storage_folder():
-            return
-        manifest = self._load_recycle_manifest()
-        for move in moves:
-            manifest[move.target_path] = move.source_path
-        self._save_recycle_manifest(manifest)
+        self._recycle_bin.remember_recycle_origins(moves)
 
     def _forget_recycle_origins(self, paths: tuple[str, ...]) -> None:
-        manifest = self._load_recycle_manifest()
-        changed = False
-        for path in paths:
-            if path in manifest:
-                manifest.pop(path, None)
-                changed = True
-        if changed:
-            self._save_recycle_manifest(manifest)
+        self._recycle_bin.forget_recycle_origins(paths)
 
     def _restore_bundle(self, recycle_paths: tuple[str, ...]) -> tuple[FileMove, ...]:
-        manifest = self._load_recycle_manifest()
-        restores: list[FileMove] = []
-        restored_targets: list[FileMove] = []
-        destination_dir: str | None = None
-        recycle_root = self._recycle_root_for_folder()
-        restore_root = recycle_root.parent
-        try:
-            for recycle_path in recycle_paths:
-                original_path = manifest.get(recycle_path)
-                if not original_path:
-                    normalized_recycle = os.path.normcase(os.path.normpath(recycle_path))
-                    for stored_path, stored_original in manifest.items():
-                        if os.path.normcase(os.path.normpath(stored_path)) == normalized_recycle:
-                            original_path = stored_original
-                            break
-                if not original_path:
-                    recycle_file = Path(recycle_path)
-                    try:
-                        relative_path = recycle_file.relative_to(recycle_root)
-                        if len(relative_path.parts) > 1:
-                            inferred_original = restore_root / relative_path
-                            destination = self._unique_destination(str(inferred_original.parent), inferred_original.name)
-                        else:
-                            if destination_dir is None:
-                                destination_dir = QFileDialog.getExistingDirectory(
-                                    self,
-                                    "Choose Restore Folder",
-                                    str(restore_root),
-                                )
-                                if not destination_dir:
-                                    raise OSError("Restore was cancelled.")
-                            destination = self._unique_destination(destination_dir, recycle_file.name)
-                    except ValueError:
-                        if destination_dir is None:
-                            destination_dir = QFileDialog.getExistingDirectory(
-                                self,
-                                "Choose Restore Folder",
-                                str(restore_root),
-                            )
-                            if not destination_dir:
-                                raise OSError("Restore was cancelled.")
-                        destination = self._unique_destination(destination_dir, Path(recycle_path).name)
-                else:
-                    destination_dir = str(Path(original_path).parent)
-                    destination = self._unique_destination(destination_dir, Path(original_path).name)
-                Path(destination).parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(recycle_path, destination)
-                file_move = FileMove(source_path=destination, target_path=recycle_path)
-                restores.append(file_move)
-                restored_targets.append(file_move)
-        except OSError as exc:
-            for restored in reversed(restored_targets):
-                if os.path.exists(restored.source_path):
-                    Path(restored.target_path).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(restored.source_path, restored.target_path)
-            raise exc
-        self._forget_recycle_origins(recycle_paths)
-        return tuple(restores)
+        return self._recycle_bin.restore_bundle(recycle_paths)
 
     def _trash_or_delete_paths(self, source_paths: tuple[str, ...]) -> bool:
         moved_all = True
@@ -26652,88 +26227,3 @@ class MainWindow(QMainWindow):
             if os.path.exists(source_path):
                 os.remove(source_path)
 
-    def _sync_winner_copy(self, record: ImageRecord, winner_enabled: bool, folder: str) -> tuple[str, ...]:
-        return self._sync_winner_copy_for_paths(self._record_paths(record), winner_enabled, folder)
-
-    @staticmethod
-    def _is_app_winner_artifact(source_path: str, destination: str) -> bool:
-        """True only when ``destination`` is provably the copy or link Image
-        Triage made of ``source_path``; a same-named file the user put there is
-        never treated as ours."""
-        try:
-            if os.path.islink(destination):
-                target = os.path.realpath(destination)
-                return os.path.normcase(target) == os.path.normcase(os.path.realpath(source_path))
-            if not os.path.exists(source_path):
-                return False
-            if os.path.samefile(source_path, destination):
-                return True
-            source_stat = os.stat(source_path)
-            copy_stat = os.stat(destination)
-            return (
-                source_stat.st_size == copy_stat.st_size
-                and abs(source_stat.st_mtime_ns - copy_stat.st_mtime_ns) <= 2_000_000_000
-            )
-        except OSError:
-            return False
-
-    def _sync_winner_copy_for_paths(
-        self,
-        source_paths: tuple[str, ...],
-        winner_enabled: bool,
-        folder: str,
-        *,
-        mode_override: WinnerMode | None = None,
-    ) -> tuple[str, ...]:
-        """Returns the names of files left in ``_winners`` on un-mark because
-        they could not be proven to be Image Triage's own copy."""
-        if self._is_winners_folder(folder):
-            return ()
-        winner_mode = mode_override or self._winner_mode
-        if winner_mode == WinnerMode.LOGICAL:
-            return ()
-        destination_dir = os.path.join(folder, "_winners")
-        if winner_enabled:
-            os.makedirs(destination_dir, exist_ok=True)
-            copied_paths: list[str] = []
-            try:
-                for source_path in source_paths:
-                    destination = os.path.join(destination_dir, Path(source_path).name)
-                    if os.path.exists(source_path) and not os.path.exists(destination):
-                        self._create_winner_artifact(source_path, destination, winner_mode)
-                        copied_paths.append(destination)
-            except OSError as exc:
-                for copied_path in copied_paths:
-                    if os.path.exists(copied_path):
-                        os.remove(copied_path)
-                raise exc
-            return ()
-
-        kept: list[str] = []
-        for source_path in source_paths:
-            destination = os.path.join(destination_dir, Path(source_path).name)
-            if not os.path.lexists(destination):
-                continue
-            if self._is_app_winner_artifact(source_path, destination):
-                os.remove(destination)
-            else:
-                kept.append(Path(destination).name)
-        return tuple(kept)
-
-    def _create_winner_artifact(self, source_path: str, destination: str, winner_mode: WinnerMode) -> None:
-        if winner_mode == WinnerMode.HARDLINK:
-            link_error: OSError | None = None
-            try:
-                os.link(source_path, destination)
-                return
-            except OSError as exc:
-                link_error = exc
-            try:
-                os.symlink(source_path, destination)
-                return
-            except OSError as exc:
-                raise OSError(
-                    f"Could not create a filesystem link for {Path(source_path).name}. "
-                    "Use Copy To _winners if this drive does not support links."
-                ) from link_error or exc
-        shutil.copy2(source_path, destination)

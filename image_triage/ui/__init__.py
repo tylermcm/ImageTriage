@@ -59,8 +59,7 @@ from .theme import (
     parse_appearance_mode,
     resolve_theme,
 )
-from .toolbars import build_primary_toolbar
-
+from .toolbar_menus import ToolbarMenuController
 __all__ = [
     "AITrainingProgressDialog",
     "AIReviewProgressDialog",
@@ -109,7 +108,6 @@ __all__ = [
     "build_main_window_actions",
     "format_action_tooltip",
     "fit_window_to_available_geometry",
-    "build_primary_toolbar",
     "build_help_button",
     "build_pin_icon",
     "build_workspace_docks",
@@ -124,4 +122,5 @@ __all__ = [
     "resolve_theme",
     "save_window_layout",
     "show_paged_help",
+    "ToolbarMenuController",
 ]

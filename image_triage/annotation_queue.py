@@ -7,9 +7,20 @@ import time
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from .decision_store import DecisionStore
-from .models import ImageRecord, SessionAnnotation
+from .file_ops import sync_winner_copy_for_paths
+from .models import ImageRecord, SessionAnnotation, WinnerMode
 from .perf import perf_logger
 from .xmp import sync_sidecar_annotation
+
+
+@dataclass(slots=True, frozen=True)
+class WinnerSyncRequest:
+    """The winner-copy-sync work for one entry (WI-4.1c): moved off the UI
+    thread and run alongside the entry's other background persistence."""
+    winner_enabled: bool
+    folder: str
+    winner_mode: WinnerMode
+    source_paths: tuple[str, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -19,6 +30,7 @@ class AnnotationQueueEntry:
     session_id: str
     annotation: SessionAnnotation | None
     previous_annotation: SessionAnnotation | None = None
+    winner_sync: WinnerSyncRequest | None = None
 
 
 class _AnnotationPersistTask(QRunnable):
@@ -70,6 +82,19 @@ class _AnnotationPersistTask(QRunnable):
             except Exception as exc:  # pragma: no cover - worker/runtime path
                 warning_count += 1
                 self.result_queue.put(("warning", entry.record_path, str(exc)))
+            if entry.winner_sync is not None:
+                try:
+                    kept = sync_winner_copy_for_paths(
+                        entry.winner_sync.source_paths,
+                        entry.winner_sync.winner_enabled,
+                        entry.winner_sync.folder,
+                        entry.winner_sync.winner_mode,
+                    )
+                except OSError as exc:
+                    self.result_queue.put(("winner_sync_failed", entry.record_path, str(exc)))
+                    continue
+                if kept:
+                    self.result_queue.put(("winner_kept", entry.record_path, ", ".join(kept)))
             self.result_queue.put(("ok", entry.record_path))
         if logger.enabled:
             logger.duration(
@@ -87,6 +112,8 @@ class _AnnotationPersistTask(QRunnable):
 class AnnotationPersistenceQueue(QObject):
     failed = Signal(str, str)
     warning = Signal(str, str)
+    winner_sync_failed = Signal(str, str)
+    winner_kept = Signal(str, str)
     flushed = Signal(int)
 
     def __init__(
@@ -120,6 +147,7 @@ class AnnotationPersistenceQueue(QObject):
         record: ImageRecord,
         session_id: str,
         previous_annotation: SessionAnnotation | None = None,
+        winner_sync: WinnerSyncRequest | None = None,
     ) -> None:
         normalized_path = record_path or record.path
         current = _clone_annotation(annotation_delta)
@@ -130,6 +158,7 @@ class AnnotationPersistenceQueue(QObject):
             session_id=session_id,
             annotation=current,
             previous_annotation=previous,
+            winner_sync=winner_sync,
         )
         if previous_annotation is not None:
             self._rollback_by_path[normalized_path] = previous
@@ -183,6 +212,16 @@ class AnnotationPersistenceQueue(QObject):
                 path = str(payload[0]) if payload else ""
                 message = str(payload[1]) if len(payload) > 1 else "Could not sync XMP sidecar."
                 self.warning.emit(path, message)
+                continue
+            if state == "winner_sync_failed":
+                path = str(payload[0]) if payload else ""
+                message = str(payload[1]) if len(payload) > 1 else "Could not update winner copy."
+                self.winner_sync_failed.emit(path, message)
+                continue
+            if state == "winner_kept":
+                path = str(payload[0]) if payload else ""
+                kept_csv = str(payload[1]) if len(payload) > 1 else ""
+                self.winner_kept.emit(path, kept_csv)
                 continue
             if state == "done":
                 flushed_count = int(payload[0]) if payload else 0

@@ -74,17 +74,6 @@ def hamming_distance_int(left: int, right: int) -> int:
     return bin(int(left) ^ int(right)).count("1")
 
 
-def find_perceptual_duplicate_groups(
-    paths: list[str],
-    *,
-    hamming_threshold: int = 6,
-) -> list[PerceptualDuplicateGroup]:
-    return find_perceptual_duplicate_groups_with_stats(
-        paths,
-        hamming_threshold=hamming_threshold,
-    ).groups
-
-
 def find_perceptual_duplicate_groups_with_stats(
     paths: list[str],
     *,
