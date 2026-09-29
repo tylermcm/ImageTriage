@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QMouseEvent, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMainWindow, QMessageBox, QToolButton, QWidget
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QToolButton, QWidget
 
 from image_triage.ui.actions import format_action_tooltip
 from image_triage.ui.theme import build_app_stylesheet, default_theme
@@ -153,121 +153,6 @@ class TopbarStyleTests(unittest.TestCase):
             stylesheet,
         )
 
-    def test_toolbar_picker_assigns_every_button_to_a_named_category(self) -> None:
-        allowed = set().union(*map(set, MainWindow.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.values()))
-        allowed.add("divider")
-
-        categories = {MainWindow._toolbar_item_picker_section(item_id) for item_id in allowed}
-
-        self.assertNotIn("Toolbar", categories)
-        self.assertTrue(categories.issubset(set(MainWindow.TOOLBAR_PICKER_SECTION_ORDER)))
-
-    def test_toolbar_edit_banner_is_centered_below_topbar(self) -> None:
-        parent = QWidget()
-        parent.resize(1000, 700)
-        topbar = QWidget(parent)
-        topbar.setGeometry(0, 0, 1000, 52)
-        hud = QFrame(parent)
-        hud.resize(280, 44)
-        host = SimpleNamespace(
-            _toolbar_edit_hud=hud,
-            _toolbar_edit_mode=True,
-            app_top_bar=topbar,
-        )
-
-        MainWindow._position_toolbar_edit_hud(host)
-
-        self.assertEqual(360, hud.x())
-        self.assertEqual(61, hud.y())
-
-    def test_toolbar_edit_banner_keeps_and_clamps_user_position(self) -> None:
-        parent = QWidget()
-        parent.resize(500, 300)
-        hud = QFrame(parent)
-        hud.resize(280, 44)
-        host = SimpleNamespace(
-            _toolbar_edit_hud=hud,
-            _toolbar_edit_mode=True,
-            _toolbar_edit_hud_user_position=QPoint(420, 275),
-            app_top_bar=None,
-        )
-
-        MainWindow._position_toolbar_edit_hud(host)
-
-        self.assertEqual(QPoint(212, 248), hud.pos())
-        self.assertEqual(hud.pos(), host._toolbar_edit_hud_user_position)
-
-    def test_toolbar_edit_marker_drags_banner(self) -> None:
-        parent = QWidget()
-        parent.resize(700, 400)
-        hud = QFrame(parent)
-        hud.setGeometry(100, 60, 280, 44)
-        handle = QFrame(hud)
-        handle.setGeometry(8, 10, 4, 24)
-        host = SimpleNamespace(
-            _toolbar_edit_hud=hud,
-            _toolbar_edit_hud_drag_handle=handle,
-            _toolbar_edit_hud_drag_offset=None,
-            _toolbar_edit_hud_user_position=None,
-            _toolbar_item_picker_dialog=None,
-        )
-        local = QPoint(2, 8)
-        press_global = handle.mapToGlobal(local)
-        press = QMouseEvent(
-            QEvent.Type.MouseButtonPress,
-            QPointF(local),
-            QPointF(press_global),
-            Qt.MouseButton.LeftButton,
-            Qt.MouseButton.LeftButton,
-            Qt.KeyboardModifier.NoModifier,
-        )
-        self.assertTrue(MainWindow._handle_toolbar_edit_hud_drag(host, press))
-
-        offset = handle.mapTo(hud, local)
-        target = QPoint(300, 180)
-        move_global = parent.mapToGlobal(target + offset)
-        move = QMouseEvent(
-            QEvent.Type.MouseMove,
-            QPointF(local),
-            QPointF(move_global),
-            Qt.MouseButton.NoButton,
-            Qt.MouseButton.LeftButton,
-            Qt.KeyboardModifier.NoModifier,
-        )
-        self.assertTrue(MainWindow._handle_toolbar_edit_hud_drag(host, move))
-        self.assertEqual(target, hud.pos())
-        self.assertEqual(target, host._toolbar_edit_hud_user_position)
-
-        release = QMouseEvent(
-            QEvent.Type.MouseButtonRelease,
-            QPointF(local),
-            QPointF(move_global),
-            Qt.MouseButton.LeftButton,
-            Qt.MouseButton.NoButton,
-            Qt.KeyboardModifier.NoModifier,
-        )
-        self.assertTrue(MainWindow._handle_toolbar_edit_hud_drag(host, release))
-        self.assertIsNone(host._toolbar_edit_hud_drag_offset)
-
-    def test_toolbar_reset_requires_explicit_confirmation(self) -> None:
-        calls = []
-        original_warning = QMessageBox.warning
-        QMessageBox.warning = lambda *args: calls.append(args) or QMessageBox.StandardButton.Cancel
-        try:
-            host = SimpleNamespace(
-                _toolbar_edit_active_mode="manual",
-                _end_inplace_toolbar_edit=lambda: self.fail("reset continued after cancellation"),
-            )
-            MainWindow._reset_inplace_toolbar_edit(host)
-        finally:
-            QMessageBox.warning = original_warning
-
-        self.assertEqual(1, len(calls))
-        self.assertEqual("Reset Toolbar Layout?", calls[0][1])
-        self.assertTrue(calls[0][3] & QMessageBox.StandardButton.Reset)
-        self.assertTrue(calls[0][3] & QMessageBox.StandardButton.Cancel)
-        self.assertEqual(QMessageBox.StandardButton.Cancel, calls[0][4])
-
     def test_toolbar_slot_model_uses_the_cell_previously_reserved_for_add(self) -> None:
         host = SimpleNamespace(
             TOPBAR_SLOT_COUNT=4,
@@ -278,15 +163,6 @@ class TopbarStyleTests(unittest.TestCase):
         slots = MainWindow._items_to_slots(host, ["one", "two", "three", "four"])
 
         self.assertEqual(["one", "two", "three", "four"], slots)
-
-    def test_toolbar_drag_can_target_the_final_edit_cell(self) -> None:
-        host = SimpleNamespace(
-            _toolbar_edit_cell_width=40.0,
-            _toolbar_edit_visible_cell_count=4,
-            _topbar_visible_slot_count=lambda: 4,
-        )
-
-        self.assertEqual(3, MainWindow._slot_at_x(host, 159.0))
 
     def test_toolbar_catalog_exposes_current_workflows(self) -> None:
         expected = {
@@ -313,7 +189,6 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertTrue(expected.issubset(MainWindow.WORKSPACE_TOOLBAR_ITEM_LABELS))
         self.assertTrue(expected.issubset(MainWindow.WORKSPACE_TOOLBAR_FLUENT_ICONS))
         self.assertIn("quick_filter", allowed)
-        self.assertIn("quick_filter", MainWindow.TOPBAR_PICKER_HIDDEN_ITEMS)
 
         host = SimpleNamespace(actions=_ActionBag())
         action_specs = MainWindow._workspace_toolbar_action_specs(host)
@@ -333,20 +208,6 @@ class TopbarStyleTests(unittest.TestCase):
         self.assertIn(host.actions.winner_ladder_mode, review_menu.actions())
         self.assertIn(host.actions.create_virtual_collection, projects_menu.actions())
         self.assertIn(host.actions.browse_catalog, catalog_menu.actions())
-
-    def test_toolbar_remove_badge_sits_on_the_button_top_right(self) -> None:
-        parent = QWidget()
-        button = QToolButton(parent)
-        button.setGeometry(40, 30, 38, 38)
-        badge = QToolButton(parent)
-        badge.setFixedSize(12, 12)
-
-        MainWindow._position_toolbar_edit_badge(badge, button)
-
-        expected_corner = button.mapTo(parent, QPoint(button.width(), 0))
-        self.assertEqual(expected_corner.x() - 6, badge.x())
-        self.assertEqual(expected_corner.y() - 6, badge.y())
-
 
 if __name__ == "__main__":
     unittest.main()

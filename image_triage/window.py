@@ -157,7 +157,9 @@ from .ai_results import (
 )
 from .batch_rename import BatchRenamePreview
 from .batch_rename_controller import BatchRenameApplyController, BatchRenameExecutionContext
+from .catalog_controller import CatalogController, CatalogExecutionContext
 from .folder_ops_controller import FolderOpsController
+from .records_repository import RecordsRepository
 from .recycle_bin_controller import RecycleBinController
 from .brackets import BracketDetector
 from .bursts import find_burst_groups
@@ -200,7 +202,6 @@ from .image_convert import ConvertApplyTask, ConvertOptions, ConvertPlan, Conver
 from .image_resize import ResizeApplyTask, ResizeOptions, ResizePlan, ResizeSourceItem
 from .job_controller import JobController, JobSpec
 from .library_store import (
-    CatalogRefreshSummary,
     CatalogRefreshTask,
     LibraryStore,
     VirtualCollection,
@@ -734,13 +735,6 @@ def _headless_background_popen_kwargs() -> dict[str, object]:
         startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0) or 0)
         kwargs["startupinfo"] = startupinfo
     return kwargs
-
-
-@dataclass(slots=True)
-class CatalogExecutionContext:
-    """Carries the currently running catalog refresh request through async handlers."""
-    root_paths: tuple[str, ...] = ()
-    label: str = ""
 
 
 
@@ -2362,22 +2356,6 @@ class MainWindow(QMainWindow):
     # Items that may appear more than once and are exempt from de-duplication
     # (a visual divider is inert and you can drop as many as you like).
     TOPBAR_REPEATABLE_ITEMS = frozenset({"divider"})
-    # Kept renderable for existing saved layouts, but omitted from the picker.
-    # ``quick_filter`` opens the exact same menu as the clearer ``filters`` item.
-    TOPBAR_PICKER_HIDDEN_ITEMS = frozenset({"quick_filter"})
-    TOOLBAR_PICKER_SECTION_ORDER = (
-        "Review",
-        "AI",
-        "Search & Filter",
-        "View",
-        "Selection",
-        "Files",
-        "Workflow",
-        "Collections",
-        "Catalog",
-        "Utilities",
-        "Layout",
-    )
     # Filled chrome glyphs that should render as a clean solid silhouette
     # (no stroke carve-out) because their key feature is an open appendage:
     # E721 = Search (magnifier handle), E9D2 = AI/Activity (picture).
@@ -2674,35 +2652,6 @@ class MainWindow(QMainWindow):
         )
         self._workspace_bar_drag_start: QPoint | None = None
         self._workspace_bar_dragging = False
-        self._toolbar_edit_mode = False
-        self._toolbar_edit_target_mode = "manual"
-        self._toolbar_edit_overlay: QFrame | None = None
-        # In-place ("jiggle mode") toolbar editing state. Items are lifted out of
-        # the live layout, frozen at their current positions, and animated; exit
-        # simply rebuilds the toolbar so the layout is restored from scratch.
-        self._toolbar_edit_active_mode: str | None = None
-        # (item_id, widget, frozen base position, remove badge, slot index)
-        self._toolbar_edit_items: list[tuple[str, QWidget, QPoint, QWidget, int]] = []
-        self._toolbar_edit_hud: QFrame | None = None
-        self._toolbar_edit_hud_drag_handle: QFrame | None = None
-        self._toolbar_edit_hud_drag_offset: QPoint | None = None
-        self._toolbar_edit_hud_user_position: QPoint | None = None
-        self._toolbar_edit_shortcut: QShortcut | None = None
-        self._toolbar_item_picker_dialog: CommandPaletteDialog | None = None
-        self._toolbar_item_picker_slot: int | None = None
-        self._toolbar_edit_cell_frames: list[QWidget] = []
-        self._toolbar_edit_hud_add_button: QPushButton | None = None
-        self._toolbar_edit_drop_highlight: QFrame | None = None
-        self._toolbar_edit_cell_width = 0.0
-        self._toolbar_edit_visible_cell_count = 0
-        self._toolbar_edit_target_slot = -1
-        self._toolbar_edit_drag_slot = -1
-        self._toolbar_edit_drag_widget: QWidget | None = None
-        self._toolbar_edit_drag_start: QPoint | None = None
-        self._toolbar_edit_drag_origin = QPoint()
-        self._toolbar_edit_dragging = False
-        self._toolbar_edit_drag_t0 = 0.0
-        self._toolbar_edit_drag_moves = 0
         self._workspace_toolbar_item_widgets: dict[str, dict[str, QWidget]] = {}
         self._workspace_toolbar_overflow_buttons: dict[str, QToolButton] = {}
         self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
@@ -2733,8 +2682,6 @@ class MainWindow(QMainWindow):
         self.actions: MainWindowActions | None = None
         self.workspace_docks: WorkspaceDocks | None = None
         self.inspector_panel: InspectorPanel | None = None
-        self._toolbar_context_mode_property = "imageTriageToolbarContextMode"
-        self._toolbar_context_installed_property = "imageTriageToolbarContextInstalled"
 
         self.thumbnail_manager = ThumbnailManager()
         self._decision_store = DecisionStore()
@@ -2771,6 +2718,7 @@ class MainWindow(QMainWindow):
         self._batch_rename_pool.setMaxThreadCount(1)
         self._batch_rename = BatchRenameApplyController(self)
         self._folder_ops = FolderOpsController(self)
+        self._catalog = CatalogController(self)
         self._resize_pool = QThreadPool(self)
         self._resize_pool.setMaxThreadCount(1)
         self._convert_pool = QThreadPool(self)
@@ -2964,8 +2912,7 @@ class MainWindow(QMainWindow):
         self._scope_id = ""
         self._scope_label = ""
         self._scan_in_progress = False
-        self._all_records: list[ImageRecord] = []
-        self._all_records_by_path: dict[str, ImageRecord] = {}
+        self._records_repo = RecordsRepository()
         self._folder_records: list[ImageRecord] = []
         self._records: list[ImageRecord] = []
         self._record_index_by_path: dict[str, int] = {}
@@ -3546,7 +3493,6 @@ class MainWindow(QMainWindow):
 
         self.manual_toolbar = QWidget()
         self.manual_toolbar.setObjectName("workspaceControls")
-        self._configure_toolbar_context_target(self.manual_toolbar, "manual")
         self.manual_toolbar_layout = QHBoxLayout(self.manual_toolbar)
         self.manual_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.manual_toolbar_layout.setSpacing(8)
@@ -3580,7 +3526,6 @@ class MainWindow(QMainWindow):
 
         self.ai_toolbar = QWidget()
         self.ai_toolbar.setObjectName("workspaceControls")
-        self._configure_toolbar_context_target(self.ai_toolbar, "ai")
         self.ai_toolbar_layout = QHBoxLayout(self.ai_toolbar)
         self.ai_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.ai_toolbar_layout.setSpacing(8)
@@ -3609,7 +3554,6 @@ class MainWindow(QMainWindow):
         self.toolbar_stack = QStackedWidget()
         self.toolbar_stack.addWidget(self.manual_toolbar)
         self.toolbar_stack.addWidget(self.ai_toolbar)
-        self._configure_toolbar_context_target(self.toolbar_stack, "workspace")
 
         self.workspace_bar_toggle_button = self._build_workspace_bar_button(
             "\u2212",
@@ -3635,7 +3579,6 @@ class MainWindow(QMainWindow):
 
         self.workspace_bar = QWidget()
         self.workspace_bar.setObjectName("workspaceBar")
-        self._configure_toolbar_context_target(self.workspace_bar, "workspace")
         workspace_bar_layout = QHBoxLayout(self.workspace_bar)
         workspace_bar_layout.setContentsMargins(12, 8, 12, 8)
         workspace_bar_layout.setSpacing(10)
@@ -3915,6 +3858,14 @@ class MainWindow(QMainWindow):
         if self._check_updates_on_startup and not self._quick_view_mode:
             QTimer.singleShot(2500, self._check_for_updates_on_startup)
 
+    @property
+    def _all_records(self) -> list[ImageRecord]:
+        return self._records_repo.all_records
+
+    @property
+    def _all_records_by_path(self) -> dict[str, ImageRecord]:
+        return self._records_repo.all_records_by_path
+
     def _build_section_label(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setObjectName("sectionLabel")
@@ -4089,7 +4040,6 @@ class MainWindow(QMainWindow):
             combo,
             on_accept_path=self._handle_path_suggestion_accepted,
         )
-        self._configure_toolbar_context_target(combo, mode)
         return combo
 
     def _build_directory_nav_button(self, text: str, tooltip: str, *, mode: str) -> QToolButton:
@@ -4107,7 +4057,6 @@ class MainWindow(QMainWindow):
         color = (self._theme or default_theme()).text_muted.qcolor()
         direction = "up" if text == "\u2191" else "down"
         button.setIcon(self._directory_nav_icon(direction, color))
-        self._configure_toolbar_context_target(button, mode)
         return button
 
     def _directory_nav_icon(self, direction: str, color: QColor) -> QIcon:
@@ -4157,7 +4106,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(up_button, 0)
         layout.addWidget(down_button, 0)
         layout.addWidget(combo, 1)
-        self._configure_toolbar_context_target(wrapper, mode)
         return wrapper
 
     def _build_selection_count_label(self, *, mode: str) -> QLabel:
@@ -4166,7 +4114,6 @@ class MainWindow(QMainWindow):
         label.setMinimumWidth(76)
         label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         label.setToolTip("Selected images in the current view")
-        self._configure_toolbar_context_target(label, mode)
         return label
 
     def _build_prototype_top_bar(self) -> QWidget:
@@ -4345,7 +4292,6 @@ class MainWindow(QMainWindow):
                 layout.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.topbar_action_stack = self._build_topbar_action_stack()
-        self._configure_toolbar_context_target(self.topbar_action_stack, "workspace")
         self.toolbar_strip = self._build_toolbar_strip(nav_cluster, self.topbar_action_stack)
 
         # Zoom and the panel toggles travel together: into the status bar when
@@ -4760,11 +4706,10 @@ class MainWindow(QMainWindow):
             if caption_scale > 1.01
             else ""
         )
-        if not self._toolbar_edit_mode:
-            self._rebuild_topbar_action_stack()
-            toolbar_profile = self._toolbar_profile()
-            for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-                self._resize_topbar_button(button, toolbar_profile)
+        self._rebuild_topbar_action_stack()
+        toolbar_profile = self._toolbar_profile()
+        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
+            self._resize_topbar_button(button, toolbar_profile)
         self._position_floating_toolbar()
         self._schedule_app_bar_alignment()
 
@@ -5039,7 +4984,7 @@ class MainWindow(QMainWindow):
     def _floating_toolbar_width(self, available: int, *, expanded: bool = False) -> int:
         """The dock is a fixed share of the window width; while editing it
         opens to the full width so there is room to drop items."""
-        if expanded or self._toolbar_edit_mode:
+        if expanded:
             return max(0, available)
         return max(0, min(available, layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_W, self.width())))
 
@@ -5368,7 +5313,7 @@ class MainWindow(QMainWindow):
         cell = max(profile.topbar_slot_cell_min, hover_width)
         spacing = max(0, profile.topbar_slot_spacing)
         count = (available + spacing) // (cell + spacing)
-        if getattr(self, "_toolbar_placement", "docked") == "floating" and not self._toolbar_edit_mode:
+        if getattr(self, "_toolbar_placement", "docked") == "floating":
             # The dock is a fixed share of the window: spread the buttons in
             # use across it instead of leaving empty cells at the end.
             count = min(count, max(1, self._used_toolbar_slot_count()))
@@ -5494,8 +5439,6 @@ class MainWindow(QMainWindow):
     def _update_topbar_overflow(self, mode: str) -> None:
         visible_slots = self._topbar_visible_slot_count()
         if visible_slots == getattr(self, "_topbar_rendered_slot_count", None):
-            return
-        if self._toolbar_edit_mode:
             return
         self._rebuild_topbar_action_stack(mode)
 
@@ -6655,7 +6598,6 @@ class MainWindow(QMainWindow):
         button.setMenu(menu)
         self._configure_workspace_toolbar_button(button, item_id="more", text="More")
         button.hide()
-        self._configure_toolbar_context_target(button, mode)
         self._workspace_toolbar_overflow_menus[mode] = menu
         return button
 
@@ -6895,19 +6837,6 @@ class MainWindow(QMainWindow):
             existing = layouts.get(mode, [])
             layouts[mode] = migrated_items + [item for item in existing if item not in migrated_items]
 
-    def _save_workspace_toolbar_layouts(self) -> None:
-        toolbars = {mode: list(items) for mode, items in self._workspace_toolbar_layouts.items()}
-        slots = {
-            mode: list(getattr(self, "_topbar_slots", {}).get(mode, ()))
-            for mode in self.WORKSPACE_TOOLBAR_DEFAULTS
-        }
-        payload = {
-            "version": self.WORKSPACE_TOOLBAR_LAYOUT_VERSION,
-            "toolbars": toolbars,
-            "slots": slots,
-        }
-        self._settings.setValue(self.WORKSPACE_TOOLBAR_LAYOUT_KEY, json.dumps(payload))
-
     # -- Top-bar slot model ------------------------------------------------
     def _is_cluster_item(self, item_id: object) -> bool:
         # Items that render in the top-bar cluster (everything the cluster can
@@ -7061,11 +6990,6 @@ class MainWindow(QMainWindow):
             else:
                 widget.setParent(None)
 
-    def _set_workspace_toolbar_controls_enabled(self, enabled: bool) -> None:
-        for widgets in getattr(self, "_workspace_toolbar_item_widgets", {}).values():
-            for widget in widgets.values():
-                widget.setEnabled(enabled)
-
     def _update_selection_count_labels(self) -> None:
         count = self.grid.selected_count() if self._records else 0
         text = f"{count} selected"
@@ -7095,7 +7019,6 @@ class MainWindow(QMainWindow):
             widget = widgets.get(item_id)
             if widget is None:
                 continue
-            self._configure_toolbar_context_target(widget, mode)
             if item_id == "address":
                 address_widget = widget
                 continue
@@ -7171,11 +7094,6 @@ class MainWindow(QMainWindow):
     def _apply_workspace_toolbar_overflow(self, mode: str) -> None:
         normalized = mode if mode == "ai" else "manual"
         self._workspace_toolbar_overflow_update_pending.discard(normalized)
-        # While a toolbar is in in-place edit mode its items are lifted out of the
-        # live layout and pinned by hand; leave visibility alone so overflow does
-        # not fight the freeze (it is re-applied when editing ends).
-        if self._toolbar_edit_mode and self._toolbar_edit_active_mode == normalized:
-            return
         toolbar = self.ai_toolbar if normalized == "ai" else self.manual_toolbar
         layout = self.ai_toolbar_layout if normalized == "ai" else self.manual_toolbar_layout
         available_width = toolbar.width()
@@ -7350,1019 +7268,6 @@ class MainWindow(QMainWindow):
         if not hidden:
             self._schedule_workspace_toolbar_overflow_update("manual")
             self._schedule_workspace_toolbar_overflow_update("ai")
-
-    def _enter_toolbar_edit_mode(self) -> None:
-        self._begin_inplace_toolbar_edit(self._ui_mode)
-
-    # -- In-place ("jiggle mode") toolbar editing --------------------------
-    def _inplace_edit_toolbar_widgets(self, mode: str) -> tuple[QWidget | None, QGridLayout | None]:
-        # Edit mode operates on the visible top-bar action cluster (the
-        # workspace_bar is hidden by default), so return that mode's stack page
-        # and its slot grid.
-        normalized = "ai" if mode == "ai" else "manual"
-        index = 1 if normalized == "ai" else 0
-        page = self.topbar_action_stack.widget(index) if hasattr(self, "topbar_action_stack") else None
-        grid = getattr(self, "_topbar_action_layouts", {}).get(normalized)
-        return page, grid
-
-    def _begin_inplace_toolbar_edit(self, mode: str | None = None) -> None:
-        """Flip the top-bar cluster into slot-grid edit mode: occupied cells lift
-        with a drop shadow and a "−" removal badge and can be dragged to any
-        cell. The edit banner opens the button picker. Widgets are pinned by hand;
-        exiting rebuilds the cluster from the slot model."""
-        normalized = mode if mode in ("manual", "ai") else ("ai" if self._ui_mode == "ai" else "manual")
-        if self._toolbar_edit_mode:
-            if self._toolbar_edit_active_mode == normalized:
-                return
-            self._end_inplace_toolbar_edit()
-        page, grid = self._inplace_edit_toolbar_widgets(normalized)
-        if page is None or grid is None:
-            return
-        index = 1 if normalized == "ai" else 0
-        if self.topbar_action_stack.currentIndex() != index:
-            self.topbar_action_stack.setCurrentIndex(index)
-        if hasattr(self, "mode_tabs") and self.mode_tabs.currentIndex() != index:
-            self.mode_tabs.setCurrentIndex(index)
-        if self._toolbar_placement == "floating":
-            # Open the dock to full width first so the edit grid has empty
-            # slots to drop into, then rebuild the cluster at that width.
-            self._position_floating_toolbar(expanded=True)
-            self.toolbar_strip.layout().activate()
-            self._rebuild_topbar_action_stack(normalized)
-            page, grid = self._inplace_edit_toolbar_widgets(normalized)
-            if page is None or grid is None:
-                return
-        self._toolbar_edit_mode = True
-        self._toolbar_edit_active_mode = normalized
-        logger = perf_logger()
-        begin_start = time.perf_counter() if logger.enabled else 0.0
-
-        n = self._topbar_visible_slot_count()
-        slot_widgets = list(self._topbar_slot_widgets.get(normalized) or [])
-        slots = list(self._topbar_slots.get(normalized) or [])
-        slot_widgets += [None] * (n - len(slot_widgets))
-        slots += [None] * (n - len(slots))
-        # Force a layout pass first: right after a rebuild (e.g. adding a button)
-        # the fresh widgets haven't been laid out, so width()/height() report 0
-        # and their badges would land off the button — making it unclickable
-        # until the editor is reopened.
-        grid.activate()
-        # Detach editable widgets so they can float freely. When the bar is
-        # overflowing, its final visible cell remains the fixed More menu.
-        more_button = self._topbar_more_buttons.get(normalized)
-        for widget in slot_widgets:
-            if widget is not None and widget is not more_button:
-                grid.removeWidget(widget)
-        page_w = max(1, page.width())
-        page_h = max(1, page.height())
-        cell_w = page_w / n
-        self._toolbar_edit_cell_width = cell_w
-        has_overflow = any(slots[n:])
-        editable_slots = max(0, n - (1 if has_overflow else 0))
-        self._toolbar_edit_visible_cell_count = editable_slots
-
-        frozen: list[tuple[str, QWidget, QPoint, QWidget, int]] = []
-        cells: list[QWidget] = []
-        for slot_index in range(editable_slots):
-            cells.append(self._create_toolbar_edit_cell(page, slot_index, cell_w, page_h))
-            widget = slot_widgets[slot_index]
-            if widget is None:
-                continue
-            item_id = slots[slot_index] or ""
-            # Fall back to the size hint if the widget hasn't been sized yet, and
-            # pin that size so the button renders and its badge lands correctly.
-            w = widget.width() or widget.sizeHint().width()
-            h = widget.height() or widget.sizeHint().height()
-            widget.resize(w, h)
-            x = round(slot_index * cell_w + (cell_w - w) / 2)
-            y = max(0, (page_h - h) // 2)
-            widget.move(x, y)
-            widget.show()
-            widget.raise_()
-            self._apply_toolbar_edit_decoration(widget)
-            widget.installEventFilter(self)
-            badge = self._create_toolbar_edit_badge(item_id, widget, slot_index)
-            frozen.append((item_id, widget, QPoint(x, y), badge, slot_index))
-        self._toolbar_edit_items = frozen
-        self._toolbar_edit_cell_frames = cells
-        # Badges sit above every lifted item, whatever the freeze order was.
-        for _item_id, _widget, _base, badge, _slot in frozen:
-            badge.raise_()
-
-        self._show_toolbar_edit_hud(normalized)
-        if self._toolbar_edit_shortcut is None:
-            self._toolbar_edit_shortcut = QShortcut(QKeySequence("Esc"), self.topbar_action_stack)
-            self._toolbar_edit_shortcut.activated.connect(self._end_inplace_toolbar_edit)
-        if self.actions is not None:
-            self.actions.customize_workspace_toolbar.setEnabled(False)
-        self.statusBar().showMessage(
-            "Editing toolbar — drag buttons between cells, − removes, and Add opens the button list."
-        )
-        if logger.enabled:
-            logger.duration(
-                "toolbar.begin_edit",
-                (time.perf_counter() - begin_start) * 1000.0,
-                mode=normalized,
-                items=len(frozen),
-                cells=len(cells),
-            )
-
-    def _apply_toolbar_edit_decoration(self, widget: QWidget) -> None:
-        effect = QGraphicsDropShadowEffect(widget)
-        effect.setBlurRadius(22)
-        effect.setColor(QColor(0, 0, 0, 165))
-        effect.setOffset(0, 6)
-        widget.setGraphicsEffect(effect)
-
-    _TOOLBAR_EDIT_BADGE_ICON = Path(__file__).resolve().parent / "ui" / "assets" / "minus_sign.png"
-
-    def _create_toolbar_edit_badge(self, item_id: str, widget: QWidget, slot_index: int) -> QToolButton:
-        """The iOS-style "−" removal badge centred on an item's top-right corner.
-        Parented to the central container (not the cluster page, which clips its
-        children) so the badge can overhang the bar without being cut off."""
-        badge = QToolButton(self.central_container)
-        badge.setObjectName("toolbarEditRemoveBadge")
-        label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
-        badge.setToolTip(f"Remove {label}")
-        badge.setCursor(Qt.CursorShape.PointingHandCursor)
-        badge.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        badge.setFixedSize(12, 12)
-        icon = QIcon(str(self._TOOLBAR_EDIT_BADGE_ICON))
-        badge.setProperty("assetIcon", not icon.isNull())
-        if icon.isNull():
-            # Fallback if the asset goes missing: the old styled text badge.
-            badge.setText("−")
-        else:
-            badge.setIcon(icon)
-            badge.setIconSize(QSize(12, 12))
-        badge.clicked.connect(lambda _checked=False, s=slot_index: self._remove_toolbar_slot_inplace(s))
-        self._position_toolbar_edit_badge(badge, widget)
-        badge.show()
-        return badge
-
-    @staticmethod
-    def _position_toolbar_edit_badge(badge: QWidget, widget: QWidget) -> None:
-        # Centred on the item's top-right corner so the badge circle and the
-        # button corner stay concentric wherever the item slides.
-        host = badge.parentWidget()
-        if host is None:
-            return
-        corner = widget.mapTo(host, QPoint(widget.width(), 0))
-        badge.move(corner.x() - badge.width() // 2, corner.y() - badge.height() // 2)
-
-    def _toolbar_edit_badge_for(self, widget: QWidget) -> QWidget | None:
-        for entry in self._toolbar_edit_items:
-            if entry[1] is widget:
-                return entry[3]
-        return None
-
-    def _is_toolbar_edit_widget(self, watched: object) -> bool:
-        return any(entry[1] is watched for entry in self._toolbar_edit_items)
-
-    def _toolbar_edit_cell_rect(self, slot_index: int, cell_w: float, page_h: int) -> QRect:
-        inset = 3
-        return QRect(
-            round(slot_index * cell_w) + inset,
-            inset,
-            max(1, round(cell_w) - inset * 2),
-            max(1, page_h - inset * 2),
-        )
-
-    def _create_toolbar_edit_cell(self, page: QWidget, slot_index: int, cell_w: float, page_h: int) -> QWidget:
-        """A plain dashed bounding box marking one grid cell (empty or occupied)."""
-        frame = QFrame(page)
-        frame.setObjectName("toolbarEditCell")
-        frame.setGeometry(self._toolbar_edit_cell_rect(slot_index, cell_w, page_h))
-        frame.lower()
-        frame.show()
-        return frame
-
-    def _available_topbar_items_for_mode(self, mode: str) -> list[str]:
-        # Every cluster button from *either* mode (buttons can cross bars), minus
-        # what's already on this bar. Manual items first, then AI-only items.
-        popup = set(self._topbar_popup_specs())
-        actions = set(self._workspace_toolbar_action_specs())
-        placed = set(self._slots_to_items(self._topbar_slots.get(mode, [])))
-        # Repeatable items (the divider) are always offered, however many are down.
-        ordered: list[str] = list(self.TOPBAR_REPEATABLE_ITEMS)
-        seen: set[str] = set(ordered)
-        for source in ("manual", "ai"):
-            for item_id in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(source, ()):
-                if item_id in seen or item_id in placed or item_id in self.TOPBAR_PICKER_HIDDEN_ITEMS:
-                    continue
-                if item_id in self.TOPBAR_CHROME_ITEMS or not (item_id in popup or item_id in actions):
-                    continue
-                seen.add(item_id)
-                ordered.append(item_id)
-        return ordered
-
-    @staticmethod
-    def _toolbar_item_picker_section(item_id: str) -> str:
-        sections = {
-            "Review": {
-                "review", "open_preview", "compare", "winner_ladder_mode", "auto_advance",
-                "burst_groups", "burst_stacks",
-            },
-            "AI": {
-                "run_ai_culling", "quick_rerank_ai_culling", "apply_ai_culling",
-                "sort_ai_semantic_folders", "reset_ai_review_cache", "ai_results",
-                "load_saved_ai", "load_ai_results", "clear_ai_results", "open_ai_report",
-                "manage_people", "show_ai_review_summary", "taste_calibration", "next_ai_pick",
-                "next_unreviewed_ai_pick", "compare_ai_group", "dispute_current_ai_result",
-                "review_ai_disagreements",
-            },
-            "Search & Filter": {
-                "search", "filters", "advanced_filters", "clear_filters", "save_filter_preset",
-            },
-            "View": {"view", "columns", "sort", "show_hidden_folders", "zen_mode"},
-            "Selection": {
-                "selection_count", "accept_selection", "reject_selection", "keep_selection",
-                "move_selection", "move_selection_to_new_folder", "delete_selection",
-                "restore_selection",
-            },
-            "Files": {
-                "open_folder", "refresh_folder", "new_folder", "rename_selection",
-                "reveal_in_explorer", "open_in_photoshop", "batch_rename", "batch_resize",
-                "batch_convert",
-            },
-            "Collections": {"projects"},
-            "Catalog": {"catalog"},
-            "Workflow": {"share_to_phone", "handoff_builder", "send_to_editor", "best_of_set"},
-            "Utilities": {"command_palette", "keyboard_shortcuts", "undo"},
-            "Layout": {"divider", "address"},
-        }
-        return next((section for section, items in sections.items() if item_id in items), "Utilities")
-
-    def _add_toolbar_item_inplace(self, item_id: str) -> None:
-        mode = "ai" if (self._toolbar_edit_active_mode or self._ui_mode) == "ai" else "manual"
-        # Any cluster button may land on any bar; using the button later handles
-        # the mode swap if it belongs to the other review mode.
-        if item_id not in self._unified_allowed_items():
-            return
-        usable = self.TOPBAR_SLOT_COUNT
-        slots = list(self._topbar_slots.get(mode) or [None] * self.TOPBAR_SLOT_COUNT)
-        slots += [None] * (self.TOPBAR_SLOT_COUNT - len(slots))
-        if item_id not in self.TOPBAR_REPEATABLE_ITEMS and item_id in slots:
-            return
-        target = self._toolbar_item_picker_slot
-        self._toolbar_item_picker_slot = None
-        if target is None or not (0 <= target < usable) or slots[target] is not None:
-            target = next((i for i in range(usable) if slots[i] is None), None)
-        if target is None:
-            self.statusBar().showMessage("The visible toolbar is full — remove a button first.")
-            return
-        slots[target] = item_id
-        perf_logger().log("toolbar.add", item=item_id, slot=target, mode=mode)
-        self._commit_slots_and_refresh(mode, slots)
-
-    def _build_toolbar_item_picker_commands(self, mode: str) -> list[PaletteCommand]:
-        commands: list[PaletteCommand] = []
-        specs = self._workspace_toolbar_action_specs()
-        popup = self._topbar_popup_specs()
-        current = "ai" if mode == "ai" else "manual"
-        current_allowed = set(self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(current, ()))
-        for item_id in self._available_topbar_items_for_mode(mode):
-            label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
-            keyword_parts = [item_id.replace("_", " "), label]
-            spec = specs.get(item_id)
-            if spec is not None:
-                action = spec[0]
-                keyword_parts.extend([action.text().replace("&", ""), action.toolTip()])
-            elif item_id in popup:
-                keyword_parts.append(popup[item_id][0])
-            if item_id in self.TOPBAR_REPEATABLE_ITEMS:
-                subtitle = "Visual divider · add as many as you like"
-                keyword_parts.append("separator pipe")
-            else:
-                # Items not valid in this mode are AI-only (AI is a superset of
-                # manual) and will flip the app to AI review when used.
-                cross_mode = item_id not in current_allowed
-                if cross_mode:
-                    keyword_parts.append("ai")
-                subtitle = "AI button · auto-switches to AI review" if cross_mode else "Toolbar button"
-            commands.append(
-                PaletteCommand(
-                    id=f"toolbar.add.{item_id}",
-                    title=label,
-                    subtitle=subtitle,
-                    section=self._toolbar_item_picker_section(item_id),
-                    keywords=tuple(part for part in keyword_parts if part),
-                    callback=lambda selected=item_id: self._add_toolbar_item_inplace(selected),
-                )
-            )
-        section_positions = {
-            section: index for index, section in enumerate(self.TOOLBAR_PICKER_SECTION_ORDER)
-        }
-        commands.sort(
-            key=lambda command: (
-                section_positions.get(command.section, len(section_positions)),
-                command.title.casefold(),
-            )
-        )
-        return commands
-
-    def _ensure_toolbar_item_picker_dialog(self) -> CommandPaletteDialog:
-        dialog = self._toolbar_item_picker_dialog
-        if isinstance(dialog, CommandPaletteDialog):
-            return dialog
-        dialog = CommandPaletteDialog(
-            [],
-            recent_command_ids=(),
-            title="Add Toolbar Button",
-            placeholder="Search buttons",
-            hint="Click a button to add it.",
-            card_size=QSize(520, 420),
-            parent=self,
-        )
-        dialog.finished.connect(self._handle_toolbar_item_picker_finished)
-        self._toolbar_item_picker_dialog = dialog
-        return dialog
-
-    def _open_toolbar_item_picker(self, mode: str | None = None, slot: int | None = None) -> None:
-        if self._active_command_palette is not None and self._active_command_palette.isVisible():
-            return
-        normalized = "ai" if (mode == "ai" or (mode not in ("manual", "ai") and self._ui_mode == "ai")) else "manual"
-        self._toolbar_item_picker_slot = slot if isinstance(slot, int) else None
-        commands = self._build_toolbar_item_picker_commands(normalized)
-        dialog = self._ensure_toolbar_item_picker_dialog()
-        dialog.configure(
-            commands,
-            title="Add Toolbar Button",
-            placeholder="Search buttons",
-            hint="Click a button to add it." if commands else "Every button is already on the bar.",
-            card_size=QSize(520, 420),
-            accept_on_click=True,
-            compact_rows=True,
-            group_by_section=True,
-            anchor_widget=self._toolbar_edit_hud_add_button,
-        )
-        dialog.set_prominent(False)
-        self._command_palette_open = True
-        self._active_command_palette = dialog
-        self._set_command_palette_shortcuts_enabled(False)
-        dialog.present()
-
-    def _handle_toolbar_item_picker_finished(self, result: int) -> None:
-        dialog = self.sender()
-        self._command_palette_open = False
-        self._active_command_palette = None
-        self._set_command_palette_shortcuts_enabled(True)
-        if not isinstance(dialog, CommandPaletteDialog):
-            return
-        if result != dialog.DialogCode.Accepted:
-            return
-        command = dialog.selected_command
-        if command is not None:
-            command.callback()
-
-    def _remove_toolbar_slot_inplace(self, slot_index: int) -> None:
-        # Remove the item in a specific cell (not by id) so removing one of
-        # several identical dividers clears the right one. Done in place — destroy
-        # just that button + its badge and leave the cell empty (its dashed box
-        # stays) — instead of tearing down and rebuilding the whole toolbar.
-        mode = self._toolbar_edit_active_mode or "manual"
-        target_entry = next((e for e in self._toolbar_edit_items if e[4] == slot_index), None)
-        if target_entry is None:
-            return
-        logger = perf_logger()
-        t0 = time.perf_counter() if logger.enabled else 0.0
-        logger.log("toolbar.remove", item=target_entry[0], slot=slot_index, mode=mode)
-        _item_id, widget, _base, badge, _slot = target_entry
-        if badge is not None:
-            badge.hide()
-            badge.setParent(None)
-            badge.deleteLater()
-        if widget is not None:
-            widget.removeEventFilter(self)
-            widget.setGraphicsEffect(None)
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
-        self._toolbar_edit_items = [e for e in self._toolbar_edit_items if e is not target_entry]
-        # Persist the new arrangement from the remaining lifted widgets.
-        n = self.TOPBAR_SLOT_COUNT
-        slots = list(self._topbar_slots.get(mode) or [None] * n)
-        slots += [None] * (n - len(slots))
-        if 0 <= slot_index < n:
-            slots[slot_index] = None
-        for entry in self._toolbar_edit_items:
-            if 0 <= entry[4] < n:
-                slots[entry[4]] = entry[0]
-        for target_mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            self._topbar_slots[target_mode] = self._normalize_slots(target_mode, slots)
-            self._sync_items_from_slots(target_mode)
-        self._save_workspace_toolbar_layouts()
-        if logger.enabled:
-            logger.duration("toolbar.delete", (time.perf_counter() - t0) * 1000.0, slot=slot_index)
-
-    def _handle_toolbar_edit_drag(self, widget: QWidget, event) -> bool:
-        """Slot-grid drag: grab a button, slide it, and on release it inserts at
-        the nearest cell (shifting neighbours toward the nearest gap). Returns
-        True when the event was consumed."""
-        event_type = event.type()
-        if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-            self._toolbar_edit_drag_widget = widget
-            self._toolbar_edit_drag_start = event.globalPosition().toPoint()
-            self._toolbar_edit_drag_origin = QPoint(widget.pos())
-            self._toolbar_edit_dragging = False
-            self._toolbar_edit_drag_t0 = time.perf_counter()
-            self._toolbar_edit_drag_moves = 0
-            self._toolbar_edit_drag_slot = next(
-                (entry[4] for entry in self._toolbar_edit_items if entry[1] is widget), -1
-            )
-            self._toolbar_edit_target_slot = self._toolbar_edit_drag_slot
-            widget.raise_()
-            badge = self._toolbar_edit_badge_for(widget)
-            if badge is not None:
-                badge.raise_()
-            return True
-        if (
-            event_type == QEvent.Type.MouseMove
-            and self._toolbar_edit_drag_widget is widget
-            and event.buttons() & Qt.MouseButton.LeftButton
-        ):
-            if self._toolbar_edit_drag_start is None:
-                return True
-            delta = event.globalPosition().toPoint() - self._toolbar_edit_drag_start
-            if not self._toolbar_edit_dragging and delta.manhattanLength() < QApplication.startDragDistance():
-                return True
-            self._toolbar_edit_dragging = True
-            self._toolbar_edit_drag_moves += 1
-            parent = widget.parentWidget()
-            new_x = self._toolbar_edit_drag_origin.x() + delta.x()
-            if parent is not None:
-                new_x = max(0, min(parent.width() - widget.width(), new_x))
-            widget.move(new_x, self._toolbar_edit_drag_origin.y())
-            badge = self._toolbar_edit_badge_for(widget)
-            if badge is not None:
-                self._position_toolbar_edit_badge(badge, widget)
-            self._update_toolbar_edit_drop_target(widget)
-            return True
-        if event_type == QEvent.Type.MouseButtonRelease and self._toolbar_edit_drag_widget is widget:
-            was_dragging = self._toolbar_edit_dragging
-            source = self._toolbar_edit_drag_slot
-            target = self._toolbar_edit_target_slot
-            self._toolbar_edit_drag_widget = None
-            self._toolbar_edit_drag_start = None
-            self._toolbar_edit_dragging = False
-            if was_dragging:
-                logger = perf_logger()
-                if logger.enabled:
-                    logger.duration(
-                        "toolbar.drag",
-                        (time.perf_counter() - getattr(self, "_toolbar_edit_drag_t0", time.perf_counter())) * 1000.0,
-                        moves=getattr(self, "_toolbar_edit_drag_moves", 0),
-                        source=source,
-                        target=target,
-                    )
-                self._commit_toolbar_edit_drag(source, target)
-            return True
-        return False
-
-    def _slot_at_x(self, center_x: float) -> int:
-        cell_w = self._toolbar_edit_cell_width or 1.0
-        editable_slots = self._toolbar_edit_visible_cell_count or self._topbar_visible_slot_count()
-        return max(0, min(editable_slots - 1, int(center_x // cell_w)))
-
-    def _update_toolbar_edit_drop_target(self, widget: QWidget) -> None:
-        page = widget.parentWidget()
-        if page is None:
-            return
-        center_x = widget.x() + widget.width() / 2
-        target = self._slot_at_x(center_x)
-        self._toolbar_edit_target_slot = target
-        cell_w = self._toolbar_edit_cell_width or 1.0
-        inset = 3
-        rect = QRect(
-            round(target * cell_w) + inset,
-            inset,
-            max(1, round(cell_w) - inset * 2),
-            max(1, page.height() - inset * 2),
-        )
-        highlight = self._toolbar_edit_drop_highlight
-        if highlight is None:
-            highlight = QFrame(page)
-            highlight.setObjectName("toolbarEditDropTarget")
-            self._toolbar_edit_drop_highlight = highlight
-        elif highlight.parentWidget() is not page:
-            highlight.setParent(page)
-        highlight.setGeometry(rect)
-        highlight.show()
-        # Keep the dragged button (and its badge) above the highlight.
-        widget.raise_()
-        badge = self._toolbar_edit_badge_for(widget)
-        if badge is not None:
-            badge.raise_()
-
-    def _commit_toolbar_edit_drag(self, source: int, target: int) -> None:
-        # Reorder the live edit widgets in place. A drop only needs to move the
-        # button widgets to their new cells, avoiding a full rebuild and paint pass.
-        n = self._toolbar_edit_visible_cell_count or self._topbar_visible_slot_count()
-        usable = max(0, n)
-        entries: list = [None] * n
-        for entry in self._toolbar_edit_items:
-            slot = entry[4]
-            if 0 <= slot < n:
-                entries[slot] = entry
-        moved = entries[source] if 0 <= source < usable else None
-        if moved is not None and source != target and 0 <= target < usable:
-            # Lift out and insert at target, shifting the occupied run toward the
-            # nearest gap (which absorbs the shift, so groups past it stay put).
-            entries[source] = None
-            if entries[target] is None:
-                entries[target] = moved
-            else:
-                hole_right = next((i for i in range(target, usable) if entries[i] is None), None)
-                if hole_right is not None:
-                    for i in range(hole_right, target, -1):
-                        entries[i] = entries[i - 1]
-                    entries[target] = moved
-                else:
-                    hole_left = next((i for i in range(target - 1, -1, -1) if entries[i] is None), None)
-                    if hole_left is not None:
-                        for i in range(hole_left, target - 1):
-                            entries[i] = entries[i + 1]
-                        entries[target - 1] = moved
-                    else:
-                        entries[source], entries[target] = entries[target], moved
-        logger = perf_logger()
-        t0 = time.perf_counter() if logger.enabled else 0.0
-        self._relayout_toolbar_edit_entries(entries)
-        if logger.enabled:
-            logger.duration("toolbar.drop", (time.perf_counter() - t0) * 1000.0, source=source, target=target)
-
-    def _relayout_toolbar_edit_entries(self, entries: list) -> None:
-        """Snap the live edit widgets (and their badges) to the cells implied by
-        ``entries`` (slot -> edit item), then persist the new arrangement. No
-        widgets are created or destroyed."""
-        cell_w = self._toolbar_edit_cell_width or 1.0
-        frozen: list[tuple[str, QWidget, QPoint, QWidget, int]] = []
-        for slot_index, entry in enumerate(entries):
-            if entry is None:
-                continue
-            item_id, widget, _base, badge, _old_slot = entry
-            parent = widget.parentWidget()
-            page_h = parent.height() if parent is not None else widget.height()
-            x = round(slot_index * cell_w + (cell_w - widget.width()) / 2)
-            y = max(0, (page_h - widget.height()) // 2)
-            widget.move(x, y)
-            widget.raise_()
-            if badge is not None:
-                self._position_toolbar_edit_badge(badge, widget)
-                badge.raise_()
-            frozen.append((item_id, widget, QPoint(x, y), badge, slot_index))
-        self._toolbar_edit_items = frozen
-        if self._toolbar_edit_drop_highlight is not None:
-            self._toolbar_edit_drop_highlight.hide()
-        # Persist the visible arrangement without losing saved slots that only
-        # fit on wider monitors.
-        visible_slots = len(entries)
-        slots = list(self._topbar_slots.get(self._toolbar_edit_active_mode or "manual") or [None] * self.TOPBAR_SLOT_COUNT)
-        slots += [None] * (self.TOPBAR_SLOT_COUNT - len(slots))
-        for index in range(max(0, min(visible_slots, self.TOPBAR_SLOT_COUNT))):
-            slots[index] = entries[index][0] if entries[index] is not None else None
-        for target_mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            self._topbar_slots[target_mode] = self._normalize_slots(target_mode, slots)
-            self._sync_items_from_slots(target_mode)
-        self._save_workspace_toolbar_layouts()
-
-    def _commit_slots_and_refresh(self, mode: str, slots: list[str | None]) -> None:
-        logger = perf_logger()
-        # end_edit and begin_edit self-time (toolbar.end_edit / toolbar.begin_edit).
-        with logger.span("toolbar.commit", mode=mode):
-            self._end_inplace_toolbar_edit()
-            normalized = self._normalize_slots(mode, slots)
-            # Unified bar: write the shared arrangement to both review modes.
-            with logger.span("toolbar.commit.sync"):
-                for target in self.WORKSPACE_TOOLBAR_DEFAULTS:
-                    self._topbar_slots[target] = list(normalized)
-                    self._sync_items_from_slots(target)
-            with logger.span("toolbar.commit.save"):
-                self._save_workspace_toolbar_layouts()
-            with logger.span("toolbar.commit.rebuild"):
-                # cascades to _rebuild_topbar_action_stack (both pages)
-                self._rebuild_workspace_toolbar(mode)
-            # _update_ai_toolbar_state() is intentionally NOT called here: it costs
-            # ~340ms (AI DB + filesystem readiness probes) and nothing about AI
-            # state changes while rearranging the toolbar. Rebuilt buttons sync
-            # their enabled/checked state straight from the actions.
-            self._begin_inplace_toolbar_edit(mode)
-
-    def _show_toolbar_edit_hud(self, mode: str) -> None:
-        parent = self.central_container
-        hud = self._toolbar_edit_hud
-        if hud is None:
-            hud = QFrame(parent)
-            hud.setObjectName("toolbarEditHud")
-            hud.setMinimumHeight(44)
-            shadow = QGraphicsDropShadowEffect(hud)
-            shadow.setBlurRadius(24)
-            shadow.setOffset(0, 5)
-            shadow.setColor(QColor(0, 0, 0, 180))
-            hud.setGraphicsEffect(shadow)
-            hud_layout = QHBoxLayout(hud)
-            hud_layout.setContentsMargins(12, 6, 8, 6)
-            hud_layout.setSpacing(8)
-            marker = QFrame(hud)
-            marker.setObjectName("toolbarEditHudMarker")
-            marker.setFixedSize(4, 24)
-            marker.setCursor(Qt.CursorShape.OpenHandCursor)
-            marker.setToolTip("Drag to move the editing toolbar")
-            marker.installEventFilter(self)
-            hint = QLabel("Editing toolbar", hud)
-            hint.setObjectName("toolbarEditHudHint")
-            add_btn = QPushButton("Add", hud)
-            add_btn.setObjectName("toolbarEditHudAdd")
-            add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            add_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            add_btn.clicked.connect(
-                lambda _checked=False: self._open_toolbar_item_picker(self._toolbar_edit_active_mode)
-            )
-            reset_btn = QPushButton("Reset", hud)
-            reset_btn.setObjectName("toolbarEditHudReset")
-            reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            reset_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            reset_btn.clicked.connect(self._reset_inplace_toolbar_edit)
-            done_btn = QPushButton("Done", hud)
-            done_btn.setObjectName("toolbarEditHudDone")
-            done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            done_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            done_btn.clicked.connect(self._end_inplace_toolbar_edit)
-            hud_layout.addWidget(marker, 0, Qt.AlignmentFlag.AlignVCenter)
-            hud_layout.addWidget(hint)
-            hud_layout.addWidget(add_btn)
-            hud_layout.addWidget(reset_btn)
-            hud_layout.addWidget(done_btn)
-            self._toolbar_edit_hud_add_button = add_btn
-            self._toolbar_edit_hud_drag_handle = marker
-            self._toolbar_edit_hud = hud
-        elif hud.parentWidget() is not parent:
-            hud.setParent(parent)
-        hud.show()
-        hud.raise_()
-        self._position_toolbar_edit_hud()
-
-    def _position_toolbar_edit_hud(self) -> None:
-        hud = self._toolbar_edit_hud
-        if hud is None or not self._toolbar_edit_mode:
-            return
-        parent = hud.parentWidget()
-        if parent is None:
-            return
-        hud.adjustSize()
-        position = getattr(self, "_toolbar_edit_hud_user_position", None)
-        if position is None:
-            # Center the edit-mode banner directly below the top bar until the
-            # user moves it for the first time.
-            top = 8
-            bar = getattr(self, "app_top_bar", None)
-            if bar is not None and bar.parentWidget() is parent:
-                top = bar.geometry().bottom() + 10
-            position = QPoint((parent.width() - hud.width()) // 2, top)
-        position = MainWindow._clamp_toolbar_edit_hud_position(hud, parent, position)
-        hud.move(position)
-        if getattr(self, "_toolbar_edit_hud_user_position", None) is not None:
-            self._toolbar_edit_hud_user_position = QPoint(position)
-        hud.raise_()
-        picker = getattr(self, "_toolbar_item_picker_dialog", None)
-        if picker is not None and picker.isVisible():
-            picker.sync_geometry()
-
-    @staticmethod
-    def _clamp_toolbar_edit_hud_position(
-        hud: QWidget,
-        parent: QWidget,
-        position: QPoint,
-    ) -> QPoint:
-        margin = 8
-        max_x = max(margin, parent.width() - hud.width() - margin)
-        max_y = max(margin, parent.height() - hud.height() - margin)
-        return QPoint(
-            max(margin, min(position.x(), max_x)),
-            max(margin, min(position.y(), max_y)),
-        )
-
-    def _handle_toolbar_edit_hud_drag(self, event) -> bool:
-        hud = self._toolbar_edit_hud
-        handle = self._toolbar_edit_hud_drag_handle
-        if hud is None or handle is None:
-            return False
-        event_type = event.type()
-        if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-            local_position = event.position().toPoint()
-            self._toolbar_edit_hud_drag_offset = handle.mapTo(hud, local_position)
-            handle.setCursor(Qt.CursorShape.ClosedHandCursor)
-            hud.raise_()
-            return True
-        if (
-            event_type == QEvent.Type.MouseMove
-            and self._toolbar_edit_hud_drag_offset is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
-        ):
-            parent = hud.parentWidget()
-            if parent is None:
-                return True
-            parent_position = parent.mapFromGlobal(event.globalPosition().toPoint())
-            candidate = parent_position - self._toolbar_edit_hud_drag_offset
-            position = MainWindow._clamp_toolbar_edit_hud_position(hud, parent, candidate)
-            hud.move(position)
-            self._toolbar_edit_hud_user_position = QPoint(position)
-            picker = getattr(self, "_toolbar_item_picker_dialog", None)
-            if picker is not None and picker.isVisible():
-                picker.sync_geometry()
-            return True
-        if event_type == QEvent.Type.MouseButtonRelease and self._toolbar_edit_hud_drag_offset is not None:
-            self._toolbar_edit_hud_drag_offset = None
-            handle.setCursor(Qt.CursorShape.OpenHandCursor)
-            return True
-        return False
-
-    def _reset_inplace_toolbar_edit(self) -> None:
-        confirmation = QMessageBox.warning(
-            self,
-            "Reset Toolbar Layout?",
-            "This will replace your customized toolbar buttons and positions with the defaults.",
-            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if confirmation != QMessageBox.StandardButton.Reset:
-            return
-        mode = self._toolbar_edit_active_mode or "manual"
-        self._end_inplace_toolbar_edit()
-        per_mode = {
-            target: self._items_to_slots(self.WORKSPACE_TOOLBAR_DEFAULTS.get(target, ()))
-            for target in self.WORKSPACE_TOOLBAR_DEFAULTS
-        }
-        shared = self._merge_slots_shared(per_mode)
-        for target in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            self._workspace_toolbar_layouts[target] = list(self.WORKSPACE_TOOLBAR_DEFAULTS.get(target, ()))
-            self._topbar_slots[target] = list(shared)
-            self._sync_items_from_slots(target)
-        self._save_workspace_toolbar_layouts()
-        self._rebuild_workspace_toolbar(mode)
-        # _update_ai_toolbar_state() intentionally skipped (see _commit_slots_and_refresh).
-        self._begin_inplace_toolbar_edit(mode)
-
-    def _end_inplace_toolbar_edit(self) -> None:
-        if not self._toolbar_edit_mode:
-            return
-        logger = perf_logger()
-        end_start = time.perf_counter() if logger.enabled else 0.0
-        item_count = len(self._toolbar_edit_items)
-        mode = self._toolbar_edit_active_mode or "manual"
-        self._toolbar_edit_drag_widget = None
-        self._toolbar_edit_drag_start = None
-        self._toolbar_edit_dragging = False
-        self._toolbar_edit_hud_drag_offset = None
-        if self._toolbar_edit_hud_drag_handle is not None:
-            self._toolbar_edit_hud_drag_handle.setCursor(Qt.CursorShape.OpenHandCursor)
-        self._toolbar_edit_target_slot = -1
-        self._toolbar_edit_drag_slot = -1
-        self._toolbar_edit_visible_cell_count = 0
-        picker = self._toolbar_item_picker_dialog
-        if picker is not None and picker.isVisible():
-            picker.reject()
-        if self._toolbar_edit_drop_highlight is not None:
-            self._toolbar_edit_drop_highlight.hide()
-            self._toolbar_edit_drop_highlight.setParent(None)
-            self._toolbar_edit_drop_highlight.deleteLater()
-            self._toolbar_edit_drop_highlight = None
-        for cell in self._toolbar_edit_cell_frames:
-            cell.hide()
-            cell.setParent(None)
-            cell.deleteLater()
-        self._toolbar_edit_cell_frames = []
-        for _item_id, widget, _base, badge, _slot in self._toolbar_edit_items:
-            if badge is not None:
-                badge.hide()
-                badge.setParent(None)
-                badge.deleteLater()
-            if widget is None:
-                continue
-            widget.removeEventFilter(self)
-            widget.setGraphicsEffect(None)
-            # The cluster is rebuilt with fresh widgets below, so discard the
-            # lifted originals rather than leaving them floating over the rebuild.
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
-        self._toolbar_edit_items = []
-        if self._toolbar_edit_hud is not None:
-            self._toolbar_edit_hud.hide()
-        if self._toolbar_edit_shortcut is not None:
-            self._toolbar_edit_shortcut.activated.disconnect()
-            self._toolbar_edit_shortcut.setParent(None)
-            self._toolbar_edit_shortcut.deleteLater()
-            self._toolbar_edit_shortcut = None
-        self._toolbar_edit_mode = False
-        self._toolbar_edit_active_mode = None
-        # Rebuild the cluster from scratch (fresh widgets from the slot model).
-        self._rebuild_topbar_action_stack(mode)
-        # _update_ai_toolbar_state() intentionally skipped — see the note in
-        # _commit_slots_and_refresh (~340ms of AI probes, irrelevant to editing).
-        if self.actions is not None:
-            self.actions.customize_workspace_toolbar.setEnabled(True)
-        self.statusBar().showMessage("Toolbar layout updated.")
-        if logger.enabled:
-            logger.duration(
-                "toolbar.end_edit", (time.perf_counter() - end_start) * 1000.0, items=item_count
-            )
-
-    def _hide_workspace_toolbar_editor(self) -> None:
-        if not self._toolbar_edit_mode:
-            return
-        self._toolbar_edit_mode = False
-        if self._toolbar_edit_overlay is not None:
-            layout = self._toolbar_edit_overlay.layout()
-            if layout is not None:
-                self._clear_layout_items(layout, delete_widgets=True)
-            self._toolbar_edit_overlay.hide()
-        self._rebuild_workspace_toolbar("manual")
-        self._rebuild_workspace_toolbar("ai")
-        self._set_workspace_toolbar_controls_enabled(True)
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("Toolbar layout updated.")
-
-    def _position_workspace_toolbar_editor(self) -> None:
-        if self._toolbar_edit_overlay is None:
-            return
-        parent = self._toolbar_edit_overlay.parentWidget()
-        if parent is None:
-            return
-        self._toolbar_edit_overlay.setGeometry(parent.rect())
-        self._toolbar_edit_overlay.raise_()
-
-    def _available_toolbar_items_for_mode(self, mode: str) -> list[str]:
-        active = set(self._workspace_toolbar_layouts.get(mode, []))
-        return [item for item in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(mode, ()) if item not in active]
-
-    def _select_toolbar_edit_target_mode(self, mode: str) -> None:
-        if mode not in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            return
-        self._toolbar_edit_target_mode = mode
-        if mode in {"manual", "ai"}:
-            target_index = 1 if mode == "ai" else 0
-            if self.mode_tabs.currentIndex() != target_index:
-                self.mode_tabs.setCurrentIndex(target_index)
-        self._rebuild_workspace_toolbar_editor()
-
-    def _rebuild_toolbar_for_mode(self, mode: str) -> None:
-        if mode in {"manual", "ai"}:
-            self._rebuild_workspace_toolbar(mode)
-
-    def _add_workspace_toolbar_item(self, mode: str, item_id: str) -> None:
-        if item_id not in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(mode, ()):
-            return
-        items = self._workspace_toolbar_layouts.setdefault(mode, [])
-        if item_id in items:
-            return
-        items.append(item_id)
-        self._save_workspace_toolbar_layouts()
-        self._rebuild_toolbar_for_mode(mode)
-        self._rebuild_workspace_toolbar_editor()
-
-    def _remove_workspace_toolbar_item(self, mode: str, item_id: str) -> None:
-        items = self._workspace_toolbar_layouts.get(mode)
-        if not items or item_id not in items:
-            return
-        items.remove(item_id)
-        self._save_workspace_toolbar_layouts()
-        self._rebuild_toolbar_for_mode(mode)
-        self._rebuild_workspace_toolbar_editor()
-
-    def _move_workspace_toolbar_item(self, mode: str, item_id: str, direction: int) -> None:
-        items = self._workspace_toolbar_layouts.get(mode)
-        if not items or item_id not in items:
-            return
-        index = items.index(item_id)
-        target = index + direction
-        if target < 0 or target >= len(items):
-            return
-        items[index], items[target] = items[target], items[index]
-        self._save_workspace_toolbar_layouts()
-        self._rebuild_toolbar_for_mode(mode)
-        self._rebuild_workspace_toolbar_editor()
-
-    def _reset_workspace_toolbar_items(self, mode: str) -> None:
-        self._workspace_toolbar_layouts[mode] = list(self.WORKSPACE_TOOLBAR_DEFAULTS.get(mode, ()))
-        self._save_workspace_toolbar_layouts()
-        self._rebuild_toolbar_for_mode(mode)
-        self._rebuild_workspace_toolbar_editor()
-
-    def _toolbar_editor_parent_for_mode(self, mode: str) -> QWidget:
-        return self.workspace_bar
-
-    def _rebuild_workspace_toolbar_editor(self) -> None:
-        mode = self._toolbar_edit_target_mode if self._toolbar_edit_target_mode in self.WORKSPACE_TOOLBAR_DEFAULTS else "manual"
-        overlay_parent = self._toolbar_editor_parent_for_mode(mode)
-        if self._toolbar_edit_overlay is None:
-            self._toolbar_edit_overlay = QFrame(overlay_parent)
-            self._toolbar_edit_overlay.setObjectName("toolbarEditOverlay")
-            self._toolbar_edit_overlay.setAutoFillBackground(True)
-            overlay_layout = QHBoxLayout(self._toolbar_edit_overlay)
-        elif self._toolbar_edit_overlay.parentWidget() is not overlay_parent:
-            self._toolbar_edit_overlay.hide()
-            self._toolbar_edit_overlay.setParent(overlay_parent)
-        overlay_layout = self._toolbar_edit_overlay.layout()
-        if overlay_layout is None:
-            return
-        overlay_layout.setContentsMargins(6, 4, 6, 4)
-        overlay_layout.setSpacing(6)
-        self._clear_layout_items(overlay_layout, delete_widgets=True)
-
-        title_text = {
-            "manual": "Manual Review Toolbar",
-            "ai": "AI Review Toolbar",
-        }.get(mode, "Toolbar")
-        title = QLabel(title_text, self._toolbar_edit_overlay)
-        title.setObjectName("toolbarEditTitle")
-        overlay_layout.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        mode_row = QWidget(self._toolbar_edit_overlay)
-        mode_row_layout = QHBoxLayout(mode_row)
-        mode_row_layout.setContentsMargins(0, 0, 0, 0)
-        mode_row_layout.setSpacing(4)
-        for target_mode, label in (("manual", "Manual"), ("ai", "AI Review")):
-            mode_button = QToolButton(mode_row)
-            mode_button.setObjectName("toolbarEditModeButton")
-            mode_button.setText(label)
-            mode_button.setCheckable(True)
-            mode_button.setChecked(mode == target_mode)
-            mode_button.clicked.connect(lambda _checked=False, selected=target_mode: self._select_toolbar_edit_target_mode(selected))
-            mode_row_layout.addWidget(mode_button)
-        overlay_layout.addWidget(mode_row, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        add_button = QToolButton(self._toolbar_edit_overlay)
-        add_button.setObjectName("toolbarEditAddButton")
-        add_button.setText("+ Add Button")
-        add_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        add_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        add_menu = QMenu(add_button)
-        available_items = self._available_toolbar_items_for_mode(mode)
-        for item_id in available_items:
-            action = add_menu.addAction(self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id))
-            action.triggered.connect(lambda _checked=False, selected=item_id: self._add_workspace_toolbar_item(mode, selected))
-        if not available_items:
-            empty_action = add_menu.addAction("All buttons added")
-            empty_action.setEnabled(False)
-        add_button.setMenu(add_menu)
-        overlay_layout.addWidget(add_button, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        chip_row = QWidget(self._toolbar_edit_overlay)
-        chip_row_layout = QHBoxLayout(chip_row)
-        chip_row_layout.setContentsMargins(0, 0, 0, 0)
-        chip_row_layout.setSpacing(5)
-        active_items = self._workspace_toolbar_layouts.get(mode, [])
-        for item_id in active_items:
-            chip = QFrame(chip_row)
-            chip.setObjectName("toolbarEditChip")
-            chip_layout = QHBoxLayout(chip)
-            chip_layout.setContentsMargins(5, 2, 4, 2)
-            chip_layout.setSpacing(3)
-
-            item_label = QLabel(self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id), chip)
-            item_label.setObjectName("toolbarEditHint")
-            chip_layout.addWidget(item_label)
-
-            left_button = QToolButton(chip)
-            left_button.setObjectName("toolbarEditMoveButton")
-            left_button.setText("<")
-            left_button.setEnabled(active_items.index(item_id) > 0)
-            left_button.clicked.connect(lambda _checked=False, selected=item_id: self._move_workspace_toolbar_item(mode, selected, -1))
-            chip_layout.addWidget(left_button)
-
-            right_button = QToolButton(chip)
-            right_button.setObjectName("toolbarEditMoveButton")
-            right_button.setText(">")
-            right_button.setEnabled(active_items.index(item_id) < len(active_items) - 1)
-            right_button.clicked.connect(lambda _checked=False, selected=item_id: self._move_workspace_toolbar_item(mode, selected, 1))
-            chip_layout.addWidget(right_button)
-
-            remove_button = QToolButton(chip)
-            remove_button.setObjectName("toolbarEditRemoveButton")
-            remove_button.setText("-")
-            remove_button.setToolTip(f"Remove {self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)}")
-            remove_button.clicked.connect(lambda _checked=False, selected=item_id: self._remove_workspace_toolbar_item(mode, selected))
-            chip_layout.addWidget(remove_button)
-            chip_row_layout.addWidget(chip)
-        if not active_items:
-            empty_label = QLabel("Toolbar empty", chip_row)
-            empty_label.setObjectName("toolbarEditHint")
-            chip_row_layout.addWidget(empty_label)
-        chip_row_layout.addStretch(1)
-        overlay_layout.addWidget(chip_row, 1, Qt.AlignmentFlag.AlignVCenter)
-
-        reset_button = QPushButton("Reset", self._toolbar_edit_overlay)
-        reset_button.setObjectName("toolbarEditResetButton")
-        reset_button.clicked.connect(lambda _checked=False: self._reset_workspace_toolbar_items(mode))
-        overlay_layout.addWidget(reset_button, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        done_button = QPushButton("Done", self._toolbar_edit_overlay)
-        done_button.setObjectName("toolbarEditDoneButton")
-        done_button.clicked.connect(self._hide_workspace_toolbar_editor)
-        overlay_layout.addWidget(done_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._toolbar_edit_overlay.show()
-        self._position_workspace_toolbar_editor()
 
     def _build_record_filter_actions(self) -> None:
         file_type_group = QActionGroup(self)
@@ -8724,37 +7629,7 @@ class MainWindow(QMainWindow):
             self._update_action_states()
 
     def _refresh_catalog_menu(self) -> None:
-        if not hasattr(self, "catalog_menu") or self.catalog_menu is None:
-            return
-        self.catalog_menu.clear()
-        self.catalog_menu.setTitle("Catalog")
-        self.catalog_menu.addAction(self.actions.browse_catalog)
-        self.catalog_menu.addAction(self.actions.add_current_folder_to_catalog)
-        self.catalog_menu.addAction(self.actions.add_folder_to_catalog)
-        self.catalog_menu.addAction(self.actions.remove_catalog_folder)
-        self.catalog_menu.addAction(self.actions.refresh_catalog)
-        self.catalog_menu.addAction(self.actions.rebuild_folder_catalog_cache)
-        self.catalog_menu.addSeparator()
-
-        roots = self._library_store.list_catalog_roots()
-        if roots:
-            header = self.catalog_menu.addSection("Indexed Roots")
-            header.setEnabled(False)
-            for root in roots:
-                label = Path(root.path).name or root.path
-                action = self.catalog_menu.addAction(f"{label} ({root.indexed_record_count})")
-                tooltip_parts = [root.path]
-                if root.last_indexed_at:
-                    tooltip_parts.append(f"Indexed: {root.last_indexed_at}")
-                if root.last_error:
-                    tooltip_parts.append(f"Status: {root.last_error}")
-                action.setToolTip("\n".join(tooltip_parts))
-                action.triggered.connect(lambda _checked=False, target=root.path: self._browse_catalog(root_path_override=target))
-        else:
-            empty_action = self.catalog_menu.addAction("No catalog roots yet")
-            empty_action.setEnabled(False)
-        if self.actions is not None:
-            self._update_action_states()
+        self._catalog.refresh_catalog_menu()
 
     def _open_command_palette(self, _checked: bool = False, *, context: str | None = None) -> None:
         if self._collection_mode:
@@ -8923,7 +7798,6 @@ class MainWindow(QMainWindow):
             add_action_command("ai.next_unreviewed_top_pick", self.actions.next_unreviewed_ai_pick, section="AI", keywords=("unreviewed ai pick",))
             add_action_command("ai.compare_group", self.actions.compare_ai_group, section="AI", keywords=("compare ai cluster", "group compare"))
             add_action_command("ai.people", self.actions.manage_people, section="AI", keywords=("people", "faces", "person names", "face search"))
-            add_action_command("window.customize_toolbar", self.actions.customize_workspace_toolbar, section="Workspace", keywords=("customize toolbar", "edit toolbar", "ui edit mode"))
             add_action_command("window.reset_layout", self.actions.reset_layout, section="Workspace", keywords=("restore layout", "default workspace"))
             add_action_command("help.keyboard_help", self.actions.keyboard_help, section="Help", keywords=("quick help", "shortcuts", "help"))
             add_action_command("help.ai_guide", self.actions.ai_guide, section="Help", keywords=("ai guide", "ai training guide", "model guide", "ai help"))
@@ -11160,51 +10034,6 @@ class MainWindow(QMainWindow):
         dialog = FileAssociationsDialog(self)
         dialog.exec()
 
-    def _configure_toolbar_context_target(self, widget: QWidget | None, mode: str) -> None:
-        if widget is None:
-            return
-        widget.setProperty(self._toolbar_context_mode_property, mode)
-        if widget.property(self._toolbar_context_installed_property):
-            return
-        widget.installEventFilter(self)
-        widget.setProperty(self._toolbar_context_installed_property, True)
-
-    def _toolbar_context_mode_for(self, watched: object) -> str:
-        if not isinstance(watched, QObject):
-            return ""
-        try:
-            mode = watched.property(self._toolbar_context_mode_property)
-        except RuntimeError:
-            return ""
-        if not isinstance(mode, str):
-            return ""
-        if mode == "workspace":
-            return self._ui_mode
-        if mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            return mode
-        return ""
-
-    def _handle_toolbar_context_event(self, mode: str, event) -> bool:
-        if event.type() != QEvent.Type.ContextMenu:
-            return False
-        self._show_toolbar_context_menu(mode, event.globalPos())
-        return True
-
-    def _show_toolbar_context_menu(self, mode: str, global_pos) -> None:
-        if self._collection_mode:
-            return
-        target_mode = mode if mode in self.WORKSPACE_TOOLBAR_DEFAULTS else self._ui_mode
-        menu = QMenu(self)
-        action = self.actions.customize_workspace_toolbar if self.actions is not None else None
-        toolbar_label = {
-            "manual": "Manual Review Toolbar",
-            "ai": "AI Review Toolbar",
-        }.get(target_mode, "Toolbar")
-        customize_action = menu.addAction(self._menu_text_with_action_shortcut(f"Customize {toolbar_label}...", action))
-        chosen = menu.exec(global_pos)
-        if chosen == customize_action:
-            self._begin_inplace_toolbar_edit(target_mode)
-
     def _handle_tree_selection(self, index) -> None:
         folder = self.folder_model.filePath(index)
         if folder:
@@ -11266,34 +10095,7 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         try:
-            if (
-                self._toolbar_edit_mode
-                and watched is getattr(self, "_toolbar_edit_hud_drag_handle", None)
-                and self._handle_toolbar_edit_hud_drag(event)
-            ):
-                return True
-            # In-place edit mode: mouse presses/moves on lifted items drive the
-            # drag-to-reorder; everything else that would trigger the item's
-            # normal action is swallowed while the user is arranging the bar.
-            if self._toolbar_edit_mode and self._is_toolbar_edit_widget(watched):
-                if isinstance(watched, QWidget) and self._handle_toolbar_edit_drag(watched, event):
-                    return True
-                if event.type() in (
-                    QEvent.Type.MouseButtonPress,
-                    QEvent.Type.MouseButtonRelease,
-                    QEvent.Type.MouseButtonDblClick,
-                    QEvent.Type.ContextMenu,
-                    QEvent.Type.Wheel,
-                    QEvent.Type.FocusIn,
-                ):
-                    return True
-            toolbar_mode = self._toolbar_context_mode_for(watched)
-            if toolbar_mode and self._handle_toolbar_context_event(toolbar_mode, event):
-                return True
             if hasattr(self, "central_container") and watched is self.central_container:
-                if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
-                    self._position_workspace_toolbar_editor()
-                    self._position_toolbar_edit_hud()
                 if event.type() == QEvent.Type.Resize and hasattr(self, "zen_hint_overlay"):
                     self._position_zen_hint_overlay()
             if watched is getattr(self, "browser_stack", None) and event.type() in (QEvent.Type.Resize, QEvent.Type.Move):
@@ -11314,19 +10116,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "topbar_action_stack") and watched is self.topbar_action_stack:
                 if event.type() == QEvent.Type.Resize:
                     self._update_topbar_overflow(self._ui_mode)
-                    if self._toolbar_edit_mode:
-                        self._position_toolbar_edit_hud()
-                if event.type() == QEvent.Type.MouseButtonDblClick:
-                    self._begin_inplace_toolbar_edit(self._ui_mode)
-                    return True
             if hasattr(self, "workspace_bar") and watched is self.workspace_bar:
-                if event.type() == QEvent.Type.Resize and self._toolbar_edit_mode:
-                    self._position_workspace_toolbar_editor()
-                    self._position_toolbar_edit_hud()
                 if self._handle_workspace_bar_drag_event(event):
-                    return True
-                if event.type() == QEvent.Type.MouseButtonDblClick:
-                    self._begin_inplace_toolbar_edit(self._ui_mode)
                     return True
             if hasattr(self, "workspace_bar_drag_handle") and watched is self.workspace_bar_drag_handle:
                 if self._handle_workspace_bar_drag_event(event):
@@ -11342,15 +10133,6 @@ class MainWindow(QMainWindow):
                     self._schedule_workspace_toolbar_overflow_update("manual")
                 elif watched is self.ai_toolbar:
                     self._schedule_workspace_toolbar_overflow_update("ai")
-            if hasattr(self, "toolbar_stack") and watched is self.toolbar_stack and event.type() == QEvent.Type.MouseButtonDblClick:
-                self._begin_inplace_toolbar_edit(self._ui_mode)
-                return True
-            if hasattr(self, "manual_toolbar") and watched is self.manual_toolbar and event.type() == QEvent.Type.MouseButtonDblClick:
-                self._begin_inplace_toolbar_edit("manual")
-                return True
-            if hasattr(self, "ai_toolbar") and watched is self.ai_toolbar and event.type() == QEvent.Type.MouseButtonDblClick:
-                self._begin_inplace_toolbar_edit("ai")
-                return True
             folder_viewport = self.folder_tree.viewport() if hasattr(self, "folder_tree") else None
             if watched is folder_viewport:
                 handled = self._handle_record_drop_event(event, source="folder_tree")
@@ -11822,60 +10604,6 @@ class MainWindow(QMainWindow):
         self._close_workflow_progress_dialog()
         QMessageBox.warning(self, "Workflow Export Failed", f"Could not apply the workflow export.\n\n{message}")
 
-    def _start_catalog_refresh(self, root_paths: tuple[str, ...] | list[str], *, label: str) -> bool:
-        roots = tuple(normalize_filesystem_path(path) for path in root_paths if normalize_filesystem_path(path))
-        if not roots:
-            return False
-        if self._active_catalog_task is not None:
-            QMessageBox.information(self, "Catalog Refresh Running", "A catalog refresh is already in progress.")
-            return False
-        dialog = self._show_catalog_progress_dialog(max(1, len(roots)))
-        dialog.setLabelText(label)
-        task = CatalogRefreshTask(roots)
-        task.signals.started.connect(self._handle_catalog_refresh_started, Qt.ConnectionType.QueuedConnection)
-        task.signals.progress.connect(self._handle_catalog_refresh_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_catalog_refresh_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_catalog_refresh_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_catalog_task = task
-        self._catalog_context = CatalogExecutionContext(root_paths=roots, label=label)
-        self._catalog_pool.start(task)
-        self.statusBar().showMessage(label)
-        return True
-
-    def _handle_catalog_refresh_started(self, total_roots: int) -> None:
-        dialog = self._show_catalog_progress_dialog(total_roots)
-        context = self._catalog_context
-        dialog.setLabelText(context.label if context is not None else "Refreshing global catalog...")
-
-    def _handle_catalog_refresh_progress(self, current: int, total: int, message: str) -> None:
-        dialog = self._show_catalog_progress_dialog(total)
-        self._update_progress_dialog(
-            dialog,
-            current=current,
-            total=total,
-            message=message,
-            default_label="Refreshing global catalog...",
-        )
-
-    def _handle_catalog_refresh_finished(self, result: object) -> None:
-        summary = result if isinstance(result, CatalogRefreshSummary) else None
-        self._active_catalog_task = None
-        self._catalog_context = None
-        self._close_catalog_progress_dialog()
-        self._refresh_catalog_menu()
-        if summary is None:
-            self.statusBar().showMessage("Catalog refresh complete")
-            return
-        message = f"Catalog refreshed: {summary.record_count} image bundle(s) across {summary.folder_count} folder(s)"
-        if summary.missing_roots:
-            message = f"{message} | Missing roots: {len(summary.missing_roots)}"
-        self.statusBar().showMessage(message)
-
-    def _handle_catalog_refresh_failed(self, message: str) -> None:
-        self._active_catalog_task = None
-        self._catalog_context = None
-        self._close_catalog_progress_dialog()
-        QMessageBox.warning(self, "Catalog Refresh Failed", f"Could not refresh the global catalog.\n\n{message}")
 
     def _handle_resize_started(self, total_steps: int) -> None:
         dialog = self._show_resize_progress_dialog(total_steps)
@@ -12268,25 +10996,6 @@ class MainWindow(QMainWindow):
     def _close_workflow_progress_dialog(self) -> None:
         self._close_job_progress_dialog("workflow")
         self._workflow_progress_dialog = None
-
-    def _show_catalog_progress_dialog(self, total_steps: int) -> QProgressDialog:
-        dialog = self._show_job_progress_dialog(
-            key="catalog",
-            total_steps=total_steps,
-            spec=JobSpec(
-                title="Global Catalog",
-                preparing_label="Refreshing global catalog...",
-                running_label="Refreshing global catalog...",
-                window_modality=Qt.WindowModality.NonModal,
-                stays_on_top=True,
-            ),
-        )
-        self._catalog_progress_dialog = dialog
-        return dialog
-
-    def _close_catalog_progress_dialog(self) -> None:
-        self._close_job_progress_dialog("catalog")
-        self._catalog_progress_dialog = None
 
     def _show_archive_progress_dialog(self, total_steps: int, *, title: str) -> QProgressDialog:
         key = f"archive:{title.casefold()}"
@@ -13800,7 +12509,6 @@ class MainWindow(QMainWindow):
         self.actions.best_of_set_auto_assembly.setEnabled(bool(self._records) and (self._ai_bundle is not None or self._review_intelligence is not None))
         self.actions.keyboard_shortcuts.setEnabled(True)
         self.actions.save_workspace_preset.setEnabled(self.workspace_docks is not None)
-        self.actions.customize_workspace_toolbar.setEnabled(not self._toolbar_edit_mode)
         self.actions.new_folder.setEnabled(bool(self._current_folder))
         self.actions.save_filter_preset.setEnabled(self._filter_query.has_active_filters)
         self.actions.delete_filter_preset.setEnabled(self._matching_saved_filter_preset() is not None)
@@ -13813,8 +12521,6 @@ class MainWindow(QMainWindow):
         self._refresh_update_button_state()
         self._refresh_tool_mode_ui()
         self._refresh_directory_navigation_buttons()
-        if self._toolbar_edit_mode:
-            self._set_workspace_toolbar_controls_enabled(False)
         if self._collection_mode:
             self._limit_actions_for_collection_mode()
         if logger.enabled:
@@ -13973,373 +12679,47 @@ class MainWindow(QMainWindow):
         record = self._record_at(current_index)
         return [record] if record is not None else []
 
-    def _selected_record_paths_for_library(self) -> tuple[str, ...]:
-        return tuple(record.path for record in self._selected_records_for_workflow())
-
-    def _choose_virtual_collection(
-        self,
-        *,
-        title: str,
-        prompt: str,
-    ) -> VirtualCollection | None:
-        collections = self._library_store.list_collections()
-        if not collections:
-            self.statusBar().showMessage("Create a collection first.")
-            return None
-        labels: list[str] = []
-        label_to_id: dict[str, str] = {}
-        for collection in collections:
-            label = f"{collection.name} ({collection.item_count})"
-            if label in label_to_id:
-                label = f"{label} [{collection.id}]"
-            labels.append(label)
-            label_to_id[label] = collection.id
-        default_label = labels[0]
-        if self._scope_kind == "collection" and self._scope_id:
-            current_collection = self._library_store.load_collection(self._scope_id)
-            if current_collection is not None:
-                for label, collection_id in label_to_id.items():
-                    if collection_id == current_collection.id:
-                        default_label = label
-                        break
-        choice, accepted = QInputDialog.getItem(self, title, prompt, labels, labels.index(default_label), False)
-        if not accepted or not choice:
-            return None
-        return self._library_store.load_collection(label_to_id[str(choice)])
-
-    def _resolve_records_for_paths(self, paths: tuple[str, ...] | list[str]) -> tuple[list[ImageRecord], int]:
-        ordered_paths: list[str] = []
-        seen: set[str] = set()
-        for path in paths:
-            normalized = normalize_filesystem_path(path)
-            key = normalized_path_key(normalized)
-            if not normalized or key in seen:
-                continue
-            seen.add(key)
-            ordered_paths.append(normalized)
-
-        if not ordered_paths:
-            return [], 0
-
-        catalog_records = self._library_store.load_catalog_records_for_paths(ordered_paths)
-        folder_record_maps: dict[str, dict[str, ImageRecord]] = {}
-        for path in ordered_paths:
-            folder = normalize_filesystem_path(str(Path(path).parent))
-            folder_key = normalized_path_key(folder)
-            if folder_key in folder_record_maps:
-                continue
-            records, _source = self._load_cached_folder_records(folder)
-            if records is None:
-                try:
-                    records = scan_folder(folder)
-                except Exception:
-                    records = []
-                else:
-                    self._persist_folder_record_cache(folder, records, source="collection-resolve")
-            folder_record_maps[folder_key] = {
-                normalized_path_key(record.path): record
-                for record in records
-            }
-
-        resolved: list[ImageRecord] = []
-        missing = 0
-        added: set[str] = set()
-        for path in ordered_paths:
-            key = normalized_path_key(path)
-            folder_key = normalized_path_key(str(Path(path).parent))
-            record = folder_record_maps.get(folder_key, {}).get(key) or catalog_records.get(key)
-            if record is None or not os.path.exists(record.path):
-                missing += 1
-                continue
-            record_key = normalized_path_key(record.path)
-            if record_key in added:
-                continue
-            added.add(record_key)
-            resolved.append(record)
-        return resolved, missing
-
     def _create_virtual_collection_from_selection(self) -> None:
-        self._begin_collection_mode("create")
+        self._catalog.create_virtual_collection_from_selection()
 
     def _begin_collection_mode(self, mode: str, *, collection: VirtualCollection | None = None) -> None:
-        if self._collection_mode:
-            return
-        if self._zen_mode_enabled:
-            self._set_zen_mode(False)
-        if self._active_tool_mode or self.grid.tool_checkbox_mode():
-            self._cancel_tool_mode(show_message=False)
-        self.grid.clear_adapter_review_mode()
-        self._collection_previous_view = self._browser_view_mode
-        self._collection_previous_inspector_enabled = self.inspector_panel.isEnabled()
-        self._collection_mode = mode
-        self._collection_target_id = collection.id if collection is not None else ""
-        self.grid.set_collection_checkbox_mode(True, paths=collection.item_paths if collection is not None else ())
-        self.grid.clear_selection(keep_current=True)
-        self.preview.set_collection_browse_mode(True)
-        self.inspector_panel.setEnabled(False)
-        self._set_browser_view_mode("grid")
-        self._refresh_collection_mode_ui()
-        self._update_action_states()
-        self.statusBar().showMessage("Collection mode: check images across folders, then save or cancel.")
+        self._catalog.begin_collection_mode(mode, collection=collection)
 
     def _refresh_collection_mode_ui(self) -> None:
-        if not self._collection_mode:
-            return
-        count = len(self.grid.collection_paths())
-        self.collection_mode_bar.show()
-        self.collection_mode_count.setText(f"{count} image{'s' if count != 1 else ''} checked")
-        if self._collection_mode == "create":
-            self.collection_mode_title.setText("New Collection")
-            self.collection_mode_save_button.setText("Save Collection")
-            self.collection_mode_save_button.setEnabled(count > 0)
-        else:
-            collection = self._library_store.load_collection(self._collection_target_id)
-            self.collection_mode_title.setText(f"Edit: {collection.name}" if collection else "Edit Collection")
-            self.collection_mode_save_button.setText("Save Changes")
-            self.collection_mode_save_button.setEnabled(collection is not None)
+        self._catalog.refresh_collection_mode_ui()
 
     def _cancel_collection_mode(self, checked: bool = False, *, show_message: bool = True) -> None:
-        del checked
-        if not self._collection_mode:
-            return
-        previous_view = self._collection_previous_view
-        self._collection_mode = ""
-        self._collection_target_id = ""
-        self.grid.set_collection_checkbox_mode(False)
-        self.preview.set_collection_browse_mode(False)
-        self.inspector_panel.setEnabled(self._collection_previous_inspector_enabled)
-        self.collection_mode_bar.hide()
-        self._set_browser_view_mode(previous_view)
-        self._update_action_states()
-        if show_message:
-            self.statusBar().showMessage("Collection mode canceled; no collection changes were saved.")
+        self._catalog.cancel_collection_mode(checked, show_message=show_message)
 
     def _save_collection_mode(self, checked: bool = False) -> None:
-        del checked
-        if not self._collection_mode:
-            return
-        paths = self.grid.collection_paths()
-        if self._collection_mode == "edit":
-            collection = self._library_store.load_collection(self._collection_target_id)
-            if collection is None:
-                self.statusBar().showMessage("That collection is no longer available.")
-                return
-            saved = self._library_store.replace_collection_paths(collection.id, paths)
-            if saved is None:
-                self.statusBar().showMessage("The collection could not be saved. Your picks are still checked.")
-                return
-            self._cancel_collection_mode(show_message=False)
-            if getattr(self, "_scope_kind", "") == "collection" and self._scope_id == saved.id:
-                records, _missing = self._resolve_records_for_paths(saved.item_paths)
-                self._load_virtual_scope_records(
-                    records,
-                    scope_kind="collection",
-                    scope_id=saved.id,
-                    scope_label=f"Collection: {saved.name}",
-                )
-            self._refresh_collections_menu()
-            self.statusBar().showMessage(f"Saved collection: {saved.name} ({saved.item_count} items)")
-            return
-        if not paths:
-            return
-        dialog = CollectionEditDialog(selection_count=len(paths), parent=self)
-        if self._exec_dialog_with_geometry(dialog, "collection_edit") != dialog.DialogCode.Accepted:
-            return
-        result = dialog.result_data()
-        existing = self._library_store.find_collection_by_name(result.name)
-        if existing is not None:
-            overwrite = QMessageBox.question(
-                self,
-                "Replace Collection?",
-                f"{existing.name} already exists.\n\nReplace its items with the current selection?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if overwrite != QMessageBox.StandardButton.Yes:
-                return
-            self._library_store.update_collection(
-                VirtualCollection(
-                    id=existing.id,
-                    name=result.name,
-                    description=result.description,
-                    kind=result.kind,
-                    item_paths=existing.item_paths,
-                    item_count=existing.item_count,
-                    created_at=existing.created_at,
-                    updated_at=existing.updated_at,
-                )
-            )
-            collection = self._library_store.replace_collection_paths(existing.id, paths)
-        else:
-            collection = self._library_store.create_collection(
-                name=result.name,
-                description=result.description,
-                kind=result.kind,
-                item_paths=paths,
-            )
-        self._refresh_collections_menu()
-        if collection is not None:
-            self._cancel_collection_mode(show_message=False)
-            self.statusBar().showMessage(f"Saved collection: {collection.name} ({collection.item_count} items)")
+        self._catalog.save_collection_mode(checked)
 
     def _open_virtual_collection(self, collection_id: str) -> None:
-        collection = self._library_store.load_collection(collection_id)
-        if collection is None:
-            self._refresh_collections_menu()
-            self.statusBar().showMessage("That collection is no longer available.")
-            return
-        records, missing = self._resolve_records_for_paths(collection.item_paths)
-        if not records:
-            self.statusBar().showMessage(f"{collection.name} has no available files to open.")
-            return
-        self._load_virtual_scope_records(
-            records,
-            scope_kind="collection",
-            scope_id=collection.id,
-            scope_label=f"Collection: {collection.name}",
-        )
-        if missing:
-            self.statusBar().showMessage(f"Loaded collection {collection.name} ({len(records)} available, {missing} missing)")
+        self._catalog.open_virtual_collection(collection_id)
 
     def _add_selection_to_virtual_collection(self) -> None:
-        collection = self._choose_virtual_collection(title="Edit Collection Items", prompt="Collection")
-        if collection is None:
-            return
-        self._begin_collection_mode("edit", collection=collection)
+        self._catalog.add_selection_to_virtual_collection()
 
     def _remove_selection_from_virtual_collection(self) -> None:
-        paths = self._selected_record_paths_for_library()
-        if not paths:
-            self.statusBar().showMessage("Select one or more images before removing them from a collection.")
-            return
-        collection = None
-        if self._scope_kind == "collection" and self._scope_id:
-            collection = self._library_store.load_collection(self._scope_id)
-        if collection is None:
-            collection = self._choose_virtual_collection(title="Remove From Collection", prompt="Collection")
-        if collection is None:
-            return
-        updated = self._library_store.remove_paths_from_collection(collection.id, paths)
-        self._refresh_collections_menu()
-        if updated is None:
-            return
-        if self._scope_kind == "collection" and self._scope_id == updated.id:
-            records, missing = self._resolve_records_for_paths(updated.item_paths)
-            self._load_virtual_scope_records(
-                records,
-                scope_kind="collection",
-                scope_id=updated.id,
-                scope_label=f"Collection: {updated.name}",
-            )
-            if missing:
-                self.statusBar().showMessage(f"Updated {updated.name} ({len(records)} available, {missing} missing)")
-            return
-        self.statusBar().showMessage(f"Removed selected items from {updated.name}")
+        self._catalog.remove_selection_from_virtual_collection()
 
     def _delete_virtual_collection(self) -> None:
-        collection = None
-        if self._scope_kind == "collection" and self._scope_id:
-            collection = self._library_store.load_collection(self._scope_id)
-        if collection is None:
-            collection = self._choose_virtual_collection(title="Delete Collection", prompt="Collection")
-        if collection is None:
-            return
-        confirmation = QMessageBox.question(
-            self,
-            "Delete Collection?",
-            f"Delete the collection \"{collection.name}\"?\n\nThis does not delete any files.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirmation != QMessageBox.StandardButton.Yes:
-            return
-        deleted = self._library_store.delete_collection(collection.id)
-        self._refresh_collections_menu()
-        if deleted and self._scope_kind == "collection" and self._scope_id == collection.id:
-            last_folder = self._settings.value(self.LAST_FOLDER_KEY, "", str)
-            if last_folder and os.path.isdir(last_folder):
-                self._select_folder(last_folder)
-            else:
-                self._current_folder = ""
-                self._set_scope_state(kind="folder", scope_id="", label="")
-                self._apply_loaded_records([])
-        if deleted:
-            self.statusBar().showMessage(f"Deleted collection: {collection.name}")
+        self._catalog.delete_virtual_collection()
 
     def _browse_catalog(self, _checked: bool = False, *, root_path_override: str = "") -> None:
-        roots = tuple(self._library_store.list_catalog_roots())
-        if not roots:
-            self.statusBar().showMessage("Add one or more folders to the catalog first.")
-            return
-        search_text = ""
-        root_path = normalize_filesystem_path(root_path_override)
-        if not root_path_override:
-            dialog = CatalogSearchDialog(roots, parent=self)
-            if self._exec_dialog_with_geometry(dialog, "catalog_search") != dialog.DialogCode.Accepted:
-                return
-            result = dialog.result_data()
-            search_text = result.search_text
-            root_path = normalize_filesystem_path(result.root_path)
-        records = self._library_store.search_catalog(search_text=search_text, root_path=root_path)
-        if not records:
-            self.statusBar().showMessage("No catalog matches were found.")
-            return
-        if root_path:
-            root_label = Path(root_path).name or root_path
-            scope_label = f"Catalog: {root_label}"
-        else:
-            scope_label = "Catalog: All Indexed Folders"
-        if search_text:
-            scope_label = f'{scope_label} | Search "{search_text}"'
-        scope_id = f"{normalized_path_key(root_path)}|{search_text.casefold()}"
-        self._load_virtual_scope_records(records, scope_kind="catalog", scope_id=scope_id, scope_label=scope_label)
+        self._catalog.browse_catalog(_checked, root_path_override=root_path_override)
 
     def _add_current_folder_to_catalog(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Open a real folder before adding it to the catalog.")
-            return
-        self._library_store.add_catalog_root(self._current_folder)
-        self._refresh_catalog_menu()
-        self._start_catalog_refresh((self._current_folder,), label="Indexing current folder for catalog...")
+        self._catalog.add_current_folder_to_catalog()
 
     def _add_folder_to_catalog_prompt(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Add Folder To Catalog", self._current_folder or QDir.homePath())
-        if not folder:
-            return
-        self._library_store.add_catalog_root(folder)
-        self._refresh_catalog_menu()
-        self._start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for catalog...")
+        self._catalog.add_folder_to_catalog_prompt()
 
     def _remove_catalog_root_prompt(self) -> None:
-        roots = self._library_store.list_catalog_roots()
-        if not roots:
-            self.statusBar().showMessage("No catalog roots are configured.")
-            return
-        labels = [f"{Path(root.path).name or root.path} ({root.indexed_record_count})" for root in roots]
-        label_to_path = {label: root.path for label, root in zip(labels, roots)}
-        choice, accepted = QInputDialog.getItem(self, "Remove Catalog Root", "Catalog root", labels, 0, False)
-        if not accepted or not choice:
-            return
-        root_path = label_to_path[str(choice)]
-        confirmation = QMessageBox.question(
-            self,
-            "Remove Catalog Root?",
-            f"Remove {root_path} from the optional catalog index?\n\nThis does not move or delete files.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirmation != QMessageBox.StandardButton.Yes:
-            return
-        if self._library_store.remove_catalog_root(root_path):
-            self._refresh_catalog_menu()
-            self.statusBar().showMessage(f"Removed catalog root: {Path(root_path).name or root_path}")
+        self._catalog.remove_catalog_root_prompt()
 
     def _refresh_catalog_index(self) -> None:
-        roots = self._library_store.list_catalog_roots()
-        if not roots:
-            self.statusBar().showMessage("Add one or more folders to the catalog first.")
-            return
-        self._start_catalog_refresh(tuple(root.path for root in roots), label="Refreshing global catalog...")
+        self._catalog.refresh_catalog_index()
 
     def _open_handoff_builder(self, _checked: bool = False, *, initial_recipe: WorkflowRecipe | None = None) -> None:
         records = self._selected_records_for_workflow()
@@ -18142,24 +16522,13 @@ class MainWindow(QMainWindow):
             )
 
     def _rebuild_current_folder_catalog_cache(self) -> None:
-        if self._scope_kind != "folder" or not self._current_folder:
-            self.statusBar().showMessage("Open a real folder before rebuilding its catalog cache.")
-            return
-        self.statusBar().showMessage(f"Rebuilding catalog cache for {self._current_folder}...")
-        self._load_folder(self._current_folder, force_refresh=True, bypass_catalog_cache=True)
+        self._catalog.rebuild_current_folder_catalog_cache()
 
     def _load_cached_folder_records(self, folder: str) -> tuple[list[ImageRecord] | None, str]:
-        normalized_folder = normalize_filesystem_path(folder)
-        records = self._catalog_repository.load_folder_records(normalized_folder)
-        if records is not None:
-            return records, "catalog"
-        return None, ""
+        return self._catalog.load_cached_folder_records(folder)
 
     def _persist_folder_record_cache(self, folder: str, records: list[ImageRecord], *, source: str = "window") -> None:
-        normalized_folder = normalize_filesystem_path(folder)
-        if not normalized_folder:
-            return
-        self._catalog_repository.save_folder_records(normalized_folder, records, source=source)
+        self._catalog.persist_folder_record_cache(folder, records, source=source)
 
     def _refresh_current_folder_watch(self) -> None:
         target = ""
@@ -18315,8 +16684,7 @@ class MainWindow(QMainWindow):
         # Cache reads can be large enough to make Windows mark startup as hung. Let the
         # scanner worker emit cached records instead of loading the cache on the UI thread.
         self.statusBar().showMessage(f"Scanning {folder}...")
-        self._all_records = []
-        self._all_records_by_path = {}
+        self._records_repo.clear()
         self._folder_records = []
         self._refresh_directory_navigation_buttons()
         self._records = []
@@ -18468,8 +16836,7 @@ class MainWindow(QMainWindow):
         chunked_view: bool = False,
         current_path: str | None = None,
     ) -> None:
-        self._all_records = records
-        self._all_records_by_path = {record.path: record for record in records}
+        self._records_repo.reload(records)
         self._refresh_record_capability_cache(records)
         self._invalidate_training_label_counts_cache()
         self._edited_candidates_cache = {}
@@ -19762,8 +18129,7 @@ class MainWindow(QMainWindow):
         self._review_chunk_dirty_paths.clear()
         self._reset_unified_search_state()
         self._reset_semantic_index_state()
-        self._all_records = []
-        self._all_records_by_path = {}
+        self._records_repo.clear()
         self._folder_records = []
         self._refresh_directory_navigation_buttons()
         self._records = []
@@ -23925,8 +22291,7 @@ class MainWindow(QMainWindow):
         if not 0 <= index < len(self._records):
             return
         record = self._records[index]
-        self._all_records = [item for item in self._all_records if item.path != record.path]
-        self._all_records_by_path.pop(record.path, None)
+        self._records_repo.remove_paths((record.path,))
         next_path = self._next_visible_path(index)
         if next_path == record.path:
             next_path = None
@@ -23946,9 +22311,7 @@ class MainWindow(QMainWindow):
             return 0
         next_path = self._next_visible_path_after_batch_removal(indices)
         removed_paths = {self._records[index].path for index in indices}
-        self._all_records = [item for item in self._all_records if item.path not in removed_paths]
-        for path in removed_paths:
-            self._all_records_by_path.pop(path, None)
+        self._records_repo.remove_paths(removed_paths)
         if self._current_folder:
             self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-remove-batch")
         self._apply_records_view(current_path=next_path)
@@ -25179,23 +23542,14 @@ class MainWindow(QMainWindow):
         )
 
     def _replace_record(self, original_path: str, record: ImageRecord) -> None:
-        self._all_records = [
-            record if existing.path == original_path else existing
-            for existing in self._all_records
-        ]
-        self._all_records_by_path.pop(original_path, None)
-        self._all_records_by_path[record.path] = record
+        self._records_repo.replace_by_old_path({original_path: record})
         if self._current_folder:
             self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-replace")
 
     def _replace_records_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
         if not records_by_old_path:
             return
-        self._all_records = [
-            records_by_old_path.get(existing.path, existing)
-            for existing in self._all_records
-        ]
-        self._all_records_by_path = {record.path: record for record in self._all_records}
+        self._records_repo.replace_by_old_path(records_by_old_path)
         if self._current_folder:
             self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-move")
 
