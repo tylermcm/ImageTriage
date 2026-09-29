@@ -10,6 +10,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QAction, QContextMenuEvent, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QStatusBar, QWidget
 
+from image_triage.catalog_controller import CatalogController
 from image_triage.grid import ThumbnailGridView
 from image_triage.library_store import LibraryStore
 from image_triage.models import ImageRecord
@@ -65,6 +66,7 @@ class _ModeHost(QWidget):
         self.collection_mode_save_button = QPushButton(self)
         self._status = QStatusBar(self)
         self.refreshes = 0
+        self._catalog = CatalogController(self)
 
     def statusBar(self) -> QStatusBar:
         return self._status
@@ -99,6 +101,7 @@ class CollectionModeTests(unittest.TestCase):
         self.host = _ModeHost(self.store)
 
     def tearDown(self) -> None:
+        self.host._catalog = None
         self.host.close()
         if self.previous_appdata is None:
             os.environ.pop("IMAGE_TRIAGE_APPDATA", None)

@@ -60,13 +60,14 @@ def test_resize_progress_tick_updates_the_dialog_without_raising(main_window) ->
 
 
 def test_catalog_refresh_progress_tick_updates_the_dialog_without_raising(main_window) -> None:
-    dialog = main_window._show_catalog_progress_dialog(3)
-    main_window._handle_catalog_refresh_progress(1, 3, "Scanning C:/shots")
+    catalog = main_window._catalog
+    dialog = catalog._show_progress_dialog(3)
+    catalog._handle_progress(1, 3, "Scanning C:/shots")
 
     assert dialog.value() == 1
     assert dialog.maximum() == 3
     assert dialog.labelText() == "Scanning C:/shots"
-    main_window._close_catalog_progress_dialog()
+    catalog._close_progress_dialog()
 
 
 def test_app_update_dialog_goes_through_job_controller_not_a_shadowed_attribute(main_window) -> None:

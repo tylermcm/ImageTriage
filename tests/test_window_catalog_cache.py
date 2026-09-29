@@ -22,6 +22,7 @@ from image_triage.ai_results import (
 )
 from image_triage.ai_workflow import default_ai_workflow_runtime
 from image_triage.catalog import CatalogRepository
+from image_triage.catalog_controller import CatalogController
 from image_triage.models import ImageRecord
 from image_triage.review_workflows import BurstRecommendation, TasteProfile, build_review_scoring_cache_key
 from image_triage.window import (
@@ -52,6 +53,7 @@ def _record(path: str, *, name: str, size: int, modified_ns: int) -> ImageRecord
 class _WindowCacheStub:
     def __init__(self, repository: CatalogRepository) -> None:
         self._catalog_repository = repository
+        self._catalog = CatalogController(self)
 
 
 class _WindowRebuildStub:
@@ -60,6 +62,7 @@ class _WindowRebuildStub:
         self._current_folder = folder
         self.status_messages: list[str] = []
         self.load_calls: list[tuple[str, bool, bool]] = []
+        self._catalog = CatalogController(self)
 
     def statusBar(self):
         return self
