@@ -30,7 +30,7 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 from textwrap import dedent
 
-from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QEventLoop, QFile, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QEventLoop, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -158,7 +158,9 @@ from .ai_results import (
 from .batch_rename import BatchRenamePreview
 from .batch_rename_controller import BatchRenameApplyController, BatchRenameExecutionContext
 from .catalog_controller import CatalogController, CatalogExecutionContext
+from .command_palette_controller import CommandPaletteController
 from .folder_ops_controller import FolderOpsController
+from .record_ops_controller import RecordOpsController, UndoAction
 from .records_repository import RecordsRepository
 from .recycle_bin_controller import RecycleBinController
 from .brackets import BracketDetector
@@ -175,14 +177,10 @@ from .phash_prefilter import (
 )
 from .file_ops import (
     FileMove,
-    copy_paths,
     is_unc_path,
-    move_paths,
     record_paths,
-    rename_bundle_paths,
     unique_destination,
 )
-from .transfer_progress import TransferItem, run_move_transfer
 from .filtering import (
     AIStateFilter,
     FileTypeFilter,
@@ -236,7 +234,7 @@ from .workflows import (
     workflow_destination_dir,
     workflow_record_folder_name,
 )
-from .review_tools import FOCUS_ASSIST_COLORS, FOCUS_ASSIST_STRENGTHS, InspectionStats, build_inspection_stats
+from .review_tools import InspectionStats, build_inspection_stats
 from .records_view_cache import RecordsViewCache, ViewInvalidationReason
 from .review_intelligence import BuildReviewIntelligenceTask, ReviewIntelligenceBundle
 from .review_workflows import (
@@ -295,7 +293,6 @@ from .ui import (
     HelpMarkdownDialog,
     InspectorPanel,
     MainWindowActions,
-    PaletteCommand,
     PeopleSearchDialog,
     ResizeDialog,
     SHORTCUT_REGISTRY,
@@ -370,28 +367,6 @@ def _window_opacity() -> float:
     except ValueError:
         value = WINDOW_OPACITY
     return min(1.0, max(0.1, value))
-
-
-@dataclass(slots=True)
-class UndoAction:
-    """Captures the minimum state needed to reverse one destructive user action."""
-    kind: str
-    primary_path: str
-    file_moves: tuple[FileMove, ...] = ()
-    original_winner: bool = False
-    original_reject: bool = False
-    original_photoshop: bool = False
-    rating: int = 0
-    tags: tuple[str, ...] = ()
-    original_review_round: str = ""
-    folder: str = ""
-    source_paths: tuple[str, ...] = ()
-    session_id: str = ""
-    winner_mode: str = ""
-    # Actions pushed from the same batch operation (e.g. one multi-file move)
-    # share a non-empty batch_id, so a single Undo reverses all of them and
-    # does one view refresh, not one per file.
-    batch_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -2913,6 +2888,8 @@ class MainWindow(QMainWindow):
         self._scope_label = ""
         self._scan_in_progress = False
         self._records_repo = RecordsRepository()
+        self._record_ops = RecordOpsController(self)
+        self._command_palette = CommandPaletteController(self)
         self._folder_records: list[ImageRecord] = []
         self._records: list[ImageRecord] = []
         self._record_index_by_path: dict[str, int] = {}
@@ -7405,14 +7382,7 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_command_palette_shortcut(self, shortcut: str) -> None:
-        sequence = QKeySequence(shortcut)
-        if self._command_palette_shortcut_main is not None:
-            self._command_palette_shortcut_main.setKey(sequence)
-        if self._command_palette_shortcut_preview is not None:
-            self._command_palette_shortcut_preview.setKey(sequence)
-        if self.actions is not None:
-            self.actions.open_command_palette.setShortcut(sequence)
-            self._refresh_action_shortcut_hint(self.actions.open_command_palette)
+        self._command_palette.apply_shortcut(shortcut)
 
     def _load_saved_workflow_recipes(self) -> list[WorkflowRecipe]:
         raw = self._settings.value(self.WORKFLOW_RECIPES_KEY, "", str)
@@ -7632,553 +7602,13 @@ class MainWindow(QMainWindow):
         self._catalog.refresh_catalog_menu()
 
     def _open_command_palette(self, _checked: bool = False, *, context: str | None = None) -> None:
-        if self._collection_mode:
-            self.statusBar().showMessage("Finish collection mode before using commands.")
-            return
-        palette_context = context or ("preview" if self.preview.isVisible() and self.preview.isActiveWindow() else "main")
-        if self._active_command_palette is not None and self._active_command_palette.isVisible():
-            return
-        dialog = self._ensure_command_palette_dialog(palette_context)
-        commands = self._build_command_palette_commands(palette_context)
-        dialog.configure(
-            commands,
-            recent_command_ids=tuple(self._recent_command_ids),
-            title="Zen Commands" if self._zen_mode_enabled else ("Preview Commands" if palette_context == "preview" else "Command Palette"),
-        )
-        dialog.set_prominent(self._zen_mode_enabled)
-        self._command_palette_open = True
-        self._active_command_palette = dialog
-        self._set_command_palette_shortcuts_enabled(False)
-        dialog.present()
+        self._command_palette.open(_checked, context=context)
 
     def _setup_command_palette_shortcuts(self) -> None:
-        self._command_palette_shortcut_main = QShortcut(QKeySequence("Ctrl+K"), self)
-        self._command_palette_shortcut_main.setAutoRepeat(False)
-        self._command_palette_shortcut_main.activated.connect(lambda: self._open_command_palette(context="main"))
-        self._command_palette_shortcut_preview = QShortcut(QKeySequence("Ctrl+K"), self.preview)
-        self._command_palette_shortcut_preview.setAutoRepeat(False)
-        self._command_palette_shortcut_preview.activated.connect(lambda: self._open_command_palette(context="preview"))
-
-    def _set_command_palette_shortcuts_enabled(self, enabled: bool) -> None:
-        if self.actions is not None:
-            self.actions.open_command_palette.setEnabled(enabled)
-        if self._command_palette_shortcut_main is not None:
-            self._command_palette_shortcut_main.setEnabled(enabled)
-        if self._command_palette_shortcut_preview is not None:
-            self._command_palette_shortcut_preview.setEnabled(enabled)
-
-    def _ensure_command_palette_dialog(self, context: str) -> CommandPaletteDialog:
-        existing = self._command_palette_dialogs.get(context)
-        if existing is not None:
-            return existing
-        parent = self.preview if context == "preview" and self.preview.isVisible() else self
-        dialog = CommandPaletteDialog([], recent_command_ids=(), parent=parent)
-        dialog.finished.connect(self._handle_command_palette_finished)
-        self._command_palette_dialogs[context] = dialog
-        return dialog
+        self._command_palette.setup_shortcuts()
 
     def _handle_command_palette_finished(self, result: int) -> None:
-        dialog = self.sender()
-        if not isinstance(dialog, CommandPaletteDialog):
-            self._command_palette_open = False
-            self._active_command_palette = None
-            self._set_command_palette_shortcuts_enabled(True)
-            return
-        self._command_palette_open = False
-        self._active_command_palette = None
-        self._set_command_palette_shortcuts_enabled(True)
-        if result != dialog.DialogCode.Accepted:
-            return
-        command = dialog.selected_command
-        if command is None:
-            return
-        self._remember_recent_command(command.id)
-        command.callback()
-
-    def _build_command_palette_commands(self, context: str) -> list[PaletteCommand]:
-        commands: list[PaletteCommand] = []
-
-        def add_action_command(
-            command_id: str,
-            action,
-            *,
-            section: str,
-            title: str | None = None,
-            subtitle: str = "",
-            keywords: tuple[str, ...] = (),
-        ) -> None:
-            if action is None or not action.isEnabled():
-                return
-            commands.append(
-                PaletteCommand(
-                    id=command_id,
-                    title=title or self._clean_command_text(action.text()),
-                    subtitle=subtitle,
-                    section=section,
-                    shortcut=action.shortcut().toString(),
-                    keywords=keywords,
-                    callback=action.trigger,
-                )
-            )
-
-        if self.actions is not None:
-            add_action_command("file.open_folder", self.actions.open_folder, section="File", keywords=("open directory", "browse folder"))
-            add_action_command("file.refresh_folder", self.actions.refresh_folder, section="File", keywords=("reload folder", "rescan"))
-            add_action_command("file.new_folder", self.actions.new_folder, section="File", keywords=("create folder", "new directory"))
-            add_action_command("file.workflow_settings", self.actions.workflow_settings, section="File", keywords=("preferences", "settings"))
-            add_action_command("edit.undo", self.actions.undo, section="Edit", keywords=("revert", "undo last action"))
-            add_action_command("edit.rename_selection", self.actions.rename_selection, section="Edit", keywords=("rename image", "rename file"))
-            add_action_command("tools.batch_rename", self.actions.batch_rename_selection, section="Tools", keywords=("batch rename tool", "rename many"))
-            add_action_command("tools.batch_resize", self.actions.batch_resize_selection, section="Tools", keywords=("batch resize tool", "resize many", "convert size"))
-            add_action_command("tools.batch_convert", self.actions.batch_convert_selection, section="Tools", keywords=("batch convert tool", "convert format", "png jpg webp"))
-            add_action_command("tools.extract_archive", self.actions.extract_archive, section="Tools", keywords=("extract archive", "unzip", "decompress", "7z"))
-            add_action_command("tools.performance_logging", self.actions.performance_logging, section="Tools", subtitle=self._toggle_state_text(self._performance_logging_enabled), keywords=("diagnostics", "profiler", "performance log", "speed"))
-            add_action_command("tools.open_performance_logs", self.actions.open_performance_log_folder, section="Tools", keywords=("diagnostics", "profiler", "logs", "performance"))
-            add_action_command("workflow.handoff_builder", self.actions.handoff_builder, section="Workflow", keywords=("delivery", "handoff", "export workflow"))
-            add_action_command("workflow.share_to_phone", self.actions.share_to_phone, section="Workflow", keywords=("phone", "qr", "pocketdrop", "share", "transfer", "send"))
-            add_action_command("workflow.send_to_editor", self.actions.send_to_editor_pipeline, section="Workflow", keywords=("retouch", "editor queue", "send to editor"))
-            add_action_command("workflow.best_of", self.actions.best_of_set_auto_assembly, section="Workflow", keywords=("best of", "shortlist", "auto assembly"))
-            add_action_command("workflow.keyboard_shortcuts", self.actions.keyboard_shortcuts, section="Workflow", keywords=("shortcuts", "keyboard mapping"))
-            add_action_command("workflow.save_workspace", self.actions.save_workspace_preset, section="Workflow", keywords=("workspace preset", "save layout"))
-            add_action_command("library.create_collection", self.actions.create_virtual_collection, section="Library", keywords=("virtual collection", "portfolio picks", "proofing set"))
-            add_action_command("library.add_to_collection", self.actions.add_selection_to_collection, section="Library", keywords=("collection", "save picks"))
-            add_action_command("library.remove_from_collection", self.actions.remove_selection_from_collection, section="Library", keywords=("collection", "remove picks"))
-            add_action_command("library.delete_collection", self.actions.delete_virtual_collection, section="Library", keywords=("collection", "delete set"))
-            add_action_command("library.browse_catalog", self.actions.browse_catalog, section="Library", keywords=("catalog", "cross folder search", "global index"))
-            add_action_command("library.add_current_to_catalog", self.actions.add_current_folder_to_catalog, section="Library", keywords=("catalog root", "index current folder"))
-            add_action_command("library.add_folder_to_catalog", self.actions.add_folder_to_catalog, section="Library", keywords=("catalog root", "index folder"))
-            add_action_command("library.remove_catalog_root", self.actions.remove_catalog_folder, section="Library", keywords=("catalog root", "remove folder"))
-            add_action_command("library.refresh_catalog", self.actions.refresh_catalog, section="Library", keywords=("refresh catalog", "reindex library"))
-            add_action_command("library.rebuild_open_folder_cache", self.actions.rebuild_folder_catalog_cache, section="Library", keywords=("rebuild cache", "rebuild folder cache", "rescan without cache"))
-            add_action_command("review.open_preview", self.actions.open_preview, section="Review", keywords=("viewer", "popout", "fullscreen"))
-            add_action_command("review.accept_selection", self.actions.accept_selection, section="Review", keywords=("winner", "approve", "accept"))
-            add_action_command("review.reject_selection", self.actions.reject_selection, section="Review", keywords=("reject", "decline"))
-            add_action_command("review.keep_selection", self.actions.keep_selection, section="Review", keywords=("keep", "_keep"))
-            add_action_command("review.move_selection", self.actions.move_selection, section="Review", keywords=("relocate", "move"))
-            add_action_command(
-                "review.move_selection_to_new_folder",
-                self.actions.move_selection_to_new_folder,
-                section="Review",
-                keywords=("new folder", "move to new folder", "subfolder"),
-            )
-            add_action_command("review.delete_selection", self.actions.delete_selection, section="Review", keywords=("trash", "remove", "delete"))
-            add_action_command("review.restore_selection", self.actions.restore_selection, section="Review", keywords=("recover", "restore"))
-            add_action_command("review.reveal_in_explorer", self.actions.reveal_in_explorer, section="Review", keywords=("show in explorer", "reveal file"))
-            add_action_command("review.photoshop", self.actions.open_in_photoshop, section="Review", keywords=("edit in photoshop",))
-            add_action_command("review.compare_mode", self.actions.compare_mode, section="Review", subtitle=self._toggle_state_text(self._compare_enabled), keywords=("toggle compare",))
-            add_action_command("review.auto_advance", self.actions.auto_advance, section="Review", subtitle=self._toggle_state_text(self._auto_advance_enabled), keywords=("toggle auto advance",))
-            add_action_command("view.grid_view", self.actions.grid_view, section="View", subtitle="Current view" if self._browser_view_mode == "grid" else "", keywords=("grid", "thumbnail grid", "tiles"))
-            add_action_command("view.details_view", self.actions.details_view, section="View", subtitle="Current view" if self._browser_view_mode == "details" else "", keywords=("details", "list view", "file explorer"))
-            add_action_command("view.details_density_compact", self.actions.details_density_compact, section="View", subtitle="Current density" if self._details_row_density == "compact" else "", keywords=("details density", "compact rows", "row density"))
-            add_action_command("view.details_density_comfortable", self.actions.details_density_comfortable, section="View", subtitle="Current density" if self._details_row_density == "comfortable" else "", keywords=("details density", "comfortable rows", "row density"))
-            add_action_command("view.details_next_unreviewed", self.actions.details_next_unreviewed, section="View", keywords=("details next unreviewed", "jump unreviewed"))
-            add_action_command("view.details_next_kept", self.actions.details_next_kept, section="View", keywords=("details next kept", "jump kept", "jump winner"))
-            add_action_command("view.details_next_rejected", self.actions.details_next_rejected, section="View", keywords=("details next rejected", "jump rejected"))
-            add_action_command("view.zen_mode", self.actions.zen_mode, section="View", subtitle=self._toggle_state_text(self._zen_mode_enabled), keywords=("fullscreen", "focus mode", "hide panels"))
-            add_action_command("view.burst_groups", self.actions.burst_groups, section="View", subtitle=self._toggle_state_text(self._burst_groups_enabled), keywords=("burst grouping", "burst shots", "toggle bursts", "capture sequence"))
-            add_action_command("view.burst_stacks", self.actions.burst_stacks, section="View", subtitle=self._toggle_state_text(self._burst_stacks_enabled), keywords=("smart stacks", "cycle group", "stack shots", "duplicate stack"))
-            add_action_command("view.show_hidden_folders", self.actions.show_hidden_folders, section="View", subtitle=self._toggle_state_text(self._show_hidden_folders), keywords=("hidden folders", "show hidden", "dot folders", "system folders"))
-            add_action_command("search.advanced_filters", self.actions.advanced_filters, section="Search", keywords=("metadata filters", "search filters"))
-            add_action_command("search.save_current", self.actions.save_filter_preset, section="Search", keywords=("save search", "save preset"))
-            add_action_command("search.delete_current", self.actions.delete_filter_preset, section="Search", keywords=("delete search", "remove preset"))
-            add_action_command("search.clear_filters", self.actions.clear_filters, section="Search", keywords=("reset filters", "clear search"))
-            add_action_command("ai.setup", self.actions.install_ai_runtime, section="AI", keywords=("runtime", "dependencies", "install ai", "pytorch", "models", "clip", "topiq"))
-            add_action_command("ai.workflow_center", self.actions.open_ai_workflow_center, section="AI", keywords=("workflow center", "ai workflow", "guide", "steps", "wizard"))
-            add_action_command("ai.run_pipeline", self.actions.run_ai_culling, section="AI", keywords=("start ai", "run ai culler", "rank images"))
-            add_action_command("ai.quick_rerank", self.actions.quick_rerank_ai_culling, section="AI", keywords=("quick rerank", "rerank", "re-rank", "rerun rank", "fast rerank", "rerank only"))
-            add_action_command("ai.apply_culling", self.actions.apply_ai_culling, section="AI", keywords=("apply ai culling", "auto cull", "move ai picks", "recycle ai rejects"))
-            add_action_command("ai.sort_semantic_folders", self.actions.sort_ai_semantic_folders, section="AI", keywords=("semantic folders", "classify folders", "sort by ai class", "sort by semantic label"))
-            add_action_command("ai.reset_cache", self.actions.reset_ai_review_cache, section="AI", keywords=("reset ai cache", "rerun ai from scratch", "clear embeddings", "delete ai artifacts"))
-            add_action_command("ai.load_saved", self.actions.load_saved_ai, section="AI", keywords=("load cached ai",))
-            add_action_command("ai.load_results", self.actions.load_ai_results, section="AI", keywords=("import ai results",))
-            add_action_command("ai.clear_results", self.actions.clear_ai_results, section="AI", keywords=("remove ai results",))
-            add_action_command("ai.open_report", self.actions.open_ai_report, section="AI", keywords=("html report",))
-            add_action_command("ai.tag_legend", self.actions.ai_review_tag_legend, section="AI", keywords=("ai tags", "tag legend", "ai badges", "what do the ai tags mean"))
-            add_action_command("ai.next_top_pick", self.actions.next_ai_pick, section="AI", keywords=("next ai pick", "jump ai"))
-            add_action_command("ai.next_unreviewed_top_pick", self.actions.next_unreviewed_ai_pick, section="AI", keywords=("unreviewed ai pick",))
-            add_action_command("ai.compare_group", self.actions.compare_ai_group, section="AI", keywords=("compare ai cluster", "group compare"))
-            add_action_command("ai.people", self.actions.manage_people, section="AI", keywords=("people", "faces", "person names", "face search"))
-            add_action_command("window.reset_layout", self.actions.reset_layout, section="Workspace", keywords=("restore layout", "default workspace"))
-            add_action_command("help.keyboard_help", self.actions.keyboard_help, section="Help", keywords=("quick help", "shortcuts", "help"))
-            add_action_command("help.ai_guide", self.actions.ai_guide, section="Help", keywords=("ai guide", "ai training guide", "model guide", "ai help"))
-            add_action_command("help.ai_tag_legend", self.actions.ai_review_tag_legend, section="Help", keywords=("ai tags", "ai review tags", "tag legend", "badge legend"))
-            add_action_command("help.advanced_help", self.actions.advanced_help, section="Help", keywords=("advanced help", "reference", "guide"))
-            add_action_command("help.check_updates", self.actions.check_for_updates, section="Help", keywords=("update", "installer", "new version", "upgrade"))
-            add_action_command("help.about", self.actions.about, section="Help", keywords=("about", "version"))
-
-            for mode, action in self.actions.appearance_actions.items():
-                label = appearance_mode_label(mode)
-                add_action_command(
-                    f"appearance.{mode.value.casefold()}",
-                    action,
-                    section="Appearance",
-                    title=f"Set Theme: {label}",
-                    keywords=("theme", "appearance", mode.value.casefold(), label.casefold()),
-                )
-            for mode, action in self.actions.sort_actions.items():
-                add_action_command(
-                    f"sort.{mode.name.casefold()}",
-                    action,
-                    section="View",
-                    title=f"View: Sort By {mode.value}",
-                    keywords=("view", "sort", mode.value.casefold()),
-                )
-            for mode, action in self.actions.filter_actions.items():
-                add_action_command(
-                    f"quick_filter.{mode.name.casefold()}",
-                    action,
-                    section="View",
-                    title=f"View: Quick Filter {mode.value}",
-                    keywords=("view", "quick filter", "filter", mode.value.casefold()),
-                )
-            for count, action in self.actions.column_actions.items():
-                add_action_command(
-                    f"columns.{count}",
-                    action,
-                    section="View",
-                    title=f"View: Columns {count} Across",
-                    keywords=("view", "columns", f"{count} across"),
-                )
-
-        if self.workspace_docks is not None:
-            for key, action in self.workspace_docks.toggle_actions.items():
-                panel_title = key.title()
-                commands.append(
-                    PaletteCommand(
-                        id=f"dock.{key}",
-                        title=f"{'Hide' if action.isChecked() else 'Show'} {panel_title}",
-                        subtitle="Workspace panel",
-                        section="Workspace",
-                        keywords=(panel_title.casefold(), "panel", "dock", "sidebar"),
-                        callback=action.trigger,
-                    )
-                )
-
-        for preset in builtin_filter_presets():
-            commands.append(
-                PaletteCommand(
-                    id=f"smart_filter.{preset.name.casefold().replace(' ', '_')}",
-                    title=f"Apply Smart Filter: {preset.name}",
-                    subtitle=self._preset_subtitle(preset),
-                    section="Search",
-                    keywords=("smart filter", "saved search", preset.name.casefold()),
-                    callback=lambda target=preset: self._apply_filter_preset(target),
-                )
-            )
-        for preset in self._saved_filter_presets:
-            commands.append(
-                PaletteCommand(
-                    id=f"saved_filter.{preset.name.casefold()}",
-                    title=f"Apply Saved Search: {preset.name}",
-                    subtitle=self._preset_subtitle(preset),
-                    section="Search",
-                    keywords=("saved search", "preset", preset.name.casefold()),
-                    callback=lambda target=preset: self._apply_filter_preset(target),
-                )
-            )
-
-        for recipe in built_in_workflow_recipes():
-            commands.append(
-                PaletteCommand(
-                    id=f"workflow_recipe.{recipe.key}",
-                    title=f"Run Workflow Recipe: {recipe.name}",
-                    subtitle=recipe.description or "Built-in workflow recipe",
-                    section="Workflow",
-                    keywords=("workflow recipe", recipe.name.casefold(), recipe.key),
-                    callback=lambda target=recipe: self._run_workflow_recipe(target),
-                )
-            )
-        for recipe in self._saved_workflow_recipes:
-            commands.append(
-                PaletteCommand(
-                    id=f"saved_workflow_recipe.{recipe.key}",
-                    title=f"Run Saved Recipe: {recipe.name}",
-                    subtitle=recipe.description or "Saved workflow recipe",
-                    section="Workflow",
-                    keywords=("saved recipe", "workflow recipe", recipe.name.casefold()),
-                    callback=lambda target=recipe: self._run_workflow_recipe(target),
-                )
-            )
-
-        for preset in built_in_workspace_presets():
-            commands.append(
-                PaletteCommand(
-                    id=f"workspace_preset.{preset.key}",
-                    title=f"Apply Workspace Preset: {preset.name}",
-                    subtitle=preset.description,
-                    section="Workspace",
-                    keywords=("workspace preset", preset.name.casefold(), preset.key),
-                    callback=lambda target=preset: self._apply_workspace_preset(target),
-                )
-            )
-        for preset in self._saved_workspace_presets:
-            commands.append(
-                PaletteCommand(
-                    id=f"saved_workspace_preset.{preset.key}",
-                    title=f"Apply Saved Workspace: {preset.name}",
-                    subtitle=preset.description or "Saved workspace preset",
-                    section="Workspace",
-                    keywords=("saved workspace", "workspace preset", preset.name.casefold()),
-                    callback=lambda target=preset: self._apply_workspace_preset(target),
-                )
-            )
-
-        for collection in self._library_store.list_collections():
-            commands.append(
-                PaletteCommand(
-                    id=f"collection.{collection.id}",
-                    title=f"Open Collection: {collection.name}",
-                    subtitle=collection.description or f"{collection.kind} | {collection.item_count} item(s)",
-                    section="Library",
-                    keywords=("collection", collection.name.casefold(), collection.kind.casefold()),
-                    callback=lambda target=collection.id: self._open_virtual_collection(target),
-                )
-            )
-
-        for root in self._library_store.list_catalog_roots():
-            root_label = Path(root.path).name or root.path
-            commands.append(
-                PaletteCommand(
-                    id=f"catalog.{normalized_path_key(root.path)}",
-                    title=f"Browse Catalog Root: {root_label}",
-                    subtitle=f"{root.indexed_record_count} indexed bundle(s)",
-                    section="Library",
-                    keywords=("catalog", "library", root_label.casefold()),
-                    callback=lambda target=root.path: self._browse_catalog(root_path_override=target),
-                )
-            )
-
-        for destination in self._recent_destination_paths(exclude_current_folder=True)[:6]:
-            label = Path(destination).name or destination
-            commands.append(
-                PaletteCommand(
-                    id=f"recent.move.{normalized_path_key(destination)}",
-                    title=f"Move Selection To Recent Folder: {label}",
-                    subtitle=destination,
-                    section="Review",
-                    keywords=("recent folder", "move recent", "destination"),
-                    callback=lambda target=destination: self._move_selected_records_to_destination(target),
-                )
-            )
-
-        if context == "preview" and self.preview.isVisible():
-            focused_path = self.preview.focused_path()
-            photoshop_path = self.preview.focused_photoshop_path()
-            commands.extend(
-                [
-                    PaletteCommand(
-                        id="preview.close",
-                        title="Close Preview",
-                        subtitle="Close the preview window",
-                        section="Preview",
-                        shortcut="Esc",
-                        keywords=("close viewer", "exit preview"),
-                        callback=self.preview.close,
-                    ),
-                    PaletteCommand(
-                        id="preview.previous",
-                        title="Previous Image",
-                        subtitle="Move to the previous visible image",
-                        section="Preview",
-                        keywords=("previous", "back", "left"),
-                        callback=lambda: self.preview.navigate_relative(-1),
-                    ),
-                    PaletteCommand(
-                        id="preview.next",
-                        title="Next Image",
-                        subtitle="Move to the next visible image",
-                        section="Preview",
-                        keywords=("next", "forward", "right"),
-                        callback=lambda: self.preview.navigate_relative(1),
-                    ),
-                    PaletteCommand(
-                        id="preview.compare",
-                        title="Toggle Compare Mode",
-                        subtitle=self._toggle_state_text(self.preview.compare_mode_enabled()),
-                        section="Preview",
-                        shortcut="C",
-                        keywords=("compare", "compare mode"),
-                        callback=self.preview.toggle_compare_mode,
-                    ),
-                    PaletteCommand(
-                        id="preview.zoom",
-                        title="Toggle Zoom",
-                        subtitle="Switch between fit and manual zoom",
-                        section="Preview",
-                        shortcut="Z",
-                        keywords=("zoom", "magnify"),
-                        callback=self.preview.toggle_zoom_command,
-                    ),
-                    PaletteCommand(
-                        id="preview.fit",
-                        title="Fit To Screen",
-                        subtitle="Return the preview to fit mode",
-                        section="Preview",
-                        shortcut="0",
-                        keywords=("fit", "fit screen", "reset zoom"),
-                        callback=self.preview.fit_to_screen,
-                    ),
-                    PaletteCommand(
-                        id="preview.loupe",
-                        title="Toggle Loupe",
-                        subtitle="Enable or disable the loupe overlay",
-                        section="Preview",
-                        shortcut="L",
-                        keywords=("loupe", "magnifier"),
-                        callback=self.preview.toggle_loupe_command,
-                    ),
-                    PaletteCommand(
-                        id="preview.focus_assist",
-                        title="Toggle Focus Assist",
-                        subtitle=(
-                            f"{self._toggle_state_text(self.preview.focus_assist_enabled())}"
-                            f" | {self.preview.focus_assist_color().label}"
-                            f" | {self.preview.focus_assist_strength().label}"
-                        ),
-                        section="Preview",
-                        shortcut="F",
-                        keywords=("focus assist", "focus", "inspection", "detail", "sensitivity"),
-                        callback=self.preview.toggle_focus_assist_command,
-                    ),
-                    PaletteCommand(
-                        id="preview.focus_assist_background",
-                        title="Toggle Focus Assist Background Filter",
-                        subtitle="Dimmed background" if self.preview.focus_assist_dim_background() else "Original image background",
-                        section="Preview",
-                        keywords=("focus assist", "background", "filter", "dim background", "overlay"),
-                        callback=self.preview.toggle_focus_assist_background_command,
-                    ),
-                ]
-            )
-            for color in FOCUS_ASSIST_COLORS:
-                commands.append(
-                    PaletteCommand(
-                        id=f"preview.focus_assist_color.{color.id}",
-                        title=f"Set Focus Assist Color: {color.label}",
-                        subtitle=(
-                            "Current color"
-                            if self.preview.focus_assist_color().id == color.id
-                            else "Switch focus peaking color"
-                        ),
-                        section="Preview",
-                        keywords=("focus assist", "focus peaking", "color", color.label.casefold()),
-                        callback=lambda color_id=color.id: self.preview.set_focus_assist_color_by_id(color_id),
-                    )
-                )
-            for strength in FOCUS_ASSIST_STRENGTHS:
-                commands.append(
-                    PaletteCommand(
-                        id=f"preview.focus_assist_strength.{strength.id}",
-                        title=f"Set Focus Assist Sensitivity: {strength.label}",
-                        subtitle=(
-                            "Current sensitivity"
-                            if self.preview.focus_assist_strength().id == strength.id
-                            else "Adjust focus peaking sensitivity"
-                        ),
-                        section="Preview",
-                        keywords=("focus assist", "focus peaking", "sensitivity", strength.label.casefold()),
-                        callback=lambda strength_id=strength.id: self.preview.set_focus_assist_strength_by_id(strength_id),
-                    )
-                )
-            if focused_path:
-                commands.extend(
-                    [
-                        PaletteCommand(
-                            id="preview.rename",
-                            title="Rename Focused Image...",
-                            subtitle="Rename the focused image bundle",
-                            section="Preview",
-                            shortcut="F2",
-                            keywords=("rename", "filename"),
-                            callback=lambda path=focused_path: self._handle_preview_rename_requested(path),
-                        ),
-                        PaletteCommand(
-                            id="preview.accept",
-                            title="Mark Focused Image As Winner",
-                            subtitle="Mark the focused preview image as a winner",
-                            section="Preview",
-                            shortcut="W",
-                            keywords=("accept", "winner", "approve"),
-                            callback=lambda path=focused_path: self._handle_preview_winner_requested(path),
-                        ),
-                        PaletteCommand(
-                            id="preview.reject",
-                            title="Reject Focused Image",
-                            subtitle="Mark the focused preview image as rejected",
-                            section="Preview",
-                            shortcut="X",
-                            keywords=("reject", "decline"),
-                            callback=lambda path=focused_path: self._handle_preview_reject_requested(path),
-                        ),
-                        PaletteCommand(
-                            id="preview.keep",
-                            title="Move Focused Image To _keep",
-                            subtitle="Send the focused preview image to the keep folder",
-                            section="Preview",
-                            shortcut="K",
-                            keywords=("keep", "_keep"),
-                            callback=lambda path=focused_path: self._handle_preview_keep_requested(path),
-                        ),
-                        PaletteCommand(
-                            id="preview.move",
-                            title="Move Focused Image...",
-                            subtitle="Move the focused preview image to another folder",
-                            section="Preview",
-                            shortcut="M",
-                            keywords=("move", "relocate"),
-                            callback=lambda path=focused_path: self._handle_preview_move_requested(path),
-                        ),
-                        PaletteCommand(
-                            id="preview.delete",
-                            title="Delete Focused Image",
-                            subtitle="Delete the focused preview image",
-                            section="Preview",
-                            shortcut="Delete",
-                            keywords=("delete", "trash", "remove"),
-                            callback=lambda path=focused_path: self._handle_preview_delete_requested(path),
-                        ),
-                        PaletteCommand(
-                            id="preview.tag",
-                            title="Tag Focused Image",
-                            subtitle="Edit tags for the focused preview image",
-                            section="Preview",
-                            shortcut="T",
-                            keywords=("tag", "keywords"),
-                            callback=lambda path=focused_path: self._handle_preview_tag_requested(path),
-                        ),
-                    ]
-                )
-            if photoshop_path and self._photoshop_executable:
-                commands.append(
-                    PaletteCommand(
-                        id="preview.photoshop",
-                        title="Open Focused Image In Photoshop",
-                        subtitle="Send the focused preview image to Photoshop",
-                        section="Preview",
-                        keywords=("photoshop", "edit"),
-                        callback=lambda path=photoshop_path: self._open_preview_image_in_photoshop(path),
-                    )
-                )
-
-        return commands
-
-    def _preset_subtitle(self, preset: SavedFilterPreset) -> str:
-        labels = active_filter_labels(preset.query)
-        if not labels:
-            return "All images"
-        return " | ".join(labels[:3])
-
-    @staticmethod
-    def _clean_command_text(text: str) -> str:
-        return (text or "").replace("&", "").replace("...", "").strip()
-
-    @staticmethod
-    def _toggle_state_text(enabled: bool) -> str:
-        return "On" if enabled else "Off"
-
-    def _remember_recent_command(self, command_id: str) -> None:
-        self._recent_command_ids = [command_id, *[item for item in self._recent_command_ids if item != command_id]][:12]
-        self._save_recent_command_ids()
+        self._command_palette.handle_finished(result)
 
     def _matching_saved_filter_preset(self, query: RecordFilterQuery | None = None) -> SavedFilterPreset | None:
         target = query or self._filter_query
@@ -22288,189 +21718,19 @@ class MainWindow(QMainWindow):
         return record_paths(record)
 
     def _remove_record(self, index: int) -> None:
-        if not 0 <= index < len(self._records):
-            return
-        record = self._records[index]
-        self._records_repo.remove_paths((record.path,))
-        next_path = self._next_visible_path(index)
-        if next_path == record.path:
-            next_path = None
-        if self._current_folder:
-            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-remove")
-        self._apply_records_view(current_path=next_path)
+        self._record_ops.remove_record(index)
 
     def _remove_records_by_paths(self, paths: list[str]) -> int:
-        """Remove several records with a single view refresh (WI-4.1b),
-        instead of calling `_remove_record` once per path and rebuilding the
-        view each time. Focus lands on the next surviving record after the
-        last one removed, falling back to the nearest surviving record
-        before the first one removed, matching `_remove_record`'s
-        next-then-previous neighbour preference."""
-        indices = sorted({self._record_index_for_path(path) for path in paths} - {None})
-        if not indices:
-            return 0
-        next_path = self._next_visible_path_after_batch_removal(indices)
-        removed_paths = {self._records[index].path for index in indices}
-        self._records_repo.remove_paths(removed_paths)
-        if self._current_folder:
-            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-remove-batch")
-        self._apply_records_view(current_path=next_path)
-        return len(indices)
-
-    def _next_visible_path_after_batch_removal(self, sorted_indices: list[int]) -> str | None:
-        if not self._records:
-            return None
-        for index in range(sorted_indices[-1] + 1, len(self._records)):
-            return self._records[index].path
-        for index in range(sorted_indices[0] - 1, -1, -1):
-            return self._records[index].path
-        return None
+        return self._record_ops.remove_records_by_paths(paths)
 
     def _delete_record(self, index: int) -> None:
-        record = self._record_at(index)
-        if record is None:
-            return
-        if not self._current_folder:
-            self.statusBar().showMessage("Open a real folder to delete files. Virtual scopes are non-destructive views.")
-            return
-
-        bundle_paths = self._record_paths(record)
-        annotation = self._annotations.get(record.path, SessionAnnotation())
-        if self._is_recycle_folder():
-            confirmation = QMessageBox.question(
-                self,
-                "Delete Permanently?",
-                f"Permanently delete {record.name} from the recycle bin?\n\nThis cannot be undone.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if confirmation != QMessageBox.StandardButton.Yes:
-                return
-            try:
-                self._delete_paths_permanently(bundle_paths)
-            except OSError as exc:
-                QMessageBox.warning(self, "Delete Failed", f"Could not permanently delete {record.name}.\n\n{exc}")
-                return
-            self._forget_recycle_origins(bundle_paths)
-            self._decision_store.delete_annotation(self._session_id, record.path)
-            self._annotations.pop(record.path, None)
-            self._remove_record(index)
-            self._refresh_recycle_button()
-            self.statusBar().showMessage(f"Permanently deleted {record.name}")
-            return
-
-        try:
-            trash_moves: tuple[FileMove, ...] = ()
-            use_safe_trash = self._delete_mode == DeleteMode.SAFE_TRASH or self._is_temporary_storage_folder()
-            if use_safe_trash:
-                trash_moves = self._move_bundle_to_recycle(bundle_paths)
-                self._remember_recycle_origins(trash_moves)
-            else:
-                moved_all = self._trash_or_delete_paths(bundle_paths)
-                if not moved_all:
-                    confirmation = QMessageBox.question(
-                        self,
-                        "Delete Permanently?",
-                        f"Could not move this file set to the trash.\n\nDelete permanently?\n\n{record.name}",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
-                    )
-                    if confirmation != QMessageBox.StandardButton.Yes:
-                        return
-                    self._delete_paths_permanently(bundle_paths)
-        except OSError as exc:
-            QMessageBox.warning(self, "Delete Failed", f"Could not delete {record.name}.\n\n{exc}")
-            return
-
-        if use_safe_trash:
-            self._push_undo(
-                UndoAction(
-                    kind="delete",
-                    primary_path=record.path,
-                    file_moves=trash_moves,
-                    original_winner=annotation.winner,
-                    original_reject=annotation.reject,
-                    original_photoshop=annotation.photoshop,
-                    rating=annotation.rating,
-                    tags=annotation.tags,
-                    original_review_round=annotation.review_round,
-                    folder=self._current_folder,
-                    source_paths=bundle_paths,
-                    session_id=self._session_id,
-                    winner_mode=self._winner_mode.value,
-                )
-            )
-
-        self._decision_store.delete_annotation(self._session_id, record.path)
-        self._annotations.pop(record.path, None)
-        self._remove_record(index)
-        self._refresh_recycle_button()
-        if use_safe_trash:
-            if self._is_temporary_storage_folder():
-                self.statusBar().showMessage(f"Moved {record.name} to this drive's recycle bin")
-            else:
-                self.statusBar().showMessage(f"Safely removed {record.name}")
-        else:
-            self.statusBar().showMessage(f"Removed {record.name}")
+        self._record_ops.delete_record(index)
 
     def _keep_record(self, index: int) -> None:
-        record = self._record_at(index)
-        if record is None:
-            return
-        if not self._current_folder:
-            self.statusBar().showMessage("Open a real folder to move files. Collections and catalog views do not move originals.")
-            return
-
-        keep_dir = os.path.join(self._current_folder, "_keep")
-        os.makedirs(keep_dir, exist_ok=True)
-        try:
-            moves = self._move_bundle(self._record_paths(record), keep_dir)
-        except OSError as exc:
-            QMessageBox.warning(self, "Move Failed", f"Could not move {record.name}.\n\n{exc}")
-            return
-        self._rekey_annotation_after_move(record, moves)
-        self._push_undo(
-            UndoAction(
-                kind="move",
-                primary_path=record.path,
-                file_moves=moves,
-                folder=self._current_folder,
-                session_id=self._session_id,
-            )
-        )
-        self._remove_record(index)
-        self.statusBar().showMessage(f"Moved {record.name} to _keep")
+        self._record_ops.keep_record(index)
 
     def _move_record_prompt(self, index: int) -> None:
-        record = self._record_at(index)
-        if record is None:
-            return
-        if not self._current_folder:
-            self.statusBar().showMessage("Open a real folder to move files. Virtual scopes are browse-only for file moves.")
-            return
-
-        destination_dir = QFileDialog.getExistingDirectory(self, "Move Selected Image", self._current_folder or QDir.homePath())
-        if not destination_dir:
-            return
-
-        try:
-            moves = self._move_bundle(self._record_paths(record), destination_dir)
-        except OSError as exc:
-            QMessageBox.warning(self, "Move Failed", f"Could not move {record.name}.\n\n{exc}")
-            return
-        self._rekey_annotation_after_move(record, moves)
-        self._push_undo(
-            UndoAction(
-                kind="move",
-                primary_path=record.path,
-                file_moves=moves,
-                folder=self._current_folder,
-                session_id=self._session_id,
-            )
-        )
-        self._remember_recent_destination(destination_dir)
-        self._remove_record(index)
-        self.statusBar().showMessage(f"Moved {record.name} to {destination_dir}")
+        self._record_ops.move_record_prompt(index)
 
     def _tag_record(self, index: int) -> None:
         record = self._record_at(index)
@@ -23035,150 +22295,35 @@ class MainWindow(QMainWindow):
             if 0 <= item_index < len(self._records) and not self._records[item_index].is_folder
         ]
 
-    def _delete_record_by_path(self, path: str) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        self._delete_record(index)
-        return self._record_index_for_path(path) is None
-
     def _copy_record_to_path(self, path: str, destination_dir: str) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        return self._copy_record_to(index, destination_dir)
+        return self._record_ops.copy_record_to_path(path, destination_dir)
 
     def _keep_record_by_path(self, path: str) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        self._keep_record(index)
-        return self._record_index_for_path(path) is None
+        return self._record_ops.keep_record_by_path(path)
 
     def _restore_record_by_path(self, path: str) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        self._restore_record(index)
-        return self._record_index_for_path(path) is None
+        return self._record_ops.restore_record_by_path(path)
 
     def _copy_record_to(self, index: int, destination_dir: str) -> bool:
-        record = self._record_at(index)
-        if record is None:
-            return False
-        try:
-            self._copy_bundle(self._record_paths(record), destination_dir)
-        except OSError as exc:
-            QMessageBox.warning(self, "Copy Failed", f"Could not copy {record.name}.\n\n{exc}")
-            return False
-        self._remember_recent_destination(destination_dir)
-        self.statusBar().showMessage(f"Copied {record.name} to {destination_dir}")
-        return True
+        return self._record_ops.copy_record_to(index, destination_dir)
 
     def _move_record_to(
         self, index: int, destination_dir: str, *, defer_removal: bool = False, batch_id: str = ""
     ) -> bool:
-        record = self._record_at(index)
-        if record is None:
-            return False
-
-        try:
-            moves = self._move_bundle(self._record_paths(record), destination_dir)
-        except OSError as exc:
-            QMessageBox.warning(self, "Move Failed", f"Could not move {record.name}.\n\n{exc}")
-            return False
-        self._rekey_annotation_after_move(record, moves)
-        self._push_undo(
-            UndoAction(
-                kind="move",
-                primary_path=record.path,
-                file_moves=moves,
-                folder=self._current_folder,
-                session_id=self._session_id,
-                batch_id=batch_id,
-            )
-        )
-        self._remember_recent_destination(destination_dir)
-        if not defer_removal:
-            self._remove_record(index)
-        return True
+        return self._record_ops.move_record_to(index, destination_dir, defer_removal=defer_removal, batch_id=batch_id)
 
     def _restore_record(self, index: int) -> None:
-        record = self._record_at(index)
-        if record is None:
-            return
-        if not self._is_recycle_folder():
-            return
-
-        try:
-            restores = self._restore_bundle(self._record_paths(record))
-        except OSError as exc:
-            QMessageBox.warning(self, "Restore Failed", f"Could not restore {record.name}.\n\n{exc}")
-            return
-        if not restores:
-            QMessageBox.warning(self, "Restore Failed", f"Could not restore {record.name}.")
-            return
-        self._remove_record(index)
-        self._refresh_recycle_button()
-        self.statusBar().showMessage(f"Restored {record.name}")
+        self._record_ops.restore_record(index)
 
     def _move_record_to_path(
         self, path: str, destination_dir: str, *, defer_removal: bool = False, batch_id: str = ""
     ) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        return self._move_record_to(index, destination_dir, defer_removal=defer_removal, batch_id=batch_id)
-
-    def _move_record_to_ai_recycle(self, index: int, *, defer_removal: bool = False, batch_id: str = "") -> bool:
-        record = self._record_at(index)
-        if record is None:
-            return False
-        if not self._current_folder:
-            self.statusBar().showMessage("Open a real folder to move files into the program recycle bin.")
-            return False
-
-        bundle_paths = self._record_paths(record)
-        annotation = self._annotations.get(record.path, SessionAnnotation())
-        try:
-            trash_moves = self._move_bundle_to_recycle(bundle_paths)
-            self._remember_recycle_origins(trash_moves)
-        except OSError as exc:
-            QMessageBox.warning(self, "Recycle Failed", f"Could not move {record.name} into the program recycle bin.\n\n{exc}")
-            return False
-
-        self._push_undo(
-            UndoAction(
-                kind="delete",
-                primary_path=record.path,
-                file_moves=trash_moves,
-                original_winner=annotation.winner,
-                original_reject=annotation.reject,
-                original_photoshop=annotation.photoshop,
-                rating=annotation.rating,
-                tags=annotation.tags,
-                original_review_round=annotation.review_round,
-                folder=self._current_folder,
-                source_paths=bundle_paths,
-                session_id=self._session_id,
-                winner_mode=self._winner_mode.value,
-                batch_id=batch_id,
-            )
-        )
-        self._decision_store.delete_annotation(self._session_id, record.path)
-        self._annotations.pop(record.path, None)
-        if not defer_removal:
-            self._remove_record(index)
-        self._refresh_recycle_button()
-        return True
+        return self._record_ops.move_record_to_path(path, destination_dir, defer_removal=defer_removal, batch_id=batch_id)
 
     def _move_record_to_ai_recycle_by_path(
         self, path: str, *, defer_removal: bool = False, batch_id: str = ""
     ) -> bool:
-        index = self._record_index_for_path(path)
-        if index is None:
-            return False
-        return self._move_record_to_ai_recycle(index, defer_removal=defer_removal, batch_id=batch_id)
+        return self._record_ops.move_record_to_ai_recycle_by_path(path, defer_removal=defer_removal, batch_id=batch_id)
 
     def _batch_set_winner(self, records: list[ImageRecord]) -> None:
         if not records:
@@ -23290,116 +22435,22 @@ class MainWindow(QMainWindow):
         return ordered
 
     def _copy_records_by_paths(self, primary_paths: list[str], destination_dir: str) -> int:
-        copied = 0
-        for path in primary_paths:
-            if self._copy_record_to_path(path, destination_dir):
-                copied += 1
-        if copied:
-            self._remember_recent_destination(destination_dir)
-        return copied
+        return self._record_ops.copy_records_by_paths(primary_paths, destination_dir)
 
     def _move_records_by_paths(self, primary_paths: list[str], destination_dir: str) -> int:
-        items: list[TransferItem] = []
-        records: dict[int, ImageRecord] = {}
-        for position, path in enumerate(primary_paths):
-            index = self._record_index_for_path(path)
-            record = self._record_at(index) if index is not None else None
-            if record is None:
-                continue
-            items.append(TransferItem(position, record.name, self._record_paths(record)))
-            records[position] = record
-        if not items:
-            return 0
-
-        result = run_move_transfer(
-            self, items, destination_dir, source_label=self._current_folder or ""
-        )
-        batch_id = uuid.uuid4().hex
-        moved = 0
-        moved_paths: list[str] = []
-        for item in items:
-            moves = result.moved.get(item.key)
-            if moves is None:
-                continue
-            record = records[item.key]
-            self._rekey_annotation_after_move(record, moves)
-            self._push_undo(
-                UndoAction(
-                    kind="move",
-                    primary_path=record.path,
-                    file_moves=moves,
-                    folder=self._current_folder,
-                    session_id=self._session_id,
-                    batch_id=batch_id,
-                )
-            )
-            moved_paths.append(record.path)
-            moved += 1
-        if moved_paths:
-            self._remove_records_by_paths(moved_paths)
-        if moved:
-            self._remember_recent_destination(destination_dir)
-        if result.failed:
-            first_key = next(iter(result.failed))
-            QMessageBox.warning(
-                self,
-                "Move Failed",
-                f"Could not move {len(result.failed)} item(s)." + chr(10) + chr(10)
-                + f"{records[first_key].name}: {result.failed[first_key]}",
-            )
-        return moved
+        return self._record_ops.move_records_by_paths(primary_paths, destination_dir)
 
     def _handle_record_drop(self, primary_paths: list[str], destination_dir: str, *, copy_requested: bool) -> None:
-        if self._collection_mode:
-            return
-        normalized_destination = normalize_filesystem_path(destination_dir)
-        if not normalized_destination or not os.path.isdir(normalized_destination):
-            return
-        if not self._current_folder or normalized_path_key(normalized_destination) == normalized_path_key(self._current_folder):
-            self.statusBar().showMessage("Choose a different folder to drop these images into.")
-            return
-
-        unique_paths: list[str] = []
-        seen: set[str] = set()
-        for path in primary_paths:
-            key = normalized_path_key(path)
-            if key in seen or self._record_index_for_path(path) is None:
-                continue
-            seen.add(key)
-            unique_paths.append(path)
-        if not unique_paths:
-            return
-
-        action_label = "Copied" if copy_requested else "Moved"
-        if copy_requested:
-            count = self._copy_records_by_paths(unique_paths, normalized_destination)
-        else:
-            count = self._move_records_by_paths(unique_paths, normalized_destination)
-        self.statusBar().showMessage(f"{action_label} {count} image(s) to {normalized_destination}")
+        self._record_ops.handle_record_drop(primary_paths, destination_dir, copy_requested=copy_requested)
 
     def _batch_copy_records(self, records: list[ImageRecord]) -> None:
-        if not records:
-            return
-        destination_dir = QFileDialog.getExistingDirectory(self, "Copy Selected Images", self._current_folder or QDir.homePath())
-        if not destination_dir:
-            return
-        copied = self._copy_records_by_paths(self._primary_paths_for_records(records), destination_dir)
-        self.statusBar().showMessage(f"Copied {copied} image(s) to {destination_dir}")
+        self._record_ops.batch_copy_records(records)
 
     def _batch_move_records(self, records: list[ImageRecord]) -> None:
-        if not records:
-            return
-        destination_dir = QFileDialog.getExistingDirectory(self, "Move Selected Images", self._current_folder or QDir.homePath())
-        if not destination_dir:
-            return
-        moved = self._move_records_by_paths(self._primary_paths_for_records(records), destination_dir)
-        self.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
+        self._record_ops.batch_move_records(records)
 
     def _batch_delete_records(self, records: list[ImageRecord]) -> None:
-        if not records:
-            return
-        deleted = sum(1 for record in records if self._delete_record_by_path(record.path))
-        self.statusBar().showMessage(f"Removed {deleted} image(s)")
+        self._record_ops.batch_delete_records(records)
 
     def _batch_restore_records(self, records: list[ImageRecord]) -> None:
         if not records:
@@ -23415,27 +22466,13 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Opened {len(records)} image(s) in Photoshop")
 
     def _move_selected_records_to_destination(self, destination_dir: str) -> None:
-        records = self._selected_records_for_actions()
-        if not records:
-            return
-        moved = self._move_records_by_paths(self._primary_paths_for_records(records), destination_dir)
-        self.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
+        self._record_ops.move_selected_records_to_destination(destination_dir)
 
     def _copy_selected_records_to_destination(self, destination_dir: str) -> None:
-        records = self._selected_records_for_actions()
-        if not records:
-            return
-        copied = self._copy_records_by_paths(self._primary_paths_for_records(records), destination_dir)
-        self.statusBar().showMessage(f"Copied {copied} image(s) to {destination_dir}")
+        self._record_ops.copy_selected_records_to_destination(destination_dir)
 
     def _batch_move_records_to_new_folder(self, records: list[ImageRecord]) -> None:
-        if not records or not self._current_folder:
-            return
-        destination_dir = self._create_folder_prompt(self._current_folder, select_created=False)
-        if not destination_dir:
-            return
-        moved = self._move_records_by_paths(self._primary_paths_for_records(records), destination_dir)
-        self.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
+        self._record_ops.batch_move_records_to_new_folder(records)
 
     def _dispatch_preview_action(self, path: str, handler, *, preserve_anchor: bool = True) -> None:
         if self._collection_mode:
@@ -23474,134 +22511,19 @@ class MainWindow(QMainWindow):
         )
 
     def _rename_record_prompt(self, index: int) -> str | None:
-        record = self._record_at(index)
-        if record is None or self._is_recycle_folder() or self._is_winners_folder():
-            return None
-
-        requested_name, accepted = QInputDialog.getText(
-            self,
-            "Rename Image",
-            "File name",
-            text=record.name,
-        )
-        if not accepted:
-            return None
-        requested_name = (requested_name or "").strip()
-        if not requested_name:
-            return None
-        return self._rename_record(index, requested_name)
-
-    def _rename_record(self, index: int, requested_name: str) -> str | None:
-        record = self._record_at(index)
-        if record is None:
-            return None
-
-        try:
-            moves = rename_bundle_paths(self._record_paths(record), record.path, requested_name)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Rename Failed", f"Could not rename {record.name}.\n\n{exc}")
-            return None
-        if not moves:
-            return record.path
-
-        self._rekey_annotation_after_move(record, moves)
-        self._push_undo(
-            UndoAction(
-                kind="move",
-                primary_path=record.path,
-                file_moves=moves,
-                folder=self._current_folder,
-                session_id=self._session_id,
-            )
-        )
-        renamed_record = self._record_after_moves(record, moves)
-        self._replace_record(record.path, renamed_record)
-        self._reset_filter_metadata_index(self._all_records)
-        self._apply_records_view(current_path=renamed_record.path)
-        self.statusBar().showMessage(f"Renamed {record.name} to {renamed_record.name}")
-        return renamed_record.path
+        return self._record_ops.rename_record_prompt(index)
 
     def _record_after_moves(self, record: ImageRecord, moves: tuple[FileMove, ...]) -> ImageRecord:
-        moved_paths = {move.source_path: move.target_path for move in moves}
-        return ImageRecord(
-            path=moved_paths.get(record.path, record.path),
-            name=Path(moved_paths.get(record.path, record.path)).name,
-            size=record.size,
-            modified_ns=record.modified_ns,
-            companion_paths=tuple(moved_paths.get(path, path) for path in record.companion_paths),
-            edited_paths=tuple(moved_paths.get(path, path) for path in record.edited_paths),
-            variants=tuple(
-                type(variant)(
-                    path=moved_paths.get(variant.path, variant.path),
-                    name=Path(moved_paths.get(variant.path, variant.path)).name,
-                    size=variant.size,
-                    modified_ns=variant.modified_ns,
-                )
-                for variant in record.variants
-            ),
-        )
+        return self._record_ops.record_after_moves(record, moves)
 
     def _replace_record(self, original_path: str, record: ImageRecord) -> None:
-        self._records_repo.replace_by_old_path({original_path: record})
-        if self._current_folder:
-            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-replace")
+        self._record_ops.replace_record(original_path, record)
 
     def _replace_records_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
-        if not records_by_old_path:
-            return
-        self._records_repo.replace_by_old_path(records_by_old_path)
-        if self._current_folder:
-            self._persist_folder_record_cache(self._current_folder, self._all_records, source="window-move")
+        self._record_ops.replace_records_after_moves(records_by_old_path)
 
     def _rekey_filter_metadata_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
-        if not records_by_old_path:
-            return
-
-        updated_metadata: dict[str, CaptureMetadata] = {}
-        for old_path, renamed_record in records_by_old_path.items():
-            metadata = self._filter_metadata_by_path.pop(old_path, None)
-            if metadata is not None:
-                updated_metadata[renamed_record.path] = replace(metadata, path=renamed_record.path)
-            if old_path in self._filter_metadata_loaded_paths:
-                self._filter_metadata_loaded_paths.discard(old_path)
-                self._filter_metadata_loaded_paths.add(renamed_record.path)
-            if old_path in self._filter_metadata_record_paths:
-                self._filter_metadata_record_paths.discard(old_path)
-                self._filter_metadata_record_paths.add(renamed_record.path)
-
-        self._filter_metadata_by_path.update(updated_metadata)
-
-    def _rekey_annotation_after_move(
-        self,
-        record: ImageRecord,
-        moves: tuple[FileMove, ...],
-        *,
-        annotation_override: SessionAnnotation | None = None,
-        update_live_cache: bool = True,
-    ) -> None:
-        annotation = annotation_override
-        if annotation is None:
-            annotation = self._annotations.pop(record.path, None)
-        elif update_live_cache:
-            self._annotations.pop(record.path, None)
-        if annotation is None:
-            return
-        if annotation.is_empty:
-            self._decision_store.delete_annotation(self._session_id, record.path)
-            return
-        new_primary_path = next((move.target_path for move in moves if move.source_path == record.path), "")
-        if not new_primary_path:
-            if update_live_cache:
-                self._annotations[record.path] = annotation
-            return
-        moved_record = self._record_from_path(new_primary_path)
-        if moved_record is None:
-            if update_live_cache:
-                self._annotations[record.path] = annotation
-            return
-        if update_live_cache:
-            self._annotations[new_primary_path] = annotation
-        self._decision_store.move_annotation(self._session_id, record.path, moved_record, annotation)
+        self._record_ops.rekey_filter_metadata_after_moves(records_by_old_path)
 
     def _show_grid_context_menu(self, index: int, global_pos) -> None:
         if index < 0:
@@ -23919,172 +22841,13 @@ class MainWindow(QMainWindow):
         return unique_destination(directory, filename)
 
     def _push_undo(self, action: UndoAction) -> None:
-        self._undo_stack.append(action)
-        self._update_action_states()
+        self._record_ops.push_undo(action)
 
     def _push_undo_actions(self, actions: list[UndoAction]) -> None:
-        if not actions:
-            return
-        self._undo_stack.extend(actions)
-        self._update_action_states()
+        self._record_ops.push_undo_actions(actions)
 
     def _undo_last_action(self) -> None:
-        if not self._undo_stack:
-            return
-
-        action = self._undo_stack.pop()
-        batch = [action]
-        if action.batch_id:
-            while self._undo_stack and self._undo_stack[-1].batch_id == action.batch_id:
-                batch.append(self._undo_stack.pop())
-        batch.reverse()  # undo oldest-pushed-first, matching how they happened
-
-        if not self._undo_stack:
-            self._update_action_states()
-
-        reload_needed = False
-        undone = 0
-        try:
-            for item in batch:
-                if item.kind == "annotation":
-                    self._undo_annotation(item)
-                elif item.kind == "move":
-                    if self._undo_move_files(item):
-                        reload_needed = True
-                elif item.kind == "delete":
-                    if self._undo_delete_files(item):
-                        reload_needed = True
-                undone += 1
-        except OSError as exc:
-            # Push back whatever this batch hadn't gotten to yet, in the
-            # order they'd be undone next.
-            self._undo_stack.extend(reversed(batch[undone:]))
-            self._update_action_states()
-            if reload_needed:
-                self._load_folder(self._current_folder)
-            QMessageBox.warning(self, "Undo Failed", f"Could not undo the last action.\n\n{exc}")
-            return
-
-        if reload_needed:
-            self._load_folder(self._current_folder)
-        self._show_undo_batch_message(batch)
-
-    def _show_undo_batch_message(self, batch: list[UndoAction]) -> None:
-        if len(batch) == 1:
-            action = batch[0]
-            name = Path(action.primary_path).name
-            if action.kind == "move":
-                self.statusBar().showMessage(f"Undid move: {name}")
-            elif action.kind == "delete":
-                self.statusBar().showMessage(f"Restored {name} from safe trash")
-            elif action.kind == "annotation":
-                self.statusBar().showMessage(f"Undid annotation change: {name}")
-            else:
-                self.statusBar().showMessage(f"Undid {action.kind}: {name}")
-            return
-        kind_labels = {"move": "move", "delete": "restore from safe trash", "annotation": "annotation change"}
-        kind_counts: dict[str, int] = {}
-        for action in batch:
-            kind_counts[action.kind] = kind_counts.get(action.kind, 0) + 1
-        parts = [
-            f"{count} {kind_labels.get(kind, kind)}{'s' if count != 1 else ''}"
-            for kind, count in kind_counts.items()
-        ]
-        self.statusBar().showMessage(f"Undid {len(batch)} action(s): " + ", ".join(parts))
-
-    def _undo_annotation(self, action: UndoAction) -> None:
-        previous_annotation = self._annotation_snapshot(
-            self._annotations.get(action.primary_path, SessionAnnotation())
-        )
-        annotation = self._annotation_from_action(action)
-        if annotation.is_empty:
-            self._annotations.pop(action.primary_path, None)
-        else:
-            self._annotations[action.primary_path] = annotation
-        mode_override = None
-        for mode in WinnerMode:
-            if action.winner_mode in {mode.name, mode.value}:
-                mode_override = mode
-                break
-        winner_sync = None
-        if not self._is_winners_folder(action.folder):
-            winner_sync = WinnerSyncRequest(
-                winner_enabled=action.original_winner,
-                folder=action.folder,
-                winner_mode=mode_override or self._winner_mode,
-                source_paths=action.source_paths,
-            )
-        record = self._all_records_by_path.get(action.primary_path) or self._record_from_path(action.primary_path)
-        if record is not None:
-            self._queue_annotation_persist(
-                record,
-                previous_annotation=previous_annotation,
-                session_id=action.session_id or self._session_id,
-                winner_sync=winner_sync,
-            )
-            self._sync_annotation_to_global_adapter_label(record, annotation)
-        self._set_annotation_views()
-        self._apply_records_view(current_path=action.primary_path)
-
-    def _undo_move_files(self, action: UndoAction) -> bool:
-        """Restore this action's files and rekey its annotation. Returns
-        whether the current folder needs reloading to show the result —
-        callers batch this across several actions into one reload."""
-        for file_move in action.file_moves:
-            target = Path(file_move.target_path)
-            original = Path(file_move.source_path)
-            if not target.exists():
-                raise OSError(f"Moved file no longer exists: {target}")
-            original.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(target), str(original))
-        target_primary = next((move.target_path for move in action.file_moves if move.source_path == action.primary_path), "")
-        annotation = self._annotations.pop(target_primary, None) if target_primary else None
-        if annotation is not None:
-            restored_record = self._record_from_path(action.primary_path)
-            if restored_record is not None:
-                self._annotations[action.primary_path] = annotation
-                self._decision_store.move_annotation(action.session_id or self._session_id, target_primary, restored_record, annotation)
-        destination_dirs = {str(Path(file_move.target_path).parent) for file_move in action.file_moves}
-        return self._current_folder == action.folder or self._current_folder in destination_dirs
-
-    def _undo_delete_files(self, action: UndoAction) -> bool:
-        """Restore this action's files and rekey its annotation. Returns
-        whether the current folder needs reloading to show the result —
-        callers batch this across several actions into one reload."""
-        for file_move in action.file_moves:
-            target = Path(file_move.target_path)
-            original = Path(file_move.source_path)
-            if not target.exists():
-                raise OSError(f"Deleted file no longer exists in safe trash: {target}")
-            original.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(target), str(original))
-
-        self._forget_recycle_origins(tuple(file_move.target_path for file_move in action.file_moves))
-        annotation = self._annotation_from_action(action)
-        restored_record = self._record_from_path(action.primary_path)
-        if restored_record is not None:
-            if annotation.is_empty:
-                self._annotations.pop(action.primary_path, None)
-            else:
-                self._annotations[action.primary_path] = annotation
-            self._queue_annotation_persist(restored_record, session_id=action.session_id or self._session_id)
-
-        if self._current_folder == action.folder:
-            return True
-        self._set_annotation_views()
-        self._update_status()
-        self._refresh_recycle_button()
-        return False
-
-    def _annotation_from_action(self, action: UndoAction) -> SessionAnnotation:
-        return SessionAnnotation(
-            winner=action.original_winner,
-            reject=action.original_reject,
-            photoshop=action.original_photoshop,
-            rating=action.rating,
-            tags=action.tags,
-            review_round=action.original_review_round,
-        )
+        self._record_ops.undo_last_action()
 
     def _next_visible_path(self, index: int) -> str | None:
         if not self._records:
@@ -24530,33 +23293,6 @@ class MainWindow(QMainWindow):
         self.grid.set_burst_stack_mode(self._burst_stacks_enabled, request_thumbnails=request_thumbnails)
         self._update_filter_summary()
 
-    def _move_bundle(self, source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
-        return move_paths(source_paths, destination_dir)
-
-    def _move_bundle_to_recycle(self, source_paths: tuple[str, ...]) -> tuple[FileMove, ...]:
-        recycle_root = self._recycle_root_for_folder()
-        recycle_root.mkdir(parents=True, exist_ok=True)
-        file_moves: list[FileMove] = []
-        moved_targets: list[FileMove] = []
-        try:
-            for source_path in source_paths:
-                source = Path(source_path)
-                destination = Path(self._unique_destination(str(recycle_root), source.name))
-                shutil.move(str(source), str(destination))
-                file_move = FileMove(source_path=str(source), target_path=str(destination))
-                file_moves.append(file_move)
-                moved_targets.append(file_move)
-        except OSError as exc:
-            for moved in reversed(moved_targets):
-                if os.path.exists(moved.target_path):
-                    Path(moved.source_path).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(moved.target_path, moved.source_path)
-            raise exc
-        return tuple(file_moves)
-
-    def _copy_bundle(self, source_paths: tuple[str, ...], destination_dir: str) -> tuple[FileMove, ...]:
-        return copy_paths(source_paths, destination_dir)
-
     def _remember_recycle_origins(self, moves: tuple[FileMove, ...]) -> None:
         self._recycle_bin.remember_recycle_origins(moves)
 
@@ -24567,17 +23303,5 @@ class MainWindow(QMainWindow):
         return self._recycle_bin.restore_bundle(recycle_paths)
 
     def _trash_or_delete_paths(self, source_paths: tuple[str, ...]) -> bool:
-        moved_all = True
-        for source_path in source_paths:
-            if not os.path.exists(source_path):
-                continue
-            file = QFile(source_path)
-            moved = file.moveToTrash() if hasattr(file, "moveToTrash") else False
-            moved_all = moved_all and moved
-        return moved_all
-
-    def _delete_paths_permanently(self, source_paths: tuple[str, ...]) -> None:
-        for source_path in source_paths:
-            if os.path.exists(source_path):
-                os.remove(source_path)
+        return self._record_ops.trash_or_delete_paths(source_paths)
 
