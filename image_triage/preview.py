@@ -1627,16 +1627,14 @@ class FullScreenPreview(QDialog):
             QLabel#navCount {{ color: #c5cad0; font-size: {type_px(popout_ratios.PATH_TEXT_H)}px; min-width: 42px; }}
             QPushButton#navArrow {{ background: transparent; color: #aeb5c0; border: none; font-size: 14px; }}
             QFrame#mockupActionBar {{ background: #141619; border: none; }}
-            QFrame#mockupActionBar QToolButton#studioToolButton,
-            QFrame#mockupActionBar QToolButton#mockupDisabledAction {{
+            QFrame#mockupActionBar QToolButton#studioToolButton {{
                 background: transparent; border: none; border-radius: 3px;
                 color: #c6cbd1; padding: 0px; font-size: {type_px(popout_ratios.ACTION_TEXT_H)}px;
                 min-width: 0px; min-height: 0px;
             }}
             QFrame#mockupActionBar QToolButton#studioToolButton:hover {{ background: #292c32; }}
             QFrame#mockupActionBar QToolButton#studioToolButton:checked {{ background: #223453; color: #fff; }}
-            QFrame#mockupActionBar QToolButton#studioToolButton:disabled,
-            QFrame#mockupActionBar QToolButton#mockupDisabledAction {{ color: #747b87; }}
+            QFrame#mockupActionBar QToolButton#studioToolButton:disabled {{ color: #747b87; }}
             QPushButton#mockupZoomButton {{ background: #25282d; border: 1px solid #3a3f46; border-radius: 4px;
                 color: #d9dde1; padding: 1px; font-size: {type_px(popout_ratios.ACTION_TEXT_H)}px; }}
             QPushButton#mockupZoomButton:hover {{ background: #363a41; }}
@@ -1967,20 +1965,6 @@ class FullScreenPreview(QDialog):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             if not button.toolTip():
                 button.setToolTip(label)
-            layout.addWidget(button)
-        self._mockup_undo = QToolButton()
-        self._mockup_undo.setText("Undo")
-        self._mockup_undo.setObjectName("mockupDisabledAction")
-        self._mockup_undo.setEnabled(False)
-        self._mockup_undo.setToolTip("Editor undo is not available yet")
-        self._mockup_redo = QToolButton()
-        self._mockup_redo.setText("Redo")
-        self._mockup_redo.setObjectName("mockupDisabledAction")
-        self._mockup_redo.setEnabled(False)
-        for button, symbol in ((self._mockup_undo, "↶"), (self._mockup_redo, "↷")):
-            button.setIcon(build_symbol_icon(symbol, QColor(studio.TEXT_MUTE), pixel_size=18, font_size=16))
-            button.setIconSize(QSize(18, 18))
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             layout.addWidget(button)
         layout.addWidget(self.compare_count_combo)
         layout.addStretch(1)
@@ -2397,8 +2381,7 @@ class FullScreenPreview(QDialog):
         self._mockup_zoom_slider.setFixedWidth(px(popout_ratios.ZOOM_SLIDER_W, width, minimum=52))
         action_icon = px(popout_ratios.ACTION_ICON_H, height, minimum=11)
         for button in (self.compare_toggle_button, self.auto_bracket_button, self.before_after_button,
-                       self.photoshop_button, self.command_palette_button, self._mockup_undo,
-                       self._mockup_redo, self.next_edit_button):
+                       self.photoshop_button, self.command_palette_button, self.next_edit_button):
             button.setIconSize(QSize(action_icon, action_icon))
             button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
                                 px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
@@ -2410,9 +2393,6 @@ class FullScreenPreview(QDialog):
             button.setFixedSize(px(popout_ratios.ACTION_BUTTON_W, width, minimum=26),
                                 px(popout_ratios.ACTION_BUTTON_H, height, minimum=26))
             button.setIconSize(QSize(action_icon, action_icon))
-        compact = width - self._studio_rail.width() < 800
-        self._mockup_undo.setVisible(not compact)
-        self._mockup_redo.setVisible(not compact)
         star_h = px(popout_ratios.RATING_STAR_H, height, minimum=17)
         for star in self._mockup_star_buttons:
             star.setFixedSize(px(0.0083, width, minimum=14), star_h)

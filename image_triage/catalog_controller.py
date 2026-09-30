@@ -42,7 +42,7 @@ class CatalogController:
         window = self._window
         roots = tuple(window._library_store.list_catalog_roots())
         if not roots:
-            window.statusBar().showMessage("Add one or more folders to the catalog first.")
+            window.statusBar().showMessage("Add one or more folders to the library first.")
             return
         search_text = ""
         root_path = normalize_filesystem_path(root_path_override)
@@ -55,13 +55,13 @@ class CatalogController:
             root_path = normalize_filesystem_path(result.root_path)
         records = window._library_store.search_catalog(search_text=search_text, root_path=root_path)
         if not records:
-            window.statusBar().showMessage("No catalog matches were found.")
+            window.statusBar().showMessage("No library matches were found.")
             return
         if root_path:
             root_label = Path(root_path).name or root_path
-            scope_label = f"Catalog: {root_label}"
+            scope_label = f"Library: {root_label}"
         else:
-            scope_label = "Catalog: All Indexed Folders"
+            scope_label = "Library: All Indexed Folders"
         if search_text:
             scope_label = f'{scope_label} | Search "{search_text}"'
         scope_id = f"{normalized_path_key(root_path)}|{search_text.casefold()}"
@@ -70,37 +70,37 @@ class CatalogController:
     def add_current_folder_to_catalog(self) -> None:
         window = self._window
         if not window._current_folder:
-            window.statusBar().showMessage("Open a real folder before adding it to the catalog.")
+            window.statusBar().showMessage("Open a real folder before adding it to the library.")
             return
         window._library_store.add_catalog_root(window._current_folder)
         window._refresh_catalog_menu()
-        self.start_catalog_refresh((window._current_folder,), label="Indexing current folder for catalog...")
+        self.start_catalog_refresh((window._current_folder,), label="Indexing current folder for the library...")
 
     def add_folder_to_catalog_prompt(self) -> None:
         window = self._window
-        folder = QFileDialog.getExistingDirectory(window, "Add Folder To Catalog", window._current_folder or QDir.homePath())
+        folder = QFileDialog.getExistingDirectory(window, "Add Folder To Library", window._current_folder or QDir.homePath())
         if not folder:
             return
         window._library_store.add_catalog_root(folder)
         window._refresh_catalog_menu()
-        self.start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for catalog...")
+        self.start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for the library...")
 
     def remove_catalog_root_prompt(self) -> None:
         window = self._window
         roots = window._library_store.list_catalog_roots()
         if not roots:
-            window.statusBar().showMessage("No catalog roots are configured.")
+            window.statusBar().showMessage("No library folders are configured.")
             return
         labels = [f"{Path(root.path).name or root.path} ({root.indexed_record_count})" for root in roots]
         label_to_path = {label: root.path for label, root in zip(labels, roots)}
-        choice, accepted = QInputDialog.getItem(window, "Remove Catalog Root", "Catalog root", labels, 0, False)
+        choice, accepted = QInputDialog.getItem(window, "Remove Library Folder", "Library folder", labels, 0, False)
         if not accepted or not choice:
             return
         root_path = label_to_path[str(choice)]
         confirmation = QMessageBox.question(
             window,
-            "Remove Catalog Root?",
-            f"Remove {root_path} from the optional catalog index?\n\nThis does not move or delete files.",
+            "Remove Library Folder?",
+            f"Remove {root_path} from the optional library index?\n\nThis does not move or delete files.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -108,22 +108,22 @@ class CatalogController:
             return
         if window._library_store.remove_catalog_root(root_path):
             window._refresh_catalog_menu()
-            window.statusBar().showMessage(f"Removed catalog root: {Path(root_path).name or root_path}")
+            window.statusBar().showMessage(f"Removed from library: {Path(root_path).name or root_path}")
 
     def refresh_catalog_index(self) -> None:
         window = self._window
         roots = window._library_store.list_catalog_roots()
         if not roots:
-            window.statusBar().showMessage("Add one or more folders to the catalog first.")
+            window.statusBar().showMessage("Add one or more folders to the library first.")
             return
-        self.start_catalog_refresh(tuple(root.path for root in roots), label="Refreshing global catalog...")
+        self.start_catalog_refresh(tuple(root.path for root in roots), label="Refreshing library index...")
 
     def refresh_catalog_menu(self) -> None:
         window = self._window
         if not hasattr(window, "catalog_menu") or window.catalog_menu is None:
             return
         window.catalog_menu.clear()
-        window.catalog_menu.setTitle("Catalog")
+        window.catalog_menu.setTitle("Library")
         window.catalog_menu.addAction(window.actions.browse_catalog)
         window.catalog_menu.addAction(window.actions.add_current_folder_to_catalog)
         window.catalog_menu.addAction(window.actions.add_folder_to_catalog)
@@ -147,7 +147,7 @@ class CatalogController:
                 action.setToolTip("\n".join(tooltip_parts))
                 action.triggered.connect(lambda _checked=False, target=root.path: window._browse_catalog(root_path_override=target))
         else:
-            empty_action = window.catalog_menu.addAction("No catalog roots yet")
+            empty_action = window.catalog_menu.addAction("No library folders yet")
             empty_action.setEnabled(False)
         if window.actions is not None:
             window._update_action_states()
@@ -160,7 +160,7 @@ class CatalogController:
         if not roots:
             return False
         if window._active_catalog_task is not None:
-            QMessageBox.information(window, "Catalog Refresh Running", "A catalog refresh is already in progress.")
+            QMessageBox.information(window, "Library Refresh Running", "A library refresh is already in progress.")
             return False
         dialog = self._show_progress_dialog(max(1, len(roots)))
         dialog.setLabelText(label)
@@ -179,7 +179,7 @@ class CatalogController:
         window = self._window
         dialog = self._show_progress_dialog(total_roots)
         context = window._catalog_context
-        dialog.setLabelText(context.label if context is not None else "Refreshing global catalog...")
+        dialog.setLabelText(context.label if context is not None else "Refreshing library index...")
 
     def _handle_progress(self, current: int, total: int, message: str) -> None:
         window = self._window
@@ -189,7 +189,7 @@ class CatalogController:
             current=current,
             total=total,
             message=message,
-            default_label="Refreshing global catalog...",
+            default_label="Refreshing library index...",
         )
 
     def _handle_finished(self, result: object) -> None:
@@ -200,9 +200,9 @@ class CatalogController:
         self._close_progress_dialog()
         window._refresh_catalog_menu()
         if summary is None:
-            window.statusBar().showMessage("Catalog refresh complete")
+            window.statusBar().showMessage("Library refresh complete")
             return
-        message = f"Catalog refreshed: {summary.record_count} image bundle(s) across {summary.folder_count} folder(s)"
+        message = f"Library refreshed: {summary.record_count} image bundle(s) across {summary.folder_count} folder(s)"
         if summary.missing_roots:
             message = f"{message} | Missing roots: {len(summary.missing_roots)}"
         window.statusBar().showMessage(message)
@@ -212,7 +212,7 @@ class CatalogController:
         window._active_catalog_task = None
         window._catalog_context = None
         self._close_progress_dialog()
-        QMessageBox.warning(window, "Catalog Refresh Failed", f"Could not refresh the global catalog.\n\n{message}")
+        QMessageBox.warning(window, "Library Refresh Failed", f"Could not refresh the library.\n\n{message}")
 
     def _show_progress_dialog(self, total_steps: int) -> QProgressDialog:
         window = self._window
@@ -220,9 +220,9 @@ class CatalogController:
             key="catalog",
             total_steps=total_steps,
             spec=JobSpec(
-                title="Global Catalog",
-                preparing_label="Refreshing global catalog...",
-                running_label="Refreshing global catalog...",
+                title="Library",
+                preparing_label="Refreshing library index...",
+                running_label="Refreshing library index...",
                 window_modality=Qt.WindowModality.NonModal,
                 stays_on_top=True,
             ),

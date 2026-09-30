@@ -32,17 +32,6 @@ class FreezeSupportTests(unittest.TestCase):
 
         self.assertIn("packaging/ai_runtime_locks", destinations)
 
-    def test_frozen_layout_ships_cli_editor_package_on_the_import_path(self) -> None:
-        root = Path("C:/build-test")
-        layout = FreezeAssetLayout(
-            ai_site_packages_source=root / "site-packages",
-            ai_stdlib_source=root / "stdlib",
-            ai_binary_modules_source=root / "lib-dynload",
-        )
-        destinations = {destination for _source, destination in layout.include_files}
-
-        self.assertIn("lib/photo_terminal", destinations)
-
     def test_resolve_freeze_asset_layout_prefers_explicit_environment_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

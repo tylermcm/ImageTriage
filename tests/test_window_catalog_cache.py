@@ -24,6 +24,7 @@ from image_triage.ai_workflow import default_ai_workflow_runtime
 from image_triage.catalog import CatalogRepository
 from image_triage.catalog_controller import CatalogController
 from image_triage.models import ImageRecord
+from image_triage.records_view_controller import RecordsViewController
 from image_triage.review_workflows import BurstRecommendation, TasteProfile, build_review_scoring_cache_key
 from image_triage.window import (
     AIReviewCompleteDialog,
@@ -763,12 +764,15 @@ class WindowCatalogCacheTests(unittest.TestCase):
             for index in range(MainWindow.CHUNKED_RESTORE_LOAD_MIN_RECORDS)
         ]
 
-        should_chunk = MainWindow._should_chunk_loaded_records(window, records)
+        should_chunk = RecordsViewController(window).should_chunk_loaded_records(records)
 
         self.assertTrue(should_chunk)
 
     def test_reset_filter_metadata_index_skips_eager_cache_probe_for_large_loads(self) -> None:
         window = _FilterMetadataResetStub()
+        controller = RecordsViewController(window)
+        controller.metadata_prefetch_seed_paths = window._metadata_prefetch_seed_paths
+        controller.enqueue_filter_metadata_paths = window._enqueue_filter_metadata_paths
         records = [
             _record(
                 f"X:/Shots/frame_{index:04d}.jpg",
@@ -779,13 +783,16 @@ class WindowCatalogCacheTests(unittest.TestCase):
             for index in range(MainWindow.FILTER_METADATA_EAGER_CACHE_MAX_RECORDS + 1)
         ]
 
-        MainWindow._reset_filter_metadata_index(window, records)
+        controller.reset_filter_metadata_index(records)
 
         self.assertEqual(0, window._filter_metadata_manager.calls)
         self.assertEqual([(["seed-path"], True)], window.enqueued)
 
     def test_reset_filter_metadata_index_still_checks_small_load_cache(self) -> None:
         window = _FilterMetadataResetStub()
+        controller = RecordsViewController(window)
+        controller.metadata_prefetch_seed_paths = window._metadata_prefetch_seed_paths
+        controller.enqueue_filter_metadata_paths = window._enqueue_filter_metadata_paths
         records = [
             _record(
                 f"X:/Shots/frame_{index:04d}.jpg",
@@ -796,7 +803,7 @@ class WindowCatalogCacheTests(unittest.TestCase):
             for index in range(4)
         ]
 
-        MainWindow._reset_filter_metadata_index(window, records)
+        controller.reset_filter_metadata_index(records)
 
         self.assertEqual(len(records), window._filter_metadata_manager.calls)
 

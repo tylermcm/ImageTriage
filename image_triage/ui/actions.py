@@ -342,12 +342,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         install_ai_runtime=_create_action(
             window,
-            "Set Up AI...",
+            "Set Up AI Runtime...",
             slot=window._install_ai_runtime,
         ),
         download_ai_model=_create_action(
             window,
-            "Set Up AI...",
+            "Download AI Models...",
             slot=window._download_ai_model,
         ),
         repair_ai=_create_action(
@@ -357,7 +357,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         check_ai_readiness=_create_action(
             window,
-            "Check AI Readiness (Demo Ready)...",
+            "Check AI Readiness...",
             slot=window._check_ai_readiness,
         ),
         copy_ai_diagnostics=_create_action(
@@ -384,7 +384,7 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         run_ai_culling=_create_action(
             window,
-            "Open AI Workflow Center",
+            "Run Review",
             slot=window._open_ai_workflow_center,
             icon=QStyle.StandardPixmap.SP_MediaPlay,
         ),
@@ -496,27 +496,27 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         browse_catalog=_create_action(
             window,
-            "Browse Global Catalog...",
+            "Browse Library...",
             slot=window._browse_catalog,
         ),
         add_current_folder_to_catalog=_create_action(
             window,
-            "Add Current Folder To Catalog",
+            "Add Current Folder To Library",
             slot=window._add_current_folder_to_catalog,
         ),
         add_folder_to_catalog=_create_action(
             window,
-            "Add Folder To Catalog...",
+            "Add Folder To Library...",
             slot=window._add_folder_to_catalog_prompt,
         ),
         remove_catalog_folder=_create_action(
             window,
-            "Remove Catalog Folder...",
+            "Remove Folder From Library...",
             slot=window._remove_catalog_root_prompt,
         ),
         refresh_catalog=_create_action(
             window,
-            "Refresh Catalog Index",
+            "Refresh Library Index",
             slot=window._refresh_catalog_index,
         ),
         rebuild_folder_catalog_cache=_create_action(

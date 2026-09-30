@@ -150,6 +150,33 @@ def ensure_depth_map(
     )
 
 
+def depth_map_cache_path(
+    source_path: str | Path,
+    *,
+    cache_root: str | Path | None = None,
+) -> Path | None:
+    """The cached depth-map PNG for ``source_path`` if already on disk, else
+    None. Never runs depth-model inference -- only checks the deterministic,
+    content-addressed cache path that ``ensure_depth_map`` also uses, so this
+    is safe to call from a headless render path (thumbnail/export). Unlike
+    the subject-mask cache key, this one only needs the source file's stat
+    and the model version string, not a weights hash, so it is cheap. Any
+    failure is treated as "not cached yet" and returns None.
+    """
+
+    try:
+        source = Path(source_path).expanduser().resolve()
+        if not source.is_file():
+            return None
+        stat = source.stat()
+        cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns)
+        cache_dir = Path(cache_root or default_depth_cache_root()) / cache_key
+        depth_path = cache_dir / "depth.png"
+        return depth_path if depth_path.is_file() else None
+    except Exception:
+        return None
+
+
 class DepthMapTaskSignals(QObject):
     progress = Signal(str, str)          # request id, message
     finished = Signal(str, str, object)  # request id, source path, DepthMapResult
@@ -213,6 +240,7 @@ __all__ = [
     "DepthMapResult",
     "ensure_depth_map",
     "default_depth_cache_root",
+    "depth_map_cache_path",
     "DepthMapTask",
     "DepthWarmTask",
 ]

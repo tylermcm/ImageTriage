@@ -482,10 +482,7 @@ class CpuEditorRenderBackend:
                 prefix, start = self._retouch_pil, len(prior[1])
         base = prefix if prefix is not None else source
         pending = list(spots or ())[start:]
-        # Imported lazily: photo_terminal lives outside this package and is only
-        # on sys.path once the editor UI has set it up, so a module-level import
-        # breaks anything that imports this backend on its own.
-        from photo_terminal.adjustments import apply_retouch
+        from .photo_terminal.adjustments import apply_retouch
 
         with logger.span("editslider.retouch", spots=len(frozen), reused=start):
             # apply_retouch copies before mutating, so the cached prefix above

@@ -28,7 +28,7 @@ class CatalogSearchDialogResult:
 class CatalogSearchDialog(QDialog):
     def __init__(self, roots: tuple[CatalogRoot, ...], *, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Browse Global Catalog")
+        self.setWindowTitle("Browse Library")
         self.resize(620, 260)
         self._roots = roots
 

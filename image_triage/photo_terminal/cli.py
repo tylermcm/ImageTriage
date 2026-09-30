@@ -15,7 +15,6 @@ from .session import (
     SessionError,
     SUPPORTED_OPERATION_TYPES,
     ValidationError,
-    WriteError,
     add_space,
     copy_bitmap_asset,
     export_xmp,

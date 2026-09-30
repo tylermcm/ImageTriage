@@ -15,6 +15,7 @@ from ..image_resize import (
     _load_resize_image,
     _save_resized_image,
     _scaled_image,
+    apply_edits_if_present,
     preset_for_key,
 )
 from ..scanner import normalized_path_key
@@ -169,6 +170,7 @@ def apply_workflow_export_plan(
             ignore_orientation=False,
             strip_metadata=plan.recipe.strip_metadata,
         )
+        loaded = apply_edits_if_present(item.source.source_path, loaded)
         image = loaded.image
         if item.width > 0 and item.height > 0:
             image = _scaled_image(image, target_size=QSize(item.width, item.height), shrink_only=True)

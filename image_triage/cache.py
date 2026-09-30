@@ -10,7 +10,7 @@ from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QImage, QImageReader
 
 
-THUMBNAIL_CACHE_VERSION = 4
+THUMBNAIL_CACHE_VERSION = 5
 
 # WI-3.5: the disk cache grew unbounded (3.2 GB / 72,860 files with zero
 # eviction, ever). Cap it; eviction is LRU by write time (thumbnails are
@@ -18,6 +18,29 @@ THUMBNAIL_CACHE_VERSION = 4
 # actually (re)created, a reasonable recency proxy without a separate index).
 DEFAULT_THUMBNAIL_CACHE_MAX_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
 _EVICTION_CHECK_INTERVAL = 200  # throttle: check every Nth save, not every save
+
+
+def edit_state_for(path: str | Path) -> tuple[int, int]:
+    """Cheap, cache-key-friendly fingerprint of ``path``'s editor sidecar.
+
+    Returns ``(mtime_ns, size)`` of the resolved session file if one exists,
+    else ``(0, 0)`` as a fixed sentinel for "no sidecar" -- this keeps an
+    unedited photo's key shape/value unaffected by whether this field exists
+    at all. Deliberately does not parse or hash the session contents (too
+    expensive per thumbnail); a changed mtime/size is enough to know the
+    cached thumbnail may be stale.
+    """
+
+    try:
+        from . import edit_storage
+
+        session_path = edit_storage.resolve_session_for_read(path)
+        stat = session_path.stat()
+    except OSError:
+        return (0, 0)
+    except Exception:
+        return (0, 0)
+    return (stat.st_mtime_ns, stat.st_size)
 
 
 @dataclass(slots=True, frozen=True)
@@ -28,9 +51,13 @@ class ThumbnailKey:
     width: int
     height: int
     version: int = THUMBNAIL_CACHE_VERSION
+    edit_state: tuple[int, int] = (0, 0)
 
     def digest(self) -> str:
-        payload = f"{self.version}|{self.path}|{self.modified_ns}|{self.file_size}|{self.width}|{self.height}"
+        payload = (
+            f"{self.version}|{self.path}|{self.modified_ns}|{self.file_size}|"
+            f"{self.width}|{self.height}|{self.edit_state[0]}|{self.edit_state[1]}"
+        )
         return sha1(payload.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 

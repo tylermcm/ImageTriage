@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple, Union
 
 import numpy as np
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 
 def _clamp_percent(value: float) -> float:

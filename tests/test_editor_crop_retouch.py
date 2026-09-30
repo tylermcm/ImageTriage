@@ -17,7 +17,6 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli_editor"))
 
 import numpy as np
 from PIL import Image
@@ -40,8 +39,8 @@ from image_triage.ui.photo_editor_panel import (
     recipe_from_session,
 )
 from image_triage.ui.retouch_overlay import RetouchOverlay
-from photo_terminal.adjustments import apply_retouch, heal_spot_patch, remove_red_eye
-from photo_terminal.session import RENDERER_ORDER, load_session, validate_operation_params
+from image_triage.photo_terminal.adjustments import apply_retouch, heal_spot_patch, remove_red_eye
+from image_triage.photo_terminal.session import RENDERER_ORDER, load_session, validate_operation_params
 
 
 def _app() -> QApplication:

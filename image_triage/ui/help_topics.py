@@ -222,11 +222,11 @@ def library_help_pages() -> tuple[HelpPage, ...]:
             """,
         ),
         HelpPage(
-            "Global Catalog",
+            "Library Index",
             """
-            # Global catalog
+            # Library index
 
-            The global catalog is an optional, searchable index of folders you choose. It lets you search filenames, paths, and cached image bundle information without opening each folder by hand.
+            The library index is an optional, searchable index of folders you choose. It lets you search filenames, paths, and cached image bundle information without opening each folder by hand.
 
             It is useful for:
 
@@ -235,7 +235,7 @@ def library_help_pages() -> tuple[HelpPage, ...]:
             - Opening images from multiple folders
             - Quickly checking cached folder contents
 
-            AI caches are still stored per folder. The catalog helps with search and navigation — it does not change how folder-local AI processing works.
+            AI caches are still stored per folder. The library index helps with search and navigation — it does not change how folder-local AI processing works.
             """,
         ),
     )
@@ -246,32 +246,32 @@ def catalog_help_pages() -> tuple[HelpPage, ...]:
         HelpPage(
             "What It Is",
             """
-            # The catalog
+            # The library index
 
-            The catalog is an optional index of folders you choose. It stores enough information to help you search and reopen image bundles quickly, without rescanning every folder each time.
+            The library index is an optional index of folders you choose. It stores enough information to help you search and reopen image bundles quickly, without rescanning every folder each time.
 
-            The catalog does not move your files or force a new workflow. It is simply a faster way to find and reopen existing work.
+            The library index does not move your files or force a new workflow. It is simply a faster way to find and reopen existing work.
             """,
         ),
         HelpPage(
             "How To Use It",
             """
-            # How to use the catalog
+            # How to use the library index
 
             1. Add one or more root folders from the **Library** menu.
-            2. Refresh the catalog index.
-            3. Search or browse the catalog by filename or path.
-            4. Open results as a virtual catalog view.
+            2. Refresh the library index.
+            3. Search or browse it by filename or path.
+            4. Open results as a virtual library view.
 
-            Catalog views are for discovery and navigation. They let you inspect found images without changing where the originals are stored.
+            Library views are for discovery and navigation. They let you inspect found images without changing where the originals are stored.
             """,
         ),
         HelpPage(
             "When To Use It",
             """
-            # When the catalog helps
+            # When the library index helps
 
-            The catalog is most useful when you want to:
+            The library index is most useful when you want to:
 
             - Find images across multiple folders
             - Search old shoots

@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 import urllib.request
+from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PIL import Image
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
 from image_triage.app_identity import user_settings
+from image_triage.edit_storage import editor_session_path
+from image_triage.models import ImageRecord
+from image_triage.photo_terminal.session import SCHEMA_NAME, SCHEMA_VERSION
 from image_triage.pocketdrop import _bridge
+from image_triage.window import MainWindow
 
 needs_native = pytest.mark.skipif(
     not _bridge.library_path().is_file(), reason="pocketdrop.dll not built (native/pocketdrop/build_windows.bat)"
@@ -72,3 +80,76 @@ def test_panel_serves_the_phone_page_and_takes_files(tmp_path) -> None:
     finally:
         panel.shutdown()
         user_settings().clear()
+
+
+IMAGE_SIZE = (80, 60)
+
+
+def _write_source_image(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", IMAGE_SIZE, color=(120, 130, 140)).save(path)
+
+
+def _write_session(image_path: Path, *, operations: list[dict] | None = None) -> Path:
+    session_path = editor_session_path(image_path)
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session_path.write_text(
+        json.dumps(
+            {
+                "version": SCHEMA_VERSION,
+                "schema": SCHEMA_NAME,
+                "coordinateSpaces": [
+                    {
+                        "id": "space-source-full",
+                        "sourceWidth": IMAGE_SIZE[0],
+                        "sourceHeight": IMAGE_SIZE[1],
+                        "cropInEffect": None,
+                    }
+                ],
+                "assets": {"dir": "assets", "bitmapMasks": []},
+                "operations": operations or [],
+                "masks": [],
+            }
+        )
+    )
+    return session_path
+
+
+def _record(path: Path) -> ImageRecord:
+    return ImageRecord(path=str(path), name=path.name, size=path.stat().st_size, modified_ns=path.stat().st_mtime_ns)
+
+
+def _fake_self(apply_edits: bool) -> SimpleNamespace:
+    # _pocketdrop_send_path_for only reads self._apply_edits_to_pocketdrop, so
+    # a bare namespace stands in for the real MainWindow instance.
+    return SimpleNamespace(_apply_edits_to_pocketdrop=apply_edits)
+
+
+def test_setting_off_sends_original_path_unchanged(tmp_path) -> None:
+    image_path = tmp_path / "IMG_0001.jpg"
+    _write_source_image(image_path)
+    _write_session(image_path, operations=[{"id": "op-1", "type": "adjust.exposure", "enabled": True, "params": {"exposure": 1.8}}])
+
+    result = MainWindow._pocketdrop_send_path_for(_fake_self(False), _record(image_path))
+
+    assert result == str(image_path)
+
+
+def test_setting_on_with_real_sidecar_sends_a_temp_rendered_path(tmp_path) -> None:
+    image_path = tmp_path / "IMG_0002.jpg"
+    _write_source_image(image_path)
+    _write_session(image_path, operations=[{"id": "op-1", "type": "adjust.exposure", "enabled": True, "params": {"exposure": 1.8}}])
+
+    result = MainWindow._pocketdrop_send_path_for(_fake_self(True), _record(image_path))
+
+    assert result != str(image_path)
+    assert os.path.isfile(result)
+
+
+def test_setting_on_without_sidecar_sends_original_path(tmp_path) -> None:
+    image_path = tmp_path / "IMG_0003.jpg"
+    _write_source_image(image_path)
+
+    result = MainWindow._pocketdrop_send_path_for(_fake_self(True), _record(image_path))
+
+    assert result == str(image_path)

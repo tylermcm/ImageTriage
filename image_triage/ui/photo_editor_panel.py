@@ -104,17 +104,13 @@ from ..people_instances import PeopleInstanceTask, PersonInstance
 from ..prompt_masks import PromptMaskResult, PromptMaskTask, PromptMaskWarmTask
 
 
-_CLI_EDITOR_ROOT = Path(__file__).resolve().parents[2] / "cli_editor"
-if _CLI_EDITOR_ROOT.exists() and str(_CLI_EDITOR_ROOT) not in sys.path:
-    sys.path.insert(0, str(_CLI_EDITOR_ROOT))
-
-from photo_terminal.adjustments import (  # noqa: E402
+from ..photo_terminal.adjustments import (
     EditRecipe,
     curve_lut,
     is_identity_curve,
     normalize_curve_points,
 )
-from photo_terminal.session import (  # noqa: E402
+from ..photo_terminal.session import (
     SessionError,
     add_space,
     asset_dir_for_session,
@@ -130,9 +126,19 @@ from photo_terminal.session import (  # noqa: E402
     upsert_mask,
     validate_session,
 )
-from .scene_regions import SceneIndexTask, SceneRegionIndex  # noqa: E402
-from photo_terminal.io import open_image  # noqa: E402
-from photo_terminal.masks import refine_color_range, refine_luminance_range  # noqa: E402
+from .scene_regions import SceneIndexTask, SceneRegionIndex
+from ..photo_terminal.io import open_image
+from ..photo_terminal.masks import refine_color_range, refine_luminance_range
+from ..edit_session_geometry import (
+    MASK_SHAPE_TYPES as _MASK_SHAPE_TYPES,
+    bitmap_asset_path as _es_bitmap_asset_path,
+    build_masked_adjustments,
+    component_params as _es_component_params,
+    group_components as _es_group_components,
+    group_members as _es_group_members,
+    mask_root as _es_mask_root,
+    mask_source_size as _es_mask_source_size,
+)
 
 
 class _MaskModelDownloadSignals(QObject):
@@ -1503,7 +1509,7 @@ class PhotoEditorPanel(QFrame):
     # The on-canvas mask overlay should re-read mask_overlay_state().
     mask_overlay_changed = Signal()
 
-    MASK_SHAPE_TYPES = ("radial", "linear-gradient")
+    MASK_SHAPE_TYPES = _MASK_SHAPE_TYPES
     # Two states, Lightroom-style: pick a mask type, or work on the mask you have.
     MASK_PANE_WORK = 0
     MASK_PANE_CREATE = 1
@@ -1678,10 +1684,17 @@ class PhotoEditorPanel(QFrame):
         self._prompt_session_active = False
         self._prompt_session_root_id: str | None = None
         self._prompt_session_label: str | None = None
+        self._prompt_session_click_count = 0
+        # The most recently created/refined component in the current session —
+        # a right-click (subtract) refines this one in place rather than
+        # starting a new group member. None until the first left-click.
+        self._prompt_active_component_id: str | None = None
+        self._prompt_subtract_task: object | None = None
         # How each click-to-select component was made: {mask_id: {"points",
-        # "refined"}}. Kept in memory (the session schema drops unknown mask
-        # keys) so "Refine Edges" can re-run the SAM prompt; mask ids survive the
-        # save/reload round-trip, so keying on them is stable.
+        # "labels", "refined"}}. Kept in memory (the session schema drops
+        # unknown mask keys) so "Refine Edges" (and a later subtract click) can
+        # re-run the SAM prompt; mask ids survive the save/reload round-trip,
+        # so keying on them is stable.
         self._prompt_meta: dict[str, dict[str, Any]] = {}
         self._refine_queue: list[str] = []
         self._refine_active_task: object | None = None
@@ -5370,6 +5383,8 @@ class PhotoEditorPanel(QFrame):
                 return False
         self._prompt_session_root_id = None
         self._prompt_session_label = None
+        self._prompt_session_click_count = 0
+        self._prompt_active_component_id = None
         self._mask_touchup_mask_id = None
         self._mask_touchup_original_present = set()
         self._mask_touchup_original_values = {}
@@ -5427,6 +5442,8 @@ class PhotoEditorPanel(QFrame):
         self._prompt_session_active = False
         self._prompt_session_root_id = None
         self._prompt_session_label = None
+        self._prompt_session_click_count = 0
+        self._prompt_active_component_id = None
         self._point_select_active = False
         self._refine_queue = []
         self._sync_point_select_button(False)
@@ -6318,10 +6335,23 @@ class PhotoEditorPanel(QFrame):
                 busy_message = "Finding people..."
             elif self._scene_index_task is not None and self._scene_index is None:
                 busy_message = "Mapping regions..."
+        prompt_points: list[tuple[float, float, int]] = []
+        if point_pick and self._prompt_session_active and self._prompt_active_component_id is not None:
+            meta = self._prompt_meta.get(self._prompt_active_component_id) or {}
+            points = meta.get("points") or []
+            labels = meta.get("labels") or [1] * len(points)
+            prompt_source_size = self._mask_source_size()
+            if prompt_source_size and points:
+                sw, sh = prompt_source_size
+                prompt_points = [
+                    (float(px) * sw, float(py) * sh, int(lbl))
+                    for (px, py), lbl in zip(points, labels)
+                ]
         return {
             "scene_index": scene_index_value,
             "scene_pick": scene_pick,
             "point_pick": point_pick,
+            "prompt_points": prompt_points,
             "point_preview_path": (
                 str(self._prompt_hover_result.mask_path)
                 if point_pick
@@ -6367,26 +6397,21 @@ class PhotoEditorPanel(QFrame):
         }
 
     def _mask_source_size(self) -> tuple[int, int] | None:
-        if self._session:
-            spaces = self._session.get("coordinateSpaces") or []
-            if spaces:
-                width = spaces[0].get("sourceWidth")
-                height = spaces[0].get("sourceHeight")
-                if width and height:
-                    return int(width), int(height)
-        if self._source_path is None:
-            return None
-        if self._source_size_cache is not None and self._source_size_cache[0] == self._source_path:
-            return self._source_size_cache[1]
-        try:
-            width, height = image_dimensions(self._source_path)
-        except Exception:
-            return None
-        if not width or not height:
-            # Unreadable or vanished file; callers treat None as "no canvas".
-            return None
-        self._source_size_cache = (self._source_path, (int(width), int(height)))
-        return self._source_size_cache[1]
+        # Delegates to the free function in edit_session_geometry (shared with
+        # headless rendering); this instance keeps its own single-entry cache
+        # dict across calls instead of the old (path, size) tuple.
+        if self._source_size_cache is not None:
+            cached_path, cached_size = self._source_size_cache
+            if cached_path == self._source_path:
+                size_cache = {str(cached_path): cached_size} if cached_path is not None else {}
+            else:
+                size_cache = {}
+        else:
+            size_cache = {}
+        result = _es_mask_source_size(self._session, self._source_path, size_cache=size_cache)
+        if result is not None and self._source_path is not None:
+            self._source_size_cache = (self._source_path, result)
+        return result
 
     def _selected_mask_dict(self) -> dict[str, Any] | None:
         return self._mask_by_id(self._selected_mask_id())
@@ -6400,18 +6425,11 @@ class PhotoEditorPanel(QFrame):
         return None
 
     def _mask_root(self, mask: dict[str, Any]) -> dict[str, Any]:
-        parent = self._mask_by_id(mask.get("parentId"))
-        return parent if parent is not None else mask
+        return _es_mask_root(self._session, mask)
 
     def _group_members(self, root_id: str) -> list[dict[str, Any]]:
         """The root mask followed by its children, in session order."""
-        if self._session is None:
-            return []
-        members = [mask for mask in self._session.get("masks", []) if mask.get("id") == root_id]
-        members.extend(
-            mask for mask in self._session.get("masks", []) if mask.get("parentId") == root_id
-        )
-        return members
+        return _es_group_members(self._session, root_id)
 
     @staticmethod
     def _attach_mask_to_group(
@@ -6434,32 +6452,13 @@ class PhotoEditorPanel(QFrame):
         return "bitmap" if mask.get("type") == "subject-select" else str(mask.get("type"))
 
     def _group_components(self, root_id: str) -> list[tuple[str, dict[str, Any], str]]:
-        out: list[tuple[str, dict[str, Any], str]] = []
-        for mask in self._group_members(root_id):
-            if mask.get("type") not in (*self.MASK_SHAPE_TYPES, "bitmap", "subject-select"):
-                continue
-            combine = "add" if mask.get("id") == root_id else str(mask.get("combine", "add"))
-            out.append((self._component_type(mask), self._component_params(mask), combine))
-        return out
+        return _es_group_components(self._session, self._session_path, root_id)
 
     def _component_params(self, mask: dict[str, Any]) -> dict[str, Any]:
-        params = dict(mask.get("params") or {})
-        if mask.get("type") in ("bitmap", "subject-select"):
-            asset_path = self._bitmap_asset_path(mask)
-            if asset_path is not None:
-                params["assetPath"] = str(asset_path)
-        return params
+        return _es_component_params(self._session, self._session_path, mask)
 
     def _bitmap_asset_path(self, mask: dict[str, Any]) -> Path | None:
-        if self._session is None or self._session_path is None:
-            return None
-        asset_id = mask.get("assetId") or mask.get("cacheAssetId")
-        if not asset_id:
-            return None
-        for asset in self._session.get("assets", {}).get("bitmapMasks", []):
-            if asset.get("id") == asset_id:
-                return self._session_path.parent / str(asset.get("path", ""))
-        return None
+        return _es_bitmap_asset_path(self._session, self._session_path, mask)
 
     def request_subject_mask(self, request: str) -> None:
         normalized = request.strip().casefold()
@@ -7212,6 +7211,8 @@ class PhotoEditorPanel(QFrame):
         self._prompt_session_active = True
         self._prompt_session_root_id = None
         self._prompt_session_label = None
+        self._prompt_session_click_count = 0
+        self._prompt_active_component_id = None
         self._mask_touchup_mask_id = None
         self._mask_touchup_original_present = set()
         self._mask_touchup_original_values = {}
@@ -7252,11 +7253,16 @@ class PhotoEditorPanel(QFrame):
         except Exception:
             pass
 
-    def handle_overlay_point_picked(self, x: float, y: float) -> None:
-        """A click landed on the photo in click-to-select mode."""
+    def handle_overlay_point_picked(self, x: float, y: float, label: int = 1) -> None:
+        """A click landed on the photo in click-to-select mode.
+
+        ``label`` is SAM's own convention: 1 = include (left-click, the
+        original behavior), 0 = exclude (right-click) — a point that refines
+        the most recently created selection in this session rather than
+        starting a new one."""
         if not self._point_select_active or self._source_path is None:
             return
-        if self._prompt_mask_task is not None or self._refine_active_task is not None:
+        if self._prompt_mask_task is not None or self._refine_active_task is not None or self._prompt_subtract_task is not None:
             self._set_status("Still working — one moment")
             return
         source_size = self._mask_source_size()
@@ -7265,6 +7271,9 @@ class PhotoEditorPanel(QFrame):
             return
         nx = max(0.0, min(1.0, float(x) / source_size[0]))
         ny = max(0.0, min(1.0, float(y) / source_size[1]))
+        if not label:
+            self._handle_overlay_subtract_point(nx, ny)
+            return
         # People/animals get an automatic BiRefNet edge refine so a selection
         # comes out matte-clean the first time (SAM picks who, BiRefNet the edge).
         refine = self._click_is_on_person(nx, ny)
@@ -7312,6 +7321,94 @@ class PhotoEditorPanel(QFrame):
         self._start_prompt_mask_task(
             [(nx, ny)], refine=refine, parent_id=parent_id, combine=combine
         )
+
+    def _handle_overlay_subtract_point(self, nx: float, ny: float) -> None:
+        """A right-click landed in click-to-select mode: refine the most
+        recently created selection by re-running SAM with this point added
+        as an exclude (label 0), replacing that component's mask in place."""
+        if not self._prompt_session_active or self._prompt_active_component_id is None:
+            self._set_status("Click to select something first")
+            return
+        mask_id = self._prompt_active_component_id
+        meta = self._prompt_meta.get(mask_id)
+        if meta is None:
+            self._set_status("Nothing to refine yet")
+            return
+        self._clear_prompt_hover()
+        points = list(meta.get("points") or [])
+        labels = list(meta.get("labels") or [1] * len(points))
+        points.append((nx, ny))
+        labels.append(0)
+        self._start_prompt_subtract_task(
+            mask_id, points, labels, refine=bool(meta.get("refined"))
+        )
+
+    def _start_prompt_subtract_task(
+        self,
+        mask_id: str,
+        points_norm: list[tuple[float, float]],
+        labels: list[int],
+        *,
+        refine: bool,
+    ) -> None:
+        if self._source_path is None or self._prompt_subtract_task is not None:
+            return
+        task = PromptMaskTask(self._source_path, points_norm, labels=labels, refine=refine)
+        task.signals.finished.connect(
+            lambda rid, sp, res, mid=mask_id, pts=points_norm, lbl=labels: self._handle_prompt_subtract_finished(
+                mid, sp, res, pts, lbl
+            ),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        task.signals.failed.connect(
+            self._handle_prompt_subtract_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._prompt_subtract_task = task
+        self.semantic_mask_status.setText("Refining selection...")
+        self.semantic_mask_status.show()
+        self._set_status("Refining selection...")
+        self._semantic_mask_pool.start(task)
+
+    def _handle_prompt_subtract_finished(
+        self,
+        mask_id: str,
+        source_path: str,
+        result: object,
+        points: list[tuple[float, float]],
+        labels: list[int],
+    ) -> None:
+        self._prompt_subtract_task = None
+        self.semantic_mask_status.hide()
+        mask = self._mask_by_id(mask_id)
+        if (
+            mask is None
+            or not isinstance(result, PromptMaskResult)
+            or not result.mask_path.is_file()
+            or self._source_path is None
+            or Path(source_path) != self._source_path.resolve()
+        ):
+            if isinstance(result, PromptMaskResult):
+                result.mask_path.unlink(missing_ok=True)
+            self._set_status("Refine failed — selection unchanged")
+            return
+        self._update_bitmap_mask_asset(mask, result.mask_path)
+        self._prompt_meta[mask_id] = {
+            "points": [(float(px), float(py)) for px, py in points],
+            "labels": [int(v) for v in labels],
+            "refined": bool(self._prompt_meta.get(mask_id, {}).get("refined")),
+        }
+        self._prompt_session_click_count += 1
+        if self._prompt_session_active:
+            self._update_prompt_session_subtitle()
+        self._set_status("Selection refined — right-click to exclude more, or press OK")
+        self.mask_overlay_changed.emit()
+
+    def _handle_prompt_subtract_failed(
+        self, request_id: str, source_path: str, message: str
+    ) -> None:
+        self._prompt_subtract_task = None
+        self.semantic_mask_status.hide()
+        self._set_status(f"Refine failed: {message}")
 
     def handle_overlay_point_hovered(self, x: float, y: float) -> None:
         if not self._point_select_active or self._source_path is None:
@@ -7554,10 +7651,13 @@ class PhotoEditorPanel(QFrame):
         # same SAM point prompt with BiRefNet applied.
         self._prompt_meta[mask_id] = {
             "points": [(float(px), float(py)) for px, py in points],
+            "labels": [1] * len(points),
             "refined": refine,
         }
         self.semantic_mask_status.hide()
         if session_mode:
+            self._prompt_active_component_id = mask_id
+            self._prompt_session_click_count += 1
             if self._prompt_session_root_id is None:
                 self._prompt_session_root_id = mask_id
                 self._bind_touchup_to_mask(mask_id)
@@ -7565,7 +7665,7 @@ class PhotoEditorPanel(QFrame):
                 # Keep the whole-group mask (the root) as the adjustment target.
                 self._select_mask_in_list(self._prompt_session_root_id)
             self._update_prompt_session_subtitle()
-            self._set_status("Added to your selection — click more, refine, or press OK")
+            self._set_status("Added to your selection — click more, right-click to exclude, or press OK")
         else:
             self._select_mask_in_list(mask_id)
             self._set_status(f"Created {category} — click another to select more")
@@ -7582,7 +7682,7 @@ class PhotoEditorPanel(QFrame):
         if root_id is None:
             return
         members = self._group_members(root_id)
-        count = len(members)
+        count = self._prompt_session_click_count or len(members)
         label = self._prompt_session_label or "Selection"
         unrefined = sum(1 for m in members if self._prompt_component_unrefined(m))
         noun = "click" if count == 1 else "clicks"
@@ -7642,10 +7742,11 @@ class PhotoEditorPanel(QFrame):
         mask = self._mask_by_id(mask_id)
         meta = self._prompt_meta.get(mask_id, {})
         points = [(float(p[0]), float(p[1])) for p in meta.get("points", [])]
+        labels = [int(v) for v in meta.get("labels", [1] * len(points))]
         if mask is None or self._source_path is None or not points:
             self._refine_next()
             return
-        task = PromptMaskTask(self._source_path, points, refine=True)
+        task = PromptMaskTask(self._source_path, points, labels=labels, refine=True)
         task.signals.finished.connect(
             lambda rid, sp, res, mid=mask_id: self._handle_refine_finished(mid, sp, res),
             Qt.ConnectionType.QueuedConnection,
@@ -8394,25 +8495,21 @@ class PhotoEditorPanel(QFrame):
         plus its parentId children; its adjustments apply through the union of
         the components. Cached bitmap and subject selections participate in
         the same live compositing path as geometric masks."""
-        if self._session is None:
-            return []
-        source_size = self._mask_source_size()
-        if source_size is None:
-            return []
-        out: list[tuple[list[tuple[str, dict[str, Any]]], tuple[int, int], EditRecipe]] = []
-        for mask in self._session.get("masks", []):
-            # A hidden layer (eye off in the overview) keeps its operations but
-            # sits out of the composite; preview and Save Copy both read here.
-            if mask.get("parentId") or not mask.get("enabled", True):
-                continue
-            root_id = str(mask.get("id"))
-            recipe = recipe_for_mask(self._session, root_id)
-            if not any(value not in (0, 0.0, None) for value in asdict(recipe).values()):
-                continue
-            components = self._group_components(root_id)
-            if not components:
-                continue
-            out.append((components, source_size, recipe))
+        # Delegates to edit_session_geometry.build_masked_adjustments, which is
+        # also the headless-rendering entry point (edit_render_headless.py).
+        # Reuse the instance's cached source size instead of re-decoding.
+        size_cache: dict[str, tuple[int, int]] = {}
+        if self._source_size_cache is not None and self._source_path is not None:
+            cached_path, cached_size = self._source_size_cache
+            if cached_path == self._source_path:
+                size_cache[str(cached_path)] = cached_size
+        out = build_masked_adjustments(
+            self._session, self._session_path, self._source_path, size_cache=size_cache
+        )
+        if self._source_path is not None:
+            cached = size_cache.get(str(self._source_path))
+            if cached is not None:
+                self._source_size_cache = (self._source_path, cached)
         return out
 
     def delete_selected_mask(self) -> None:
@@ -9080,7 +9177,7 @@ def operations_from_recipe(recipe: EditRecipe, *, existing_ids: set[str] | None 
 
 
 def _operation_order(op_type: str) -> int:
-    from photo_terminal.session import RENDERER_ORDER
+    from ..photo_terminal.session import RENDERER_ORDER
 
     try:
         return RENDERER_ORDER.index(op_type)

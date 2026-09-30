@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,7 +12,6 @@ from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from .annotation_queue import WinnerSyncRequest
 from .file_ops import FileMove, copy_paths, move_paths, rename_bundle_paths
-from .metadata import CaptureMetadata
 from .models import DeleteMode, ImageRecord, SessionAnnotation, WinnerMode
 from .scanner import normalize_filesystem_path, normalized_path_key
 from .transfer_progress import TransferItem, run_move_transfer
@@ -641,23 +640,7 @@ class RecordOpsController:
             window._persist_folder_record_cache(window._current_folder, window._all_records, source="window-move")
 
     def rekey_filter_metadata_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
-        window = self._window
-        if not records_by_old_path:
-            return
-
-        updated_metadata: dict[str, CaptureMetadata] = {}
-        for old_path, renamed_record in records_by_old_path.items():
-            metadata = window._filter_metadata_by_path.pop(old_path, None)
-            if metadata is not None:
-                updated_metadata[renamed_record.path] = replace(metadata, path=renamed_record.path)
-            if old_path in window._filter_metadata_loaded_paths:
-                window._filter_metadata_loaded_paths.discard(old_path)
-                window._filter_metadata_loaded_paths.add(renamed_record.path)
-            if old_path in window._filter_metadata_record_paths:
-                window._filter_metadata_record_paths.discard(old_path)
-                window._filter_metadata_record_paths.add(renamed_record.path)
-
-        window._filter_metadata_by_path.update(updated_metadata)
+        self._window._records_view.rekey_filter_metadata_after_moves(records_by_old_path)
 
     def rekey_annotation_after_move(
         self,

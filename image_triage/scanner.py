@@ -202,6 +202,21 @@ def scan_child_folders(folder: str, *, include_hidden: bool = False) -> list[Ima
     return sort_records(records, SortMode.NAME)
 
 
+def _has_editor_session(image_path: str) -> bool:
+    """Whether ``image_path`` has a built-in-editor session with real edits.
+
+    Deferred import: ``edit_storage`` imports ``EDIT_STORAGE_ROOT_NAME`` from
+    this module at top level, so importing ``edit_storage`` back at module
+    level here would create a cycle. The same lazy-import pattern is used
+    elsewhere in this codebase to break the same kind of cycle (see
+    ``editor_copy.write_edited_copy``'s import of ``editor_render``).
+    """
+
+    from .edit_storage import session_has_edits
+
+    return session_has_edits(image_path)
+
+
 def _is_hidden_directory_entry(entry: os.DirEntry[str], stat_result: os.stat_result | None = None) -> bool:
     if entry.name.startswith("."):
         return True
@@ -368,6 +383,7 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                     companion_paths=companions,
                     edited_paths=tuple(item.path for item in edit_files),
                     variants=stack_variants,
+                    has_editor_session=_has_editor_session(raw.path),
                 )
             )
 
@@ -399,6 +415,7 @@ def _scan_folder_impl(folder: str, *, include_stat: bool) -> list[ImageRecord]:
                 modified_ns=max([primary.modified_ns, *[item.modified_ns for item in edit_files]]),
                 edited_paths=tuple(item.path for item in edit_files),
                 variants=stack_variants,
+                has_editor_session=_has_editor_session(primary.path),
             )
         )
     return records
