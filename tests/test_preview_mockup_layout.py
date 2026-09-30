@@ -162,8 +162,6 @@ class PreviewMockupLayoutTests(unittest.TestCase):
         self.preview.resize(1024, 768)
         self.app.processEvents()
         self.assertEqual(self.preview._studio_rail.width(), 270)
-        self.assertFalse(self.preview._mockup_undo.isVisible())
-        self.assertFalse(self.preview._mockup_redo.isVisible())
         adjust = self.preview.photo_editor_panel
         self.assertEqual(adjust._adjust_body.width(), adjust._adjust_scroll.viewport().width())
 

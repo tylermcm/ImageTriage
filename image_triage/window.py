@@ -20,7 +20,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
-import threading
+import tempfile
 import time
 import uuid
 from collections import Counter, deque
@@ -64,7 +64,6 @@ from PySide6.QtWidgets import (
     QSpacerItem,
     QStackedWidget,
     QStatusBar,
-    QTabBar,
     QToolButton,
     QTreeView,
     QVBoxLayout,
@@ -162,6 +161,7 @@ from .command_palette_controller import CommandPaletteController
 from .folder_ops_controller import FolderOpsController
 from .record_ops_controller import RecordOpsController, UndoAction
 from .records_repository import RecordsRepository
+from .records_view_controller import RecordsViewController, UnifiedSearchTask, _memory_path_key
 from .recycle_bin_controller import RecycleBinController
 from .brackets import BracketDetector
 from .bursts import find_burst_groups
@@ -184,14 +184,10 @@ from .file_ops import (
 from .filtering import (
     AIStateFilter,
     FileTypeFilter,
-    OrientationFilter,
     RecordFilterQuery,
     ReviewStateFilter,
     SavedFilterPreset,
-    active_filter_labels,
-    builtin_filter_presets,
     deserialize_saved_filter_preset,
-    matches_record_query,
     serialize_saved_filter_preset,
 )
 from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
@@ -204,10 +200,10 @@ from .library_store import (
     LibraryStore,
     VirtualCollection,
 )
-from .metadata import EMPTY_METADATA, CaptureMetadata, MetadataManager
-from .models import DeleteMode, FilterMode, ImageRecord, ImageVariant, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode, sort_records
+from .metadata import CaptureMetadata, MetadataManager
+from .models import DeleteMode, FilterMode, ImageRecord, ImageVariant, JPEG_SUFFIXES, SessionAnnotation, SortMode, WinnerMode
 from .perceptual_hash import hamming_distance_int
-from .perf import perf_logger, performance_log_dir, write_execution_log
+from .perf import perf_logger, performance_log_dir
 from .preview import FullScreenPreview, PreviewEntry
 from .ui import preview_studio
 from .workflows import (
@@ -255,13 +251,7 @@ from .review_workflows import (
 )
 from .scanner import FolderScanTask, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
-from .semantic_search import SearchFilters
-from .semantic_index import (
-    SEMANTIC_EMBEDDING_DIM,
-    SemanticFolderIndexTask,
-    compute_semantic_model_identity,
-    ensure_semantic_onnx_runtime,
-)
+from .semantic_index import SemanticFolderIndexTask
 from .face_index import FaceFolderIndexTask
 from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
@@ -407,182 +397,6 @@ class InspectorStatsTask(QRunnable):
         self.result_queue.put(("ready", self.request.cache_key, stats))
 
 
-class UnifiedSearchSignals(QObject):
-    finished = Signal(str, int, object)
-    failed = Signal(str, int, str)
-
-
-class UnifiedSearchTask(QRunnable):
-    """Runs CLIP/person search off the UI thread for the current search box."""
-
-    _text_encoder_cache: dict[tuple[str, str, str], object] = {}
-    _text_encoder_cache_lock = threading.Lock()
-
-    def __init__(
-        self,
-        *,
-        folder: str,
-        token: int,
-        db_path: Path,
-        runtime: object,
-        query_text: str,
-        min_confidence: float,
-        limit: int = 500,
-    ) -> None:
-        super().__init__()
-        self.folder = folder
-        self.token = token
-        self.db_path = Path(db_path)
-        self.runtime = runtime
-        self.query_text = query_text
-        self.min_confidence = float(min_confidence)
-        self.limit = int(limit)
-        self.signals = UnifiedSearchSignals()
-        self._cancelled = False
-        self.setAutoDelete(True)
-
-    def cancel(self) -> None:
-        self._cancelled = True
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        if self._cancelled:
-            return
-        try:
-            query_text = self.query_text.strip()
-            if not query_text or not self.db_path.exists():
-                self.signals.finished.emit(self.folder, self.token, self._empty_result(query_text))
-                return
-
-            from aiculler.storage import SQLiteFeatureStore
-            from .people_search import list_person_clusters
-            from .semantic_search import (
-                SEARCH_QUERY_TEMPLATES,
-                FeatureStoreSemanticSearch,
-                parse_search_query,
-            )
-
-            store = SQLiteFeatureStore(self.db_path)
-            try:
-                known_people = tuple(
-                    cluster.name
-                    for cluster in list_person_clusters(store.connection)
-                    if cluster.name.strip()
-                )
-                if self._cancelled:
-                    return
-                parsed = parse_search_query(query_text, known_people=known_people)
-                text_encoder = None
-                if parsed.semantic_text:
-                    text_model = Path(getattr(self.runtime, "clip_text_model", ""))
-                    tokenizer = Path(getattr(self.runtime, "tokenizer", ""))
-                    fallback_text_model = getattr(self.runtime, "clip_fallback_text_model", None)
-                    for label, path in (("CLIP text model", text_model), ("CLIP tokenizer", tokenizer)):
-                        if not path.exists():
-                            raise FileNotFoundError(f"{label} is missing: {path}")
-                    text_encoder = self._cached_text_encoder(
-                        text_model,
-                        tokenizer,
-                        fallback_text_model,
-                        device=str(getattr(self.runtime, "device", "auto")),
-                    )
-                service = FeatureStoreSemanticSearch(
-                    store,
-                    text_encoder,
-                    query_templates=SEARCH_QUERY_TEMPLATES,
-                )
-                hits = service.search(
-                    query_text,
-                    known_people=known_people,
-                    filters=SearchFilters(min_confidence=self.min_confidence),
-                    limit=self.limit,
-                )
-            finally:
-                store.close()
-
-            if self._cancelled:
-                return
-            path_keys: list[str] = []
-            rank_by_path: dict[str, float] = {}
-            for hit in hits:
-                key = _search_match_path_key(hit.source_path)
-                if not key:
-                    continue
-                path_keys.append(key)
-                rank_by_path[key] = max(rank_by_path.get(key, 0.0), float(hit.confidence))
-            result = {
-                "query": query_text,
-                "path_keys": tuple(path_keys),
-                "rank_by_path": rank_by_path,
-                "hit_count": len(path_keys),
-                "known_people": known_people,
-            }
-            if logger.enabled:
-                logger.duration(
-                    "unified_search",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self.folder,
-                    hits=len(path_keys),
-                    people=len(known_people),
-                )
-            self.signals.finished.emit(self.folder, self.token, result)
-        except Exception as exc:
-            if logger.enabled:
-                logger.duration(
-                    "unified_search.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self.folder,
-                    error=str(exc),
-                )
-            self.signals.failed.emit(self.folder, self.token, str(exc))
-
-    @classmethod
-    def _cached_text_encoder(
-        cls,
-        text_model: Path,
-        tokenizer: Path,
-        fallback_text_model: object,
-        *,
-        device: str = "auto",
-    ):
-        cls._ensure_text_search_runtime(device=device)
-        from aiculler.text_scoring import CLIPTextEncoder
-
-        fallback_path = Path(fallback_text_model) if fallback_text_model else None
-        key = (
-            str(text_model.resolve()),
-            str(tokenizer.resolve()),
-            str(fallback_path.resolve()) if fallback_path is not None else "",
-        )
-        with cls._text_encoder_cache_lock:
-            cached = cls._text_encoder_cache.get(key)
-            if cached is not None:
-                return cached
-            encoder = CLIPTextEncoder(
-                text_model,
-                tokenizer,
-                fallback_text_onnx_path=fallback_path,
-            )
-            cls._text_encoder_cache.clear()
-            cls._text_encoder_cache[key] = encoder
-            return encoder
-
-    @staticmethod
-    def _ensure_text_search_runtime(*, device: str) -> None:
-        ensure_semantic_onnx_runtime(device=device)
-
-    @staticmethod
-    def _empty_result(query_text: str) -> dict[str, object]:
-        return {
-            "query": query_text,
-            "path_keys": (),
-            "rank_by_path": {},
-            "hit_count": 0,
-            "known_people": (),
-        }
-
-
 @dataclass(slots=True)
 class ResizeExecutionContext:
     """Stores the active resize plan while the resize worker is running."""
@@ -662,11 +476,6 @@ class ChildAppProcess:
     process: subprocess.Popen[str]
 
 
-def _memory_path_key(path: str) -> str:
-    """Create a cheap case-insensitive in-memory lookup key for loaded paths."""
-    return os.path.normpath(path).casefold()
-
-
 def _path_parent_stem_key(path: str) -> str:
     try:
         candidate = Path(path).expanduser()
@@ -686,13 +495,6 @@ _PROJECT_ROW_PX = 34
 _PROJECT_EMPTY_ROW_PX = 38
 _NAV_SECTION_GAP_PX = 8
 _PROJECT_HEADER_BODY_GAP_PX = 0
-
-
-def _search_match_path_key(path: str | Path) -> str:
-    text = str(path or "").strip()
-    if not text:
-        return ""
-    return os.path.normpath(os.path.abspath(text)).casefold()
 
 
 def _headless_background_popen_kwargs() -> dict[str, object]:
@@ -1064,7 +866,7 @@ class AIReviewCompleteDialog(QDialog):
 
         summary_lines = [f"Folder: {folder}"]
         if same_folder:
-            summary_lines.append("The new results were loaded automatically and the workspace switched to AI Review.")
+            summary_lines.append("The new results were loaded automatically.")
         else:
             summary_lines.append("The review outputs were written successfully.")
         summary = QLabel("\n".join(summary_lines), self)
@@ -1180,8 +982,8 @@ class AIReviewCompleteDialog(QDialog):
         outputs_grid.setVerticalSpacing(10)
         output_rows = (
             ("Hidden AI folder", "The folder-local AI workspace beside your images.", hidden_root),
-            ("Artifacts", "Embeddings, IDs, and cluster data used by AI Review.", artifacts_dir),
-            ("Ranked export", "The scored CSV that drives the AI Review tab.", export_csv_path),
+            ("Artifacts", "Embeddings, IDs, and cluster data used by AI scoring.", artifacts_dir),
+            ("Ranked export", "The scored CSV used for ranking and review.", export_csv_path),
             ("Report folder", "Summary files and reports generated for this run.", report_dir),
             ("HTML report", "The browser-friendly review report for this folder.", report_html_path),
         )
@@ -1202,7 +1004,7 @@ class AIReviewCompleteDialog(QDialog):
         root_layout.addWidget(legend_title)
 
         legend_subtitle = QLabel(
-            "Use this as the quick reference for the badges you just generated in AI Review.",
+            "Use this as the quick reference for the AI badges you just generated.",
             self,
         )
         legend_subtitle.setWordWrap(True)
@@ -2050,6 +1852,51 @@ def _format_bytes(size: int) -> str:
     return f"{value:.1f} TB"
 
 
+_POCKETDROP_EDITED_EXPORT_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _pocketdrop_edited_export_dir() -> Path:
+    """Scratch folder for edited-render temp files handed to PocketDrop.
+
+    Sits next to PocketDrop's existing pasted-image scratch folder under the
+    app's own AppData root (see pocketdrop.panel._pasted_images_dir), not a
+    bare system temp dir, so it is easy to find and sweep.
+    """
+
+    from .scan_cache import app_data_root
+
+    folder = app_data_root() / "PocketDrop" / "EditedExports"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _cleanup_pocketdrop_edited_exports() -> None:
+    """Best-effort sweep of stale rendered-for-PocketDrop temp files.
+
+    WI-5.3 (D3): PocketDrop's native send (``pd_add_paths``) is fire-and-forget
+    -- the host gets no completion callback for an individual transfer (see
+    ``pocketdrop/panel.py``), so a temp file written for an edited send cannot
+    be deleted right after the call without risking deleting it before the
+    transfer has actually read it. Rather than guess at a completion signal
+    that does not exist, temp files live in their own scratch subfolder and
+    are swept here for anything older than a day -- comfortably longer than
+    any local transfer should take -- called opportunistically (startup and
+    each PocketDrop send), never blocking on it.
+    """
+
+    try:
+        folder = _pocketdrop_edited_export_dir()
+        cutoff = time.time() - _POCKETDROP_EDITED_EXPORT_MAX_AGE_SECONDS
+        for path in folder.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 class MainWindow(QMainWindow):
     """Top-level application window.
 
@@ -2190,6 +2037,10 @@ class MainWindow(QMainWindow):
     # (which is permanently forced to "manual" since the 2026-09-19 AI Review
     # mode retirement, see docs/ai_mode_retirement.md).
     SHOW_AI_TAGS_IN_GRID_KEY = "workflow/show_ai_tags_in_grid"
+    # WI-5.3 (D3): opt-in, off by default -- render a photo's built-in editor
+    # session before handing it to PocketDrop, instead of always sending the
+    # unedited original.
+    APPLY_EDITS_TO_POCKETDROP_KEY = "workflow/apply_edits_to_pocketdrop"
     # Keep diagnostics focused on the active UI investigations so the JSONL log
     # remains readable while still capturing the popout's full loading path.
     # editslider.* stays available for slider-latency profiling under perf logging.
@@ -2302,7 +2153,7 @@ class MainWindow(QMainWindow):
         "zen_mode": "Zen",
         "save_filter_preset": "Save Search",
         "projects": "Collections",
-        "catalog": "Catalog",
+        "catalog": "Library",
         "performance_logging": "Perf",
         "open_performance_logs": "Logs",
         "columns": "Cols",
@@ -2517,7 +2368,7 @@ class MainWindow(QMainWindow):
         "zen_mode": "Zen Mode",
         "save_filter_preset": "Save Search",
         "projects": "Collections",
-        "catalog": "Catalog",
+        "catalog": "Library",
         "performance_logging": "Performance Logging",
         "open_performance_logs": "Performance Logs",
     }
@@ -2890,6 +2741,7 @@ class MainWindow(QMainWindow):
         self._records_repo = RecordsRepository()
         self._record_ops = RecordOpsController(self)
         self._command_palette = CommandPaletteController(self)
+        self._records_view = RecordsViewController(self)
         self._folder_records: list[ImageRecord] = []
         self._records: list[ImageRecord] = []
         self._record_index_by_path: dict[str, int] = {}
@@ -3037,6 +2889,7 @@ class MainWindow(QMainWindow):
         self._ai_review_detail_progress_enabled = self._settings.value(self.AI_REVIEW_DETAIL_PROGRESS_KEY, False, bool)
         self._show_ai_tags_in_grid = self._settings.value(self.SHOW_AI_TAGS_IN_GRID_KEY, False, bool)
         self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
+        self._apply_edits_to_pocketdrop = self._settings.value(self.APPLY_EDITS_TO_POCKETDROP_KEY, False, bool)
         # Stub: the semantic-sidecar setting used to flip a stage count and
         # gate a legacy semantic model. With CLI-Culler driving the pipeline
         # the flag is no longer meaningful, but a couple of legacy status-line
@@ -3441,7 +3294,7 @@ class MainWindow(QMainWindow):
         self.workspace_preset_menu = QMenu(self)
         self.workflow_recipe_menu = QMenu("Run Recipe", self)
         self.collections_menu = QMenu("Collections", self)
-        self.catalog_menu = QMenu("Catalog", self)
+        self.catalog_menu = QMenu("Library", self)
 
         self.manual_search_field = self._build_search_field()
         self.ai_search_field = self._build_search_field()
@@ -3517,17 +3370,6 @@ class MainWindow(QMainWindow):
         self._rebuild_workspace_toolbar("manual")
         self._rebuild_workspace_toolbar("ai")
 
-        self.mode_tabs = QTabBar()
-        self.mode_tabs.setObjectName("modeTabs")
-        self.mode_tabs.addTab("Manual Review")
-        self.mode_tabs.addTab("AI Review")
-        self.mode_tabs.setExpanding(False)
-        self.mode_tabs.setDrawBase(False)
-        self.mode_tabs.setElideMode(Qt.TextElideMode.ElideNone)
-        self.mode_tabs.setUsesScrollButtons(False)
-        self.mode_tabs.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.mode_tabs.currentChanged.connect(self._handle_mode_tab_changed)
-
         self.toolbar_stack = QStackedWidget()
         self.toolbar_stack.addWidget(self.manual_toolbar)
         self.toolbar_stack.addWidget(self.ai_toolbar)
@@ -3565,12 +3407,8 @@ class MainWindow(QMainWindow):
         self.workspace_bar_drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
         self.workspace_bar_drag_handle.installEventFilter(self)
         workspace_bar_layout.addWidget(self.workspace_bar_drag_handle, 0, Qt.AlignmentFlag.AlignVCenter)
-        workspace_bar_layout.addWidget(self.mode_tabs, 0, Qt.AlignmentFlag.AlignVCenter)
-        # AI Review is retired; the tabs stay only as the manual-mode state holder.
-        self.mode_tabs.hide()
         workspace_bar_layout.addWidget(self.toolbar_stack, 1)
         workspace_bar_layout.addWidget(self.workspace_bar_chrome, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._refresh_mode_tabs_width()
         self._apply_workspace_bar_state()
 
         self.tool_mode_bar = QWidget()
@@ -3829,7 +3667,7 @@ class MainWindow(QMainWindow):
         self._sync_record_filter_controls()
         self._update_filter_summary()
         self.preview.set_auto_bracket_mode(self._auto_bracket_enabled)
-        self._handle_mode_tab_changed(self.mode_tabs.currentIndex())
+        self._handle_mode_tab_changed(0)
         self._update_action_states()
         QTimer.singleShot(0, self._finish_startup_restore)
         if self._check_updates_on_startup and not self._quick_view_mode:
@@ -5031,7 +4869,7 @@ class MainWindow(QMainWindow):
             "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
             "ai_results": ("AI Results", self._build_ai_results_menu),
             "projects": ("Collections", self._build_projects_toolbar_menu),
-            "catalog": ("Catalog", self._build_catalog_toolbar_menu),
+            "catalog": ("Library", self._build_catalog_toolbar_menu),
         }
 
     def _build_topbar_action_item(self, item_id: str) -> QWidget | None:
@@ -5110,11 +4948,10 @@ class MainWindow(QMainWindow):
         return None
 
     def _switch_review_mode_to(self, mode: str) -> None:
-        if not hasattr(self, "mode_tabs"):
-            return
-        index = 1 if mode == "ai" else 0
-        if self.mode_tabs.currentIndex() != index:
-            self.mode_tabs.setCurrentIndex(index)
+        # AI Review is retired: the app always stays in manual review, so
+        # asking to switch to "ai" is a no-op (matches the guard already in
+        # _handle_mode_tab_changed).
+        return
 
     def _activate_topbar_action(self, item_id: str, action: QAction) -> None:
         target = self._item_target_mode_for_action(item_id)
@@ -5420,14 +5257,7 @@ class MainWindow(QMainWindow):
         self._rebuild_topbar_action_stack(mode)
 
     def _build_advanced_filter_button(self) -> QToolButton:
-        button = QToolButton()
-        button.setObjectName("workspaceFiltersButton")
-        button.setText("Filters")
-        button.setToolTip("Advanced filters and saved searches")
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setMenu(self.filter_toolbar_menu)
-        return button
+        return self._records_view.build_advanced_filter_button()
 
     @staticmethod
     def _normalize_toolbar_style(value: object) -> str:
@@ -6708,7 +6538,7 @@ class MainWindow(QMainWindow):
             "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
             "ai_results": ("AI Results", self._build_ai_results_menu),
             "projects": ("Collections", self._build_projects_toolbar_menu),
-            "catalog": ("Catalog", self._build_catalog_toolbar_menu),
+            "catalog": ("Library", self._build_catalog_toolbar_menu),
         }
         for item_id, (text, factory) in menu_factories.items():
             button = self._build_popup_button(text, factory())
@@ -7247,83 +7077,10 @@ class MainWindow(QMainWindow):
             self._schedule_workspace_toolbar_overflow_update("ai")
 
     def _build_record_filter_actions(self) -> None:
-        file_type_group = QActionGroup(self)
-        file_type_group.setExclusive(True)
-        for mode in FileTypeFilter:
-            action = QAction(mode.value, self)
-            action.setCheckable(True)
-            action.triggered.connect(lambda _checked=False, selected=mode: self._set_file_type_filter(selected))
-            file_type_group.addAction(action)
-            self._file_type_actions[mode] = action
-
-        review_group = QActionGroup(self)
-        review_group.setExclusive(True)
-        for mode in ReviewStateFilter:
-            action = QAction(mode.value, self)
-            action.setCheckable(True)
-            action.triggered.connect(lambda _checked=False, selected=mode: self._set_review_state_filter(selected))
-            review_group.addAction(action)
-            self._review_state_actions[mode] = action
-
-        ai_group = QActionGroup(self)
-        ai_group.setExclusive(True)
-        for mode in AIStateFilter:
-            action = QAction(mode.value, self)
-            action.setCheckable(True)
-            action.triggered.connect(lambda _checked=False, selected=mode: self._set_ai_state_filter(selected))
-            ai_group.addAction(action)
-            self._ai_state_actions[mode] = action
-            self.actions.ai_state_actions[mode] = action
-
-    def _populate_saved_filter_menu(self, menu: QMenu) -> None:
-        menu.addAction(self.actions.save_filter_preset)
-        menu.addAction(self.actions.delete_filter_preset)
-        menu.addSeparator()
-
-        active_label = self._matching_filter_preset_label(self._filter_query)
-        builtins = builtin_filter_presets()
-        if builtins:
-            builtins_header = menu.addSection("Smart Filters")
-            builtins_header.setEnabled(False)
-            for preset in builtins:
-                action = menu.addAction(preset.name)
-                action.setCheckable(True)
-                action.setChecked(active_label == preset.name)
-                action.triggered.connect(lambda _checked=False, target=preset: self._apply_filter_preset(target))
-            menu.addSeparator()
-
-        saved_header = menu.addSection("Saved Searches")
-        saved_header.setEnabled(False)
-        if self._saved_filter_presets:
-            for preset in self._saved_filter_presets:
-                action = menu.addAction(preset.name)
-                action.setCheckable(True)
-                action.setChecked(active_label == preset.name)
-                action.triggered.connect(lambda _checked=False, target=preset: self._apply_filter_preset(target))
-        else:
-            empty_action = menu.addAction("No saved searches yet")
-            empty_action.setEnabled(False)
+        self._records_view.build_record_filter_actions()
 
     def _refresh_filter_toolbar_menu(self) -> None:
-        self.filter_toolbar_menu.clear()
-        file_type_menu = self.filter_toolbar_menu.addMenu("File Type")
-        for mode in FileTypeFilter:
-            file_type_menu.addAction(self._file_type_actions[mode])
-
-        review_menu = self.filter_toolbar_menu.addMenu("Review State")
-        for mode in ReviewStateFilter:
-            review_menu.addAction(self._review_state_actions[mode])
-
-        ai_menu = self.filter_toolbar_menu.addMenu("AI State")
-        for mode in AIStateFilter:
-            ai_menu.addAction(self._ai_state_actions[mode])
-
-        self.filter_toolbar_menu.addSeparator()
-        self.filter_toolbar_menu.addAction(self.actions.advanced_filters)
-        self.filter_toolbar_menu.addAction(self.actions.clear_filters)
-        self.filter_toolbar_menu.addSeparator()
-        saved_menu = self.filter_toolbar_menu.addMenu("Saved Searches")
-        self._populate_saved_filter_menu(saved_menu)
+        self._records_view.refresh_filter_toolbar_menu()
 
     def _refresh_action_shortcut_hint(self, action: QAction) -> None:
         base_text = action.property("imageTriageBaseText")
@@ -7611,112 +7368,16 @@ class MainWindow(QMainWindow):
         self._command_palette.handle_finished(result)
 
     def _matching_saved_filter_preset(self, query: RecordFilterQuery | None = None) -> SavedFilterPreset | None:
-        target = query or self._filter_query
-        for preset in self._saved_filter_presets:
-            if preset.query == target:
-                return preset
-        return None
-
-    def _matching_filter_preset_label(self, query: RecordFilterQuery | None = None) -> str:
-        target = query or self._filter_query
-        saved = self._matching_saved_filter_preset(target)
-        if saved is not None:
-            return saved.name
-        for preset in builtin_filter_presets():
-            if preset.query == target:
-                return preset.name
-        return ""
-
-    def _copy_filter_query(self, query: RecordFilterQuery) -> RecordFilterQuery:
-        return RecordFilterQuery(
-            quick_filter=query.quick_filter,
-            search_text=query.search_text,
-            min_search_confidence=query.min_search_confidence,
-            file_type=query.file_type,
-            review_state=query.review_state,
-            ai_state=query.ai_state,
-            ai_cull_bucket=query.ai_cull_bucket,
-            ai_workflow_tag=query.ai_workflow_tag,
-            folder_text=query.folder_text,
-            camera_text=query.camera_text,
-            lens_text=query.lens_text,
-            tag_text=query.tag_text,
-            min_rating=query.min_rating,
-            orientation=query.orientation,
-            captured_after=query.captured_after,
-            captured_before=query.captured_before,
-            iso_min=query.iso_min,
-            iso_max=query.iso_max,
-            focal_min=query.focal_min,
-            focal_max=query.focal_max,
-        )
+        return self._records_view.matching_saved_filter_preset(query)
 
     def _apply_filter_preset(self, preset: SavedFilterPreset) -> None:
-        self._filter_query = self._copy_filter_query(preset.query)
-        self._pending_search_text = self._filter_query.search_text
-        self._apply_filter_query_change()
-        self.statusBar().showMessage(f"Applied saved search: {preset.name}")
+        self._records_view.apply_filter_preset(preset)
 
     def _save_current_filter_preset(self) -> None:
-        if not self._filter_query.has_active_filters:
-            self.statusBar().showMessage("Set a search or filter before saving a preset")
-            return
-
-        existing = self._matching_saved_filter_preset()
-        initial_name = existing.name if existing is not None else self._matching_filter_preset_label(self._filter_query)
-        name, accepted = QInputDialog.getText(self, "Save Current Search", "Preset name", text=initial_name)
-        if not accepted:
-            return
-        name = (name or "").strip()
-        if not name:
-            return
-
-        existing_index = next(
-            (index for index, preset in enumerate(self._saved_filter_presets) if preset.name.casefold() == name.casefold()),
-            None,
-        )
-        if existing_index is not None:
-            overwrite = QMessageBox.question(
-                self,
-                "Overwrite Saved Search",
-                f"A saved search named '{self._saved_filter_presets[existing_index].name}' already exists. Overwrite it?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if overwrite != QMessageBox.StandardButton.Yes:
-                return
-            self._saved_filter_presets[existing_index] = SavedFilterPreset(name=name, query=self._copy_filter_query(self._filter_query))
-        else:
-            self._saved_filter_presets.append(SavedFilterPreset(name=name, query=self._copy_filter_query(self._filter_query)))
-
-        self._save_saved_filter_presets()
-        self._refresh_filter_toolbar_menu()
-        self._update_filter_summary()
-        self._update_action_states()
-        self.statusBar().showMessage(f"Saved search: {name}")
+        self._records_view.save_current_filter_preset()
 
     def _delete_current_filter_preset(self) -> None:
-        preset = self._matching_saved_filter_preset()
-        if preset is None:
-            self.statusBar().showMessage("The current filter state is not one of your saved searches")
-            return
-
-        confirm = QMessageBox.question(
-            self,
-            "Delete Saved Search",
-            f"Delete the saved search '{preset.name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
-        self._saved_filter_presets = [item for item in self._saved_filter_presets if item.name.casefold() != preset.name.casefold()]
-        self._save_saved_filter_presets()
-        self._refresh_filter_toolbar_menu()
-        self._update_filter_summary()
-        self._update_action_states()
-        self.statusBar().showMessage(f"Deleted saved search: {preset.name}")
+        self._records_view.delete_current_filter_preset()
 
     def _handle_system_color_scheme_changed(self) -> None:
         if self._appearance_mode == AppearanceMode.AUTO:
@@ -7739,18 +7400,9 @@ class MainWindow(QMainWindow):
         self.grid.apply_theme(self._theme)
         self.grid.set_backdrop_painter(self._paint_grid_backdrop if theme_has_backdrop(self._theme) else None)
         self.preview.apply_theme(self._theme)
-        self._refresh_mode_tabs_width()
         self._schedule_workspace_toolbar_overflow_update("manual")
         self._schedule_workspace_toolbar_overflow_update("ai")
         self._update_action_states()
-
-    def _refresh_mode_tabs_width(self) -> None:
-        self.mode_tabs.ensurePolished()
-        self.mode_tabs.adjustSize()
-        target_width = max(self.mode_tabs.sizeHint().width(), self.mode_tabs.minimumSizeHint().width())
-        target_width += 10
-        self.mode_tabs.setMinimumWidth(target_width)
-        self.mode_tabs.setMaximumWidth(target_width)
 
     def _update_dynamic_action_icons(self) -> None:
         if self.actions is None or self._theme is None:
@@ -9711,7 +9363,7 @@ class MainWindow(QMainWindow):
         move_action = menu.addAction("Move Folder...")
         delete_action = menu.addAction("Delete Folder...")
         menu.addSeparator()
-        catalog_action = menu.addAction("Remove From Catalog" if self._library_store.is_catalog_root(folder) else "Add To Catalog")
+        catalog_action = menu.addAction("Remove From Library" if self._library_store.is_catalog_root(folder) else "Add To Library")
         favorite_action = menu.addAction("Remove From Favorites" if is_favorite else "Add To Favorites")
         can_modify = not self._is_filesystem_root(folder)
         rename_action.setEnabled(can_modify)
@@ -9746,11 +9398,11 @@ class MainWindow(QMainWindow):
             if self._library_store.is_catalog_root(folder):
                 self._library_store.remove_catalog_root(folder)
                 self._refresh_catalog_menu()
-                self.statusBar().showMessage(f"Removed catalog root: {Path(folder).name}")
+                self.statusBar().showMessage(f"Removed from library: {Path(folder).name}")
             else:
                 self._library_store.add_catalog_root(folder)
                 self._refresh_catalog_menu()
-                self._start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for catalog...")
+                self._start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for the library...")
             return
         if chosen == favorite_action:
             if is_favorite:
@@ -10681,18 +10333,9 @@ class MainWindow(QMainWindow):
     def _set_ui_mode(self, mode: str) -> None:
         # AI Review is retired: the app always runs in manual review. Callers
         # that still ask for "ai" (AI workflow entry points) land in manual mode.
-        if self.mode_tabs.currentIndex() != 0:
-            self.mode_tabs.setCurrentIndex(0)
-            return
         self._handle_mode_tab_changed(0)
 
     def _handle_mode_tab_changed(self, index: int) -> None:
-        if index != 0:
-            # Anything that still flips the hidden mode tabs to AI (toolbar
-            # editing, AI toolbar buttons) is pulled back to manual here.
-            with QSignalBlocker(self.mode_tabs):
-                self.mode_tabs.setCurrentIndex(0)
-            index = 0
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         step_start = start
@@ -10825,564 +10468,61 @@ class MainWindow(QMainWindow):
             )
 
     def _set_filter_mode(self, mode: FilterMode) -> None:
-        self._filter_query.quick_filter = mode
-        combo_index = self.filter_combo.findData(mode)
-        if combo_index >= 0 and combo_index != self.filter_combo.currentIndex():
-            self.filter_combo.setCurrentIndex(combo_index)
-            return
-        self._apply_filter_query_change()
+        self._records_view.set_filter_mode(mode)
 
     def _handle_filter_changed(self) -> None:
-        selected = self._selected_filter_mode()
-        if selected is None:
-            return
-        self._set_filter_mode(selected)
+        self._records_view.handle_filter_changed()
 
     def _handle_search_text_changed(self, text: str, *, source: str) -> None:
-        self._pending_search_text = text
-        for field_name in ("manual_search_field", "ai_search_field", "topbar_search_field"):
-            if field_name.startswith(source):
-                continue
-            field = getattr(self, field_name, None)
-            if field is not None and field.text() != text:
-                with QSignalBlocker(field):
-                    field.setText(text)
-        self._search_apply_timer.start()
+        self._records_view.handle_search_text_changed(text, source=source)
 
     def _commit_search_text_filter(self) -> None:
-        self._set_search_text(self._pending_search_text)
-
-    def _set_search_text(self, text: str) -> None:
-        if self._filter_query.search_text == text:
-            return
-        self._filter_query.search_text = text
-        self._apply_filter_query_change()
-
-    def _unified_search_current_signature(self) -> tuple[object, ...]:
-        query = self._filter_query
-        return (
-            normalized_path_key(self._current_folder) if self._current_folder else "",
-            query.search_text.strip(),
-            round(float(query.min_search_confidence or 0.0), 4),
-        )
-
-    def _reset_unified_search_state(self) -> None:
-        self._unified_search_token += 1
-        if self._active_unified_search_task is not None:
-            self._active_unified_search_task.cancel()
-            self._active_unified_search_task = None
-        self._unified_search_signature = ()
-        self._unified_search_completed_signature = ()
-        self._unified_search_path_keys = frozenset()
-        self._unified_search_rank_by_path = {}
-
-    def _reset_semantic_index_state(self) -> None:
-        self._semantic_index_token += 1
-        if self._active_semantic_index_task is not None:
-            self._active_semantic_index_task.cancel()
-            self._active_semantic_index_task = None
-        self._semantic_index_scope_key = ""
-        self._semantic_index_signature = ()
-        self._semantic_index_completed = 0
-        self._semantic_index_total = 0
-        self._semantic_index_active = False
-        self._reset_face_index_state()
-
-    def _reset_face_index_state(self) -> None:
-        self._face_index_token += 1
-        if self._active_face_index_task is not None:
-            self._active_face_index_task.cancel()
-            self._active_face_index_task = None
-        self._face_index_scope_key = ""
-        self._face_index_signature = ()
-        self._face_index_active = False
-        self._face_index_people_count = 0
-
-    def _schedule_unified_search_for_current_filter(self) -> str:
-        signature = self._unified_search_current_signature()
-        if signature != self._unified_search_signature:
-            self._unified_search_signature = signature
-            self._unified_search_completed_signature = ()
-            self._unified_search_path_keys = frozenset()
-            self._unified_search_rank_by_path = {}
-            if self._active_unified_search_task is not None:
-                self._active_unified_search_task.cancel()
-                self._active_unified_search_task = None
-
-        query_text = self._filter_query.search_text.strip()
-        if not query_text:
-            return ""
-        if self._scope_kind != "folder" or not self._current_folder:
-            return "Object and people search requires an opened folder."
-        if self._active_unified_search_task is not None or self._unified_search_completed_signature == signature:
-            return ""
-        # Hold the search until background indexing for this folder finishes, so
-        # results arrive as one complete set instead of trickling in as each
-        # batch of embeddings lands. The search is re-triggered on completion.
-        if (
-            self._semantic_index_active
-            and normalized_path_key(self._current_folder) == self._semantic_index_scope_key
-        ):
-            return self._semantic_index_status_text()
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return "Indexed search is unavailable for this folder."
-        db_path = aiculler_db_path(paths)
-        if not db_path.exists():
-            return (
-                "Filename search only. Object and people search becomes available "
-                "once the folder has been indexed."
-            )
-        try:
-            runtime = self._configured_aiculler_runtime(workers=1)
-        except Exception as exc:
-            return f"Indexed search unavailable: {exc}"
-
-        self._unified_search_token += 1
-        token = self._unified_search_token
-        task = UnifiedSearchTask(
-            folder=self._current_folder,
-            token=token,
-            db_path=db_path,
-            runtime=runtime,
-            query_text=query_text,
-            min_confidence=float(self._filter_query.min_search_confidence),
-        )
-        task.signals.finished.connect(self._handle_unified_search_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_unified_search_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_unified_search_task = task
-        self._unified_search_pool.start(task)
-        return f'Searching indexed photos for "{query_text}"...'
+        self._records_view.commit_search_text_filter()
 
     def _handle_unified_search_finished(self, folder: str, token: int, result: object) -> None:
-        if token != self._unified_search_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
-            return
-        self._active_unified_search_task = None
-        if not isinstance(result, dict):
-            return
-        query_text = str(result.get("query", ""))
-        if query_text != self._filter_query.search_text.strip():
-            return
-        path_keys = frozenset(str(path) for path in result.get("path_keys", ()) if str(path))
-        rank_by_path = result.get("rank_by_path", {})
-        self._unified_search_completed_signature = self._unified_search_current_signature()
-        self._unified_search_path_keys = path_keys
-        self._unified_search_rank_by_path = (
-            {str(path): float(score) for path, score in rank_by_path.items()}
-            if isinstance(rank_by_path, dict)
-            else {}
-        )
-        current_path = self._current_visible_record_path()
-        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-        self._apply_records_view(current_path=current_path)
-        hit_count = int(result.get("hit_count") or 0)
-        if query_text:
-            if hit_count:
-                self.statusBar().showMessage(f"Indexed search found {hit_count} image(s)")
-            else:
-                self.statusBar().showMessage(
-                    "No matches. Try different words, or lower the Min Confidence filter."
-                )
+        self._records_view.handle_unified_search_finished(folder, token, result)
 
     def _handle_unified_search_failed(self, folder: str, token: int, message: str) -> None:
-        if token != self._unified_search_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
-            return
-        self._active_unified_search_task = None
-        self._unified_search_completed_signature = self._unified_search_current_signature()
-        self._unified_search_path_keys = frozenset()
-        self._unified_search_rank_by_path = {}
-        if self._filter_query.search_text.strip():
-            self.statusBar().showMessage(f"Indexed search unavailable: {message}")
-
-    def _semantic_index_status_text(self) -> str:
-        total = self._semantic_index_total
-        if total <= 0:
-            return "Preparing semantic search..."
-        completed = min(self._semantic_index_completed, total)
-        return f"Preparing semantic search: {completed:,} / {total:,}"
-
-    def _maybe_start_semantic_index(self, records: list[ImageRecord]) -> None:
-        """Kick off background semantic-only embedding for the current folder.
-
-        This is decoupled from Index & Score: it builds TinyCLIP image
-        embeddings so natural-language search becomes available without running
-        technical scoring, TOPIQ, face detection, clustering, or ranking. It is
-        best-effort — if the AI runtime or CLIP model is not installed we stay
-        quiet and leave filename search as the fallback.
-        """
-        if self._scope_kind != "folder" or not self._current_folder:
-            return
-        if not records:
-            return
-        # Remember the records so background indexing can be restarted after the
-        # editor closes (see _resume_background_indexing).
-        self._background_index_records = list(records)
-        if self._background_indexing_suspended:
-            return  # editor owns the GPU; resume kicks this off again on close
-        if not (self._ai_runtime_available() and self._aiculler_clip_model_available()):
-            return
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return
-        try:
-            runtime = self._configured_aiculler_runtime(workers=1)
-        except Exception:
-            return
-        clip_vision_model = getattr(runtime, "clip_vision_model", None)
-        if clip_vision_model is None or not Path(clip_vision_model).exists():
-            return
-        clip_fallback = getattr(runtime, "clip_fallback_vision_model", None)
-        try:
-            model_identity = compute_semantic_model_identity(
-                clip_vision_model,
-                embedding_dim=SEMANTIC_EMBEDDING_DIM,
-                fallback_model=clip_fallback,
-            )
-        except Exception:
-            return
-
-        scope_key = normalized_path_key(self._current_folder)
-        signature = (scope_key, model_identity, len(records))
-        if (
-            self._active_semantic_index_task is not None
-            and self._semantic_index_scope_key == scope_key
-            and self._semantic_index_signature == signature
-        ):
-            return
-        if self._active_semantic_index_task is not None:
-            self._active_semantic_index_task.cancel()
-            self._active_semantic_index_task = None
-
-        self._semantic_index_token += 1
-        token = self._semantic_index_token
-        self._semantic_index_scope_key = scope_key
-        self._semantic_index_signature = signature
-        self._semantic_index_completed = 0
-        self._semantic_index_total = 0
-        self._semantic_index_active = True
-        task = SemanticFolderIndexTask(
-            folder=self._current_folder,
-            token=token,
-            records=tuple(records),
-            db_path=aiculler_db_path(paths),
-            clip_vision_model=clip_vision_model,
-            clip_fallback_model=clip_fallback,
-            model_identity=model_identity,
-            device=str(getattr(runtime, "device", "auto")),
-            expected_dim=SEMANTIC_EMBEDDING_DIM,
-        )
-        task.signals.progress.connect(self._handle_semantic_index_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_semantic_index_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_semantic_index_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_semantic_index_task = task
-        self._semantic_index_pool.start(task)
-
-    def _semantic_index_event_is_current(self, folder: str, token: int) -> bool:
-        return (
-            token == self._semantic_index_token
-            and normalized_path_key(folder) == normalized_path_key(self._current_folder)
-        )
+        self._records_view.handle_unified_search_failed(folder, token, message)
 
     def _handle_semantic_index_progress(self, folder: str, token: int, completed: int, total: int) -> None:
-        if not self._semantic_index_event_is_current(folder, token):
-            return
-        self._semantic_index_completed = int(completed)
-        self._semantic_index_total = int(total)
-        # Restrained: only surface progress while the user is waiting on a query.
-        if self._filter_query.search_text.strip():
-            self.statusBar().showMessage(self._semantic_index_status_text())
+        self._records_view.handle_semantic_index_progress(folder, token, completed, total)
 
     def _handle_semantic_index_finished(self, folder: str, token: int, indexed: int, ready_total: int) -> None:
-        if not self._semantic_index_event_is_current(folder, token):
-            write_execution_log(
-                f"face-index: semantic finished but STALE (token {token} != {self._semantic_index_token}); "
-                f"not chaining face pass"
-            )
-            return
-        self._active_semantic_index_task = None
-        self._semantic_index_active = False
-        write_execution_log(
-            f"face-index: semantic index finished (indexed={indexed}, ready_total={ready_total}) "
-            f"-> chaining face pass"
-        )
-        # Now that the whole folder is indexed, run any query the user was
-        # waiting on once, over the complete set.
-        if self._filter_query.search_text.strip():
-            self.statusBar().showMessage("Semantic search ready")
-            self._run_deferred_unified_search()
-        # The face pass reuses the embeddings just produced, so start it now.
-        self._maybe_start_face_index()
+        self._records_view.handle_semantic_index_finished(folder, token, indexed, ready_total)
 
     def _handle_semantic_index_failed(self, folder: str, token: int, message: str) -> None:
-        if not self._semantic_index_event_is_current(folder, token):
-            return
-        self._active_semantic_index_task = None
-        self._semantic_index_active = False
-        if self._filter_query.search_text.strip():
-            self.statusBar().showMessage(f"Semantic search indexing failed: {message}")
-            # Fall back to whatever was indexed (plus filename matches) so the
-            # search box is not left hanging on the deferred state.
-            self._run_deferred_unified_search()
-
-    def _run_deferred_unified_search(self) -> None:
-        """Run the query held back during indexing, as a single complete pass."""
-        if not self._filter_query.search_text.strip():
-            return
-        if self._scope_kind != "folder" or not self._current_folder:
-            return
-        self._unified_search_completed_signature = ()
-        if self._active_unified_search_task is not None:
-            self._active_unified_search_task.cancel()
-            self._active_unified_search_task = None
-        notice = self._schedule_unified_search_for_current_filter()
-        if notice:
-            self.statusBar().showMessage(notice)
-
-    def _maybe_start_face_index(self) -> None:
-        """Kick off the person-filtered face pass for the current folder.
-
-        Best-effort and layered on the semantic index: it reuses the stored
-        TinyCLIP embeddings for a cheap person pre-filter and runs AuraFace only
-        on the flagged subset. Requires the AI runtime and the AuraFace face
-        model to be installed; otherwise it stays quiet (people tagging simply
-        does not populate until the face model is installed).
-        """
-        if self._scope_kind != "folder" or not self._current_folder:
-            write_execution_log("face-index: skip (not a folder scope)")
-            return
-        if self._background_indexing_suspended:
-            write_execution_log("face-index: skip (background indexing suspended — editor open)")
-            return  # editor owns the GPU; resume kicks this off again on close
-        if not (self._ai_runtime_available() and self._aiculler_face_model_available()):
-            write_execution_log(
-                f"face-index: skip (runtime_available={self._ai_runtime_available()}, "
-                f"face_model_available={self._aiculler_face_model_available()})"
-            )
-            return
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            write_execution_log("face-index: skip (no aiculler paths)")
-            return
-        db_path = aiculler_db_path(paths)
-        if not db_path.exists():
-            write_execution_log(f"face-index: skip (db missing: {db_path})")
-            return
-        try:
-            runtime = self._configured_aiculler_runtime(workers=1)
-        except Exception as exc:
-            write_execution_log(f"face-index: skip (runtime config failed: {exc})")
-            return
-        text_model = getattr(runtime, "clip_text_model", None)
-        tokenizer = getattr(runtime, "tokenizer", None)
-        if text_model is None or tokenizer is None or not Path(text_model).exists() or not Path(tokenizer).exists():
-            write_execution_log(
-                f"face-index: skip (clip text model/tokenizer missing: text={text_model}, tok={tokenizer})"
-            )
-            return
-
-        scope_key = normalized_path_key(self._current_folder)
-        signature = (scope_key, str(text_model))
-        if (
-            self._active_face_index_task is not None
-            and self._face_index_scope_key == scope_key
-            and self._face_index_signature == signature
-        ):
-            write_execution_log("face-index: skip (already running for this folder)")
-            return
-        if self._active_face_index_task is not None:
-            self._active_face_index_task.cancel()
-            self._active_face_index_task = None
-        write_execution_log(f"face-index: STARTING pass for {self._current_folder} (device={getattr(runtime,'device','?')})")
-
-        self._face_index_token += 1
-        token = self._face_index_token
-        self._face_index_scope_key = scope_key
-        self._face_index_signature = signature
-        self._face_index_active = True
-        task = FaceFolderIndexTask(
-            folder=self._current_folder,
-            token=token,
-            db_path=db_path,
-            clip_text_model=text_model,
-            clip_tokenizer=tokenizer,
-            clip_fallback_text_model=getattr(runtime, "clip_fallback_text_model", None),
-            device=str(getattr(runtime, "device", "auto")),
-        )
-        task.signals.progress.connect(self._handle_face_index_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_face_index_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_face_index_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_face_index_task = task
-        self._face_index_pool.start(task)
+        self._records_view.handle_semantic_index_failed(folder, token, message)
 
     def _suspend_background_indexing(self) -> None:
-        """Hand the GPU to the interactive editor: cancel the background semantic
-        and face index passes so they stop submitting GPU work, freeing the device
-        for the mask engine (SAM / OneFormer / BiRefNet). Cancellation is checked
-        between images, so any in-flight single inference finishes (<~1s) and then
-        the task returns, releasing its onnxruntime session. The passes are
-        incremental, so no progress is lost — resume picks up where they stopped."""
-        if self._background_indexing_suspended:
-            write_execution_log("gpu-arbitration: suspend requested but already suspended")
-            return
-        sem_active = self._active_semantic_index_task is not None
-        face_active = self._active_face_index_task is not None
-        write_execution_log(
-            f"gpu-arbitration: editor opened -> suspend indexing "
-            f"(semantic_task={sem_active}, face_task={face_active})"
-        )
-        self._background_indexing_suspended = True
-        if self._active_semantic_index_task is not None:
-            self._active_semantic_index_task.cancel()
-            self._active_semantic_index_task = None
-            self._semantic_index_active = False
-        if self._active_face_index_task is not None:
-            self._active_face_index_task.cancel()
-            self._active_face_index_task = None
-            self._face_index_active = False
+        self._records_view.suspend_background_indexing()
 
     def _resume_background_indexing(self) -> None:
-        """Editor closed: resume background indexing on the GPU where it left off.
-        The semantic pass is incremental and chains into the face pass on finish,
-        so restarting it is enough to continue both."""
-        if not self._background_indexing_suspended:
-            return
-        write_execution_log(
-            f"gpu-arbitration: editor closed -> resume indexing "
-            f"(records={len(self._background_index_records)})"
-        )
-        self._background_indexing_suspended = False
-        if self._background_index_records:
-            self._maybe_start_semantic_index(self._background_index_records)
-
-    def _face_index_event_is_current(self, folder: str, token: int) -> bool:
-        return (
-            token == self._face_index_token
-            and normalized_path_key(folder) == normalized_path_key(self._current_folder)
-        )
+        self._records_view.resume_background_indexing()
 
     def _handle_face_index_progress(self, folder: str, token: int, completed: int, total: int) -> None:
-        if not self._face_index_event_is_current(folder, token):
-            return
-        # Restrained: no chrome yet (People panel lands in Phase 3). Keep it quiet
-        # unless diagnostics want it; progress is tracked for that panel to read.
-        self._face_index_completed = int(completed)
-        self._face_index_total = int(total)
+        self._records_view.handle_face_index_progress(folder, token, completed, total)
 
     def _handle_face_index_finished(self, folder: str, token: int, faces_indexed: int, people_count: int) -> None:
-        self._refresh_face_groups()
-        if not self._face_index_event_is_current(folder, token):
-            return
-        self._active_face_index_task = None
-        self._face_index_active = False
-        self._face_index_people_count = int(people_count)
+        self._records_view.handle_face_index_finished(folder, token, faces_indexed, people_count)
 
     def _handle_face_index_failed(self, folder: str, token: int, message: str) -> None:
-        if not self._face_index_event_is_current(folder, token):
-            return
-        self._active_face_index_task = None
-        self._face_index_active = False
-        perf_logger().log("face_index.failed", folder=folder, message=message)
-        self.statusBar().showMessage(f"People indexing failed: {message}")
-
-    def _set_file_type_filter(self, mode: FileTypeFilter) -> None:
-        if self._filter_query.file_type == mode:
-            return
-        self._filter_query.file_type = mode
-        self._apply_filter_query_change()
-
-    def _set_review_state_filter(self, mode: ReviewStateFilter) -> None:
-        if self._filter_query.review_state == mode:
-            return
-        self._filter_query.review_state = mode
-        self._apply_filter_query_change()
-
-    def _set_ai_state_filter(self, mode: AIStateFilter) -> None:
-        if self._filter_query.ai_state == mode:
-            return
-        self._filter_query.ai_state = mode
-        self._apply_filter_query_change()
+        self._records_view.handle_face_index_failed(folder, token, message)
 
     def _open_advanced_filters_dialog(self) -> None:
-        dialog = AdvancedFilterDialog(self._filter_query, self)
-        if self._exec_dialog_with_geometry(dialog, "advanced_filters") != dialog.DialogCode.Accepted:
-            return
-        updated_query = dialog.updated_query()
-        if updated_query == self._filter_query:
-            return
-        self._filter_query = updated_query
-        self._apply_filter_query_change()
-        self.statusBar().showMessage("Updated advanced filters")
+        self._records_view.open_advanced_filters_dialog()
 
     def _clear_record_filters(self) -> None:
-        if not self._filter_query.has_active_filters:
-            return
-        self._filter_query = RecordFilterQuery()
-        self._pending_search_text = ""
-        self._person_filter_paths = frozenset()
-        self._reset_unified_search_state()
-        self._sync_record_filter_controls()
-        self._apply_filter_query_change()
-        self.statusBar().showMessage("Cleared filters")
+        self._records_view.clear_record_filters()
 
     def _apply_filter_query_change(self) -> None:
-        current_path = self._current_visible_record_path()
-        self._sync_record_filter_controls()
-        search_notice = self._schedule_unified_search_for_current_filter()
-        self._ensure_filter_metadata_index()
-        self._refresh_filter_toolbar_menu()
-        if (
-            self._all_records
-            and self._review_intelligence is None
-            and self._active_review_intelligence_task is None
-            and self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
-        ):
-            self._start_review_intelligence_analysis(force=True)
-        self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-        self._apply_records_view(current_path=current_path)
-        if search_notice:
-            self.statusBar().showMessage(search_notice)
-        if not self._records:
-            return
-        if current_path and current_path in self._record_index_by_path:
-            return
-        self._scroll_active_view_to_top()
+        self._records_view.apply_filter_query_change()
 
     def _sync_record_filter_controls(self) -> None:
-        search_text = self._filter_query.search_text
-        for field in (self.manual_search_field, self.ai_search_field, getattr(self, "topbar_search_field", None)):
-            if field is None:
-                continue
-            if field.text() != search_text:
-                with QSignalBlocker(field):
-                    field.setText(search_text)
-
-        combo_index = self.filter_combo.findData(self._filter_query.quick_filter)
-        if combo_index >= 0 and combo_index != self.filter_combo.currentIndex():
-            with QSignalBlocker(self.filter_combo):
-                self.filter_combo.setCurrentIndex(combo_index)
-
-        for mode, action in self._file_type_actions.items():
-            with QSignalBlocker(action):
-                action.setChecked(self._filter_query.file_type == mode)
-        for mode, action in self._review_state_actions.items():
-            with QSignalBlocker(action):
-                action.setChecked(self._filter_query.review_state == mode)
-        for mode, action in self._ai_state_actions.items():
-            with QSignalBlocker(action):
-                action.setChecked(self._filter_query.ai_state == mode)
+        self._records_view.sync_record_filter_controls()
 
     def _current_visible_record_path(self) -> str | None:
-        current_record = self._record_at(self.grid.current_index())
-        if current_record is None:
-            return None
-        return current_record.path
-
-    def _ensure_filter_metadata_index(self) -> None:
-        if not self._all_records:
-            return
-        if self._filter_metadata_record_paths:
-            return
-        self._reset_filter_metadata_index(self._all_records)
+        return self._records_view.current_visible_record_path()
 
     @staticmethod
     def _normalize_column_count(value: object, *, default: int = 3) -> int:
@@ -11772,25 +10912,6 @@ class MainWindow(QMainWindow):
                 return mode
         return None
 
-    def _selected_filter_mode(self) -> FilterMode | None:
-        selected = self.filter_combo.currentData()
-        if isinstance(selected, FilterMode):
-            return selected
-        if isinstance(selected, str):
-            for mode in FilterMode:
-                if selected in {mode.name, mode.value}:
-                    return mode
-                try:
-                    if FilterMode(selected) == mode:
-                        return mode
-                except ValueError:
-                    continue
-        text = self.filter_combo.currentText()
-        for mode in FilterMode:
-            if text == mode.value:
-                return mode
-        return None
-
     def _update_action_states(self, *, probe_folder_ai: bool | None = None) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
@@ -12174,10 +11295,48 @@ class MainWindow(QMainWindow):
         result = dialog.result_data()
         self._run_workflow_recipe(result.recipe, destination_root=result.destination_root, records=records)
 
+    def _pocketdrop_send_path_for(self, record: ImageRecord) -> str:
+        """The path to hand PocketDrop for ``record``: the original file,
+        unless the opt-in "apply edits" setting is on and this record has a
+        real built-in editor session that renders successfully.
+
+        Falls back to the original path whenever the setting is off, there is
+        no sidecar, or the render fails -- sending to PocketDrop must never
+        fail or silently drop a file just because a sidecar was unreadable.
+        """
+
+        if not self._apply_edits_to_pocketdrop:
+            return record.path
+        from .edit_storage import session_has_edits
+
+        if not session_has_edits(record.path):
+            return record.path
+        try:
+            from .edit_render_headless import render_edited_image
+
+            rendered = render_edited_image(record.path)
+            if rendered is None or rendered.isNull():
+                return record.path
+            folder = _pocketdrop_edited_export_dir()
+            fd, temp_name = tempfile.mkstemp(prefix="pocketdrop_edit_", suffix=".jpg", dir=str(folder))
+            os.close(fd)
+            # JPEG: PocketDrop and the receiving end need a universally
+            # supported format, and a RAW/PSD/etc. source can't be "rendered
+            # with edits applied" back into its original format anyway.
+            if not rendered.save(temp_name, "JPEG", quality=92):
+                try:
+                    os.unlink(temp_name)
+                except OSError:
+                    pass
+                return record.path
+            return temp_name
+        except Exception:
+            return record.path
+
     def _send_selection_to_pocketdrop(self, _checked: bool = False) -> None:
         """Add the selected files to PocketDrop and bring its page forward."""
-        paths = [record.path for record in self._selected_records_for_workflow() if record.path]
-        if not paths:
+        records = [record for record in self._selected_records_for_workflow() if record.path]
+        if not records:
             self.statusBar().showMessage("Select one or more files to send with PocketDrop.")
             return
         panel = getattr(self, "pocketdrop_panel", None)
@@ -12185,6 +11344,8 @@ class MainWindow(QMainWindow):
             detail = panel.error if panel is not None else ""
             self.statusBar().showMessage(f"PocketDrop isn't available. {detail}".strip())
             return
+        _cleanup_pocketdrop_edited_exports()
+        paths = [self._pocketdrop_send_path_for(record) for record in records]
         self._show_pocketdrop_page()
         panel.add_paths(paths)
         noun = "file" if len(paths) == 1 else "files"
@@ -12963,65 +12124,14 @@ class MainWindow(QMainWindow):
         dialog.activateWindow()
 
     def _open_people_search_dialog(self) -> None:
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            self.statusBar().showMessage("Choose a folder before managing people.")
-            return
-        db_path = aiculler_db_path(paths)
-        if not db_path.exists():
-            self.statusBar().showMessage("People are found automatically once this folder finishes indexing.")
-            return
-        # Retry a previously failed or interrupted face pass and let the modal
-        # dialog observe its progressive commits through its refresh timer.
-        if not self._semantic_index_active:
-            self._maybe_start_face_index()
-        dialog = PeopleSearchDialog(db_path, self)
-        # Always open at the dialog's own 3x3 default (do not restore a saved
-        # geometry, which could reopen at a cramped 2-column size), centered on
-        # the main window.
-        frame = dialog.frameGeometry()
-        frame.moveCenter(self.frameGeometry().center())
-        dialog.move(frame.topLeft())
-        if dialog.exec() == dialog.DialogCode.Accepted:
-            self._unified_search_completed_signature = ()
-            self._unified_search_path_keys = frozenset()
-            self._unified_search_rank_by_path = {}
-            self._schedule_unified_search_for_current_filter()
-            self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-            self._apply_records_view(current_path=self._current_visible_record_path())
-            label = getattr(dialog, "requested_person_label", "")
-            paths = getattr(dialog, "requested_person_paths", ())
-            if label:
-                self._show_photos_for_person(label, paths)
-            else:
-                self.statusBar().showMessage("Updated people names")
+        self._records_view.open_people_search_dialog()
 
     def _show_photos_for_person(self, label: str, paths) -> None:
-        """Filter the grid to the photos one face appears in.
+        self._records_view.show_photos_for_person(label, paths)
 
-        Driven by the cluster's own image paths rather than by the person's
-        name, so it works for faces nobody has named yet. It reads as an
-        ordinary filter: it shows up in the active-filter chips and the usual
-        Clear filters action removes it.
-        """
-        # Must be the same key the matcher builds, so use the search helper
-        # rather than normalized_path_key (which also resolves symlinks).
-        keys = frozenset(
-            key for key in (_search_match_path_key(path) for path in paths) if key
-        )
-        self._person_filter_paths = keys
-        self._filter_query.person_label = label
-        self._apply_filter_query_change()
-        if not keys:
-            self.statusBar().showMessage(f"No indexed photos found for {label}")
-            return
-        count = len(keys)
-        self.statusBar().showMessage(
-            f"Showing {count} photo(s) of {label} - use Clear filters to go back"
-        )
     def _open_current_ai_review(self) -> None:
         if self._ai_bundle is None and not self._load_hidden_ai_results_for_current_folder(show_message=True):
-            self.statusBar().showMessage("Run Cull & Score before opening AI Review.")
+            self.statusBar().showMessage("Run Cull & Score first.")
             return
         self._set_ui_mode("ai")
 
@@ -13755,7 +12865,6 @@ class MainWindow(QMainWindow):
                 reason_tags_by_path=saved_reason_tags,
                 reason_options=self.ADAPTER_REASON_TAGS,
             )
-            self.mode_tabs.setCurrentIndex(0)
             self._refresh_adapter_review_banner()
             dialog = getattr(self, "_ai_workflow_center_dialog", None)
             if dialog is not None:
@@ -13851,7 +12960,6 @@ class MainWindow(QMainWindow):
         self._adapter_review_rating_paths = tuple(review_paths)
         self._clear_adapter_review_reason_tags()
         self.grid.set_adapter_review_mode(review_paths, saved_labels)
-        self.mode_tabs.setCurrentIndex(0)
         self._refresh_adapter_review_banner()
         dialog = getattr(self, "_ai_workflow_center_dialog", None)
         if dialog is not None:
@@ -16036,132 +15144,13 @@ class MainWindow(QMainWindow):
         bypass_catalog_cache: bool = False,
         preferred_record_path: str | None = None,
     ) -> None:
-        if not folder:
-            return
-        logger = perf_logger()
-        pre_scan_start = time.perf_counter() if logger.enabled else 0.0
-        slow_source = self._is_slow_source_folder(folder)
-        if self._active_tool_mode or self.grid.tool_checkbox_mode():
-            self._cancel_tool_mode(show_message=False)
-        self._cancel_records_view_chunk()
-        folder_changed = _memory_path_key(folder) != _memory_path_key(self._current_folder)
-        if folder_changed:
-            if not getattr(self, "_nav_suppress_history", False) and self._current_folder:
-                nav_back = getattr(self, "_nav_back", None)
-                if nav_back is not None:
-                    nav_back.append(self._current_folder)
-                    if len(nav_back) > 100:
-                        del nav_back[0]
-                    if getattr(self, "_nav_forward", None) is not None:
-                        self._nav_forward.clear()
-            self._remember_current_folder_view_state()
-            self._cancel_hidden_ai_results_load()
-            self._hidden_ai_results_checked_scope_key = ""
-        normalized_focus_path = normalize_filesystem_path(preferred_record_path) if preferred_record_path else ""
-        if normalized_focus_path and _memory_path_key(str(Path(normalized_focus_path).parent)) == _memory_path_key(folder):
-            self._pending_folder_focus_path = normalized_focus_path
-        elif folder_changed:
-            self._pending_folder_focus_path = ""
-        self._current_folder = folder
-        self._update_nav_history_buttons()
-        self._folder_records = []
-        self._set_scope_state(kind="folder", scope_id=_memory_path_key(folder), label=folder)
-        self._refresh_current_folder_watch()
-        self._settings.setValue(self.LAST_FOLDER_KEY, folder)
-        self._remember_recent_folder(folder)
-        self._apply_folder_view_state(folder)
-        self._scan_token += 1
-        token = self._scan_token
-        if chunked_restore:
-            self._chunked_load_scan_tokens.add(token)
-        self._chunked_load_scan_tokens = {existing for existing in self._chunked_load_scan_tokens if existing >= token}
-        self._scan_showed_cached = False
-        self._scan_cached_source = ""
-        self._scan_in_progress = True
-        self._ai_deferred_background_work = False
-        self._ai_deferred_background_scope_key = ""
-        self._catalog_load_source = "scanning"
-        self._catalog_load_detail = f"Scanning {folder}..."
-        self._reset_review_cache_status()
-        self._refresh_catalog_status_indicator()
-        self._cancel_scope_enrichment_task()
-        self._annotation_hydration_token += 1
-        if self._active_annotation_hydration_task is not None:
-            self._active_annotation_hydration_task.cancel()
-        self._active_annotation_hydration_task = None
-        self._annotation_hydration_dirty_paths.clear()
-        self._annotation_hydration_pending_clear_paths.clear()
-        self._annotation_reapply_timer.stop()
-        self._review_intelligence_token += 1
-        self._review_chunk_flush_timer.stop()
-        self._review_chunk_dirty_paths.clear()
-        self._reset_unified_search_state()
-        self._reset_semantic_index_state()
-        if self._active_review_intelligence_task is not None:
-            self._active_review_intelligence_task.cancel()
-            self._active_review_intelligence_task = None
-        self._refresh_recycle_button()
-        if folder_changed:
-            self._clear_ai_results_state(preserve_setting=True, refresh=False)
-        if logger.enabled:
-            logger.duration(
-                "folder.load.pre_scan_setup",
-                (time.perf_counter() - pre_scan_start) * 1000.0,
-                folder=folder,
-                folder_changed=folder_changed,
-                slow_source=slow_source,
-            )
-        # Cache reads can be large enough to make Windows mark startup as hung. Let the
-        # scanner worker emit cached records instead of loading the cache on the UI thread.
-        self.statusBar().showMessage(f"Scanning {folder}...")
-        self._records_repo.clear()
-        self._folder_records = []
-        self._refresh_directory_navigation_buttons()
-        self._records = []
-        self._last_view_record_paths = ()
-        self._record_index_by_path = {}
-        self._edited_candidates_cache = {}
-        self._visible_review_group_rows_by_id = {}
-        self._visible_ai_group_rows_by_id = {}
-        self._accepted_count = 0
-        self._rejected_count = 0
-        self._unreviewed_count = 0
-        self._records_have_resizable = False
-        self._records_have_convertible = False
-        self._invalidate_training_label_counts_cache()
-        self._summary_ai_text = "AI: Off" if self._ai_bundle is None else self._summary_ai_text
-        self._summary_ai_tooltip = "No AI export is currently loaded." if self._ai_bundle is None else self._summary_ai_tooltip
-        self._filter_metadata_by_path = {}
-        self._filter_metadata_record_paths = set()
-        self._filter_metadata_loaded_paths = set()
-        self._filter_metadata_requested_paths = set()
-        self._filter_metadata_queue = deque()
-        self._filter_metadata_queue_keys = set()
-        self._metadata_membership_dirty_paths = set()
-        self._metadata_scroll_prefetch_timer.stop()
-        self._metadata_request_timer.stop()
-        self.grid.set_empty_message(f"Scanning {Path(folder).name}...")
-        self.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
-        self.details_view.set_records([])
-        self._set_annotation_views()
-        self._refresh_viewport_mode()
-        self._update_ai_toolbar_state()
-
-        task = FolderScanTask(
+        self._records_view.load_folder(
             folder,
-            token,
-            self._sort_mode,
-            prefer_cached_only=(not force_refresh and self._is_slow_source_folder(folder)),
-            use_catalog_cache=self._catalog_cache_reads_enabled(),
-            read_cached_records=not bypass_catalog_cache,
-            include_hidden_folders=self._show_hidden_folders,
+            force_refresh=force_refresh,
+            chunked_restore=chunked_restore,
+            bypass_catalog_cache=bypass_catalog_cache,
+            preferred_record_path=preferred_record_path,
         )
-        self._active_scan_tasks[token] = task
-        task.signals.children.connect(self._handle_scan_children, Qt.ConnectionType.QueuedConnection)
-        task.signals.cached.connect(self._handle_scan_cached, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_scan_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_scan_failed, Qt.ConnectionType.QueuedConnection)
-        self._scan_pool.start(task)
 
     def _load_virtual_scope_records(
         self,
@@ -16171,92 +15160,18 @@ class MainWindow(QMainWindow):
         scope_id: str,
         scope_label: str,
     ) -> None:
-        if self._active_tool_mode or self.grid.tool_checkbox_mode():
-            self._cancel_tool_mode(show_message=False)
-        self._remember_current_folder_view_state()
-        self._pending_folder_scroll_value = None
-        self._scan_in_progress = False
-        self._scan_token += 1
-        self._ai_deferred_background_work = False
-        self._ai_deferred_background_scope_key = ""
-        self._cancel_scope_enrichment_task()
-        self._annotation_hydration_token += 1
-        if self._active_annotation_hydration_task is not None:
-            self._active_annotation_hydration_task.cancel()
-        self._active_annotation_hydration_task = None
-        self._annotation_hydration_dirty_paths.clear()
-        self._annotation_hydration_pending_clear_paths.clear()
-        self._annotation_reapply_timer.stop()
-        self._review_intelligence_token += 1
-        self._review_chunk_flush_timer.stop()
-        self._review_chunk_dirty_paths.clear()
-        self._reset_unified_search_state()
-        self._reset_semantic_index_state()
-        if self._active_review_intelligence_task is not None:
-            self._active_review_intelligence_task.cancel()
-            self._active_review_intelligence_task = None
-        self._pending_folder_focus_path = ""
-        self._current_folder = ""
-        self._folder_records = []
-        self._set_scope_state(kind=scope_kind, scope_id=scope_id, label=scope_label)
-        self._refresh_directory_navigation_buttons()
-        self._refresh_current_folder_watch()
-        self._scan_showed_cached = False
-        self._scan_cached_source = ""
-        self._catalog_load_source = "idle"
-        self._catalog_load_detail = "Virtual scopes are loaded from app state, not folder cache."
-        self._reset_review_cache_status()
-        self._refresh_catalog_status_indicator()
-        self._clear_ai_results_state(preserve_setting=True)
-        self._refresh_recycle_button()
-        self.grid.set_empty_message("Choose a folder to start triaging images.")
-        self._apply_loaded_records(
+        self._records_view.load_virtual_scope_records(
             records,
-            chunked_view=self._should_chunk_loaded_records(records),
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            scope_label=scope_label,
         )
-        self.statusBar().showMessage(f"Loaded {scope_label} ({len(records)} image bundle(s))")
 
     def _cancel_records_view_chunk(self) -> None:
-        self._records_view_chunk_timer.stop()
-        self._records_view_chunk_records = []
-        self._records_view_chunk_next_index = 0
-        self._records_view_chunk_current_path = None
-        self._records_view_chunk_post_load_enrichment = ""
-
-    def _cancel_hidden_ai_results_load(self) -> None:
-        self._hidden_ai_results_timer.stop()
-        self._hidden_ai_results_token += 1
-        if self._active_hidden_ai_results_task is not None:
-            self._active_hidden_ai_results_task.cancel()
-            self._active_hidden_ai_results_task = None
+        self._records_view.cancel_records_view_chunk()
 
     def _records_view_chunk_active(self) -> bool:
-        return bool(self._records_view_chunk_records)
-
-    def _should_chunk_loaded_records(
-        self,
-        records: list[ImageRecord] | tuple[ImageRecord, ...] | None,
-        *,
-        token: int | None = None,
-        requested: bool = False,
-    ) -> bool:
-        if requested:
-            return True
-        if token is not None and token in self._chunked_load_scan_tokens:
-            return True
-        return bool(records) and len(records) >= self.CHUNKED_RESTORE_LOAD_MIN_RECORDS
-
-    def _finish_loaded_records_enrichment(self, records: list[ImageRecord], *, defer_enrichment: bool) -> None:
-        if defer_enrichment:
-            self._deferred_enrichment_pending = True
-            self._deferred_enrichment_scope_key = self._current_scope_key()
-            self._deferred_enrichment_token = self._scan_token
-            if not self._scan_in_progress and not self._records_view_chunk_active():
-                self._schedule_loaded_records_enrichment()
-            return
-        self._start_scope_enrichment_task(records)
-        self._start_annotation_hydration(records)
-        self._start_review_intelligence_analysis()
+        return self._records_view.records_view_chunk_active()
 
     def _apply_loaded_records(
         self,
@@ -16266,62 +15181,15 @@ class MainWindow(QMainWindow):
         chunked_view: bool = False,
         current_path: str | None = None,
     ) -> None:
-        self._records_repo.reload(records)
-        self._refresh_record_capability_cache(records)
-        self._invalidate_training_label_counts_cache()
-        self._edited_candidates_cache = {}
-        self._review_intelligence = None
-        self._deferred_enrichment_pending = False
-        self._deferred_enrichment_scheduled = False
-        self._deferred_enrichment_scope_key = ""
-        self._deferred_enrichment_token = 0
-        self._records_view_cache.mark(ViewInvalidationReason.LOAD_CHANGED)
-        self._reset_filter_metadata_index(records)
-        current_paths = {record.path for record in records}
-        self._annotations = {
-            path: annotation
-            for path, annotation in self._annotations.items()
-            if path in current_paths
-        }
-        self._correction_events = []
-        self._taste_profile = TasteProfile()
-        self._burst_recommendations = {}
-        self._workflow_insights_by_path = {}
-        view_complete = self._apply_records_view(
+        self._records_view.apply_loaded_records(
+            records,
+            defer_enrichment=defer_enrichment,
+            chunked_view=chunked_view,
             current_path=current_path,
-            chunked=chunked_view,
-            post_load_enrichment="defer" if defer_enrichment else "start",
         )
-        if view_complete:
-            self._finish_loaded_records_enrichment(records, defer_enrichment=defer_enrichment)
-
-    def _schedule_loaded_records_enrichment(self) -> None:
-        if not self._deferred_enrichment_pending or self._deferred_enrichment_scheduled:
-            return
-        if self._records_view_chunk_active():
-            return
-        self._deferred_enrichment_scheduled = True
-        QTimer.singleShot(0, self._run_loaded_records_enrichment)
 
     def _run_loaded_records_enrichment(self) -> None:
-        self._deferred_enrichment_scheduled = False
-        if not self._deferred_enrichment_pending:
-            return
-        if (
-            self._deferred_enrichment_token != self._scan_token
-            or self._deferred_enrichment_scope_key != self._current_scope_key()
-        ):
-            self._deferred_enrichment_pending = False
-            self._deferred_enrichment_scope_key = ""
-            self._deferred_enrichment_token = 0
-            return
-        self._deferred_enrichment_pending = False
-        self._deferred_enrichment_scope_key = ""
-        self._deferred_enrichment_token = 0
-        records = list(self._all_records)
-        self._start_scope_enrichment_task(records)
-        self._start_annotation_hydration(records)
-        self._start_review_intelligence_analysis()
+        self._records_view.run_loaded_records_enrichment()
 
     def _mark_background_review_work_deferred_for_ai(self, *, reason: str) -> None:
         if not self._all_records:
@@ -16832,94 +15700,16 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Smart grouping fallback active: {message}")
 
     def _reset_filter_metadata_index(self, records: list[ImageRecord]) -> None:
-        self._filter_metadata_by_path = {}
-        self._filter_metadata_loaded_paths = set()
-        self._filter_metadata_requested_paths = set()
-        self._filter_metadata_queue = deque()
-        self._filter_metadata_queue_keys = set()
-        self._metadata_membership_dirty_paths = set()
-        self._metadata_scroll_last_value = self.grid.verticalScrollBar().value()
-        self._metadata_scroll_direction = 1
-        self._metadata_scroll_prefetch_timer.stop()
-        self._metadata_request_timer.stop()
-        self._filter_metadata_record_paths = {record.path for record in records}
-        if len(records) <= self.FILTER_METADATA_EAGER_CACHE_MAX_RECORDS:
-            for record in records:
-                cached = self._filter_metadata_manager.get_cached(record)
-                if cached is not None:
-                    self._filter_metadata_by_path[record.path] = cached
-                    self._filter_metadata_loaded_paths.add(record.path)
-        if records:
-            self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
+        self._records_view.reset_filter_metadata_index(records)
 
     def _handle_filter_metadata_ready(self, key, metadata) -> None:
-        record = self._all_records_by_path.get(key.path)
-        if record is None or record.path not in self._filter_metadata_record_paths:
-            return
-        self._filter_metadata_requested_paths.discard(record.path)
-        self._filter_metadata_by_path[record.path] = metadata
-        self._filter_metadata_loaded_paths.add(record.path)
-        if self._filter_query.requires_metadata:
-            if self._metadata_changes_filter_membership(record, metadata):
-                self._metadata_membership_dirty_paths.add(record.path)
-                self._metadata_reapply_timer.start()
-            else:
-                self._update_filter_summary()
-        else:
-            self._update_filter_summary()
-        current_record = self._record_at(self.grid.current_index())
-        if current_record is not None and current_record.path == record.path:
-            self._update_inspector_context()
-        if self._filter_metadata_queue and not self._metadata_request_timer.isActive():
-            self._metadata_request_timer.start()
+        self._records_view.handle_filter_metadata_ready(key, metadata)
 
     def _handle_metadata_filter_batch_update(self) -> None:
-        current_path = self._current_visible_record_path()
-        if self._filter_query.requires_metadata:
-            if not self._metadata_membership_dirty_paths:
-                return
-            self._metadata_membership_dirty_paths.clear()
-            self._apply_records_view(current_path=current_path)
-            return
-        if self._burst_groups_enabled or self._burst_stacks_enabled:
-            self._refresh_burst_group_view()
+        self._records_view.handle_metadata_filter_batch_update()
 
     def _metadata_prefetch_seed_paths(self, *, lookahead: int = 120) -> list[str]:
-        visible_paths = self.grid.visible_item_paths(limit=220)
-        if not visible_paths:
-            return [record.path for record in self._all_records[: max(80, lookahead)]]
-
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for path in visible_paths:
-            if path and path not in seen:
-                ordered.append(path)
-                seen.add(path)
-
-        visible_indexes = [self._record_index_by_path[path] for path in visible_paths if path in self._record_index_by_path]
-        if not visible_indexes:
-            return ordered
-        min_visible = min(visible_indexes)
-        max_visible = max(visible_indexes)
-        direction = 1 if self._metadata_scroll_direction >= 0 else -1
-        if direction >= 0:
-            start = max_visible + 1
-            end = min(len(self._records), start + max(0, lookahead))
-            candidate_paths = [self._records[index].path for index in range(start, end)]
-        else:
-            end = min_visible
-            start = max(0, end - max(0, lookahead))
-            candidate_paths = [self._records[index].path for index in range(end - 1, start - 1, -1)]
-
-        for path in candidate_paths:
-            if path and path not in seen:
-                ordered.append(path)
-                seen.add(path)
-        return ordered
-
-    @staticmethod
-    def _metadata_queue_key(path: str) -> str:
-        return os.path.normpath(path).casefold()
+        return self._records_view.metadata_prefetch_seed_paths(lookahead=lookahead)
 
     def _enqueue_filter_metadata_paths(
         self,
@@ -16927,110 +15717,16 @@ class MainWindow(QMainWindow):
         *,
         front: bool = False,
     ) -> None:
-        if not paths:
-            return
-        additions: list[str] = []
-        for path in paths:
-            if not path:
-                continue
-            if path not in self._filter_metadata_record_paths:
-                continue
-            if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
-                continue
-            key = self._metadata_queue_key(path)
-            if key in self._filter_metadata_queue_keys:
-                continue
-            self._filter_metadata_queue_keys.add(key)
-            additions.append(path)
-        if not additions:
-            return
-        if front:
-            for path in reversed(additions):
-                self._filter_metadata_queue.appendleft(path)
-        else:
-            self._filter_metadata_queue.extend(additions)
-        if len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
-            while len(self._filter_metadata_queue) > self._filter_metadata_queue_limit:
-                removed = self._filter_metadata_queue.pop()
-                self._filter_metadata_queue_keys.discard(self._metadata_queue_key(removed))
-        if not self._metadata_request_timer.isActive():
-            self._metadata_request_timer.start()
+        self._records_view.enqueue_filter_metadata_paths(paths, front=front)
 
     def _schedule_metadata_scroll_prefetch(self, value: int) -> None:
-        if not self._records:
-            return
-        if value != self._metadata_scroll_last_value:
-            self._metadata_scroll_direction = 1 if value > self._metadata_scroll_last_value else -1
-            self._metadata_scroll_last_value = value
-        self._metadata_scroll_prefetch_timer.start()
+        self._records_view.schedule_metadata_scroll_prefetch(value)
 
     def _run_metadata_scroll_prefetch(self) -> None:
-        if not self._records:
-            return
-        self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
-
-    def _metadata_changes_filter_membership(self, record: ImageRecord, metadata: CaptureMetadata) -> bool:
-        if not self._filter_query.requires_metadata:
-            return False
-        annotation = self._annotations.get(record.path, SessionAnnotation())
-        needs_ai = (
-            self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
-            or self._filter_query.ai_state != AIStateFilter.ALL
-        )
-        needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
-        needs_workflow = (
-            self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
-            or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
-        )
-        ai_result = self._ai_result_for_record(record) if needs_ai else None
-        review_insight = self._review_insight_for_record(record) if needs_review else None
-        workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
-        is_disputed = self._is_record_disputed(record)
-        old_match = matches_record_query(
-            record,
-            self._filter_query,
-            annotation=annotation,
-            ai_result=ai_result,
-            metadata=EMPTY_METADATA,
-            review_insight=review_insight,
-            workflow_insight=workflow_insight,
-            is_disputed=is_disputed,
-            search_match_paths=self._unified_search_path_keys,
-            person_match_paths=self._person_filter_paths,
-        )
-        new_match = matches_record_query(
-            record,
-            self._filter_query,
-            annotation=annotation,
-            ai_result=ai_result,
-            metadata=metadata,
-            review_insight=review_insight,
-            workflow_insight=workflow_insight,
-            is_disputed=is_disputed,
-            search_match_paths=self._unified_search_path_keys,
-            person_match_paths=self._person_filter_paths,
-        )
-        return old_match != new_match
+        self._records_view.run_metadata_scroll_prefetch()
 
     def _drain_filter_metadata_requests(self) -> None:
-        if not self._filter_metadata_queue:
-            self._metadata_request_timer.stop()
-            return
-        requested = 0
-        while self._filter_metadata_queue and requested < 20:
-            path = self._filter_metadata_queue.popleft()
-            self._filter_metadata_queue_keys.discard(self._metadata_queue_key(path))
-            if path in self._filter_metadata_loaded_paths or path in self._filter_metadata_requested_paths:
-                continue
-            record = self._all_records_by_path.get(path)
-            if record is None:
-                continue
-            self._filter_metadata_requested_paths.add(path)
-            priority = max(1, 12_000 - requested * 200)
-            self._filter_metadata_manager.request_metadata(record, priority=priority)
-            requested += 1
-        if not self._filter_metadata_queue:
-            self._metadata_request_timer.stop()
+        self._records_view.drain_filter_metadata_requests()
 
     def _catalog_cache_reads_enabled(self) -> bool:
         override = catalog_cache_env_override()
@@ -17446,161 +16142,16 @@ class MainWindow(QMainWindow):
         self._review_scoring_cache_detail = "Ready"
 
     def _handle_scan_cached(self, folder: str, token: int, records: list[ImageRecord], source: str) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        if token != self._scan_token or not records:
-            return
-        self._scan_showed_cached = True
-        self._scan_cached_source = source
-        self._catalog_load_source = source or "idle"
-        self._catalog_load_detail = f"Loaded from {self._catalog_source_label(source)}; live refresh still running."
-        self._refresh_catalog_status_indicator()
-        self.grid.set_empty_message("Choose a folder to start triaging images.")
-        chunked_view = self._should_chunk_loaded_records(records, token=token)
-        self._apply_loaded_records(
-            records,
-            defer_enrichment=True,
-            chunked_view=chunked_view,
-            current_path=self._pending_folder_focus_path or None,
-        )
-        self._schedule_hidden_ai_results_load()
-        cache_label = self._catalog_source_label(source)
-        self.statusBar().showMessage(f"Loaded {cache_label.lower()} for {self._current_folder}, refreshing from disk...")
-        if logger.enabled:
-            logger.duration("scan.cached_applied", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records), chunked=chunked_view)
+        self._records_view.handle_scan_cached(folder, token, records, source)
 
     def _handle_scan_finished(self, folder: str, token: int, records: list[ImageRecord], source: str) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        self._active_scan_tasks.pop(token, None)
-        if token != self._scan_token:
-            self._chunked_load_scan_tokens.discard(token)
-            return
-
-        self._scan_in_progress = False
-        self.grid.set_empty_message("Choose a folder to start triaging images.")
-        chunked_view = self._should_chunk_loaded_records(records, token=token)
-        self._chunked_load_scan_tokens.discard(token)
-        if self._scan_showed_cached and self._records_match_for_refresh(self._all_records, records):
-            self._catalog_load_source = source or "live"
-            if self._scan_cached_source:
-                self._catalog_load_detail = f"Opened from {self._catalog_source_label(self._scan_cached_source)} and confirmed by live scan."
-            else:
-                self._catalog_load_detail = "Live scan confirmed the current folder contents."
-            self._refresh_catalog_status_indicator()
-            self._schedule_loaded_records_enrichment()
-            self._schedule_hidden_ai_results_load()
-            self._refresh_recycle_button()
-            self.statusBar().showMessage(f"Refreshed {self._current_folder}")
-            if self._folder_watch_refresh_pending:
-                self._folder_watch_refresh_timer.start(250)
-            self._maybe_open_startup_quick_view()
-            self._finish_quick_view_attempt_if_ready()
-            self._pending_folder_focus_path = ""
-            self._maybe_start_semantic_index(records)
-            if logger.enabled:
-                logger.duration("scan.finished_confirmed_cache", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records))
-            return
-        self._apply_loaded_records(
-            records,
-            chunked_view=chunked_view,
-            current_path=self._pending_folder_focus_path or None,
-        )
-        self._catalog_load_source = source or "live"
-        if self._scan_showed_cached and self._scan_cached_source:
-            self._catalog_load_detail = f"Opened from {self._catalog_source_label(self._scan_cached_source)} and refreshed from disk."
-        else:
-            self._catalog_load_detail = "Loaded directly from a live folder scan."
-        self._refresh_catalog_status_indicator()
-        self._schedule_hidden_ai_results_load()
-        self._refresh_recycle_button()
-        if self._scan_showed_cached:
-            self.statusBar().showMessage(f"Refreshed {self._current_folder}")
-        if self._folder_watch_refresh_pending:
-            self._folder_watch_refresh_timer.start(250)
-        self._finish_quick_view_attempt_if_ready()
-        self._pending_folder_focus_path = ""
-        self._maybe_start_semantic_index(records)
-        if logger.enabled:
-            logger.duration("scan.finished_applied", (time.perf_counter() - start) * 1000.0, folder=folder, source=source, records=len(records), chunked=chunked_view)
+        self._records_view.handle_scan_finished(folder, token, records, source)
 
     def _handle_scan_children(self, folder: str, token: int, records: object) -> None:
-        if token != self._scan_token or normalized_path_key(folder) != normalized_path_key(self._current_folder):
-            return
-        if not isinstance(records, list):
-            return
-        self._folder_records = [record for record in records if isinstance(record, ImageRecord)]
-        self._refresh_directory_navigation_buttons()
-        self._records_view_cache.mark(ViewInvalidationReason.LOAD_CHANGED)
-        self._apply_records_view(current_path=self._pending_folder_focus_path or None)
+        self._records_view.handle_scan_children(folder, token, records)
 
     def _handle_scan_failed(self, folder: str, token: int, message: str) -> None:
-        perf_logger().log("scan.failed", folder=folder, token=token, message=message)
-        self._active_scan_tasks.pop(token, None)
-        if token != self._scan_token:
-            self._chunked_load_scan_tokens.discard(token)
-            return
-        self._chunked_load_scan_tokens.discard(token)
-        self._cancel_records_view_chunk()
-        self._pending_folder_scroll_value = None
-        self._scan_in_progress = False
-        self._cancel_scope_enrichment_task()
-        self._annotation_hydration_token += 1
-        self._active_annotation_hydration_task = None
-        self._annotation_hydration_dirty_paths.clear()
-        self._annotation_hydration_pending_clear_paths.clear()
-        self._annotation_reapply_timer.stop()
-        self._deferred_enrichment_pending = False
-        self._deferred_enrichment_scheduled = False
-        self._deferred_enrichment_scope_key = ""
-        self._deferred_enrichment_token = 0
-        self._pending_folder_focus_path = ""
-        self._review_chunk_flush_timer.stop()
-        self._review_chunk_dirty_paths.clear()
-        self._reset_unified_search_state()
-        self._reset_semantic_index_state()
-        self._records_repo.clear()
-        self._folder_records = []
-        self._refresh_directory_navigation_buttons()
-        self._records = []
-        self._last_view_record_paths = ()
-        self._record_index_by_path = {}
-        self._edited_candidates_cache = {}
-        self._visible_review_group_rows_by_id = {}
-        self._visible_ai_group_rows_by_id = {}
-        self._accepted_count = 0
-        self._rejected_count = 0
-        self._unreviewed_count = 0
-        self._records_have_resizable = False
-        self._records_have_convertible = False
-        self._invalidate_training_label_counts_cache()
-        self._correction_events = []
-        self._taste_profile = TasteProfile()
-        self._burst_recommendations = {}
-        self._workflow_insights_by_path = {}
-        self._summary_ai_text = "AI: Off" if self._ai_bundle is None else self._summary_ai_text
-        self._summary_ai_tooltip = "No AI export is currently loaded." if self._ai_bundle is None else self._summary_ai_tooltip
-        self._filter_metadata_by_path = {}
-        self._filter_metadata_record_paths = set()
-        self._filter_metadata_loaded_paths = set()
-        self._filter_metadata_requested_paths = set()
-        self._filter_metadata_queue = deque()
-        self._filter_metadata_queue_keys = set()
-        self._metadata_membership_dirty_paths = set()
-        self._metadata_scroll_prefetch_timer.stop()
-        self.grid.set_empty_message(f"Could not scan this folder.\n\n{message}")
-        self.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
-        self.details_view.set_records([])
-        self.actions.empty_recycle_bin.setEnabled(False)
-        self.actions.empty_recycle_bin.setToolTip("Unavailable because this folder could not be scanned.")
-        self._update_action_states(probe_folder_ai=False)
-        self._catalog_load_source = "failed"
-        self._catalog_load_detail = message
-        self._refresh_catalog_status_indicator()
-        self.statusBar().showMessage(f"Could not scan {self._current_folder}: {message}")
-        self._show_main_window_after_quick_view_failure()
-        if self._folder_watch_refresh_pending:
-            self._folder_watch_refresh_timer.start(450)
+        self._records_view.handle_scan_failed(folder, token, message)
 
     def _handle_current_changed(self, index: int) -> None:
         logger = perf_logger()
@@ -17789,6 +16340,13 @@ class MainWindow(QMainWindow):
             return None
         return build_ai_workflow_paths(self._current_folder)
 
+    def _cancel_hidden_ai_results_load(self) -> None:
+        self._hidden_ai_results_timer.stop()
+        self._hidden_ai_results_token += 1
+        if self._active_hidden_ai_results_task is not None:
+            self._active_hidden_ai_results_task.cancel()
+            self._active_hidden_ai_results_task = None
+
     def _schedule_hidden_ai_results_load(self, *, delay_ms: int | None = None) -> None:
         if not self._current_folder or not self._all_records:
             return
@@ -17918,29 +16476,6 @@ class MainWindow(QMainWindow):
                 show_message=show_message,
             )
         return loaded
-
-    @staticmethod
-    def _records_match_for_refresh(existing: list[ImageRecord], incoming: list[ImageRecord]) -> bool:
-        if len(existing) != len(incoming):
-            return False
-        for left_record, right_record in zip(existing, incoming):
-            if (
-                left_record.path != right_record.path
-                or left_record.size != right_record.size
-                or left_record.modified_ns != right_record.modified_ns
-                or left_record.companion_paths != right_record.companion_paths
-                or left_record.edited_paths != right_record.edited_paths
-                or len(left_record.variants) != len(right_record.variants)
-            ):
-                return False
-            for left_variant, right_variant in zip(left_record.variants, right_record.variants):
-                if (
-                    left_variant.path != right_variant.path
-                    or left_variant.size != right_variant.size
-                    or left_variant.modified_ns != right_variant.modified_ns
-                ):
-                    return False
-        return True
 
     def _load_ai_results(self, path: str | Path, *, show_message: bool = True) -> bool:
         logger = perf_logger()
@@ -19701,87 +18236,7 @@ class MainWindow(QMainWindow):
         self._unreviewed_count = max(0, len(self._all_records) - self._accepted_count - self._rejected_count)
 
     def _update_filter_summary(self) -> None:
-        labels = active_filter_labels(self._filter_query)
-        preset_label = self._matching_filter_preset_label(self._filter_query)
-        metadata_progress = ""
-        if self._filter_query.requires_metadata and self._filter_metadata_record_paths:
-            loaded = len(self._filter_metadata_loaded_paths)
-            total = len(self._filter_metadata_record_paths)
-            if loaded < total:
-                metadata_progress = f"Metadata {loaded}/{total}"
-        if labels:
-            summary_text = "Filters: " + " | ".join(labels)
-            tooltip_lines = list(labels)
-        else:
-            summary_text = "Filters: All Images"
-            tooltip_lines = ["No search or filters are active."]
-
-        if preset_label:
-            summary_text = f"Preset: {preset_label} | {summary_text}"
-            tooltip_lines.insert(0, f"Preset: {preset_label}")
-        if metadata_progress:
-            summary_text = f"{summary_text} | {metadata_progress}"
-            tooltip_lines.append(metadata_progress)
-
-        if self._burst_groups_enabled or self._burst_stacks_enabled:
-            burst_group_count = len(self._visible_burst_groups)
-            burst_image_count = sum(len(group) for group in self._visible_burst_groups)
-            burst_mode_labels: list[str] = []
-            if self._burst_groups_enabled:
-                burst_mode_labels.append("tags")
-            if self._burst_stacks_enabled:
-                burst_mode_labels.append("stacks")
-            burst_mode_text = ", ".join(burst_mode_labels) if burst_mode_labels else "on"
-            group_label = "Smart groups" if self._review_intelligence is not None else "Bursts"
-            if burst_group_count:
-                burst_summary = f"{group_label} {burst_group_count}"
-                tooltip_lines.append(f"{group_label} {burst_mode_text}: {burst_group_count} group(s), {burst_image_count} image(s)")
-            else:
-                burst_summary = f"{group_label} On"
-                tooltip_lines.append(f"{group_label} {burst_mode_text} is on. No related groups are currently visible.")
-            summary_text = f"{summary_text} | {burst_summary}"
-            visible_total = len(self._records)
-            if visible_total and self._review_intelligence is None:
-                visible_loaded = sum(1 for record in self._records if record.path in self._filter_metadata_loaded_paths)
-                if visible_loaded < visible_total:
-                    tooltip_lines.append(f"Burst detection metadata: {visible_loaded}/{visible_total}")
-        tooltip_text = "\n".join(tooltip_lines)
-
-        self.filter_summary_label.setText(summary_text)
-        self.filter_summary_label.setToolTip(tooltip_text)
-        self.clear_filters_button.setVisible(bool(labels))
-
-        advanced_count = self._advanced_filter_count()
-        button_text = f"Filters ({advanced_count})" if advanced_count else "Filters"
-        button_tooltip = tooltip_text if labels else "Filter by file type, review state, or AI state."
-        if self._saved_filter_presets:
-            button_tooltip = f"{button_tooltip}\nSaved searches: {len(self._saved_filter_presets)}"
-        if preset_label:
-            button_tooltip = f"{button_tooltip}\nActive preset: {preset_label}"
-        for button in (self.manual_filter_button, self.ai_filter_button):
-            button.setText(button_text)
-            button.setToolTip(button_tooltip)
-
-    def _advanced_filter_count(self) -> int:
-        count = int(self._filter_query.file_type != FileTypeFilter.ALL)
-        count += int(self._filter_query.review_state != ReviewStateFilter.ALL)
-        count += int(self._filter_query.ai_state != AIStateFilter.ALL)
-        count += int(self._filter_query.ai_cull_bucket is not None)
-        count += int(bool(self._filter_query.ai_workflow_tag.strip()))
-        count += int(bool(self._filter_query.folder_text.strip()))
-        count += int(self._filter_query.min_search_confidence > 0.0)
-        count += int(bool(self._filter_query.camera_text.strip()))
-        count += int(bool(self._filter_query.lens_text.strip()))
-        count += int(bool(self._filter_query.tag_text.strip()))
-        count += int(self._filter_query.min_rating > 0)
-        count += int(self._filter_query.orientation != OrientationFilter.ALL)
-        count += int(self._filter_query.captured_after is not None)
-        count += int(self._filter_query.captured_before is not None)
-        count += int(self._filter_query.iso_min > 0)
-        count += int(self._filter_query.iso_max > 0)
-        count += int(self._filter_query.focal_min > 0)
-        count += int(self._filter_query.focal_max > 0)
-        return count
+        self._records_view.update_filter_summary()
 
     def _ai_result_for_record(self, record: ImageRecord | None, *, preferred_path: str | None = None):
         if record is None or self._ai_bundle is None:
@@ -21037,7 +19492,7 @@ class MainWindow(QMainWindow):
                 f"""
                 # AI Review tag legend
 
-                A quick reference for the badges you see in **AI Review**.
+                A quick reference for the AI badges Image Triage can show.
 
                 {self._ai_review_tags_markdown()}
                 """
@@ -21417,6 +19872,7 @@ class MainWindow(QMainWindow):
             theme=self._appearance_mode.value,
             performance_logging_enabled=self._performance_logging_enabled,
             show_ai_tags_in_grid=self._show_ai_tags_in_grid,
+            apply_edits_to_pocketdrop=self._apply_edits_to_pocketdrop,
             ai_embed_batch_size=self._ai_embed_batch_size_setting,
             ai_review_detail_progress_enabled=self._ai_review_detail_progress_enabled,
             ai_dispute_weight=self._ai_dispute_weight_setting,
@@ -21500,6 +19956,9 @@ class MainWindow(QMainWindow):
             self._show_ai_tags_in_grid = result.show_ai_tags_in_grid
             self._settings.setValue(self.SHOW_AI_TAGS_IN_GRID_KEY, self._show_ai_tags_in_grid)
             self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
+        if result.apply_edits_to_pocketdrop != self._apply_edits_to_pocketdrop:
+            self._apply_edits_to_pocketdrop = result.apply_edits_to_pocketdrop
+            self._settings.setValue(self.APPLY_EDITS_TO_POCKETDROP_KEY, self._apply_edits_to_pocketdrop)
         self._ai_embed_batch_size_setting = self._normalize_ai_embed_batch_size(result.ai_embed_batch_size)
         self._ai_dispute_weight_setting = self._normalize_ai_dispute_weight(result.ai_dispute_weight)
         self._phash_prefilter_settings = result.phash_prefilter_settings.normalized()
@@ -21831,20 +20290,7 @@ class MainWindow(QMainWindow):
         )
 
     def _annotation_change_affects_active_filter(self) -> bool:
-        if bool((self._filter_query.search_text or "").strip()):
-            return True
-        if self._filter_query.review_state != ReviewStateFilter.ALL:
-            return True
-        if self._filter_query.quick_filter in {
-            FilterMode.WINNERS,
-            FilterMode.REJECTS,
-            FilterMode.UNREVIEWED,
-            FilterMode.AI_DISAGREEMENTS,
-        }:
-            return True
-        if self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS:
-            return True
-        return False
+        return self._records_view.annotation_change_affects_active_filter()
 
     def _apply_annotation_change_effects(
         self,
@@ -22828,10 +21274,7 @@ class MainWindow(QMainWindow):
         return menu
 
     def _clear_search_from_workspace_menu(self) -> None:
-        self._handle_search_text_changed("", source="context_menu")
-        self._search_apply_timer.stop()
-        self._commit_search_text_filter()
-        self.statusBar().showMessage("Cleared search")
+        self._records_view.clear_search_from_workspace_menu()
 
     def _open_current_folder_in_file_manager(self) -> None:
         if self._current_folder and os.path.isdir(self._current_folder):
@@ -22858,244 +21301,8 @@ class MainWindow(QMainWindow):
             return self._records[index - 1].path
         return self._records[index].path
 
-    def _apply_records_view_action_mode(self) -> None:
-        if self._is_recycle_folder():
-            self.grid.set_action_mode("recycle_only")
-        elif self._is_winners_folder():
-            self.grid.set_action_mode("accepted_only")
-        elif self._filter_query.quick_filter == FilterMode.WINNERS:
-            self.grid.set_action_mode("accepted_only")
-        elif self._filter_query.quick_filter == FilterMode.REJECTS:
-            self.grid.set_action_mode("rejected_only")
-        else:
-            self.grid.set_action_mode("normal")
-
-    def _finalize_records_view_display(
-        self,
-        *,
-        records: list[ImageRecord],
-        next_record_paths: tuple[str, ...],
-        structural_changed: bool,
-        current_path: str | None,
-    ) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        step_start = start
-
-        def log_step(event: str, previous: float, **fields) -> float:
-            if not logger.enabled:
-                return 0.0
-            now = time.perf_counter()
-            logger.duration(
-                event,
-                (now - previous) * 1000.0,
-                records=len(records),
-                structural_changed=structural_changed,
-                **fields,
-            )
-            return now
-
-        self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
-        step_start = log_step("records_view.finalize.ai_results", step_start)
-        if self._phash_prefilter_settings.enabled or self._prefilter_decisions_by_path:
-            self._refresh_prefilter_decisions_for_current_folder()
-        self.grid.set_prefilter_decisions(self._prefilter_decisions_by_path)
-        step_start = log_step("records_view.finalize.prefilter", step_start)
-        if not structural_changed:
-            self.details_view.refresh_rows()
-        step_start = log_step("records_view.finalize.details_refresh", step_start)
-        self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
-        self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
-        step_start = log_step("records_view.finalize.review_insights", step_start)
-        self._rebuild_visible_preview_group_indexes()
-        step_start = log_step("records_view.finalize.group_indexes", step_start)
-        self._refresh_burst_group_view(request_thumbnails=False)
-        step_start = log_step("records_view.finalize.burst_groups", step_start)
-        self._apply_records_view_action_mode()
-        step_start = log_step("records_view.finalize.action_mode", step_start)
-
-        restored_current = False
-        if current_path:
-            index = self._record_index_by_path.get(current_path)
-            if index is not None:
-                if index != self.grid.current_index():
-                    self.grid.set_current_index(index)
-                restored_current = True
-        if restored_current and self._pending_focus_scroll_top:
-            self._pending_focus_scroll_top = False
-            QTimer.singleShot(0, lambda path=current_path: self._scroll_current_to_top(path))
-        if records and not restored_current and structural_changed:
-            self.grid.set_current_index(0)
-        step_start = log_step("records_view.finalize.current", step_start, restored_current=restored_current)
-        self._last_view_record_paths = next_record_paths
-        self._enqueue_filter_metadata_paths(self._metadata_prefetch_seed_paths(), front=True)
-        step_start = log_step("records_view.finalize.enqueue_metadata", step_start)
-        self._refresh_viewport_mode()
-        self._sync_details_view_from_grid()
-        step_start = log_step("records_view.finalize.viewport_sync", step_start, view=self._browser_view_mode)
-        self._update_action_states()
-        step_start = log_step("records_view.finalize.action_states", step_start)
-        self._update_status()
-        step_start = log_step("records_view.finalize.status", step_start)
-        if structural_changed and self._browser_view_mode == "grid":
-            self.grid.schedule_visible_thumbnail_requests()
-        step_start = log_step("records_view.finalize.thumbnail_schedule", step_start, view=self._browser_view_mode)
-        if self._pending_folder_scroll_value is not None:
-            QTimer.singleShot(0, self._restore_pending_folder_scroll)
-        step_start = log_step("records_view.finalize.pending_scroll", step_start, has_pending_scroll=self._pending_folder_scroll_value is not None)
-        self._maybe_open_startup_quick_view()
-        if logger.enabled:
-            logger.duration(
-                "records_view.finalize",
-                (time.perf_counter() - start) * 1000.0,
-                records=len(records),
-                structural_changed=structural_changed,
-                current_path=current_path or "",
-            )
-
-    def _start_records_view_chunk(
-        self,
-        *,
-        records: list[ImageRecord],
-        current_path: str | None,
-        post_load_enrichment: str,
-    ) -> None:
-        perf_logger().log("records_view.chunk_start", records=len(records), current_path=current_path or "", post_load_enrichment=post_load_enrichment)
-        self._records_view_chunk_timer.stop()
-        self._records_view_chunk_records = records
-        self._records_view_chunk_next_index = 0
-        self._records_view_chunk_current_path = current_path
-        self._records_view_chunk_post_load_enrichment = post_load_enrichment
-        self._records = []
-        self._record_index_by_path = {}
-        self._visible_review_group_rows_by_id = {}
-        self._visible_ai_group_rows_by_id = {}
-        self._last_view_record_paths = ()
-        self.grid.set_items([], emit_state_signals=False, request_thumbnails=False)
-        self.details_view.set_records([])
-        self._set_annotation_views()
-        self.grid.set_ai_results(self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {})
-        if self._phash_prefilter_settings.enabled or self._prefilter_decisions_by_path:
-            self._refresh_prefilter_decisions_for_current_folder()
-        self.grid.set_prefilter_decisions(self._prefilter_decisions_by_path)
-        self.details_view.refresh_rows()
-        self.grid.set_review_insights(self._review_intelligence.insights_by_path if self._review_intelligence is not None else {})
-        self.grid.set_review_workflow_insights(self._workflow_insights_by_path)
-        self._apply_records_view_action_mode()
-        self._update_status()
-        self._records_view_chunk_timer.start(0)
-
     def _drain_records_view_chunk(self) -> None:
-        logger = perf_logger()
-        start_time = time.perf_counter() if logger.enabled else 0.0
-        records = self._records_view_chunk_records
-        if not records:
-            return
-        start = self._records_view_chunk_next_index
-        batch_size = max(1, self.CHUNKED_RESTORE_LOAD_BATCH_SIZE)
-        end = min(len(records), start + batch_size)
-        batch = records[start:end]
-        if start == 0:
-            self._records = list(batch)
-            self._record_index_by_path = {record.path: index for index, record in enumerate(self._records)}
-            self.grid.set_items(list(self._records), emit_state_signals=False, request_thumbnails=False)
-            self.details_view.set_records(list(self._records))
-            self._set_annotation_views()
-        else:
-            offset = len(self._records)
-            self._records.extend(batch)
-            for index, record in enumerate(batch, start=offset):
-                self._record_index_by_path[record.path] = index
-            self.grid.append_items(list(batch), request_thumbnails=False)
-            self.details_view.append_records(list(batch))
-        self._records_view_chunk_next_index = end
-        if end < len(records):
-            self._update_status()
-            self._records_view_chunk_timer.start(0)
-            if logger.enabled:
-                logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=False)
-            return
-
-        current_path = self._records_view_chunk_current_path
-        post_load_enrichment = self._records_view_chunk_post_load_enrichment
-        next_record_paths = tuple(record.path for record in records)
-        self._records_view_chunk_records = []
-        self._records_view_chunk_next_index = 0
-        self._records_view_chunk_current_path = None
-        self._records_view_chunk_post_load_enrichment = ""
-        self._finalize_records_view_display(
-            records=records,
-            next_record_paths=next_record_paths,
-            structural_changed=True,
-            current_path=current_path,
-        )
-        if post_load_enrichment == "defer":
-            self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=True)
-        elif post_load_enrichment == "start":
-            self._finish_loaded_records_enrichment(list(self._all_records), defer_enrichment=False)
-        self._finish_quick_view_attempt_if_ready()
-        if logger.enabled:
-            logger.duration("records_view.chunk_batch", (time.perf_counter() - start_time) * 1000.0, start=start, end=end, total=len(records), done=True)
-
-    def _sort_records_for_active_context(self, records: list[ImageRecord]) -> list[ImageRecord]:
-        if self._sort_mode == SortMode.AI_WOW:
-            if not self._winner_scores_by_path:
-                self._refresh_winner_scores_for_current_folder()
-
-            def wow_key(record: ImageRecord) -> tuple[object, ...]:
-                if record.is_folder:
-                    return (0, record.name.casefold())
-                score = self._winner_score_for_record(record)
-                if score is None:
-                    return (2, record.name.casefold())
-                return (
-                    1,
-                    -float(score.get("blended_score") or 0.0),
-                    record.name.casefold(),
-                )
-
-            return sorted(records, key=wow_key)
-
-        if self._sort_mode != SortMode.AI_RANK or self._ai_bundle is None:
-            return sort_records(records, self._sort_mode)
-
-        def key(record: ImageRecord) -> tuple[object, ...]:
-            if record.is_folder:
-                return (0, record.name.casefold())
-            result = find_ai_result_for_record(self._ai_bundle, record)
-            if result is None:
-                return (2, record.name.casefold())
-            percentile = float(result.folder_percentile if result.folder_percentile is not None else -1.0)
-            return (
-                1,
-                -float(result.score),
-                -percentile,
-                int(max(1, result.rank_in_group)),
-                record.name.casefold(),
-            )
-
-        return sorted(records, key=key)
-
-    def _rank_records_for_unified_search(self, records: list[ImageRecord]) -> list[ImageRecord]:
-        if not self._filter_query.search_text.strip() or not self._unified_search_rank_by_path:
-            return records
-
-        def record_score(record: ImageRecord) -> float | None:
-            scores = [
-                self._unified_search_rank_by_path[key]
-                for key in (_search_match_path_key(path) for path in record.stack_paths)
-                if key in self._unified_search_rank_by_path
-            ]
-            return max(scores) if scores else None
-
-        def key(item: tuple[int, ImageRecord]) -> tuple[object, ...]:
-            index, record = item
-            score = record_score(record)
-            if score is None:
-                return (1, index)
-            return (0, -score, index)
-
-        return [record for _, record in sorted(enumerate(records), key=key)]
+        self._records_view.drain_records_view_chunk()
 
     def _apply_records_view(
         self,
@@ -23104,144 +21311,11 @@ class MainWindow(QMainWindow):
         chunked: bool = False,
         post_load_enrichment: str = "",
     ) -> bool:
-        logger = perf_logger()
-        start_time = time.perf_counter() if logger.enabled else 0.0
-        if self._records_view_chunk_active() or not chunked:
-            self._cancel_records_view_chunk()
-        reasons, dirty_paths = self._records_view_cache.consume()
-        force_workflow_rebuild = (
-            ViewInvalidationReason.AI_CHANGED in reasons
-            and bool(self._all_records)
+        return self._records_view.apply_records_view(
+            current_path,
+            chunked=chunked,
+            post_load_enrichment=post_load_enrichment,
         )
-        if force_workflow_rebuild or dirty_paths:
-            self._refresh_workflow_insights_cache(
-                changed_paths=set(dirty_paths) if dirty_paths else None,
-                force_full=force_workflow_rebuild,
-            )
-
-        sorted_records = self._sort_records_for_active_context(list(self._all_records))
-        sorted_records = self._rank_records_for_unified_search(sorted_records)
-        visible_folder_records = (
-            self._sort_records_for_active_context(list(self._folder_records))
-            if self._scope_kind == "folder" and not self._filter_query.has_active_filters
-            else []
-        )
-        needs_ai = self._filter_query.quick_filter in {FilterMode.AI_TOP_PICKS, FilterMode.AI_GROUPED, FilterMode.AI_DISAGREEMENTS}
-        needs_ai = needs_ai or self._filter_query.ai_state != AIStateFilter.ALL
-        needs_ai = needs_ai or self._filter_query.ai_cull_bucket is not None
-        needs_aiculler_ingested = self._filter_query.quick_filter == FilterMode.AI_INGESTED
-        needs_prefilter = self._filter_query.quick_filter == FilterMode.AI_PREFILTER_DUMPED
-        needs_review = self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}
-        needs_workflow = self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
-        needs_workflow = needs_workflow or self._filter_query.ai_state == AIStateFilter.DISAGREEMENTS
-        needs_workflow = needs_workflow or bool(self._filter_query.ai_workflow_tag.strip())
-        needs_metadata = self._filter_query.requires_metadata
-        if needs_prefilter:
-            self._refresh_prefilter_decisions_for_current_folder()
-        if needs_aiculler_ingested:
-            self._refresh_aiculler_ingested_paths_for_current_folder()
-        if not self._filter_query.has_active_filters:
-            records = [*visible_folder_records, *sorted_records]
-        else:
-            records = list(visible_folder_records)
-            needs_dispute = self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS
-            for record in sorted_records:
-                annotation = self._annotations.get(record.path, SessionAnnotation())
-                ai_result = self._ai_result_for_record(record) if needs_ai else None
-                review_insight = self._review_insight_for_record(record) if needs_review else None
-                workflow_insight = self._workflow_insight_for_record(record) if needs_workflow else None
-                metadata = self._filter_metadata_by_path.get(record.path, EMPTY_METADATA) if needs_metadata else None
-                is_disputed = self._is_record_disputed(record) if needs_dispute else False
-                prefilter_decision = self._prefilter_decision_for_record(record) if needs_prefilter else None
-                ai_ingested = self._record_was_aiculler_ingested(record) if needs_aiculler_ingested else False
-                if matches_record_query(
-                    record,
-                    self._filter_query,
-                    annotation=annotation,
-                    ai_result=ai_result,
-                    metadata=metadata,
-                    review_insight=review_insight,
-                    workflow_insight=workflow_insight,
-                    is_disputed=is_disputed,
-                    prefilter_decision=prefilter_decision,
-                    ai_ingested=ai_ingested,
-                    search_match_paths=self._unified_search_path_keys,
-                    person_match_paths=self._person_filter_paths,
-                ):
-                    records.append(record)
-
-        previous_record_paths = self._last_view_record_paths
-        next_record_paths = tuple(record.path for record in records)
-        structural_changed = previous_record_paths != next_record_paths
-
-        self._records = records
-        self._record_index_by_path = {record.path: index for index, record in enumerate(records)}
-        self._recalculate_review_counts()
-        if reasons.intersection(
-            {
-                ViewInvalidationReason.LOAD_CHANGED,
-                ViewInvalidationReason.AI_CHANGED,
-                ViewInvalidationReason.REVIEW_CHANGED,
-            }
-        ):
-            self._refresh_ai_summary_cache()
-        if structural_changed:
-            should_chunk = chunked and len(records) >= self.CHUNKED_RESTORE_LOAD_MIN_RECORDS
-            if should_chunk:
-                self._start_records_view_chunk(
-                    records=records,
-                    current_path=current_path,
-                    post_load_enrichment=post_load_enrichment,
-                )
-                if logger.enabled:
-                    logger.duration(
-                        "records_view.apply",
-                        (time.perf_counter() - start_time) * 1000.0,
-                        records=len(records),
-                        structural_changed=structural_changed,
-                        chunked=True,
-                        reasons=[reason.name for reason in reasons],
-                    )
-                return False
-            self.grid.set_items(records, emit_state_signals=False, request_thumbnails=False)
-            self.details_view.set_records(records)
-            self._set_annotation_views()
-        else:
-            changed_visible_paths = tuple(path for path in dirty_paths if path in self._record_index_by_path)
-            self.grid.update_items(
-                GridDeltaUpdate(
-                    changed_paths=changed_visible_paths,
-                    selection_anchor=self.grid.current_index(),
-                    preserve_pixmap_cache=True,
-                )
-            )
-            if changed_visible_paths:
-                self.details_view.refresh_rows(
-                    {
-                        self._record_index_by_path[path]
-                        for path in changed_visible_paths
-                        if path in self._record_index_by_path
-                    }
-                )
-            if changed_visible_paths:
-                self._set_annotation_views(changed_visible_paths)
-        self._finalize_records_view_display(
-            records=records,
-            next_record_paths=next_record_paths,
-            structural_changed=structural_changed,
-            current_path=current_path,
-        )
-        if logger.enabled:
-            logger.duration(
-                "records_view.apply",
-                (time.perf_counter() - start_time) * 1000.0,
-                records=len(records),
-                structural_changed=structural_changed,
-                chunked=False,
-                reasons=[reason.name for reason in reasons],
-                dirty_paths=len(dirty_paths),
-            )
-        return True
 
     def _refresh_burst_group_view(self, *, request_thumbnails: bool = True) -> None:
         burst_groups: list[tuple[int, ...]] = []

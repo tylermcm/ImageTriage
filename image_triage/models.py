@@ -26,6 +26,7 @@ class ImageRecord:
     edited_paths: tuple[str, ...] = ()
     variants: tuple[ImageVariant, ...] = ()
     is_folder: bool = False
+    has_editor_session: bool = False
 
     @property
     def all_paths(self) -> tuple[str, ...]:
@@ -107,7 +108,7 @@ class ImageRecord:
 
     @property
     def has_edits(self) -> bool:
-        return bool(self.edited_paths)
+        return bool(self.edited_paths) or self.has_editor_session
 
     @property
     def preferred_edit_path(self) -> str:

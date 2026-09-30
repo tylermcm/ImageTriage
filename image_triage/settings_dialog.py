@@ -75,6 +75,7 @@ class WorkflowSettingsResult:
     theme: str = "auto"
     performance_logging_enabled: bool = False
     show_ai_tags_in_grid: bool = False
+    apply_edits_to_pocketdrop: bool = False
     ai_embed_batch_size: int = 0
     ai_review_detail_progress_enabled: bool = False
     ai_dispute_weight: int = 3
@@ -314,6 +315,7 @@ class WorkflowSettingsDialog(QDialog):
         theme: str = "auto",
         performance_logging_enabled: bool = False,
         show_ai_tags_in_grid: bool = False,
+        apply_edits_to_pocketdrop: bool = False,
         ai_embed_batch_size: int = 0,
         ai_review_detail_progress_enabled: bool = False,
         ai_dispute_weight: int = 3,
@@ -523,6 +525,13 @@ class WorkflowSettingsDialog(QDialog):
             "during manual review, not only in the inspector."
         ))
 
+        self.apply_edits_to_pocketdrop_checkbox = QCheckBox("Apply edits before sending to PocketDrop")
+        self.apply_edits_to_pocketdrop_checkbox.setChecked(apply_edits_to_pocketdrop)
+        self.apply_edits_to_pocketdrop_checkbox.setToolTip(_settings_tooltip(
+            "Off by default. When on, sending a photo with a real built-in editor session to "
+            "PocketDrop sends a rendered copy with its edits applied instead of the original file."
+        ))
+
         session_row = QWidget()
         session_row.setToolTip(_settings_tooltip(
             "Choose or name the settings preset used for this review profile."
@@ -552,6 +561,7 @@ class WorkflowSettingsDialog(QDialog):
         self._add_form_row(general_layout, "Theme", self.theme_combo)
         self._add_checkbox_row(general_layout, "Performance logging", self.performance_logging_checkbox)
         self._add_checkbox_row(general_layout, "AI tags in grid", self.show_ai_tags_in_grid_checkbox)
+        self._add_checkbox_row(general_layout, "PocketDrop", self.apply_edits_to_pocketdrop_checkbox)
         self._add_category_heading(general_layout, "App updates")
         self._add_checkbox_row(general_layout, "Automatic check", self.check_updates_on_startup_checkbox)
         self.preset_status_label = QLabel("")
@@ -1434,6 +1444,7 @@ class WorkflowSettingsDialog(QDialog):
             theme=str(self.theme_combo.currentData()),
             performance_logging_enabled=self.performance_logging_checkbox.isChecked(),
             show_ai_tags_in_grid=self.show_ai_tags_in_grid_checkbox.isChecked(),
+            apply_edits_to_pocketdrop=self.apply_edits_to_pocketdrop_checkbox.isChecked(),
             ai_embed_batch_size=max(0, int(self.ai_embed_batch_size_spin.value())),
             ai_review_detail_progress_enabled=self.ai_review_detail_progress_checkbox.isChecked(),
             ai_dispute_weight=max(2, min(5, int(self.ai_dispute_weight_spin.value()))),

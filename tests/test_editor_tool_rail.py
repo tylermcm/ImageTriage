@@ -17,7 +17,6 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli_editor"))
 
 import numpy as np
 from PIL import Image
@@ -35,14 +34,14 @@ from image_triage.ui.photo_editor_panel import (
     operations_from_recipe,
     recipe_from_session,
 )
-from photo_terminal.adjustments import (
+from image_triage.photo_terminal.adjustments import (
     apply_color_calibration,
     apply_color_grading,
     apply_defringe,
     apply_grain,
     apply_hsl_adjustments,
 )
-from photo_terminal.session import RENDERER_ORDER, validate_operation_params
+from image_triage.photo_terminal.session import RENDERER_ORDER, validate_operation_params
 
 # The editor column budget. 336px of rail plus slack, matching the constant
 # MaskPaneFootprintTests measures against.

@@ -81,7 +81,7 @@ class ToolbarMenuController:
 
     def build_catalog_toolbar_menu(self) -> QMenu:
         actions = self._actions
-        menu = QMenu("Catalog", self._parent)
+        menu = QMenu("Library", self._parent)
         menu.addAction(actions.browse_catalog)
         menu.addSeparator()
         menu.addAction(actions.add_current_folder_to_catalog)

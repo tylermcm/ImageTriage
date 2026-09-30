@@ -97,6 +97,18 @@ class PackagingScriptTests(unittest.TestCase):
         self.assertIn("depth_worker.py", constants)
         self.assertIn("ai_workers/depth_worker.py", constants)
 
+    def test_vendored_editor_engine_is_named_explicitly_for_cx_freeze(self) -> None:
+        # image_triage.photo_terminal (the vendored former cli_editor package)
+        # is reached via a lazy import inside editor_render.py, so it must be
+        # named explicitly rather than relying on cx_Freeze's static scan.
+        includes = _dict_list_literals(
+            _read_tree("setup_msi.py"),
+            "build_exe_options",
+            "includes",
+        )
+        self.assertIn("image_triage.photo_terminal", includes)
+        self.assertIn("image_triage.photo_terminal.adjustments", includes)
+
 
 if __name__ == "__main__":
     unittest.main()

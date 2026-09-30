@@ -324,6 +324,52 @@ def ensure_subject_masks(
     )
 
 
+def subject_mask_cache_path(
+    source_path: str | Path,
+    request: str = "subject",
+    *,
+    installation: AIModelInstallation | None = None,
+    cache_root: str | Path | None = None,
+) -> Path | None:
+    """The cached mask PNG for ``source_path`` if one is already on disk, else
+    None. Never runs BiRefNet inference -- only checks the deterministic,
+    content-addressed cache path that ``ensure_subject_masks`` also uses (see
+    its cache-hit check above), so this is safe to call from a headless
+    render path (thumbnail/export) without triggering a synchronous model
+    run. Any failure (missing model install, unreadable file, ...) is treated
+    as "not cached yet" and returns None rather than raising.
+    """
+
+    try:
+        source = Path(source_path).expanduser().resolve()
+        if not source.is_file():
+            return None
+        model_installation = installation or resolve_birefnet_model_installation()
+        if not model_installation.is_installed:
+            return None
+        model_path = model_installation.install_dir / "model.safetensors"
+        if not model_path.is_file():
+            return None
+        weights_hash, _ = _cached_sha256_file(model_path)
+        stat = source.stat()
+        cache_key = _source_cache_key(source, stat.st_size, stat.st_mtime_ns, weights_hash)
+        cache_dir = Path(cache_root or default_subject_mask_cache_root()) / cache_key
+        mask_path = cache_dir / f"{request}.png"
+        metadata_path = cache_dir / "metadata.json"
+        cached_metadata = _load_json(metadata_path)
+        if (
+            cached_metadata.get("sourceSizeBytes") == stat.st_size
+            and cached_metadata.get("sourceMtimeNs") == stat.st_mtime_ns
+            and cached_metadata.get("weightsHash") == weights_hash
+            and cached_metadata.get("refinementVersion") == SUBJECT_MASK_REFINEMENT_VERSION
+            and mask_path.is_file()
+        ):
+            return mask_path
+        return None
+    except Exception:
+        return None
+
+
 def _run_subject_worker(
     *,
     model_dir: Path,
@@ -609,4 +655,5 @@ __all__ = [
     "SubjectMaskWarmTask",
     "combine_subject_components",
     "ensure_subject_masks",
+    "subject_mask_cache_path",
 ]

@@ -135,22 +135,10 @@ class LeftPaneSwapTests(unittest.TestCase):
         self.assertEqual({}, self.host._settings.values)
 
 
-class _ModeTabs:
-    def __init__(self, index: int) -> None:
-        self.index = index
-
-    def currentIndex(self) -> int:
-        return self.index
-
-    def setCurrentIndex(self, index: int) -> None:
-        self.index = index
-
-
 class _ModeHost:
     _set_ui_mode = MainWindow._set_ui_mode
 
-    def __init__(self, index: int) -> None:
-        self.mode_tabs = _ModeTabs(index)
+    def __init__(self) -> None:
         self.handled: list[int] = []
 
     def _handle_mode_tab_changed(self, index: int) -> None:
@@ -159,19 +147,18 @@ class _ModeHost:
 
 class ManualOnlyModeTests(unittest.TestCase):
     def test_asking_for_ai_review_stays_in_manual(self) -> None:
-        host = _ModeHost(index=0)
+        host = _ModeHost()
 
         host._set_ui_mode("ai")
 
-        self.assertEqual(0, host.mode_tabs.index)
         self.assertEqual([0], host.handled)
 
-    def test_a_stale_ai_tab_is_pulled_back_to_manual(self) -> None:
-        host = _ModeHost(index=1)
+    def test_asking_for_manual_stays_in_manual(self) -> None:
+        host = _ModeHost()
 
-        host._set_ui_mode("ai")
+        host._set_ui_mode("manual")
 
-        self.assertEqual(0, host.mode_tabs.index)
+        self.assertEqual([0], host.handled)
 
 
 if __name__ == "__main__":

@@ -503,8 +503,9 @@ class MaskOverlay(CanvasOverlay):
     source_clicked = Signal(float, float)
     # A detected scene region was clicked (category name).
     scene_region_picked = Signal(str)
-    # A point was clicked in promptable click-to-select mode (source coords).
-    point_picked = Signal(float, float)
+    # A point was clicked in promptable click-to-select mode (source coords,
+    # label: 1 = include/add, 0 = exclude/subtract).
+    point_picked = Signal(float, float, int)
     # The pointer moved over/left promptable click-to-select mode.
     point_hovered = Signal(float, float)
     point_hover_cleared = Signal()
@@ -543,6 +544,7 @@ class MaskOverlay(CanvasOverlay):
         self._scene_hover: str | None = None
         self._point_pick = False
         self._point_preview_path: str | None = None
+        self._prompt_points: list[tuple[float, float, int]] = []
         self._subject_candidates: list[dict[str, Any]] = []
         self._subject_hover: str | None = None
         self._watched: QWidget | None = None
@@ -582,6 +584,7 @@ class MaskOverlay(CanvasOverlay):
         scene_pick: bool = False,
         point_pick: bool = False,
         point_preview_path: str | None = None,
+        prompt_points: list[tuple[float, float, int]] | None = None,
         subject_candidates: list[dict[str, Any]] | None = None,
         overlay_mode: str = "color",
         overlay_color: QColor | str | None = None,
@@ -662,6 +665,9 @@ class MaskOverlay(CanvasOverlay):
         preview_path = str(point_preview_path or "") or None
         if preview_path != self._point_preview_path:
             self._point_preview_path = preview_path
+        self._prompt_points = [
+            (float(px), float(py), int(label)) for px, py, label in (prompt_points or [])
+        ]
         self._subject_candidates = [
             dict(candidate) for candidate in (subject_candidates or [])
         ]
@@ -781,6 +787,8 @@ class MaskOverlay(CanvasOverlay):
                         base,
                     ),
                 )
+        if self._point_pick and self._prompt_points:
+            self._paint_prompt_points(painter)
         if self._point_pick and self._hover_pos is not None and self._drag is None:
             self._paint_point_pick_hint(painter)
         if self._params is None and not self._components:
@@ -1195,6 +1203,17 @@ class MaskOverlay(CanvasOverlay):
         painter.setPen(QPen(QColor(240, 240, 240)))
         painter.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
 
+    def _paint_prompt_points(self, painter: QPainter) -> None:
+        """Small include/exclude markers for the click-to-select point session
+        currently being built (green = include, red = exclude)."""
+        radius = 5.0
+        for src_x, src_y, label in self._prompt_points:
+            center = self._to_display(src_x, src_y)
+            fill = QColor(90, 220, 130) if label else QColor(235, 80, 80)
+            painter.setPen(QPen(QColor(255, 255, 255, 230), 1.6))
+            painter.setBrush(fill)
+            painter.drawEllipse(center, radius, radius)
+
     def _paint_point_pick_hint(self, painter: QPainter) -> None:
         pos = self._hover_pos
         if pos is None:
@@ -1205,7 +1224,11 @@ class MaskOverlay(CanvasOverlay):
             painter.setPen(pen)
             painter.drawLine(QPointF(pos.x() - reach, pos.y()), QPointF(pos.x() + reach, pos.y()))
             painter.drawLine(QPointF(pos.x(), pos.y() - reach), QPointF(pos.x(), pos.y() + reach))
-        text = "click a person or object to select it"
+        text = (
+            "right-click to exclude part of it"
+            if self._prompt_points
+            else "click a person or object to select it"
+        )
         metrics = QFontMetricsF(painter.font())
         width = metrics.horizontalAdvance(text) + CHIP_PAD * 2
         height = metrics.height() + CHIP_PAD
@@ -1417,7 +1440,21 @@ class MaskOverlay(CanvasOverlay):
 
     # -- mouse interaction ----------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
-        if event.button() != Qt.MouseButton.LeftButton or self._scales() is None:
+        if self._scales() is None:
+            event.ignore()
+            return
+        if event.button() == Qt.MouseButton.RightButton:
+            # Right-click only ever means one thing: a subtract point while
+            # click-to-select is armed. Everything else (handles, create
+            # tools, scene picking) is left-click-only, same as before.
+            if self._point_pick and self._create_mode is None and self._brush_mode is None:
+                src_x, src_y = self._to_source(QPointF(event.position()))
+                self.point_picked.emit(src_x, src_y, 0)
+                event.accept()
+                return
+            event.ignore()
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
             event.ignore()
             return
         pos = QPointF(event.position())
@@ -1494,7 +1531,7 @@ class MaskOverlay(CanvasOverlay):
             return
         if self._point_pick and self._create_mode is None and self._brush_mode is None:
             src_x, src_y = self._to_source(pos)
-            self.point_picked.emit(src_x, src_y)
+            self.point_picked.emit(src_x, src_y, 1)
             event.accept()
             return
         category = self._scene_category_at(pos)

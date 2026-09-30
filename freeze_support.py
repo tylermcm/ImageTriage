@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parent
 APP_ICON_WINDOWS_PATH = ROOT / "build_assets" / "icons" / "image_triage-v2.ico"
 APP_ICON_LINUX_PATH = ROOT / "build_assets" / "icons" / "image_triage-v2.png"
 CLI_CULLER_PACKAGE_ROOT = ROOT / "aiculler"
-CLI_EDITOR_PACKAGE_ROOT = ROOT / "cli_editor" / "photo_terminal"
 AI_SITE_PACKAGES_STAGE_ROOT = ROOT / "build_assets" / "ai_site_packages"
 AI_STDLIB_STAGE_ROOT = ROOT / "build_assets" / "ai_stdlib"
 AI_DLLS_STAGE_ROOT = ROOT / "build_assets" / "ai_python_dlls"
@@ -106,7 +105,6 @@ class FreezeAssetLayout:
             ),
             *_pocketdrop_include_files(),
             (str(CLI_CULLER_PACKAGE_ROOT), "aiculler"),
-            (str(CLI_EDITOR_PACKAGE_ROOT), "lib/photo_terminal"),
             (str(ROOT / "image_triage" / "birefnet_worker.py"), "ai_workers/birefnet_worker.py"),
             (str(ROOT / "image_triage" / "oneformer_worker.py"), "ai_workers/oneformer_worker.py"),
             (str(ROOT / "image_triage" / "sam_worker.py"), "ai_workers/sam_worker.py"),

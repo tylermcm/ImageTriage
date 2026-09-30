@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,9 @@ from image_triage.edit_storage import (
     legacy_session_path,
     migrate_bundle,
     resolve_session_for_read,
+    session_has_edits,
 )
+from image_triage.photo_terminal.session import SCHEMA_NAME, SCHEMA_VERSION
 
 
 def _write_legacy_bundle(folder: Path, stem: str, *, with_assets: bool = True) -> Path:
@@ -126,6 +129,69 @@ class ConsolidateFolderTests(unittest.TestCase):
 
             self.assertEqual(consolidate_folder(folder), 1)
             self.assertEqual(consolidate_folder(folder), 0)
+
+
+def _write_session(session_path: Path, *, operations=(), masks=()) -> None:
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session_path.write_text(
+        json.dumps(
+            {
+                "version": SCHEMA_VERSION,
+                "schema": SCHEMA_NAME,
+                "operations": list(operations),
+                "masks": list(masks),
+            }
+        )
+    )
+
+
+class SessionHasEditsTests(unittest.TestCase):
+    def test_no_session_file_returns_false(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="edit_storage_") as temp_dir:
+            image = Path(temp_dir) / "_DSC1.jpg"
+            image.write_bytes(b"original")
+
+            self.assertFalse(session_has_edits(image))
+
+    def test_opened_but_untouched_session_returns_false(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="edit_storage_") as temp_dir:
+            image = Path(temp_dir) / "_DSC1.jpg"
+            image.write_bytes(b"original")
+            _write_session(editor_session_path(image))
+
+            self.assertFalse(session_has_edits(image))
+
+    def test_session_with_operations_returns_true(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="edit_storage_") as temp_dir:
+            image = Path(temp_dir) / "_DSC1.jpg"
+            image.write_bytes(b"original")
+            _write_session(
+                editor_session_path(image),
+                operations=[{"id": "op-1", "type": "adjust.exposure", "params": {"exposure": 0.5}}],
+            )
+
+            self.assertTrue(session_has_edits(image))
+
+    def test_session_with_masks_returns_true(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="edit_storage_") as temp_dir:
+            image = Path(temp_dir) / "_DSC1.jpg"
+            image.write_bytes(b"original")
+            _write_session(
+                editor_session_path(image),
+                masks=[{"id": "mask-1", "type": "radial", "params": {}}],
+            )
+
+            self.assertTrue(session_has_edits(image))
+
+    def test_corrupt_session_file_returns_false_not_a_crash(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="edit_storage_") as temp_dir:
+            image = Path(temp_dir) / "_DSC1.jpg"
+            image.write_bytes(b"original")
+            session_path = editor_session_path(image)
+            session_path.parent.mkdir(parents=True, exist_ok=True)
+            session_path.write_text("{not valid json")
+
+            self.assertFalse(session_has_edits(image))
 
 
 if __name__ == "__main__":

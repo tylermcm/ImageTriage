@@ -4,11 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from .formats import suffix_for_path
 from .image_ops import (
-    load_image_for_transform,
     normalized_output_path_key,
     save_transformed_image,
 )
@@ -91,40 +90,28 @@ def write_edited_copy(
     source = Path(source_path)
     target = Path(target_path)
     target_suffix = validate_save_copy_paths(source, target)
-    loaded = load_image_for_transform(
-        str(source),
-        target_size=QSize(),
-        ignore_orientation=False,
-        strip_metadata=False,
-    )
-    if loaded.image.isNull():
-        raise OSError(f"Could not decode {source.name} for saving.")
 
     # Lazy import avoids a UI-package import cycle while the editor panel is
-    # being constructed. It also guarantees export and preview share one
-    # rendering implementation.
-    from .editor_render import CpuEditorRenderBackend
+    # being constructed. It also guarantees export, Save Copy, and headless
+    # rendering (thumbnails, other export paths) share one decode+render
+    # implementation -- see edit_render_headless.render_session_pixels.
+    from .edit_render_headless import render_session_pixels
 
-    rendered = CpuEditorRenderBackend().render(
-        loaded.image,
+    rendered, exif_bytes, icc_profile = render_session_pixels(
+        source,
         recipe,
         masked_adjustments,
-        base_key=("save-copy", str(source.resolve(strict=False))),
         background=background,
         lensblur=lensblur,
-        # An export always renders the real crop, whatever tool happens to be
-        # armed in the UI at the time.
-        view={"bypass_crop": False},
+        base_key=("save-copy", str(source.resolve(strict=False))),
     )
-    if rendered.isNull():
-        raise OSError(f"Could not render {source.name}.")
     target.parent.mkdir(parents=True, exist_ok=True)
     save_transformed_image(
         rendered,
         target_path=str(target),
         target_suffix=target_suffix,
-        exif_bytes=loaded.exif_bytes,
-        icc_profile=loaded.icc_profile,
+        exif_bytes=exif_bytes,
+        icc_profile=icc_profile,
     )
     return target
 

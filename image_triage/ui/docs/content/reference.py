@@ -123,7 +123,7 @@ ARTICLES = [
 
         ## Why per-folder
 
-        Keeping the AI cache next to the images means a folder is self-contained: copy it elsewhere and its scores travel with it. It also means catalog search and collections never change how a folder's AI processing works — see [The global catalog](doc:catalog).
+        Keeping the AI cache next to the images means a folder is self-contained: copy it elsewhere and its scores travel with it. It also means library search and collections never change how a folder's AI processing works — see [The Library index](doc:catalog).
 
         ## Runtime and models
 

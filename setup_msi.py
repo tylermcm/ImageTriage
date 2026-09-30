@@ -37,6 +37,17 @@ build_exe_options = {
         # imports it, so cx_Freeze's scan misses it and the frozen app dies
         # on startup (hidden behind the splash) with an ImportError.
         "image_triage.ui.layout_ratios",
+        # The vendored editor engine (formerly the separately-packaged
+        # cli_editor/photo_terminal). editor_render.py imports it lazily
+        # inside a function, so name it explicitly rather than relying on
+        # cx_Freeze's static import scan finding it.
+        "image_triage.photo_terminal",
+        "image_triage.photo_terminal.adjustments",
+        "image_triage.photo_terminal.cli",
+        "image_triage.photo_terminal.io",
+        "image_triage.photo_terminal.masks",
+        "image_triage.photo_terminal.preview",
+        "image_triage.photo_terminal.session",
         "onnxruntime",
         "PIL",
         "pip",

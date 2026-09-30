@@ -24,6 +24,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 image-triage = "image_triage.main:main"
+photoedit = "image_triage.photo_terminal.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

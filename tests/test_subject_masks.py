@@ -15,7 +15,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication
 
-from image_triage.ai_model import resolve_birefnet_model_installation
+from image_triage.ai_model import AIModelInstallation, resolve_birefnet_model_installation
 from image_triage.birefnet_worker import _birefnet_rearrange, _emit_metric
 import image_triage.subject_masks as subject_masks
 import image_triage.semantic_mask_service as semantic_mask_service
@@ -25,8 +25,105 @@ from image_triage.subject_masks import (
     SubjectMaskResult,
     combine_subject_components,
     ensure_subject_masks,
+    subject_mask_cache_path,
 )
 from image_triage.ui.photo_editor_panel import PhotoEditorPanel
+
+
+class SubjectMaskCachePathTests(unittest.TestCase):
+    """Tests for subject_mask_cache_path: the headless-render lookup that
+    checks the on-disk cache without ever running BiRefNet inference."""
+
+    def test_returns_none_when_model_not_installed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_subject_cache_") as temp_dir:
+            source = Path(temp_dir) / "photo.jpg"
+            source.write_bytes(b"fake-image-bytes")
+            installation = AIModelInstallation(
+                repo_id="fake/repo",
+                revision="main",
+                install_dir=Path(temp_dir) / "not-installed",
+                required_filenames=("model.safetensors",),
+            )
+
+            result = subject_mask_cache_path(source, "subject", installation=installation)
+
+            self.assertIsNone(result)
+
+    def test_returns_none_when_source_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_subject_cache_") as temp_dir:
+            missing_source = Path(temp_dir) / "missing.jpg"
+            installation = AIModelInstallation(
+                repo_id="fake/repo",
+                revision="main",
+                install_dir=Path(temp_dir),
+                required_filenames=("model.safetensors",),
+            )
+
+            self.assertIsNone(subject_mask_cache_path(missing_source, installation=installation))
+
+    def test_returns_cached_path_when_metadata_matches(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_subject_cache_") as temp_dir:
+            install_dir = Path(temp_dir) / "install"
+            install_dir.mkdir()
+            model_path = install_dir / "model.safetensors"
+            model_path.write_bytes(b"fake-weights")
+            installation = AIModelInstallation(
+                repo_id="fake/repo",
+                revision="main",
+                install_dir=install_dir,
+                required_filenames=("model.safetensors",),
+            )
+            source = Path(temp_dir) / "photo.jpg"
+            source.write_bytes(b"fake-image-bytes")
+            cache_root = Path(temp_dir) / "cache"
+
+            weights_hash, _ = subject_masks._cached_sha256_file(model_path)
+            stat = source.resolve().stat()
+            cache_key = subject_masks._source_cache_key(
+                source.resolve(), stat.st_size, stat.st_mtime_ns, weights_hash
+            )
+            cache_dir = cache_root / cache_key
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "subject.png").write_bytes(b"fake-mask")
+            (cache_dir / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "sourceSizeBytes": stat.st_size,
+                        "sourceMtimeNs": stat.st_mtime_ns,
+                        "weightsHash": weights_hash,
+                        "refinementVersion": subject_masks.SUBJECT_MASK_REFINEMENT_VERSION,
+                    }
+                )
+            )
+
+            result = subject_mask_cache_path(
+                source, "subject", installation=installation, cache_root=cache_root
+            )
+
+            self.assertEqual(cache_dir / "subject.png", result)
+
+    def test_returns_none_when_metadata_stale(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="image_triage_subject_cache_") as temp_dir:
+            install_dir = Path(temp_dir) / "install"
+            install_dir.mkdir()
+            model_path = install_dir / "model.safetensors"
+            model_path.write_bytes(b"fake-weights")
+            installation = AIModelInstallation(
+                repo_id="fake/repo",
+                revision="main",
+                install_dir=install_dir,
+                required_filenames=("model.safetensors",),
+            )
+            source = Path(temp_dir) / "photo.jpg"
+            source.write_bytes(b"fake-image-bytes")
+            cache_root = Path(temp_dir) / "cache"
+            # No cache dir at all for this source -> not cached.
+
+            result = subject_mask_cache_path(
+                source, "subject", installation=installation, cache_root=cache_root
+            )
+
+            self.assertIsNone(result)
 
 
 class SubjectMaskCacheTests(unittest.TestCase):
