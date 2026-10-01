@@ -9,10 +9,8 @@ from image_triage.models import ImageRecord, SessionAnnotation
 from image_triage.review_intelligence import ReviewGroup, ReviewInsight, ReviewIntelligenceBundle
 from image_triage.review_workflows import (
     BurstRecommendation,
-    CalibrationPair,
     TasteProfile,
     build_burst_recommendations,
-    build_calibration_pairs,
     build_pairwise_label_payload,
     build_record_workflow_insight,
     ai_disagreement_group_leader_path,
@@ -244,76 +242,6 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertEqual(leader.rank_in_group, 1)
         self.assertGreater(leader.score, runner_up.score)
         self.assertTrue(any("Detail retention" in line for line in leader.reasons))
-
-    def test_build_calibration_pairs_prefers_burst_and_close_ai_comparisons(self) -> None:
-        records = [
-            _record("C:/shots/burst_01.jpg", modified_ns=1),
-            _record("C:/shots/burst_02.jpg", modified_ns=2),
-            _record("C:/shots/final_01.jpg", modified_ns=3),
-            _record("C:/shots/final_02.jpg", modified_ns=4),
-        ]
-        review_bundle = _review_bundle(
-            groups=(
-                ReviewGroup(
-                    id="burst-1",
-                    kind="burst",
-                    label="Burst",
-                    member_paths=(records[0].path, records[1].path),
-                ),
-            ),
-            insights=(
-                ReviewInsight(path=records[0].path, group_id="burst-1", group_kind="burst", group_label="Burst", group_size=2, rank_in_group=1, detail_score=88.0, exposure_score=80.0),
-                ReviewInsight(path=records[1].path, group_id="burst-1", group_kind="burst", group_label="Burst", group_size=2, rank_in_group=2, detail_score=84.0, exposure_score=77.0),
-            ),
-        )
-        burst_recommendations = {
-            records[0].path: BurstRecommendation(
-                path=records[0].path,
-                group_id="burst-1",
-                group_label="Burst",
-                group_size=2,
-                recommended_path=records[0].path,
-                rank_in_group=1,
-                score=92.0,
-                recommended_score=92.0,
-                is_recommended=True,
-            ),
-            records[1].path: BurstRecommendation(
-                path=records[1].path,
-                group_id="burst-1",
-                group_label="Burst",
-                group_size=2,
-                recommended_path=records[0].path,
-                rank_in_group=2,
-                score=86.0,
-                recommended_score=92.0,
-                is_recommended=False,
-            ),
-        }
-        ai_bundle = _ai_bundle(
-            _ai_result(records[2].path, group_id="ai-close", group_size=2, rank_in_group=1, score=0.77, normalized_score=71.0, bucket=AIConfidenceBucket.LIKELY_KEEPER),
-            _ai_result(records[3].path, group_id="ai-close", group_size=2, rank_in_group=2, score=0.74, normalized_score=67.0, bucket=AIConfidenceBucket.NEEDS_REVIEW),
-        )
-
-        pairs = build_calibration_pairs(
-            records,
-            ai_bundle=ai_bundle,
-            review_bundle=review_bundle,
-            burst_recommendations=burst_recommendations,
-            limit=4,
-        )
-
-        self.assertGreaterEqual(len(pairs), 2)
-        self.assertEqual(pairs[0].group_id, "burst-1")
-        self.assertIn("burst", pairs[0].prompt.casefold())
-        self.assertEqual({pairs[0].left_path, pairs[0].right_path}, {records[0].path, records[1].path})
-
-        ai_pair = next((pair for pair in pairs if pair.group_id == "ai-close"), None)
-        self.assertIsNotNone(ai_pair)
-        assert ai_pair is not None
-        self.assertEqual(ai_pair.group_label, "AI Group")
-        self.assertIn("ai finalists", ai_pair.prompt.casefold())
-        self.assertEqual({ai_pair.left_path, ai_pair.right_path}, {records[2].path, records[3].path})
 
     def test_build_pairwise_label_payload_uses_stable_relative_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
