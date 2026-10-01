@@ -28,7 +28,6 @@ from image_triage.records_view_controller import RecordsViewController
 from image_triage.review_workflows import BurstRecommendation, TasteProfile, build_review_scoring_cache_key
 from image_triage.window import (
     AIReviewCompleteDialog,
-    AITrainingExecutionContext,
     MainWindow,
     ScopeEnrichmentTask,
     _DirectorySuggestionController,
@@ -479,37 +478,6 @@ class _WindowAiSummaryStub:
         self.status_messages.append(message)
 
 
-class _LabelLaunchFinishStub:
-    def __init__(self, folder: str) -> None:
-        self._ai_training_context = AITrainingExecutionContext(
-            action="launch_labeling",
-            folder=folder,
-            title="Collect Training Labels",
-        )
-        self._active_ai_training_task = object()
-        self._current_folder = folder
-        self._ai_training_pipeline = None
-        self.registered_processes: list[tuple[object, str]] = []
-        self.status_messages: list[str] = []
-        self.toolbar_updates = 0
-        self.closed_progress_dialog = 0
-
-    def _close_ai_training_progress_dialog(self) -> None:
-        self.closed_progress_dialog += 1
-
-    def _update_ai_toolbar_state(self) -> None:
-        self.toolbar_updates += 1
-
-    def _register_child_process(self, process, *, name: str) -> None:
-        self.registered_processes.append((process, name))
-
-    def statusBar(self):
-        return self
-
-    def showMessage(self, message: str) -> None:
-        self.status_messages.append(message)
-
-
 class _VerticalScrollBarStub:
     def value(self) -> int:
         return 0
@@ -608,29 +576,6 @@ class WindowCatalogCacheTests(unittest.TestCase):
                 window._settings.value(window.AI_RESULTS_KEY, "", str),
             )
         )
-
-    @pytest.mark.xfail(strict=True, reason='WI-0.5: hand-built stub lacks _ai_training_stats_dialog the real MainWindow now has; replace with the real-window harness')
-
-    def test_handle_ai_training_finished_registers_launched_labeling_process(self) -> None:
-        folder = "X:/Shots"
-        process = SimpleNamespace(pid=3210)
-        window = _LabelLaunchFinishStub(folder)
-
-        MainWindow._handle_ai_training_finished(
-            window,
-            {
-                "process": process,
-                "pid": 3210,
-                "ready_acknowledged": True,
-            },
-        )
-
-        self.assertIsNone(window._ai_training_context)
-        self.assertIsNone(window._active_ai_training_task)
-        self.assertEqual(1, window.closed_progress_dialog)
-        self.assertEqual(1, window.toolbar_updates)
-        self.assertEqual([(process, "AI Label Collection")], window.registered_processes)
-        self.assertEqual(["Opened training label collection for the current folder."], window.status_messages)
 
     def test_load_cached_folder_records_uses_catalog_only(self) -> None:
         with tempfile.TemporaryDirectory(prefix="image_triage_window_cache_") as temp_dir:

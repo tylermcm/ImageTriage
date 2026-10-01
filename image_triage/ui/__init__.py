@@ -10,11 +10,9 @@ from .actions import (
 )
 from .ai_review_progress_dialog import AIReviewProgressDialog
 from .ai_cull_preferences_dialog import GuidedAICullPreferencesDialog, GuidedCullPreferences
-from .ai_training_progress_dialog import AITrainingProgressDialog
-from .ai_training_stats_dialog import AITrainingStatsDialog
+from .apply_ai_decisions_dialog import ApplyAIDecisionsDialog
 from .batch_rename_dialog import BatchRenameDialog
 from .best_of_dialog import BestOfSetDialog
-from .calibration_dialog import TasteCalibrationDialog
 from .catalog_dialog import CatalogSearchDialog
 from .collection_dialog import CollectionEditDialog
 from .command_palette import CommandPaletteDialog, PaletteCommand
@@ -61,16 +59,14 @@ from .theme import (
 )
 from .toolbar_menus import ToolbarMenuController
 __all__ = [
-    "AITrainingProgressDialog",
     "AIReviewProgressDialog",
-    "AITrainingStatsDialog",
     "AppearanceMode",
     "AdvancedFilterDialog",
+    "ApplyAIDecisionsDialog",
     "BatchRenameDialog",
     "BestOfSetDialog",
     "CatalogSearchDialog",
     "CollectionEditDialog",
-    "TasteCalibrationDialog",
     "ColorToken",
     "CommandPaletteDialog",
     "ConvertDialog",

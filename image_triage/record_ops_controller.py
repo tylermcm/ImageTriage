@@ -418,7 +418,7 @@ class RecordOpsController:
             self._window._remember_recent_destination(destination_dir)
         return copied
 
-    def move_records_by_paths(self, primary_paths: list[str], destination_dir: str) -> int:
+    def move_records_by_paths(self, primary_paths: list[str], destination_dir: str, *, batch_id: str = "") -> int:
         window = self._window
         items: list[TransferItem] = []
         records: dict[int, ImageRecord] = {}
@@ -435,7 +435,12 @@ class RecordOpsController:
         result = run_move_transfer(
             window, items, destination_dir, source_label=window._current_folder or ""
         )
-        batch_id = uuid.uuid4().hex
+        # An externally-supplied batch_id (e.g. from _apply_ai_culling, which
+        # needs this move to join a batch shared with its Reject/recycle
+        # half) joins that batch instead of minting a fresh one; every other
+        # caller (drag-drop, the regular batch-move action) omits it and gets
+        # the same freshly-minted-per-call id as before.
+        batch_id = batch_id or uuid.uuid4().hex
         moved = 0
         moved_paths: list[str] = []
         for item in items:

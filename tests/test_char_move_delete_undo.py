@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from PySide6.QtWidgets import QDialog
 
+from image_triage.ai_results import AIBundle, AICullBucket
+from image_triage.file_ops import FileMove
 from image_triage.models import DeleteMode, WinnerMode
+from image_triage.transfer_progress import TransferResult
+from image_triage.ui.apply_ai_decisions_dialog import ApplyAIDecisionsDialog
 from tests.harness import make_jpegs, open_folder, pump_until
 
 
@@ -246,6 +252,44 @@ def test_undoing_a_batch_move_reverses_every_file_in_one_undo(window, tmp_path) 
     assert os.path.exists(a) and os.path.exists(b) and os.path.exists(c)
 
 
+def test_move_records_by_paths_with_explicit_batch_id_joins_that_batch(window, tmp_path) -> None:
+    """WI-6.2: `_apply_ai_culling` needs its AI-Pick move to join the same
+    Undo batch as its Reject/recycle half, so `move_records_by_paths` (and
+    the `_move_records_by_paths` wrapper) accept an optional `batch_id` that,
+    when given, is used as-is instead of minting a fresh one."""
+    source = tmp_path / "src"
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
+    dest = tmp_path / "dest"
+
+    moved = window._move_records_by_paths([a, b], str(dest), batch_id="given-batch-id")
+
+    assert moved == 2
+    assert {action.batch_id for action in window._undo_stack} == {"given-batch-id"}
+
+
+def test_move_records_by_paths_without_batch_id_still_mints_its_own(window, tmp_path) -> None:
+    """Every other existing caller (drag-drop, the regular batch-move action)
+    calls this without a batch_id and must be completely unaffected: it still
+    gets a freshly minted id per call, same as before this work item. (The
+    other pre-existing tests in this file that call `_move_records_by_paths`
+    with no `batch_id` argument at all are the real proof of this -- they
+    pass unmodified -- this test just pins the "fresh id, not empty/shared"
+    behaviour explicitly.)"""
+    source = tmp_path / "src"
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
+    dest = tmp_path / "dest"
+
+    moved = window._move_records_by_paths([a, b], str(dest))
+
+    assert moved == 2
+    batch_ids = {action.batch_id for action in window._undo_stack}
+    assert len(batch_ids) == 1
+    minted = next(iter(batch_ids))
+    assert minted and minted != "given-batch-id"
+
+
 # ---- WI-4.1b: _remove_records_by_paths, the new batch removal API --------
 
 def test_remove_records_by_paths_refreshes_the_view_exactly_once(window, tmp_path) -> None:
@@ -435,3 +479,216 @@ def test_undoing_past_an_already_empty_batch_is_a_safe_no_op(window, tmp_path) -
     window._undo_last_action()  # nothing left to undo
     assert window._undo_stack == []
     assert len(window._records) == 1
+
+
+# ---- WI-6.2: Apply AI Decisions -- thumbnail-grid confirmation + routing the
+# winners move through run_move_transfer -----------------------------------
+
+def _set_ai_cull_groups(
+    window,
+    *,
+    ai_pick: list | None = None,
+    reject: list | None = None,
+    keeper: list | None = None,
+    review: list | None = None,
+):
+    """Bypasses the real AI bundle/cull-bucket classification (a separate,
+    pre-existing concern) and hands `_apply_ai_culling` a controlled set of
+    groups directly, the same way the WI-4.1b tests above stub out the
+    pieces they don't need to exercise end to end."""
+    # Just needs to be non-None (and a real AIBundle, since `_update_action_states`
+    # and friends look up `.results_by_path` on it mid-move) to pass the guard --
+    # the real cull-bucket classification is a separate, pre-existing concern.
+    window._ai_bundle = AIBundle(source_path="", export_csv_path="")
+    groups = {
+        AICullBucket.AI_PICK: list(ai_pick or []),
+        AICullBucket.REJECT: list(reject or []),
+        AICullBucket.KEEPER: list(keeper or []),
+        AICullBucket.NEEDS_REVIEW: list(review or []),
+    }
+    return patch.object(window, "_ai_cull_record_groups", return_value=groups)
+
+
+def _accept_apply_ai_dialog(window):
+    """Stands in for the user clicking Apply: same seam
+    (`_exec_dialog_with_geometry`) every other in-house confirmation dialog
+    in this codebase is tested through, since `QDialog.exec()` is blocked in
+    this headless harness."""
+    captured: dict[str, ApplyAIDecisionsDialog] = {}
+
+    def _fake_exec(dialog, _dialog_id):
+        captured["dialog"] = dialog
+        return QDialog.DialogCode.Accepted
+
+    return patch.object(window, "_exec_dialog_with_geometry", side_effect=_fake_exec), captured
+
+
+def _reject_apply_ai_dialog(window):
+    return patch.object(window, "_exec_dialog_with_geometry", return_value=QDialog.DialogCode.Rejected)
+
+
+def test_apply_ai_decisions_shows_the_dialog_with_the_right_records_in_each_group(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    a, b, c, d, e = make_jpegs(source, ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"])
+    open_folder(window, source, 5)
+    by_path = {record.path: record for record in window._records}
+
+    with _set_ai_cull_groups(
+        window,
+        ai_pick=[by_path[a], by_path[b]],
+        reject=[by_path[c]],
+        keeper=[by_path[d]],
+        review=[by_path[e]],
+    ):
+        patch_exec, captured = _accept_apply_ai_dialog(window)
+        with patch_exec:
+            window._apply_ai_culling()
+
+    dialog = captured["dialog"]
+    assert {record.path for record in dialog.ai_pick_records} == {a, b}
+    assert {record.path for record in dialog.reject_records} == {c}
+    assert dialog.keeper_count == 1
+    assert dialog.review_count == 1
+
+
+def test_declining_the_apply_ai_decisions_dialog_makes_no_file_changes(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
+    by_path = {record.path: record for record in window._records}
+
+    with _set_ai_cull_groups(window, ai_pick=[by_path[a]], reject=[by_path[b]]):
+        with _reject_apply_ai_dialog(window):
+            window._apply_ai_culling()
+
+    assert os.path.exists(a) and os.path.exists(b)
+    assert _names(window) == ["a.jpg", "b.jpg"]
+    assert not window._undo_stack
+    assert not (tmp_path / "_recycle_sandbox").exists() or not list(
+        (tmp_path / "_recycle_sandbox").glob("*.jpg")
+    )
+
+
+def test_accepting_apply_ai_decisions_moves_winners_and_recycles_rejects_in_one_undo_batch(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    a, b, c = make_jpegs(source, ["a.jpg", "b.jpg", "c.jpg"])
+    open_folder(window, source, 3)
+    by_path = {record.path: record for record in window._records}
+    winners_dir = source / "_winners"
+
+    with _set_ai_cull_groups(window, ai_pick=[by_path[a]], reject=[by_path[b]], keeper=[by_path[c]]):
+        patch_exec, _captured = _accept_apply_ai_dialog(window)
+        with patch_exec:
+            window._apply_ai_culling()
+
+    assert not os.path.exists(a) and (winners_dir / "a.jpg").exists()
+    assert not os.path.exists(b)
+    recycled = list((tmp_path / "_recycle_sandbox").glob("*.jpg"))
+    assert [p.name for p in recycled] == ["b.jpg"]
+    assert os.path.exists(c), "Keeper images are not moved by Apply AI Decisions"
+
+    assert [action.kind for action in window._undo_stack] == ["move", "delete"]
+    batch_ids = {action.batch_id for action in window._undo_stack}
+    assert len(batch_ids) == 1 and next(iter(batch_ids))
+    assert pump_until(lambda: len(window._records) == 1)
+
+    window._undo_last_action()
+
+    assert window._undo_stack == []
+    # The reload picks up the (now-empty) "_winners" folder left behind on
+    # disk as its own record alongside the three restored images -- that
+    # leftover-empty-folder behaviour predates this work item and is
+    # unrelated to it, so this just accounts for it rather than re-litigating
+    # it.
+    assert pump_until(lambda: len({Path(r.path).name for r in window._records if not r.is_folder}) == 3)
+    assert {Path(r.path).name for r in window._records if not r.is_folder} == {"a.jpg", "b.jpg", "c.jpg"}
+    assert os.path.exists(a) and os.path.exists(b)
+    assert not list((tmp_path / "_recycle_sandbox").glob("*.jpg"))
+
+
+def test_apply_ai_decisions_cancel_partway_through_winners_move_leaves_the_rest_untouched(
+    window, tmp_path
+) -> None:
+    """A user can cancel the winners move's progress dialog partway through a
+    multi-file Apply AI Decisions run. `move_records_by_paths` only pushes
+    undo entries and removes records for the subset `run_move_transfer`
+    actually reports as moved, so this should naturally do the right thing:
+    the moved subset is gone from the view and undoable, the rest stays on
+    disk and in the grid untouched, and the Reject loop / follow-up status
+    message still run normally afterwards without double-counting anything."""
+    source = tmp_path / "src"
+    a, b, c = make_jpegs(source, ["a.jpg", "b.jpg", "c.jpg"])
+    d, = make_jpegs(source, ["d.jpg"])
+    open_folder(window, source, 4)
+    by_path = {record.path: record for record in window._records}
+    winners_dir = source / "_winners"
+    winners_dir.mkdir(parents=True, exist_ok=True)
+
+    # Simulate the real TransferWorker: "a" finished moving before the user
+    # hit Cancel; "b" and "c" were never touched.
+    moved_target = str(winners_dir / "a.jpg")
+    shutil.move(a, moved_target)
+    fake_result = TransferResult(
+        moved={0: (FileMove(source_path=a, target_path=moved_target),)},
+        failed={},
+        cancelled=True,
+    )
+
+    with _set_ai_cull_groups(
+        window, ai_pick=[by_path[a], by_path[b], by_path[c]], reject=[by_path[d]]
+    ):
+        patch_exec, _captured = _accept_apply_ai_dialog(window)
+        with patch_exec, patch(
+            "image_triage.record_ops_controller.run_move_transfer", return_value=fake_result
+        ):
+            window._apply_ai_culling()
+        # Captured immediately: the directory watcher can overwrite the
+        # status bar with its own "Detected folder changes" refresh message
+        # once the event loop gets pumped again (see the pump_until calls
+        # below), which is unrelated noise, not something this feature sets.
+        status_message = window.statusBar().currentMessage()
+
+    # "a" moved: gone from disk at its old path, present in _winners, removed
+    # from the grid, and undoable.
+    assert not os.path.exists(a)
+    assert os.path.exists(moved_target)
+    move_actions = [action for action in window._undo_stack if action.kind == "move"]
+    assert len(move_actions) == 1 and move_actions[0].primary_path == a
+
+    # "b" and "c" were never part of the cancelled transfer: still on disk at
+    # their original paths, still shown in the grid, not touched or counted.
+    assert os.path.exists(b) and os.path.exists(c)
+    assert pump_until(lambda: len(window._records) == 2)
+    names = set(_names(window))
+    assert names == {"b.jpg", "c.jpg"}
+
+    # The Reject loop (an unrelated record, "d") still ran to completion and
+    # shares the same undo batch as the one successfully-moved winner.
+    delete_actions = [action for action in window._undo_stack if action.kind == "delete"]
+    assert len(delete_actions) == 1 and delete_actions[0].primary_path == d
+    assert not os.path.exists(d)
+    recycled = list((tmp_path / "_recycle_sandbox").glob("*.jpg"))
+    assert [p.name for p in recycled] == ["d.jpg"]
+
+    batch_ids = {action.batch_id for action in window._undo_stack}
+    assert len(batch_ids) == 1 and next(iter(batch_ids)), "winners + reject halves share one Undo batch"
+
+    # Status bar reflects only what actually moved -- no double counting of
+    # the two files that never got there.
+    assert "moved 1 AI Pick image(s)" in status_message
+    assert "1 Reject image(s)" in status_message
+
+    # Undo reverses the whole shared batch in one click, including the
+    # cancelled-but-partially-applied winners half and the reject half.
+    window._undo_last_action()
+
+    assert window._undo_stack == []
+    assert pump_until(lambda: len({Path(r.path).name for r in window._records if not r.is_folder}) == 4)
+    assert {Path(r.path).name for r in window._records if not r.is_folder} == {
+        "a.jpg",
+        "b.jpg",
+        "c.jpg",
+        "d.jpg",
+    }
+    assert os.path.exists(a) and os.path.exists(b) and os.path.exists(c) and os.path.exists(d)
+    assert not list((tmp_path / "_recycle_sandbox").glob("*.jpg"))

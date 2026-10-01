@@ -613,6 +613,7 @@ Notation: **Type** . **Risk** (L/M/H) . **Touches** (FILES, EDITS, SETTINGS, ANN
 - **Validate:** Characterization suite; a stress test of 300 moves (time, view rebuild count); a NAS manual test.
 - **Done:** No file copy or move on the UI thread; one view refresh per batch; behaviour otherwise identical.
 - **Disposition:** Refactor, then behavioural change.
+- **Status: DONE (2026-09-27).** All three sub-steps landed — see the dated write-ups below ("4.1a partially done", "WI-4.1b done: batched removal API", "WI-4.1c done: async winner copy"). This header never got its own status line added at the time (doc-lag, same pattern as WI-5.2/WI-1.4/WI-6.1 earlier this session) even though the work was finished and WI-4.2/WI-4.4 were already noted as unblocked by it.
 
 **WI-4.2 Job and progress consolidation.** *Internal refactor . M* (Depends on 4.1)
 - **Finding:** A11, P8 (`processEvents`).
@@ -743,12 +744,27 @@ Notation: **Type** . **Risk** (L/M/H) . **Touches** (FILES, EDITS, SETTINGS, ANN
 - **Finding:** I2.
 - **Approach:** Show a reviewable list, run through the file-operation service with progress and cancel, and make it a single undoable batch.
 - **Disposition:** Refactor, then behavioural change.
+- **Status: DONE (2026-09-30).** Its two dependencies turned out to already be satisfied (WI-4.1 was fully done 2026-09-27 but never got a status line on its own header — fixed as a doc-lag correction above; WI-6.1 done 2026-09-29), and the "single undoable batch" half of I2 was already built as part of WI-4.1c (one shared `batch_id` across the AI-Pick move and Reject recycle). The two real remaining gaps:
+  - **Reviewable list, as a thumbnail grid (your call over a plain filename list)**: new `ApplyAIDecisionsDialog` (`image_triage/ui/apply_ai_decisions_dialog.py`) replaces the old count-only `QMessageBox.question`, showing the actual AI-Pick and Reject photos as thumbnails grouped under "AI Pick → _winners (N)" / "Reject → Recycle (N)", reusing the main grid's shared `ThumbnailManager` (cache-hit first, async request on miss) rather than freezing the dialog decoding hundreds of images synchronously. Keeper/Needs-Review counts stay as plain text (they aren't moving).
+  - **Progress + cancel for the winners move, not the recycle move (your call, matching existing recycle-is-fast precedent elsewhere in the app)**: the AI-Pick → `_winners` loop now goes through the same `transfer_progress.run_move_transfer` path ordinary drag-drop/batch moves already use (via `RecordOpsController.move_records_by_paths`, which gained an optional `batch_id` param so it can join the Apply-AI-Decisions batch instead of minting its own) — real progress dialog, real cancel, safe for NAS-scale winners moves. Reject → recycle is untouched: still a fast per-path loop, no dialog, sharing the same batch_id.
+  - **Cancel-partway correctness verified**, not just assumed: a new test cancels after 1 of 3 winners files actually moved and confirms the moved one is gone from source/visible at destination/undoable, the other two are completely untouched on disk and in the grid, the reject loop still completes normally, the status message reports only the real count, and one Undo reverses the whole mixed batch cleanly.
+  - **Verified**: confirmed independently (not just by the implementing pass) — full suite 1560 passed, only the 2 known-pre-existing-flaky `test_aiculler_cli_reports.py` tests failed; reachability clean (0 orphan modules, 0 unused imports, 0 unreferenced methods). Every other `move_records_by_paths` caller (drag-drop, manual batch move) confirmed unaffected — no `batch_id` argument at those call sites, so they still mint their own as before.
 
 **WI-6.3 AI entry-point consolidation.** *Investigation . M* (Needs D9)
 - **Finding:** I5. About 35 AI actions and 3 overlapping dialogs.
 - **Approach:** Map what each dialog owns, pick canonical flows, hide the rest from menus first (reversible), delete later.
 - **Disposition:** Investigate first.
 - **Unblocked 2026-09-29 (D9 decided: park)** — the actual investigation/consolidation work itself is still open; D9 only resolved the ambiguity of whether AI v4 would be adding new entry points to account for (it won't, while parked).
+- **Status: DONE (2026-09-30).** A full read-only investigation mapped all 40 current AI-related actions (up from the audit's ~35 — expected drift since several cleanup sessions have run) and the real scope of the 3 dialogs (AI Workflow Center, Guided AI Cull, Taste Calibration), finding the Workflow Center's own code had already quietly retired its adapter-training UI (`adapter_panel.hide()`, an explicit "intentionally unreachable" dead code tail) while 6 adapter-training actions remained live via the command palette with no dialog home — plus Taste Calibration and Dispute Current AI Decision both writing to the same per-folder label store with no cross-link between them. Presented the findings and 4 real judgment calls to the user rather than guessing:
+  - **Duplicate "Run" entry point** (`run_ai_culling` "Run Review" toolbar button vs. `open_ai_workflow_center` "AI Workflow Center..." menu item — same slot, different label/icon): **kept the menu item, hid the toolbar button.** Removed `run_ai_culling` from `WORKSPACE_TOOLBAR_DEFAULTS["ai"]` (window.py) only — it stays in `WORKSPACE_TOOLBAR_ALLOWED_ITEMS` so a user can still add it back via toolbar customization, and stays palette-reachable (`ai.run_pipeline`). Fully reversible, per the plan's "hide first" approach.
+  - **Guided AI Cull** (genre-preset picker that feeds the same Cull & Score pipeline, with its own "Open Workflow Center" escape hatch): **kept as its own entry point**, no change — judged to add real value (genre-tuned defaults) distinct from the Workflow Center.
+  - **Taste Calibration and Dispute Current AI Decision**: **declared dead features by the user and removed outright** (not hidden) — `TasteCalibrationDialog` (whole file), its action/slot/palette entry, `build_calibration_pairs`/`CalibrationPair` (sole consumer was the wizard); the `dispute_current_ai_result` action/slot/palette entry (its underlying chord-based dispute path, `_handle_dispute_label_requested`/`grid.dispute_label_requested`, is a separate mechanism and is untouched and still live). `review_ai_disagreements` (an independent filter-navigation action, not a correction mechanism) was explicitly confirmed out of scope and left alone.
+  - **The 6-action adapter-training cluster**: **removed outright** per "remove it all" — `open_ai_data_selection` (Prepare Training Labels, the CSV-writing action that violated `feedback_adapter_labeling_hidden.md`'s "no user-facing CSVs" rule — this also resolves that), `train_ai_ranker`, `train_ai_ranker_from_global`, `evaluate_ai_ranker`, `score_ai_with_trained_ranker`, plus the already-dead Workflow Center scaffolding behind them (the unreachable `_build_steps` tail, the hidden adapter-history side panel, the GUI training-progress-dialog subsystem, the backend `AICullerAdapterTask`/`AICullerGlobalAdapterTask` GUI-task wrappers) — roughly 1,100 lines total across `window.py`, `ai_workflow_center.py`, `aiculler_workflow.py`, and 2 whole dialog files. **`review_ai_adapter_labels` was investigated and explicitly kept, deviating from the literal "all 6"**: it turned out to drive a genuinely live, separate "Adapter Label Review" grid mode (20+ `_adapter_review_mode` guard sites inside `ThumbnailGridView`, a working two-phase rate-then-tag workflow) — not orphaned scaffolding like the other 5. Flagged as its own possible future item if the user still wants it gone, not removed unilaterally on this pass.
+  - **Backend/CLI boundary respected**: confirmed `GlobalAdapterLabelStore`, `aiculler_db_path`/`global_aiculler_db_path`, `latest_adapter_model_version`, `load_adapter_status_summary`, and `delete_adapter_model` are still used by the dispute-label flow, Apply AI Decisions, quick-rerank, or have dedicated backend test coverage independent of the removed GUI actions — kept, not deleted. Checked the standalone `aiculler/` CLI directly: none of the removed names appear there.
+  - **A real post-removal regression caught by the coordinating session, not the removal pass**: the adapter-ranking removal deleted `_rank_aiculler_adapter`'s two call sites of `_kick_off_async_ai_results_reload` without removing the now-fully-orphaned helper itself (plus its sole consumer `_handle_quiet_ai_bundle_reload`) — reachability briefly regressed from 0 to 2 unreferenced methods. Verified via `git diff`/`git show HEAD` that this was a genuine new orphan introduced by this pass (not pre-existing baseline noise, which the removal agent's own report had incorrectly claimed for it), confirmed zero remaining references anywhere, and removed both methods (~85 lines). Reachability back to its 1-item pre-existing baseline (`_register_child_process`, confirmed present in committed `HEAD` already, untouched by this work).
+  - **`docs/deletion_ledger.md`** updated with entries for each removal, including an explicit "NOT removed, and why" row for `review_ai_adapter_labels`.
+  - **Mechanical palette-completeness fixes** (not hides — two genuine gaps the investigation found against WI-7.1's original "every action in the palette" goal): added `show_ai_review_summary` and the 9 `AIStateFilter` quick-filter toggles (Top Picks/Grouped/Pending Review/etc.) to the command palette.
+  - **Verified**: confirmed independently — full suite 1559 passed, only the 2 known-pre-existing-flaky `test_aiculler_cli_reports.py` tests failed; reachability clean (0 orphan modules, 0 unused imports, 1 unreferenced method — the pre-existing baseline item, not a regression).
 
 **WI-6.4 AI v4 disposition.** *Decision* (Needs D9)
 - **Finding:** I4. `quality/` dimension code is referenced only by tests.
@@ -844,36 +860,36 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 
 | Done | ID | Finding | Status | Item |
 |---|---|---|---|---|
-| [ ] | A1 | `MainWindow` god object | B (0.5, 2.x, 4.1) | 4.4 |
+| [x] | A1 | `MainWindow` god object | B (0.5, 2.x, 4.1) | 4.4 (done 2026-09-29 — all 5 slices extracted into controllers; closed in full) |
 | [ ] | A2 | Long functions / 2,677-line stylesheet | D | 8.x (low value now) |
 | [x] | A3 | Stale `CODEBASE_REVIEW.md` | P | 7.3 (done — file no longer exists) |
-| [ ] | A4 | Three AI generations | P | 2.4-2.6 |
-| [ ] | A5, I6 | DINO stack dead | R (D2) | 2.4 |
-| [ ] | A6 | Legacy engine packaged and CI-gated | B | 2.6 |
-| [ ] | A7 | Never-instantiated dialogs | R | 2.4 |
+| [x] | A4 | Three AI generations | P | 2.4-2.6 (done — predates this session's active work, confirmed 2026-09-30: `AICullingPipeline/` doesn't exist, DINO/TrainRankerDialog not in source) |
+| [x] | A5, I6 | DINO stack dead | R (D2) | 2.4 (done — confirmed gone from source 2026-09-30) |
+| [x] | A6 | Legacy engine packaged and CI-gated | B | 2.6 (done — `AICullingPipeline/` confirmed removed 2026-09-30) |
+| [x] | A7 | Never-instantiated dialogs | R | 2.4 (done — `TrainRankerDialog` etc. confirmed gone from source 2026-09-30) |
 | [x] | A8 | Editor engine `sys.path` and packaging | I | 4.6 (done 2026-09-29 — vendored as `image_triage.photo_terminal`) |
 | [x] | A9, E3 | Two mask rasterisers | I / X (intentional split) | 5.2 |
 | [x] | A10 | Two shortcut editors | P | 3.2 |
 | [x] | A11 | Six progress UIs | P (generic only) | 4.2 |
-| [ ] | A12 | "Catalog" naming | X (systems distinct); label only | 7.2 |
+| [x] | A12 | "Catalog" naming | X (systems distinct); label only | 7.2 (done 2026-09-30 — D8: LibraryStore's UI surface renamed to "Library", CatalogRepository's cache UI keeps "Catalog") |
 | [x] | A13 | Four duplicate mechanisms | X (distinct jobs) / I | 4.3 |
 | [ ] | A14 | "Workflow" naming | P | 7.2 |
-| [ ] | A15 | Toolbar systems, dead customizer | R | 2.7 |
-| [ ] | A16 | `plugins/` indirection | X (leave) | none |
+| [x] | A15 | Toolbar systems, dead customizer | R | 2.7 (done — predates this session's active work) |
+| [x] | A16 | `plugins/` indirection | X (leave) | none (intentional, no action needed) |
 | [~] | A17 | UI as state holder | I | 4.5 (partial 2026-09-29 — `mode_tabs` removed; analysis-panel indirection deferred, see write-up) |
-| [ ] | A18 | 39 orphan attributes | R | 2.3 |
-| [ ] | A19 | About 10 persistence layers | X (roles differ); document | 3.4 |
+| [x] | A18 | 39 orphan attributes | R | 2.3 (done — predates this session's active work) |
+| [x] | A19 | About 10 persistence layers | X (roles differ); document | 3.4 (documented, intentional) |
 | [ ] | A20 | Organisation "Codex" | I (D10) | 3.1 (registry identity done 2026-09-27; `QStandardPaths`/cache placement still "Codex", pending 3.5/3.6) |
 | [ ] | A21 | Roaming derived data (corrected N3) | I / D | 3.6 |
 | [x] | A22 | Two annotation sources | I | 3.4 |
 | [x] | A23 | Thumbnail cache unbounded (3.2 GB) | P | 3.5 |
-| [ ] | A24 | Stray tracked root files | R (user-run) | 2.2 |
-| [ ] | A25 | Untracked junk (78 MB exe, onnx) | R (user-run) | 2.2 |
-| [ ] | A26 | Repo inside OneDrive | D (user environment) | none |
-| [ ] | A27 | `pocketdrop.dll` committed | I (D15) | 2.2 |
-| [ ] | A28 | Unreferenced splash images | R (keep v4, packaging) | 2.2 |
+| [x] | A24 | Stray tracked root files | R (user-run) | 2.2 (done 2026-09-30 — see WI-2.2) |
+| [x] | A25 | Untracked junk (78 MB exe, onnx) | R (user-run) | 2.2 (done — confirmed gone 2026-09-30) |
+| [x] | A26 | Repo inside OneDrive | D (user environment) | none (accepted, no action possible) |
+| [x] | A27 | `pocketdrop.dll` committed | I (D15) | 2.2 (resolved by D15 — stays committed) |
+| [x] | A28 | Unreferenced splash images | R (keep v4, packaging) | 2.2 (done — confirmed gone 2026-09-30) |
 | [x] | A29 | `pyproject` package list | I | 4.6 (done 2026-09-29 — `cli_editor`/`photo_terminal` no longer exists as a separate package to list; vendored under the existing `image_triage*` include) |
-| [ ] | A30 | Git stashes / WinUI | B (D11) | 4.4 |
+| [x] | A30 | Git stashes / WinUI | B (D11) | 4.4 (done 2026-09-27 — WinUI stash and branch dropped) |
 
 ### UI/UX
 
@@ -894,10 +910,10 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | Done | ID | Finding | Status | Item |
 |---|---|---|---|---|
 | [x] | I1 | AI results invisible | X (prior decision) + B (D1) | 6.1 (done 2026-09-29 — see WI-6.1's dated write-up) |
-| [ ] | I2 | Apply AI Decisions safety | B (4.1, 6.1) | 6.2 |
+| [x] | I2 | Apply AI Decisions safety | B (4.1, 6.1) | 6.2 (done 2026-09-30 — thumbnail review dialog + progress/cancel on the winners move) |
 | [ ] | I3 | Underused signals | D | 6.5 |
 | [x] | I4 | AI v4 half-built | B (D9) | 6.4 (done 2026-09-29 — D9 decided: park) |
-| [ ] | I5 | Too many AI entry points | I | 6.3 |
+| [x] | I5 | Too many AI entry points | I | 6.3 (done 2026-09-30 — duplicate Run action hidden; Taste Calibration, Dispute AI Decision, and 6 adapter-training actions removed as dead features) |
 
 ### Editor
 
@@ -918,18 +934,18 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | [x] | S3 | Dead keys, orphan registry values | R (never delete registry values) | 2.7, 3.1 |
 | [ ] | S4 | Stubbed `_ai_semantic_sidecar_enabled` | R | 2.5 (investigated in 3.3, deliberately deferred — see log) |
 | [x] | S5 | Missing settings (theme, perf, AI tags) | P | 3.3 |
-| [ ] | S6a | Session preset conflation | B (D5) | 3.4, 7.2 |
-| [ ] | S6b | Winner-copy default | B (D4) | 4.1c |
+| [x] | S6a | Session preset conflation | B (D5) | 3.4, 7.2 (done — "Session" renamed to "Profile" in the UI, WI-3.4) |
+| [x] | S6b | Winner-copy default | B (D4) | 4.1c (done — D4 decided, WI-4.1c implemented async winner copy) |
 | [ ] | S6c | Watch folder on NAS | I | 8.2 |
-| [ ] | S6d | "Processing workers" naming | P | 3.3 |
-| [ ] | S6e | AI ranges' visible effect | B (D1) | 6.1 |
+| [x] | S6d | "Processing workers" naming | P | 3.3 (done — renamed "AI batch size", WI-3.3) |
+| [x] | S6e | AI ranges' visible effect | B (D1) | 6.1 (done — WI-6.1, opt-in AI-tags-in-grid setting) |
 
 ### Performance and reliability
 
 | Done | ID | Finding | Status | Item |
 |---|---|---|---|---|
-| [ ] | P1 | Winner copy on UI thread | B (D4, 4.1) | 4.1c |
-| [ ] | P2 | Apply AI per-record view rebuild (also the move code) | B | 4.1b |
+| [x] | P1 | Winner copy on UI thread | B (D4, 4.1) | 4.1c (done — async winner copy via the annotation worker) |
+| [x] | P2 | Apply AI per-record view rebuild (also the move code) | B | 4.1b (done — batched removal API, one view refresh per batch) |
 | [x] | P3 | Un-mark deletes blindly | I -> P | 1.2 |
 | [x] | P4 | Updater hash optional | I (D14) | 1.3 |
 | [ ] | P5 | Toolbar rebuild 472 ms | P | 8.1 |
@@ -956,8 +972,8 @@ Status key: **P** planned . **I** investigate first . **B** blocked by another i
 | [ ] | N4 | Cache/organisation coupling | I | 3.1, 3.5 |
 | [x] | N5 | "Session" vocabulary | B (D5) | 3.4 |
 | [x] | N6 | Prior product decisions | X | D1 (tentative — see tracker) |
-| [ ] | N9 | The session's own change debt | P | 0.1, 4.1b |
-| [ ] | N10 | Registry orphans | I | 3.1 |
+| [x] | N9 | The session's own change debt | P | 0.1, 4.1b (done — WI-4.1b closed the batching gap this remediation work itself had been carrying) |
+| [x] | N10 | Registry orphans | I | 3.1 (done — identity unified/documented via WI-3.1; orphan registry values intentionally left, never deleted, matching S3's policy) |
 | [ ] | N11 | WinUI `.pyc` leftovers | R (user-run) | 2.2 |
 | [ ] | O1-O9 | Opportunities (AI tags/why, unified stacks, edits everywhere, editor undo and batch, coach, click-select, GPU, faster libraries, Move-to everywhere) | D / B | 6.x, 5.x, 4.3, 8.4 |
 
@@ -1110,7 +1126,7 @@ No code was modified while producing this plan. The only actions were reads (cod
 - Status: waiting on you to run the commands. Nothing was deleted.
 - **D15 decided 2026-09-29 (cross-platform is a kept goal): `pocketdrop.dll` stays committed as-is** — this WI's scope was cleanup, not building the missing Linux/macOS PocketDrop binaries, which is real, separate, not-yet-scheduled work (no build script or compiled `.so`/`.dylib` exists yet, only the Linux/Mac platform source).
 - **Status (2026-09-30): effectively done.** Re-checked every item in this file against the current repo — everything in section A (tracked splash/zip/empty files), and everything in section C (the 76 MB stray installer, `_tmp_*.png` screenshots, the dead `image_triage/engine/` folder, ~1.1 GB of sandbox models/datasets) was already removed outside this session (`git log` shows section A went in commit `763ca17`, "removed unused files"). Section B resolved: `verified.png` (root) — delete, confirmed unreferenced/redundant with the `assets/` copy. `heartbutton.png`/`xbutton.png` — **keep**; not actually D13's concern (D13 was the in-app `generated_prototype.py` prototype, already gone via WI-2.8; these two PNGs are only referenced by the separate, never-decided `scripts/loupe_card_prototype.py`). You decided: delete `scripts/loupe_card_prototype.py`, keep the two PNGs — because you want them actually wired into every real card's favorite/reject icons (see the new note below; today those icons are vector-drawn in `grid_card_renderer.py`, not loaded from these files at all). Handed you the literal command (`git rm "scripts/loupe_card_prototype.py" "verified.png"`) rather than running it myself, per the standing file-deletion rule. WI-2.2 closes once you run it.
-- **New follow-up surfaced, not part of WI-2.2's original scope**: wire `heartbutton.png`/`xbutton.png` into the real card UI, replacing `grid_card_renderer.py`'s `_paint_heart_icon`/`_paint_reject_icon` vector drawing with these PNG assets, across every card style and column count. This is a real UI change the user wants done next, not a hygiene item — pick up as its own small work item.
+- **Follow-up resolved, 2026-10-01 — turned out to already be built.** The user wanted `heartbutton.png`/`xbutton.png` wired into every real card's favorite/reject icons. Checked before writing any code: `grid_card_renderer.py::load_action_icon` (line 38) already loads real PNG artwork for both icons (recolors it per card state, falls back to the vector `_paint_heart_icon`/`_paint_reject_icon` only if the file is missing), used by all 6 `_paint_action_button` call sites across every card size/style. The files it reads — `image_triage/ui/assets/loupe_heart.png`/`loupe_reject.png` — are byte-identical (`cmp`-verified) to the root `heartbutton.png`/`xbutton.png`: someone had already copied these exact assets into place and wired them in. No code changed. The now-redundant root copies were deleted alongside the rest of WI-2.2's cleanup, closing this out as "nothing to build," not a new work item.
 
 ### WI-2.3 Peel dead code: rounds 1-2 DONE (2026-09-26, uncommitted)
 - **Round 1, unused imports: 46 removed, 0 left.** One removal broke 74 tests (`popout_layout_ratios.ratio_px`, re-exported and reached through the alias `popout_ratios`); it was restored and whitelisted, and the analysis now checks for that pattern. The 32 `window.py` imports were mostly the AI-training task classes.

@@ -176,8 +176,6 @@ class TopbarStyleTests(unittest.TestCase):
             "quick_rerank_ai_culling",
             "manage_people",
             "show_ai_review_summary",
-            "taste_calibration",
-            "dispute_current_ai_result",
             "review_ai_disagreements",
             "projects",
             "catalog",

@@ -91,17 +91,10 @@ class MainWindowActions:
     open_ai_report: QAction
     manage_people: QAction
     show_ai_review_summary: QAction
-    taste_calibration: QAction
     review_ai_adapter_labels: QAction
-    open_ai_data_selection: QAction
-    train_ai_ranker: QAction
-    train_ai_ranker_from_global: QAction
-    evaluate_ai_ranker: QAction
-    score_ai_with_trained_ranker: QAction
     next_ai_pick: QAction
     next_unreviewed_ai_pick: QAction
     compare_ai_group: QAction
-    dispute_current_ai_result: QAction
     review_ai_disagreements: QAction
     winner_ladder_mode: QAction
     create_virtual_collection: QAction
@@ -415,36 +408,10 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         open_ai_report=_create_action(window, "Open AI Report", slot=window._open_ai_report),
         manage_people=_create_action(window, "People...", slot=window._open_people_search_dialog),
         show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._show_last_ai_review_summary),
-        taste_calibration=_create_action(
-            window,
-            "Taste Calibration...",
-            slot=window._open_taste_calibration_wizard,
-        ),
         review_ai_adapter_labels=_create_action(
             window,
             "Review Adapter Labels...",
             slot=window._review_aiculler_adapter_labels,
-        ),
-        open_ai_data_selection=_create_action(
-            window,
-            "Prepare Training Labels",
-            slot=window._export_aiculler_ratings,
-        ),
-        train_ai_ranker=_create_action(
-            window,
-            "Train Adapter...",
-            slot=window._train_aiculler_adapter,
-        ),
-        train_ai_ranker_from_global=_create_action(
-            window,
-            "Train Global Adapter...",
-            slot=window._train_aiculler_adapter_from_global_labels,
-        ),
-        evaluate_ai_ranker=_create_action(window, "Evaluate Adapter", slot=window._evaluate_aiculler_adapter),
-        score_ai_with_trained_ranker=_create_action(
-            window,
-            "Rank Folder With Local Adapter",
-            slot=window._rank_aiculler_adapter,
         ),
         next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+N"),
         next_unreviewed_ai_pick=_create_action(
@@ -457,11 +424,6 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Compare Current AI Group",
             slot=window._open_current_ai_group_compare,
             shortcut="Ctrl+Alt+G",
-        ),
-        dispute_current_ai_result=_create_action(
-            window,
-            "Dispute Current AI Decision...",
-            slot=window._dispute_current_ai_result,
         ),
         review_ai_disagreements=_create_action(
             window,
@@ -654,11 +616,5 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         )
         column_group.addAction(action)
         actions.column_actions[count] = action
-
-    actions.dispute_current_ai_result.setToolTip(
-        "Dispute the selected AI result and choose the correct 1-5 label. "
-        "Keyboard path in AI Review: press D, then 1-5."
-    )
-    actions.dispute_current_ai_result.setStatusTip(actions.dispute_current_ai_result.toolTip())
 
     return actions

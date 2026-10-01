@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -59,35 +58,6 @@ _STATUS_COLORS = {
     STATUS_READY: ("#214f7e", "#bcd6f4"),
     STATUS_BLOCKED: ("#5a2a2a", "#f1c4c4"),
 }
-
-
-def _display_adapter_version(model_version: str, *, compact: bool = False) -> str:
-    text = str(model_version or "").strip()
-    if not text:
-        return "unknown"
-    prefix = ""
-    timestamp = text
-    for candidate in ("Global Adapter ", "Adapter "):
-        if text.startswith(candidate):
-            prefix = candidate.strip()
-            timestamp = text[len(candidate):]
-            break
-    parsed = _parse_adapter_timestamp(timestamp)
-    if parsed:
-        date_text, time_text = parsed
-        if compact:
-            return f"{prefix + ' ' if prefix else ''}{date_text} {time_text[:5]}"
-        return f"{prefix + ' ' if prefix else ''}{date_text} {time_text}"
-    return text
-
-
-def _parse_adapter_timestamp(value: str) -> tuple[str, str] | None:
-    text = value.strip()
-    if len(text) == 15 and text[8] == "T" and text[:8].isdigit() and text[9:].isdigit():
-        return f"{text[0:4]}-{text[4:6]}-{text[6:8]}", f"{text[9:11]}:{text[11:13]}:{text[13:15]}"
-    if len(text) == 19 and text[4] == "-" and text[7] == "-" and text[10] == " ":
-        return text[:10], text[11:].replace(".", ":")
-    return None
 
 
 def _int_value(value: object, default: int = 0) -> int:
@@ -472,109 +442,8 @@ class AIWorkflowCenterDialog(QDialog):
         self._pages.setMinimumWidth(390)
         root.addWidget(self._pages, 1)
 
-        adapter_panel = QFrame()
-        adapter_panel.setObjectName("adapterHistoryPanel")
-        adapter_panel.setStyleSheet(
-            "QFrame#adapterHistoryPanel {"
-            " background: #121821;"
-            " border-left: 1px solid rgba(255, 255, 255, 0.05);"
-            "}"
-        )
-        adapter_panel.setFixedWidth(250)
-        adapter_layout = QVBoxLayout(adapter_panel)
-        adapter_layout.setContentsMargins(14, 18, 14, 18)
-        adapter_layout.setSpacing(10)
-        adapter_title = QLabel("Adapters")
-        adapter_title_font = QFont()
-        adapter_title_font.setPointSize(12)
-        adapter_title_font.setBold(True)
-        adapter_title.setFont(adapter_title_font)
-        adapter_layout.addWidget(adapter_title)
-        self._adapter_tabs = QTabWidget()
-        self._adapter_tabs.setObjectName("adapterScopeTabs")
-        self._adapter_tabs.setStyleSheet(
-            "QTabWidget#adapterScopeTabs::pane { border: none; }"
-            "QTabBar::tab {"
-            " background: rgba(255,255,255,0.04); color: #aab6c7;"
-            " border: 1px solid rgba(255,255,255,0.08);"
-            " padding: 5px 12px; margin-right: 4px; border-radius: 5px;"
-            "}"
-            "QTabBar::tab:selected { background: #203b64; color: white; }"
-        )
-        self._local_adapter_summary_label = QLabel("")
-        self._local_adapter_summary_label.setStyleSheet("color: #8d99ac; font-size: 11px;")
-        self._local_adapter_summary_label.setWordWrap(True)
-        self._global_adapter_summary_label = QLabel("")
-        self._global_adapter_summary_label.setStyleSheet("color: #8d99ac; font-size: 11px;")
-        self._global_adapter_summary_label.setWordWrap(True)
-        self._local_adapter_list = self._build_adapter_list()
-        self._global_adapter_list = self._build_adapter_list()
-        local_tab = QWidget()
-        local_layout = QVBoxLayout(local_tab)
-        local_layout.setContentsMargins(0, 8, 0, 0)
-        local_layout.setSpacing(8)
-        local_layout.addWidget(self._local_adapter_summary_label)
-        local_layout.addWidget(self._local_adapter_list, 0)
-        global_tab = QWidget()
-        global_layout = QVBoxLayout(global_tab)
-        global_layout.setContentsMargins(0, 8, 0, 0)
-        global_layout.setSpacing(8)
-        global_layout.addWidget(self._global_adapter_summary_label)
-        global_layout.addWidget(self._global_adapter_list, 0)
-        self._adapter_tabs.addTab(local_tab, "Local")
-        self._adapter_tabs.addTab(global_tab, "Global")
-        self._adapter_tabs.currentChanged.connect(lambda _index: self._handle_adapter_selected(self._current_adapter_row()))
-        adapter_layout.addWidget(self._adapter_tabs, 0)
-        self._local_adapter_list.currentRowChanged.connect(self._handle_adapter_selected)
-        self._global_adapter_list.currentRowChanged.connect(self._handle_adapter_selected)
-        self._adapter_list_style = (
-            "QListWidget#adapterHistoryList {"
-            " background: transparent; border: none;"
-            "} QListWidget#adapterHistoryList::item {"
-            " padding: 8px 8px; margin: 1px 0; border-radius: 5px;"
-            " color: #c4cbd6;"
-            "} QListWidget#adapterHistoryList::item:selected {"
-            " background: rgba(47, 111, 214, 0.25); color: white;"
-            "}"
-        )
-        self._local_adapter_list.setStyleSheet(self._adapter_list_style)
-        self._global_adapter_list.setStyleSheet(self._adapter_list_style)
-        self._delete_adapter_button = QPushButton("Delete Adapter")
-        self._delete_adapter_button.setEnabled(False)
-        self._delete_adapter_button.setStyleSheet(
-            "QPushButton {"
-            " background: rgba(126, 49, 43, 0.72); color: #f3d2ce;"
-            " border: 1px solid rgba(255, 255, 255, 0.12);"
-            " border-radius: 6px; padding: 7px 10px;"
-            "} QPushButton:disabled { background: rgba(255,255,255,0.04); color: #6c7488; }"
-        )
-        self._delete_adapter_button.clicked.connect(self._delete_selected_adapter)
-        adapter_layout.addWidget(self._delete_adapter_button, 0)
-        self._adapter_detail_label = QLabel("")
-        self._adapter_detail_label.setStyleSheet("color: #d4dbe4; font-size: 11px;")
-        self._adapter_detail_label.setWordWrap(True)
-        self._adapter_detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        detail_scroll = QScrollArea()
-        detail_scroll.setWidgetResizable(True)
-        detail_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        detail_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        detail_container = QWidget()
-        detail_layout = QVBoxLayout(detail_container)
-        detail_layout.setContentsMargins(0, 0, 0, 0)
-        detail_layout.addWidget(self._adapter_detail_label)
-        detail_layout.addStretch(1)
-        detail_scroll.setWidget(detail_container)
-        adapter_layout.addWidget(detail_scroll, 1)
-        root.addWidget(adapter_panel, 0)
-        # Adapter training is no longer part of the supported culling workflow.
-        # Keep the legacy widgets alive for old databases, but do not surface
-        # them in the current Workflow Center.
-        adapter_panel.hide()
-
         self._step_keys: list[str] = []
         self._page_widgets: dict[str, _StepPage] = {}
-        self._adapter_models: tuple[dict[str, object], ...] = ()
-        self._global_adapter_models: tuple[dict[str, object], ...] = ()
         self._build_pages()
         self.refresh()
 
@@ -593,14 +462,6 @@ class AIWorkflowCenterDialog(QDialog):
         self.show()
         self.raise_()
         self.activateWindow()
-
-    def _build_adapter_list(self) -> QListWidget:
-        adapter_list = QListWidget()
-        adapter_list.setObjectName("adapterHistoryList")
-        adapter_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        adapter_list.setMinimumHeight(58)
-        adapter_list.setMaximumHeight(190)
-        return adapter_list
 
     def _show_help(self) -> None:
         show_paged_help(
@@ -642,22 +503,6 @@ class AIWorkflowCenterDialog(QDialog):
                 widget.verticalScrollBar().setValue(0)
                 widget.horizontalScrollBar().setValue(0)
 
-    def _handle_adapter_selected(self, row: int) -> None:
-        self._update_adapter_detail(row)
-        self._delete_adapter_button.setEnabled(0 <= row < len(self._active_adapter_models()))
-
-    def _delete_selected_adapter(self) -> None:
-        row = self._current_adapter_row()
-        models = self._active_adapter_models()
-        if row < 0 or row >= len(models):
-            return
-        version = str(models[row].get("model_version") or "").strip()
-        if not version:
-            return
-        handler = getattr(self._window, "_delete_aiculler_adapter", None)
-        if callable(handler):
-            handler(version, scope=self._active_adapter_scope())
-
     def refresh(self) -> None:
         snapshot = self._capture_snapshot()
         folder_text = snapshot.folder_path or "(no folder open)"
@@ -683,123 +528,6 @@ class AIWorkflowCenterDialog(QDialog):
                 colors = _STATUS_COLORS.get(step.status, _STATUS_COLORS[STATUS_BLOCKED])
                 item.setForeground(Qt.GlobalColor.lightGray if step.status == STATUS_BLOCKED else Qt.GlobalColor.white)
                 item.setToolTip(_STATUS_LABELS.get(step.status, ""))
-
-    def _populate_adapter_history(
-        self,
-        adapter_models: tuple[dict[str, object], ...],
-        global_adapter_models: tuple[dict[str, object], ...],
-    ) -> None:
-        selected_versions = {"local": "", "global": ""}
-        current_item = self._local_adapter_list.currentItem()
-        if current_item is not None:
-            selected_versions["local"] = str(current_item.data(Qt.ItemDataRole.UserRole) or "")
-        current_item = self._global_adapter_list.currentItem()
-        if current_item is not None:
-            selected_versions["global"] = str(current_item.data(Qt.ItemDataRole.UserRole) or "")
-        self._adapter_models = adapter_models
-        self._global_adapter_models = global_adapter_models
-        self._populate_adapter_list(
-            self._local_adapter_list,
-            adapter_models,
-            selected_versions["local"],
-            empty_text="No local adapters for this folder yet.",
-        )
-        self._populate_adapter_list(
-            self._global_adapter_list,
-            global_adapter_models,
-            selected_versions["global"],
-            empty_text="No global adapters trained yet.",
-        )
-        self._local_adapter_summary_label.setText(
-            f"{len(adapter_models)} local adapter{'s' if len(adapter_models) != 1 else ''}"
-            if adapter_models
-            else "No local adapters for this folder yet."
-        )
-        self._global_adapter_summary_label.setText(
-            f"{len(global_adapter_models)} global adapter{'s' if len(global_adapter_models) != 1 else ''}"
-            if global_adapter_models
-            else "No global adapters trained yet."
-        )
-        self._update_adapter_detail(self._current_adapter_row())
-        self._delete_adapter_button.setEnabled(0 <= self._current_adapter_row() < len(self._active_adapter_models()))
-
-    def _populate_adapter_list(
-        self,
-        adapter_list: QListWidget,
-        adapter_models: tuple[dict[str, object], ...],
-        selected_version: str,
-        *,
-        empty_text: str,
-    ) -> None:
-        adapter_list.clear()
-        selected_row = 0
-        for index, model in enumerate(adapter_models):
-            version = str(model.get("model_version") or "")
-            score_fit = model.get("score_fit_percent", model.get("accuracy_percent"))
-            score_fit_text = f"{float(score_fit):.1f}%" if isinstance(score_fit, (int, float)) else "n/a"
-            item = QListWidgetItem(f"{_display_adapter_version(version, compact=True)}\nScore Fit {score_fit_text}")
-            item.setData(Qt.ItemDataRole.UserRole, version)
-            item.setToolTip(_display_adapter_version(version))
-            adapter_list.addItem(item)
-            if version == selected_version:
-                selected_row = index
-        list_height = 58 if not adapter_models else max(58, min(190, len(adapter_models) * 62 + 12))
-        adapter_list.setMinimumHeight(list_height)
-        adapter_list.setMaximumHeight(list_height)
-        if adapter_models:
-            adapter_list.setCurrentRow(selected_row)
-
-    def _active_adapter_scope(self) -> str:
-        return "global" if self._adapter_tabs.currentIndex() == 1 else "local"
-
-    def _active_adapter_models(self) -> tuple[dict[str, object], ...]:
-        return self._global_adapter_models if self._active_adapter_scope() == "global" else self._adapter_models
-
-    def _active_adapter_list(self) -> QListWidget:
-        return self._global_adapter_list if self._active_adapter_scope() == "global" else self._local_adapter_list
-
-    def _current_adapter_row(self) -> int:
-        return self._active_adapter_list().currentRow()
-
-    def _update_adapter_detail(self, row: int) -> None:
-        models = self._active_adapter_models()
-        if row < 0 or row >= len(models):
-            scope_label = "global" if self._active_adapter_scope() == "global" else "local"
-            self._adapter_detail_label.setText(f"Train a {scope_label} adapter to see score fit, MAE, and scored image counts here.")
-            return
-        model = models[row]
-        score_fit = model.get("score_fit_percent", model.get("accuracy_percent"))
-        holdout_mae = model.get("holdout_mae")
-        train_mae = model.get("train_mae")
-        failure_rate = holdout_mae if isinstance(holdout_mae, (int, float)) else train_mae
-        score_fit_text = f"{float(score_fit):.1f}%" if isinstance(score_fit, (int, float)) else "n/a"
-        failure_text = f"{float(failure_rate) * 100.0:.1f}%" if isinstance(failure_rate, (int, float)) else "n/a"
-        holdout_text = f"{float(holdout_mae):.4f}" if isinstance(holdout_mae, (int, float)) else "n/a"
-        train_text = f"{float(train_mae):.4f}" if isinstance(train_mae, (int, float)) else "n/a"
-        details = [
-            f"Version: {_display_adapter_version(str(model.get('model_version') or 'unknown'))}",
-            f"Score Fit: {score_fit_text}",
-            f"MAE as percent: {failure_text}",
-            f"Holdout MAE: {holdout_text}",
-            f"Train MAE: {train_text}",
-            f"Scored images: {int(model.get('scored_count') or 0)}",
-        ]
-        validation_health = model.get("validation_health")
-        if isinstance(validation_health, dict) and validation_health:
-            status = str(validation_health.get("status") or "").strip()
-            if status:
-                details.append(f"Validation health: {status.replace('_', ' ').title()}")
-            reasons = validation_health.get("reasons")
-            if isinstance(reasons, list) and reasons:
-                details.append(f"Reason: {'; '.join(str(reason) for reason in reasons if reason)}")
-        origin_counts = model.get("label_origin_counts")
-        if isinstance(origin_counts, dict) and origin_counts:
-            origin_text = ", ".join(f"{key}: {value}" for key, value in sorted(origin_counts.items()))
-            details.append(f"Labels: {origin_text}")
-        created_at = str(model.get("created_at") or "")
-        if created_at:
-            details.append(f"Trained: {created_at}")
-        self._adapter_detail_label.setText("\n".join(details))
 
     def _find_item(self, key: str) -> QListWidgetItem | None:
         for row in range(self._step_list.count()):
@@ -1113,198 +841,9 @@ class AIWorkflowCenterDialog(QDialog):
         )
         return steps
 
-        # Legacy adapter workflow retained below for database compatibility only.
-        # It is intentionally unreachable from the current Workflow Center.
-        # Label step is "done" if any usable folder/global training labels exist.
-        # The DB ratings table is only populated after successful training, so
-        # saved labels outside that table need to count here too.
-        label_status = STATUS_BLOCKED
-        if index_status == STATUS_DONE:
-            label_status = STATUS_DONE if snap.has_trainable_labels else STATUS_READY
-        label_metrics = []
-        if snap.pending_label_count:
-            label_metrics.append(("Training Labels Available", str(snap.pending_label_count)))
-        label_metrics.append(("Trained-on labels", str(snap.label_count)))
-        label_metrics.append(("Global labels", str(snap.global_label_count)))
-        label_metrics.append(("Matching global labels", str(snap.global_matching_label_count)))
-        if snap.global_matching_dispute_count:
-            label_metrics.append(("Matching disputes", str(snap.global_matching_dispute_count)))
-        label_metrics.append(("Telemetry overrides", str(snap.telemetry_override_count)))
-        label_metrics.append(("Final usable overrides", str(snap.telemetry_final_usable_override_count)))
-        label_metrics.append(("Ignored/intermediate", str(snap.telemetry_ignored_intermediate_override_count)))
-        label_metrics.append(("Latest override", snap.telemetry_latest_override_created_at or "N/A"))
-        label_metrics.append(("Cluster run", snap.cluster_run_id or "—"))
-        steps["label"] = StepSpec(
-            key="label",
-            title="Review Labels",
-            subtitle="Hand-rate a sampled set of candidates to teach the adapter.",
-            description=(
-                "Opens a filtered grid showing the most useful candidates "
-                "(proportional category coverage + technical-disagreement). Use "
-                "keys 1–5 (best / strong / maybe / weak / reject) — auto-advance "
-                "moves to the next un-labeled candidate automatically. You don't "
-                "need to label every candidate; a couple of dozen across at least "
-                "two rating values is enough to train."
-            ),
-            status=label_status,
-            metrics=label_metrics,
-            actions=[
-                ActionSpec(
-                    label="Open Review Labels",
-                    callback=lambda: self._invoke("_review_aiculler_adapter_labels"),
-                    primary=True,
-                    enabled=snap.db_exists and snap.indexed_count > 0,
-                ),
-                ActionSpec(
-                    label="Prepare Ratings CSV",
-                    callback=lambda: self._invoke("_export_aiculler_ratings"),
-                    enabled=snap.db_exists,
-                ),
-            ],
-        )
-
-        train_status = STATUS_BLOCKED
-        if label_status == STATUS_DONE:
-            train_status = STATUS_DONE if snap.adapter_version else STATUS_READY
-        train_metrics: list[tuple[str, str]] = []
-        if snap.pending_label_count:
-            train_metrics.append(("Training Labels Available", str(snap.pending_label_count)))
-        train_metrics.append(("Trained-on labels", str(snap.label_count)))
-        train_metrics.append(("Global labels", str(snap.global_label_count)))
-        train_metrics.append(("Telemetry overrides", str(snap.telemetry_override_count)))
-        train_metrics.append(("Final usable overrides", str(snap.telemetry_final_usable_override_count)))
-        train_metrics.append(("Ignored/intermediate", str(snap.telemetry_ignored_intermediate_override_count)))
-        train_metrics.append(("Latest override", snap.telemetry_latest_override_created_at or "N/A"))
-        train_metrics.append(("Local adapter", _display_adapter_version(snap.adapter_version) if snap.adapter_version else "untrained"))
-        train_metrics.append(("Global adapter", _display_adapter_version(snap.global_adapter_version) if snap.global_adapter_version else "untrained"))
-        if snap.adapter_created_at:
-            train_metrics.append(("Trained at", snap.adapter_created_at))
-        if snap.train_mae is not None:
-            train_metrics.append(("Train MAE", f"{snap.train_mae:.4f}"))
-        if snap.train_rank_lift is not None:
-            train_metrics.append(("Train rank lift", f"{snap.train_rank_lift:+.3f}"))
-        steps["train"] = StepSpec(
-            key="train",
-            title="Train Adapter",
-            subtitle="Fit a personal model from your saved labels.",
-            description=(
-                "Trains the adapter on every label saved for this folder — "
-                "both the available folder training labels and any "
-                "previously-trained labels in the DB. Training is fast "
-                "(a few seconds per hundred labels) and produces a new model "
-                "version you can evaluate or rank with."
-            ),
-            status=train_status,
-            metrics=train_metrics,
-            actions=[
-                ActionSpec(
-                    label="Train Adapter",
-                    callback=lambda: self._invoke("_train_aiculler_adapter"),
-                    primary=True,
-                    enabled=snap.db_exists and snap.total_label_count > 0,
-                ),
-                ActionSpec(
-                    label="Train Global Adapter",
-                    callback=lambda: self._invoke("_train_aiculler_adapter_from_global_labels"),
-                    enabled=snap.can_train_global_adapter,
-                    tooltip=(
-                        "Needs at least two global labels with two different rating values."
-                        if not snap.can_train_global_adapter
-                        else ""
-                    ),
-                ),
-            ],
-        )
-
-        evaluate_status = STATUS_BLOCKED
-        if train_status == STATUS_DONE:
-            evaluate_status = STATUS_DONE if snap.holdout_mae is not None else STATUS_READY
-        eval_metrics: list[tuple[str, str]] = []
-        if snap.holdout_mae is not None:
-            eval_metrics.append(("Holdout MAE", f"{snap.holdout_mae:.4f}"))
-        if snap.train_mae is not None and snap.holdout_mae is not None:
-            eval_metrics.append((
-                "Generalization gap",
-                f"{(snap.holdout_mae - snap.train_mae):+.4f}",
-            ))
-        if not eval_metrics:
-            eval_metrics.append(("Evaluation", "Not run yet."))
-        steps["evaluate"] = StepSpec(
-            key="evaluate",
-            title="Evaluate",
-            subtitle="Check the adapter on stored labels and a held-out slice.",
-            description=(
-                "Computes mean absolute error and rank lift across train and "
-                "holdout folds. Aim for a small gap between train and holdout — a "
-                "blowout usually means too few or too inconsistent labels."
-            ),
-            status=evaluate_status,
-            metrics=eval_metrics,
-            actions=[
-                ActionSpec(
-                    label="Evaluate Adapter",
-                    callback=lambda: self._invoke("_evaluate_aiculler_adapter"),
-                    primary=True,
-                    enabled=bool(snap.adapter_version),
-                ),
-            ],
-        )
-
-        active_adapter_version = snap.global_adapter_version if self._active_adapter_scope() == "global" else snap.adapter_version
-        active_adapter_count = len(snap.global_adapter_models) if self._active_adapter_scope() == "global" else len(snap.adapter_models)
-        apply_status = STATUS_BLOCKED
-        if active_adapter_version:
-            apply_status = STATUS_DONE if snap.scored_count > 0 else STATUS_READY
-        apply_metrics = [
-            ("Adapter scope", self._active_adapter_scope().title()),
-            ("Adapter version", active_adapter_version or "untrained"),
-            ("Adapter-scored images", str(snap.scored_count) if snap.scored_count else "—"),
-        ]
-        steps["apply"] = StepSpec(
-            key="apply",
-            title="Rank & Apply",
-            subtitle="Score the folder with your adapter, then act on the results.",
-            description=(
-                "Ranks the current folder with the trained adapter and writes "
-                "fresh GUI exports. From there you can move the top picks into "
-                "your winners folder, sort by AI category, or push rejects to "
-                "the recycle bin. If the AI is wrong on a card, use Dispute AI "
-                "in AI Review to save your correction as a stronger adapter "
-                "training label."
-            ),
-            status=apply_status,
-            metrics=apply_metrics,
-            actions=[
-                ActionSpec(
-                    label="Rank with Adapter",
-                    callback=self._rank_selected_adapter,
-                    primary=True,
-                    enabled=bool(active_adapter_version and active_adapter_count),
-                ),
-                ActionSpec(
-                    label="Apply AI Decisions",
-                    callback=lambda: self._invoke("_apply_ai_culling"),
-                    enabled=snap.scored_count > 0,
-                ),
-                ActionSpec(
-                    label="Sort Into Categories",
-                    callback=lambda: self._invoke("_sort_images_into_semantic_folders"),
-                    enabled=snap.scored_count > 0,
-                ),
-            ],
-        )
-        return steps
-
     def _invoke(self, slot_name: str) -> None:
         slot = getattr(self._window, slot_name, None)
         if not callable(slot):
             return
         slot()
-        self.refresh()
-
-    def _rank_selected_adapter(self) -> None:
-        slot = getattr(self._window, "_rank_aiculler_adapter", None)
-        if not callable(slot):
-            return
-        slot(scope=self._active_adapter_scope())
         self.refresh()
