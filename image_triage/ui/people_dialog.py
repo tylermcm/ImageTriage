@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import lru_cache
 
 import sqlite3
@@ -919,6 +920,190 @@ class _PersonCard(QFrame):
 
 
 # --------------------------------------------------------------------------
+# Stylesheet
+# --------------------------------------------------------------------------
+# The dialog styles itself from its palette. ``_people_stylesheet`` joins the
+# section functions below, in order, one blank line apart; the exact text is
+# pinned by ``tests/test_stylesheet_golden.py``.
+
+
+@dataclass(frozen=True, slots=True)
+class _PeopleColors:
+    """Colours the dialog stylesheet uses, derived from the palette as CSS hex strings."""
+
+    text: str
+    muted: str
+    mid: str
+    accent: str
+    base: str
+    field_bg: str
+    subtle: str
+    segment_checked: str
+    card_gradient: str
+    card_hover_gradient: str
+    card_hover_border: str
+    band: str
+    handle: str
+    handle_hover: str
+    done_hover: str
+
+
+def _people_colors(palette: QPalette) -> _PeopleColors:
+    base = palette.color(QPalette.ColorRole.Base)
+    window = palette.color(QPalette.ColorRole.Window)
+    text = palette.color(QPalette.ColorRole.Text)
+    mid = palette.color(QPalette.ColorRole.Mid)
+    hl = palette.color(QPalette.ColorRole.Highlight)
+    muted = palette.color(QPalette.ColorRole.PlaceholderText).name()
+    subtle = _blend(base, text, 0.10).name()  # faint normal border
+    # Each card carries a soft top-left-to-bottom-right sheen so the grid
+    # reads as a set of lit surfaces rather than flat rectangles.
+    card_top = _blend(base, text, 0.055).name()
+    card_bottom = _blend(base, window, 0.55).name()
+    card_hover_top = _blend(base, text, 0.10).name()
+    return _PeopleColors(
+        text=text.name(),
+        muted=muted,
+        mid=mid.name(),
+        accent=hl.name(),
+        base=base.name(),
+        field_bg=_blend(base, text, 0.07).name(),
+        subtle=subtle,
+        segment_checked=_blend(base, text, 0.16).name(),
+        card_gradient=(
+            f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {card_top}, stop:1 {card_bottom})"
+        ),
+        card_hover_gradient=(
+            f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {card_hover_top}, stop:1 {card_bottom})"
+        ),
+        card_hover_border=_blend(base, hl, 0.5).name(),
+        band=_blend(window, QColor(0, 0, 0), 0.22).name(),
+        # Translucent so the scroll bar reads as a hint rather than a fixture.
+        handle=QColor(text.red(), text.green(), text.blue(), 48).name(QColor.NameFormat.HexArgb),
+        handle_hover=QColor(text.red(), text.green(), text.blue(), 96).name(
+            QColor.NameFormat.HexArgb
+        ),
+        done_hover=_blend(QColor(_DONE_BLUE), QColor("#ffffff"), 0.14).name(),
+    )
+
+
+def _people_header_rules(c: _PeopleColors) -> str:
+    """Title, stats and empty-state labels, the scan progress bar and the search field."""
+    return f"""\
+            QLabel#peopleTitle {{ color: {c.text}; font-size: 20px; font-weight: 700; }}
+            QLabel#peopleStats {{ color: {c.muted}; font-size: 12px; }}
+            QLabel#peopleEmpty {{ color: {c.muted}; font-size: 13px; }}
+            QLabel#switchLabel {{ color: {c.text}; font-size: 12px; }}
+            QProgressBar#scanProgress {{ background: {c.mid}; border: none; border-radius: 1px; }}
+            QProgressBar#scanProgress::chunk {{ background: {c.accent}; border-radius: 1px; }}
+
+            QLineEdit#searchEdit {{
+                background: {c.field_bg}; border: 1px solid {c.subtle}; border-radius: 9px;
+                padding: 0px 10px; color: {c.text}; font-size: 14px;
+            }}
+            QLineEdit#searchEdit:focus {{ border-color: {c.accent}; }}"""
+
+
+def _people_segmented_control_rules(c: _PeopleColors) -> str:
+    """The segmented filter control."""
+    return f"""\
+            QFrame#segTrack {{ background: {c.field_bg}; border: 1px solid {c.subtle}; border-radius: 18px; }}
+            QPushButton#segButton {{
+                padding: 6px 18px; border: 1px solid transparent;
+                border-radius: {_SEGMENT_BTN_H // 2}px;
+                background-color: transparent; color: {c.muted}; font-size: 12px; min-width: 0px;
+            }}
+            QPushButton#segButton:hover {{ color: {c.text}; }}
+            QPushButton#segButton:checked {{
+                color: {c.text}; font-weight: 600;
+                border: 1px solid transparent;
+                border-radius: {_SEGMENT_BTN_H // 2}px;
+                background-color: {c.segment_checked};
+            }}"""
+
+
+def _people_card_rules(c: _PeopleColors) -> str:
+    """Person cards, their name button and field, and the hover preview."""
+    return f"""\
+            QFrame#personCard {{
+                background: {c.card_gradient}; border: 1px solid {c.subtle}; border-radius: 14px;
+            }}
+            QFrame#personCard:hover {{
+                background: {c.card_hover_gradient}; border-color: {c.card_hover_border};
+            }}
+            QFrame#personCard[focused="true"] {{ border: 1px dashed {c.accent}; }}
+            QFrame#personCard[selected="true"] {{ border: 2px solid {c.accent}; }}
+            QPushButton#nameButton {{ border: none; background: transparent; padding: 2px 2px;
+                font-size: 15px; font-weight: 600; color: {c.text}; min-width: 0px; text-align: center; }}
+            QLineEdit#nameEdit {{
+                background: {c.field_bg}; border: 1px solid {c.subtle}; border-radius: 7px;
+                color: {c.text}; font-size: 12px; padding: 2px 8px;
+            }}
+            QLineEdit#nameEdit:focus {{ border-color: {c.accent}; }}
+            QLabel#personCount {{ color: {c.muted}; font-size: 12px; }}
+
+            QFrame#hoverPreview {{ background: {c.base}; border: 1px solid {c.accent}; border-radius: 12px; }}"""
+
+
+def _people_footer_and_button_rules(c: _PeopleColors) -> str:
+    """The footer band and the dialog's buttons."""
+    return f"""\
+            QFrame#footerBand {{ background: {c.band}; border: none;
+                border-top: 1px solid {c.subtle}; }}
+            QLabel#undoLabel {{ color: {c.muted}; font-size: 12px; }}
+
+            QPushButton {{ padding: 8px 18px; min-width: 92px; border-radius: 8px;
+                border: 1px solid {c.mid}; background: transparent; color: {c.text}; font-size: 13px; }}
+            QPushButton:hover {{ border-color: {c.accent}; }}
+            QPushButton:disabled {{ color: {c.muted}; border-color: {c.subtle}; }}
+            QPushButton#actionButton {{
+                background: {c.field_bg}; border: 1px solid {c.subtle}; padding: 8px 16px; font-size: 13px;
+            }}
+            QPushButton#actionButton:hover {{ border-color: {c.accent}; }}
+            QPushButton#doneButton {{
+                background: {_DONE_BLUE}; color: #ffffff; border: none; font-weight: 700;
+                font-size: 13px; letter-spacing: 1px; padding: 9px 18px; border-radius: 9px;
+                min-width: 150px; max-width: 150px;
+            }}
+            QPushButton#doneButton:hover {{
+                background: {c.done_hover};
+            }}
+            QPushButton#scanButton {{ padding: 7px 14px; }}"""
+
+
+def _people_scroll_rules(c: _PeopleColors) -> str:
+    """The scroll area and its scroll bar."""
+    return f"""\
+            QScrollArea {{ background: transparent; }}
+            QScrollBar:vertical {{
+                background: transparent; width: {_SCROLLBAR_W}px; margin: 0px; border: none;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {c.handle}; border: none;
+                border-radius: {_SCROLLBAR_W // 2}px; min-height: 40px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background-color: {c.handle_hover}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}"""
+
+
+_PEOPLE_STYLESHEET_SECTIONS: tuple[Callable[[_PeopleColors], str], ...] = (
+    _people_header_rules,
+    _people_segmented_control_rules,
+    _people_card_rules,
+    _people_footer_and_button_rules,
+    _people_scroll_rules,
+)
+
+
+def _people_stylesheet(palette: QPalette) -> str:
+    """The People dialog stylesheet for ``palette``."""
+    colors = _people_colors(palette)
+    sections = "\n\n".join(section(colors) for section in _PEOPLE_STYLESHEET_SECTIONS)
+    return "\n" + sections + "\n        "
+
+
+# --------------------------------------------------------------------------
 # Dialog
 # --------------------------------------------------------------------------
 class PeopleSearchDialog(QDialog):
@@ -1191,116 +1376,7 @@ class PeopleSearchDialog(QDialog):
 
     # -- styling -----------------------------------------------------------
     def _stylesheet(self) -> str:
-        pal = self.palette()
-        base = pal.color(QPalette.ColorRole.Base)
-        window = pal.color(QPalette.ColorRole.Window)
-        text = pal.color(QPalette.ColorRole.Text)
-        mid = pal.color(QPalette.ColorRole.Mid)
-        hl = pal.color(QPalette.ColorRole.Highlight)
-        on_hl = pal.color(QPalette.ColorRole.HighlightedText).name()
-        muted = pal.color(QPalette.ColorRole.PlaceholderText).name()
-        subtle = _blend(base, text, 0.10).name()  # faint normal border
-        tint = QColor(hl.red(), hl.green(), hl.blue(), 28).name(QColor.NameFormat.HexArgb)
-        accent = hl.name()
-        # Each card carries a soft top-left-to-bottom-right sheen so the grid
-        # reads as a set of lit surfaces rather than flat rectangles.
-        card_top = _blend(base, text, 0.055).name()
-        card_bottom = _blend(base, window, 0.55).name()
-        card_gradient = (
-            f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {card_top}, stop:1 {card_bottom})"
-        )
-        card_hover_top = _blend(base, text, 0.10).name()
-        card_hover_gradient = (
-            f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {card_hover_top}, stop:1 {card_bottom})"
-        )
-        band = _blend(window, QColor(0, 0, 0), 0.22).name()
-        # Translucent so the bar reads as a hint rather than a fixture.
-        handle = QColor(text.red(), text.green(), text.blue(), 48).name(QColor.NameFormat.HexArgb)
-        handle_hover = QColor(text.red(), text.green(), text.blue(), 96).name(
-            QColor.NameFormat.HexArgb
-        )
-        field = _blend(base, text, 0.07).name()
-        return f"""
-            QLabel#peopleTitle {{ color: {text.name()}; font-size: 20px; font-weight: 700; }}
-            QLabel#peopleStats {{ color: {muted}; font-size: 12px; }}
-            QLabel#peopleEmpty {{ color: {muted}; font-size: 13px; }}
-            QLabel#switchLabel {{ color: {text.name()}; font-size: 12px; }}
-            QProgressBar#scanProgress {{ background: {mid.name()}; border: none; border-radius: 1px; }}
-            QProgressBar#scanProgress::chunk {{ background: {accent}; border-radius: 1px; }}
-
-            QLineEdit#searchEdit {{
-                background: {field}; border: 1px solid {subtle}; border-radius: 9px;
-                padding: 0px 10px; color: {text.name()}; font-size: 14px;
-            }}
-            QLineEdit#searchEdit:focus {{ border-color: {accent}; }}
-
-            QFrame#segTrack {{ background: {field}; border: 1px solid {subtle}; border-radius: 18px; }}
-            QPushButton#segButton {{
-                padding: 6px 18px; border: 1px solid transparent;
-                border-radius: {_SEGMENT_BTN_H // 2}px;
-                background-color: transparent; color: {muted}; font-size: 12px; min-width: 0px;
-            }}
-            QPushButton#segButton:hover {{ color: {text.name()}; }}
-            QPushButton#segButton:checked {{
-                color: {text.name()}; font-weight: 600;
-                border: 1px solid transparent;
-                border-radius: {_SEGMENT_BTN_H // 2}px;
-                background-color: {_blend(base, text, 0.16).name()};
-            }}
-
-            QFrame#personCard {{
-                background: {card_gradient}; border: 1px solid {subtle}; border-radius: 14px;
-            }}
-            QFrame#personCard:hover {{
-                background: {card_hover_gradient}; border-color: {_blend(base, hl, 0.5).name()};
-            }}
-            QFrame#personCard[focused="true"] {{ border: 1px dashed {accent}; }}
-            QFrame#personCard[selected="true"] {{ border: 2px solid {accent}; }}
-            QPushButton#nameButton {{ border: none; background: transparent; padding: 2px 2px;
-                font-size: 15px; font-weight: 600; color: {text.name()}; min-width: 0px; text-align: center; }}
-            QLineEdit#nameEdit {{
-                background: {field}; border: 1px solid {subtle}; border-radius: 7px;
-                color: {text.name()}; font-size: 12px; padding: 2px 8px;
-            }}
-            QLineEdit#nameEdit:focus {{ border-color: {accent}; }}
-            QLabel#personCount {{ color: {muted}; font-size: 12px; }}
-
-            QFrame#hoverPreview {{ background: {base.name()}; border: 1px solid {accent}; border-radius: 12px; }}
-
-            QFrame#footerBand {{ background: {band}; border: none;
-                border-top: 1px solid {subtle}; }}
-            QLabel#undoLabel {{ color: {muted}; font-size: 12px; }}
-
-            QPushButton {{ padding: 8px 18px; min-width: 92px; border-radius: 8px;
-                border: 1px solid {mid.name()}; background: transparent; color: {text.name()}; font-size: 13px; }}
-            QPushButton:hover {{ border-color: {accent}; }}
-            QPushButton:disabled {{ color: {muted}; border-color: {subtle}; }}
-            QPushButton#actionButton {{
-                background: {field}; border: 1px solid {subtle}; padding: 8px 16px; font-size: 13px;
-            }}
-            QPushButton#actionButton:hover {{ border-color: {accent}; }}
-            QPushButton#doneButton {{
-                background: {_DONE_BLUE}; color: #ffffff; border: none; font-weight: 700;
-                font-size: 13px; letter-spacing: 1px; padding: 9px 18px; border-radius: 9px;
-                min-width: 150px; max-width: 150px;
-            }}
-            QPushButton#doneButton:hover {{
-                background: {_blend(QColor(_DONE_BLUE), QColor("#ffffff"), 0.14).name()};
-            }}
-            QPushButton#scanButton {{ padding: 7px 14px; }}
-
-            QScrollArea {{ background: transparent; }}
-            QScrollBar:vertical {{
-                background: transparent; width: {_SCROLLBAR_W}px; margin: 0px; border: none;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {handle}; border: none;
-                border-radius: {_SCROLLBAR_W // 2}px; min-height: 40px;
-            }}
-            QScrollBar::handle:vertical:hover {{ background-color: {handle_hover}; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-        """
+        return _people_stylesheet(self.palette())
 
     def _sync_header_control_heights(self) -> None:
         """Match the search field to the Rescan button exactly.

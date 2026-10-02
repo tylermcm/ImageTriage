@@ -178,8 +178,9 @@ def _create_action(
     return action
 
 
-def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
-    actions = MainWindowActions(
+def _file_actions(window: "MainWindow") -> dict[str, QAction]:
+    """File menu, folder management, window layout and exit."""
+    return dict(
         open_folder=_create_action(
             window,
             "Open Folder...",
@@ -209,6 +210,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         ),
         reset_layout=_create_action(window, "Reset Window Layout", slot=window._reset_window_layout),
         exit_app=_create_action(window, "Exit", slot=window.close),
+    )
+
+
+def _edit_and_batch_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Undo, rename, the batch tools and archive extraction."""
+    return dict(
         undo=_create_action(
             window,
             "Undo",
@@ -235,6 +242,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             shortcut="Ctrl+Shift+C",
         ),
         extract_archive=_create_action(window, "Extract Archive...", slot=window._extract_archive_prompt),
+    )
+
+
+def _selection_review_actions(window: "MainWindow") -> dict[str, QAction]:
+    """What happens to the selected images, and opening them elsewhere."""
+    return dict(
         accept_selection=_create_action(window, "Mark Winner", slot=window._accept_selected_records),
         reject_selection=_create_action(window, "Reject Selection", slot=window._reject_selected_records),
         keep_selection=_create_action(window, "Move Selection To _keep", slot=window._keep_selected_records),
@@ -254,6 +267,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         open_preview=_create_action(window, "Open Preview", slot=window._open_current_preview),
         reveal_in_explorer=_create_action(window, "Reveal In File Explorer", slot=window._reveal_current_selection),
         open_in_photoshop=_create_action(window, "Open In Photoshop", slot=window._open_selected_in_photoshop),
+    )
+
+
+def _view_toggle_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Compare, auto-advance, smart groups and stacks, and hidden folders."""
+    return dict(
         compare_mode=_create_action(
             window,
             "Compare",
@@ -285,6 +304,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=window._handle_show_hidden_folders_toggled,
             checkable=True,
         ),
+    )
+
+
+def _layout_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Grid and details views, details row density and navigation, and Zen mode."""
+    return dict(
         grid_view=_create_action(
             window,
             "Grid View",
@@ -333,6 +358,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             checkable=True,
             shortcut="F11",
         ),
+    )
+
+
+def _ai_setup_actions(window: "MainWindow") -> dict[str, QAction]:
+    """AI runtime and model installation, repair and diagnostics."""
+    return dict(
         install_ai_runtime=_create_action(
             window,
             "Set Up AI Runtime...",
@@ -363,6 +394,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Uninstall AI Runtime & Models...",
             slot=window._uninstall_ai_components,
         ),
+    )
+
+
+def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Running, applying and loading AI culling results."""
+    return dict(
         guided_ai_cull_preferences=_create_action(
             window,
             "Guided AI Cull...",
@@ -413,6 +450,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Review Adapter Labels...",
             slot=window._review_aiculler_adapter_labels,
         ),
+    )
+
+
+def _ai_review_tool_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Jumping between and comparing AI picks."""
+    return dict(
         next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+N"),
         next_unreviewed_ai_pick=_create_action(
             window,
@@ -436,6 +479,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=window._open_winner_ladder,
             shortcut="Ctrl+Alt+W",
         ),
+    )
+
+
+def _collection_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Virtual collections."""
+    return dict(
         create_virtual_collection=_create_action(
             window,
             "Create Collection...",
@@ -456,6 +505,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Delete Collection...",
             slot=window._delete_virtual_collection,
         ),
+    )
+
+
+def _catalog_actions(window: "MainWindow") -> dict[str, QAction]:
+    """The cross-folder library catalog."""
+    return dict(
         browse_catalog=_create_action(
             window,
             "Browse Library...",
@@ -486,6 +541,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Rebuild Open Folder Cache",
             slot=window._rebuild_current_folder_catalog_cache,
         ),
+    )
+
+
+def _delivery_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Sharing and handing images off."""
+    return dict(
         share_to_phone=_create_action(
             window,
             "Send to PocketDrop",
@@ -510,6 +571,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=window._open_best_of_set_builder,
             shortcut="Ctrl+Alt+B",
         ),
+    )
+
+
+def _workspace_and_tool_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Keyboard shortcuts, workspace presets/toolbar, the command palette and diagnostics."""
+    return dict(
         keyboard_shortcuts=_create_action(
             window,
             "Keyboard Shortcuts...",
@@ -544,10 +611,22 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             "Open Performance Log Folder",
             slot=window._open_performance_log_folder,
         ),
+    )
+
+
+def _filter_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Advanced filters and saved searches."""
+    return dict(
         advanced_filters=_create_action(window, "Advanced Filters...", slot=window._open_advanced_filters_dialog),
         save_filter_preset=_create_action(window, "Save Current Search...", slot=window._save_current_filter_preset),
         delete_filter_preset=_create_action(window, "Delete Saved Search", slot=window._delete_current_filter_preset),
         clear_filters=_create_action(window, "Clear Filters", slot=window._clear_record_filters, shortcut="Ctrl+Shift+X"),
+    )
+
+
+def _help_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Help menu entries and the update check."""
+    return dict(
         documentation=_create_action(window, "Documentation", slot=window._show_documentation, shortcut="F1"),
         keyboard_help=_create_action(window, "Quick Help", slot=window._show_help),
         ai_guide=_create_action(window, "AI Guide", slot=window._show_ai_guide),
@@ -557,8 +636,12 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
         about=_create_action(window, "About Image Triage", slot=window._show_about_dialog),
     )
 
-    appearance_group = QActionGroup(window)
-    appearance_group.setExclusive(True)
+
+def _appearance_actions(window: "MainWindow") -> dict[AppearanceMode, QAction]:
+    """One exclusive, checkable action per appearance profile."""
+    group = QActionGroup(window)
+    group.setExclusive(True)
+    actions: dict[AppearanceMode, QAction] = {}
     for mode in appearance_profile_modes():
         action = _create_action(
             window,
@@ -566,11 +649,16 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=lambda _checked=False, selected=mode: window._set_appearance_mode(selected),
             checkable=True,
         )
-        appearance_group.addAction(action)
-        actions.appearance_actions[mode] = action
+        group.addAction(action)
+        actions[mode] = action
+    return actions
 
-    toolbar_placement_group = QActionGroup(window)
-    toolbar_placement_group.setExclusive(True)
+
+def _toolbar_placement_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Floating (bottom) versus docked (top) toolbar, keyed by placement name."""
+    group = QActionGroup(window)
+    group.setExclusive(True)
+    actions: dict[str, QAction] = {}
     for placement, label in (("floating", "Floating Toolbar (Bottom)"), ("docked", "Docked Toolbar (Top)")):
         action = _create_action(
             window,
@@ -578,11 +666,16 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=lambda _checked=False, selected=placement: window._set_toolbar_placement(selected),
             checkable=True,
         )
-        toolbar_placement_group.addAction(action)
-        actions.toolbar_placement_actions[placement] = action
+        group.addAction(action)
+        actions[placement] = action
+    return actions
 
-    sort_group = QActionGroup(window)
-    sort_group.setExclusive(True)
+
+def _sort_actions(window: "MainWindow") -> dict[SortMode, QAction]:
+    """One exclusive, checkable action per sort mode."""
+    group = QActionGroup(window)
+    group.setExclusive(True)
+    actions: dict[SortMode, QAction] = {}
     for mode in SortMode:
         action = _create_action(
             window,
@@ -590,11 +683,16 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=lambda _checked=False, selected=mode: window._set_sort_mode(selected),
             checkable=True,
         )
-        sort_group.addAction(action)
-        actions.sort_actions[mode] = action
+        group.addAction(action)
+        actions[mode] = action
+    return actions
 
-    filter_group = QActionGroup(window)
-    filter_group.setExclusive(True)
+
+def _quick_filter_actions(window: "MainWindow") -> dict[FilterMode, QAction]:
+    """One exclusive, checkable action per quick filter mode."""
+    group = QActionGroup(window)
+    group.setExclusive(True)
+    actions: dict[FilterMode, QAction] = {}
     for mode in FilterMode:
         action = _create_action(
             window,
@@ -602,11 +700,16 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=lambda _checked=False, selected=mode: window._set_filter_mode(selected),
             checkable=True,
         )
-        filter_group.addAction(action)
-        actions.filter_actions[mode] = action
+        group.addAction(action)
+        actions[mode] = action
+    return actions
 
-    column_group = QActionGroup(window)
-    column_group.setExclusive(True)
+
+def _column_actions(window: "MainWindow") -> dict[int, QAction]:
+    """One exclusive, checkable action per grid column count (1 to 8)."""
+    group = QActionGroup(window)
+    group.setExclusive(True)
+    actions: dict[int, QAction] = {}
     for count in range(1, 9):
         action = _create_action(
             window,
@@ -614,7 +717,58 @@ def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
             slot=lambda _checked=False, selected=count: window._set_column_count(selected),
             checkable=True,
         )
-        column_group.addAction(action)
-        actions.column_actions[count] = action
-
+        group.addAction(action)
+        actions[count] = action
     return actions
+
+
+# The single-action groups, in the order their QActions are created. QAction
+# creation order is parent-child order on the window, so it is part of the
+# observable result: keep these in the order the actions have always been built.
+_SINGLE_ACTION_GROUPS = (
+    _file_actions,
+    _edit_and_batch_actions,
+    _selection_review_actions,
+    _view_toggle_actions,
+    _layout_actions,
+    _ai_setup_actions,
+    _ai_workflow_actions,
+    _ai_review_tool_actions,
+    _collection_actions,
+    _catalog_actions,
+    _delivery_actions,
+    _workspace_and_tool_actions,
+    _filter_actions,
+    _help_actions,
+)
+
+
+def _create_single_actions(window: "MainWindow") -> dict[str, QAction]:
+    """Every plain (non-dict) ``MainWindowActions`` field, from the groups above.
+
+    The groups must be disjoint: a name supplied twice would silently keep only
+    the later action (both would still be created and parented to the window)."""
+    singles: dict[str, QAction] = {}
+    for create_group in _SINGLE_ACTION_GROUPS:
+        group = create_group(window)
+        duplicated = sorted(singles.keys() & group.keys())
+        if duplicated:
+            raise ValueError(f"{create_group.__name__} redefines actions already created: {duplicated}")
+        singles.update(group)
+    return singles
+
+
+def build_main_window_actions(window: "MainWindow") -> MainWindowActions:
+    # Creation order is observable (see _SINGLE_ACTION_GROUPS): every plain
+    # action first, then each exclusive group's QActionGroup followed by its
+    # actions, in the order of the dict fields below. ``ai_state_actions`` stays
+    # empty here; the records view controller fills it in later.
+    singles = _create_single_actions(window)
+    return MainWindowActions(
+        **singles,
+        appearance_actions=_appearance_actions(window),
+        toolbar_placement_actions=_toolbar_placement_actions(window),
+        sort_actions=_sort_actions(window),
+        filter_actions=_quick_filter_actions(window),
+        column_actions=_column_actions(window),
+    )

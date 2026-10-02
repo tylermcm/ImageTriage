@@ -31,7 +31,8 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 from textwrap import dedent
 
-from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QEventLoop, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal
+import numpy as np
+from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QEventLoop, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1879,6 +1880,28 @@ def _cleanup_pocketdrop_edited_exports() -> None:
 _logger = logging.getLogger(__name__)
 
 
+class _TopbarActionSync(QObject):
+    """Keeps one top-bar button in step with the ``QAction`` it was built for.
+
+    It is a child of the button, so the connection to the (long-lived) action
+    disappears with the button when the bar is rebuilt. A lambda connected
+    straight to ``action.changed`` is never disconnected: it piled up one
+    handler per button per rebuild for the life of the app.
+    """
+
+    def __init__(self, window: "MainWindow", button: QToolButton, action: QAction, item_id: str) -> None:
+        super().__init__(button)
+        self._window = window
+        self._button = button
+        self._action = action
+        self._item_id = item_id
+        action.changed.connect(self.sync)
+
+    @Slot()
+    def sync(self) -> None:
+        self._window._sync_topbar_action_button_for(self._button, self._action, self._item_id)
+
+
 class MainWindow(QMainWindow):
     """Top-level application window.
 
@@ -2420,6 +2443,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self, launch_target: str | None = None, *, quick_view: bool = False) -> None:
         super().__init__()
+        # The popout viewer is the most expensive widget tree in the app and is
+        # not on screen at startup, so it is built on first use (the ``preview``
+        # property) instead of here. Must exist before anything can reach it.
+        self._preview: FullScreenPreview | None = None
+        self._deferred_preview_timer: QTimer | None = None
         # Windows: our app bar is the title bar (see nativeEvent), so drop the
         # system caption but keep a resizable, snappable frame.
         self._custom_frame = os.name == "nt"
@@ -2492,9 +2520,6 @@ class MainWindow(QMainWindow):
         self._photoshop_executable = detect_photoshop_executable()
         self.grid = ThumbnailGridView(self.thumbnail_manager)
         self.details_view = PhotoDetailsView(ai_text_provider=self._details_ai_text_for_record)
-        self.preview = FullScreenPreview(self)
-        self.preview.navigation_requested.connect(self._navigate_preview)
-        self.preview.set_photoshop_available(bool(self._photoshop_executable))
         self._preview_navigation_dirty = False
         self._preview_preload_index: int | None = None
         self._preview_preload_timer = QTimer(self)
@@ -2796,7 +2821,6 @@ class MainWindow(QMainWindow):
         self._filter_query = RecordFilterQuery()
         self._pending_search_text = ""
         self._auto_advance_enabled = self._settings.value(self.AUTO_ADVANCE_KEY, True, bool)
-        self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
         self._compare_enabled = False
         self._auto_bracket_enabled = self._settings.value(self.AUTO_BRACKET_KEY, True, bool)
         self._burst_groups_enabled = self._settings.value(self.BURST_GROUPS_KEY, False, bool)
@@ -2819,7 +2843,6 @@ class MainWindow(QMainWindow):
                 int,
             )
         )
-        self.preview.set_preload_batch_size(self._preview_preload_batch_size)
         self._show_hidden_folders = self._settings.value(self.SHOW_HIDDEN_FOLDERS_KEY, False, bool)
         self._single_drive_expansion_enabled = self._settings.value(
             self.SINGLE_DRIVE_EXPANSION_KEY, True, bool
@@ -3597,21 +3620,6 @@ class MainWindow(QMainWindow):
         self.details_view.tag_requested.connect(self._tag_record)
         self.details_view.winner_requested.connect(self._toggle_winner)
         self.details_view.reject_requested.connect(self._toggle_reject)
-        self.preview.compare_mode_changed.connect(self._handle_preview_compare_mode_changed)
-        self.preview.auto_bracket_mode_changed.connect(self._handle_preview_auto_bracket_mode_changed)
-        self.preview.compare_count_changed.connect(self._handle_preview_compare_count_changed)
-        self.preview.command_palette_requested.connect(lambda: self._open_command_palette(context="preview"))
-        self.preview.photoshop_requested.connect(self._open_preview_image_in_photoshop)
-        self.preview.winner_requested.connect(self._handle_preview_winner_requested)
-        self.preview.reject_requested.connect(self._handle_preview_reject_requested)
-        self.preview.keep_requested.connect(self._handle_preview_keep_requested)
-        self.preview.delete_requested.connect(self._handle_preview_delete_requested)
-        self.preview.move_requested.connect(self._handle_preview_move_requested)
-        self.preview.tag_requested.connect(self._handle_preview_tag_requested)
-        self.preview.rating_requested.connect(self._handle_preview_rating_requested)
-        self.preview.winner_ladder_choice_requested.connect(self._handle_preview_winner_ladder_choice)
-        self.preview.winner_ladder_skip_requested.connect(self._handle_preview_winner_ladder_skip)
-        self.preview.closed.connect(self._handle_preview_closed)
 
         app = QApplication.instance()
         if app is not None:
@@ -3623,7 +3631,6 @@ class MainWindow(QMainWindow):
         self._restore_window_state()
         self._sync_record_filter_controls()
         self._update_filter_summary()
-        self.preview.set_auto_bracket_mode(self._auto_bracket_enabled)
         self._handle_mode_tab_changed(0)
         self._update_action_states()
         QTimer.singleShot(0, self._finish_startup_restore)
@@ -3637,6 +3644,118 @@ class MainWindow(QMainWindow):
     @property
     def _all_records_by_path(self) -> dict[str, ImageRecord]:
         return self._records_repo.all_records_by_path
+
+    # -- Popout viewer, built on first use (WI-8.1) ------------------------
+    # Constructing FullScreenPreview costs ~0.6 s (about 1,100 widgets, 85
+    # stylesheet applications) and is ~70% of what MainWindow.__init__ used to
+    # take, yet nothing needs it until the user opens the popout. Three rules
+    # keep that deferral honest:
+    #   * ``self.preview`` is for code that genuinely uses the viewer (open it,
+    #     navigate it, read its state); first access builds it.
+    #   * Pushing window state *into* the viewer (theme, density, shortcuts,
+    #     settings...) or asking whether it is open must go through
+    #     ``_preview_if_built`` / ``_preview_is_visible`` so that never forces
+    #     the build; ``_configure_new_preview`` replays the current window state
+    #     into whatever gets built later.
+    #   * Anything the old __init__ wired to the viewer lives in that method.
+    @property
+    def preview(self) -> FullScreenPreview:
+        preview = self._preview
+        if preview is None:
+            preview = self._build_preview()
+        return preview
+
+    def _preview_if_built(self) -> FullScreenPreview | None:
+        """The popout viewer if it exists yet; never builds it."""
+        return self._preview
+
+    def _preview_is_visible(self) -> bool:
+        """Whether the popout is on screen; an unbuilt viewer is not."""
+        preview = self._preview
+        return preview is not None and preview.isVisible()
+
+    def _build_preview(self) -> FullScreenPreview:
+        logger = perf_logger()
+        start = time.perf_counter() if logger.enabled else 0.0
+        preview = FullScreenPreview(self)
+        # Published before it is configured, so a re-entrant ``self.preview``
+        # while configuring gets this instance instead of recursing into a
+        # second build.
+        self._preview = preview
+        try:
+            self._configure_new_preview(preview)
+        except BaseException:
+            self._preview = None
+            preview.deleteLater()
+            raise
+        if logger.enabled:
+            logger.duration("preview.build", (time.perf_counter() - start) * 1000.0)
+        return preview
+
+    def _configure_new_preview(self, preview: FullScreenPreview) -> None:
+        """Leave a freshly built popout in the state an eagerly built one had
+        after ``__init__``, plus every window-level setting changed since.
+
+        Order matches the old startup: signals, simple setters, shortcuts, then
+        the display profile and the theme (the viewer restyles itself in its own
+        constructor, so the theme step is a no-op when it already matches).
+        """
+        preview.navigation_requested.connect(self._navigate_preview)
+        preview.compare_mode_changed.connect(self._handle_preview_compare_mode_changed)
+        preview.auto_bracket_mode_changed.connect(self._handle_preview_auto_bracket_mode_changed)
+        preview.compare_count_changed.connect(self._handle_preview_compare_count_changed)
+        preview.command_palette_requested.connect(lambda: self._open_command_palette(context="preview"))
+        preview.photoshop_requested.connect(self._open_preview_image_in_photoshop)
+        preview.winner_requested.connect(self._handle_preview_winner_requested)
+        preview.reject_requested.connect(self._handle_preview_reject_requested)
+        preview.keep_requested.connect(self._handle_preview_keep_requested)
+        preview.delete_requested.connect(self._handle_preview_delete_requested)
+        preview.move_requested.connect(self._handle_preview_move_requested)
+        preview.tag_requested.connect(self._handle_preview_tag_requested)
+        preview.rating_requested.connect(self._handle_preview_rating_requested)
+        preview.winner_ladder_choice_requested.connect(self._handle_preview_winner_ladder_choice)
+        preview.winner_ladder_skip_requested.connect(self._handle_preview_winner_ladder_skip)
+        preview.closed.connect(self._handle_preview_closed)
+
+        preview.set_photoshop_available(bool(self._photoshop_executable))
+        preview.set_auto_advance_enabled(self._auto_advance_enabled)
+        preview.set_preload_batch_size(self._preview_preload_batch_size)
+        preview.set_auto_bracket_mode(self._auto_bracket_enabled)
+        if self.actions is not None:
+            self._push_review_shortcuts((preview,), load_shortcut_overrides(settings=self._settings))
+        self._command_palette.attach_preview_shortcut(preview)
+        if self._display_profile is not None:
+            preview.apply_display_profile(self._display_profile)
+        if self._theme is not None:
+            preview.apply_theme(self._theme)
+        # Modes the window can enter while there is no viewer to tell.
+        preview.set_compare_mode(self._compare_enabled)
+        if self._collection_mode:
+            preview.set_collection_browse_mode(True)
+
+    def schedule_deferred_preview_build(self, delay_ms: int = 800) -> None:
+        """Build the popout once the window is up and the event loop is idle, so
+        the ~0.6 s cost lands in idle time instead of as a hitch the first time
+        the user presses Space. Opt-in: only the app entry point calls this
+        (tests that show windows never get a surprise build). A no-op when the
+        viewer already exists or a build is already scheduled."""
+        if self._preview is not None or self._deferred_preview_timer is not None:
+            return
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(max(0, int(delay_ms)))
+        timer.timeout.connect(self._run_deferred_preview_build)
+        self._deferred_preview_timer = timer
+        timer.start()
+
+    def _run_deferred_preview_build(self) -> None:
+        timer, self._deferred_preview_timer = self._deferred_preview_timer, None
+        if timer is not None:
+            timer.deleteLater()
+        # A window that was closed or hidden in the meantime (quick view, app
+        # shutting down) is not worth a build; the first real use still builds.
+        if self._preview is None and self.isVisible():
+            self._build_preview()
 
     def _build_section_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -4479,6 +4598,8 @@ class MainWindow(QMainWindow):
             if caption_scale > 1.01
             else ""
         )
+        # Not forced: this runs on every layout pass and nearly all of them leave
+        # the bar's inputs unchanged, so the change guard turns them into no-ops.
         self._rebuild_topbar_action_stack()
         toolbar_profile = self._toolbar_profile()
         for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
@@ -4704,7 +4825,9 @@ class MainWindow(QMainWindow):
         self._toolbar_placement = normalized
         self._settings.setValue(self.TOOLBAR_PLACEMENT_KEY, normalized)
         self._apply_toolbar_placement()
-        self._rebuild_topbar_action_stack()
+        # Forced: a rare, user-initiated change that just reparented the strip
+        # and swapped its surface, so fresh buttons are worth the few ms.
+        self._rebuild_topbar_action_stack(force=True)
         profile = self._toolbar_profile()
         for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
             self._resize_topbar_button(button, profile)
@@ -4796,6 +4919,8 @@ class MainWindow(QMainWindow):
         self._topbar_action_items: dict[str, list[tuple[str, QWidget]]] = {}
         self._topbar_slot_widgets: dict[str, list[QWidget | None]] = {}
         self._topbar_more_buttons: dict[str, QToolButton] = {}
+        # The widgets the recorded key described no longer exist.
+        self._topbar_rebuild_key: tuple | None = None
         for mode in ("manual", "ai"):
             page = QWidget()
             grid = QGridLayout(page)
@@ -4813,7 +4938,8 @@ class MainWindow(QMainWindow):
         # Assign early so the overflow pass can find the stack during the build.
         self.topbar_action_stack = stack
         stack.installEventFilter(self)
-        self._rebuild_topbar_action_stack()
+        # Nothing built yet, so there is nothing for the change guard to compare.
+        self._rebuild_topbar_action_stack(force=True)
         stack.setCurrentIndex(1 if getattr(self, "_ui_mode", "manual") == "ai" else 0)
         return stack
 
@@ -4850,7 +4976,12 @@ class MainWindow(QMainWindow):
         action: QAction | None = None
         if item_id in popup_specs:
             label, factory = popup_specs[item_id]
-            button = self._build_popup_button(label, factory())
+            menu = factory()
+            button = self._build_popup_button(label, menu)
+            # The factories parent every menu to the main window, so one would
+            # outlive its button (with its submenus) on each rebuild. Hand it to
+            # the button; keep its window flags, which a plain setParent resets.
+            menu.setParent(button, menu.windowFlags())
         else:
             spec = self._workspace_toolbar_action_specs().get(item_id)
             if spec is None:
@@ -4864,9 +4995,7 @@ class MainWindow(QMainWindow):
             button.clicked.connect(
                 lambda _checked=False, iid=item_id, src=action: self._activate_topbar_action(iid, src)
             )
-            action.changed.connect(
-                lambda b=button, src=action, iid=item_id: self._sync_topbar_action_button_for(b, src, iid)
-            )
+            _TopbarActionSync(self, button, action, item_id)
             self._sync_topbar_action_button_for(button, action, item_id)
         button.setText(self.TOPBAR_COMPACT_LABELS.get(item_id, button.text()))
         self._apply_topbar_button_style(button, icon)
@@ -4934,6 +5063,26 @@ class MainWindow(QMainWindow):
                 glyph.setChecked(action.isChecked() if action.isCheckable() else False)
         except RuntimeError:
             pass
+
+    def _sync_topbar_action_buttons(self) -> None:
+        """Re-read every action-backed top-bar button from its action.
+
+        The buttons normally follow ``action.changed``. But the checked state of
+        several actions (Compare, Auto-Advance, Smart Groups/Stacks, Hidden
+        Folders, Zen) is pushed from window state under ``QSignalBlocker`` so a
+        resync does not re-trigger the action, and that blocker swallows
+        ``changed`` too: a button on the bar then keeps the old state until
+        something happens to rebuild it. Call this after any such push.
+        """
+        built = getattr(self, "_topbar_action_items", None)
+        if not built or getattr(self, "actions", None) is None:
+            return
+        specs = self._workspace_toolbar_action_specs()
+        for items in built.values():
+            for item_id, widget in items:
+                spec = specs.get(item_id)
+                if spec is not None and isinstance(widget, QToolButton):
+                    self._sync_topbar_action_button_for(widget, spec[0], item_id)
 
     def _apply_topbar_button_style(self, button: QToolButton, icon: QIcon) -> None:
         """Place every glyph and caption in identical fixed-height rows."""
@@ -5023,18 +5172,24 @@ class MainWindow(QMainWindow):
             return icon
         source = icon.pixmap(QSize(64, 64))
         image = source.toImage()
-        left, top = image.width(), image.height()
-        right = bottom = -1
-        for y in range(image.height()):
-            for x in range(image.width()):
-                if image.pixelColor(x, y).alpha() <= 0:
-                    continue
-                left = min(left, x)
-                top = min(top, y)
-                right = max(right, x)
-                bottom = max(bottom, y)
-        if right < left or bottom < top:
+        if image.isNull():
             return icon
+        # Bounding box of every pixel with alpha > 0. Done on the alpha plane in
+        # numpy: a per-pixel pixelColor() loop here cost ~2 ms per icon, which
+        # dominated every top-bar rebuild (18 buttons -> ~37 ms).
+        if image.hasAlphaChannel():
+            alpha = image.convertToFormat(QImage.Format.Format_Alpha8)
+            height, width = alpha.height(), alpha.width()
+            stride = alpha.bytesPerLine()
+            plane = np.frombuffer(alpha.constBits(), dtype=np.uint8, count=stride * height)
+            rows, columns = np.nonzero(plane.reshape(height, stride)[:, :width])
+            if rows.size == 0:
+                return icon
+            left, right = int(columns.min()), int(columns.max())
+            top, bottom = int(rows.min()), int(rows.max())
+        else:
+            # No alpha channel: every pixel is opaque, so the ink is the whole image.
+            left, top, right, bottom = 0, 0, image.width() - 1, image.height() - 1
         inset = max(0, int(padding))
         bounds = QRect(left, top, right - left + 1, bottom - top + 1)
         bounds = bounds.adjusted(-inset, -inset, inset, inset).intersected(image.rect())
@@ -5098,7 +5253,56 @@ class MainWindow(QMainWindow):
             grid.setColumnStretch(col, 1 if active else 0)
             grid.setColumnMinimumWidth(col, profile.topbar_slot_cell_min if active else 0)
 
-    def _rebuild_topbar_action_stack(self, mode: str | None = None) -> None:
+    def _topbar_rebuild_inputs(self, visible_slots: int) -> tuple:
+        """Everything ``_rebuild_topbar_action_stack`` reads that can change what
+        it builds, as a value to compare between calls.
+
+        Live action state (enabled, checked, tooltip) is deliberately absent:
+        the buttons follow it themselves (``_TopbarActionSync`` and
+        ``_sync_topbar_action_buttons``). The popup menus are built from shared
+        actions, so they follow it too. The icon cache is also absent; whoever
+        clears it passes ``force=True``.
+        """
+        slots = getattr(self, "_topbar_slots", None) or {}
+        return (
+            visible_slots,
+            tuple(slots.get("manual") or ()),
+            tuple(slots.get("ai") or ()),
+            # Every button metric (and, floating, the scale derived from the window size).
+            self._toolbar_profile(),
+            # Icon colours.
+            getattr(self, "_theme", None),
+            getattr(self, "_toolbar_placement", "docked"),
+            # Decides whether an item is "cross-mode" and so stays clickable.
+            getattr(self, "_ui_mode", "manual"),
+        )
+
+    def _topbar_stack_intact(self) -> bool:
+        """True while every widget the last rebuild made is still alive and in its grid."""
+        layouts = getattr(self, "_topbar_action_layouts", None) or {}
+        built = getattr(self, "_topbar_action_items", None) or {}
+        try:
+            for target in ("manual", "ai"):
+                grid = layouts.get(target)
+                items = built.get(target)
+                if grid is None or items is None or grid.count() != len(items):
+                    return False
+                if any(grid.indexOf(widget) < 0 for _item_id, widget in items):
+                    return False
+        except RuntimeError:  # a wrapped C++ widget was deleted underneath us
+            return False
+        return True
+
+    def _rebuild_topbar_action_stack(self, mode: str | None = None, *, force: bool = False) -> None:
+        """Rebuild both top-bar pages from the shared slots.
+
+        Cheap to call often: when none of ``_topbar_rebuild_inputs`` changed since
+        the last rebuild and its widgets are all still alive, nothing is built
+        (about half of the calls made over a launch and a resize were identical
+        rebuilds). ``force=True`` rebuilds regardless; pass it when something the
+        inputs do not capture has changed, such as a cleared icon cache.
+        Always synchronous: deferring the layout on resize drew a visible jump.
+        """
         layouts = getattr(self, "_topbar_action_layouts", None)
         if not layouts:
             return
@@ -5107,6 +5311,16 @@ class MainWindow(QMainWindow):
         modes = ("manual", "ai")
         n = self.TOPBAR_SLOT_COUNT
         visible_slots = self._topbar_visible_slot_count()
+        rebuild_key = self._topbar_rebuild_inputs(visible_slots)
+        if (
+            not force
+            and rebuild_key == getattr(self, "_topbar_rebuild_key", None)
+            and self._topbar_stack_intact()
+        ):
+            return
+        # Recorded again only once the build below has completed, so a build that
+        # raises part-way can never be mistaken for a finished one.
+        self._topbar_rebuild_key = None
         self._topbar_rendered_slot_count = visible_slots
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
@@ -5154,6 +5368,7 @@ class MainWindow(QMainWindow):
                 self._topbar_more_buttons.pop(target, None)
             self._topbar_action_items[target] = items
             self._topbar_slot_widgets[target] = slot_widgets
+        self._topbar_rebuild_key = rebuild_key
         if logger.enabled:
             logger.duration("toolbar.rebuild_stack", (time.perf_counter() - start) * 1000.0, widgets=built)
         if getattr(self, "_toolbar_placement", "docked") == "floating" and getattr(self, "toolbar_strip", None) is not None:
@@ -5212,7 +5427,9 @@ class MainWindow(QMainWindow):
         visible_slots = self._topbar_visible_slot_count()
         if visible_slots == getattr(self, "_topbar_rendered_slot_count", None):
             return
-        self._rebuild_topbar_action_stack(mode)
+        # Forced: the check above is already the change detection (the visible
+        # slot count moved), and this runs synchronously from the stack's resize.
+        self._rebuild_topbar_action_stack(mode, force=True)
 
     def _build_advanced_filter_button(self) -> QToolButton:
         return self._records_view.build_advanced_filter_button()
@@ -5260,8 +5477,8 @@ class MainWindow(QMainWindow):
         if docks is not None:
             docks.apply_display_profile(profile)
         self._apply_main_chrome_display_profile(profile)
-        preview = getattr(self, "preview", None)
-        if preview is not None and hasattr(preview, "apply_display_profile"):
+        preview = self._preview_if_built()
+        if preview is not None:
             preview.apply_display_profile(profile)
 
     def _apply_main_chrome_display_profile(self, profile: DisplayProfile) -> None:
@@ -5306,7 +5523,9 @@ class MainWindow(QMainWindow):
         for grid in getattr(self, "_topbar_action_layouts", {}).values():
             grid.setHorizontalSpacing(profile.topbar_slot_spacing)
         if getattr(self, "_topbar_action_layouts", None):
-            self._rebuild_topbar_action_stack()
+            # Forced: _apply_display_profile only gets here for a profile that
+            # differs from the last one, which is exactly what the bar must follow.
+            self._rebuild_topbar_action_stack(force=True)
         self._size_view_controls()
         search_field = getattr(self, "topbar_search_field", None)
         if search_field is not None:
@@ -5745,7 +5964,9 @@ class MainWindow(QMainWindow):
                 self._configure_workspace_toolbar_button(button, item_id="more", text="More")
 
         if hasattr(self, "topbar_action_stack"):
-            self._rebuild_topbar_action_stack()
+            # Forced: the icon cache was just cleared, an input the change guard
+            # cannot see, and this is a theme / gamma / icon refresh.
+            self._rebuild_topbar_action_stack(force=True)
 
     def _refresh_left_sidebar_icons(self) -> None:
         theme = getattr(self, "_theme", None) or default_theme()
@@ -6799,7 +7020,9 @@ class MainWindow(QMainWindow):
             layout.addStretch(1)
         self._schedule_workspace_toolbar_overflow_update(mode)
         # Mirror the same editable layout into the top-bar action cluster.
-        self._rebuild_topbar_action_stack(mode)
+        # Forced: this is the "the layout was just edited" path, whose inputs
+        # (the flat layout lists) are not what the change guard compares.
+        self._rebuild_topbar_action_stack(mode, force=True)
 
     def _workspace_toolbar_non_overflow_items(self) -> set[str]:
         return {"ai_status", "search", "address"}
@@ -7080,12 +7303,12 @@ class MainWindow(QMainWindow):
             if action is not None:
                 self._refresh_action_shortcut_hint(action)
 
-        review_keys = effective_shortcuts(self._REVIEW_KEY_BINDING_IDS, overrides)
-        winner_shortcut = self.actions.accept_selection.shortcut()
-        reject_shortcut = self.actions.reject_selection.shortcut()
-        for surface in (self.grid, self.details_view.table, self.preview):
-            surface.set_review_action_shortcuts(winner_shortcut, reject_shortcut)
-            surface.set_review_key_shortcuts(review_keys)
+        surfaces = [self.grid, self.details_view.table]
+        preview = self._preview_if_built()
+        if preview is not None:
+            # An unbuilt viewer picks the same values up in _configure_new_preview.
+            surfaces.append(preview)
+        self._push_review_shortcuts(surfaces, overrides)
 
         self._apply_command_palette_shortcut(
             overrides.get(
@@ -7093,6 +7316,14 @@ class MainWindow(QMainWindow):
                 self.actions.open_command_palette.shortcut().toString(QKeySequence.SequenceFormat.PortableText),
             )
         )
+
+    def _push_review_shortcuts(self, surfaces, overrides) -> None:
+        review_keys = effective_shortcuts(self._REVIEW_KEY_BINDING_IDS, overrides)
+        winner_shortcut = self.actions.accept_selection.shortcut()
+        reject_shortcut = self.actions.reject_selection.shortcut()
+        for surface in surfaces:
+            surface.set_review_action_shortcuts(winner_shortcut, reject_shortcut)
+            surface.set_review_key_shortcuts(review_keys)
 
     def _apply_command_palette_shortcut(self, shortcut: str) -> None:
         self._command_palette.apply_shortcut(shortcut)
@@ -7355,7 +7586,9 @@ class MainWindow(QMainWindow):
             self.workspace_docks.apply_theme(self._theme)
         self.grid.apply_theme(self._theme)
         self.grid.set_backdrop_painter(self._paint_grid_backdrop if theme_has_backdrop(self._theme) else None)
-        self.preview.apply_theme(self._theme)
+        preview = self._preview_if_built()
+        if preview is not None:
+            preview.apply_theme(self._theme)
         self._schedule_workspace_toolbar_overflow_update("manual")
         self._schedule_workspace_toolbar_overflow_update("ai")
         self._update_action_states()
@@ -10606,7 +10839,7 @@ class MainWindow(QMainWindow):
                 if path in self._record_index_by_path
             }
             self.details_view.refresh_rows(changed_rows)
-            if self.preview.isVisible():
+            if self._preview_is_visible():
                 for path in changed_paths:
                     annotation = self._annotations.get(path, SessionAnnotation())
                     self.preview.set_annotation_state(path, annotation.winner, annotation.reject, annotation.rating)
@@ -10767,6 +11000,9 @@ class MainWindow(QMainWindow):
         self._refresh_directory_navigation_buttons()
         if self._collection_mode:
             self._limit_actions_for_collection_mode()
+        # The checked states pushed above sit under QSignalBlocker, which also
+        # swallows the changed() the top-bar buttons listen to.
+        self._sync_topbar_action_buttons()
         if logger.enabled:
             logger.duration(
                 "window.update_action_states",
@@ -12449,6 +12685,7 @@ class MainWindow(QMainWindow):
                     "Disabled while AI Review is active. "
                     "Switch to Manual Review to use Smart Groups / Smart Stacks."
                 )
+            self._sync_topbar_action_buttons()
         else:
             for action in (burst_groups, burst_stacks):
                 action.setEnabled(True)
@@ -13839,7 +14076,9 @@ class MainWindow(QMainWindow):
     def _handle_auto_advance_toggled(self, checked: bool) -> None:
         self._auto_advance_enabled = checked
         self._settings.setValue(self.AUTO_ADVANCE_KEY, checked)
-        self.preview.set_auto_advance_enabled(checked)
+        preview = self._preview_if_built()
+        if preview is not None:
+            preview.set_auto_advance_enabled(checked)
         self._update_action_states()
         mode = "on" if checked else "off"
         self.statusBar().showMessage(f"Auto-advance {mode}")
@@ -13872,11 +14111,13 @@ class MainWindow(QMainWindow):
         if not checked and self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
         self._compare_enabled = checked
-        self.preview.set_compare_mode(checked)
+        preview = self._preview_if_built()
+        if preview is not None:
+            preview.set_compare_mode(checked)
         self._update_action_states()
         mode = "on" if checked else "off"
         self.statusBar().showMessage(f"Compare {mode}")
-        if self.preview.isVisible():
+        if self._preview_is_visible():
             index = self.grid.current_index()
             if index >= 0:
                 self._open_preview(index)
@@ -13884,10 +14125,12 @@ class MainWindow(QMainWindow):
     def _handle_auto_bracket_toggled(self, checked: bool) -> None:
         self._auto_bracket_enabled = checked
         self._settings.setValue(self.AUTO_BRACKET_KEY, checked)
-        self.preview.set_auto_bracket_mode(checked)
+        preview = self._preview_if_built()
+        if preview is not None:
+            preview.set_auto_bracket_mode(checked)
         mode = "on" if checked else "off"
         self.statusBar().showMessage(f"Auto-bracket compare {mode}")
-        if self.preview.isVisible() and self._compare_enabled:
+        if self._preview_is_visible() and self._compare_enabled:
             index = self.grid.current_index()
             if index >= 0:
                 self._open_preview(index)
@@ -14175,6 +14418,7 @@ class MainWindow(QMainWindow):
         if self.actions is not None:
             with QSignalBlocker(self.actions.compare_mode):
                 self.actions.compare_mode.setChecked(True)
+            self._sync_topbar_action_buttons()
         challenger_index = self._record_index_for_path(challenger_path)
         if challenger_index is not None:
             self.grid.set_current_index(challenger_index)
@@ -14199,6 +14443,7 @@ class MainWindow(QMainWindow):
         if self.actions is not None:
             with QSignalBlocker(self.actions.compare_mode):
                 self.actions.compare_mode.setChecked(previous_compare_enabled)
+            self._sync_topbar_action_buttons()
         self.preview.set_compare_mode(previous_compare_enabled)
         winner_index = self._record_index_for_path(winner_path)
         if winner_index is not None:
@@ -14837,7 +15082,7 @@ class MainWindow(QMainWindow):
         self._records_view_cache.mark(ViewInvalidationReason.REVIEW_CHANGED)
         self._apply_records_view(current_path=current_path)
         self._start_scope_enrichment_task()
-        if self.preview.isVisible():
+        if self._preview_is_visible():
             index = self.grid.current_index()
             if index >= 0:
                 self._open_preview(index)
@@ -15354,7 +15599,7 @@ class MainWindow(QMainWindow):
             now = time.perf_counter()
             logger.duration("window.current_changed.status", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
             step_start = now
-        if not self.preview.isVisible():
+        if not self._preview_is_visible():
             self._schedule_preview_preload(index)
         if logger.enabled:
             now = time.perf_counter()
@@ -15976,11 +16221,11 @@ class MainWindow(QMainWindow):
         step_start = log_step("ai_state.refresh.status", step_start)
         self._update_inspector_context()
         step_start = log_step("ai_state.refresh.inspector", step_start)
-        if self.preview.isVisible():
+        if self._preview_is_visible():
             index = self.grid.current_index()
             if index >= 0:
                 self._open_preview(index)
-        step_start = log_step("ai_state.refresh.preview", step_start, preview_visible=self.preview.isVisible())
+        step_start = log_step("ai_state.refresh.preview", step_start, preview_visible=self._preview_is_visible())
         if logger.enabled:
             logger.duration(
                 "ai_state.refresh.total",
@@ -18063,7 +18308,7 @@ class MainWindow(QMainWindow):
     def _run_preview_preload(self) -> None:
         index = self._preview_preload_index
         self._preview_preload_index = None
-        if index is None or index < 0 or not self.preview.isVisible():
+        if index is None or index < 0 or not self._preview_is_visible():
             return
         paths = self._likely_preview_preload_paths(index)
         self.preview.preload_paths(paths)
@@ -18428,6 +18673,7 @@ class MainWindow(QMainWindow):
         if self.actions is not None:
             with QSignalBlocker(self.actions.compare_mode):
                 self.actions.compare_mode.setChecked(True)
+            self._sync_topbar_action_buttons()
         self.preview.set_compare_mode(True)
         self._compare_count = len(entries)
         self._manual_compare_count = len(entries)
@@ -19085,8 +19331,10 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.AI_REVIEW_DETAIL_PROGRESS_KEY, self._ai_review_detail_progress_enabled)
         self._decision_store.touch_session(self._session_id)
         self.summary_session.setText(f"Profile: {self._session_id}")
-        self.preview.set_auto_advance_enabled(self._auto_advance_enabled)
-        self.preview.set_preload_batch_size(self._preview_preload_batch_size)
+        preview = self._preview_if_built()
+        if preview is not None:
+            preview.set_auto_advance_enabled(self._auto_advance_enabled)
+            preview.set_preload_batch_size(self._preview_preload_batch_size)
         # Apply through the resolution policy so the effective (coerced) style
         # and column thresholds land on the grid.
         self._apply_display_style_policy(show_warning=False)
@@ -19543,7 +19791,7 @@ class MainWindow(QMainWindow):
     def _open_preview(self, index: int, *, lightweight_grid_sync: bool = False) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        if not self.preview.isVisible():
+        if not self._preview_is_visible():
             self._preview_navigation_dirty = False
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
@@ -19721,7 +19969,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _handle_preview_filmstrip_thumbnail_ready(self, *_args) -> None:
-        if self.preview.isVisible():
+        if self._preview_is_visible():
             logger = perf_logger()
             if logger.enabled:
                 logger.log("preview.filmstrip_refresh_requested")

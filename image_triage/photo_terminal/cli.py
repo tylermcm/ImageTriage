@@ -494,25 +494,32 @@ def command_export_xmp(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="photoedit")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+# What ``ArgumentParser.add_subparsers`` returns (the stdlib exposes no public name for it).
+_Subparsers = argparse._SubParsersAction
 
+
+def _add_inspect_parser(subparsers: _Subparsers) -> None:
     inspect_parser = subparsers.add_parser("inspect", help="Show image metadata.")
     inspect_parser.add_argument("image", type=Path)
     inspect_parser.set_defaults(func=command_inspect)
 
+
+def _add_preview_parser(subparsers: _Subparsers) -> None:
     preview_parser = subparsers.add_parser("preview", help="Render a truecolor ANSI terminal preview.")
     preview_parser.add_argument("image", type=Path)
     preview_parser.add_argument("--width", type=int, default=80)
     preview_parser.add_argument("--height", type=int)
     preview_parser.set_defaults(func=command_preview)
 
+
+def _add_recipe_parser(subparsers: _Subparsers) -> None:
     recipe_parser = subparsers.add_parser("recipe", help="Save an edit recipe JSON file.")
     recipe_parser.add_argument("output", type=Path)
     add_adjustment_args(recipe_parser)
     recipe_parser.set_defaults(func=command_recipe)
 
+
+def _add_render_parser(subparsers: _Subparsers) -> None:
     render_parser = subparsers.add_parser("render", help="Apply edits to one image.")
     render_parser.add_argument("input", type=Path)
     render_parser.add_argument("output", type=Path)
@@ -520,6 +527,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_adjustment_args(render_parser)
     render_parser.set_defaults(func=command_render)
 
+
+def _add_spot_parser(subparsers: _Subparsers) -> None:
     spot_parser = subparsers.add_parser("spot", help="Blend a small median-filtered cleanup patch.")
     spot_parser.add_argument("input", type=Path)
     spot_parser.add_argument("output", type=Path)
@@ -530,24 +539,32 @@ def build_parser() -> argparse.ArgumentParser:
     spot_parser.add_argument("--quality", type=int, default=95)
     spot_parser.set_defaults(func=command_spot)
 
+
+def _add_session_new_parser(subparsers: _Subparsers) -> None:
     session_new = subparsers.add_parser("session-new", help="Create a canonical JSON edit sidecar.")
     session_new.add_argument("image", type=Path)
     session_new.add_argument("--out", type=Path)
     session_new.add_argument("--json", action="store_true")
     session_new.set_defaults(func=command_session_new)
 
+
+def _add_session_info_parser(subparsers: _Subparsers) -> None:
     session_info = subparsers.add_parser("session-info", help="Show JSON edit sidecar summary.")
     session_info.add_argument("session", type=Path)
     session_info.add_argument("--json", action="store_true")
     session_info.add_argument("--strict", action="store_true")
     session_info.set_defaults(func=command_session_info)
 
+
+def _add_validate_parser(subparsers: _Subparsers) -> None:
     validate = subparsers.add_parser("validate", help="Validate a JSON edit sidecar.")
     validate.add_argument("session", type=Path)
     validate.add_argument("--strict", action="store_true")
     validate.add_argument("--json", action="store_true")
     validate.set_defaults(func=command_validate)
 
+
+def _add_migrate_parser(subparsers: _Subparsers) -> None:
     migrate = subparsers.add_parser("migrate", help="Validate and rewrite a session at a target schema version.")
     migrate.add_argument("session", type=Path)
     migrate.add_argument("--to", type=int, default=1)
@@ -555,6 +572,8 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--json", action="store_true")
     migrate.set_defaults(func=command_migrate)
 
+
+def _add_op_add_parser(subparsers: _Subparsers) -> None:
     op_add = subparsers.add_parser("op-add", help="Add an ordered session operation.")
     op_add.add_argument("session", type=Path)
     op_add.add_argument("type")
@@ -568,6 +587,8 @@ def build_parser() -> argparse.ArgumentParser:
     op_add.add_argument("--last", action="store_true")
     op_add.set_defaults(func=command_op_add)
 
+
+def _add_op_set_parser(subparsers: _Subparsers) -> None:
     op_set = subparsers.add_parser("op-set", help="Update an existing session operation.")
     op_set.add_argument("session", type=Path)
     op_set.add_argument("op_id")
@@ -578,6 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
     op_set.add_argument("--space")
     op_set.set_defaults(func=command_op_set)
 
+
+def _add_op_move_parser(subparsers: _Subparsers) -> None:
     op_move = subparsers.add_parser("op-move", help="Move an operation by op-id.")
     op_move.add_argument("session", type=Path)
     op_move.add_argument("op_id")
@@ -587,11 +610,15 @@ def build_parser() -> argparse.ArgumentParser:
     op_move.add_argument("--last", action="store_true")
     op_move.set_defaults(func=command_op_move)
 
+
+def _add_op_delete_parser(subparsers: _Subparsers) -> None:
     op_delete = subparsers.add_parser("op-delete", help="Delete an operation by op-id.")
     op_delete.add_argument("session", type=Path)
     op_delete.add_argument("op_id")
     op_delete.set_defaults(func=command_op_delete)
 
+
+def _add_wb_kelvin_parser(subparsers: _Subparsers) -> None:
     wb_kelvin = subparsers.add_parser("wb-kelvin", help="Add a Kelvin white balance operation.")
     wb_kelvin.add_argument("session", type=Path)
     wb_kelvin.add_argument("--id")
@@ -604,6 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
     wb_kelvin.add_argument("--last", action="store_true")
     wb_kelvin.set_defaults(func=command_wb_kelvin)
 
+
+def _add_levels_parser(subparsers: _Subparsers) -> None:
     levels = subparsers.add_parser("levels", help="Add a levels operation.")
     levels.add_argument("session", type=Path)
     levels.add_argument("--id")
@@ -617,6 +646,8 @@ def build_parser() -> argparse.ArgumentParser:
     levels.add_argument("--last", action="store_true")
     levels.set_defaults(func=command_levels)
 
+
+def _add_point_curve_parser(subparsers: _Subparsers) -> None:
     point_curve = subparsers.add_parser("point-curve", help="Add a point curve operation.")
     point_curve.add_argument("session", type=Path)
     point_curve.add_argument("--id")
@@ -628,6 +659,8 @@ def build_parser() -> argparse.ArgumentParser:
     point_curve.add_argument("--last", action="store_true")
     point_curve.set_defaults(func=command_point_curve)
 
+
+def _add_crop_preset_parser(subparsers: _Subparsers) -> None:
     crop_preset = subparsers.add_parser("crop-preset", help="Add a crop preset operation.")
     crop_preset.add_argument("session", type=Path)
     crop_preset.add_argument("--id")
@@ -640,6 +673,8 @@ def build_parser() -> argparse.ArgumentParser:
     crop_preset.add_argument("--last", action="store_true")
     crop_preset.set_defaults(func=command_crop_preset)
 
+
+def _add_space_add_parser(subparsers: _Subparsers) -> None:
     space_add = subparsers.add_parser("space-add", help="Add or replace a coordinate space.")
     space_add.add_argument("session", type=Path)
     space_add.add_argument("--id", required=True)
@@ -648,6 +683,8 @@ def build_parser() -> argparse.ArgumentParser:
     space_add.add_argument("--crop", help="left,top,right,bottom")
     space_add.set_defaults(func=command_space_add)
 
+
+def _add_mask_radial_parser(subparsers: _Subparsers) -> None:
     mask_radial = subparsers.add_parser("mask-radial", help="Add or replace a radial mask.")
     mask_radial.add_argument("session", type=Path)
     mask_radial.add_argument("--id", required=True)
@@ -662,6 +699,8 @@ def build_parser() -> argparse.ArgumentParser:
     mask_radial.add_argument("--invert", action="store_true")
     mask_radial.set_defaults(func=command_mask_radial)
 
+
+def _add_mask_gradient_parser(subparsers: _Subparsers) -> None:
     mask_gradient = subparsers.add_parser("mask-gradient", help="Add or replace a linear gradient mask.")
     mask_gradient.add_argument("session", type=Path)
     mask_gradient.add_argument("--id", required=True)
@@ -675,6 +714,8 @@ def build_parser() -> argparse.ArgumentParser:
     mask_gradient.add_argument("--invert", action="store_true")
     mask_gradient.set_defaults(func=command_mask_gradient)
 
+
+def _add_mask_painted_add_parser(subparsers: _Subparsers) -> None:
     mask_painted = subparsers.add_parser("mask-painted-add", help="Copy a hand-painted bitmap mask asset into the session assets directory.")
     mask_painted.add_argument("session", type=Path)
     mask_painted.add_argument("--id", required=True)
@@ -682,6 +723,8 @@ def build_parser() -> argparse.ArgumentParser:
     mask_painted.add_argument("--png", type=Path, required=True)
     mask_painted.set_defaults(func=command_mask_painted_add)
 
+
+def _add_mask_subject_parser(subparsers: _Subparsers) -> None:
     mask_subject = subparsers.add_parser("mask-subject", help="Register a cached subject mask with pinned model identity.")
     mask_subject.add_argument("session", type=Path)
     mask_subject.add_argument("--id", required=True)
@@ -692,6 +735,8 @@ def build_parser() -> argparse.ArgumentParser:
     mask_subject.add_argument("--cache-png", type=Path)
     mask_subject.set_defaults(func=command_mask_subject)
 
+
+def _add_mask_refine_luma_parser(subparsers: _Subparsers) -> None:
     mask_luma = subparsers.add_parser("mask-refine-luma", help="Append a luminance range refinement to a mask.")
     mask_luma.add_argument("session", type=Path)
     mask_luma.add_argument("mask_id")
@@ -701,6 +746,8 @@ def build_parser() -> argparse.ArgumentParser:
     mask_luma.add_argument("--invert", action="store_true")
     mask_luma.set_defaults(func=command_mask_refine, refine_type="luminance-range")
 
+
+def _add_mask_refine_color_parser(subparsers: _Subparsers) -> None:
     mask_color = subparsers.add_parser("mask-refine-color", help="Append a color range refinement to a mask.")
     mask_color.add_argument("session", type=Path)
     mask_color.add_argument("mask_id")
@@ -712,28 +759,80 @@ def build_parser() -> argparse.ArgumentParser:
     mask_color.add_argument("--invert", action="store_true")
     mask_color.set_defaults(func=command_mask_refine, refine_type="color-range")
 
+
+def _add_mask_bounds_parser(subparsers: _Subparsers) -> None:
     mask_bounds = subparsers.add_parser("mask-bounds", help="Append an expand/contract refinement to a mask.")
     mask_bounds.add_argument("session", type=Path)
     mask_bounds.add_argument("mask_id")
     mask_bounds.add_argument("--pixels", type=int, required=True)
     mask_bounds.set_defaults(func=command_mask_refine, refine_type="bounds")
 
+
+def _add_mask_delete_parser(subparsers: _Subparsers) -> None:
     mask_delete = subparsers.add_parser("mask-delete", help="Delete a mask by id.")
     mask_delete.add_argument("session", type=Path)
     mask_delete.add_argument("mask_id")
     mask_delete.add_argument("--force", action="store_true")
     mask_delete.set_defaults(func=command_mask_delete)
 
+
+def _add_relink_parser(subparsers: _Subparsers) -> None:
     relink_parser = subparsers.add_parser("relink", help="Repair broken lastKnownPath hints by hash matching.")
     relink_parser.add_argument("dir", type=Path)
     relink_parser.add_argument("--sessions", default="*.edit.json")
     relink_parser.add_argument("--json", action="store_true")
     relink_parser.set_defaults(func=command_relink)
 
+
+def _add_export_xmp_parser(subparsers: _Subparsers) -> None:
     export_xmp_parser = subparsers.add_parser("export-xmp", help="One-way rough XMP export from JSON session.")
     export_xmp_parser.add_argument("session", type=Path)
     export_xmp_parser.add_argument("--out", type=Path)
     export_xmp_parser.set_defaults(func=command_export_xmp)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="photoedit")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Registration order is the order the subcommands are listed in ``--help``.
+    # Image commands.
+    _add_inspect_parser(subparsers)
+    _add_preview_parser(subparsers)
+    _add_recipe_parser(subparsers)
+    _add_render_parser(subparsers)
+    _add_spot_parser(subparsers)
+
+    # Session files: create, inspect, validate, migrate.
+    _add_session_new_parser(subparsers)
+    _add_session_info_parser(subparsers)
+    _add_validate_parser(subparsers)
+    _add_migrate_parser(subparsers)
+
+    # Edit the session's ordered operation list.
+    _add_op_add_parser(subparsers)
+    _add_op_set_parser(subparsers)
+    _add_op_move_parser(subparsers)
+    _add_op_delete_parser(subparsers)
+    _add_wb_kelvin_parser(subparsers)
+    _add_levels_parser(subparsers)
+    _add_point_curve_parser(subparsers)
+    _add_crop_preset_parser(subparsers)
+
+    # Coordinate spaces and masks.
+    _add_space_add_parser(subparsers)
+    _add_mask_radial_parser(subparsers)
+    _add_mask_gradient_parser(subparsers)
+    _add_mask_painted_add_parser(subparsers)
+    _add_mask_subject_parser(subparsers)
+    _add_mask_refine_luma_parser(subparsers)
+    _add_mask_refine_color_parser(subparsers)
+    _add_mask_bounds_parser(subparsers)
+    _add_mask_delete_parser(subparsers)
+
+    # Repair and export.
+    _add_relink_parser(subparsers)
+    _add_export_xmp_parser(subparsers)
 
     return parser
 

@@ -100,6 +100,12 @@ def main() -> int:
         splash.finish(window)
     elif not quick_view:
         window.show()
+    if not quick_view:
+        # The popout viewer is built on first use rather than during startup
+        # (WI-8.1); pre-build it in idle time once the window is up so the first
+        # Space press doesn't pay for it. A quick-view launch needs it at once
+        # and builds it synchronously when it opens the image.
+        window.schedule_deferred_preview_build()
     return app.exec()
 
 

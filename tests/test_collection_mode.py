@@ -71,6 +71,9 @@ class _ModeHost(QWidget):
     def statusBar(self) -> QStatusBar:
         return self._status
 
+    def _preview_if_built(self):
+        return self.preview  # the stub stands in for an already-built viewer
+
     def _set_browser_view_mode(self, mode: str) -> None:
         self._browser_view_mode = mode
 
