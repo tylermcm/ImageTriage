@@ -13,6 +13,7 @@ import ctypes
 import ctypes.wintypes
 import csv
 import json
+import logging
 import os
 import re
 import shutil
@@ -78,7 +79,6 @@ from .ai_model import (
     DEFAULT_AICULLER_CLIP_SIZE_MB,
     DEFAULT_AICULLER_FACE_SIZE_MB,
     DEFAULT_AICULLER_TOPIQ_SIZE_MB,
-    DEFAULT_SEMANTIC_MODEL_SIZE_MB,
     download_ai_model as download_managed_ai_model,
     resolve_aiculler_clip_model_installation,
     resolve_aiculler_face_model_installation,
@@ -1876,6 +1876,9 @@ def _cleanup_pocketdrop_edited_exports() -> None:
         pass
 
 
+_logger = logging.getLogger(__name__)
+
+
 class MainWindow(QMainWindow):
     """Top-level application window.
 
@@ -2020,6 +2023,10 @@ class MainWindow(QMainWindow):
     # session before handing it to PocketDrop, instead of always sending the
     # unedited original.
     APPLY_EDITS_TO_POCKETDROP_KEY = "workflow/apply_edits_to_pocketdrop"
+    # WI-4.7: remembers the last choice made on the Move/Copy confirmation
+    # dialog's "Include paired RAW/JPEG and sidecar files" checkbox. Defaults
+    # to True so the first run preserves today's always-bundled behavior.
+    TRANSFER_INCLUDE_COMPANIONS_KEY = "workflow/transfer_include_companions"
     # Keep diagnostics focused on the active UI investigations so the JSONL log
     # remains readable while still capturing the popout's full loading path.
     # editslider.* stays available for slider-latency profiling under perf logging.
@@ -2846,12 +2853,6 @@ class MainWindow(QMainWindow):
         self._show_ai_tags_in_grid = self._settings.value(self.SHOW_AI_TAGS_IN_GRID_KEY, False, bool)
         self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
         self._apply_edits_to_pocketdrop = self._settings.value(self.APPLY_EDITS_TO_POCKETDROP_KEY, False, bool)
-        # Stub: the semantic-sidecar setting used to flip a stage count and
-        # gate a legacy semantic model. With CLI-Culler driving the pipeline
-        # the flag is no longer meaningful, but a couple of legacy status-line
-        # helpers still read it — keep it as a constant False so they evaluate
-        # to a tidy "disabled" path until those helpers go too.
-        self._ai_semantic_sidecar_enabled = False
         self._phash_prefilter_settings = self._load_phash_prefilter_settings()
         self._catalog_load_source = "idle"
         self._catalog_load_detail = "Ready"
@@ -4171,7 +4172,7 @@ class MainWindow(QMainWindow):
                 ctypes.windll.user32.ShowWindow(int(self.winId()), 3)  # type: ignore[attr-defined]  # SW_MAXIMIZE
                 return
             except (AttributeError, OSError):
-                pass
+                _logger.warning("Native ShowWindow(SW_MAXIMIZE) failed; falling back to Qt showMaximized", exc_info=True)
         super().showMaximized()
 
     def showNormal(self) -> None:  # type: ignore[override]
@@ -4185,7 +4186,7 @@ class MainWindow(QMainWindow):
                     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                     return
             except (AttributeError, OSError):
-                pass
+                _logger.warning("Native ShowWindow(SW_RESTORE) failed; falling back to Qt showNormal", exc_info=True)
         super().showNormal()
 
     def _toggle_maximized(self) -> None:
@@ -4226,6 +4227,7 @@ class MainWindow(QMainWindow):
             # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
             user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010)
         except (AttributeError, OSError, ValueError):
+            _logger.warning("Failed to install the custom window frame; disabling it", exc_info=True)
             self._custom_frame = False
 
     @staticmethod
@@ -7389,7 +7391,7 @@ class MainWindow(QMainWindow):
             temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             temp_path.replace(self._child_sync_state_path)
         except OSError:
-            pass
+            _logger.exception("Failed to write child sync state to %s", self._child_sync_state_path)
 
     def _register_child_process(self, process: subprocess.Popen[str], *, name: str) -> None:
         pid = int(getattr(process, "pid", 0) or 0)
@@ -7451,7 +7453,7 @@ class MainWindow(QMainWindow):
         try:
             self._child_sync_state_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            _logger.exception("Failed to remove child sync state file %s", self._child_sync_state_path)
 
     def _apply_default_workspace(self) -> None:
         if self.workspace_docks is None:
@@ -7509,7 +7511,7 @@ class MainWindow(QMainWindow):
         try:
             self._suspend_background_indexing()
         except Exception:
-            pass
+            _logger.exception("Failed to suspend background indexing before dev restart")
         try:
             # Kill the mask_engine_worker child directly rather than via
             # service.shutdown(): shutdown() takes the service lock, which would
@@ -7521,7 +7523,7 @@ class MainWindow(QMainWindow):
             if worker is not None and worker.poll() is None:
                 worker.kill()
         except Exception:
-            pass
+            _logger.exception("Failed to kill mask_engine_worker before dev restart")
 
         args = [sys.executable, "-m", "image_triage", *sys.argv[1:]]
         cwd = Path(__file__).resolve().parent.parent
@@ -7849,18 +7851,11 @@ class MainWindow(QMainWindow):
         clip_missing = not self._aiculler_clip_model_available()
         topiq_missing = not self._aiculler_topiq_model_available()
         face_missing = not self._aiculler_face_model_available()
-        semantic_missing = (
-            self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
-        )
         model_specs = [
             ("CLIP", DEFAULT_AICULLER_CLIP_SIZE_MB, clip_missing),
             ("TOPIQ", DEFAULT_AICULLER_TOPIQ_SIZE_MB, topiq_missing),
             ("InsightFace", DEFAULT_AICULLER_FACE_SIZE_MB, face_missing),
         ]
-        if self._ai_semantic_sidecar_enabled:
-            model_specs.append(
-                ("Semantic CLIP", DEFAULT_SEMANTIC_MODEL_SIZE_MB, semantic_missing)
-            )
         missing_model_mb = sum(size for _name, size, missing in model_specs if missing)
 
         dialog = QDialog(self)
@@ -8041,16 +8036,6 @@ class MainWindow(QMainWindow):
         self._install_ai_runtime()
         return False
 
-    def _ensure_semantic_model_available(self, *, title: str) -> bool:
-        if not self._ai_semantic_sidecar_enabled or self._semantic_model_available():
-            return True
-        if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
-            self.statusBar().showMessage("An AI component install is already running.")
-            return False
-        self.statusBar().showMessage("Semantic AI model is required before running AI review.")
-        self._prompt_for_ai_model_install(automatic=False)
-        return False
-
     def _migrate_managed_ai_assets(self) -> None:
         from .ai_model_store import migrate_ai_assets, recover_interrupted_activations
 
@@ -8095,13 +8080,11 @@ class MainWindow(QMainWindow):
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
         aiculler_face_missing = not self._aiculler_face_model_available()
-        semantic_model_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
         if (
             not runtime_missing
             and not aiculler_clip_missing
             and not aiculler_topiq_missing
             and not aiculler_face_missing
-            and not semantic_model_missing
         ):
             return
         if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
@@ -8121,14 +8104,13 @@ class MainWindow(QMainWindow):
                 aiculler_clip_missing
                 or aiculler_topiq_missing
                 or aiculler_face_missing
-                or semantic_model_missing
             ),
             default_install_runtime=runtime_missing,
             default_include_torch_runtime=True,
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_semantic_model=semantic_model_missing,
+            default_download_semantic_model=False,
         )
         if selection is None:
             self.statusBar().showMessage("AI setup skipped for now.")
@@ -8175,7 +8157,6 @@ class MainWindow(QMainWindow):
         aiculler_clip_missing = not self._aiculler_clip_model_available()
         aiculler_topiq_missing = not self._aiculler_topiq_model_available()
         aiculler_face_missing = not self._aiculler_face_model_available()
-        semantic_missing = self._ai_semantic_sidecar_enabled and not self._semantic_model_available()
         selection = self._show_ai_setup_dialog(
             automatic=automatic,
             title="Set Up AI",
@@ -8187,7 +8168,7 @@ class MainWindow(QMainWindow):
             default_download_aiculler_clip_model=aiculler_clip_missing,
             default_download_aiculler_topiq_model=aiculler_topiq_missing,
             default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_semantic_model=semantic_missing,
+            default_download_semantic_model=False,
         )
         if selection is None:
             self.statusBar().showMessage("AI setup skipped for now.")
@@ -9571,7 +9552,7 @@ class MainWindow(QMainWindow):
         task.signals.failed.connect(self._handle_workflow_export_failed, Qt.ConnectionType.QueuedConnection)
         self._active_workflow_export_task = task
         self._workflow_export_pool.start(task)
-        self.statusBar().showMessage(f"Running workflow recipe: {plan.recipe.name}")
+        self.statusBar().showMessage(f"Running export recipe: {plan.recipe.name}")
         return True
 
     def _handle_workflow_export_started(self, total_steps: int) -> None:
@@ -10150,7 +10131,7 @@ class MainWindow(QMainWindow):
                     disputes = self._load_aiculler_internal_disputes(paths)
                     self.grid.set_disputed_paths(set(disputes.keys()))
                 except Exception:
-                    pass
+                    _logger.exception("Failed to load disputed paths for AI Review; Disputed badges will not show")
             self._recompute_user_label_bucket_overrides()
             # Don't call _load_hidden_ai_results_for_current_folder /
             # _restore_ai_results here — both do synchronous load_ai_bundle()
@@ -11429,7 +11410,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         selected_records = records if records is not None else self._selected_records_for_workflow()
         if not selected_records:
-            self.statusBar().showMessage("Select one or more images before running a workflow recipe.")
+            self.statusBar().showMessage("Select one or more images before running an export recipe.")
             return
 
         destination_dir = self._workflow_destination_dir(recipe, destination_root)
@@ -11444,9 +11425,9 @@ class MainWindow(QMainWindow):
             plan = build_workflow_export_plan(sources, recipe, destination_dir=destination_dir)
             if not plan.can_apply:
                 if plan.general_error:
-                    QMessageBox.warning(self, "Workflow Recipe", plan.general_error)
+                    QMessageBox.warning(self, "Export Recipe", plan.general_error)
                 else:
-                    self.statusBar().showMessage("The workflow export plan could not be built.")
+                    self.statusBar().showMessage("The export plan could not be built.")
                 return
             self._start_workflow_export_task(plan)
             return
@@ -11466,14 +11447,14 @@ class MainWindow(QMainWindow):
             return
 
         if not destination_dir:
-            self.statusBar().showMessage("Choose a destination folder for this workflow recipe.")
+            self.statusBar().showMessage("Choose a destination folder for this export recipe.")
             return
 
         destructive = recipe.transfer_mode == RECIPE_TRANSFER_MOVE
         if destructive:
             confirmation = QMessageBox.question(
                 self,
-                "Run Workflow Recipe?",
+                "Run Export Recipe?",
                 f"This recipe moves the selected bundles into:\n\n{destination_dir}\n\nContinue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -11881,6 +11862,7 @@ class MainWindow(QMainWindow):
             # Global labels are a convenience layer. Folder-local labels remain
             # authoritative for the current workflow if the global DB is not
             # writable.
+            _logger.debug("Failed to save global aiculler label for %s", source_path, exc_info=True)
             return
 
     def _queue_aiculler_global_label(
@@ -11910,6 +11892,7 @@ class MainWindow(QMainWindow):
             finally:
                 store.close()
         except Exception:
+            _logger.debug("Failed to save global aiculler reason tags for %s", source_path, exc_info=True)
             return
 
     def _flush_aiculler_global_label_queue(self) -> None:
@@ -12842,7 +12825,7 @@ class MainWindow(QMainWindow):
             try:
                 self.grid._ensure_index_visible(index)
             except Exception:
-                pass
+                _logger.warning("Failed to scroll grid to next record needing a reason", exc_info=True)
             return
         self.statusBar().showMessage("All visible winner/reject labels have reasons.")
 
@@ -14997,11 +14980,13 @@ class MainWindow(QMainWindow):
         try:
             paths = self._aiculler_paths_for_current_folder()
         except Exception:
+            _logger.exception("Failed to resolve aiculler paths for adapter status indicator")
             paths = None
         if paths is not None:
             try:
                 summary = load_adapter_status_summary(aiculler_db_path(paths))
             except Exception:
+                _logger.exception("Failed to load adapter status summary")
                 summary = None
         text, tooltip = self._adapter_status_display(summary)
         self.adapter_status_label.setText(text)
@@ -15011,6 +14996,7 @@ class MainWindow(QMainWindow):
         try:
             paths = self._aiculler_paths_for_current_folder()
         except Exception:
+            _logger.exception("Failed to resolve aiculler paths for winner scores")
             paths = None
         if paths is None:
             self._winner_scores_by_path = {}
@@ -15025,6 +15011,7 @@ class MainWindow(QMainWindow):
                 model_version=WINNER_SCORE_FALLBACK_MODEL_VERSION,
             )
         except Exception:
+            _logger.exception("Failed to load winner scores from %s", db_path)
             self._winner_scores_by_path = {}
             self._winner_scores_model_version = ""
             self._winner_scores_label_count = 0
@@ -15050,6 +15037,7 @@ class MainWindow(QMainWindow):
         try:
             paths = self._aiculler_paths_for_current_folder()
         except Exception:
+            _logger.exception("Failed to resolve aiculler paths for face records")
             paths = None
         if paths is None:
             self._face_records_by_path = {}
@@ -15059,6 +15047,7 @@ class MainWindow(QMainWindow):
         try:
             self._face_records_by_path = load_face_records_by_path(db_path)
         except Exception:
+            _logger.exception("Failed to load face records from %s", db_path)
             self._face_records_by_path = {}
         self._face_records_db_path = str(db_path)
         return bool(self._face_records_by_path)
@@ -15070,6 +15059,7 @@ class MainWindow(QMainWindow):
             paths = self._aiculler_paths_for_current_folder()
             db_path = str(aiculler_db_path(paths))
         except Exception:
+            _logger.exception("Failed to resolve aiculler db path for face bundle lookup")
             db_path = ""
         if db_path and db_path != self._face_records_db_path:
             self._refresh_face_records_for_current_folder()
@@ -15101,6 +15091,7 @@ class MainWindow(QMainWindow):
         try:
             paths = self._aiculler_paths_for_current_folder()
         except Exception:
+            _logger.exception("Failed to resolve aiculler paths for image categories")
             paths = None
         if paths is None:
             self._image_categories_by_path = {}
@@ -15110,6 +15101,7 @@ class MainWindow(QMainWindow):
         try:
             self._image_categories_by_path = load_image_categories_by_path(db_path)
         except Exception:
+            _logger.exception("Failed to load image categories from %s", db_path)
             self._image_categories_by_path = {}
         self._image_categories_db_path = str(db_path)
         return bool(self._image_categories_by_path)
@@ -15121,6 +15113,7 @@ class MainWindow(QMainWindow):
             paths = self._aiculler_paths_for_current_folder()
             db_path = str(aiculler_db_path(paths))
         except Exception:
+            _logger.exception("Failed to resolve aiculler db path for category info lookup")
             db_path = ""
         if db_path and db_path != self._image_categories_db_path:
             self._refresh_image_categories_for_current_folder()
@@ -15499,7 +15492,7 @@ class MainWindow(QMainWindow):
         self._ai_bundle = None
         if self._active_ai_task is None:
             self._ai_stage_index = 0
-            self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
+            self._ai_stage_total = 3
             self._ai_stage_message = "Ready to run AI review"
             self._ai_progress_current = 0
             self._ai_progress_total = 0
@@ -15578,8 +15571,8 @@ class MainWindow(QMainWindow):
         if source_path:
             self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
         if self._active_ai_task is None:
-            self._ai_stage_index = 4 if self._ai_semantic_sidecar_enabled else 3
-            self._ai_stage_total = 4 if self._ai_semantic_sidecar_enabled else 3
+            self._ai_stage_index = 3
+            self._ai_stage_total = 3
             self._ai_stage_message = "Saved AI cache loaded"
             self._ai_progress_current = 0
             self._ai_progress_total = 0
@@ -16025,10 +16018,12 @@ class MainWindow(QMainWindow):
         try:
             probe["aiculler_available"] = bool(folder and aiculler_db_path(build_aiculler_workflow_paths(folder)).exists())
         except Exception:
+            _logger.exception("Failed to probe aiculler availability for %s", folder)
             probe["aiculler_available"] = False
         try:
             probe["phash_available"] = bool(folder and build_phash_prefilter_paths(folder).rows_path.exists())
         except Exception:
+            _logger.exception("Failed to probe phash prefilter availability for %s", folder)
             probe["phash_available"] = False
         self._ai_folder_probe_cache = probe
         return probe
@@ -16171,8 +16166,6 @@ class MainWindow(QMainWindow):
             self.ai_status_label.setText("AI runtime not installed")
         elif not culler_runtime_ready:
             self.ai_status_label.setText("AI culling models not installed")
-        elif self._ai_semantic_sidecar_enabled and not semantic_model_ready:
-            self.ai_status_label.setText("Semantic AI model not installed")
         elif ai_loaded and self._ai_bundle is not None:
             export_name = Path(self._ai_bundle.export_csv_path).name
             self.ai_status_label.setText(f"Loaded {export_name}")
@@ -16509,7 +16502,7 @@ class MainWindow(QMainWindow):
         if ai_pick_paths:
             # Routed through the same progress-dialog-and-cancel transfer the
             # ordinary drag-drop/manual batch move uses (RecordOpsController.
-            # move_records_by_paths -> transfer_progress.run_move_transfer),
+            # move_records_by_paths -> transfer_progress.run_file_transfer),
             # rather than looping _move_record_to_path per file: hundreds of
             # AI Picks used to move with no feedback and no way to cancel.
             # The shared batch_id keeps this half of the action in the same
@@ -17398,6 +17391,7 @@ class MainWindow(QMainWindow):
                     adapter_version = latest_adapter_model_version(db_path)
                     self._aiculler_telemetry_adapter_version_cache[cache_key] = (mtime_ns, adapter_version)
             except Exception:
+                _logger.exception("Failed to resolve adapter version for telemetry event")
                 adapter_version = ""
         event = TelemetryEvent(
             image_id=str(getattr(raw_result, "image_id", "") or record.path),
@@ -17464,6 +17458,7 @@ class MainWindow(QMainWindow):
         try:
             paths = self._aiculler_paths_for_current_folder()
         except Exception:
+            _logger.exception("Failed to resolve aiculler paths for user label bucket overrides")
             paths = None
         if paths is None:
             self._user_label_bucket_overrides = overrides
@@ -17472,6 +17467,7 @@ class MainWindow(QMainWindow):
         try:
             labels = self._load_aiculler_internal_labels(paths)
         except Exception:
+            _logger.exception("Failed to load aiculler internal labels for bucket overrides")
             labels = {}
         for path, label in labels.items():
             bucket_name = self._USER_LABEL_TO_BUCKET.get(str(label).strip().lower())
@@ -17480,6 +17476,7 @@ class MainWindow(QMainWindow):
         try:
             disputes = self._load_aiculler_internal_disputes(paths)
         except Exception:
+            _logger.exception("Failed to load aiculler internal disputes for bucket overrides")
             disputes = {}
         for path in disputes:
             disputed_keys.add(_memory_path_key(path))
@@ -17655,6 +17652,7 @@ class MainWindow(QMainWindow):
         try:
             decisions = load_phash_prefilter_decisions(build_phash_prefilter_paths(self._current_folder))
         except Exception:
+            _logger.exception("Failed to load phash prefilter decisions for %s", self._current_folder)
             decisions = {}
         self._prefilter_decisions_by_path = {
             normalized_path_key(path): decision
@@ -17698,6 +17696,7 @@ class MainWindow(QMainWindow):
                     if sibling_key:
                         sibling_keys.add(sibling_key)
         except Exception:
+            _logger.exception("Failed to refresh aiculler ingested paths for %s", self._current_folder)
             path_keys = set()
             sibling_keys = set()
         self._aiculler_ingested_path_keys = path_keys

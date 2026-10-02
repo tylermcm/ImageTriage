@@ -13,7 +13,9 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QIcon, QImageReader
 from PySide6.QtWidgets import QApplication
 
+from image_triage.app_data_migration import migrate_legacy_app_data_once
 from image_triage.app_identity import migrate_legacy_settings_once
+from image_triage.app_logging import configure_app_logging
 from image_triage.formats import is_image_file_candidate
 from image_triage.updater import current_app_version
 
@@ -52,16 +54,21 @@ def is_quick_view_launch_target(target: str) -> bool:
 
 
 def main() -> int:
+    configure_app_logging()
     _configure_windows_app_identity()
-    # QSettings now lives under one identity, HKCU\Software\Image Triage (see
-    # app_identity.py). The organisation name below is intentionally still
-    # "Codex": it also drives QStandardPaths (thumbnail cache,
-    # decisions.sqlite3), and moving those is a separate migration
-    # (WI-3.5/3.6), not this one.
-    QCoreApplication.setOrganizationName("Codex")
+    # QSettings lives under one identity, HKCU\Software\Image Triage (see
+    # app_identity.py). The organisation name below also drives
+    # QStandardPaths (thumbnail cache, decisions.sqlite3, and everything
+    # under AppDataLocation/AppLocalDataLocation): it used to stay "Codex"
+    # here deliberately, because flipping it would silently relocate that
+    # data. WI-3.6 replaced that silence with an explicit, verified,
+    # one-time migration (migrate_legacy_app_data_once, just below), so the
+    # org name can now simply be "Image Triage" like everything else.
+    QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
     QCoreApplication.setApplicationVersion(current_app_version())
     migrate_legacy_settings_once()
+    migrate_legacy_app_data_once()
     # Large edited derivatives can legitimately exceed Qt's conservative default.
     QImageReader.setAllocationLimit(1024)
 

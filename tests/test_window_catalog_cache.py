@@ -305,7 +305,6 @@ class _WindowAiRunStub:
         self._current_folder = folder
         self._all_records = records
         self._ai_runtime = default_ai_workflow_runtime()
-        self._ai_semantic_sidecar_enabled = False
         self._active_reference_bank_path = ""
         self._active_ai_task = None
         self._ai_run_pool = _AiRunPoolStub()
@@ -327,9 +326,6 @@ class _WindowAiRunStub:
         self.defer_background_calls = 0
 
     def _ensure_ai_model_available(self, *, title: str) -> bool:
-        return True
-
-    def _ensure_semantic_model_available(self, *, title: str) -> bool:
         return True
 
     def _ensure_ai_runtime_available(self, *, title: str) -> bool:
@@ -385,14 +381,12 @@ class _WindowAiRunFinishedStub:
         self._active_ai_cluster_cache_key = "cluster-finished"
         self._active_ai_report_cache_key = "report-finished"
         self._active_ai_semantic_cache_key = ""
-        self._ai_semantic_sidecar_enabled = False
         self._ai_stage_index = 0
         self._ai_stage_total = 3
         self._ai_stage_message = ""
         self._ai_progress_current = 0
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
-        self._ai_semantic_sidecar_enabled = False
         self.mode_tabs = _ModeTabsStub()
         self.load_ai_calls: list[tuple[str, bool]] = []
         self.completion_dialog_calls: list[dict[str, object]] = []
@@ -438,7 +432,6 @@ class _WindowAiResetStub:
         self._ai_progress_current = 1
         self._ai_progress_total = 1
         self._ai_progress_eta_text = ""
-        self._ai_semantic_sidecar_enabled = False
         self._settings = _SettingsStub()
         self._settings.setValue(self.AI_RESULTS_KEY, folder)
         self.refresh_calls = 0

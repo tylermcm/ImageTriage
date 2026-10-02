@@ -78,7 +78,7 @@ class HandoffBuilderDialog(QDialog):
         intro.setWordWrap(True)
         intro.setObjectName("secondaryText")
         intro_row.addWidget(intro, 1)
-        help_button = build_help_button(self, tooltip="Open workflow recipe help")
+        help_button = build_help_button(self, tooltip="Open export recipe help")
         help_button.clicked.connect(self._show_help)
         intro_row.addWidget(help_button, 0, Qt.AlignmentFlag.AlignTop)
         root_layout.addLayout(intro_row)
@@ -235,7 +235,7 @@ class HandoffBuilderDialog(QDialog):
     def _show_help(self) -> None:
         show_paged_help(
             self,
-            title="Workflow Recipe Help",
+            title="Export Recipe Help",
             pages=workflow_builder_help_pages(),
         )
 
@@ -288,7 +288,7 @@ class HandoffBuilderDialog(QDialog):
         self._update_summary()
 
     def _recipe_from_fields(self) -> WorkflowRecipe:
-        name = " ".join(self.recipe_name_field.text().split()) or "Workflow Recipe"
+        name = " ".join(self.recipe_name_field.text().split()) or "Export Recipe"
         return WorkflowRecipe(
             key=recipe_key_for_name(name) or "workflow_recipe",
             name=name,

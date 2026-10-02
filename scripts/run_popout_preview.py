@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
-    QCoreApplication.setOrganizationName("Codex")
+    QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
     app = QApplication([sys.argv[0]])
     preview = FullScreenPreview()

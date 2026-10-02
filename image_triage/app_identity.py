@@ -6,10 +6,12 @@ organisation/application name), a stray ``ImageTriage\\ImageTriage`` used
 only by ``ui/shortcuts.py``, and whatever a bare ``QSettings()`` call picked
 up. All settings now live under one key, ``HKCU\\Software\\Image Triage``
 (no doubled ``Image Triage\\Image Triage`` segment), read through
-:func:`user_settings`. ``QCoreApplication``'s organisation name stays
-"Codex" for now: it also drives ``QStandardPaths`` (the thumbnail cache and
-``decisions.sqlite3``), and moving those is a separate, data-migration-heavy
-piece of work (WI-3.5/3.6), not this one.
+:func:`user_settings`. ``QCoreApplication``'s organisation name was left as
+"Codex" for a while after this landed, since it also drives
+``QStandardPaths`` (the thumbnail cache, ``decisions.sqlite3``, and more) and
+moving those needed a real data migration, not just a rename - WI-3.6 added
+that migration (see ``app_data_migration.py``), so ``main.py`` now sets the
+organisation name to "Image Triage" too.
 """
 from __future__ import annotations
 

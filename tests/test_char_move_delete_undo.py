@@ -170,12 +170,121 @@ def test_copy_records_leaves_the_source_and_creates_the_copy(window, tmp_path) -
     assert _names(window) == ["a.jpg"]
 
 
+def test_copying_a_batch_goes_through_the_progress_and_cancel_transfer(window, tmp_path) -> None:
+    """WI-4.7: Copy used to be a plain per-file loop with no progress dialog
+    at all. It now routes through the same `run_file_transfer` mechanism
+    Move already used (WI-4.1b), with `keep_source=True`."""
+    source = tmp_path / "src"
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
+    dest = tmp_path / "dest"
+
+    with patch("image_triage.record_ops_controller.run_file_transfer") as mock_transfer:
+        mock_transfer.return_value = TransferResult(
+            moved={
+                0: (FileMove(source_path=a, target_path=str(dest / "a.jpg")),),
+                1: (FileMove(source_path=b, target_path=str(dest / "b.jpg")),),
+            }
+        )
+        copied = window._copy_records_by_paths([a, b], str(dest))
+
+    assert copied == 2
+    assert mock_transfer.call_args.kwargs["keep_source"] is True
+    # The source records are never removed from the view by a copy.
+    assert _names(window) == ["a.jpg", "b.jpg"]
+
+
+def test_copy_failure_reports_a_warning_and_counts_only_the_successes(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
+    dest = tmp_path / "dest"
+
+    with patch("image_triage.record_ops_controller.run_file_transfer") as mock_transfer, patch(
+        "image_triage.record_ops_controller.QMessageBox"
+    ) as mock_box:
+        mock_transfer.return_value = TransferResult(
+            moved={0: (FileMove(source_path=a, target_path=str(dest / "a.jpg")),)},
+            failed={1: "disk full"},
+        )
+        copied = window._copy_records_by_paths([a, b], str(dest))
+
+    assert copied == 1
+    mock_box.warning.assert_called_once()
+
+
+# ---- WI-4.7: confirm -> transfer -> completion for To Folder / To Recent --
+
+
+def test_declining_the_confirmation_makes_no_file_changes(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
+    dest = tmp_path / "dest"
+
+    with patch("image_triage.record_ops_controller.confirm_transfer", return_value=(False, True)) as mock_confirm:
+        window._record_ops._confirm_and_transfer(list(window._records), str(dest), mode="copy")
+
+    mock_confirm.assert_called_once()
+    assert not dest.exists()
+    assert _names(window) == ["a.jpg", "b.jpg"]
+
+
+def test_accepting_the_confirmation_runs_the_transfer_and_remembers_the_companions_choice(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    a, b = make_jpegs(source, ["a.jpg", "b.jpg"])
+    open_folder(window, source, 2)
+    dest = tmp_path / "dest"
+
+    with patch("image_triage.record_ops_controller.confirm_transfer", return_value=(True, False)), patch(
+        "image_triage.record_ops_controller.show_transfer_complete"
+    ) as mock_complete:
+        window._record_ops._confirm_and_transfer(list(window._records), str(dest), mode="copy")
+
+    assert (dest / "a.jpg").exists() and (dest / "b.jpg").exists()
+    assert window._settings.value(window.TRANSFER_INCLUDE_COMPANIONS_KEY, True, bool) is False
+    mock_complete.assert_called_once()
+    assert mock_complete.call_args.kwargs["count"] == 2
+
+
+def test_unchecking_include_companions_transfers_only_the_primary_file(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    (raw,) = make_jpegs(source, ["img.jpg"])
+    companion = source / "img.xmp"
+    companion.write_text("sidecar")
+    open_folder(window, source, 1)
+    record = window._records[0]
+    object.__setattr__(record, "companion_paths", (str(companion),))
+    dest = tmp_path / "dest"
+
+    with patch("image_triage.record_ops_controller.confirm_transfer", return_value=(True, False)):
+        window._record_ops.copy_selected_records_to_destination(str(dest))
+
+    assert (dest / "img.jpg").exists()
+    assert not (dest / "img.xmp").exists(), "unchecked companions must not be transferred"
+    assert companion.exists(), "the sidecar stays untouched at the source"
+
+
+def test_completion_dialog_is_skipped_for_a_single_file(window, tmp_path) -> None:
+    source = tmp_path / "src"
+    (a,) = make_jpegs(source, ["a.jpg"])
+    open_folder(window, source, 1)
+    dest = tmp_path / "dest"
+
+    with patch("image_triage.record_ops_controller.confirm_transfer", return_value=(True, True)), patch(
+        "image_triage.record_ops_controller.show_transfer_complete"
+    ) as mock_complete:
+        window._record_ops.copy_selected_records_to_destination(str(dest))
+
+    mock_complete.assert_not_called()
+
+
 def test_moving_a_batch_no_longer_rebuilds_the_view_once_per_record(window, tmp_path) -> None:
     """N9/WI-4.1b, fixed: `_move_records_by_paths` used to call
     `_remove_record` once per moved item (each a full `_apply_records_view`
     rebuild), so a rebuild count that scaled with the batch size. It now
     routes through `_remove_records_by_paths`, one rebuild for the whole
-    batch. There is still a little unrelated noise here — `run_move_transfer`
+    batch. There is still a little unrelated noise here — `run_file_transfer`
     spins a nested `QEventLoop` while its worker thread runs, and the
     directory watcher can notice the app's own file moves and queue its own
     refresh — so the count isn't pinned at exactly 1. What matters, and is
@@ -482,7 +591,7 @@ def test_undoing_past_an_already_empty_batch_is_a_safe_no_op(window, tmp_path) -
 
 
 # ---- WI-6.2: Apply AI Decisions -- thumbnail-grid confirmation + routing the
-# winners move through run_move_transfer -----------------------------------
+# winners move through run_file_transfer -----------------------------------
 
 def _set_ai_cull_groups(
     window,
@@ -611,7 +720,7 @@ def test_apply_ai_decisions_cancel_partway_through_winners_move_leaves_the_rest_
 ) -> None:
     """A user can cancel the winners move's progress dialog partway through a
     multi-file Apply AI Decisions run. `move_records_by_paths` only pushes
-    undo entries and removes records for the subset `run_move_transfer`
+    undo entries and removes records for the subset `run_file_transfer`
     actually reports as moved, so this should naturally do the right thing:
     the moved subset is gone from the view and undoable, the rest stays on
     disk and in the grid untouched, and the Reject loop / follow-up status
@@ -639,7 +748,7 @@ def test_apply_ai_decisions_cancel_partway_through_winners_move_leaves_the_rest_
     ):
         patch_exec, _captured = _accept_apply_ai_dialog(window)
         with patch_exec, patch(
-            "image_triage.record_ops_controller.run_move_transfer", return_value=fake_result
+            "image_triage.record_ops_controller.run_file_transfer", return_value=fake_result
         ):
             window._apply_ai_culling()
         # Captured immediately: the directory watcher can overwrite the

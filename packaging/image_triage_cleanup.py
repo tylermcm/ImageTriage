@@ -76,6 +76,10 @@ def _cleanup_paths(*, include_ai_cache: bool = True) -> list[Path]:
             [
                 appdata / "ImageTriage",
                 appdata / "Codex" / APP_NAME,
+                # Current identity post-WI-3.6 (QStandardPaths.AppDataLocation
+                # under organisation "Image Triage" doubles the segment, same
+                # as the pre-existing registry identity below).
+                appdata / APP_NAME / APP_NAME,
             ]
         )
     if local_appdata is not None:
@@ -83,6 +87,7 @@ def _cleanup_paths(*, include_ai_cache: bool = True) -> list[Path]:
             [
                 local_appdata / "ImageTriage",
                 local_appdata / "Codex" / APP_NAME,
+                local_appdata / APP_NAME / APP_NAME,
             ]
         )
     home = _home_path()

@@ -89,11 +89,11 @@ def ai_workflow_center_help_pages() -> tuple[HelpPage, ...]:
 def workflow_builder_help_pages() -> tuple[HelpPage, ...]:
     return (
         HelpPage(
-            "Workflow Recipes",
+            "Export Recipes",
             """
-            # Workflow recipes
+            # Export recipes
 
-            A workflow recipe is a saved export or handoff setup. Recipes let you repeat the same output process without rebuilding the settings each time.
+            An export recipe is a saved export or handoff setup. Recipes let you repeat the same output process without rebuilding the settings each time.
 
             They are useful whenever you copy, move, resize, convert, export, or archive images the same way — for example:
 
