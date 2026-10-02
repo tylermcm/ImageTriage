@@ -362,7 +362,10 @@ class CatalogController:
         window._collection_target_id = collection.id if collection is not None else ""
         window.grid.set_collection_checkbox_mode(True, paths=collection.item_paths if collection is not None else ())
         window.grid.clear_selection(keep_current=True)
-        window.preview.set_collection_browse_mode(True)
+        # An unbuilt popout picks collection mode up when it is built.
+        preview = window._preview_if_built()
+        if preview is not None:
+            preview.set_collection_browse_mode(True)
         window.inspector_panel.setEnabled(False)
         window._set_browser_view_mode("grid")
         self.refresh_collection_mode_ui()
@@ -395,7 +398,9 @@ class CatalogController:
         window._collection_mode = ""
         window._collection_target_id = ""
         window.grid.set_collection_checkbox_mode(False)
-        window.preview.set_collection_browse_mode(False)
+        preview = window._preview_if_built()
+        if preview is not None:
+            preview.set_collection_browse_mode(False)
         window.inspector_panel.setEnabled(window._collection_previous_inspector_enabled)
         window.collection_mode_bar.hide()
         window._set_browser_view_mode(previous_view)

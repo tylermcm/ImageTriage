@@ -62,6 +62,35 @@ def test_baseline_folder_open_and_winner_toggle(main_window, tmp_path) -> None:
         _record(f"winner_toggle_{mode.name.lower()}_max_ms", _ms(max(timings)))
 
 
+# WI-8.1: a top-bar rebuild used to cost ~40 ms (two pages of buttons, each icon
+# trimmed by a per-pixel Python loop); it is now a few ms. The budget is loose on
+# purpose (several times the measured figure, well under the old one) so a slow
+# machine does not flake it while a reintroduced per-pixel loop still fails it.
+TOPBAR_REBUILD_BUDGET_MS = 20.0
+
+
+def test_baseline_topbar_rebuild(main_window) -> None:
+    main_window._rebuild_topbar_action_stack(force=True)  # warm the icon cache
+    widgets = sum(len(items) for items in main_window._topbar_action_items.values())
+    timings = []
+    for _ in range(15):
+        begin = time.perf_counter()
+        main_window._rebuild_topbar_action_stack(force=True)
+        timings.append(time.perf_counter() - begin)
+    median_ms = _ms(statistics.median(timings))
+    _record("topbar_rebuild_widgets", widgets)
+    _record("topbar_rebuild_forced_median_ms", median_ms)
+    _record("topbar_rebuild_forced_max_ms", _ms(max(timings)))
+
+    begin = time.perf_counter()
+    main_window._rebuild_topbar_action_stack()  # nothing changed since the forced rebuild above
+    _record("topbar_rebuild_unchanged_skip_ms", _ms(time.perf_counter() - begin))
+
+    assert median_ms < TOPBAR_REBUILD_BUDGET_MS, (
+        f"top-bar rebuild median {median_ms} ms exceeds the {TOPBAR_REBUILD_BUDGET_MS} ms budget"
+    )
+
+
 def test_baseline_editor_render(main_window) -> None:
     from image_triage.editor_render import CpuEditorRenderBackend
     from image_triage.ui.photo_editor_panel import EditRecipe

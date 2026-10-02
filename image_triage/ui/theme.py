@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
@@ -598,7 +599,33 @@ def build_app_palette(theme: ThemePalette) -> QPalette:
 
 
 def build_app_stylesheet(theme: ThemePalette) -> str:
-    metrics = WORKSPACE_METRICS
+    """The application-wide Qt stylesheet for ``theme``.
+
+    The text is assembled from small section functions, each returning the
+    rules for one widget family. ``_APP_STYLESHEET_SECTIONS`` (bottom of this
+    module) fixes their order, which matters: Qt resolves equal-specificity
+    rules by position, and the app compares stylesheet text for equality.
+
+    The sections in ``_APP_STYLESHEET_SECTIONS`` each start with a newline and
+    stop right after their last ``}``, so they join with no separator; the
+    original single string ended with a newline and a four-space indent, which
+    is restored here. The sections in ``_APP_STYLESHEET_PADDED_SECTIONS`` predate
+    the split and carry that leading newline and trailing indent themselves.
+    ``tests/test_stylesheet_golden.py`` pins the exact output.
+    """
+    body = "".join(section(theme) for section in _APP_STYLESHEET_SECTIONS)
+    padded = "".join(section(theme) for section in _APP_STYLESHEET_PADDED_SECTIONS)
+    return body + "\n    " + padded
+
+
+# --- Stylesheet sections -----------------------------------------------------
+# One function per widget family. Each returns its rules starting with a newline
+# and ending right after the last closing brace (no trailing newline), so the
+# pieces concatenate into exactly the text the original f-string produced.
+
+
+def _window_and_menu_rules(theme: ThemePalette) -> str:
+    """Base font, the main window surface, the menu bar and popup menus."""
     return f"""
         QWidget {{
             font-family: {UI_FONT_STACK};
@@ -644,7 +671,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             height: 1px;
             background: {theme.border_muted.css};
             margin: 6px 4px;
-        }}
+        }}"""
+
+
+def _toolbar_and_tool_button_rules(theme: ThemePalette) -> str:
+    """The primary toolbar strip and the generic QToolButton states."""
+    return f"""
         QToolBar#primaryToolbar {{
             background-color: {theme.toolbar_bg.css};
             border: 1px solid {theme.border.css};
@@ -695,7 +727,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton::menu-indicator {{
             image: none;
-        }}
+        }}"""
+
+
+def _push_button_and_line_edit_rules(theme: ThemePalette) -> str:
+    """Generic QPushButton and QLineEdit."""
+    return f"""
         QPushButton {{
             background-color: {theme.raised_bg.css};
             border: 1px solid {theme.border.css};
@@ -732,7 +769,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QLineEdit:focus {{
             background-color: {theme.input_hover_bg.css};
             border-color: {theme.accent.css};
-        }}
+        }}"""
+
+
+def _phone_share_rules(theme: ThemePalette) -> str:
+    """The phone-share dialog: status pill, QR frame, URL field, network panel."""
+    return f"""
         QFrame#phoneShareConnectionCard {{
             background-color: transparent;
             border: none;
@@ -814,7 +856,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#phoneShareLinkButton:hover {{
             background-color: transparent;
             color: {theme.accent_hover.css};
-        }}
+        }}"""
+
+
+def _combo_box_and_check_box_rules(theme: ThemePalette) -> str:
+    """Generic QComboBox and QCheckBox, plus the settings session combo overrides."""
+    return f"""
         QComboBox {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
@@ -872,7 +919,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             margin: 0px;
             color: {theme.text_primary.css};
             selection-background-color: {theme.selection_fill.css};
-        }}
+        }}"""
+
+
+def _panel_surface_and_tab_rules(theme: ThemePalette) -> str:
+    """Generic tree/list views, the floating palette panel, and the floating and
+    docked panel tab strips."""
+    return f"""
         QTreeView, QListWidget {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -949,7 +1002,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QTabWidget#dockedPanelTabs QWidget#libraryWorkspacePanel,
         QTabWidget#dockedPanelTabs QWidget#inspectorWorkspacePanel {{
             border-top-left-radius: 0px;
-        }}
+        }}"""
+
+
+def _top_bar_button_rules(theme: ThemePalette) -> str:
+    """The app top bar surface and its glyph and pane buttons."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#appTopBar {{
             /* Chrome, like the rail and status bar it lines up with. The
                floating toolbar is a QFrame with the same name and takes
@@ -1009,7 +1068,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#appTopBarPaneButton:focus {{
             border-color: {theme.selection_outline.css};
-        }}
+        }}"""
+
+
+def _top_bar_search_and_zoom_rules(theme: ThemePalette) -> str:
+    """The workspace search field, path suggestion popup and the top bar zoom slider."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QLineEdit#workspaceSearchField {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -1069,7 +1134,14 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             color: {theme.text_muted.css};
             font-family: "Segoe UI Symbol";
             font-size: 24px;
-        }}
+        }}"""
+
+
+def _top_bar_action_button_rules(theme: ThemePalette) -> str:
+    """The top bar action, icon and caption buttons (one rule per state, shared
+    across the three button kinds)."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#appTopBar QToolButton#appTopBarActionButton,
         QWidget#appTopBar QToolButton#workspacePresetsButton {{
             background-color: transparent;
@@ -1138,7 +1210,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#appTopBar QToolButton#appTopBarIconButton::menu-indicator {{
             image: none;
             width: 0px;
-        }}
+        }}"""
+
+
+def _workspace_panel_rules(theme: ThemePalette) -> str:
+    """The library and inspector workspace panels and their header/viewport/content hosts."""
+    return f"""
         QWidget#libraryWorkspacePanel {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -1177,7 +1254,14 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QWidget#libraryPanelContent QToolButton {{
             font-family: {UI_FONT_STACK};
             letter-spacing: 0px;
-        }}
+        }}"""
+
+
+def _left_nav_rail_rules(theme: ThemePalette) -> str:
+    """The left navigation rail and its buttons, the generated rail buttons and the
+    library stack."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#leftNavRail {{
             background-color: {theme.chrome_bg.css};
             border-right: 1px solid {theme.border_muted.css};
@@ -1237,7 +1321,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border: none;
             padding: 10px;
-        }}
+        }}"""
+
+
+def _review_workflow_rules(theme: ThemePalette) -> str:
+    """The review workflow panel: decision labels and markers, command buttons."""
+    return f"""
         QFrame#leftQuickActionsPanel, QFrame#reviewWorkflowPanel {{
             background-color: transparent;
             border: none;
@@ -1307,7 +1396,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.raised_bg.css};
             border-color: {theme.text_muted.css};
             color: {theme.text_muted.css};
-        }}
+        }}"""
+
+
+def _left_quick_actions_and_settings_bar_rules(theme: ThemePalette) -> str:
+    """Left quick-action icons and the left settings bar."""
+    return f"""
         QToolButton#leftQuickActionIcon {{
             background-color: {theme.raised_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -1345,7 +1439,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#leftSettingsBarButton:focus {{
             border-color: {theme.selection_outline.css};
-        }}
+        }}"""
+
+
+def _inspector_scroll_rules(theme: ThemePalette) -> str:
+    """The inspector scroll areas and their section/overlay scroll bars."""
+    return f"""
         QWidget#inspectorBody,
         QScrollArea#inspectorScrollArea > QWidget > QWidget,
         QScrollArea#inspectorSectionScrollArea,
@@ -1407,7 +1506,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QScrollBar#inspectorOverlayScrollBar::add-page:vertical,
         QScrollBar#inspectorOverlayScrollBar::sub-page:vertical {{
             background: transparent;
-        }}
+        }}"""
+
+
+def _inspector_panel_rules(theme: ThemePalette) -> str:
+    """The inspector's preview card, header bar, collapsible sections and key labels."""
+    return f"""
         QWidget#inspectorPreviewCard {{
             background-color: {theme.panel_alt_bg.css};
             border: 1px solid {theme.border_muted.css};
@@ -1492,7 +1596,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#inspectorKey {{
             color: {theme.text_muted.css};
-        }}
+        }}"""
+
+
+def _inspector_value_and_action_rules(theme: ThemePalette) -> str:
+    """Inspector value labels (severity/emphasis variants), empty state and action button."""
+    return f"""
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};
             font-size: 12px;
@@ -1539,7 +1648,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#inspectorActionButton:disabled {{
             color: {theme.text_disabled.css};
             border-color: {theme.border_muted.css};
-        }}
+        }}"""
+
+
+def _folder_tree_and_details_table_rules(theme: ThemePalette) -> str:
+    """The folder tree and favourites list, the details table and generic header sections."""
+    return f"""
         QTreeView#folderTree, QListWidget#favoritesList {{
             background-color: transparent;
             border: none;
@@ -1617,7 +1731,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             border: none;
             border-bottom: 1px solid {theme.border.css};
             padding: 6px 8px;
-        }}
+        }}"""
+
+
+def _workspace_bar_rules(theme: ThemePalette) -> str:
+    """The summary strip and the workspace bar with its divider and drag handle."""
+    return f"""
         QWidget#summaryStrip {{
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
@@ -1648,7 +1767,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#workspaceBarDragHandle:hover {{
             color: {theme.text_secondary.css};
-        }}
+        }}"""
+
+
+def _toolbar_edit_hud_rules(theme: ThemePalette) -> str:
+    """The toolbar edit-mode overlay and heads-up display."""
+    return f"""
         QFrame#toolbarEditOverlay {{
             background-color: rgba(0, 0, 0, 132);
             border: 1px solid {theme.accent_soft.css};
@@ -1707,7 +1831,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QFrame#toolbarEditHud QPushButton:focus {{
             border-color: {theme.selection_outline.css};
-        }}
+        }}"""
+
+
+def _toolbar_customizer_preview_rules(theme: ThemePalette) -> str:
+    """The toolbar customizer dialog and its live preview bar."""
+    return f"""
         QDialog#toolbarCustomizerDialog {{
             background-color: {theme.window_bg.css};
             color: {theme.text_primary.css};
@@ -1740,7 +1869,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#toolbarCustomizerPreviewButton:checked {{
             background-color: {theme.accent_soft.css};
             border-color: {theme.accent.css};
-        }}
+        }}"""
+
+
+def _toolbar_edit_sidebar_rules(theme: ThemePalette) -> str:
+    """The toolbar edit sidebar: chips, titles, add/move/remove and palette buttons."""
+    return f"""
         QFrame#toolbarEditSidebar {{
             background-color: {theme.panel_bg.with_alpha(232).css};
             border: 1px solid {theme.border.css};
@@ -1803,7 +1937,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#toolbarEditDoneButton {{
             background-color: {theme.accent_soft.css};
             border-color: {theme.accent.css};
-        }}
+        }}"""
+
+
+def _panel_header_and_pin_button_rules(theme: ThemePalette) -> str:
+    """Workspace controls, pane titles, the panel header buttons and the zen menu pin."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QWidget#workspaceControls {{
             background-color: transparent;
             border: none;
@@ -1863,7 +2003,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: transparent;
             border-color: transparent;
             color: {theme.text_primary.css};
-        }}
+        }}"""
+
+
+def _update_button_and_zen_overlay_rules(theme: ThemePalette) -> str:
+    """The menu corner widget, the update button, the zen hint overlay and the
+    panel close button's hover/pressed states."""
+    return f"""
         QWidget#menuCornerWidget {{
             background-color: transparent;
         }}
@@ -1907,7 +2053,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QToolButton#workspacePanelCloseButton:pressed {{
             background-color: {theme.danger_soft.css};
             color: {theme.danger.css};
-        }}
+        }}"""
+
+
+def _navigation_section_rules(theme: ThemePalette) -> str:
+    """Navigation section headers, the projects and face-group lists, and section labels."""
+    return f"""
         QWidget#navSectionHeader {{
             background-color: transparent;
             border: none;
@@ -1981,7 +2132,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 13px;
             font-weight: 500;
             padding: 0 2px;
-        }}
+        }}"""
+
+
+def _settings_sidebar_rules(theme: ThemePalette) -> str:
+    """The settings dialog sidebar: search box, navigation buttons and help card."""
+    return f"""
         QFrame#settingsSidebar {{
             background-color: {theme.panel_alt_bg.css};
             border: none;
@@ -2066,7 +2222,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#settingsHelpButton:hover {{
             background-color: {theme.input_hover_bg.css};
             color: {theme.text_primary.css};
-        }}
+        }}"""
+
+
+def _settings_page_rules(theme: ThemePalette) -> str:
+    """The settings dialog main area: header, section titles, cards and rows."""
+    return f"""
         QWidget#settingsMain, QStackedWidget#settingsPages, QWidget#settingsPageContent {{
             background-color: {theme.window_bg.css};
         }}
@@ -2130,7 +2291,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background: transparent;
             color: {theme.text_muted.css};
             font-size: 10px;
-        }}
+        }}"""
+
+
+def _settings_card_control_rules(theme: ThemePalette) -> str:
+    """Controls inside settings cards: checkboxes, combos, spin boxes, buttons, sliders."""
+    return f"""
         QWidget#settingsPageContent QCheckBox {{
             qproperty-trackOffColor: {theme.border.css};
             qproperty-trackOnColor: {theme.accent.css};
@@ -2202,7 +2368,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             height: 10px;
             margin: -7px 0;
             width: 10px;
-        }}
+        }}"""
+
+
+def _settings_footer_rules(theme: ThemePalette) -> str:
+    """Settings category headings, row hover, and the footer with its buttons."""
+    return f"""
         QLabel#settingsCategoryHeading {{
             background: transparent;
             color: {theme.text_primary.css};
@@ -2264,496 +2435,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#settingsPrimaryButton:hover {{
             background-color: {theme.accent_hover.css};
             border-color: {theme.accent_hover.css};
-        }}
-        QLabel#inspectorValue {{
-            color: {theme.text_primary.css};
-            font-size: 12px;
-            font-weight: 500;
-            padding: 0px;
-        }}
-        QLabel#inspectorValue[severity="muted"] {{
-            color: {theme.text_muted.css};
-            font-weight: 400;
-        }}
-        QLabel#inspectorValue[severity="warning"],
-        QLabel#inspectorSeverityIcon[severity="warning"] {{
-            color: {theme.warning.css};
-        }}
-        QLabel#inspectorValue[severity="critical"],
-        QLabel#inspectorSeverityIcon[severity="critical"] {{
-            color: {theme.danger.css};
-        }}
-        QLabel#inspectorValue[emphasis="strong"] {{
-            color: {theme.text_primary.css};
-            font-weight: 600;
-        }}
-        QLabel#inspectorValue[emphasis="secondary"] {{
-            color: {theme.text_secondary.css};
-            font-weight: 450;
-        }}
-        QLabel#inspectorEmptyState {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            padding: 1px 2px 3px 2px;
-        }}
-        QPushButton#inspectorActionButton {{
-            background-color: {theme.input_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 6px;
-            color: {theme.text_primary.css};
-            min-height: 24px;
-            padding: 4px 8px;
-            text-align: center;
-        }}
-        QPushButton#inspectorActionButton:hover {{
-            background-color: {theme.input_hover_bg.css};
-        }}
-        QPushButton#inspectorActionButton:disabled {{
-            color: {theme.text_disabled.css};
-            border-color: {theme.border_muted.css};
-        }}
-        QTreeView#folderTree, QListWidget#favoritesList {{
-            background-color: transparent;
-            border: none;
-            show-decoration-selected: 1;
-        }}
-        QTreeView#folderTree {{
-            font-size: 13px;
-            outline: none;
-        }}
-        QTreeView#folderTree QScrollBar:vertical {{
-            width: 8px;
-        }}
-        QTreeView#folderTree::item, QListWidget#favoritesList::item {{
-            min-height: 25px;
-            padding: 2px 7px;
-            border-radius: 6px;
-            margin: 1px 0px;
-        }}
-        QTreeView#folderTree::item:selected, QListWidget#favoritesList::item:selected {{
-            background-color: {theme.selection_fill.css};
-            color: {theme.text_primary.css};
-        }}
-        QTreeView::branch {{
-            background: transparent;
-        }}
-        QTreeView#folderTree::branch:selected {{
-            background: transparent;
-        }}
-        QTableView#detailsTableView {{
-            background-color: {theme.chrome_bg.css};
-            alternate-background-color: {theme.panel_alt_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 6px;
-            color: {theme.text_primary.css};
-            gridline-color: transparent;
-            outline: none;
-            selection-background-color: {theme.selection_fill.css};
-            selection-color: {theme.text_primary.css};
-        }}
-        QTableView#detailsTableView QTableCornerButton::section {{
-            background-color: {theme.panel_alt_bg.css};
-            border: none;
-            border-top-left-radius: 6px;
-            border-bottom: 1px solid {theme.border.css};
-        }}
-        QTableView#detailsTableView QHeaderView::section:first {{
-            border-top-left-radius: 6px;
-        }}
-        QTableView#detailsTableView QHeaderView::section:last {{
-            border-top-right-radius: 6px;
-        }}
-        QTableView#detailsTableView QHeaderView::section {{
-            min-height: 38px;
-            padding-top: 6px;
-            padding-bottom: 4px;
-        }}
-        QTableView#detailsTableView::item {{
-            border: none;
-            padding: 5px 8px;
-        }}
-        QTableView#detailsTableView::item:selected {{
-            background-color: {theme.selection_fill.css};
-            color: {theme.text_primary.css};
-        }}
-        QLabel#detailsStatusStrip {{
-            background-color: {theme.chrome_bg.css};
-            border-top: 1px solid {theme.border_muted.css};
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            padding: 4px 8px;
-        }}
-        QHeaderView::section {{
-            background-color: {theme.panel_alt_bg.css};
-            color: {theme.text_secondary.css};
-            border: none;
-            border-bottom: 1px solid {theme.border.css};
-            padding: 6px 8px;
-        }}
-        QWidget#summaryStrip {{
-            background-color: {theme.panel_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 12px;
-        }}
-        QWidget#workspaceBar {{
-            background-color: {theme.toolbar_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 8px;
-        }}
-        QFrame#workspaceBarDivider {{
-            background-color: {theme.border_muted.css};
-            border: none;
-            min-width: 1px;
-            max-width: 1px;
-            min-height: 24px;
-            margin: 2px 0px;
-        }}
-        QWidget#workspaceBarChrome {{
-            background-color: transparent;
-            border: none;
-        }}
-        QLabel#workspaceBarDragHandle {{
-            color: {theme.text_muted.css};
-            font-size: 14px;
-            font-weight: 700;
-            padding: 0px 2px;
-        }}
-        QLabel#workspaceBarDragHandle:hover {{
-            color: {theme.text_secondary.css};
-        }}
-        QFrame#toolbarEditOverlay {{
-            background-color: rgba(0, 0, 0, 132);
-            border: 1px solid {theme.accent_soft.css};
-            border-radius: 12px;
-        }}
-        QFrame#toolbarEditHud {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.accent_soft.css};
-            border-radius: 9px;
-        }}
-        QFrame#toolbarEditHudMarker {{
-            background-color: {theme.accent.css};
-            border: none;
-            border-radius: 2px;
-        }}
-        QLabel#toolbarEditHudHint {{
-            color: {theme.text_primary.css};
-            font-family: {UI_FONT_STACK};
-            font-size: 13px;
-            font-weight: 700;
-            padding-right: 8px;
-        }}
-        QFrame#toolbarEditHud QPushButton {{
-            border: 1px solid {theme.border.css};
-            border-radius: 6px;
-            color: {theme.text_primary.css};
-            font-size: 12px;
-            font-weight: 650;
-            min-height: 28px;
-            padding: 2px 13px;
-        }}
-        QPushButton#toolbarEditHudAdd {{
-            background-color: {theme.panel_alt_bg.css};
-            border-color: {theme.accent_soft.css};
-            color: {theme.accent.css};
-        }}
-        QPushButton#toolbarEditHudAdd:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.accent.css};
-        }}
-        QPushButton#toolbarEditHudReset {{
-            background-color: {theme.panel_alt_bg.css};
-        }}
-        QPushButton#toolbarEditHudReset:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.text_muted.css};
-        }}
-        QPushButton#toolbarEditHudDone {{
-            background-color: {theme.accent.css};
-            border-color: {theme.accent.css};
-            color: {theme.window_bg.css};
-        }}
-        QPushButton#toolbarEditHudDone:hover {{
-            background-color: {theme.accent_hover.css};
-            border-color: {theme.accent_hover.css};
-        }}
-        QFrame#toolbarEditHud QPushButton:focus {{
-            border-color: {theme.selection_outline.css};
-        }}
-        QDialog#toolbarCustomizerDialog {{
-            background-color: {theme.window_bg.css};
-            color: {theme.text_primary.css};
-        }}
-        QScrollArea#toolbarCustomizerPreviewScroll {{
-            background-color: transparent;
-            border: none;
-        }}
-        QFrame#toolbarCustomizerPreviewHost {{
-            background-color: transparent;
-            border: none;
-        }}
-        QFrame#toolbarCustomizerPreviewBar {{
-            background-color: {theme.toolbar_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 12px;
-        }}
-        QPushButton#toolbarCustomizerPreviewButton {{
-            background-color: {theme.input_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 8px;
-            color: {theme.text_primary.css};
-            font-weight: 600;
-            min-height: 28px;
-            padding: 4px 12px;
-        }}
-        QPushButton#toolbarCustomizerPreviewButton:hover {{
-            background-color: {theme.input_hover_bg.css};
-        }}
-        QPushButton#toolbarCustomizerPreviewButton:checked {{
-            background-color: {theme.accent_soft.css};
-            border-color: {theme.accent.css};
-        }}
-        QFrame#toolbarEditSidebar {{
-            background-color: {theme.panel_bg.with_alpha(232).css};
-            border: 1px solid {theme.border.css};
-            border-radius: 10px;
-            min-width: 170px;
-            max-width: 210px;
-        }}
-        QFrame#toolbarEditContent {{
-            background-color: rgba(0, 0, 0, 0);
-            border: none;
-        }}
-        QFrame#toolbarEditChip {{
-            background-color: {theme.panel_bg.with_alpha(218).css};
-            border: 1px solid {theme.border.css};
-            border-radius: 8px;
-        }}
-        QLabel#toolbarEditTitle {{
-            color: {theme.text_primary.css};
-            font-size: 12px;
-            font-weight: 700;
-        }}
-        QLabel#toolbarEditHint {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 600;
-        }}
-        QToolButton#toolbarEditAddButton, QToolButton#toolbarEditModeButton {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 8px;
-            color: {theme.text_primary.css};
-            min-height: 24px;
-            padding: 2px 8px;
-        }}
-        QToolButton#toolbarEditModeButton:checked {{
-            background-color: {theme.accent_soft.css};
-            border-color: {theme.accent.css};
-        }}
-        QToolButton#toolbarEditMoveButton, QToolButton#toolbarEditRemoveButton {{
-            background-color: {theme.raised_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 7px;
-            color: {theme.text_primary.css};
-            min-width: 18px;
-            max-width: 18px;
-            min-height: 18px;
-            max-height: 18px;
-            padding: 0px;
-        }}
-        QToolButton#toolbarEditRemoveButton {{
-            background-color: {theme.danger_soft.css};
-            border-color: {theme.danger.css};
-        }}
-        QPushButton#toolbarEditPaletteButton, QPushButton#toolbarEditResetButton, QPushButton#toolbarEditDoneButton {{
-            border-radius: 8px;
-            min-height: 24px;
-            padding: 3px 8px;
-            text-align: left;
-        }}
-        QPushButton#toolbarEditDoneButton {{
-            background-color: {theme.accent_soft.css};
-            border-color: {theme.accent.css};
-        }}
-        QWidget#workspaceControls {{
-            background-color: transparent;
-            border: none;
-        }}
-        QLabel#paneTitle {{
-            color: {theme.text_primary.css};
-            font-family: "Segoe UI Variable Display", {UI_FONT_STACK};
-            font-size: 13px;
-            font-weight: 750;
-            letter-spacing: 0px;
-            padding: 0 1px 2px 1px;
-        }}
-        QLabel#panelHeaderSubtitle {{
-            color: {theme.text_muted.css};
-            font-size: 11px;
-            font-weight: 600;
-            padding: 0 1px;
-        }}
-        QToolButton#workspacePanelButton, QToolButton#workspacePanelCloseButton {{
-            background-color: transparent;
-            border: 1px solid transparent;
-            border-radius: {metrics.radius_7}px;
-            color: {theme.text_secondary.css};
-            font-family: "Segoe UI Symbol", "Segoe UI Variable Display", {UI_FONT_STACK};
-            font-size: 13px;
-            font-weight: 600;
-            padding: 0px;
-        }}
-        QToolButton#workspacePanelButton:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
-            color: {theme.text_primary.css};
-        }}
-        QToolButton#workspacePanelButton:pressed {{
-            background-color: {theme.accent_soft.css};
-        }}
-        QToolButton#workspacePanelButton:focus,
-        QToolButton#workspacePanelCloseButton:focus {{
-            border-color: {theme.selection_outline.css};
-        }}
-        QToolButton#zenMenuPinButton {{
-            background-color: transparent;
-            border: 1px solid transparent;
-            border-radius: 0px;
-            color: {theme.text_secondary.css};
-            margin: 2px 10px 2px 6px;
-            min-width: 30px;
-            min-height: 30px;
-            padding: 0px;
-        }}
-        QToolButton#zenMenuPinButton:hover {{
-            background-color: transparent;
-            border-color: transparent;
-            color: {theme.text_primary.css};
-        }}
-        QToolButton#zenMenuPinButton:checked {{
-            background-color: transparent;
-            border-color: transparent;
-            color: {theme.text_primary.css};
-        }}
-        QWidget#menuCornerWidget {{
-            background-color: transparent;
-        }}
-        QToolButton#updateDownloadButton {{
-            background-color: transparent;
-            border: 1px solid transparent;
-            border-radius: 8px;
-            color: {theme.text_muted.css};
-            margin: 1px 2px 1px 4px;
-            padding: 0px;
-        }}
-        QToolButton#updateDownloadButton:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: {theme.border.css};
-            color: {theme.text_primary.css};
-        }}
-        QToolButton#updateDownloadButton[updateAvailable="true"] {{
-            background-color: transparent;
-            border-color: transparent;
-            color: {theme.success.css};
-        }}
-        QToolButton#updateDownloadButton[updateAvailable="true"]:hover {{
-            background-color: {theme.input_hover_bg.css};
-            border-color: transparent;
-            color: {theme.success.css};
-        }}
-        QLabel#zenHintOverlay {{
-            background-color: {theme.badge_bg.css};
-            border: 1px solid {theme.border.css};
-            border-radius: 8px;
-            color: {theme.badge_text.css};
-            font-size: 12px;
-            font-weight: 650;
-            padding: 7px 12px;
-        }}
-        QToolButton#workspacePanelCloseButton:hover {{
-            background-color: {theme.danger_soft.css};
-            border-color: {theme.danger.css};
-            color: {theme.text_primary.css};
-        }}
-        QToolButton#workspacePanelCloseButton:pressed {{
-            background-color: {theme.danger_soft.css};
-            color: {theme.danger.css};
-        }}
-        QWidget#navSectionHeader {{
-            background-color: transparent;
-            border: none;
-            min-height: 40px;
-            padding: 0px 8px;
-        }}
-        QWidget#navSectionHeader[sectionRole="projects"] {{
-            border-top: 1px solid {theme.border_muted.css};
-            min-height: 36px;
-            padding-top: 0px;
-        }}
-        QWidget#navSectionHeader:hover QLabel#navSectionTitle {{
-            color: {theme.text_primary.css};
-        }}
-        /* Match the mode tabs while retaining enough weight to outrank rows. */
-        QLabel#navSectionTitle {{
-            color: {theme.text_primary.css};
-            font-size: 16px;
-            font-weight: 555;
-        }}
-        /* Rows hug their 34px portrait; the custom widget owns the columns for
-           the name, count, and trailing navigation chevron. */
-        QListWidget#faceGroupsList::item {{
-            min-height: 38px;
-            padding: 0px;
-            margin: 0px;
-            border-radius: 6px;
-        }}
-        QListWidget#projectsList::item {{
-            min-height: 32px;
-            padding: 1px 10px 1px 38px;
-            margin: 0px;
-        }}
-        QListWidget#faceGroupsList, QListWidget#projectsList {{
-            background-color: transparent;
-            border: none;
-            outline: none;
-            font-size: 14px;
-        }}
-        QListWidget#faceGroupsList::item:selected,
-        QListWidget#projectsList::item:selected {{
-            background-color: {theme.selection_fill.css};
-            color: {theme.text_primary.css};
-        }}
-        QListWidget#faceGroupsList::item:hover:!selected,
-        QListWidget#projectsList::item:hover:!selected {{
-            background-color: {theme.input_hover_bg.css};
-            color: {theme.text_primary.css};
-        }}
-        QListWidget#faceGroupsList::item:disabled,
-        QListWidget#projectsList::item:disabled {{
-            background-color: transparent;
-            color: {theme.text_muted.css};
-            font-size: 12px;
-            padding: 3px 10px;
-        }}
-        QLineEdit#faceGroupsSearch {{
-            background-color: {theme.input_hover_bg.css};
-            border: 1px solid {theme.border_muted.css};
-            border-radius: 7px;
-            color: {theme.text_primary.css};
-            font-size: 13px;
-            min-height: 34px;
-            padding: 0px 8px;
-        }}
-        QLineEdit#faceGroupsSearch:focus {{
-            border-color: {theme.accent.css};
-        }}
-        QLabel#sectionLabel {{
-            color: {theme.text_muted.css};
-            font-size: 13px;
-            font-weight: 500;
-            padding: 0 2px;
-        }}
+        }}"""
+
+
+def _settings_section_list_rules(theme: ThemePalette) -> str:
+    """The settings section list and the page/row/footer rules that follow it."""
+    return f"""
         QListWidget#settingsSectionList {{
             background-color: {theme.panel_alt_bg.css};
             border: none;
@@ -2823,7 +2510,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         QPushButton#settingsHelpButton {{
             min-height: 30px;
             padding: 0 14px;
-        }}
+        }}"""
+
+
+def _inspector_hint_and_divider_rules(theme: ThemePalette) -> str:
+    """Inspector value/hint text and the generic section divider."""
+    return f"""
         QLabel#inspectorValue {{
             color: {theme.text_primary.css};
             font-size: 12px;
@@ -2840,7 +2532,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             max-height: 1px;
             min-height: 1px;
             border: none;
-        }}
+        }}"""
+
+
+def _path_control_rules(theme: ThemePalette) -> str:
+    """The path combo box and navigation buttons, and the toolbar selection count."""
+    return f"""
         QComboBox#pathComboBox {{
             background-color: {theme.raised_bg.css};
             color: {theme.text_secondary.css};
@@ -2887,7 +2584,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QLabel#toolbarSelectionCount[toolbarPreviewSelected="true"] {{
             color: {theme.text_primary.css};
-        }}
+        }}"""
+
+
+def _collection_dialog_rules(theme: ThemePalette) -> str:
+    """The collection edit dialog: title, fields, description box and buttons."""
+    return f"""
         QDialog#collectionEditDialog {{
             background-color: {theme.panel_bg.css};
             color: {theme.text_primary.css};
@@ -2976,7 +2678,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.raised_bg.css};
             border-color: {theme.border_muted.css};
             color: {theme.text_disabled.css};
-        }}
+        }}"""
+
+
+def _utility_text_and_help_rules(theme: ThemePalette) -> str:
+    """Secondary/muted text styles, the help browser and page list, the AI training log."""
+    return f"""
         QLabel#secondaryText {{
             color: {theme.text_secondary.css};
         }}
@@ -3048,7 +2755,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             background-color: {theme.panel_bg.css};
             border: 1px solid {theme.border.css};
             border-radius: 14px;
-        }}
+        }}"""
+
+
+def _command_palette_rules(theme: ThemePalette) -> str:
+    """The command palette overlay: card, list rows, title, subtitle and shortcut."""
+    return f"""
         QWidget#commandPaletteOverlay {{
             background-color: rgba(0, 0, 0, 0.22);
         }}
@@ -3123,7 +2835,13 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             font-size: 10px;
             font-weight: 700;
             letter-spacing: 1px;
-        }}
+        }}"""
+
+
+def _workspace_icon_button_and_edit_cell_rules(theme: ThemePalette) -> str:
+    """Workspace filter/icon buttons, the top bar divider and toolbar edit-mode cells."""
+    metrics = WORKSPACE_METRICS
+    return f"""
         QToolButton#workspaceFiltersButton, QToolButton#workspacePresetsButton {{
             min-height: 28px;
             border-radius: 7px;
@@ -3178,7 +2896,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QToolButton#statusFilterClearButton {{
             padding: 2px 8px;
-        }}
+        }}"""
+
+
+def _mode_tab_progress_and_status_bar_rules(theme: ThemePalette) -> str:
+    """Mode tabs, progress bars and the status bar."""
+    return f"""
         QTabBar#modeTabs::tab {{
             background-color: {theme.input_bg.css};
             border: 1px solid {theme.border.css};
@@ -3215,7 +2938,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QStatusBar::item {{
             border: none;
-        }}
+        }}"""
+
+
+def _scroll_bar_rules(theme: ThemePalette) -> str:
+    """Generic vertical and horizontal scroll bars."""
+    return f"""
         QScrollBar:vertical {{
             background-color: {theme.chrome_bg.css};
             border: none;
@@ -3252,7 +2980,12 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
             width: 0px;
             border: none;
             background: transparent;
-        }}
+        }}"""
+
+
+def _header_and_splitter_rules(theme: ThemePalette) -> str:
+    """The folder tree header and the generic splitter handles."""
+    return f"""
         QTreeView#folderTree QHeaderView::section {{
             background-color: transparent;
             border: none;
@@ -3272,8 +3005,7 @@ def build_app_stylesheet(theme: ThemePalette) -> str:
         }}
         QSplitter::handle:hover {{
             background-color: {theme.accent_soft.css};
-        }}
-    """ + _app_bar_rules(theme) + _flat_shell_rules(theme) + _inspector_rules(theme) + _toolbar_placement_rules(theme) + _backdrop_rules(theme)
+        }}"""
 
 
 def _inspector_rules(theme: ThemePalette) -> str:
@@ -3572,3 +3304,73 @@ def _backdrop_rules(theme: ThemePalette) -> str:
             background-color: {panel_wash};
         }}
     """
+
+
+# --- Section order -----------------------------------------------------------
+# Defined after every section function so the names exist. Each entry is a
+# ``(ThemePalette) -> str`` function; see ``build_app_stylesheet`` for how the
+# two groups are joined.
+
+# The sections from the inspector value rules through the navigation sections
+# are emitted twice: once before the settings-dialog sections and once after
+# them. The original single f-string pasted the same 489 lines in at both
+# places, verbatim, and the output must stay byte-identical, so the group is
+# listed twice below instead of being duplicated in source. No selector in the
+# settings-dialog sections also appears in this group, but equal-specificity
+# rules with different selectors can still interact, so dropping the second
+# copy needs a look at the rendered UI first.
+_REPEATED_WORKSPACE_SECTIONS: tuple[Callable[[ThemePalette], str], ...] = (
+    _inspector_value_and_action_rules,
+    _folder_tree_and_details_table_rules,
+    _workspace_bar_rules,
+    _toolbar_edit_hud_rules,
+    _toolbar_customizer_preview_rules,
+    _toolbar_edit_sidebar_rules,
+    _panel_header_and_pin_button_rules,
+    _update_button_and_zen_overlay_rules,
+    _navigation_section_rules,
+)
+
+_APP_STYLESHEET_SECTIONS: tuple[Callable[[ThemePalette], str], ...] = (
+    _window_and_menu_rules,
+    _toolbar_and_tool_button_rules,
+    _push_button_and_line_edit_rules,
+    _phone_share_rules,
+    _combo_box_and_check_box_rules,
+    _panel_surface_and_tab_rules,
+    _top_bar_button_rules,
+    _top_bar_search_and_zoom_rules,
+    _top_bar_action_button_rules,
+    _workspace_panel_rules,
+    _left_nav_rail_rules,
+    _review_workflow_rules,
+    _left_quick_actions_and_settings_bar_rules,
+    _inspector_scroll_rules,
+    _inspector_panel_rules,
+    *_REPEATED_WORKSPACE_SECTIONS,
+    _settings_sidebar_rules,
+    _settings_page_rules,
+    _settings_card_control_rules,
+    _settings_footer_rules,
+    *_REPEATED_WORKSPACE_SECTIONS,
+    _settings_section_list_rules,
+    _inspector_hint_and_divider_rules,
+    _path_control_rules,
+    _collection_dialog_rules,
+    _utility_text_and_help_rules,
+    _command_palette_rules,
+    _workspace_icon_button_and_edit_cell_rules,
+    _mode_tab_progress_and_status_bar_rules,
+    _scroll_bar_rules,
+    _header_and_splitter_rules,
+)
+
+# Older section functions that return their own leading newline and trailing
+# four-space indent. They follow the sections above, in this order.
+_APP_STYLESHEET_PADDED_SECTIONS: tuple[Callable[[ThemePalette], str], ...] = (
+    _app_bar_rules,
+    _flat_shell_rules,
+    _inspector_rules,
+    _toolbar_placement_rules,
+    _backdrop_rules,
+)
