@@ -3,6 +3,7 @@ name = "image-triage"
 version = "2.2.1"
 description = "Image Triage"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
     "astropy>=7.1",

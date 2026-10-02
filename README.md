@@ -118,3 +118,7 @@ If the user skips that step, the older bundled AI pipeline stays unavailable unt
 
 - Version 1 focuses on scan speed, responsive scrolling, and large visual previews.
 - Workflow refinement, metadata polish, and side-by-side compare improvements are natural next steps.
+
+## License
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE) — noncommercial use only. This is a temporary license while the project is under active development; it will change once the project reaches a more finished state.
