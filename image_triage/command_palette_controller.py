@@ -144,12 +144,12 @@ class CommandPaletteController:
             add_action_command("tools.extract_archive", window.actions.extract_archive, section="Tools", keywords=("extract archive", "unzip", "decompress", "7z"))
             add_action_command("tools.performance_logging", window.actions.performance_logging, section="Tools", subtitle=self.toggle_state_text(window._performance_logging_enabled), keywords=("diagnostics", "profiler", "performance log", "speed"))
             add_action_command("tools.open_performance_logs", window.actions.open_performance_log_folder, section="Tools", keywords=("diagnostics", "profiler", "logs", "performance"))
-            add_action_command("workflow.handoff_builder", window.actions.handoff_builder, section="Workflow", keywords=("delivery", "handoff", "export workflow"))
-            add_action_command("workflow.share_to_phone", window.actions.share_to_phone, section="Workflow", keywords=("phone", "qr", "pocketdrop", "share", "transfer", "send"))
-            add_action_command("workflow.send_to_editor", window.actions.send_to_editor_pipeline, section="Workflow", keywords=("retouch", "editor queue", "send to editor"))
-            add_action_command("workflow.best_of", window.actions.best_of_set_auto_assembly, section="Workflow", keywords=("best of", "shortlist", "auto assembly"))
-            add_action_command("workflow.keyboard_shortcuts", window.actions.keyboard_shortcuts, section="Workflow", keywords=("shortcuts", "keyboard mapping"))
-            add_action_command("workflow.save_workspace", window.actions.save_workspace_preset, section="Workflow", keywords=("workspace preset", "save layout"))
+            add_action_command("workflow.handoff_builder", window.actions.handoff_builder, section="Export", keywords=("delivery", "handoff", "export workflow"))
+            add_action_command("workflow.share_to_phone", window.actions.share_to_phone, section="Export", keywords=("phone", "qr", "pocketdrop", "share", "transfer", "send"))
+            add_action_command("workflow.send_to_editor", window.actions.send_to_editor_pipeline, section="Export", keywords=("retouch", "editor queue", "send to editor"))
+            add_action_command("workflow.best_of", window.actions.best_of_set_auto_assembly, section="Export", keywords=("best of", "shortlist", "auto assembly"))
+            add_action_command("workflow.keyboard_shortcuts", window.actions.keyboard_shortcuts, section="Export", keywords=("shortcuts", "keyboard mapping"))
+            add_action_command("workflow.save_workspace", window.actions.save_workspace_preset, section="Export", keywords=("workspace preset", "save layout"))
             add_action_command("library.create_collection", window.actions.create_virtual_collection, section="Library", keywords=("virtual collection", "portfolio picks", "proofing set"))
             add_action_command("library.add_to_collection", window.actions.add_selection_to_collection, section="Library", keywords=("collection", "save picks"))
             add_action_command("library.remove_from_collection", window.actions.remove_selection_from_collection, section="Library", keywords=("collection", "remove picks"))
@@ -297,10 +297,10 @@ class CommandPaletteController:
             commands.append(
                 PaletteCommand(
                     id=f"workflow_recipe.{recipe.key}",
-                    title=f"Run Workflow Recipe: {recipe.name}",
-                    subtitle=recipe.description or "Built-in workflow recipe",
-                    section="Workflow",
-                    keywords=("workflow recipe", recipe.name.casefold(), recipe.key),
+                    title=f"Run Export Recipe: {recipe.name}",
+                    subtitle=recipe.description or "Built-in export recipe",
+                    section="Export",
+                    keywords=("workflow recipe", "export recipe", recipe.name.casefold(), recipe.key),
                     callback=lambda target=recipe: window._run_workflow_recipe(target),
                 )
             )
@@ -309,9 +309,9 @@ class CommandPaletteController:
                 PaletteCommand(
                     id=f"saved_workflow_recipe.{recipe.key}",
                     title=f"Run Saved Recipe: {recipe.name}",
-                    subtitle=recipe.description or "Saved workflow recipe",
-                    section="Workflow",
-                    keywords=("saved recipe", "workflow recipe", recipe.name.casefold()),
+                    subtitle=recipe.description or "Saved export recipe",
+                    section="Export",
+                    keywords=("saved recipe", "workflow recipe", "export recipe", recipe.name.casefold()),
                     callback=lambda target=recipe: window._run_workflow_recipe(target),
                 )
             )

@@ -73,11 +73,15 @@ def format_remaining(seconds: float | None) -> str:
 
 
 class TransferWorker(QThread):
-    """Moves each item's files, reporting byte-level progress.
+    """Moves or copies each item's files, reporting byte-level progress.
 
-    Same-volume moves are renames and finish instantly; anything else is
-    copied in chunks and the source removed afterwards, so a cancel or error
-    never leaves a half-moved item behind.
+    For a move, same-volume transfers are renames and finish instantly;
+    anything else is copied in chunks and the source removed afterwards, so a
+    cancel or error never leaves a half-moved item behind. For a copy
+    (``keep_source=True``), the source is never touched and every transfer is
+    a real byte copy (no rename fast path, since a rename can't leave the
+    source in place) — a cancel deletes whatever was already copied to the
+    destination so far, leaving it exactly as it was before the copy started.
     """
 
     # object, not int: Qt's int is 32-bit and byte counts pass 2 GB.
@@ -86,10 +90,13 @@ class TransferWorker(QThread):
     itemDone = Signal(int, object)
     itemFailed = Signal(int, str)
 
-    def __init__(self, items: list[TransferItem], destination: str, parent=None) -> None:
+    def __init__(
+        self, items: list[TransferItem], destination: str, parent=None, *, keep_source: bool = False
+    ) -> None:
         super().__init__(parent)
         self._items = items
         self._destination = destination
+        self._keep_source = keep_source
         self._cancel = False
         self._done_bytes = 0
         self._items_done = 0
@@ -146,14 +153,15 @@ class TransferWorker(QThread):
         self.progress.emit(self._done_bytes, self._items_done, name, copying)
 
     def _move_file(self, source: str, target: str, name: str) -> None:
-        try:
-            os.rename(source, target)
-            self._done_bytes += _size(target)
-            self._emit(name, False)
-            return
-        except OSError:
-            if not os.path.exists(source):
-                raise
+        if not self._keep_source:
+            try:
+                os.rename(source, target)
+                self._done_bytes += _size(target)
+                self._emit(name, False)
+                return
+            except OSError:
+                if not os.path.exists(source):
+                    raise
         written = 0
         try:
             with open(source, "rb") as reader, open(target, "wb") as writer:
@@ -175,13 +183,19 @@ class TransferWorker(QThread):
             except OSError:
                 pass
             raise
-        os.remove(source)
+        if not self._keep_source:
+            os.remove(source)
 
-    @staticmethod
-    def _rollback(moves: list[FileMove]) -> None:
+    def _rollback(self, moves: list[FileMove]) -> None:
         for move in reversed(moves):
             try:
-                if os.path.exists(move.target_path):
+                if not os.path.exists(move.target_path):
+                    continue
+                if self._keep_source:
+                    # The source was never touched; undo a copy by simply
+                    # deleting the (partial or finished) destination file.
+                    os.remove(move.target_path)
+                else:
                     Path(move.source_path).parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(move.target_path, move.source_path)
             except OSError:
@@ -323,18 +337,21 @@ class TransferProgressDialog(QDialog):
             self._request_cancel()
 
 
-def run_move_transfer(
+def run_file_transfer(
     parent: QWidget,
     items: list[TransferItem],
     destination: str,
     *,
     source_label: str = "",
     verb: str = "Moving",
+    keep_source: bool = False,
 ) -> TransferResult:
-    """Run the transfer on a worker thread while showing a Windows-style
+    """Run a move or copy on a worker thread while showing a Windows-style
     progress dialog. Returns once every item is finished, failed or cancelled,
-    so callers can stay synchronous."""
-    worker = TransferWorker(items, destination, parent)
+    so callers can stay synchronous. ``keep_source=True`` copies instead of
+    moving (the source is never touched; a cancel removes whatever was
+    already copied to the destination)."""
+    worker = TransferWorker(items, destination, parent, keep_source=keep_source)
     dialog = TransferProgressDialog(
         parent,
         verb=verb,

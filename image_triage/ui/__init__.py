@@ -58,6 +58,7 @@ from .theme import (
     resolve_theme,
 )
 from .toolbar_menus import ToolbarMenuController
+from .transfer_dialogs import confirm_transfer, show_transfer_complete
 __all__ = [
     "AIReviewProgressDialog",
     "AppearanceMode",
@@ -119,4 +120,6 @@ __all__ = [
     "save_window_layout",
     "show_paged_help",
     "ToolbarMenuController",
+    "confirm_transfer",
+    "show_transfer_complete",
 ]

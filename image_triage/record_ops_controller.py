@@ -14,7 +14,8 @@ from .annotation_queue import WinnerSyncRequest
 from .file_ops import FileMove, copy_paths, move_paths, rename_bundle_paths
 from .models import DeleteMode, ImageRecord, SessionAnnotation, WinnerMode
 from .scanner import normalize_filesystem_path, normalized_path_key
-from .transfer_progress import TransferItem, run_move_transfer
+from .transfer_progress import TransferItem, run_file_transfer
+from .ui import confirm_transfer, show_transfer_complete
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -409,16 +410,9 @@ class RecordOpsController:
 
     # -- Batch move/copy/delete -------------------------------------------
 
-    def copy_records_by_paths(self, primary_paths: list[str], destination_dir: str) -> int:
-        copied = 0
-        for path in primary_paths:
-            if self.copy_record_to_path(path, destination_dir):
-                copied += 1
-        if copied:
-            self._window._remember_recent_destination(destination_dir)
-        return copied
-
-    def move_records_by_paths(self, primary_paths: list[str], destination_dir: str, *, batch_id: str = "") -> int:
+    def copy_records_by_paths(
+        self, primary_paths: list[str], destination_dir: str, *, include_companions: bool = True
+    ) -> int:
         window = self._window
         items: list[TransferItem] = []
         records: dict[int, ImageRecord] = {}
@@ -427,12 +421,51 @@ class RecordOpsController:
             record = window._record_at(index) if index is not None else None
             if record is None:
                 continue
-            items.append(TransferItem(position, record.name, window._record_paths(record)))
+            bundle = window._record_paths(record) if include_companions else (record.path,)
+            items.append(TransferItem(position, record.name, bundle))
             records[position] = record
         if not items:
             return 0
 
-        result = run_move_transfer(
+        result = run_file_transfer(
+            window, items, destination_dir, source_label=window._current_folder or "", verb="Copying", keep_source=True
+        )
+        copied = sum(1 for item in items if item.key in result.moved)
+        if copied:
+            window._remember_recent_destination(destination_dir)
+        if result.failed:
+            first_key = next(iter(result.failed))
+            QMessageBox.warning(
+                window,
+                "Copy Failed",
+                f"Could not copy {len(result.failed)} item(s)." + chr(10) + chr(10)
+                + f"{records[first_key].name}: {result.failed[first_key]}",
+            )
+        return copied
+
+    def move_records_by_paths(
+        self,
+        primary_paths: list[str],
+        destination_dir: str,
+        *,
+        batch_id: str = "",
+        include_companions: bool = True,
+    ) -> int:
+        window = self._window
+        items: list[TransferItem] = []
+        records: dict[int, ImageRecord] = {}
+        for position, path in enumerate(primary_paths):
+            index = window._record_index_for_path(path)
+            record = window._record_at(index) if index is not None else None
+            if record is None:
+                continue
+            bundle = window._record_paths(record) if include_companions else (record.path,)
+            items.append(TransferItem(position, record.name, bundle))
+            records[position] = record
+        if not items:
+            return 0
+
+        result = run_file_transfer(
             window, items, destination_dir, source_label=window._current_folder or ""
         )
         # An externally-supplied batch_id (e.g. from _apply_ai_culling, which
@@ -511,8 +544,7 @@ class RecordOpsController:
         destination_dir = QFileDialog.getExistingDirectory(window, "Copy Selected Images", window._current_folder or QDir.homePath())
         if not destination_dir:
             return
-        copied = self.copy_records_by_paths(window._primary_paths_for_records(records), destination_dir)
-        window.statusBar().showMessage(f"Copied {copied} image(s) to {destination_dir}")
+        self._confirm_and_transfer(records, destination_dir, mode="copy")
 
     def batch_move_records(self, records: list[ImageRecord]) -> None:
         window = self._window
@@ -521,8 +553,7 @@ class RecordOpsController:
         destination_dir = QFileDialog.getExistingDirectory(window, "Move Selected Images", window._current_folder or QDir.homePath())
         if not destination_dir:
             return
-        moved = self.move_records_by_paths(window._primary_paths_for_records(records), destination_dir)
-        window.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
+        self._confirm_and_transfer(records, destination_dir, mode="move")
 
     def batch_delete_records(self, records: list[ImageRecord]) -> None:
         window = self._window
@@ -534,18 +565,44 @@ class RecordOpsController:
     def move_selected_records_to_destination(self, destination_dir: str) -> None:
         window = self._window
         records = window._selected_records_for_actions()
-        if not records:
-            return
-        moved = self.move_records_by_paths(window._primary_paths_for_records(records), destination_dir)
-        window.statusBar().showMessage(f"Moved {moved} image(s) to {destination_dir}")
+        self._confirm_and_transfer(records, destination_dir, mode="move")
 
     def copy_selected_records_to_destination(self, destination_dir: str) -> None:
         window = self._window
         records = window._selected_records_for_actions()
+        self._confirm_and_transfer(records, destination_dir, mode="copy")
+
+    def _confirm_and_transfer(self, records: list[ImageRecord], destination_dir: str, *, mode: str) -> None:
+        """Shared confirm -> transfer -> completion flow for Move/Copy To
+        Folder and To Recent Destination (WI-4.7). Drag-drop and single-record
+        context-menu actions deliberately don't go through this -- they're
+        already a visible, deliberate choice of destination, unlike picking a
+        folder from a file dialog or a "recent destinations" submenu."""
+        window = self._window
         if not records:
             return
-        copied = self.copy_records_by_paths(window._primary_paths_for_records(records), destination_dir)
-        window.statusBar().showMessage(f"Copied {copied} image(s) to {destination_dir}")
+        verb = "Copy" if mode == "copy" else "Move"
+        include_default = window._settings.value(window.TRANSFER_INCLUDE_COMPANIONS_KEY, True, bool)
+        confirmed, include_companions = confirm_transfer(
+            window,
+            verb=verb,
+            count=len(records),
+            destination=destination_dir,
+            include_companions_default=include_default,
+        )
+        if not confirmed:
+            return
+        window._settings.setValue(window.TRANSFER_INCLUDE_COMPANIONS_KEY, include_companions)
+        primary_paths = window._primary_paths_for_records(records)
+        if mode == "copy":
+            count = self.copy_records_by_paths(primary_paths, destination_dir, include_companions=include_companions)
+            verb_past = "Copied"
+        else:
+            count = self.move_records_by_paths(primary_paths, destination_dir, include_companions=include_companions)
+            verb_past = "Moved"
+        window.statusBar().showMessage(f"{verb_past} {count} image(s) to {destination_dir}")
+        if count >= 2:
+            show_transfer_complete(window, verb_past=verb_past, count=count, destination=destination_dir)
 
     def batch_move_records_to_new_folder(self, records: list[ImageRecord]) -> None:
         window = self._window

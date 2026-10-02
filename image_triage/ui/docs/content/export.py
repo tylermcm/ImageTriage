@@ -49,14 +49,14 @@ ARTICLES = [
     ),
     DocArticle(
         id="recipes",
-        title="Workflow recipes",
+        title="Export recipes",
         category="export",
         summary="Saved export or handoff setups you can reuse.",
         keywords=("recipe", "workflow", "export", "handoff", "preset", "deliver"),
         markdown="""
-        # Workflow recipes
+        # Export recipes
 
-        A workflow recipe is a saved export or handoff setup. Recipes let you repeat the same output process without rebuilding the settings each time.
+        An export recipe is a saved export or handoff setup. Recipes let you repeat the same output process without rebuilding the settings each time.
 
         They are useful whenever you copy, move, resize, convert, export, or archive images the same way — for example:
 

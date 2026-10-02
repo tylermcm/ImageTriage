@@ -51,7 +51,7 @@ def install_dialog_guards(monkeypatch) -> DialogRecorder:
 
 
 def prepare_application() -> QApplication:
-    QCoreApplication.setOrganizationName("Codex")
+    QCoreApplication.setOrganizationName("Image Triage")
     QCoreApplication.setApplicationName("Image Triage")
     user_settings().clear()
     for legacy in legacy_settings_sources():

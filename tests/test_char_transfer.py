@@ -123,3 +123,62 @@ def test_unusable_destination_fails_every_item(tmp_path) -> None:
 
     assert 0 in worker.result.failed
     assert os.path.exists(src)
+
+
+# ---- WI-4.7: keep_source=True (Copy) -------------------------------------
+
+
+def test_same_volume_copy_leaves_the_source_and_reports_the_copy(tmp_path) -> None:
+    """A same-volume copy must not take the rename fast path (a rename can't
+    leave the source behind) — it has to do a real byte copy instead."""
+    src = _file(tmp_path / "a", "one.jpg", b"111")
+    worker = TransferWorker([TransferItem(0, "one.jpg", (src,))], str(tmp_path / "dest"), keep_source=True)
+    worker.run()
+
+    target = tmp_path / "dest" / "one.jpg"
+    assert target.read_bytes() == b"111"
+    assert os.path.exists(src) and Path(src).read_bytes() == b"111"
+    (move,) = worker.result.moved[0]
+    assert (move.source_path, move.target_path) == (src, str(target))
+    assert worker.result.failed == {} and not worker.result.cancelled
+
+
+def test_copy_cancel_mid_item_deletes_the_destination_and_leaves_the_source_alone(tmp_path) -> None:
+    """Decided: cancelling a copy means nothing happened — any files already
+    copied to the destination are deleted, not kept, and the source (never
+    touched during a copy) is naturally untouched either way."""
+    first = _file(tmp_path / "a", "first.jpg", b"1")
+    second = _file(tmp_path / "a", "second.jpg", b"2")
+    worker = TransferWorker(
+        [TransferItem(0, "pair", (first, second))], str(tmp_path / "dest"), keep_source=True
+    )
+    original_move_file = worker._move_file
+
+    def cancel_after_first(source, target, name):
+        original_move_file(source, target, name)
+        worker.cancel()
+
+    with patch.object(worker, "_move_file", side_effect=cancel_after_first):
+        worker.run()
+
+    assert os.path.exists(first) and os.path.exists(second), "copy never touches the source"
+    assert not any((tmp_path / "dest").iterdir()), "the partially-finished copy is cleaned up, not kept"
+    assert worker.result.cancelled and worker.result.moved == {}
+
+
+def test_copy_failure_rolls_back_the_destination_not_the_source(tmp_path) -> None:
+    ok_first = _file(tmp_path / "a", "first.jpg", b"1")
+    good = _file(tmp_path / "a", "good.jpg", b"g")
+    gone = str(tmp_path / "a" / "missing.jpg")  # never existed
+    items = [
+        TransferItem(0, "pair", (ok_first, gone)),
+        TransferItem(1, "good.jpg", (good,)),
+    ]
+    worker = TransferWorker(items, str(tmp_path / "dest"), keep_source=True)
+    worker.run()
+
+    assert 0 in worker.result.failed and 0 not in worker.result.moved
+    assert os.path.exists(ok_first), "the source is never touched during a copy"
+    assert not (tmp_path / "dest" / "first.jpg").exists()
+    assert (tmp_path / "dest" / "good.jpg").read_bytes() == b"g"
+    assert 1 in worker.result.moved
