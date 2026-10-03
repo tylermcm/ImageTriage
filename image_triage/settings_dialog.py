@@ -711,7 +711,9 @@ class WorkflowSettingsDialog(QDialog):
         self.watch_current_folder_checkbox = QCheckBox("Refresh the open folder when files change on disk")
         self.watch_current_folder_checkbox.setChecked(watch_current_folder)
         self.watch_current_folder_checkbox.setToolTip(_settings_tooltip(
-            "Automatically refreshes the current folder when files are added, removed, or renamed outside the app."
+            "Automatically refreshes the current folder when files are added, removed, or renamed outside the app. "
+            "Folders on network or removable drives cannot be watched live, so they are checked when you open "
+            "them and whenever you switch back to the app."
         ))
 
         self.restore_folder_position_checkbox = QCheckBox("Reopen folders where I left off")

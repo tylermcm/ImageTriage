@@ -14,7 +14,7 @@ from image_triage.metadata import CaptureMetadata
 from image_triage.models import ImageRecord, ImageVariant, SortMode
 from image_triage.review_intelligence import ReviewGroup, ReviewInsight, ReviewIntelligenceBundle, _RecordFingerprint
 from image_triage.review_workflows import BurstRecommendation, TasteProfile
-from image_triage.scanner import FolderScanTask
+from image_triage.scanner import FolderScanTask, folder_modified_ns
 
 
 def _record(path: str, *, name: str, size: int, modified_ns: int, companion_paths=(), edited_paths=(), variants=()) -> ImageRecord:
@@ -146,7 +146,12 @@ class CatalogRepositoryTests(unittest.TestCase):
                     modified_ns=1,
                 )
             ]
-            repository.save_folder_records(str(folder_path), expected_records)
+            # A saved listing is only served without listing the folder while the folder's modified
+            # time still matches the one recorded with it (tests/test_folder_change_detection.py
+            # covers the changed / unrecorded / unreachable cases).
+            repository.save_folder_records(
+                str(folder_path), expected_records, dir_mtime_ns=folder_modified_ns(str(folder_path))
+            )
             task = FolderScanTask(str(folder_path), token=7, sort_mode=SortMode.NAME, prefer_cached_only=True)
             finished_payloads: list[tuple[list[ImageRecord], str]] = []
             task.signals.finished.connect(

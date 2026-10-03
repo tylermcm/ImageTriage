@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QCoreApplication, QThreadPool
+from PySide6.QtCore import QCoreApplication, QEvent, QThreadPool
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
 from image_triage.app_identity import legacy_settings_sources, user_settings
@@ -94,6 +94,14 @@ def make_main_window():
 
 
 def dispose_window(window) -> None:
+    """Close a test window and really destroy it.
+
+    ``processEvents()`` never runs ``deleteLater()`` (deferred deletes need an explicit
+    ``sendPostedEvents(..., DeferredDelete)``), so windows disposed with ``deleteLater`` alone were
+    never destroyed: ~600 widgets and ~140 top-level popups survived *each* test, tens of thousands
+    after a few dozen tests. Everything that scales with live widgets (app-wide style, palette and
+    font changes, every ``processEvents`` turn servicing their timers) then got slower the further a
+    full run went, until single tests crossed conftest's per-test hard timeout."""
     app = QApplication.instance()
     window.close()
     if app is not None:
@@ -101,7 +109,22 @@ def dispose_window(window) -> None:
     QThreadPool.globalInstance().waitForDone(5000)
     window.deleteLater()
     if app is not None:
-        app.processEvents()
+        _pump_past_destroyed_widgets(app)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        _pump_past_destroyed_widgets(app)
+
+
+def _pump_past_destroyed_widgets(app, turns: int = 4) -> None:
+    """``processEvents`` a few times, tolerating deferred callbacks (``QTimer.singleShot`` lambdas,
+    queued signals) that were still pending when their window's widgets were destroyed: they raise
+    "Internal C++ object ... already deleted" from inside the event loop. They fire here, at
+    teardown, instead of leaking into whichever test runs next; anything else still propagates."""
+    for _ in range(turns):
+        try:
+            app.processEvents()
+        except RuntimeError as exc:
+            if "already deleted" not in str(exc):
+                raise
 
 
 def make_jpegs(directory, names, size=(64, 48)):

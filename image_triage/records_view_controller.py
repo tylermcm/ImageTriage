@@ -308,6 +308,7 @@ class RecordsViewController:
         window._chunked_load_scan_tokens = {existing for existing in window._chunked_load_scan_tokens if existing >= token}
         window._scan_showed_cached = False
         window._scan_cached_source = ""
+        window._folder_dir_mtime_ns = None
         window._scan_in_progress = True
         window._ai_deferred_background_work = False
         window._ai_deferred_background_scope_key = ""
@@ -606,12 +607,15 @@ class RecordsViewController:
         window = self._window
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
-        window._active_scan_tasks.pop(token, None)
+        finished_task = window._active_scan_tasks.pop(token, None)
         if token != window._scan_token:
             window._chunked_load_scan_tokens.discard(token)
             return
 
         window._scan_in_progress = False
+        # What is now on screen was taken (or vouched for) at this folder modified time; the
+        # return-to-app check on network drives compares the folder against it.
+        window._folder_dir_mtime_ns = getattr(finished_task, "dir_mtime_ns", None)
         window.grid.set_empty_message("Choose a folder to start triaging images.")
         chunked_view = self.should_chunk_loaded_records(records, token=token)
         window._chunked_load_scan_tokens.discard(token)

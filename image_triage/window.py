@@ -244,7 +244,14 @@ from .review_workflows import (
     disagreement_level_for,
     review_scoring_provider_id,
 )
-from .scanner import FolderScanTask, normalize_filesystem_path, normalized_path_key, scan_child_folders, scan_folder
+from .scanner import (
+    FolderModifiedCheckTask,
+    FolderScanTask,
+    normalize_filesystem_path,
+    normalized_path_key,
+    scan_child_folders,
+    scan_folder,
+)
 from .settings_dialog import WorkflowPreset, WorkflowSettingsDialog
 from .semantic_index import SemanticFolderIndexTask
 from .face_index import FaceFolderIndexTask
@@ -2956,6 +2963,13 @@ class MainWindow(QMainWindow):
         self._review_scoring_cache_detail = "Ready"
         self._watched_folder_path = ""
         self._folder_watch_refresh_pending = False
+        # Network and removable drives get no QFileSystemWatcher; instead the folder's modified
+        # time is compared against the one its listing was taken at whenever the user returns to
+        # the app (_check_folder_changed_on_activation).
+        self._folder_dir_mtime_ns: int | None = None
+        self._folder_check_task: FolderModifiedCheckTask | None = None
+        self._folder_check_token = -1
+        self._folder_check_last_started = 0.0
         # Resolution-aware: coerce the effective style + thresholds to what the
         # display can show (warning is deferred until the window is up).
         self._display_class_value = "high"
@@ -3044,6 +3058,9 @@ class MainWindow(QMainWindow):
         self._folder_watch_refresh_timer.setSingleShot(True)
         self._folder_watch_refresh_timer.setInterval(900)
         self._folder_watch_refresh_timer.timeout.connect(self._run_watched_folder_refresh)
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._handle_application_state_changed)
 
     def _init_folder_tree_and_drive_list(self) -> None:
         """Folder model, the Folders tree and the flat Drives list."""
@@ -14643,6 +14660,50 @@ class MainWindow(QMainWindow):
         if self._scan_in_progress:
             self.statusBar().showMessage(f"Detected folder changes in {self._current_folder}; refresh queued.")
             return
+        self.statusBar().showMessage(f"Detected folder changes in {self._current_folder}; refreshing...")
+
+    def _handle_application_state_changed(self, state: Qt.ApplicationState) -> None:
+        if state == Qt.ApplicationState.ApplicationActive:
+            self._check_folder_changed_on_activation()
+
+    def _check_folder_changed_on_activation(self) -> None:
+        """Network and removable drives are not watched, so look once when the user comes back to
+        the app (typically after importing or exporting elsewhere).
+
+        The folder's modified time is read on a worker thread (a stat on an unreachable share can
+        block) and compared with the one its on-screen listing was taken at; a difference queues
+        the same refresh a local watcher change would."""
+        if (
+            not self._watch_current_folder_enabled
+            or self._scope_kind != "folder"
+            or not self._current_folder
+            or self._scan_in_progress
+            or self._folder_dir_mtime_ns is None
+            or not self._is_slow_source_folder(self._current_folder)
+        ):
+            return
+        if self._folder_check_task is not None and self._folder_check_token == self._scan_token:
+            return
+        now = time.monotonic()
+        if now - self._folder_check_last_started < 5.0:
+            return  # focus flaps (dialogs opening and closing) should not hammer the share
+        self._folder_check_last_started = now
+        task = FolderModifiedCheckTask(self._current_folder, self._scan_token)
+        task.signals.checked.connect(self._handle_folder_modified_checked, Qt.ConnectionType.QueuedConnection)
+        self._folder_check_task = task
+        self._folder_check_token = self._scan_token
+        QThreadPool.globalInstance().start(task)
+
+    def _handle_folder_modified_checked(self, folder: str, token: int, modified_ns: object) -> None:
+        if token == self._folder_check_token:
+            self._folder_check_task = None
+        if token != self._scan_token or self._scan_in_progress or not isinstance(modified_ns, int):
+            return
+        if _memory_path_key(folder) != _memory_path_key(self._current_folder):
+            return
+        if modified_ns == self._folder_dir_mtime_ns:
+            return
+        self._queue_watched_folder_refresh()
         self.statusBar().showMessage(f"Detected folder changes in {self._current_folder}; refreshing...")
 
     def _run_watched_folder_refresh(self) -> None:
