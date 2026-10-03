@@ -243,7 +243,7 @@ class GridFailureTests(unittest.TestCase):
             best_in_group=True,
             disagreement_level="moderate",
             disagreement_summary="You kept a frame AI bucketed as likely reject.",
-            summary_text="Pass 2 | Best Frame | AI Disagreement",
+            summary_text="Pass 2 | Suggested Frame | AI Disagreement",
         )
 
         summary = grid._visible_workflow_summary(insight)
