@@ -2645,7 +2645,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         if self._show_ai_annotations:
             return summary
         parts = [part.strip() for part in summary.split("|")]
-        visible_parts = [part for part in parts if part and part not in {"AI Disagreement", "Best Frame"}]
+        visible_parts = [part for part in parts if part and part not in {"AI Disagreement", "Suggested Frame"}]
         return " | ".join(visible_parts)
 
     def _group_badge_palette(self, kind: str) -> tuple[QColor, QColor]:
@@ -3043,7 +3043,8 @@ class ThumbnailGridView(QAbstractScrollArea):
             label = ai_result.confidence_bucket_short_label
             return "Review" if label in {"Needs Review", "Review"} else label
         if workflow_insight is not None and getattr(workflow_insight, "best_in_group", False):
-            return "Winner"
+            # Only a burst suggestion (no AI result): not a Winner, which is the word for what the user marks.
+            return "Suggested"
         return ""
 
     def _review_workflow_tags(self, record: ImageRecord) -> tuple[tuple[str, str], ...]:
@@ -3057,7 +3058,7 @@ class ThumbnailGridView(QAbstractScrollArea):
         """
         # The rail is AI-Review-only, and it now carries a single tag: AI Miss —
         # the one place where the user overruled a call the AI was confident
-        # about. Everything else (Best Frame, dup/prefilter states, Edited) is
+        # about. Everything else (Suggested Frame, dup/prefilter states, Edited) is
         # data-only now: computed and filterable, never drawn on the card.
         if not self._show_ai_annotations:
             return ()

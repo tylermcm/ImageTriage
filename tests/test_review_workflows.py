@@ -155,8 +155,8 @@ class ReviewWorkflowTests(unittest.TestCase):
             recommended_score=96.0,
             is_recommended=True,
             reasons=(
-                "Best overall signal inside this burst.",
-                "Detail retention is stronger than the nearby frames.",
+                "Highest combined score in this burst (a suggestion, not a verdict).",
+                "Measurably sharper than the other frames.",
             ),
         )
         annotation = SessionAnnotation(winner=True, review_round="final_hero_selects")
@@ -182,9 +182,10 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertEqual(insight.disagreement_level, "strong")
         self.assertEqual(insight.disagreement_badge, "AI Miss")
         self.assertNotIn("Hero", insight.summary_text)
-        self.assertIn("Best Frame", insight.summary_text)
+        self.assertIn("Suggested Frame", insight.summary_text)
+        self.assertNotIn("Best Frame", insight.summary_text)
         self.assertIn("AI Disagreement", insight.summary_text)
-        self.assertTrue(any("Burst specialist pick" in line for line in insight.detail_lines))
+        self.assertTrue(any("Suggested frame: top-scoring of 4" in line for line in insight.detail_lines))
         self.assertTrue(any("Taste profile:" in line for line in insight.detail_lines))
 
     def test_build_burst_recommendations_picks_practical_best_frame(self) -> None:
@@ -241,7 +242,93 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertEqual(leader.recommended_path, records[0].path)
         self.assertEqual(leader.rank_in_group, 1)
         self.assertGreater(leader.score, runner_up.score)
-        self.assertTrue(any("Detail retention" in line for line in leader.reasons))
+        self.assertTrue(any("Measurably sharper" in line for line in leader.reasons))
+
+    # --- what a suggestion is allowed to claim -------------------------------------------------------
+    @staticmethod
+    def _burst_of(frames: list[tuple[float, float]]):
+        """A burst of frames (detail_score, exposure_score) with no AI results; returns (records, recommendations)."""
+        records = [_record(f"C:/shots/frame_{index:02d}.jpg", modified_ns=index + 1) for index in range(len(frames))]
+        review_bundle = _review_bundle(
+            groups=(
+                ReviewGroup(id="burst-1", kind="burst", label="Burst", member_paths=tuple(record.path for record in records)),
+            ),
+            insights=tuple(
+                ReviewInsight(
+                    path=record.path, group_id="burst-1", group_kind="burst", group_label="Burst",
+                    group_size=len(frames), rank_in_group=index + 1, detail_score=detail, exposure_score=exposure,
+                )
+                for index, (record, (detail, exposure)) in enumerate(zip(records, frames))
+            ),
+        )
+        _taste, recommendations = build_burst_recommendations(
+            records, ai_bundle=None, review_bundle=review_bundle, correction_events=[]
+        )
+        return records, recommendations
+
+    def test_a_suggestion_does_not_claim_sharper_when_the_frames_are_equally_sharp(self) -> None:
+        # The old rule fired for any leader with a detail score of 60 or more, which is nearly every frame.
+        records, recommendations = self._burst_of([(95.0, 80.0), (96.0, 80.0), (95.5, 80.0)])
+        leader = next(rec for rec in recommendations.values() if rec.is_recommended)
+        text = " ".join(leader.reasons).lower()
+        self.assertNotIn("sharper", text)
+        self.assertNotIn("cleaner exposure", text)
+        self.assertIn("about the same across these frames", text)
+        self.assertIn("not a verdict", text)
+
+    def test_a_suggestion_claims_sharper_only_for_a_real_gap(self) -> None:
+        _records, small = self._burst_of([(80.0, 80.0), (80.0 * 1.14, 80.0)])
+        _records, real = self._burst_of([(80.0, 80.0), (80.0 * 1.30, 80.0)])
+        small_leader = next(rec for rec in small.values() if rec.is_recommended)
+        real_leader = next(rec for rec in real.values() if rec.is_recommended)
+        self.assertFalse(any("sharper" in line.lower() for line in small_leader.reasons))
+        self.assertTrue(any("Measurably sharper" in line for line in real_leader.reasons))
+
+    def test_a_suggestion_claims_cleaner_exposure_only_for_a_real_gap(self) -> None:
+        _records, small = self._burst_of([(90.0, 70.0), (90.0, 70.0 + 9.0)])
+        _records, real = self._burst_of([(90.0, 70.0), (90.0, 70.0 + 11.0)])
+        small_leader = next(rec for rec in small.values() if rec.is_recommended)
+        real_leader = next(rec for rec in real.values() if rec.is_recommended)
+        self.assertFalse(any("cleaner exposure" in line.lower() for line in small_leader.reasons))
+        self.assertTrue(any("Cleaner exposure" in line for line in real_leader.reasons))
+
+    def test_other_frames_are_called_softer_only_when_clearly_softer_than_the_suggestion(self) -> None:
+        records, recommendations = self._burst_of([(100.0, 80.0), (90.0, 80.0), (70.0, 80.0)])
+        by_path = {rec.path: rec for rec in recommendations.values() if not rec.is_recommended}
+        slightly_softer = by_path[records[1].path]
+        much_softer = by_path[records[2].path]
+        self.assertFalse(any("softer" in line.lower() for line in slightly_softer.reasons))
+        self.assertTrue(any("Softer than the suggested frame" in line for line in much_softer.reasons))
+        for rec in by_path.values():
+            self.assertNotIn("leader looks stronger", " ".join(rec.reasons))
+
+    def test_changing_the_scoring_version_invalidates_cached_recommendations(self) -> None:
+        import image_triage.review_workflows as workflows
+
+        records = [_record("C:/shots/frame_01.jpg"), _record("C:/shots/frame_02.jpg", modified_ns=2)]
+        args = dict(ai_bundle=None, review_bundle=None, correction_events=[])
+        before = workflows.build_review_scoring_cache_key(records, **args)
+        original = workflows._REVIEW_SCORING_CACHE_VERSION
+        workflows._REVIEW_SCORING_CACHE_VERSION = original + 1
+        try:
+            after = workflows.build_review_scoring_cache_key(records, **args)
+        finally:
+            workflows._REVIEW_SCORING_CACHE_VERSION = original
+        self.assertNotEqual(before, after)
+
+    def test_a_burst_suggestion_is_not_called_winner_on_the_card(self) -> None:
+        from types import SimpleNamespace
+
+        from image_triage.grid import ThumbnailGridView
+
+        label = ThumbnailGridView._review_keeper_label
+        self.assertEqual("Suggested", label(None, None, SimpleNamespace(best_in_group=True)))
+        self.assertEqual("", label(None, None, SimpleNamespace(best_in_group=False)))
+        top_pick = _ai_result(
+            "C:/shots/a.jpg", group_id="g", group_size=3, rank_in_group=1, score=0.9, normalized_score=95.0,
+            bucket=AIConfidenceBucket.OBVIOUS_WINNER,
+        )
+        self.assertEqual("Winner", label(None, top_pick, SimpleNamespace(best_in_group=True)))
 
     def test_build_pairwise_label_payload_uses_stable_relative_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
