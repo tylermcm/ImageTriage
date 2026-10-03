@@ -2174,7 +2174,7 @@ class FullScreenPreview(QDialog):
             compare_action.triggered.connect(lambda checked: self.compare_toggle_button.setChecked(checked))
             auto_bracket_action = review_menu.addAction("Auto-Bracket")
             auto_bracket_action.setCheckable(True)
-            auto_bracket_action.setChecked(self._auto_bracket_enabled)
+            auto_bracket_action.setChecked(self.auto_bracket_button.isChecked())
             auto_bracket_action.triggered.connect(lambda checked: self.auto_bracket_button.setChecked(checked))
             before_after_action = review_menu.addAction("Before/After")
             before_after_action.setCheckable(True)
