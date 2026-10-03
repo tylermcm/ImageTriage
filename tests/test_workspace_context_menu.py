@@ -64,6 +64,8 @@ class WorkspaceContextMenuTests(unittest.TestCase):
         host._set_sort_mode = selected_sorts.append
         host._current_folder = tempfile.gettempdir()
         host._open_current_folder_in_file_manager = lambda: None
+        host._is_slow_source_folder = lambda _folder=None: False  # "Open folder" asks whether it is provably gone
+        host._dir_confirmed_missing = lambda path: MainWindow._dir_confirmed_missing(host, path)
 
         menu = MainWindow._build_empty_grid_context_menu(host)
         visible_actions = [action.text() for action in menu.actions() if not action.isSeparator()]

@@ -655,6 +655,32 @@ class FolderModifiedCheckTask(QRunnable):
         self.signals.checked.emit(self.folder, self.token, folder_modified_ns(self.folder))
 
 
+class PathReachableSignals(QObject):
+    checked = Signal(int, str, bool)
+
+
+class PathReachableTask(QRunnable):
+    """Asks, off the GUI thread, whether a folder answers at all.
+
+    ``os.path.isdir`` (and anything else that touches the path) can block for ~20 s on a share that is
+    asleep, so the GUI thread never asks; it waits for ``signals.checked(token, path, reachable)``.
+    The owner keeps the task alive until that signal arrives."""
+
+    def __init__(self, path: str, token: int) -> None:
+        super().__init__()
+        self.path = path
+        self.token = token
+        self.signals = PathReachableSignals()
+        self.setAutoDelete(False)
+
+    def run(self) -> None:
+        try:
+            reachable = bool(os.path.isdir(self.path))
+        except OSError:
+            reachable = False
+        self.signals.checked.emit(self.token, self.path, reachable)
+
+
 class FolderRecordsPersistTask(QRunnable):
     def __init__(self, folder: str, records: list[ImageRecord], dir_mtime_ns: int | None = None) -> None:
         super().__init__()
@@ -696,7 +722,10 @@ class FolderScanTask(QRunnable):
         include_hidden_folders: bool = False,
     ) -> None:
         super().__init__()
-        self.folder = normalize_filesystem_path(folder)
+        # Only tidied here: normalize_filesystem_path resolves the path through the filesystem, a network
+        # round trip for a folder on a share (~20 s if it is asleep), and this runs on the GUI thread.
+        # run() resolves it, exactly as before, on the worker.
+        self.folder = str(folder).strip()
         self.token = token
         self.sort_mode = sort_mode
         self.prefer_cached_only = prefer_cached_only
@@ -714,6 +743,10 @@ class FolderScanTask(QRunnable):
     def run(self) -> None:
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
+        try:
+            self.folder = normalize_filesystem_path(self.folder)
+        except Exception:  # an unresolvable path is scanned as given and fails visibly below
+            pass
         self.dir_mtime_ns = folder_modified_ns(self.folder)
         try:
             child_start = time.perf_counter() if logger.enabled else 0.0
@@ -804,6 +837,7 @@ __all__ = [
     "IGNORED_SYSTEM_DIRECTORY_NAMES",
     "FolderModifiedCheckTask",
     "FolderScanTask",
+    "PathReachableTask",
     "discover_edited_paths",
     "folder_modified_ns",
     "format_scan_error",

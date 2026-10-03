@@ -186,7 +186,7 @@ from .filtering import (
     deserialize_saved_filter_preset,
     serialize_saved_filter_preset,
 )
-from .formats import FITS_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
+from .formats import FITS_SUFFIXES, IMAGE_SUFFIXES, MODEL_SUFFIXES, RAW_SUFFIXES, suffix_for_path
 from .grid import BurstVisualInfo, GridDeltaUpdate, ThumbnailGridView
 from .image_convert import ConvertApplyTask, ConvertOptions, ConvertPlan, ConvertSourceItem
 from .image_resize import ResizeApplyTask, ResizeOptions, ResizePlan, ResizeSourceItem
@@ -244,9 +244,11 @@ from .review_workflows import (
     disagreement_level_for,
     review_scoring_provider_id,
 )
+from . import path_policy
 from .scanner import (
     FolderModifiedCheckTask,
     FolderScanTask,
+    PathReachableTask,
     normalize_filesystem_path,
     normalized_path_key,
     scan_child_folders,
@@ -502,6 +504,121 @@ def _headless_background_popen_kwargs() -> dict[str, object]:
 
 
 
+def _unknown_ai_folder_probe(folder: str) -> dict:
+    """What the AI toolbar assumes about a folder it has not been able to look at yet: nothing found."""
+    return {
+        "folder": folder,
+        "at": 0.0,
+        "ranked_export_exists": False,
+        "semantic_ready": False,
+        "report_ready": False,
+        "adapter_version": "",
+        "rerank_ready": False,
+        "adapter_db_exists": False,
+        "aiculler_available": False,
+        "phash_available": False,
+    }
+
+
+def _compute_ai_folder_probe(ai_paths, folder: str) -> dict:
+    """Look inside a folder's hidden AI directory: existence checks and a few SQLite opens.
+
+    It touches the disk, so for a folder on a network / removable drive it only runs on a worker thread."""
+    db_path = aiculler_db_path(ai_paths) if ai_paths is not None else None
+    probe = _unknown_ai_folder_probe(folder)
+    probe["ranked_export_exists"] = bool(ai_paths is not None and ai_paths.ranked_export_path.exists())
+    probe["semantic_ready"] = bool(ai_paths is not None and ai_semantic_artifacts_ready(ai_paths))
+    probe["report_ready"] = bool(ai_paths is not None and ai_report_artifacts_ready(ai_paths))
+    probe["adapter_version"] = latest_adapter_model_version(db_path) if db_path is not None else ""
+    probe["rerank_ready"] = bool(db_path is not None and aiculler_rerank_readiness(db_path).get("can_rerank"))
+    probe["adapter_db_exists"] = bool(db_path is not None and db_path.exists())
+    try:
+        probe["aiculler_available"] = bool(folder and aiculler_db_path(build_aiculler_workflow_paths(folder)).exists())
+    except Exception:
+        _logger.exception("Failed to probe aiculler availability for %s", folder)
+        probe["aiculler_available"] = False
+    try:
+        probe["phash_available"] = bool(folder and build_phash_prefilter_paths(folder).rows_path.exists())
+    except Exception:
+        _logger.exception("Failed to probe phash prefilter availability for %s", folder)
+        probe["phash_available"] = False
+    return probe
+
+
+class _PrefilterDecisionsSignals(QObject):
+    ready = Signal(int, str, object)
+
+
+class _PrefilterDecisionsTask(QRunnable):
+    """Loads a folder's saved pHash prefilter decisions off the GUI thread (for a folder on a share)."""
+
+    def __init__(self, token: int, folder: str) -> None:
+        super().__init__()
+        self.token = token
+        self.folder = folder
+        self.signals = _PrefilterDecisionsSignals()
+        self.setAutoDelete(False)
+
+    def run(self) -> None:
+        try:
+            decisions = load_phash_prefilter_decisions(build_phash_prefilter_paths(self.folder))
+            keyed = {key: decision for path, decision in decisions.items() if (key := normalized_path_key(path))}
+        except Exception:
+            _logger.exception("Failed to load phash prefilter decisions for %s", self.folder)
+            keyed = {}
+        self.signals.ready.emit(self.token, self.folder, keyed)
+
+
+class _AIFolderProbeSignals(QObject):
+    ready = Signal(int, str, object)
+
+
+class _AIFolderProbeTask(QRunnable):
+    """One AI-folder probe for a folder on a share, run off the GUI thread."""
+
+    def __init__(self, generation: int, folder: str, ai_paths) -> None:
+        super().__init__()
+        self.generation = generation
+        self.folder = folder
+        self._ai_paths = ai_paths
+        self.signals = _AIFolderProbeSignals()
+        self.setAutoDelete(False)
+
+    def run(self) -> None:
+        try:
+            probe = _compute_ai_folder_probe(self._ai_paths, self.folder)
+        except Exception:
+            _logger.exception("Failed to probe the AI data of %s", self.folder)
+            probe = _unknown_ai_folder_probe(self.folder)
+        self.signals.ready.emit(self.generation, self.folder, probe)
+
+
+class _SuggestionSignals(QObject):
+    ready = Signal(int, str, object)
+
+
+class _SuggestionTask(QRunnable):
+    """One folder listing for the address-bar suggestions, run off the GUI thread."""
+
+    def __init__(self, token: int, text: str, is_stale, lister) -> None:
+        super().__init__()
+        self.token = token
+        self._text = text
+        self._is_stale = is_stale
+        self._lister = lister
+        self.signals = _SuggestionSignals()
+        self.setAutoDelete(False)
+
+    def run(self) -> None:
+        suggestions = None  # None = stale, nothing to show; the owner still hears back so it can let go of us
+        if not self._is_stale():  # if the user typed on, do not even list the share for this one
+            try:
+                suggestions = self._lister(self._text)
+            except Exception:  # a share that errors out simply offers no suggestions
+                suggestions = []
+        self.signals.ready.emit(self.token, self._text, suggestions)
+
+
 class _DirectorySuggestionController(QObject):
     """Segment-aware folder suggestions for the workspace address field."""
 
@@ -531,6 +648,11 @@ class _DirectorySuggestionController(QObject):
         self._list.itemActivated.connect(self._accept_item)
         popup_layout.addWidget(self._list)
         self._last_query_text = ""
+        # Folders on a network / removable drive are listed on this one worker, newest request wins.
+        self._suggestion_token = 0
+        self._suggestion_tasks: set[_SuggestionTask] = set()
+        self._suggestion_pool = QThreadPool(self)
+        self._suggestion_pool.setMaxThreadCount(1)
 
         if self._line_edit is not None:
             self._line_edit.textEdited.connect(self._handle_text_edited)
@@ -609,7 +731,31 @@ class _DirectorySuggestionController(QObject):
     def _show_suggestions_for_text(self, text: str) -> None:
         if self._line_edit is None:
             return
-        suggestions = self._list_directory_suggestions(text)
+        parent_dir, _fragment = self._split_directory_query(text)
+        if parent_dir and not path_policy.is_plain_local(parent_dir):
+            # Listing a folder on a share on every keystroke would stall the window (and a sleeping NAS
+            # would freeze it), so it is done on a worker; only the newest request's answer is shown.
+            self._request_suggestions_off_thread(text)
+            return
+        self._suggestion_token += 1  # a still-pending share listing must not overwrite this local answer
+        self._show_suggestions(self._list_directory_suggestions(text))
+
+    def _request_suggestions_off_thread(self, text: str) -> None:
+        self._suggestion_token += 1
+        token = self._suggestion_token
+        self.hide_popup()
+        task = _SuggestionTask(token, text, lambda: token != self._suggestion_token, self._list_directory_suggestions)
+        task.signals.ready.connect(self._handle_suggestions_ready, Qt.ConnectionType.QueuedConnection)
+        self._suggestion_tasks.add(task)
+        self._suggestion_pool.start(task)
+
+    def _handle_suggestions_ready(self, token: int, text: str, suggestions: object) -> None:
+        self._suggestion_tasks = {task for task in self._suggestion_tasks if task.token != token}
+        if token != self._suggestion_token or self._line_edit is None or self._line_edit.text() != text:
+            return
+        self._show_suggestions(list(suggestions) if isinstance(suggestions, list) else [])
+
+    def _show_suggestions(self, suggestions: list[tuple[str, str]]) -> None:
         self._list.clear()
         if not suggestions:
             self.hide_popup()
@@ -2970,6 +3116,17 @@ class MainWindow(QMainWindow):
         self._folder_check_task: FolderModifiedCheckTask | None = None
         self._folder_check_token = -1
         self._folder_check_last_started = 0.0
+        # Re-rooting the Folders tree on a share waits for a worker to see the drive answer.
+        self._drive_sync_token = 0
+        self._drive_sync_tasks: dict[int, tuple[PathReachableTask, str, str]] = {}
+        # The AI-folder probe of a folder on a share is computed by a worker (see _ai_folder_probe).
+        self._ai_probe_task: _AIFolderProbeTask | None = None
+        self._ai_probe_generation = 0
+        # So are a share folder's saved pHash prefilter decisions (see _refresh_prefilter_decisions_...).
+        self._prefilter_load_task: _PrefilterDecisionsTask | None = None
+        self._prefilter_load_token = 0
+        self._prefilter_load_folder = ""
+        self._prefilter_load_at = 0.0
         # Resolution-aware: coerce the effective style + thresholds to what the
         # display can show (warning is deferred until the window is up).
         self._display_class_value = "high"
@@ -9287,15 +9444,31 @@ class MainWindow(QMainWindow):
 
     def _load_start_folder(self) -> None:
         last_folder = self._settings.value(self.LAST_FOLDER_KEY, "", str)
-        if last_folder and os.path.isdir(last_folder):
+        if last_folder and not self._dir_confirmed_missing(last_folder):
+            # On a network / removable drive nothing asks the share here: the scan worker opens the
+            # folder (or the grid says it could not), and the saved last folder is kept either way.
             self._select_folder(last_folder, sync_tree=False, chunked_restore=True)
             self.folder_tree.clearSelection()
             self.folder_tree.setCurrentIndex(QModelIndex())
 
     def _open_launch_target(self, target: str, *, chunked_restore: bool = False) -> bool:
-        normalized = normalize_filesystem_path(target)
+        normalized = self._normalize_for_gui(target)
         if not normalized:
             return False
+        if self._is_slow_source_folder(normalized) or not path_policy.is_plain_local(normalized):
+            # The share cannot be asked on the GUI thread, so tell a file from a folder by its name and
+            # let the scan worker report a path that is not there.
+            is_file = suffix_for_path(normalized) in IMAGE_SUFFIXES
+            folder = os.path.normpath(str(Path(normalized).parent)) if is_file else normalized
+            self._select_folder(
+                folder,
+                sync_tree=False,
+                chunked_restore=chunked_restore,
+                preferred_record_path=normalized if is_file else None,
+            )
+            self.folder_tree.clearSelection()
+            self.folder_tree.setCurrentIndex(QModelIndex())
+            return True
         if os.path.isdir(normalized):
             self._select_folder(normalized, sync_tree=False, chunked_restore=chunked_restore)
             self.folder_tree.clearSelection()
@@ -9367,6 +9540,29 @@ class MainWindow(QMainWindow):
 
     def _is_slow_source_folder(self, folder: str | None = None) -> bool:
         return self._recycle_bin.is_slow_source_folder(folder)
+
+    def _normalize_for_gui(self, path: str | None) -> str:
+        """``normalize_filesystem_path`` for use on the GUI thread.
+
+        That function resolves the path through the filesystem (memoized, but the first call for each path
+        is a network round trip for a share, ~20 s if the share is asleep). So a share's path is only tidied
+        here (``os.path.normpath``), not resolved; the scan worker resolves it exactly as before, and a
+        local path is resolved as before."""
+        raw = str(path or "").strip()
+        if raw and (self._is_slow_source_folder(raw) or not path_policy.is_plain_local(raw)):
+            return os.path.normpath(raw)
+        return normalize_filesystem_path(raw)
+
+    def _dir_confirmed_missing(self, path: str | None) -> bool:
+        """True only when ``path`` is provably not a folder and finding out cannot block the GUI thread.
+
+        A network or removable path is never touched here and is never reported missing: a share that is
+        asleep makes ``os.path.isdir`` block for ~20 s and answer "no", and callers used to treat that as
+        "deleted", dropping the entry from a saved list. Opening such a path is left to the scan worker.
+        See ``path_policy``."""
+        if not path or self._is_slow_source_folder(path):
+            return False
+        return path_policy.confirmed_missing(path)
 
     def _recycle_root_for_folder(self, folder: str | None = None) -> Path:
         return self._recycle_bin.recycle_root_for_folder(folder)
@@ -9458,6 +9654,33 @@ class MainWindow(QMainWindow):
         drive_root = self._drive_root_for(folder or "")
         if not drive_root:
             return
+        if self._is_slow_source_folder(folder) or not path_policy.is_plain_local(drive_root):
+            # QFileSystemModel.index() on a share that is asleep blocks the GUI thread for ~20 s, and this
+            # runs on every folder open, so a share's drive is re-rooted only after a worker has seen it
+            # answer. (_select_folder already skips selecting a share's folder in the tree.)
+            self._request_drive_sections_sync(folder, drive_root)
+            return
+        self._apply_drive_sections(folder, drive_root)
+
+    def _request_drive_sections_sync(self, folder: str, drive_root: str) -> None:
+        self._drive_sync_token += 1
+        token = self._drive_sync_token
+        task = PathReachableTask(drive_root, token)
+        task.signals.checked.connect(self._handle_drive_reachable, Qt.ConnectionType.QueuedConnection)
+        self._drive_sync_tasks[token] = (task, folder, drive_root)
+        QThreadPool.globalInstance().start(task)
+
+    def _handle_drive_reachable(self, token: int, _path: str, reachable: bool) -> None:
+        pending = self._drive_sync_tasks.pop(token, None)
+        if pending is None or token != self._drive_sync_token or not reachable:
+            return
+        _task, folder, drive_root = pending
+        if self._scope_kind != "folder" or _memory_path_key(self._current_folder) != _memory_path_key(folder):
+            return  # the user has moved on while the worker was asking
+        self._apply_drive_sections(folder, drive_root)
+
+    def _apply_drive_sections(self, folder: str, drive_root: str) -> None:
+        tree = self.folder_tree
         root_index = self.folder_model.index(drive_root)
         if not root_index.isValid():
             return
@@ -9474,7 +9697,7 @@ class MainWindow(QMainWindow):
 
     def _handle_favorite_activated(self, item: QListWidgetItem) -> None:
         folder = item.data(Qt.ItemDataRole.UserRole)
-        if isinstance(folder, str) and os.path.isdir(folder):
+        if isinstance(folder, str) and folder and not self._dir_confirmed_missing(folder):
             self._select_folder(folder)
 
     def eventFilter(self, watched, event) -> bool:
@@ -9607,14 +9830,15 @@ class MainWindow(QMainWindow):
         if not index.isValid():
             return ""
         folder = self.folder_model.filePath(index)
-        return folder if folder and os.path.isdir(folder) else ""
+        # Runs on every drag-move over the tree, so it must never ask a share.
+        return folder if folder and not self._dir_confirmed_missing(folder) else ""
 
     def _favorite_drop_target(self, point) -> str:
         item = self.favorites_list.itemAt(point)
         if item is None:
             return ""
         folder = item.data(Qt.ItemDataRole.UserRole)
-        return folder if isinstance(folder, str) and os.path.isdir(folder) else ""
+        return folder if isinstance(folder, str) and folder and not self._dir_confirmed_missing(folder) else ""
 
     def _drag_drop_prefers_copy(self, event) -> bool:
         modifiers = QApplication.keyboardModifiers()
@@ -9623,7 +9847,7 @@ class MainWindow(QMainWindow):
         return bool(modifiers & Qt.KeyboardModifier.ControlModifier)
 
     def _can_accept_record_drop(self, destination_folder: str) -> bool:
-        if not destination_folder or not os.path.isdir(destination_folder):
+        if not destination_folder or self._dir_confirmed_missing(destination_folder):
             return False
         if not self._current_folder:
             return False
@@ -9634,7 +9858,7 @@ class MainWindow(QMainWindow):
         if not index.isValid():
             return
         folder = self.folder_model.filePath(index)
-        if not folder or not os.path.isdir(folder):
+        if not folder or self._dir_confirmed_missing(folder):
             return
         self._show_folder_context_menu(folder, self.folder_tree.viewport().mapToGlobal(point), is_favorite=folder in self._favorites)
 
@@ -10382,19 +10606,27 @@ class MainWindow(QMainWindow):
         new_model.layoutChanged.connect(lambda *_args: self._drive_list_fit_timer.start())
         old_model.deleteLater()
 
-        if root_path:
+        def restorable(path: str) -> bool:
+            # new_model.index() on a share that is asleep blocks the GUI thread for ~20 s, so only plain
+            # local paths are put back here; a share's drive is re-rooted by _sync_drive_sections below
+            # once a worker has seen it answer (its expanded branches and drive selection are not kept).
+            return bool(path) and not self._is_slow_source_folder(path) and path_policy.is_plain_local(path)
+
+        if restorable(root_path):
             root_index = new_model.index(root_path)
             if root_index.isValid():
                 tree.setRootIndex(root_index)
         for path in expanded:
+            if not restorable(path):
+                continue
             index = new_model.index(path)
             if index.isValid():
                 tree.expand(index)
-        if current_path:
+        if restorable(current_path):
             index = new_model.index(current_path)
             if index.isValid():
                 tree.setCurrentIndex(index)
-        if drive_path:
+        if restorable(drive_path):
             drive_index = new_model.index(drive_path)
             if drive_index.isValid():
                 self.drive_list.setCurrentIndex(drive_index)
@@ -12123,7 +12355,10 @@ class MainWindow(QMainWindow):
     def _aiculler_paths_for_current_folder(self):
         if not self._current_folder:
             return None
-        return build_aiculler_workflow_paths(self._current_folder)
+        # Called on every winner / reject mark (telemetry), so it must not ask a share to resolve the path.
+        return build_aiculler_workflow_paths(
+            self._current_folder, resolve=not self._is_slow_source_folder(self._current_folder)
+        )
 
     def _aiculler_telemetry_logger_for_current_folder(self) -> ThreadedTelemetryLogger | None:
         paths = self._aiculler_paths_for_current_folder()
@@ -13597,7 +13832,8 @@ class MainWindow(QMainWindow):
             raw = [raw]
         favorites: list[str] = []
         for path in raw or []:
-            if isinstance(path, str) and path and os.path.isdir(path) and path not in favorites:
+            # Only a folder provably gone from a local drive is dropped; a share that is asleep stays.
+            if isinstance(path, str) and path and not self._dir_confirmed_missing(path) and path not in favorites:
                 favorites.append(path)
         return favorites
 
@@ -13608,9 +13844,11 @@ class MainWindow(QMainWindow):
         folders: list[str] = []
         seen: set[str] = set()
         for path in raw or []:
-            if not isinstance(path, str) or not path or not os.path.isdir(path):
+            if not isinstance(path, str) or not path or self._dir_confirmed_missing(path):
                 continue
-            normalized = normalized_path_key(path)
+            # _memory_path_key, not normalized_path_key: that one resolves the path through the filesystem,
+            # a network round trip per share path, and this is only for in-memory de-duplication.
+            normalized = _memory_path_key(path)
             if normalized in seen:
                 continue
             seen.add(normalized)
@@ -13653,9 +13891,9 @@ class MainWindow(QMainWindow):
         destinations: list[str] = []
         seen: set[str] = set()
         for path in raw or []:
-            if not isinstance(path, str) or not path or not os.path.isdir(path):
+            if not isinstance(path, str) or not path or self._dir_confirmed_missing(path):
                 continue
-            normalized = normalized_path_key(path)
+            normalized = _memory_path_key(path)  # pure; normalized_path_key would resolve a share path
             if normalized in seen:
                 continue
             seen.add(normalized)
@@ -13978,7 +14216,9 @@ class MainWindow(QMainWindow):
         return [path for path in valid if _memory_path_key(path) != current_key]
 
     def _open_recent_folder(self, folder: str) -> None:
-        if os.path.isdir(folder):
+        if not self._dir_confirmed_missing(folder):
+            # A share that does not answer is not "gone": the scan worker opens it, or reports the failure
+            # in the grid, and the entry stays in the list.
             self._select_folder(folder)
             return
         missing_key = _memory_path_key(folder)
@@ -14033,8 +14273,8 @@ class MainWindow(QMainWindow):
         self._refresh_recent_folder_combos()
 
     def _handle_path_suggestion_accepted(self, folder: str) -> None:
-        normalized = normalize_filesystem_path(folder)
-        if not normalized or not os.path.isdir(normalized):
+        normalized = self._normalize_for_gui(folder)
+        if not normalized or self._dir_confirmed_missing(normalized):
             self._refresh_recent_folder_combos()
             return
         if self._current_folder and _memory_path_key(normalized) == _memory_path_key(self._current_folder):
@@ -14044,11 +14284,11 @@ class MainWindow(QMainWindow):
 
     def _commit_path_combo_text(self, combo: QComboBox) -> None:
         raw_text = combo.currentText().strip().strip('"')
-        folder = normalize_filesystem_path(raw_text)
+        folder = self._normalize_for_gui(raw_text)
         if not folder:
             self._refresh_recent_folder_combos()
             return
-        if not os.path.isdir(folder):
+        if self._dir_confirmed_missing(folder):
             self.statusBar().showMessage(f"Folder not found: {folder}")
             self._refresh_recent_folder_combos()
             return
@@ -14058,35 +14298,40 @@ class MainWindow(QMainWindow):
         self._select_folder(folder)
 
     def _remember_recent_destination(self, destination_dir: str) -> None:
-        normalized = normalize_filesystem_path(destination_dir)
-        if not normalized or not os.path.isdir(normalized):
+        normalized = self._normalize_for_gui(destination_dir)
+        if not normalized or self._dir_confirmed_missing(normalized):
             return
         self._recent_destinations = [
             normalized,
             *[
                 item
                 for item in self._recent_destinations
-                if normalized_path_key(item) != normalized_path_key(normalized)
+                if _memory_path_key(item) != _memory_path_key(normalized)
             ],
         ][:10]
         self._save_recent_destinations()
 
     def _recent_destination_paths(self, *, exclude_current_folder: bool = False) -> list[str]:
-        current_key = normalized_path_key(self._current_folder) if exclude_current_folder and self._current_folder else ""
         cleaned: list[str] = []
         seen: set[str] = set()
         for path in self._recent_destinations:
-            if not os.path.isdir(path):
+            if self._dir_confirmed_missing(path):
                 continue
-            normalized = normalized_path_key(path)
-            if normalized in seen or (current_key and normalized == current_key):
+            normalized = _memory_path_key(path)
+            if normalized in seen:
                 continue
             seen.add(normalized)
             cleaned.append(path)
+        # Only provably-gone folders and duplicates are ever dropped from the saved list. "Hide the folder
+        # I am in" is a filter on what the menu shows: it used to be written back too, so merely opening
+        # the Move-To menu erased the current folder from the saved destinations.
         if cleaned != self._recent_destinations:
             self._recent_destinations = cleaned[:10]
             self._save_recent_destinations()
-        return cleaned
+        if not exclude_current_folder or not self._current_folder:
+            return cleaned
+        current_key = _memory_path_key(self._current_folder)
+        return [path for path in cleaned if _memory_path_key(path) != current_key]
 
     def _add_recent_destination_actions(self, menu: QMenu, title: str) -> dict[QAction, str]:
         recent_menu = menu.addMenu(title)
@@ -14179,7 +14424,7 @@ class MainWindow(QMainWindow):
         self.favorites_list.setFixedHeight(height)
 
     def _add_favorite(self, folder: str) -> None:
-        if not folder or not os.path.isdir(folder) or folder in self._favorites:
+        if not folder or self._dir_confirmed_missing(folder) or folder in self._favorites:
             return
         self._favorites.append(folder)
         self._save_favorites()
@@ -14715,7 +14960,7 @@ class MainWindow(QMainWindow):
         if self._scan_in_progress:
             self._folder_watch_refresh_timer.start(450)
             return
-        if not os.path.isdir(self._current_folder):
+        if self._dir_confirmed_missing(self._current_folder):
             self._folder_watch_refresh_pending = False
             self._refresh_current_folder_watch()
             return
@@ -15940,7 +16185,8 @@ class MainWindow(QMainWindow):
     def _hidden_ai_paths_for_current_folder(self):
         if not self._current_folder:
             return None
-        return build_ai_workflow_paths(self._current_folder)
+        # Resolving the path asks the filesystem, so for a folder on a share the GUI thread does not.
+        return build_ai_workflow_paths(self._current_folder, resolve=not self._is_slow_source_folder(self._current_folder))
 
     def _cancel_hidden_ai_results_load(self) -> None:
         self._hidden_ai_results_timer.stop()
@@ -16442,29 +16688,46 @@ class MainWindow(QMainWindow):
             and (now - cache.get("at", 0.0)) < self._AI_FOLDER_PROBE_TTL_S
         ):
             return cache
-        db_path = aiculler_db_path(ai_paths) if ai_paths is not None else None
-        probe: dict = {"folder": folder, "at": now}
-        probe["ranked_export_exists"] = bool(ai_paths is not None and ai_paths.ranked_export_path.exists())
-        probe["semantic_ready"] = bool(ai_paths is not None and ai_semantic_artifacts_ready(ai_paths))
-        probe["report_ready"] = bool(ai_paths is not None and ai_report_artifacts_ready(ai_paths))
-        probe["adapter_version"] = latest_adapter_model_version(db_path) if db_path is not None else ""
-        probe["rerank_ready"] = bool(db_path is not None and aiculler_rerank_readiness(db_path).get("can_rerank"))
-        probe["adapter_db_exists"] = bool(db_path is not None and db_path.exists())
-        try:
-            probe["aiculler_available"] = bool(folder and aiculler_db_path(build_aiculler_workflow_paths(folder)).exists())
-        except Exception:
-            _logger.exception("Failed to probe aiculler availability for %s", folder)
-            probe["aiculler_available"] = False
-        try:
-            probe["phash_available"] = bool(folder and build_phash_prefilter_paths(folder).rows_path.exists())
-        except Exception:
-            _logger.exception("Failed to probe phash prefilter availability for %s", folder)
-            probe["phash_available"] = False
+        if folder and self._is_slow_source_folder(folder):
+            return self._ai_folder_probe_off_thread(ai_paths, folder, cache)
+        probe = _compute_ai_folder_probe(ai_paths, folder)
+        probe["at"] = now
         self._ai_folder_probe_cache = probe
         return probe
 
+    def _ai_folder_probe_off_thread(self, ai_paths, folder: str, cache: dict | None) -> dict:
+        """The probe of a folder on a network / removable drive.
+
+        It opens SQLite files and stats artifacts inside the folder, which on the GUI thread would stall
+        every folder open on a NAS (and freeze the window if the share is asleep). So a worker does it;
+        until its answer arrives the toolbar shows what was last known for this folder, or "nothing found
+        yet", and the arriving answer refreshes the toolbar."""
+        if self._ai_probe_task is None:
+            task = _AIFolderProbeTask(self._ai_probe_generation, folder, ai_paths)
+            task.signals.ready.connect(self._handle_ai_folder_probe_ready, Qt.ConnectionType.QueuedConnection)
+            self._ai_probe_task = task
+            QThreadPool.globalInstance().start(task)
+        if cache is not None and cache.get("folder") == folder:
+            return cache
+        return _unknown_ai_folder_probe(folder)
+
+    def _handle_ai_folder_probe_ready(self, generation: int, folder: str, probe: object) -> None:
+        self._ai_probe_task = None
+        current = self._current_folder or ""
+        if not isinstance(probe, dict):
+            return
+        if folder != current or generation != self._ai_probe_generation:
+            # The folder, or its AI data, changed while the worker was looking: this answer is stale, so
+            # ask again for what is current (one probe is in flight at a time).
+            self._update_ai_toolbar_state()
+            return
+        probe["at"] = time.perf_counter()
+        self._ai_folder_probe_cache = probe
+        self._update_ai_toolbar_state()
+
     def _invalidate_ai_folder_probe_cache(self) -> None:
         self._ai_folder_probe_cache = None
+        self._ai_probe_generation += 1
 
     def _update_ai_toolbar_state(self) -> None:
         logger = perf_logger()
@@ -18080,9 +18343,18 @@ class MainWindow(QMainWindow):
                 return decision
         return None
 
+    _PREFILTER_LOAD_TTL_S = 60.0
+
     def _refresh_prefilter_decisions_for_current_folder(self) -> None:
         if not self._current_folder:
             self._prefilter_decisions_by_path = {}
+            return
+        if self._is_slow_source_folder(self._current_folder):
+            # Runs every time the records view is finalized, and loading the decisions resolves the hidden
+            # folder, stats and reads a file and resolves every decision's path: all over the share. So
+            # for a share a worker does it (at most once a minute per folder) and the arriving answer
+            # is pushed to the grid.
+            self._load_prefilter_decisions_off_thread(self._current_folder)
             return
         try:
             decisions = load_phash_prefilter_decisions(build_phash_prefilter_paths(self._current_folder))
@@ -18094,6 +18366,28 @@ class MainWindow(QMainWindow):
             for path, decision in decisions.items()
             if normalized_path_key(path)
         }
+
+    def _load_prefilter_decisions_off_thread(self, folder: str) -> None:
+        now = time.monotonic()
+        if self._prefilter_load_folder == folder and (
+            self._prefilter_load_task is not None or now - self._prefilter_load_at < self._PREFILTER_LOAD_TTL_S
+        ):
+            return
+        self._prefilter_load_token += 1
+        self._prefilter_load_folder = folder
+        self._prefilter_load_at = now
+        task = _PrefilterDecisionsTask(self._prefilter_load_token, folder)
+        task.signals.ready.connect(self._handle_prefilter_decisions_ready, Qt.ConnectionType.QueuedConnection)
+        self._prefilter_load_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _handle_prefilter_decisions_ready(self, token: int, folder: str, decisions: object) -> None:
+        if token == self._prefilter_load_token:
+            self._prefilter_load_task = None
+        if token != self._prefilter_load_token or folder != self._current_folder or not isinstance(decisions, dict):
+            return
+        self._prefilter_decisions_by_path = decisions
+        self.grid.set_prefilter_decisions(decisions)
 
     def _refresh_aiculler_ingested_paths_for_current_folder(self) -> None:
         folder_key = normalized_path_key(self._current_folder) if self._current_folder else ""
@@ -20785,7 +21079,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         open_folder_label = "Open Current Folder In File Explorer" if os.name == "nt" else "Open Current Folder In File Manager"
         open_folder = menu.addAction(open_folder_label)
-        open_folder.setEnabled(bool(self._current_folder and os.path.isdir(self._current_folder)))
+        open_folder.setEnabled(bool(self._current_folder and not self._dir_confirmed_missing(self._current_folder)))
         open_folder.triggered.connect(self._open_current_folder_in_file_manager)
         return menu
 
@@ -20793,7 +21087,7 @@ class MainWindow(QMainWindow):
         self._records_view.clear_search_from_workspace_menu()
 
     def _open_current_folder_in_file_manager(self) -> None:
-        if self._current_folder and os.path.isdir(self._current_folder):
+        if self._current_folder and not self._dir_confirmed_missing(self._current_folder):
             open_in_file_explorer(self._current_folder)
 
     def _unique_destination(self, directory: str, filename: str) -> str:

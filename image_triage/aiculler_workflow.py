@@ -1236,8 +1236,8 @@ def aiculler_runtime_status(workers: int | None = None) -> AICullerRuntimeStatus
     )
 
 
-def build_aiculler_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
-    return build_ai_workflow_paths(folder)
+def build_aiculler_workflow_paths(folder: str | Path, *, resolve: bool = True) -> AIWorkflowPaths:
+    return build_ai_workflow_paths(folder, resolve=resolve)
 
 
 def aiculler_db_path(paths: AIWorkflowPaths) -> Path:

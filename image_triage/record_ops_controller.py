@@ -513,7 +513,7 @@ class RecordOpsController:
         if window._collection_mode:
             return
         normalized_destination = normalize_filesystem_path(destination_dir)
-        if not normalized_destination or not os.path.isdir(normalized_destination):
+        if not normalized_destination or window._dir_confirmed_missing(normalized_destination):
             return
         if not window._current_folder or normalized_path_key(normalized_destination) == normalized_path_key(window._current_folder):
             window.statusBar().showMessage("Choose a different folder to drop these images into.")

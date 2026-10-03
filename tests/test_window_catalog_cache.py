@@ -90,6 +90,13 @@ class _WindowLaunchStub:
             setCurrentIndex=lambda _index=None: None,
         )
 
+    # The launch target code asks whether a path is on a share before it checks it (path_policy).
+    def _is_slow_source_folder(self, _folder: str | None = None) -> bool:
+        return False
+
+    _dir_confirmed_missing = MainWindow._dir_confirmed_missing
+    _normalize_for_gui = MainWindow._normalize_for_gui
+
     def _select_folder(
         self,
         folder: str,

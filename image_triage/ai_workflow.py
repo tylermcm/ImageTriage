@@ -141,9 +141,15 @@ def ai_device_environment_override() -> str | None:
     return None
 
 
-def build_ai_workflow_paths(folder: str | Path) -> AIWorkflowPaths:
-    """Resolve the hidden AI artifact/report layout for a real folder."""
-    folder_path = Path(folder).expanduser().resolve()
+def build_ai_workflow_paths(folder: str | Path, *, resolve: bool = True) -> AIWorkflowPaths:
+    """Resolve the hidden AI artifact/report layout for a real folder.
+
+    ``resolve=False`` skips ``Path.resolve()``, which asks the filesystem (a network round trip for a folder
+    on a share, ~20 s if the share is asleep). The GUI thread passes it for a share's folder; workers keep
+    the default. The hidden directory is the same physical place either way."""
+    folder_path = Path(folder).expanduser()
+    if resolve:
+        folder_path = folder_path.resolve()
     hidden_root = folder_path / HIDDEN_ROOT_NAME
     artifacts_dir = hidden_root / ARTIFACTS_DIR_NAME
     report_dir = hidden_root / REPORT_DIR_NAME

@@ -205,6 +205,8 @@ class CatalogController:
         message = f"Library refreshed: {summary.record_count} image bundle(s) across {summary.folder_count} folder(s)"
         if summary.missing_roots:
             message = f"{message} | Missing roots: {len(summary.missing_roots)}"
+        if summary.unreachable_roots:
+            message = f"{message} | Not reachable right now (index kept): {len(summary.unreachable_roots)}"
         window.statusBar().showMessage(message)
 
     def _handle_failed(self, message: str) -> None:
@@ -555,7 +557,7 @@ class CatalogController:
         window._refresh_collections_menu()
         if deleted and window._scope_kind == "collection" and window._scope_id == collection.id:
             last_folder = window._settings.value(window.LAST_FOLDER_KEY, "", str)
-            if last_folder and os.path.isdir(last_folder):
+            if last_folder and not window._dir_confirmed_missing(last_folder):
                 window._select_folder(last_folder)
             else:
                 window._current_folder = ""
