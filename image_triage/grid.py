@@ -14,6 +14,7 @@ from PySide6.QtGui import QAction, QBrush, QColor, QContextMenuEvent, QCursor, Q
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QComboBox, QMenu, QToolButton, QWidget
 
 from .ai_results import AIConfidenceBucket, AIImageResult, refine_ai_result_with_review_insight
+from .ai_why import AIWhy, ai_why_tooltip_html, build_ai_why
 from .cache import ThumbnailKey
 from .metadata import CaptureMetadata, MetadataKey, MetadataManager
 from .keyboard_mapping import matches_shortcut
@@ -474,6 +475,23 @@ class ThumbnailGridView(QAbstractScrollArea):
     def _action_tooltip(label: str, shortcut: QKeySequence) -> str:
         shortcut_text = shortcut.toString(QKeySequence.SequenceFormat.NativeText)
         return f"{label}\nShortcut: {shortcut_text}" if shortcut_text else label
+
+    def _card_tooltip(self, index: int, rect: QRect) -> str:
+        """What hovering a card says: the AI's "why" when AI tags are switched on and the photo has a
+        result (with the filename underneath if it is cut off on the card), otherwise just the filename."""
+        filename = self._filename_tooltip(index, rect)
+        why = self._ai_why_for(index)
+        if why is None:
+            return filename
+        return ai_why_tooltip_html(why, filename=filename)
+
+    def _ai_why_for(self, index: int) -> AIWhy | None:
+        if not self._show_ai_annotations:
+            return None  # manual review stays clean; the opt-in is "Show AI tags on cards in the grid"
+        record = self._items[index]
+        if record.is_folder:
+            return None
+        return build_ai_why(self._ai_result_for(record), self._review_insight_for(record))
 
     def _filename_tooltip(self, index: int, rect: QRect) -> str:
         data = self._grid_card_data(index)
@@ -1599,7 +1617,7 @@ class ThumbnailGridView(QAbstractScrollArea):
             elif hovered_reject >= 0:
                 tooltip = self._action_tooltip("Reject Selection", self._reject_shortcut)
             else:
-                tooltip = self._filename_tooltip(index, rect)
+                tooltip = self._card_tooltip(index, rect)
         elif action_index >= 0:
             if hovered_winner >= 0:
                 tooltip = self._action_tooltip("Mark Winner", self._winner_shortcut)
