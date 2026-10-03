@@ -271,14 +271,37 @@ class CatalogRepository:
             )
         return records
 
+    def load_folder_dir_mtime(self, folder: str) -> int | None:
+        """The folder's modified time recorded when its saved listing was last taken from disk, or
+        None when there is no saved listing or it predates the recording."""
+        folder_key = _normalized_path_key(_normalize_filesystem_path(folder))
+        try:
+            with closing(connect_catalog_db(self.db_path)) as connection:
+                apply_catalog_migrations(connection)
+                row = connection.execute(
+                    "SELECT dir_mtime_ns FROM catalog_folders WHERE folder_key = ?",
+                    (folder_key,),
+                ).fetchone()
+        except sqlite3.DatabaseError:
+            return None
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
+
     def save_folder_records(
         self,
         folder: str,
         records: list[ImageRecord],
         *,
         source: str = "scan",
+        dir_mtime_ns: int | None = None,
     ) -> bool:
-        """Persist one folder's current scan result into the catalog snapshot tables."""
+        """Persist one folder's current scan result into the catalog snapshot tables.
+
+        ``dir_mtime_ns`` is the folder's modified time read *before* the listing was taken. Pass it
+        only for a real listing; the app's own edits to a saved listing leave it ``None``, which keeps
+        the previous value (the folder's real modified time has moved on, so the next check simply
+        sees a difference and rescans)."""
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         folder_path = _normalize_filesystem_path(folder)
@@ -290,15 +313,16 @@ class CatalogRepository:
                 with connection:
                     connection.execute(
                         """
-                        INSERT INTO catalog_folders(folder_key, folder_path, record_count, source, last_indexed_at)
-                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO catalog_folders(folder_key, folder_path, record_count, source, last_indexed_at, dir_mtime_ns)
+                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                         ON CONFLICT(folder_key) DO UPDATE SET
                             folder_path = excluded.folder_path,
                             record_count = excluded.record_count,
                             source = excluded.source,
-                            last_indexed_at = CURRENT_TIMESTAMP
+                            last_indexed_at = CURRENT_TIMESTAMP,
+                            dir_mtime_ns = COALESCE(excluded.dir_mtime_ns, catalog_folders.dir_mtime_ns)
                         """,
-                        (folder_key, folder_path, len(records), source),
+                        (folder_key, folder_path, len(records), source, dir_mtime_ns),
                     )
                     connection.execute("DELETE FROM catalog_record_members WHERE folder_key = ?", (folder_key,))
                     connection.execute("DELETE FROM catalog_records WHERE folder_key = ?", (folder_key,))
