@@ -25,6 +25,7 @@ import tempfile
 import time
 import uuid
 from collections import Counter, deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from hashlib import sha1
 from pathlib import Path
@@ -8547,7 +8548,7 @@ class MainWindow(QMainWindow):
             download_aiculler_clip_model=clip_missing,
             download_aiculler_topiq_model=topiq_missing,
             download_aiculler_face_model=face_missing,
-            download_semantic_model=semantic_missing,
+            download_semantic_model=False,
         )
 
     def _ensure_ai_runtime_available(self, *, title: str) -> bool:
@@ -9928,7 +9929,7 @@ class MainWindow(QMainWindow):
             else:
                 self._library_store.add_catalog_root(folder)
                 self._refresh_catalog_menu()
-                self._start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for the library...")
+                self._catalog.start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for the library...")
             return
         if chosen == favorite_action:
             if is_favorite:
@@ -14450,7 +14451,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
         self.folder_model.setFilter(self._folder_tree_filter())
         if self._current_folder and self._scope_kind == "folder":
-            current_path = self._current_path_for_index(self.grid.current_index())
+            current_path = self._current_visible_record_path()
             self._folder_records = scan_child_folders(
                 self._current_folder,
                 include_hidden=self._show_hidden_folders,
@@ -19833,7 +19834,7 @@ class MainWindow(QMainWindow):
             self._single_drive_expansion_enabled
         )
         if hidden_changed and self._current_folder and self._scope_kind == "folder":
-            current_path = self._current_path_for_index(self.grid.current_index())
+            current_path = self._current_visible_record_path()
             self._folder_records = scan_child_folders(self._current_folder, include_hidden=self._show_hidden_folders)
             self._refresh_directory_navigation_buttons()
             self._apply_records_view(current_path=current_path)
