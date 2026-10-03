@@ -522,7 +522,8 @@ class WorkflowSettingsDialog(QDialog):
         self.show_ai_tags_in_grid_checkbox.setChecked(show_ai_tags_in_grid)
         self.show_ai_tags_in_grid_checkbox.setToolTip(_settings_tooltip(
             "Off by default. When on, AI badges (top pick, confidence, etc.) show on grid cards "
-            "during manual review, not only in the inspector."
+            "during manual review, not only in the inspector, and hovering a card explains why: the AI's "
+            "reason, sharpness, exposure, quality score, technical flags and subject."
         ))
 
         self.apply_edits_to_pocketdrop_checkbox = QCheckBox("Apply edits before sending to PocketDrop")
