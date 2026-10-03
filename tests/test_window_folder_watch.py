@@ -43,6 +43,12 @@ class _WindowStub:
     def statusBar(self) -> _StatusBarStub:
         return self._status
 
+    # The watched-folder refresh asks whether the folder is provably gone before it reloads (path_policy).
+    def _is_slow_source_folder(self, _folder: str | None = None) -> bool:
+        return False
+
+    _dir_confirmed_missing = MainWindow._dir_confirmed_missing
+
     def _queue_watched_folder_refresh(self, delay_ms: int = 900) -> None:
         self._folder_watch_refresh_pending = True
         self.queued_delays.append(delay_ms)

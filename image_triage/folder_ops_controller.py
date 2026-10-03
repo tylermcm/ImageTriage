@@ -6,11 +6,23 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
+from . import path_policy
 from .file_ops import create_folder, delete_folder, move_folder, rename_folder
 from .scanner import normalized_path_key
 
 if TYPE_CHECKING:
     from .window import MainWindow
+
+
+def _path_key(path: str) -> str:
+    """A comparison key for a saved folder path.
+
+    ``normalized_path_key`` resolves the path through the filesystem, which for a share is a network round
+    trip (~20 s if it is asleep) and these loops run over every saved favorite / recent entry, so a share's
+    path gets a plain textual key instead. A local path is resolved as before."""
+    if path_policy.is_plain_local(path):
+        return normalized_path_key(path)
+    return os.path.normpath(str(path)).casefold()
 
 
 class FolderOpsController:
@@ -31,7 +43,23 @@ class FolderOpsController:
         return str(path.parent) == str(path)
 
     @staticmethod
+    def _is_plain_local_pair(path: str, root_folder: str) -> bool:
+        return path_policy.is_plain_local(path) and path_policy.is_plain_local(root_folder)
+
+    @staticmethod
+    def _text_relative(path: str, root_folder: str) -> Path | None:
+        """``path`` relative to ``root_folder`` by plain text (no filesystem call), or None if it is not under it."""
+        try:
+            return Path(os.path.normpath(path)).relative_to(Path(os.path.normpath(root_folder)))
+        except ValueError:
+            return None
+
+    @staticmethod
     def folder_is_same_or_descendant(path: str, root_folder: str) -> bool:
+        if not FolderOpsController._is_plain_local_pair(path, root_folder):
+            # Resolving either path asks its share (a network round trip, ~20 s if it is asleep), and this
+            # is called for every saved favorite / recent entry. Plain text comparison is enough here.
+            return FolderOpsController._text_relative(path, root_folder) is not None
         try:
             resolved_path = Path(path).resolve(strict=False)
             resolved_root = Path(root_folder).resolve(strict=False)
@@ -44,6 +72,11 @@ class FolderOpsController:
     def remap_folder_path(cls, path: str, source_root: str, destination_root: str) -> str:
         if not cls.folder_is_same_or_descendant(path, source_root):
             return path
+        if not cls._is_plain_local_pair(path, source_root):
+            relative = cls._text_relative(path, source_root) or Path(".")
+            if not relative.parts:
+                return destination_root
+            return str(Path(destination_root) / relative)
         resolved_path = Path(path).resolve(strict=False)
         resolved_root = Path(source_root).resolve(strict=False)
         relative = resolved_path.relative_to(resolved_root)
@@ -58,9 +91,9 @@ class FolderOpsController:
         seen_favorites: set[str] = set()
         for path in window._favorites:
             mapped = self.remap_folder_path(path, source_root, destination_root)
-            if not os.path.isdir(mapped):
-                continue
-            key = normalized_path_key(mapped)
+            if window._dir_confirmed_missing(mapped):
+                continue  # only a folder provably gone from a local drive; an unreachable share's entry stays
+            key = _path_key(mapped)
             if key in seen_favorites:
                 continue
             seen_favorites.add(key)
@@ -73,9 +106,9 @@ class FolderOpsController:
         seen_destinations: set[str] = set()
         for path in window._recent_destinations:
             mapped = self.remap_folder_path(path, source_root, destination_root)
-            if not os.path.isdir(mapped):
-                continue
-            key = normalized_path_key(mapped)
+            if window._dir_confirmed_missing(mapped):
+                continue  # only a folder provably gone from a local drive; an unreachable share's entry stays
+            key = _path_key(mapped)
             if key in seen_destinations:
                 continue
             seen_destinations.add(key)
@@ -87,9 +120,9 @@ class FolderOpsController:
         seen_recent_folders: set[str] = set()
         for path in window._recent_folders:
             mapped = self.remap_folder_path(path, source_root, destination_root)
-            if not os.path.isdir(mapped):
-                continue
-            key = normalized_path_key(mapped)
+            if window._dir_confirmed_missing(mapped):
+                continue  # only a folder provably gone from a local drive; an unreachable share's entry stays
+            key = _path_key(mapped)
             if key in seen_recent_folders:
                 continue
             seen_recent_folders.add(key)
@@ -148,7 +181,7 @@ class FolderOpsController:
             return
         target_folder = self.remap_folder_references(folder, destination)
         window._refresh_folder_tree()
-        window._select_folder(target_folder if os.path.isdir(target_folder) else destination)
+        window._select_folder(destination if window._dir_confirmed_missing(target_folder) else target_folder)
         window.statusBar().showMessage(f"Renamed folder to {new_name}")
 
     def move_folder_prompt(self, folder: str) -> None:
@@ -168,7 +201,7 @@ class FolderOpsController:
         target_folder = self.remap_folder_references(folder, destination)
         window._remember_recent_destination(str(Path(destination).parent))
         window._refresh_folder_tree()
-        window._select_folder(target_folder if os.path.isdir(target_folder) else destination)
+        window._select_folder(destination if window._dir_confirmed_missing(target_folder) else target_folder)
         window.statusBar().showMessage(f"Moved folder to {destination}")
 
     def delete_folder_prompt(self, folder: str) -> None:
@@ -202,24 +235,24 @@ class FolderOpsController:
             QMessageBox.warning(window, "Delete Failed", f"Could not delete folder.\n\n{exc}")
             return
 
-        deleted_key = normalized_path_key(folder)
+        deleted_key = _path_key(folder)
         window._favorites = [
             path
             for path in window._favorites
-            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
+            if not (_path_key(path) == deleted_key or _path_key(path).startswith(deleted_key + os.sep))
         ]
         window._save_favorites()
         window._refresh_favorites_panel()
         window._recent_destinations = [
             path
             for path in window._recent_destinations
-            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
+            if not (_path_key(path) == deleted_key or _path_key(path).startswith(deleted_key + os.sep))
         ]
         window._save_recent_destinations()
         window._recent_folders = [
             path
             for path in window._recent_folders
-            if not (normalized_path_key(path) == deleted_key or normalized_path_key(path).startswith(deleted_key + os.sep))
+            if not (_path_key(path) == deleted_key or _path_key(path).startswith(deleted_key + os.sep))
         ]
         window._save_recent_folders()
         window._refresh_recent_folder_combos()
@@ -227,10 +260,10 @@ class FolderOpsController:
         replacement_folder = str(Path(folder).parent)
         window._refresh_folder_tree()
         if window._current_folder and (
-            normalized_path_key(window._current_folder) == deleted_key
-            or normalized_path_key(window._current_folder).startswith(deleted_key + os.sep)
+            _path_key(window._current_folder) == deleted_key
+            or _path_key(window._current_folder).startswith(deleted_key + os.sep)
         ):
-            if os.path.isdir(replacement_folder):
+            if not window._dir_confirmed_missing(replacement_folder):
                 window._select_folder(replacement_folder)
             else:
                 window._current_folder = ""
