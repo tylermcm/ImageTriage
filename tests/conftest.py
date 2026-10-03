@@ -109,15 +109,26 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+HANG_LOG_PATH = Path(tempfile.gettempdir()) / "image_triage_test_hang.txt"
+
+
 @pytest.fixture(autouse=True)
-def _per_test_hard_timeout():
+def _per_test_hard_timeout(request):
     # A hung test would otherwise stall the whole run forever. faulthandler
     # prints every thread's stack and then terminates the process.
-    faulthandler.dump_traceback_later(TEST_TIMEOUT_SECONDS, exit=True)
-    try:
-        yield
-    finally:
-        faulthandler.cancel_dump_traceback_later()
+    #
+    # The dump goes to a real file, not the default sys.stderr: during a test that is pytest's
+    # capture file, which vanishes with the process, so a killed run used to end with the log just
+    # stopping mid-test and no clue which test or where. The file holds only the current test's
+    # name (rewritten per test) plus, if the timeout fires, the stacks.
+    with open(HANG_LOG_PATH, "w", encoding="utf-8") as hang_log:
+        hang_log.write(f"{request.node.nodeid}\n")
+        hang_log.flush()
+        faulthandler.dump_traceback_later(TEST_TIMEOUT_SECONDS, exit=True, file=hang_log)
+        try:
+            yield
+        finally:
+            faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.fixture(autouse=True)

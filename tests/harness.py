@@ -65,11 +65,21 @@ def snapshot_app_state():
 
 
 def restore_app_state(snapshot) -> None:
+    """Put the app-wide style back, touching only what actually changed.
+
+    Qt does not short-circuit an identical ``setStyleSheet`` (or palette / font): each call
+    repolishes or re-notifies every live widget, and late in a full run the widgets leaked by
+    earlier tests make that take tens of seconds. Hundreds of tests restore a state they never
+    changed, so an unconditional restore dominated the suite and pushed single tests towards
+    conftest's per-test hard timeout."""
     app = QApplication.instance()
     stylesheet, palette, font = snapshot
-    app.setStyleSheet(stylesheet)
-    app.setPalette(palette)
-    app.setFont(font)
+    if app.styleSheet() != stylesheet:
+        app.setStyleSheet(stylesheet)
+    if app.palette() != palette:
+        app.setPalette(palette)
+    if app.font() != font:
+        app.setFont(font)
 
 
 def make_main_window():
