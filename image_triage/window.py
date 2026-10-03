@@ -2443,6 +2443,37 @@ class MainWindow(QMainWindow):
 
     def __init__(self, launch_target: str | None = None, *, quick_view: bool = False) -> None:
         super().__init__()
+        self._init_window_frame_and_launch_state(launch_target, quick_view)
+        self._init_settings_and_appearance_prefs()
+        self._init_child_processes_and_core_services()
+        self._init_thread_pools_and_controllers()
+        self._init_background_indexing_state()
+        self._init_scan_task_and_search_state()
+        self._init_enrichment_and_ai_review_label_state()
+        self._init_job_contexts_and_scope_state()
+        self._init_records_controllers_and_state()
+        self._init_view_state_and_preferences()
+        self._init_cull_thresholds_and_display_policy()
+        self._init_session_and_saved_collections()
+        self._init_filter_metadata_and_folder_watching()
+        self._init_folder_tree_and_drive_list()
+        self._init_left_rail_section_widgets()
+        self._init_left_rail_pages_and_nav_rail()
+        self._init_left_panel_layout()
+        self._init_path_controls_and_combos()
+        self._init_actions_and_shortcuts()
+        self._init_inspector_menus_and_filter_buttons()
+        self._init_workspace_toolbars()
+        self._init_workspace_bar_and_mode_bars()
+        self._init_center_column_and_docks()
+        self._init_menu_bar_and_zen_menu()
+        self._init_central_container_and_top_bar()
+        self._init_status_bar()
+        self._init_view_signal_connections()
+        self._init_appearance_restore_and_startup_timers()
+
+    def _init_window_frame_and_launch_state(self, launch_target: str | None, quick_view: bool) -> None:
+        """Frame flags, startup launch-target / quick-view flags, window title and size."""
         # The popout viewer is the most expensive widget tree in the app and is
         # not on screen at startup, so it is built on first use (the ``preview``
         # property) instead of here. Must exist before anything can reach it.
@@ -2461,6 +2492,10 @@ class MainWindow(QMainWindow):
         self._pending_focus_scroll_top = False
         self.setWindowTitle("Image Triage")
         self.resize(1600, 960)
+
+    def _init_settings_and_appearance_prefs(self) -> None:
+        """Open the settings store (after the one-time legacy migration) and load the pane, toolbar
+        and appearance preferences that later phases read."""
         migrate_legacy_settings_once()
         self._settings = user_settings()
         self._load_pane_width_ratios()
@@ -2502,6 +2537,10 @@ class MainWindow(QMainWindow):
         self._theme = None
         self._display_profile: DisplayProfile | None = None
         self._display_profile_update_pending = False
+
+    def _init_child_processes_and_core_services(self) -> None:
+        """Child-app process tracking, then the stores, managers, views and AI-model lookups the
+        controllers below are handed."""
         self._child_sync_state_path = self._prepare_child_sync_state_path()
         self._child_processes: dict[int, ChildAppProcess] = {}
         self._child_process_timer = QTimer(self)
@@ -2530,6 +2569,9 @@ class MainWindow(QMainWindow):
         self._aiculler_topiq_model_installation = resolve_aiculler_topiq_model_installation()
         self._aiculler_face_model_installation = resolve_aiculler_face_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
+
+    def _init_thread_pools_and_controllers(self) -> None:
+        """Worker pools, with the batch-rename / folder-ops / catalog controllers built between them."""
         self._scan_pool = QThreadPool(self)
         self._scan_pool.setMaxThreadCount(1)
         self._ai_run_pool = QThreadPool(self)
@@ -2561,6 +2603,9 @@ class MainWindow(QMainWindow):
         self._annotation_hydration_pool.setMaxThreadCount(1)
         self._unified_search_pool = QThreadPool(self)
         self._unified_search_pool.setMaxThreadCount(1)
+
+    def _init_background_indexing_state(self) -> None:
+        """Semantic and face auto-indexing pools and state, and the background-indexing suspend flags."""
         # Semantic auto-indexing runs at low concurrency so opening a large
         # folder keeps browsing responsive while embeddings build up.
         self._semantic_index_pool = QThreadPool(self)
@@ -2589,6 +2634,10 @@ class MainWindow(QMainWindow):
         # records so the incremental passes can be restarted on resume.
         self._background_indexing_suspended = False
         self._background_index_records: list[ImageRecord] = []
+
+    def _init_scan_task_and_search_state(self) -> None:
+        """Recycle-bin controller plus scan, AI-task, update-check, review-intelligence,
+        annotation-hydration and unified-search task state."""
         self._recycle_bin = RecycleBinController(self)
         self._scan_token = 0
         self._scan_showed_cached = False
@@ -2624,6 +2673,10 @@ class MainWindow(QMainWindow):
         self._unified_search_signature: tuple[object, ...] = ()
         self._unified_search_completed_signature: tuple[object, ...] = ()
         self._unified_search_path_keys: frozenset[str] = frozenset()
+
+    def _init_enrichment_and_ai_review_label_state(self) -> None:
+        """Person-filter and deferred-enrichment state, flush and label-save timers, the winner-score /
+        face / category caches, and the AI-review and telemetry state."""
         # Photos containing the face picked in Tag People; paired with
         # _filter_query.person_label, which is what activates the filter.
         self._person_filter_paths: frozenset[str] = frozenset()
@@ -2700,6 +2753,10 @@ class MainWindow(QMainWindow):
         # when the user switches back to Manual.
         self._ai_review_burst_snapshot: tuple[bool, bool] | None = None
         self._ai_review_progress_dialog: AIReviewProgressDialog | None = None
+
+    def _init_job_contexts_and_scope_state(self) -> None:
+        """Per-job (resize, convert, export, archive, catalog) task / context / dialog slots, job
+        controllers, pending model-download flags and the current scope fields."""
         self._active_resize_task: ResizeApplyTask | None = None
         self._resize_context: ResizeExecutionContext | None = None
         self._resize_progress_dialog: QProgressDialog | None = None
@@ -2726,6 +2783,10 @@ class MainWindow(QMainWindow):
         self._scope_id = ""
         self._scope_label = ""
         self._scan_in_progress = False
+
+    def _init_records_controllers_and_state(self) -> None:
+        """Records repository and the record-ops / command-palette / records-view controllers, then
+        the records and annotation state they operate on."""
         self._records_repo = RecordsRepository()
         self._record_ops = RecordOpsController(self)
         self._command_palette = CommandPaletteController(self)
@@ -2779,6 +2840,10 @@ class MainWindow(QMainWindow):
         self._records_view_chunk_current_path: str | None = None
         self._records_view_chunk_post_load_enrichment = ""
         self._winner_ladder_state: dict[str, object] | None = None
+
+    def _init_view_state_and_preferences(self) -> None:
+        """View and workflow preferences read from settings, perf-logger focus, Zen-menu and
+        AI-progress state, sort and filter defaults."""
         self._ui_mode = "manual"
         self._browser_view_mode = self._normalize_browser_view_mode(self._settings.value(self.BROWSER_VIEW_MODE_KEY, "grid", str))
         self._details_row_density = self._normalize_details_row_density(
@@ -2868,6 +2933,10 @@ class MainWindow(QMainWindow):
         self._ai_base_score_weight_percent_setting = self._normalize_ai_base_score_weight_percent(
             self._settings.value(self.AI_BASE_SCORE_WEIGHT_PERCENT_KEY, self.AI_BASE_SCORE_WEIGHT_PERCENT_DEFAULT, int)
         )
+
+    def _init_cull_thresholds_and_display_policy(self) -> None:
+        """Push the loaded cull thresholds into the classifier, read the remaining AI / catalog
+        toggles, apply the display-class style policy and register the first post-show callback."""
         # Push the loaded cull thresholds into the bucket classifier so the
         # very first bundle load uses them.
         self._apply_cull_thresholds_to_classifier()
@@ -2895,6 +2964,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._post_show_display_setup)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         self._refresh_ai_runtime_preferences()
+
+    def _init_session_and_saved_collections(self) -> None:
+        """Session id, saved presets / favorites / recents / commands, collection and tool-mode
+        state, undo stack and the annotation-persistence queue wiring."""
         self._session_id = self._decision_store.ensure_session(
             self._settings.value(self.SESSION_KEY, DecisionStore.DEFAULT_SESSION, str)
         )
@@ -2936,6 +3009,8 @@ class MainWindow(QMainWindow):
         self._annotation_persistence_queue.winner_sync_failed.connect(self._handle_winner_sync_failed)
         self._annotation_persistence_queue.winner_kept.connect(self._handle_winner_kept)
 
+    def _init_filter_metadata_and_folder_watching(self) -> None:
+        """Search debounce, the filter-metadata manager and prefetch timers, and the folder watcher."""
         self._search_apply_timer = QTimer(self)
         self._search_apply_timer.setSingleShot(True)
         self._search_apply_timer.setInterval(140)
@@ -2970,6 +3045,8 @@ class MainWindow(QMainWindow):
         self._folder_watch_refresh_timer.setInterval(900)
         self._folder_watch_refresh_timer.timeout.connect(self._run_watched_folder_refresh)
 
+    def _init_folder_tree_and_drive_list(self) -> None:
+        """Folder model, the Folders tree and the flat Drives list."""
         self.folder_model = QFileSystemModel(self)
         self.folder_model.setFilter(self._folder_tree_filter())
         self.folder_model.setRootPath("")
@@ -3015,6 +3092,9 @@ class MainWindow(QMainWindow):
         self.folder_model.layoutChanged.connect(lambda *_args: self._drive_list_fit_timer.start())
         self._drive_list_fit_timer.start()
 
+    def _init_left_rail_section_widgets(self) -> None:
+        """Left-rail section widgets: Drives / Folders headers, Favorites list, Face Groups and
+        Collections sections."""
         self.drives_refresh_button = self._build_left_rail_plus_button(tooltip="Refresh drives")
         self.drives_refresh_button.setProperty("fluentGlyph", "E72C")
         self.drives_refresh_button.clicked.connect(self._refresh_drive_list)
@@ -3105,7 +3185,9 @@ class MainWindow(QMainWindow):
         self.projects_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.projects_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
-
+    def _init_left_rail_pages_and_nav_rail(self) -> None:
+        """Assemble the rail pages (Folders, Faces, Collections, PocketDrop) and the nav rail, then show
+        the saved page."""
         self.favorites_divider = QFrame()
         self.favorites_divider.setFrameShape(QFrame.Shape.HLine)
         self.favorites_divider.setObjectName("sectionDivider")
@@ -3185,6 +3267,9 @@ class MainWindow(QMainWindow):
         saved_page = str(self._settings.value(self.LEFT_NAV_PAGE_KEY, "folders") or "folders")
         self._show_left_nav_page(saved_page if saved_page in self._left_nav_page_widgets else "folders")
 
+    def _init_left_panel_layout(self) -> None:
+        """Place the page stack and the settings bar in the right column, build ``left_panel`` and refresh
+        the Favorites panel."""
         # The settings bar is flush to the bottom edge of the panel card (no gap),
         # so it sits in its own column below the swapped page.
         right_column = QWidget()
@@ -3205,6 +3290,8 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(right_column, 1)
         self._refresh_favorites_panel()
 
+    def _init_path_controls_and_combos(self) -> None:
+        """Path combos and controls, selection-count labels, and the sort / filter / columns combos."""
         self._directory_up_buttons: list[QToolButton] = []
         self._directory_down_buttons: list[QToolButton] = []
         self.manual_path_combo = self._build_path_combo(mode="manual")
@@ -3234,6 +3321,12 @@ class MainWindow(QMainWindow):
         self._settings.remove(self.VIEW_ZOOM_WIDTH_KEY)
         self.columns_combo.currentIndexChanged.connect(self._handle_columns_changed)
 
+    def _init_actions_and_shortcuts(self) -> None:
+        """Build the main actions, shortcut overrides, toolbar menus and global shortcuts, create the
+        record-filter actions, and wire the Collections / Face Groups lists.
+
+        ``_build_record_filter_actions`` fills ``actions.ai_state_actions``, which
+        ``build_main_menu_bar`` reads, so this phase must run before ``_init_menu_bar_and_zen_menu``."""
         self.actions = build_main_window_actions(self)
         apply_shortcut_overrides(self.actions)
         self._toolbar_menus = ToolbarMenuController(self, self.actions)
@@ -3267,6 +3360,9 @@ class MainWindow(QMainWindow):
             lambda: self.actions.manage_people.trigger()
         )
         self._refresh_face_groups()
+
+    def _init_inspector_menus_and_filter_buttons(self) -> None:
+        """Inspector panel, shared popup menus, search fields and the Review / View / Filter buttons."""
         self.inspector_panel = InspectorPanel()
         self.inspector_panel.setMinimumWidth(0)
         self.thumbnail_manager.thumbnail_ready.connect(self._handle_inspector_thumbnail_ready)
@@ -3301,6 +3397,8 @@ class MainWindow(QMainWindow):
         for button in (self.manual_view_tools_button, self.ai_view_tools_button):
             button.setToolTip("Quick filters, sort options, and column layout.")
 
+    def _init_workspace_toolbars(self) -> None:
+        """Manual and AI workspace toolbars, the AI status strip and the toolbar stack."""
         self.manual_toolbar = QWidget()
         self.manual_toolbar.setObjectName("workspaceControls")
         self.manual_toolbar_layout = QHBoxLayout(self.manual_toolbar)
@@ -3354,6 +3452,8 @@ class MainWindow(QMainWindow):
         self.toolbar_stack.addWidget(self.manual_toolbar)
         self.toolbar_stack.addWidget(self.ai_toolbar)
 
+    def _init_workspace_bar_and_mode_bars(self) -> None:
+        """Floating workspace bar (drag handle, chrome buttons) and the Tool / Collection mode bars."""
         self.workspace_bar_toggle_button = self._build_workspace_bar_button(
             "\u2212",
             "Minimize workspace toolbar",
@@ -3439,6 +3539,9 @@ class MainWindow(QMainWindow):
         collection_mode_layout.addWidget(self.collection_mode_cancel_button)
         self.collection_mode_bar.hide()
 
+    def _init_center_column_and_docks(self) -> None:
+        """Centre column, the docks shell around it, the inspector signal wiring and the menu
+        refreshes that feed the menu bar."""
         center_column = QWidget()
         center_column.setObjectName("workspaceCenterColumn")
         center_layout = QVBoxLayout(center_column)
@@ -3475,6 +3578,10 @@ class MainWindow(QMainWindow):
         self._refresh_workflow_recipe_menu()
         self._refresh_collections_menu()
         self._refresh_catalog_menu()
+
+    def _init_menu_bar_and_zen_menu(self) -> None:
+        """Main menu bar (needs ``actions.ai_state_actions`` filled), Zen-menu pin and corner widget,
+        menu-shortcut adoption and the menu-bar animation."""
         build_main_menu_bar(
             self,
             self.actions,
@@ -3513,6 +3620,9 @@ class MainWindow(QMainWindow):
         self._zen_menu_animation.setDuration(145)
         self._zen_menu_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
+    def _init_central_container_and_top_bar(self) -> None:
+        """Summary strip, central container, prototype top bar, overlays, default workspace and
+        display profile."""
         self.summary_strip = QWidget()
         self.summary_strip.setObjectName("summaryStrip")
         summary_layout = QHBoxLayout(self.summary_strip)
@@ -3565,6 +3675,8 @@ class MainWindow(QMainWindow):
         self._apply_display_profile()
         QTimer.singleShot(0, self._restore_details_view_state)
 
+    def _init_status_bar(self) -> None:
+        """Status bar and its permanent widgets, then toolbar placement and the status indicators."""
         status = QStatusBar()
         status.showMessage("Ready")
         self.setStatusBar(status)
@@ -3591,6 +3703,8 @@ class MainWindow(QMainWindow):
         self._refresh_filter_toolbar_menu()
         self._refresh_recent_folder_combos()
 
+    def _init_view_signal_connections(self) -> None:
+        """Connect the thumbnail grid and details-view signals to the window's handlers."""
         self.grid.current_changed.connect(self._handle_current_changed)
         self.grid.collection_selection_changed.connect(self._refresh_collection_mode_ui)
         self.grid.collection_cancel_requested.connect(self._cancel_collection_mode)
@@ -3621,6 +3735,9 @@ class MainWindow(QMainWindow):
         self.details_view.winner_requested.connect(self._toggle_winner)
         self.details_view.reject_requested.connect(self._toggle_reject)
 
+    def _init_appearance_restore_and_startup_timers(self) -> None:
+        """System color-scheme hook, appearance, window-state restore, initial control sync and the
+        startup timers."""
         app = QApplication.instance()
         if app is not None:
             style_hints = app.styleHints()
@@ -13703,17 +13820,29 @@ class MainWindow(QMainWindow):
 
     def _adopt_menu_bar_shortcuts(self) -> None:
         pending = list(self.menuBar().actions())
-        seen: set[int] = set()
+        # Keyed by id() but holding the wrapper itself: QMenu.actions() returns temporary PySide
+        # wrappers, and once one is dropped Python hands its address to another action's wrapper,
+        # which a bare set of ids then skipped (random shortcuts were never adopted).
+        seen: dict[int, object] = {}
+        # The palette key already has the window's own QShortcut (CommandPaletteController, which
+        # also follows remaps). The same key on an adopted action is ambiguous: Qt logs "Ambiguous
+        # shortcut overload" and fires neither, so Ctrl+K would stop opening the palette.
+        palette_action = getattr(getattr(self, "actions", None), "open_command_palette", None)
         while pending:
             action = pending.pop()
             if id(action) in seen:
                 continue
-            seen.add(id(action))
+            seen[id(action)] = action
             try:
                 submenu = action.menu()
                 if submenu is not None:
                     pending.extend(submenu.actions())
-                elif not action.isSeparator() and action.shortcuts() and action not in QWidget.actions(self):
+                elif (
+                    not action.isSeparator()
+                    and action.shortcuts()
+                    and action is not palette_action
+                    and action not in QWidget.actions(self)
+                ):
                     self.addAction(action)
             except RuntimeError:
                 # Rebuilt-on-open menus (recent folders, presets) can already

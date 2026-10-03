@@ -126,7 +126,11 @@ def test_main_window_startup_restyles_the_preview_only_once(dialogs) -> None:
     """The viewer is no longer built during window startup (WI-8.1 stage B), so startup applies no
     studio theme at all; when it is built on first use it styles itself in its own __init__ and the
     window's replay of the identical theme must be a no-op, i.e. one pass in total."""
-    from tests.harness import dispose_window, make_main_window
+    # _fresh_window leaves the app-wide stylesheet/palette alone. Applying them repolishes every live
+    # widget, and late in a full run the widgets leaked by earlier tests made this one test take ~110 s
+    # against conftest's 120 s per-test hard timeout. The viewer's studio styling is per-widget, so
+    # nothing counted here depends on the app-wide sheet.
+    from tests.test_preview_lazy_build import _fresh_window
 
     calls = []
     real = FullScreenPreview._apply_studio_theme
@@ -136,10 +140,7 @@ def test_main_window_startup_restyles_the_preview_only_once(dialogs) -> None:
         return real(self)
 
     with mock.patch.object(FullScreenPreview, "_apply_studio_theme", counting):
-        window = make_main_window()
-        try:
+        with _fresh_window() as window:
             assert calls == [], f"startup applied the studio theme {len(calls)} times; the viewer should not exist yet"
             window.preview  # the lazy build
             assert len(calls) == 1, f"preview studio theme applied {len(calls)} times while building it"
-        finally:
-            dispose_window(window)
