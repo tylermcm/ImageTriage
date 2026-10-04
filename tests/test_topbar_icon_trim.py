@@ -84,7 +84,7 @@ def test_every_workspace_toolbar_icon_trims_identically(main_window) -> None:
     item_ids = list(MainWindow.WORKSPACE_TOOLBAR_FLUENT_ICONS)
     assert len(item_ids) >= 50, "icon table unexpectedly small; the equivalence sweep would prove little"
     for item_id in item_ids:
-        icon = main_window._workspace_toolbar_icon(item_id, color=colour)
+        icon = main_window._toolbar.workspace_toolbar_icon(item_id, color=colour)
         _assert_same_as_legacy(icon, label=item_id)
         # The drive-glyph path trims with a tighter inset.
         _assert_same_as_legacy(icon, padding=2, label=f"{item_id} padding=2")
@@ -93,14 +93,14 @@ def test_every_workspace_toolbar_icon_trims_identically(main_window) -> None:
 def test_every_topbar_nav_icon_trims_identically(main_window) -> None:
     colour = main_window._theme.text_primary.qcolor()
     for item_id, (primary, secondary) in MainWindow.TOPBAR_NAV_FLUENT_ICONS.items():
-        icon = main_window._fluent_toolbar_icon(primary, secondary, color=colour)
+        icon = main_window._toolbar.fluent_toolbar_icon(primary, secondary, color=colour)
         _assert_same_as_legacy(icon, label=item_id)
 
 
 def test_trim_matches_legacy_in_the_other_theme_variants(main_window) -> None:
     for colour in (QColor(10, 10, 10), QColor(255, 255, 255), QColor(90, 120, 200, 128)):
         for item_id in list(MainWindow.WORKSPACE_TOOLBAR_FLUENT_ICONS)[:12]:
-            _assert_same_as_legacy(main_window._workspace_toolbar_icon(item_id, color=colour), label=item_id)
+            _assert_same_as_legacy(main_window._toolbar.workspace_toolbar_icon(item_id, color=colour), label=item_id)
 
 
 def test_null_icon_is_returned_untouched() -> None:

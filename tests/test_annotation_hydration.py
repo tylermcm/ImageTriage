@@ -67,9 +67,9 @@ class AnnotationHydrationTaskTests(unittest.TestCase):
             task.signals.finished.connect(lambda scope, token: finished.append((scope, token)))
 
             with (
-                patch("image_triage.window.DecisionStore", StubDecisionStore),
+                patch("image_triage.tasks.annotation_tasks.DecisionStore", StubDecisionStore),
                 patch(
-                    "image_triage.window.load_sidecar_annotation",
+                    "image_triage.tasks.annotation_tasks.load_sidecar_annotation",
                     side_effect=lambda path: sidecar_map.get(path, SessionAnnotation()),
                 ),
             ):
@@ -110,7 +110,7 @@ class AnnotationHydrationTaskTests(unittest.TestCase):
         task.signals.chunk.connect(lambda scope, token, chunk: chunks.append(dict(chunk)))
         task.signals.finished.connect(lambda scope, token: finished.append((scope, token)))
         task.cancel()
-        with patch("image_triage.window.DecisionStore", StubDecisionStore):
+        with patch("image_triage.tasks.annotation_tasks.DecisionStore", StubDecisionStore):
             task.run()
         self.assertEqual([], load_calls)
         self.assertEqual([], chunks)

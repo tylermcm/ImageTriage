@@ -3,42 +3,46 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiculler.telemetry import TelemetryEvent
 from image_triage.ai_results import AIConfidenceBucket, AIImageResult
 from image_triage.models import ImageRecord
-import image_triage.window as window_module
-from image_triage.window import MainWindow
+import image_triage.aiculler_controller as controller_module
+from image_triage.aiculler_controller import AiCullerController
 
 
 class _TelemetryWindowStub:
+    """Stands in for the controller (``self``) and, behind ``_window``, for the main window."""
+
     def __init__(self, raw_result: AIImageResult, folder: Path) -> None:
         self.raw_result = raw_result
-        self._current_folder = str(folder)
         self.events = []
+        self._window = SimpleNamespace(
+            _current_folder=str(folder),
+            _ai_run=SimpleNamespace(raw_ai_result_for_record=lambda record: self.raw_result),
+        )
 
-    def _raw_ai_result_for_record(self, record):
-        return self.raw_result
-
-    def _aiculler_paths_for_current_folder(self):
+    def aiculler_paths_for_current_folder(self):
         return None
 
-    def _aiculler_bucket_for_user_label(self, label: str) -> str:
-        return MainWindow._aiculler_bucket_for_user_label(label)
+    def aiculler_bucket_for_user_label(self, label: str) -> str:
+        return AiCullerController.aiculler_bucket_for_user_label(label)
 
-    def _queue_aiculler_telemetry_event(self, event):
+    def queue_aiculler_telemetry_event(self, event):
         self.events.append(event)
 
 
 class _QueueWindowStub:
     def __init__(self) -> None:
-        self._aiculler_pending_telemetry_events = {}
+        # the pending-events dict still lives on the window; the controller reaches it through ``_window``
+        self._window = SimpleNamespace(_aiculler_pending_telemetry_events={})
         self.logged_events = []
 
-    def _aiculler_telemetry_logger_for_current_folder(self):
+    def aiculler_telemetry_logger_for_current_folder(self):
         return object()
 
-    def _log_aiculler_telemetry_now(self, event):
+    def log_aiculler_telemetry_now(self, event):
         self.logged_events.append(event)
 
 
@@ -109,7 +113,7 @@ class AICullerWindowTelemetryTests(unittest.TestCase):
             )
             stub = _TelemetryWindowStub(raw_result, folder)
 
-            MainWindow._record_aiculler_override_telemetry(
+            AiCullerController.record_aiculler_override_telemetry(
                 stub,
                 record,
                 user_label="keep",
@@ -148,14 +152,14 @@ class AICullerWindowTelemetryTests(unittest.TestCase):
             )
             stub = _TelemetryWindowStub(raw_result, folder)
 
-            MainWindow._record_aiculler_override_telemetry(
+            AiCullerController.record_aiculler_override_telemetry(
                 stub,
                 record,
                 user_label="",
                 previous_label="keep",
                 action_source="adapter_label_clear",
             )
-            MainWindow._record_aiculler_override_telemetry(
+            AiCullerController.record_aiculler_override_telemetry(
                 stub,
                 record,
                 user_label="",
@@ -171,17 +175,17 @@ class AICullerWindowTelemetryTests(unittest.TestCase):
 
     def test_queue_coalesces_same_image_and_marks_intermediate_event_ignored(self) -> None:
         stub = _QueueWindowStub()
-        original_qtimer = window_module.QTimer
+        original_qtimer = controller_module.QTimer
         try:
-            window_module.QTimer = _FakeTimer
+            controller_module.QTimer = _FakeTimer
             first = self._event("raw-id", "keeper")
             second = self._event("raw-id", "needs review")
 
-            MainWindow._queue_aiculler_telemetry_event(stub, first)
-            MainWindow._queue_aiculler_telemetry_event(stub, second)
-            MainWindow._flush_pending_aiculler_telemetry(stub)
+            AiCullerController.queue_aiculler_telemetry_event(stub, first)
+            AiCullerController.queue_aiculler_telemetry_event(stub, second)
+            AiCullerController.flush_pending_aiculler_telemetry(stub)
         finally:
-            window_module.QTimer = original_qtimer
+            controller_module.QTimer = original_qtimer
 
         self.assertEqual(2, len(stub.logged_events))
         intermediate, final = stub.logged_events

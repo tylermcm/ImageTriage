@@ -33,6 +33,12 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e ".[dev]"
 
+      - name: Undefined-name gate
+        run: python scripts/check_undefined_names.py
+
+      - name: Architecture ratchet
+        run: python scripts/architecture_report.py --check
+
       - name: Run full test suite
         run: python -m pytest tests -q -m "not requires_models" -rxX
 

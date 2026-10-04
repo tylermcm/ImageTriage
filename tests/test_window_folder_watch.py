@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from image_triage.window import MainWindow
@@ -36,6 +37,7 @@ class _WindowStub:
         self._folder_watch_refresh_timer = _TimerStub()
         self._status = _StatusBarStub()
         self.current_path = rf"{folder}\IMG_0042.CR3"
+        self._records_view = SimpleNamespace(current_visible_record_path=lambda: self.current_path)
         self.load_calls: list[tuple[str, bool, str | None]] = []
         self.queued_delays: list[int] = []
         self.refresh_watch_calls = 0
@@ -52,9 +54,6 @@ class _WindowStub:
     def _queue_watched_folder_refresh(self, delay_ms: int = 900) -> None:
         self._folder_watch_refresh_pending = True
         self.queued_delays.append(delay_ms)
-
-    def _current_visible_record_path(self) -> str | None:
-        return self.current_path
 
     def _load_folder(
         self,

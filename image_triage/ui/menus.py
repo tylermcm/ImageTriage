@@ -268,8 +268,8 @@ def _add_view_window_controls(
     view_menu.addSeparator()
     view_menu.addAction(actions.show_workspace_toolbar)
     toolbar_position_menu = view_menu.addMenu("Toolbar Position")
-    toolbar_position_menu.addAction("Top", lambda _checked=False: window._set_workspace_bar_position("top"))
-    toolbar_position_menu.addAction("Bottom", lambda _checked=False: window._set_workspace_bar_position("bottom"))
+    toolbar_position_menu.addAction("Top", lambda _checked=False: window._toolbar.set_workspace_bar_position("top"))
+    toolbar_position_menu.addAction("Bottom", lambda _checked=False: window._toolbar.set_workspace_bar_position("bottom"))
     if dock_actions:
         panels_menu = view_menu.addMenu("Panels")
         for key in ("library", "inspector"):

@@ -45,8 +45,16 @@ def install_dialog_guards(monkeypatch) -> DialogRecorder:
 
     monkeypatch.setattr(QDialog, "exec", _blocked)
     monkeypatch.setattr(QMessageBox, "exec", _blocked)
-    for name in ("getExistingDirectory", "getOpenFileName", "getSaveFileName", "getOpenFileNames"):
-        monkeypatch.setattr(QFileDialog, name, staticmethod(lambda *a, **k: ("", "") if name != "getExistingDirectory" else ""))
+    # Each stub must return what its real counterpart returns when the user cancels: a plain "" for
+    # getExistingDirectory, a (path, filter) pair for the others. (A loop-variable lambda here used to
+    # hand every stub the last name's value, so getExistingDirectory returned a tuple.)
+    for name, cancelled in (
+        ("getExistingDirectory", ""),
+        ("getOpenFileName", ("", "")),
+        ("getSaveFileName", ("", "")),
+        ("getOpenFileNames", ([], "")),
+    ):
+        monkeypatch.setattr(QFileDialog, name, staticmethod(lambda *a, _cancelled=cancelled, **k: _cancelled))
     return recorder
 
 

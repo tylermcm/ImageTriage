@@ -16,6 +16,7 @@ from .models import DeleteMode, ImageRecord, SessionAnnotation, WinnerMode
 from .scanner import normalize_filesystem_path, normalized_path_key
 from .transfer_progress import TransferItem, run_file_transfer
 from .ui import confirm_transfer, show_transfer_complete
+from .folder_session import FolderSession
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -55,6 +56,10 @@ class RecordOpsController:
     (see records_repository.py); this controller calls into it rather than
     touching `_all_records`/`_all_records_by_path` directly."""
 
+    @property
+    def _session(self) -> FolderSession:
+        return self._window._folder_session
+
     def __init__(self, window: "MainWindow") -> None:
         self._window = window
 
@@ -69,8 +74,8 @@ class RecordOpsController:
         next_path = window._next_visible_path(index)
         if next_path == record.path:
             next_path = None
-        if window._current_folder:
-            window._persist_folder_record_cache(window._current_folder, window._all_records, source="window-remove")
+        if self._session.folder:
+            window._persist_folder_record_cache(self._session.folder, window._all_records, source="window-remove")
         window._apply_records_view(current_path=next_path)
 
     def remove_records_by_paths(self, paths: list[str]) -> int:
@@ -87,8 +92,8 @@ class RecordOpsController:
         next_path = self.next_visible_path_after_batch_removal(indices)
         removed_paths = {window._records[index].path for index in indices}
         window._records_repo.remove_paths(removed_paths)
-        if window._current_folder:
-            window._persist_folder_record_cache(window._current_folder, window._all_records, source="window-remove-batch")
+        if self._session.folder:
+            window._persist_folder_record_cache(self._session.folder, window._all_records, source="window-remove-batch")
         window._apply_records_view(current_path=next_path)
         return len(indices)
 
@@ -107,7 +112,7 @@ class RecordOpsController:
         record = window._record_at(index)
         if record is None:
             return
-        if not window._current_folder:
+        if not self._session.folder:
             window.statusBar().showMessage("Open a real folder to delete files. Virtual scopes are non-destructive views.")
             return
 
@@ -128,20 +133,20 @@ class RecordOpsController:
             except OSError as exc:
                 QMessageBox.warning(window, "Delete Failed", f"Could not permanently delete {record.name}.\n\n{exc}")
                 return
-            window._forget_recycle_origins(bundle_paths)
-            window._decision_store.delete_annotation(window._session_id, record.path)
+            window._recycle_bin.forget_recycle_origins(bundle_paths)
+            window._decision_store.delete_annotation(self._session.session_id, record.path)
             window._annotations.pop(record.path, None)
             self.remove_record(index)
-            window._refresh_recycle_button()
+            window._recycle_bin.refresh_recycle_button()
             window.statusBar().showMessage(f"Permanently deleted {record.name}")
             return
 
         try:
             trash_moves: tuple[FileMove, ...] = ()
-            use_safe_trash = window._delete_mode == DeleteMode.SAFE_TRASH or window._is_temporary_storage_folder()
+            use_safe_trash = window._delete_mode == DeleteMode.SAFE_TRASH or window._recycle_bin.is_temporary_storage_folder()
             if use_safe_trash:
                 trash_moves = self.move_bundle_to_recycle(bundle_paths)
-                window._remember_recycle_origins(trash_moves)
+                window._recycle_bin.remember_recycle_origins(trash_moves)
             else:
                 moved_all = self.trash_or_delete_paths(bundle_paths)
                 if not moved_all:
@@ -171,19 +176,19 @@ class RecordOpsController:
                     rating=annotation.rating,
                     tags=annotation.tags,
                     original_review_round=annotation.review_round,
-                    folder=window._current_folder,
+                    folder=self._session.folder,
                     source_paths=bundle_paths,
-                    session_id=window._session_id,
+                    session_id=self._session.session_id,
                     winner_mode=window._winner_mode.value,
                 )
             )
 
-        window._decision_store.delete_annotation(window._session_id, record.path)
+        window._decision_store.delete_annotation(self._session.session_id, record.path)
         window._annotations.pop(record.path, None)
         self.remove_record(index)
-        window._refresh_recycle_button()
+        window._recycle_bin.refresh_recycle_button()
         if use_safe_trash:
-            if window._is_temporary_storage_folder():
+            if window._recycle_bin.is_temporary_storage_folder():
                 window.statusBar().showMessage(f"Moved {record.name} to this drive's recycle bin")
             else:
                 window.statusBar().showMessage(f"Safely removed {record.name}")
@@ -195,11 +200,11 @@ class RecordOpsController:
         record = window._record_at(index)
         if record is None:
             return
-        if not window._current_folder:
+        if not self._session.folder:
             window.statusBar().showMessage("Open a real folder to move files. Collections and catalog views do not move originals.")
             return
 
-        keep_dir = os.path.join(window._current_folder, "_keep")
+        keep_dir = os.path.join(self._session.folder, "_keep")
         os.makedirs(keep_dir, exist_ok=True)
         try:
             moves = self.move_bundle(window._record_paths(record), keep_dir)
@@ -212,8 +217,8 @@ class RecordOpsController:
                 kind="move",
                 primary_path=record.path,
                 file_moves=moves,
-                folder=window._current_folder,
-                session_id=window._session_id,
+                folder=self._session.folder,
+                session_id=self._session.session_id,
             )
         )
         self.remove_record(index)
@@ -224,11 +229,11 @@ class RecordOpsController:
         record = window._record_at(index)
         if record is None:
             return
-        if not window._current_folder:
+        if not self._session.folder:
             window.statusBar().showMessage("Open a real folder to move files. Virtual scopes are browse-only for file moves.")
             return
 
-        destination_dir = QFileDialog.getExistingDirectory(window, "Move Selected Image", window._current_folder or QDir.homePath())
+        destination_dir = QFileDialog.getExistingDirectory(window, "Move Selected Image", self._session.folder or QDir.homePath())
         if not destination_dir:
             return
 
@@ -243,8 +248,8 @@ class RecordOpsController:
                 kind="move",
                 primary_path=record.path,
                 file_moves=moves,
-                folder=window._current_folder,
-                session_id=window._session_id,
+                folder=self._session.folder,
+                session_id=self._session.session_id,
             )
         )
         window._remember_recent_destination(destination_dir)
@@ -317,8 +322,8 @@ class RecordOpsController:
                 kind="move",
                 primary_path=record.path,
                 file_moves=moves,
-                folder=window._current_folder,
-                session_id=window._session_id,
+                folder=self._session.folder,
+                session_id=self._session.session_id,
                 batch_id=batch_id,
             )
         )
@@ -336,7 +341,7 @@ class RecordOpsController:
             return
 
         try:
-            restores = window._restore_bundle(window._record_paths(record))
+            restores = window._recycle_bin.restore_bundle(window._record_paths(record))
         except OSError as exc:
             QMessageBox.warning(window, "Restore Failed", f"Could not restore {record.name}.\n\n{exc}")
             return
@@ -344,7 +349,7 @@ class RecordOpsController:
             QMessageBox.warning(window, "Restore Failed", f"Could not restore {record.name}.")
             return
         self.remove_record(index)
-        window._refresh_recycle_button()
+        window._recycle_bin.refresh_recycle_button()
         window.statusBar().showMessage(f"Restored {record.name}")
 
     def move_record_to_path(
@@ -361,7 +366,7 @@ class RecordOpsController:
         record = window._record_at(index)
         if record is None:
             return False
-        if not window._current_folder:
+        if not self._session.folder:
             window.statusBar().showMessage("Open a real folder to move files into the program recycle bin.")
             return False
 
@@ -369,7 +374,7 @@ class RecordOpsController:
         annotation = window._annotations.get(record.path, SessionAnnotation())
         try:
             trash_moves = self.move_bundle_to_recycle(bundle_paths)
-            window._remember_recycle_origins(trash_moves)
+            window._recycle_bin.remember_recycle_origins(trash_moves)
         except OSError as exc:
             QMessageBox.warning(window, "Recycle Failed", f"Could not move {record.name} into the program recycle bin.\n\n{exc}")
             return False
@@ -385,18 +390,18 @@ class RecordOpsController:
                 rating=annotation.rating,
                 tags=annotation.tags,
                 original_review_round=annotation.review_round,
-                folder=window._current_folder,
+                folder=self._session.folder,
                 source_paths=bundle_paths,
-                session_id=window._session_id,
+                session_id=self._session.session_id,
                 winner_mode=window._winner_mode.value,
                 batch_id=batch_id,
             )
         )
-        window._decision_store.delete_annotation(window._session_id, record.path)
+        window._decision_store.delete_annotation(self._session.session_id, record.path)
         window._annotations.pop(record.path, None)
         if not defer_removal:
             self.remove_record(index)
-        window._refresh_recycle_button()
+        window._recycle_bin.refresh_recycle_button()
         return True
 
     def move_record_to_ai_recycle_by_path(
@@ -428,7 +433,7 @@ class RecordOpsController:
             return 0
 
         result = run_file_transfer(
-            window, items, destination_dir, source_label=window._current_folder or "", verb="Copying", keep_source=True
+            window, items, destination_dir, source_label=self._session.folder or "", verb="Copying", keep_source=True
         )
         copied = sum(1 for item in items if item.key in result.moved)
         if copied:
@@ -466,7 +471,7 @@ class RecordOpsController:
             return 0
 
         result = run_file_transfer(
-            window, items, destination_dir, source_label=window._current_folder or ""
+            window, items, destination_dir, source_label=self._session.folder or ""
         )
         # An externally-supplied batch_id (e.g. from _apply_ai_culling, which
         # needs this move to join a batch shared with its Reject/recycle
@@ -487,8 +492,8 @@ class RecordOpsController:
                     kind="move",
                     primary_path=record.path,
                     file_moves=moves,
-                    folder=window._current_folder,
-                    session_id=window._session_id,
+                    folder=self._session.folder,
+                    session_id=self._session.session_id,
                     batch_id=batch_id,
                 )
             )
@@ -510,12 +515,12 @@ class RecordOpsController:
 
     def handle_record_drop(self, primary_paths: list[str], destination_dir: str, *, copy_requested: bool) -> None:
         window = self._window
-        if window._collection_mode:
+        if self._session.collection_mode:
             return
         normalized_destination = normalize_filesystem_path(destination_dir)
         if not normalized_destination or window._dir_confirmed_missing(normalized_destination):
             return
-        if not window._current_folder or normalized_path_key(normalized_destination) == normalized_path_key(window._current_folder):
+        if not self._session.folder or normalized_path_key(normalized_destination) == normalized_path_key(self._session.folder):
             window.statusBar().showMessage("Choose a different folder to drop these images into.")
             return
 
@@ -541,7 +546,7 @@ class RecordOpsController:
         window = self._window
         if not records:
             return
-        destination_dir = QFileDialog.getExistingDirectory(window, "Copy Selected Images", window._current_folder or QDir.homePath())
+        destination_dir = QFileDialog.getExistingDirectory(window, "Copy Selected Images", self._session.folder or QDir.homePath())
         if not destination_dir:
             return
         self._confirm_and_transfer(records, destination_dir, mode="copy")
@@ -550,7 +555,7 @@ class RecordOpsController:
         window = self._window
         if not records:
             return
-        destination_dir = QFileDialog.getExistingDirectory(window, "Move Selected Images", window._current_folder or QDir.homePath())
+        destination_dir = QFileDialog.getExistingDirectory(window, "Move Selected Images", self._session.folder or QDir.homePath())
         if not destination_dir:
             return
         self._confirm_and_transfer(records, destination_dir, mode="move")
@@ -606,9 +611,9 @@ class RecordOpsController:
 
     def batch_move_records_to_new_folder(self, records: list[ImageRecord]) -> None:
         window = self._window
-        if not records or not window._current_folder:
+        if not records or not self._session.folder:
             return
-        destination_dir = window._create_folder_prompt(window._current_folder, select_created=False)
+        destination_dir = window._folder_ops.create_folder_prompt(self._session.folder, select_created=False)
         if not destination_dir:
             return
         moved = self.move_records_by_paths(window._primary_paths_for_records(records), destination_dir)
@@ -655,13 +660,13 @@ class RecordOpsController:
                 kind="move",
                 primary_path=record.path,
                 file_moves=moves,
-                folder=window._current_folder,
-                session_id=window._session_id,
+                folder=self._session.folder,
+                session_id=self._session.session_id,
             )
         )
         renamed_record = self.record_after_moves(record, moves)
         self.replace_record(record.path, renamed_record)
-        window._reset_filter_metadata_index(window._all_records)
+        window._records_view.reset_filter_metadata_index(window._all_records)
         window._apply_records_view(current_path=renamed_record.path)
         window.statusBar().showMessage(f"Renamed {record.name} to {renamed_record.name}")
         return renamed_record.path
@@ -690,16 +695,16 @@ class RecordOpsController:
     def replace_record(self, original_path: str, record: ImageRecord) -> None:
         window = self._window
         window._records_repo.replace_by_old_path({original_path: record})
-        if window._current_folder:
-            window._persist_folder_record_cache(window._current_folder, window._all_records, source="window-replace")
+        if self._session.folder:
+            window._persist_folder_record_cache(self._session.folder, window._all_records, source="window-replace")
 
     def replace_records_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
         window = self._window
         if not records_by_old_path:
             return
         window._records_repo.replace_by_old_path(records_by_old_path)
-        if window._current_folder:
-            window._persist_folder_record_cache(window._current_folder, window._all_records, source="window-move")
+        if self._session.folder:
+            window._persist_folder_record_cache(self._session.folder, window._all_records, source="window-move")
 
     def rekey_filter_metadata_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
         self._window._records_view.rekey_filter_metadata_after_moves(records_by_old_path)
@@ -721,7 +726,7 @@ class RecordOpsController:
         if annotation is None:
             return
         if annotation.is_empty:
-            window._decision_store.delete_annotation(window._session_id, record.path)
+            window._decision_store.delete_annotation(self._session.session_id, record.path)
             return
         new_primary_path = next((move.target_path for move in moves if move.source_path == record.path), "")
         if not new_primary_path:
@@ -735,7 +740,7 @@ class RecordOpsController:
             return
         if update_live_cache:
             window._annotations[new_primary_path] = annotation
-        window._decision_store.move_annotation(window._session_id, record.path, moved_record, annotation)
+        window._decision_store.move_annotation(self._session.session_id, record.path, moved_record, annotation)
 
     # -- Undo stack ----------------------------------------------------
 
@@ -785,12 +790,12 @@ class RecordOpsController:
             window._undo_stack.extend(reversed(batch[undone:]))
             window._update_action_states()
             if reload_needed:
-                window._load_folder(window._current_folder)
+                window._load_folder(self._session.folder)
             QMessageBox.warning(window, "Undo Failed", f"Could not undo the last action.\n\n{exc}")
             return
 
         if reload_needed:
-            window._load_folder(window._current_folder)
+            window._load_folder(self._session.folder)
         self.show_undo_batch_message(batch)
 
     def show_undo_batch_message(self, batch: list[UndoAction]) -> None:
@@ -845,10 +850,10 @@ class RecordOpsController:
             window._queue_annotation_persist(
                 record,
                 previous_annotation=previous_annotation,
-                session_id=action.session_id or window._session_id,
+                session_id=action.session_id or self._session.session_id,
                 winner_sync=winner_sync,
             )
-            window._sync_annotation_to_global_adapter_label(record, annotation)
+            window._aiculler.sync_annotation_to_global_adapter_label(record, annotation)
         window._set_annotation_views()
         window._apply_records_view(current_path=action.primary_path)
 
@@ -870,9 +875,9 @@ class RecordOpsController:
             restored_record = window._record_from_path(action.primary_path)
             if restored_record is not None:
                 window._annotations[action.primary_path] = annotation
-                window._decision_store.move_annotation(action.session_id or window._session_id, target_primary, restored_record, annotation)
+                window._decision_store.move_annotation(action.session_id or self._session.session_id, target_primary, restored_record, annotation)
         destination_dirs = {str(Path(file_move.target_path).parent) for file_move in action.file_moves}
-        return window._current_folder == action.folder or window._current_folder in destination_dirs
+        return self._session.folder == action.folder or self._session.folder in destination_dirs
 
     def undo_delete_files(self, action: UndoAction) -> bool:
         """Restore this action's files and rekey its annotation. Returns
@@ -887,7 +892,7 @@ class RecordOpsController:
             original.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(target), str(original))
 
-        window._forget_recycle_origins(tuple(file_move.target_path for file_move in action.file_moves))
+        window._recycle_bin.forget_recycle_origins(tuple(file_move.target_path for file_move in action.file_moves))
         annotation = self.annotation_from_action(action)
         restored_record = window._record_from_path(action.primary_path)
         if restored_record is not None:
@@ -895,13 +900,13 @@ class RecordOpsController:
                 window._annotations.pop(action.primary_path, None)
             else:
                 window._annotations[action.primary_path] = annotation
-            window._queue_annotation_persist(restored_record, session_id=action.session_id or window._session_id)
+            window._queue_annotation_persist(restored_record, session_id=action.session_id or self._session.session_id)
 
-        if window._current_folder == action.folder:
+        if self._session.folder == action.folder:
             return True
         window._set_annotation_views()
         window._update_status()
-        window._refresh_recycle_button()
+        window._recycle_bin.refresh_recycle_button()
         return False
 
     @staticmethod

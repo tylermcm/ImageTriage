@@ -13,6 +13,7 @@ from .library_store import CatalogRefreshSummary, CatalogRefreshTask, VirtualCol
 from .models import ImageRecord
 from .scanner import normalize_filesystem_path, normalized_path_key, scan_folder
 from .ui import CatalogSearchDialog, CollectionEditDialog
+from .folder_session import FolderSession
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -32,6 +33,10 @@ class CatalogController:
     (`_collection_mode` is checked in ~15 places outside this group,
     `_active_catalog_task` gates the refresh-catalog action's enabled state)
     stays on `window` rather than becoming private to this controller."""
+
+    @property
+    def _session(self) -> FolderSession:
+        return self._window._folder_session
 
     def __init__(self, window: "MainWindow") -> None:
         self._window = window
@@ -65,24 +70,24 @@ class CatalogController:
         if search_text:
             scope_label = f'{scope_label} | Search "{search_text}"'
         scope_id = f"{normalized_path_key(root_path)}|{search_text.casefold()}"
-        window._load_virtual_scope_records(records, scope_kind="catalog", scope_id=scope_id, scope_label=scope_label)
+        window._records_view.load_virtual_scope_records(records, scope_kind="catalog", scope_id=scope_id, scope_label=scope_label)
 
     def add_current_folder_to_catalog(self) -> None:
         window = self._window
-        if not window._current_folder:
+        if not self._session.folder:
             window.statusBar().showMessage("Open a real folder before adding it to the library.")
             return
-        window._library_store.add_catalog_root(window._current_folder)
-        window._refresh_catalog_menu()
-        self.start_catalog_refresh((window._current_folder,), label="Indexing current folder for the library...")
+        window._library_store.add_catalog_root(self._session.folder)
+        window._catalog.refresh_catalog_menu()
+        self.start_catalog_refresh((self._session.folder,), label="Indexing current folder for the library...")
 
     def add_folder_to_catalog_prompt(self) -> None:
         window = self._window
-        folder = QFileDialog.getExistingDirectory(window, "Add Folder To Library", window._current_folder or QDir.homePath())
+        folder = QFileDialog.getExistingDirectory(window, "Add Folder To Library", self._session.folder or QDir.homePath())
         if not folder:
             return
         window._library_store.add_catalog_root(folder)
-        window._refresh_catalog_menu()
+        window._catalog.refresh_catalog_menu()
         self.start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for the library...")
 
     def remove_catalog_root_prompt(self) -> None:
@@ -107,7 +112,7 @@ class CatalogController:
         if confirmation != QMessageBox.StandardButton.Yes:
             return
         if window._library_store.remove_catalog_root(root_path):
-            window._refresh_catalog_menu()
+            window._catalog.refresh_catalog_menu()
             window.statusBar().showMessage(f"Removed from library: {Path(root_path).name or root_path}")
 
     def refresh_catalog_index(self) -> None:
@@ -198,7 +203,7 @@ class CatalogController:
         window._active_catalog_task = None
         window._catalog_context = None
         self._close_progress_dialog()
-        window._refresh_catalog_menu()
+        window._catalog.refresh_catalog_menu()
         if summary is None:
             window.statusBar().showMessage("Library refresh complete")
             return
@@ -256,11 +261,11 @@ class CatalogController:
 
     def rebuild_current_folder_catalog_cache(self) -> None:
         window = self._window
-        if window._scope_kind != "folder" or not window._current_folder:
+        if self._session.scope_kind != "folder" or not self._session.folder:
             window.statusBar().showMessage("Open a real folder before rebuilding its catalog cache.")
             return
-        window.statusBar().showMessage(f"Rebuilding catalog cache for {window._current_folder}...")
-        window._load_folder(window._current_folder, force_refresh=True, bypass_catalog_cache=True)
+        window.statusBar().showMessage(f"Rebuilding catalog cache for {self._session.folder}...")
+        window._load_folder(self._session.folder, force_refresh=True, bypass_catalog_cache=True)
 
     # -- Virtual collections ---------------------------------------------
 
@@ -282,8 +287,8 @@ class CatalogController:
             labels.append(label)
             label_to_id[label] = collection.id
         default_label = labels[0]
-        if window._scope_kind == "collection" and window._scope_id:
-            current_collection = window._library_store.load_collection(window._scope_id)
+        if self._session.scope_kind == "collection" and self._session.scope_id:
+            current_collection = window._library_store.load_collection(self._session.scope_id)
             if current_collection is not None:
                 for label, collection_id in label_to_id.items():
                     if collection_id == current_collection.id:
@@ -351,16 +356,16 @@ class CatalogController:
 
     def begin_collection_mode(self, mode: str, *, collection: VirtualCollection | None = None) -> None:
         window = self._window
-        if window._collection_mode:
+        if self._session.collection_mode:
             return
         if window._zen_mode_enabled:
-            window._set_zen_mode(False)
+            window._zen.set_zen_mode(False)
         if window._active_tool_mode or window.grid.tool_checkbox_mode():
-            window._cancel_tool_mode(show_message=False)
+            window._tool_mode.cancel_tool_mode(show_message=False)
         window.grid.clear_adapter_review_mode()
-        window._collection_previous_view = window._browser_view_mode
+        window._collection_previous_view = self._session.browser_view_mode
         window._collection_previous_inspector_enabled = window.inspector_panel.isEnabled()
-        window._collection_mode = mode
+        self._session.collection_mode = mode
         window._collection_target_id = collection.id if collection is not None else ""
         window.grid.set_collection_checkbox_mode(True, paths=collection.item_paths if collection is not None else ())
         window.grid.clear_selection(keep_current=True)
@@ -376,12 +381,12 @@ class CatalogController:
 
     def refresh_collection_mode_ui(self) -> None:
         window = self._window
-        if not window._collection_mode:
+        if not self._session.collection_mode:
             return
         count = len(window.grid.collection_paths())
         window.collection_mode_bar.show()
         window.collection_mode_count.setText(f"{count} image{'s' if count != 1 else ''} checked")
-        if window._collection_mode == "create":
+        if self._session.collection_mode == "create":
             window.collection_mode_title.setText("New Collection")
             window.collection_mode_save_button.setText("Save Collection")
             window.collection_mode_save_button.setEnabled(count > 0)
@@ -394,10 +399,10 @@ class CatalogController:
     def cancel_collection_mode(self, checked: bool = False, *, show_message: bool = True) -> None:
         del checked
         window = self._window
-        if not window._collection_mode:
+        if not self._session.collection_mode:
             return
         previous_view = window._collection_previous_view
-        window._collection_mode = ""
+        self._session.collection_mode = ""
         window._collection_target_id = ""
         window.grid.set_collection_checkbox_mode(False)
         preview = window._preview_if_built()
@@ -413,10 +418,10 @@ class CatalogController:
     def save_collection_mode(self, checked: bool = False) -> None:
         del checked
         window = self._window
-        if not window._collection_mode:
+        if not self._session.collection_mode:
             return
         paths = window.grid.collection_paths()
-        if window._collection_mode == "edit":
+        if self._session.collection_mode == "edit":
             collection = window._library_store.load_collection(window._collection_target_id)
             if collection is None:
                 window.statusBar().showMessage("That collection is no longer available.")
@@ -426,9 +431,9 @@ class CatalogController:
                 window.statusBar().showMessage("The collection could not be saved. Your picks are still checked.")
                 return
             self.cancel_collection_mode(show_message=False)
-            if getattr(window, "_scope_kind", "") == "collection" and window._scope_id == saved.id:
+            if getattr(window, "_scope_kind", "") == "collection" and self._session.scope_id == saved.id:
                 records, _missing = self.resolve_records_for_paths(saved.item_paths)
-                window._load_virtual_scope_records(
+                window._records_view.load_virtual_scope_records(
                     records,
                     scope_kind="collection",
                     scope_id=saved.id,
@@ -490,7 +495,7 @@ class CatalogController:
         if not records:
             window.statusBar().showMessage(f"{collection.name} has no available files to open.")
             return
-        window._load_virtual_scope_records(
+        window._records_view.load_virtual_scope_records(
             records,
             scope_kind="collection",
             scope_id=collection.id,
@@ -512,8 +517,8 @@ class CatalogController:
             window.statusBar().showMessage("Select one or more images before removing them from a collection.")
             return
         collection = None
-        if window._scope_kind == "collection" and window._scope_id:
-            collection = window._library_store.load_collection(window._scope_id)
+        if self._session.scope_kind == "collection" and self._session.scope_id:
+            collection = window._library_store.load_collection(self._session.scope_id)
         if collection is None:
             collection = self.choose_virtual_collection(title="Remove From Collection", prompt="Collection")
         if collection is None:
@@ -522,9 +527,9 @@ class CatalogController:
         window._refresh_collections_menu()
         if updated is None:
             return
-        if window._scope_kind == "collection" and window._scope_id == updated.id:
+        if self._session.scope_kind == "collection" and self._session.scope_id == updated.id:
             records, missing = self.resolve_records_for_paths(updated.item_paths)
-            window._load_virtual_scope_records(
+            window._records_view.load_virtual_scope_records(
                 records,
                 scope_kind="collection",
                 scope_id=updated.id,
@@ -538,8 +543,8 @@ class CatalogController:
     def delete_virtual_collection(self) -> None:
         window = self._window
         collection = None
-        if window._scope_kind == "collection" and window._scope_id:
-            collection = window._library_store.load_collection(window._scope_id)
+        if self._session.scope_kind == "collection" and self._session.scope_id:
+            collection = window._library_store.load_collection(self._session.scope_id)
         if collection is None:
             collection = self.choose_virtual_collection(title="Delete Collection", prompt="Collection")
         if collection is None:
@@ -555,13 +560,13 @@ class CatalogController:
             return
         deleted = window._library_store.delete_collection(collection.id)
         window._refresh_collections_menu()
-        if deleted and window._scope_kind == "collection" and window._scope_id == collection.id:
+        if deleted and self._session.scope_kind == "collection" and self._session.scope_id == collection.id:
             last_folder = window._settings.value(window.LAST_FOLDER_KEY, "", str)
             if last_folder and not window._dir_confirmed_missing(last_folder):
                 window._select_folder(last_folder)
             else:
-                window._current_folder = ""
+                self._session.folder = ""
                 window._set_scope_state(kind="folder", scope_id="", label="")
-                window._apply_loaded_records([])
+                window._records_view.apply_loaded_records([])
         if deleted:
             window.statusBar().showMessage(f"Deleted collection: {collection.name}")

@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from image_triage.ai_workflow import _parse_tqdm_progress, _run_command_with_live_output
+from image_triage.ai_workflow import _parse_tqdm_progress
 from image_triage.library_store import LibraryStore
 from image_triage.scanner import scan_folder, scan_folder_quick
 from image_triage.window import MainWindow
@@ -300,20 +300,8 @@ def _benchmark_ai_stream_parser(
     sample_runs: int,
     line_count: int,
 ) -> dict[str, MetricSummary]:
-    script_path = temp_root / "emit_ai_progress.py"
-    script_path.write_text(
-        (
-            "import sys\n"
-            f"total={int(line_count)}\n"
-            "for i in range(1, total + 1):\n"
-            "    sys.stdout.write(f\"Scanning images: 100%|██████████| {i}/{total} [00:00<00:00]\\n\")\n"
-            "sys.stdout.write(\"final tail\")\n"
-            "sys.stdout.flush()\n"
-        ),
-        encoding="utf-8",
-    )
-
-    stream_samples: list[float] = []
+    # The subprocess live-output runner this used to time was removed with the legacy AI wrapper (WI-2.x);
+    # only the progress-line parser is still measured.
     parse_only_samples: list[float] = []
     synthetic_lines = [
         f"Extracting embeddings: 100%|##########| {index}/{line_count} [00:00<00:00]"
@@ -321,19 +309,6 @@ def _benchmark_ai_stream_parser(
     ]
 
     for _ in range(max(1, sample_runs)):
-        parsed_lines = {"count": 0}
-        stream_samples.append(
-            _time_call_ms(
-                lambda: _run_command_with_live_output(
-                    [sys.executable, str(script_path)],
-                    cwd=temp_root,
-                    progress_callback=lambda line: parsed_lines.__setitem__(
-                        "count",
-                        parsed_lines["count"] + (1 if _parse_tqdm_progress(line) is not None else 0),
-                    ),
-                )
-            )
-        )
         parse_only_samples.append(
             _time_call_ms(
                 lambda: [
@@ -344,7 +319,6 @@ def _benchmark_ai_stream_parser(
         )
 
     return {
-        "ai_stream_processing": _summary(stream_samples),
         "ai_progress_parse_only": _summary(parse_only_samples),
     }
 

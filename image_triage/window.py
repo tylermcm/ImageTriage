@@ -26,17 +26,37 @@ import time
 import uuid
 from collections import Counter, deque
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from hashlib import sha1
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from textwrap import dedent
 
 import numpy as np
-from PySide6.QtCore import QByteArray, QDir, QEasingCurve, QEvent, QEventLoop, QFileSystemWatcher, QMimeData, QModelIndex, QObject, QPoint, QPropertyAnimation, QRect, QRunnable, QSignalBlocker, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QByteArray,
+    QDir,
+    QEasingCurve,
+    QEvent,
+    QEventLoop,
+    QFileSystemWatcher,
+    QMimeData,
+    QModelIndex,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    QRunnable,
+    QSignalBlocker,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    Slot,
+)
 from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QCursor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -81,7 +101,6 @@ from .ai_model import (
     DEFAULT_AICULLER_CLIP_SIZE_MB,
     DEFAULT_AICULLER_FACE_SIZE_MB,
     DEFAULT_AICULLER_TOPIQ_SIZE_MB,
-    download_ai_model as download_managed_ai_model,
     resolve_aiculler_clip_model_installation,
     resolve_aiculler_face_model_installation,
     resolve_aiculler_topiq_model_installation,
@@ -156,6 +175,14 @@ from .batch_rename_controller import BatchRenameApplyController, BatchRenameExec
 from .catalog_controller import CatalogController, CatalogExecutionContext
 from .command_palette_controller import CommandPaletteController
 from .folder_ops_controller import FolderOpsController
+from .folder_session import FolderSession, session_field
+from .appearance_controller import AppearanceController
+from .toolbar_controller import ToolbarController
+from .zen_controller import ZenController
+from .tool_mode_controller import ToolModeController
+from .ai_run_controller import AiRunController
+from .aiculler_controller import AiCullerController
+from .ai_setup_controller import AiSetupController
 from .record_ops_controller import RecordOpsController, UndoAction
 from .records_repository import RecordsRepository
 from .records_view_controller import RecordsViewController, UnifiedSearchTask, _memory_path_key
@@ -227,7 +254,7 @@ from .workflows import (
     workflow_destination_dir,
     workflow_record_folder_name,
 )
-from .review_tools import InspectionStats, build_inspection_stats
+from .review_tools import InspectionStats
 from .records_view_cache import RecordsViewCache, ViewInvalidationReason
 from .review_intelligence import BuildReviewIntelligenceTask, ReviewIntelligenceBundle
 from .review_workflows import (
@@ -236,14 +263,12 @@ from .review_workflows import (
     RecordWorkflowInsight,
     TasteProfile,
     ai_strength,
-    build_review_scoring_cache_key,
     build_burst_recommendations,
     build_pairwise_label_payload,
     build_record_workflow_insight,
     current_timestamp,
     ai_disagreement_group_leader_path,
     disagreement_level_for,
-    review_scoring_provider_id,
 )
 from . import path_policy
 from .scanner import (
@@ -261,14 +286,7 @@ from .face_index import FaceFolderIndexTask
 from .semantic_sort import load_semantic_classifications, semantic_classification_for_record, semantic_folder_name
 from .shell_actions import detect_photoshop_executable, open_in_file_explorer, open_in_photoshop, open_with_default, open_with_dialog, reveal_in_file_explorer
 from .thumbnails import ThumbnailManager
-from .updater import (
-    UpdateCheckResult,
-    UpdateInfo,
-    check_for_update,
-    current_app_version,
-    download_update_installer,
-    launch_update_installer_and_restart,
-)
+from .updater import UpdateCheckResult, UpdateInfo, current_app_version, launch_update_installer_and_restart
 from .ui import (
     AdvancedFilterDialog,
     AIReviewProgressDialog,
@@ -345,6 +363,13 @@ from .ui.prototype_style import (
     trim_to_alpha,
 )
 from .xmp import load_sidecar_annotation
+from .tasks.ai_tasks import AIModelDownloadRequest, AIModelDownloadTask, AIRuntimeInstallTask, AISetupSelection, AIUninstallTask, HiddenAIResultsLoadTask, PostAIRunBundleLoadTask, _AIFolderProbeTask, _PrefilterDecisionsTask, _compute_ai_folder_probe, _unknown_ai_folder_probe
+from .tasks.annotation_tasks import AnnotationHydrationTask, InspectorStatsRequest, InspectorStatsTask, ScopeEnrichmentTask
+from .tasks.job_contexts import ArchiveExecutionContext, ConvertExecutionContext, ResizeExecutionContext, WorkflowExecutionContext
+from .tasks.update_tasks import AppUpdateCheckTask, AppUpdateDownloadTask
+from .ui.ai_review_dialogs import AIReviewCompleteDialog
+from .ui.directory_suggestions import _DirectorySuggestionController
+from .ui.topbar_sync import _TopbarActionSync
 
 
 # TEMPORARY: the window is translucent so it can be laid over the design
@@ -362,120 +387,6 @@ def _window_opacity() -> float:
     return min(1.0, max(0.1, value))
 
 
-@dataclass(slots=True, frozen=True)
-class InspectorStatsRequest:
-    """Background request for lightweight Inspector quality statistics."""
-    cache_key: tuple[str, int, int, int, int]
-    image: object
-
-
-class InspectorStatsTask(QRunnable):
-    def __init__(self, request: InspectorStatsRequest, result_queue: SimpleQueue) -> None:
-        super().__init__()
-        self.request = request
-        self.result_queue = result_queue
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        try:
-            stats = build_inspection_stats(self.request.image)
-        except Exception as exc:  # pragma: no cover - defensive worker boundary
-            if logger.enabled:
-                logger.duration(
-                    "inspector.stats.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    error=str(exc),
-                )
-            self.result_queue.put(("failed", self.request.cache_key, str(exc)))
-            return
-        if logger.enabled:
-            logger.duration(
-                "inspector.stats",
-                (time.perf_counter() - start) * 1000.0,
-                width=self.request.image.width() if hasattr(self.request.image, "width") else 0,
-                height=self.request.image.height() if hasattr(self.request.image, "height") else 0,
-            )
-        self.result_queue.put(("ready", self.request.cache_key, stats))
-
-
-@dataclass(slots=True)
-class ResizeExecutionContext:
-    """Stores the active resize plan while the resize worker is running."""
-    plan: ResizePlan
-    options: ResizeOptions
-    refresh_folder: str = ""
-
-
-@dataclass(slots=True)
-class ConvertExecutionContext:
-    """Stores the active convert plan while the convert worker is running."""
-    plan: ConvertPlan
-    options: ConvertOptions
-    refresh_folder: str = ""
-
-
-@dataclass(slots=True)
-class WorkflowExecutionContext:
-    """Stores recipe execution state across export, copy, move, and archive steps."""
-    recipe: WorkflowRecipe
-    action: str
-    destination_root: str = ""
-    destination_dir: str = ""
-    refresh_folder: str = ""
-    archive_after_export: bool = False
-    archive_format: str = "zip"
-
-
-@dataclass(slots=True)
-class ArchiveExecutionContext:
-    """Describes the archive job currently in flight for status and refresh logic."""
-    mode: str
-    archive_path: str = ""
-    destination_dir: str = ""
-    archive_label: str = ""
-    refresh_folder: str = ""
-
-
-@dataclass(slots=True, frozen=True)
-class AISetupSelection:
-    """Captures the optional AI components the user chose to install."""
-    install_runtime: bool
-    runtime_variant: str
-    include_torch_runtime: bool
-    download_aiculler_clip_model: bool
-    download_aiculler_topiq_model: bool
-    download_aiculler_face_model: bool
-    download_semantic_model: bool
-
-    @property
-    def download_model(self) -> bool:
-        return (
-            self.download_aiculler_clip_model
-            or self.download_aiculler_topiq_model
-            or self.download_aiculler_face_model
-            or self.download_semantic_model
-        )
-
-
-@dataclass(slots=True)
-class ChildAppProcess:
-    """Wraps a spawned companion process so the window can track its lifetime."""
-    name: str
-    process: subprocess.Popen[str]
-
-
-def _path_parent_stem_key(path: str) -> str:
-    try:
-        candidate = Path(path).expanduser()
-        parent = normalized_path_key(str(candidate.parent))
-        stem = candidate.stem.casefold()
-    except (OSError, ValueError):
-        return ""
-    return f"{parent}|{stem}" if parent and stem else ""
-
-
 # Beyond this the Collections section scrolls rather than growing, so it can
 # never crowd the folder tree out of the sidebar.
 _MAX_VISIBLE_PROJECT_ROWS = 6
@@ -487,1503 +398,7 @@ _NAV_SECTION_GAP_PX = 8
 _PROJECT_HEADER_BODY_GAP_PX = 0
 
 
-def _headless_background_popen_kwargs() -> dict[str, object]:
-    """Hide console windows for background helper processes on Windows."""
-    if os.name != "nt":
-        return {}
-    kwargs: dict[str, object] = {}
-    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
-    if creationflags:
-        kwargs["creationflags"] = creationflags
-    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
-    if startupinfo_cls is not None:
-        startupinfo = startupinfo_cls()
-        startupinfo.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0) or 0)
-        startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0) or 0)
-        kwargs["startupinfo"] = startupinfo
-    return kwargs
 
-
-
-def _unknown_ai_folder_probe(folder: str) -> dict:
-    """What the AI toolbar assumes about a folder it has not been able to look at yet: nothing found."""
-    return {
-        "folder": folder,
-        "at": 0.0,
-        "ranked_export_exists": False,
-        "semantic_ready": False,
-        "report_ready": False,
-        "adapter_version": "",
-        "rerank_ready": False,
-        "adapter_db_exists": False,
-        "aiculler_available": False,
-        "phash_available": False,
-    }
-
-
-def _compute_ai_folder_probe(ai_paths, folder: str) -> dict:
-    """Look inside a folder's hidden AI directory: existence checks and a few SQLite opens.
-
-    It touches the disk, so for a folder on a network / removable drive it only runs on a worker thread."""
-    db_path = aiculler_db_path(ai_paths) if ai_paths is not None else None
-    probe = _unknown_ai_folder_probe(folder)
-    probe["ranked_export_exists"] = bool(ai_paths is not None and ai_paths.ranked_export_path.exists())
-    probe["semantic_ready"] = bool(ai_paths is not None and ai_semantic_artifacts_ready(ai_paths))
-    probe["report_ready"] = bool(ai_paths is not None and ai_report_artifacts_ready(ai_paths))
-    probe["adapter_version"] = latest_adapter_model_version(db_path) if db_path is not None else ""
-    probe["rerank_ready"] = bool(db_path is not None and aiculler_rerank_readiness(db_path).get("can_rerank"))
-    probe["adapter_db_exists"] = bool(db_path is not None and db_path.exists())
-    try:
-        probe["aiculler_available"] = bool(folder and aiculler_db_path(build_aiculler_workflow_paths(folder)).exists())
-    except Exception:
-        _logger.exception("Failed to probe aiculler availability for %s", folder)
-        probe["aiculler_available"] = False
-    try:
-        probe["phash_available"] = bool(folder and build_phash_prefilter_paths(folder).rows_path.exists())
-    except Exception:
-        _logger.exception("Failed to probe phash prefilter availability for %s", folder)
-        probe["phash_available"] = False
-    return probe
-
-
-class _PrefilterDecisionsSignals(QObject):
-    ready = Signal(int, str, object)
-
-
-class _PrefilterDecisionsTask(QRunnable):
-    """Loads a folder's saved pHash prefilter decisions off the GUI thread (for a folder on a share)."""
-
-    def __init__(self, token: int, folder: str) -> None:
-        super().__init__()
-        self.token = token
-        self.folder = folder
-        self.signals = _PrefilterDecisionsSignals()
-        self.setAutoDelete(False)
-
-    def run(self) -> None:
-        try:
-            decisions = load_phash_prefilter_decisions(build_phash_prefilter_paths(self.folder))
-            keyed = {key: decision for path, decision in decisions.items() if (key := normalized_path_key(path))}
-        except Exception:
-            _logger.exception("Failed to load phash prefilter decisions for %s", self.folder)
-            keyed = {}
-        self.signals.ready.emit(self.token, self.folder, keyed)
-
-
-class _AIFolderProbeSignals(QObject):
-    ready = Signal(int, str, object)
-
-
-class _AIFolderProbeTask(QRunnable):
-    """One AI-folder probe for a folder on a share, run off the GUI thread."""
-
-    def __init__(self, generation: int, folder: str, ai_paths) -> None:
-        super().__init__()
-        self.generation = generation
-        self.folder = folder
-        self._ai_paths = ai_paths
-        self.signals = _AIFolderProbeSignals()
-        self.setAutoDelete(False)
-
-    def run(self) -> None:
-        try:
-            probe = _compute_ai_folder_probe(self._ai_paths, self.folder)
-        except Exception:
-            _logger.exception("Failed to probe the AI data of %s", self.folder)
-            probe = _unknown_ai_folder_probe(self.folder)
-        self.signals.ready.emit(self.generation, self.folder, probe)
-
-
-class _SuggestionSignals(QObject):
-    ready = Signal(int, str, object)
-
-
-class _SuggestionTask(QRunnable):
-    """One folder listing for the address-bar suggestions, run off the GUI thread."""
-
-    def __init__(self, token: int, text: str, is_stale, lister) -> None:
-        super().__init__()
-        self.token = token
-        self._text = text
-        self._is_stale = is_stale
-        self._lister = lister
-        self.signals = _SuggestionSignals()
-        self.setAutoDelete(False)
-
-    def run(self) -> None:
-        suggestions = None  # None = stale, nothing to show; the owner still hears back so it can let go of us
-        if not self._is_stale():  # if the user typed on, do not even list the share for this one
-            try:
-                suggestions = self._lister(self._text)
-            except Exception:  # a share that errors out simply offers no suggestions
-                suggestions = []
-        self.signals.ready.emit(self.token, self._text, suggestions)
-
-
-class _DirectorySuggestionController(QObject):
-    """Segment-aware folder suggestions for the workspace address field."""
-
-    MAX_VISIBLE_ROWS = 5
-
-    def __init__(self, combo: QComboBox, *, on_accept_path=None) -> None:
-        super().__init__(combo)
-        self._combo = combo
-        self._line_edit = combo.lineEdit()
-        self._on_accept_path = on_accept_path
-        self._popup = QFrame(combo.window(), Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
-        self._popup.setObjectName("pathSuggestionPopup")
-        self._popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self._popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        popup_layout = QVBoxLayout(self._popup)
-        popup_layout.setContentsMargins(0, 0, 0, 0)
-        popup_layout.setSpacing(0)
-        self._list = QListWidget(self._popup)
-        self._list.setObjectName("pathSuggestionList")
-        self._list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self._list.setUniformItemSizes(True)
-        self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._list.itemClicked.connect(self._accept_item)
-        self._list.itemActivated.connect(self._accept_item)
-        popup_layout.addWidget(self._list)
-        self._last_query_text = ""
-        # Folders on a network / removable drive are listed on this one worker, newest request wins.
-        self._suggestion_token = 0
-        self._suggestion_tasks: set[_SuggestionTask] = set()
-        self._suggestion_pool = QThreadPool(self)
-        self._suggestion_pool.setMaxThreadCount(1)
-
-        if self._line_edit is not None:
-            self._line_edit.textEdited.connect(self._handle_text_edited)
-            self._line_edit.installEventFilter(self)
-        self._combo.installEventFilter(self)
-        self._popup.installEventFilter(self)
-        self._list.installEventFilter(self)
-        self._combo.activated.connect(lambda _index: self.hide_popup())
-
-    @staticmethod
-    def _strip_wrapping_quotes(text: str) -> str:
-        return text.strip().strip('"').strip("'")
-
-    @classmethod
-    def _split_directory_query(cls, text: str) -> tuple[str, str]:
-        raw_text = cls._strip_wrapping_quotes(text)
-        if not raw_text:
-            return "", ""
-        normalized = normalize_filesystem_path(raw_text)
-        if not normalized:
-            return "", ""
-        if raw_text.endswith(("\\", "/")):
-            return normalized, ""
-        parent_dir, fragment = os.path.split(normalized)
-        return parent_dir, fragment
-
-    @classmethod
-    def _list_directory_suggestions(cls, text: str) -> list[tuple[str, str]]:
-        parent_dir, fragment = cls._split_directory_query(text)
-        if not parent_dir or not os.path.isdir(parent_dir):
-            return []
-        fragment_casefold = fragment.casefold()
-        suggestions: list[tuple[str, str]] = []
-        try:
-            with os.scandir(parent_dir) as entries:
-                for entry in entries:
-                    try:
-                        if not entry.is_dir(follow_symlinks=False):
-                            continue
-                    except OSError:
-                        continue
-                    name = entry.name
-                    if not name:
-                        continue
-                    if name.startswith("."):
-                        continue
-                    if cls._is_hidden_directory_entry(entry):
-                        continue
-                    if fragment_casefold and not name.casefold().startswith(fragment_casefold):
-                        continue
-                    suggestions.append((name, normalize_filesystem_path(entry.path)))
-        except OSError:
-            return []
-        suggestions.sort(key=lambda item: item[0].casefold())
-        return suggestions
-
-    @staticmethod
-    def _is_hidden_directory_entry(entry: os.DirEntry[str]) -> bool:
-        try:
-            attributes = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
-        except OSError:
-            return False
-        hidden_flag = int(getattr(stat, "FILE_ATTRIBUTE_HIDDEN", 0) or 0)
-        if hidden_flag and attributes & hidden_flag:
-            return True
-        return False
-
-    def hide_popup(self) -> None:
-        if self._popup.isVisible():
-            self._popup.hide()
-
-    def _handle_text_edited(self, text: str) -> None:
-        self._last_query_text = text
-        self._show_suggestions_for_text(text)
-
-    def _show_suggestions_for_text(self, text: str) -> None:
-        if self._line_edit is None:
-            return
-        parent_dir, _fragment = self._split_directory_query(text)
-        if parent_dir and not path_policy.is_plain_local(parent_dir):
-            # Listing a folder on a share on every keystroke would stall the window (and a sleeping NAS
-            # would freeze it), so it is done on a worker; only the newest request's answer is shown.
-            self._request_suggestions_off_thread(text)
-            return
-        self._suggestion_token += 1  # a still-pending share listing must not overwrite this local answer
-        self._show_suggestions(self._list_directory_suggestions(text))
-
-    def _request_suggestions_off_thread(self, text: str) -> None:
-        self._suggestion_token += 1
-        token = self._suggestion_token
-        self.hide_popup()
-        task = _SuggestionTask(token, text, lambda: token != self._suggestion_token, self._list_directory_suggestions)
-        task.signals.ready.connect(self._handle_suggestions_ready, Qt.ConnectionType.QueuedConnection)
-        self._suggestion_tasks.add(task)
-        self._suggestion_pool.start(task)
-
-    def _handle_suggestions_ready(self, token: int, text: str, suggestions: object) -> None:
-        self._suggestion_tasks = {task for task in self._suggestion_tasks if task.token != token}
-        if token != self._suggestion_token or self._line_edit is None or self._line_edit.text() != text:
-            return
-        self._show_suggestions(list(suggestions) if isinstance(suggestions, list) else [])
-
-    def _show_suggestions(self, suggestions: list[tuple[str, str]]) -> None:
-        self._list.clear()
-        if not suggestions:
-            self.hide_popup()
-            return
-        for name, full_path in suggestions:
-            item = QListWidgetItem(name, self._list)
-            item.setData(Qt.ItemDataRole.UserRole, full_path)
-            item.setToolTip(full_path)
-        self._list.setCurrentRow(0)
-        self._position_popup()
-        self._popup.show()
-        self._popup.raise_()
-
-    def _position_popup(self) -> None:
-        if self._line_edit is None:
-            return
-        row_height = self._list.sizeHintForRow(0)
-        if row_height <= 0:
-            row_height = 24
-        visible_rows = min(self.MAX_VISIBLE_ROWS, max(1, self._list.count()))
-        frame_width = max(self._combo.width(), self._line_edit.width())
-        frame_height = (row_height * visible_rows) + 8
-        global_pos = self._line_edit.mapToGlobal(QPoint(0, self._line_edit.height() + 4))
-        self._popup.resize(frame_width, frame_height)
-        self._popup.move(global_pos)
-
-    def _accept_current_item(self) -> None:
-        item = self._list.currentItem()
-        if item is not None:
-            self._accept_item(item)
-
-    def _accept_item(self, item: QListWidgetItem) -> None:
-        if self._line_edit is None:
-            return
-        full_path = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
-        if not full_path:
-            self.hide_popup()
-            return
-        completed = full_path
-        if not completed.endswith(("\\", "/")):
-            completed = f"{completed}{os.sep}"
-        with QSignalBlocker(self._combo):
-            self._combo.setEditText(completed)
-        self._line_edit.setText(completed)
-        self._line_edit.setCursorPosition(len(completed))
-        self.hide_popup()
-        if callable(self._on_accept_path):
-            self._on_accept_path(full_path)
-
-    def _move_selection(self, delta: int) -> None:
-        count = self._list.count()
-        if count <= 0:
-            return
-        current_row = self._list.currentRow()
-        if current_row < 0:
-            current_row = 0
-        next_row = max(0, min(count - 1, current_row + delta))
-        self._list.setCurrentRow(next_row)
-        self._list.scrollToItem(self._list.currentItem(), QAbstractItemView.ScrollHint.PositionAtCenter)
-
-    @staticmethod
-    def _is_navigation_key(key: int) -> bool:
-        return key in (
-            Qt.Key.Key_Down,
-            Qt.Key.Key_Up,
-            Qt.Key.Key_Tab,
-            Qt.Key.Key_Return,
-            Qt.Key.Key_Enter,
-            Qt.Key.Key_Escape,
-        )
-
-    def _handle_navigation_key(self, key: int) -> bool:
-        if not self._popup.isVisible():
-            return False
-        if key == Qt.Key.Key_Down:
-            self._move_selection(1)
-            return True
-        if key == Qt.Key.Key_Up:
-            self._move_selection(-1)
-            return True
-        if key in (Qt.Key.Key_Tab, Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self._accept_current_item()
-            return True
-        if key == Qt.Key.Key_Escape:
-            self.hide_popup()
-            return True
-        return False
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched in (self._line_edit, self._combo):
-            if event.type() == QEvent.Type.ShortcutOverride:
-                key = event.key()
-                if self._popup.isVisible() and self._is_navigation_key(key):
-                    event.accept()
-                    return True
-            elif event.type() == QEvent.Type.KeyPress:
-                key = event.key()
-                if self._handle_navigation_key(key):
-                    event.accept()
-                    return True
-        if watched is self._line_edit:
-            if event.type() in (QEvent.Type.FocusOut, QEvent.Type.Hide):
-                QTimer.singleShot(0, self._hide_popup_if_inactive)
-            elif event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
-                if self._popup.isVisible():
-                    self._position_popup()
-        elif watched is self._combo:
-            if event.type() in (QEvent.Type.Hide, QEvent.Type.Move, QEvent.Type.Resize):
-                self.hide_popup()
-            elif event.type() == QEvent.Type.MouseButtonPress:
-                self.hide_popup()
-        elif watched in (self._popup, self._list):
-            if event.type() == QEvent.Type.Hide:
-                self.hide_popup()
-        return super().eventFilter(watched, event)
-
-    def _hide_popup_if_inactive(self) -> None:
-        if self._popup.underMouse() or self._list.underMouse():
-            return
-        if self._line_edit is not None and self._line_edit.hasFocus():
-            return
-        self.hide_popup()
-
-
-class _AIBadgePreview(QLabel):
-    def __init__(self, text: str, *, background: str, foreground: str, parent: QWidget | None = None) -> None:
-        super().__init__(text, parent)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet(
-            f"""
-            QLabel {{
-                background-color: {background};
-                color: {foreground};
-                border-radius: 9px;
-                padding: 4px 10px;
-                font-weight: 600;
-            }}
-            """
-        )
-
-
-class _AITagSampleCard(QFrame):
-    def __init__(
-        self,
-        *,
-        left_badges: tuple[tuple[str, str, str], ...] = (),
-        right_badges: tuple[tuple[str, str, str], ...] = (),
-        filename: str = "_DSC0001.NEF",
-        compact: bool = False,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setObjectName("aiTagSampleCard")
-        self.setStyleSheet(
-            """
-            QFrame#aiTagSampleCard {
-                background-color: #141922;
-                border: 1px solid #364152;
-                border-radius: 14px;
-            }
-            QFrame#aiTagSampleImage {
-                background-color: #212936;
-                border: 1px solid #2c3645;
-                border-radius: 10px;
-            }
-            QLabel#aiTagSampleFilename {
-                color: #b7c4d7;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            """
-        )
-        if compact:
-            self.setFixedSize(176, 108)
-        else:
-            self.setFixedSize(228, 136)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8 if compact else 10, 8 if compact else 10, 8 if compact else 10, 8 if compact else 10)
-        layout.setSpacing(6 if compact else 8)
-
-        image_area = QFrame(self)
-        image_area.setObjectName("aiTagSampleImage")
-        image_area.setMinimumHeight(68 if compact else 84)
-        image_layout = QHBoxLayout(image_area)
-        image_layout.setContentsMargins(8 if compact else 10, 8 if compact else 10, 8 if compact else 10, 8 if compact else 10)
-        image_layout.setSpacing(6 if compact else 8)
-
-        left_column = QVBoxLayout()
-        left_column.setContentsMargins(0, 0, 0, 0)
-        left_column.setSpacing(6)
-        for text, background, foreground in left_badges:
-            left_column.addWidget(_AIBadgePreview(text, background=background, foreground=foreground, parent=image_area), 0, Qt.AlignmentFlag.AlignLeft)
-        left_column.addStretch(1)
-        image_layout.addLayout(left_column, 1)
-
-        right_column = QVBoxLayout()
-        right_column.setContentsMargins(0, 0, 0, 0)
-        right_column.setSpacing(6)
-        for text, background, foreground in right_badges:
-            right_column.addWidget(_AIBadgePreview(text, background=background, foreground=foreground, parent=image_area), 0, Qt.AlignmentFlag.AlignRight)
-        right_column.addStretch(1)
-        image_layout.addLayout(right_column, 1)
-
-        layout.addWidget(image_area)
-
-        filename_label = QLabel(filename, self)
-        filename_label.setObjectName("aiTagSampleFilename")
-        layout.addWidget(filename_label)
-
-
-class AIReviewCompleteDialog(QDialog):
-    def __init__(
-        self,
-        *,
-        folder: str,
-        hidden_root: str,
-        artifacts_dir: str,
-        report_dir: str,
-        export_csv_path: str,
-        report_html_path: str,
-        bucket_counts: Counter[AICullBucket] | None = None,
-        same_folder: bool,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._hidden_root = hidden_root
-        self._report_html_path = report_html_path
-        self.setModal(True)
-        self.setWindowTitle("AI Review Complete")
-        self.resize(1120, 760)
-        self.setMinimumSize(1040, 720)
-
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(18, 18, 18, 18)
-        root_layout.setSpacing(10)
-
-        heading = QLabel("AI review finished successfully.", self)
-        heading.setStyleSheet("font-size: 20px; font-weight: 700;")
-        root_layout.addWidget(heading)
-
-        summary_lines = [f"Folder: {folder}"]
-        if same_folder:
-            summary_lines.append("The new results were loaded automatically.")
-        else:
-            summary_lines.append("The review outputs were written successfully.")
-        summary = QLabel("\n".join(summary_lines), self)
-        summary.setWordWrap(True)
-        summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        root_layout.addWidget(summary)
-
-        if bucket_counts:
-            counts_row = QHBoxLayout()
-            counts_row.setContentsMargins(0, 0, 0, 0)
-            counts_row.setSpacing(8)
-            counts_row.addWidget(QLabel("Result buckets:", self))
-            counts_row.addWidget(
-                _AIBadgePreview(
-                    f"Winner {bucket_counts.get(AICullBucket.AI_PICK, 0)}",
-                    background="rgba(70, 189, 120, 218)",
-                    foreground="#fffaf2",
-                    parent=self,
-                )
-            )
-            counts_row.addWidget(
-                _AIBadgePreview(
-                    f"Reject {bucket_counts.get(AICullBucket.REJECT, 0)}",
-                    background="rgba(214, 90, 103, 218)",
-                    foreground="#fffaf2",
-                    parent=self,
-                )
-            )
-            counts_row.addWidget(
-                _AIBadgePreview(
-                    f"Review {bucket_counts.get(AICullBucket.NEEDS_REVIEW, 0)}",
-                    background="rgba(210, 135, 53, 218)",
-                    foreground="#fffaf2",
-                    parent=self,
-                )
-            )
-            counts_row.addStretch(1)
-            root_layout.addLayout(counts_row)
-
-        outputs_frame = QFrame(self)
-        outputs_frame.setStyleSheet(
-            """
-            QFrame {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
-            }
-            QToolButton[sectionToggle="true"] {
-                background: transparent;
-                border: none;
-                color: #dbe6f5;
-                font-weight: 700;
-                padding: 0px;
-            }
-            QToolButton[sectionToggle="true"]:hover {
-                color: #f4f7fb;
-            }
-            QLabel[outputTitle="true"] {
-                color: #dbe6f5;
-                font-weight: 700;
-            }
-            QLabel[outputDescription="true"] {
-                color: #b7c4d7;
-            }
-            QLabel[outputPath="true"] {
-                color: #9aa9bd;
-            }
-            QLineEdit[outputPathField="true"] {
-                background-color: rgba(10, 15, 20, 0.42);
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 8px;
-                color: #9aa9bd;
-                min-height: 24px;
-                padding: 2px 8px;
-            }
-            QFrame#aiOutputEntry {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.07);
-                border-radius: 10px;
-            }
-            QFrame#aiLegendEntry {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.07);
-                border-radius: 12px;
-            }
-            """
-        )
-        outputs_layout = QVBoxLayout(outputs_frame)
-        outputs_layout.setContentsMargins(14, 12, 14, 12)
-        outputs_layout.setSpacing(10)
-        outputs_header = QHBoxLayout()
-        outputs_header.setContentsMargins(0, 0, 0, 0)
-        outputs_header.setSpacing(8)
-        self.outputs_toggle = QToolButton(outputs_frame)
-        self.outputs_toggle.setProperty("sectionToggle", True)
-        self.outputs_toggle.setCheckable(True)
-        self.outputs_toggle.setChecked(False)
-        self.outputs_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.outputs_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.outputs_toggle.setText("Outputs")
-        self.outputs_toggle.toggled.connect(self._set_outputs_expanded)
-        outputs_header.addWidget(self.outputs_toggle)
-        outputs_hint = QLabel("Show generated files and what each one is for.", outputs_frame)
-        outputs_hint.setProperty("outputDescription", True)
-        outputs_header.addWidget(outputs_hint, 1)
-        outputs_layout.addLayout(outputs_header)
-
-        self.outputs_body = QWidget(outputs_frame)
-        self.outputs_body.setObjectName("aiReviewOutputsBody")
-        outputs_grid = QGridLayout(self.outputs_body)
-        outputs_grid.setContentsMargins(0, 0, 0, 0)
-        outputs_grid.setHorizontalSpacing(10)
-        outputs_grid.setVerticalSpacing(10)
-        output_rows = (
-            ("Hidden AI folder", "The folder-local AI workspace beside your images.", hidden_root),
-            ("Artifacts", "Embeddings, IDs, and cluster data used by AI scoring.", artifacts_dir),
-            ("Ranked export", "The scored CSV used for ranking and review.", export_csv_path),
-            ("Report folder", "Summary files and reports generated for this run.", report_dir),
-            ("HTML report", "The browser-friendly review report for this folder.", report_html_path),
-        )
-        for index, (label_text, description_text, value) in enumerate(output_rows):
-            outputs_grid.addWidget(
-                self._build_output_entry(label_text, description_text, value, parent=self.outputs_body),
-                index // 2,
-                index % 2,
-            )
-        outputs_grid.setColumnStretch(0, 1)
-        outputs_grid.setColumnStretch(1, 1)
-        self.outputs_body.setVisible(False)
-        outputs_layout.addWidget(self.outputs_body)
-        root_layout.addWidget(outputs_frame)
-
-        legend_title = QLabel("AI tag guide", self)
-        legend_title.setStyleSheet("font-size: 16px; font-weight: 700;")
-        root_layout.addWidget(legend_title)
-
-        legend_subtitle = QLabel(
-            "Use this as the quick reference for the AI badges you just generated.",
-            self,
-        )
-        legend_subtitle.setWordWrap(True)
-        root_layout.addWidget(legend_subtitle)
-
-        legend_host = QWidget(self)
-        legend_host.setObjectName("aiReviewLegendHost")
-        legend_grid = QGridLayout(legend_host)
-        legend_grid.setContentsMargins(0, 0, 0, 0)
-        legend_grid.setHorizontalSpacing(12)
-        legend_grid.setVerticalSpacing(12)
-        for index, (tag_name, description) in enumerate(ai_review_tag_definitions()):
-            legend_grid.addWidget(
-                self._build_tag_legend_entry(tag_name, description, parent=legend_host),
-                index // 2,
-                index % 2,
-            )
-        legend_grid.setColumnStretch(0, 1)
-        legend_grid.setColumnStretch(1, 1)
-        root_layout.addWidget(legend_host, 1)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, Qt.Orientation.Horizontal, self)
-        self.open_outputs_button = button_box.addButton("Open AI Output Folder", QDialogButtonBox.ButtonRole.ActionRole)
-        self.open_report_button = button_box.addButton("Open Report", QDialogButtonBox.ButtonRole.ActionRole)
-        self.open_outputs_button.clicked.connect(self._open_outputs_folder)
-        self.open_report_button.clicked.connect(self._open_report)
-        self.open_outputs_button.setEnabled(Path(hidden_root).exists())
-        self.open_report_button.setEnabled(bool(report_html_path and Path(report_html_path).exists()))
-        button_box.accepted.connect(self.accept)
-        root_layout.addWidget(button_box)
-
-    def _build_output_entry(self, title: str, description: str, path: str, *, parent: QWidget | None = None) -> QWidget:
-        frame = QFrame(parent)
-        frame.setObjectName("aiOutputEntry")
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(4)
-        title_label = QLabel(title, frame)
-        title_label.setProperty("outputTitle", True)
-        description_label = QLabel(description, frame)
-        description_label.setProperty("outputDescription", True)
-        description_label.setWordWrap(True)
-        path_field = QLineEdit(path, frame)
-        path_field.setProperty("outputPathField", True)
-        path_field.setReadOnly(True)
-        path_field.setCursorPosition(0)
-        layout.addWidget(title_label)
-        layout.addWidget(description_label)
-        layout.addWidget(path_field)
-        return frame
-
-    def _build_tag_legend_entry(self, tag_name: str, description: str, *, parent: QWidget | None = None) -> QWidget:
-        frame = QFrame(parent)
-        frame.setObjectName("aiLegendEntry")
-        layout = QHBoxLayout(frame)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-        layout.addWidget(self._build_tag_preview(tag_name), 0, Qt.AlignmentFlag.AlignTop)
-
-        text_column = QVBoxLayout()
-        text_column.setContentsMargins(0, 0, 0, 0)
-        text_column.setSpacing(4)
-        tag_label = QLabel(tag_name, frame)
-        tag_label.setStyleSheet("font-weight: 700; font-size: 13px;")
-        description_label = QLabel(description, frame)
-        description_label.setWordWrap(True)
-        description_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        description_label.setStyleSheet("color: #b7c4d7;")
-        text_column.addWidget(tag_label)
-        text_column.addWidget(description_label)
-        text_column.addStretch(1)
-        layout.addLayout(text_column, 1)
-        return frame
-
-    def _set_outputs_expanded(self, expanded: bool) -> None:
-        self.outputs_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        self.outputs_body.setVisible(expanded)
-
-    @staticmethod
-    def _build_tag_preview(tag_name: str) -> QWidget:
-        preview_map: dict[str, tuple[tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str], ...], str]] = {
-            "Winner": (
-                (),
-                (("Winner", "rgba(70, 189, 120, 218)", "#fffaf2"),),
-                "_DSC1024.NEF",
-            ),
-            "Review": (
-                (),
-                (("Review", "rgba(210, 135, 53, 218)", "#fffaf2"),),
-                "_DSC1040.NEF",
-            ),
-            "Reject": (
-                (),
-                (("Reject", "rgba(214, 90, 103, 218)", "#fffaf2"),),
-                "_DSC1044.NEF",
-            ),
-            "AI Miss": (
-                (("AI Miss", "rgba(215, 84, 122, 218)", "#fffaf2"),),
-                (),
-                "_DSC1063.NEF",
-            ),
-        }
-        left_badges, right_badges, filename = preview_map.get(tag_name, ((), (), "_DSC0001.NEF"))
-        return _AITagSampleCard(
-            left_badges=left_badges,
-            right_badges=right_badges,
-            filename=filename,
-            compact=True,
-        )
-
-    def _open_outputs_folder(self) -> None:
-        open_in_file_explorer(self._hidden_root)
-
-    def _open_report(self) -> None:
-        if self._report_html_path:
-            open_with_default(self._report_html_path)
-
-
-class AnnotationHydrationSignals(QObject):
-    """Signals emitted while annotation state is loaded in batches for a scope."""
-    chunk = Signal(str, int, object)
-    finished = Signal(str, int)
-    failed = Signal(str, int, str)
-
-
-class AnnotationHydrationTask(QRunnable):
-    """Loads persisted and sidecar annotations without blocking the UI thread."""
-    PRIORITY_BATCH_SIZE = 96
-    BACKGROUND_BATCH_SIZE = 240
-
-    def __init__(
-        self,
-        *,
-        scope_key: str,
-        token: int,
-        session_id: str,
-        records: tuple[ImageRecord, ...],
-        prioritized_paths: tuple[str, ...] = (),
-    ) -> None:
-        super().__init__()
-        self.scope_key = scope_key
-        self.token = token
-        self.session_id = session_id
-        self.records = records
-        self.prioritized_paths = prioritized_paths
-        self.signals = AnnotationHydrationSignals()
-        self._cancelled = False
-        self.setAutoDelete(True)
-
-    def cancel(self) -> None:
-        self._cancelled = True
-
-    @staticmethod
-    def _record_batches(records: list[ImageRecord], batch_size: int) -> list[list[ImageRecord]]:
-        return [records[index : index + batch_size] for index in range(0, len(records), batch_size)]
-
-    def _partition_records(self) -> tuple[list[ImageRecord], list[ImageRecord]]:
-        if not self.records:
-            return [], []
-        record_by_key = {normalized_path_key(record.path): record for record in self.records}
-        prioritized_records: list[ImageRecord] = []
-        seen_keys: set[str] = set()
-        for path in self.prioritized_paths:
-            if not path:
-                continue
-            key = normalized_path_key(path)
-            if key in seen_keys:
-                continue
-            record = record_by_key.get(key)
-            if record is None:
-                continue
-            prioritized_records.append(record)
-            seen_keys.add(key)
-        remaining_records = [record for record in self.records if normalized_path_key(record.path) not in seen_keys]
-        return prioritized_records, remaining_records
-
-    def _hydrate_records_batch(
-        self,
-        store: DecisionStore,
-        records: list[ImageRecord],
-    ) -> dict[str, SessionAnnotation]:
-        if not records or self._cancelled:
-            return {}
-        records_by_path = {record.path: record for record in records}
-        persisted = store.load_annotations_for_paths(
-            self.session_id,
-            records_by_path,
-            list(records_by_path),
-        )
-        hydrated: dict[str, SessionAnnotation] = {}
-        for record in records:
-            if self._cancelled:
-                return {}
-            sidecar = load_sidecar_annotation(record.path)
-            if not sidecar.is_empty:
-                hydrated[record.path] = sidecar
-            persisted_annotation = persisted.get(record.path)
-            if persisted_annotation is not None and not persisted_annotation.is_empty:
-                hydrated[record.path] = persisted_annotation
-        return hydrated
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        hydrated_count = 0
-        try:
-            if self._cancelled:
-                return
-            store = DecisionStore()
-            prioritized_records, remaining_records = self._partition_records()
-
-            for batch in self._record_batches(prioritized_records, self.PRIORITY_BATCH_SIZE):
-                if self._cancelled:
-                    return
-                chunk = self._hydrate_records_batch(store, batch)
-                if chunk:
-                    hydrated_count += len(chunk)
-                    self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
-
-            for batch in self._record_batches(remaining_records, self.BACKGROUND_BATCH_SIZE):
-                if self._cancelled:
-                    return
-                chunk = self._hydrate_records_batch(store, batch)
-                if chunk:
-                    hydrated_count += len(chunk)
-                    self.signals.chunk.emit(self.scope_key, self.token, dict(chunk))
-
-            if self._cancelled:
-                return
-            if logger.enabled:
-                logger.duration(
-                    "annotation.hydration",
-                    (time.perf_counter() - start) * 1000.0,
-                    scope=self.scope_key,
-                    token=self.token,
-                    records=len(self.records),
-                    hydrated=hydrated_count,
-                    prioritized=len(self.prioritized_paths),
-                )
-            self.signals.finished.emit(self.scope_key, self.token)
-        except Exception as exc:  # pragma: no cover - desktop/runtime path
-            if logger.enabled:
-                logger.duration(
-                    "annotation.hydration.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    scope=self.scope_key,
-                    token=self.token,
-                    records=len(self.records),
-                    hydrated=hydrated_count,
-                    error=str(exc),
-                )
-            self.signals.failed.emit(self.scope_key, self.token, str(exc))
-
-
-class ScopeEnrichmentSignals(QObject):
-    """Signals for workflow-scoring and taste-profile enrichment work."""
-    cache_status = Signal(str, int, object)
-    finished = Signal(str, int, object, object, object)
-    failed = Signal(str, int, str)
-
-
-class ScopeEnrichmentTask(QRunnable):
-    """Builds workflow recommendations for the current scope, with catalog reuse."""
-    def __init__(
-        self,
-        *,
-        scope_key: str,
-        token: int,
-        session_id: str,
-        folder_path: str,
-        catalog_db_path: str | Path | None,
-        include_all_scope_events: bool,
-        records: tuple[ImageRecord, ...],
-        ai_bundle: AIBundle | None,
-        review_bundle: ReviewIntelligenceBundle | None,
-    ) -> None:
-        super().__init__()
-        self.scope_key = scope_key
-        self.token = token
-        self.session_id = session_id
-        self.folder_path = folder_path
-        self.catalog_db_path = Path(catalog_db_path) if catalog_db_path else None
-        self.include_all_scope_events = include_all_scope_events
-        self.records = records
-        self.ai_bundle = ai_bundle
-        self.review_bundle = review_bundle
-        self.signals = ScopeEnrichmentSignals()
-        self._cancelled = False
-        self.setAutoDelete(True)
-
-    def cancel(self) -> None:
-        self._cancelled = True
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        try:
-            if self._cancelled:
-                return
-            store = DecisionStore()
-            if self.folder_path:
-                correction_events = store.load_correction_events(self.session_id, self.folder_path)
-            elif self.include_all_scope_events and self.records:
-                correction_events = store.load_correction_events(self.session_id)
-            else:
-                correction_events = []
-            if self._cancelled:
-                return
-            catalog_repository: CatalogRepository | None = None
-            cache_key = ""
-            if self.folder_path:
-                cache_key = build_review_scoring_cache_key(
-                    self.records,
-                    ai_bundle=self.ai_bundle,
-                    review_bundle=self.review_bundle,
-                    correction_events=correction_events,
-                )
-                catalog_repository = CatalogRepository(self.catalog_db_path)
-                cached_entry = catalog_repository.load_review_scoring(
-                    self.folder_path,
-                    session_id=self.session_id,
-                    cache_key=cache_key,
-                )
-                if cached_entry is not None:
-                    self.signals.cache_status.emit(
-                        self.scope_key,
-                        self.token,
-                        {
-                            "source": "catalog",
-                            "record_count": len(self.records),
-                        },
-                    )
-                    self.signals.finished.emit(
-                        self.scope_key,
-                        self.token,
-                        correction_events,
-                        cached_entry.taste_profile,
-                        cached_entry.recommendations,
-                    )
-                    if logger.enabled:
-                        logger.duration(
-                            "workflow.enrichment",
-                            (time.perf_counter() - start) * 1000.0,
-                            scope=self.scope_key,
-                            token=self.token,
-                            records=len(self.records),
-                            source="catalog",
-                            corrections=len(correction_events),
-                            recommendations=len(cached_entry.recommendations),
-                        )
-                    return
-            taste_profile, recommendations = build_burst_recommendations(
-                list(self.records),
-                ai_bundle=self.ai_bundle,
-                review_bundle=self.review_bundle,
-                correction_events=correction_events,
-                should_cancel=lambda: self._cancelled,
-                )
-            if self._cancelled:
-                return
-            if self.folder_path:
-                if catalog_repository is None:
-                    catalog_repository = CatalogRepository(self.catalog_db_path)
-                if not cache_key:
-                    cache_key = build_review_scoring_cache_key(
-                        self.records,
-                        ai_bundle=self.ai_bundle,
-                        review_bundle=self.review_bundle,
-                        correction_events=correction_events,
-                    )
-                catalog_repository.save_review_scoring(
-                    self.folder_path,
-                    session_id=self.session_id,
-                    cache_key=cache_key,
-                    provider_id=review_scoring_provider_id(
-                        self.records,
-                        ai_bundle=self.ai_bundle,
-                        review_bundle=self.review_bundle,
-                        correction_events=correction_events,
-                    ),
-                    records=self.records,
-                    taste_profile=taste_profile,
-                    recommendations=recommendations,
-                )
-            self.signals.cache_status.emit(
-                self.scope_key,
-                self.token,
-                {
-                    "source": "live",
-                    "record_count": len(self.records),
-                },
-            )
-            self.signals.finished.emit(
-                self.scope_key,
-                self.token,
-                correction_events,
-                taste_profile,
-                recommendations,
-            )
-            if logger.enabled:
-                logger.duration(
-                    "workflow.enrichment",
-                    (time.perf_counter() - start) * 1000.0,
-                    scope=self.scope_key,
-                    token=self.token,
-                    records=len(self.records),
-                    source="live",
-                    corrections=len(correction_events),
-                    recommendations=len(recommendations),
-                )
-        except Exception as exc:  # pragma: no cover - desktop/runtime path
-            if logger.enabled:
-                logger.duration(
-                    "workflow.enrichment.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    scope=self.scope_key,
-                    token=self.token,
-                    records=len(self.records),
-                    error=str(exc),
-                )
-            self.signals.failed.emit(self.scope_key, self.token, str(exc))
-
-
-class PostAIRunBundleLoadSignals(QObject):
-    """Signals emitted by the post-AI-run bundle loader."""
-    finished = Signal(str, str, str, object, object)  # folder, report_dir, html_report_path, bundle, source_details
-    failed = Signal(str, str, str, str)  # folder, report_dir, html_report_path, error
-
-
-class PostAIRunBundleLoadTask(QRunnable):
-    """Loads the freshly written AI bundle off the UI thread so the post-AI
-    flow doesn't freeze the GUI on slow/UNC paths."""
-
-    def __init__(
-        self,
-        *,
-        folder: str,
-        report_dir: str,
-        html_report_path: str,
-        catalog_db_path: str | Path | None,
-    ) -> None:
-        super().__init__()
-        self.folder = folder
-        self.report_dir = report_dir
-        self.html_report_path = html_report_path
-        self.catalog_db_path = Path(catalog_db_path) if catalog_db_path else None
-        self.signals = PostAIRunBundleLoadSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        try:
-            source_details = inspect_ai_bundle_source(self.report_dir)
-            bundle: AIBundle | None = None
-            repository = (
-                CatalogRepository(self.catalog_db_path)
-                if self.catalog_db_path is not None
-                else CatalogRepository()
-            )
-            if self.folder and source_details.cache_key:
-                cached_entry = repository.load_ai_bundle(self.folder, cache_key=source_details.cache_key)
-                if cached_entry is not None:
-                    bundle = cached_entry.bundle
-            if bundle is None:
-                bundle = load_ai_bundle(self.report_dir)
-                if source_details.cache_key and bundle.results_by_path:
-                    repository.save_ai_bundle(
-                        self.folder,
-                        cache_key=source_details.cache_key,
-                        bundle=bundle,
-                    )
-            if logger.enabled:
-                logger.duration(
-                    "post_ai_run.bundle_load",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self.folder,
-                    report_dir=self.report_dir,
-                    results=len(bundle.results_by_path or {}),
-                )
-            self.signals.finished.emit(self.folder, self.report_dir, self.html_report_path, bundle, source_details)
-        except (FileNotFoundError, ValueError, OSError) as exc:
-            if logger.enabled:
-                logger.duration(
-                    "post_ai_run.bundle_load.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self.folder,
-                    error=str(exc),
-                )
-            self.signals.failed.emit(self.folder, self.report_dir, self.html_report_path, str(exc))
-
-
-class HiddenAIResultsLoadSignals(QObject):
-    """Signals emitted by the hidden AI-result autoload worker."""
-    finished = Signal(str, int, object, object, str)
-    missing = Signal(str, int)
-    failed = Signal(str, int, str)
-
-
-class HiddenAIResultsLoadTask(QRunnable):
-    """Loads saved AI results without blocking folder display."""
-    def __init__(
-        self,
-        *,
-        folder: str,
-        token: int,
-        catalog_db_path: str | Path | None,
-    ) -> None:
-        super().__init__()
-        self.folder = folder
-        self.token = token
-        self.catalog_db_path = Path(catalog_db_path) if catalog_db_path else None
-        self.signals = HiddenAIResultsLoadSignals()
-        self._cancelled = False
-        self.setAutoDelete(True)
-
-    def cancel(self) -> None:
-        self._cancelled = True
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        try:
-            report_dir = existing_hidden_ai_report_dir(self.folder)
-            if self._cancelled:
-                return
-            if report_dir is None:
-                if logger.enabled:
-                    logger.duration("hidden_ai.load", (time.perf_counter() - start) * 1000.0, folder=self.folder, state="missing")
-                self.signals.missing.emit(self.folder, self.token)
-                return
-
-            source_details = inspect_ai_bundle_source(report_dir)
-            if self._cancelled:
-                return
-
-            bundle: AIBundle | None = None
-            cache_source = "file"
-            repository = CatalogRepository(self.catalog_db_path) if self.catalog_db_path is not None else CatalogRepository()
-            if source_details.cache_key:
-                cached_entry = repository.load_ai_bundle(self.folder, cache_key=source_details.cache_key)
-                if self._cancelled:
-                    return
-                if cached_entry is not None:
-                    bundle = cached_entry.bundle
-                    cache_source = "catalog"
-
-            if bundle is None:
-                bundle = load_ai_bundle(report_dir)
-                if source_details.cache_key and bundle.results_by_path:
-                    repository.save_ai_bundle(self.folder, cache_key=source_details.cache_key, bundle=bundle)
-
-            if self._cancelled:
-                return
-            if logger.enabled:
-                logger.duration(
-                    "hidden_ai.load",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self.folder,
-                    state=cache_source,
-                    results=len(bundle.results_by_path or {}),
-                )
-            self.signals.finished.emit(self.folder, self.token, bundle, source_details, cache_source)
-        except (FileNotFoundError, ValueError, OSError) as exc:
-            if logger.enabled:
-                logger.duration(
-                    "hidden_ai.load.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self.folder,
-                    error=str(exc),
-                )
-            self.signals.failed.emit(self.folder, self.token, str(exc))
-
-
-class AIModelDownloadSignals(QObject):
-    """Signals for the managed AI model download worker."""
-    started = Signal(str)
-    progress = Signal(str, int, int)
-    finished = Signal(str)
-    failed = Signal(str)
-
-
-@dataclass(slots=True, frozen=True)
-class AIModelDownloadRequest:
-    """One managed Hugging Face model to fetch through the shared installer."""
-    label: str
-    installation: AIModelInstallation
-    force: bool = False
-
-
-class AIModelDownloadTask(QRunnable):
-    """Downloads selected managed AI model bundles on a background worker thread."""
-    def __init__(
-        self,
-        *,
-        requests: tuple[AIModelDownloadRequest, ...],
-    ) -> None:
-        super().__init__()
-        self.requests = requests
-        self.signals = AIModelDownloadSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        completed: list[str] = []
-        failures: list[str] = []
-        for request in self.requests:
-            self.signals.started.emit(f"{request.label}: {request.installation.install_dir}")
-
-            def emit_progress(filename: str, current: int, total: int, *, label: str = request.label) -> None:
-                self.signals.progress.emit(f"{label}: {filename}", current, total)
-
-            try:
-                download_managed_ai_model(
-                    request.installation,
-                    force=request.force,
-                    progress_callback=emit_progress,
-                )
-                completed.append(f"{request.label}: {request.installation.install_dir}")
-            except Exception as exc:
-                failures.append(f"{request.label}: {exc}")
-        if failures:
-            if logger.enabled:
-                logger.duration(
-                    "ai.model_download.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    requests=len(self.requests),
-                    completed=len(completed),
-                    failures=len(failures),
-                )
-            message = "Some AI model downloads failed:\n" + "\n".join(failures)
-            if completed:
-                message += "\n\nCompleted:\n" + "\n".join(completed)
-            self.signals.failed.emit(message)
-            return
-        if logger.enabled:
-            logger.duration(
-                "ai.model_download",
-                (time.perf_counter() - start) * 1000.0,
-                requests=len(self.requests),
-                completed=len(completed),
-            )
-        self.signals.finished.emit("\n".join(completed))
-
-
-class AIUninstallSignals(QObject):
-    """Signals for the AI component uninstall worker."""
-    finished = Signal(object)  # (freed_bytes: int, removed: list[str], failures: list[str])
-
-
-class AIUninstallTask(QRunnable):
-    """Deletes selected AI runtime / model directories on a background thread."""
-    def __init__(self, *, targets: tuple[tuple[str, Path, int], ...]) -> None:
-        super().__init__()
-        self.targets = targets
-        self.signals = AIUninstallSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        freed = 0
-        removed: list[str] = []
-        failures: list[str] = []
-        for label, path, size_bytes in self.targets:
-            try:
-                if path.exists():
-                    shutil.rmtree(path, ignore_errors=True)
-                if path.exists():
-                    failures.append(f"{label}: could not fully remove {path}")
-                else:
-                    freed += int(size_bytes)
-                    removed.append(label)
-            except Exception as exc:
-                failures.append(f"{label}: {exc}")
-        self.signals.finished.emit((freed, removed, failures))
-
-
-class AppUpdateCheckSignals(QObject):
-    """Signals for the application update check worker."""
-    finished = Signal(object)
-    failed = Signal(str)
-
-
-class AppUpdateCheckTask(QRunnable):
-    """Checks the configured release feed without blocking the UI."""
-    def __init__(self, *, current_version: str) -> None:
-        super().__init__()
-        self.current_version = current_version
-        self.signals = AppUpdateCheckSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        try:
-            self.signals.finished.emit(check_for_update(current_version=self.current_version))
-        except Exception as exc:
-            self.signals.failed.emit(str(exc))
-
-
-class AppUpdateDownloadSignals(QObject):
-    """Signals for downloading a newer MSI installer."""
-    started = Signal(str)
-    progress = Signal(object, object, str)
-    finished = Signal(str)
-    failed = Signal(str)
-
-
-class AppUpdateDownloadTask(QRunnable):
-    """Downloads an update installer without blocking the UI."""
-    def __init__(self, *, update: UpdateInfo) -> None:
-        super().__init__()
-        self.update = update
-        self.signals = AppUpdateDownloadSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        try:
-            self.signals.started.emit(self.update.installer_filename)
-
-            def emit_progress(current: int, total: int, filename: str) -> None:
-                self.signals.progress.emit(current, total, filename)
-
-            installer_path = download_update_installer(self.update, progress_callback=emit_progress)
-            self.signals.finished.emit(str(installer_path))
-        except Exception as exc:
-            self.signals.failed.emit(str(exc))
-
-
-class AIRuntimeInstallSignals(QObject):
-    """Signals for the on-demand AI runtime package installer."""
-    started = Signal(str, str)
-    progress = Signal(str)
-    finished = Signal(str, str)
-    failed = Signal(str)
-
-
-class AIRuntimeInstallTask(QRunnable):
-    """Installs the optional AI runtime profile in a background subprocess."""
-    def __init__(
-        self,
-        *,
-        command: list[str],
-        cwd: Path,
-        install_root: Path,
-        variant_choice: str,
-    ) -> None:
-        super().__init__()
-        self.command = command
-        self.cwd = cwd
-        self.install_root = install_root
-        self.variant_choice = variant_choice
-        self.signals = AIRuntimeInstallSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        output_lines: list[str] = []
-        try:
-            self.signals.started.emit(str(self.install_root), self.variant_choice)
-            process = subprocess.Popen(
-                self.command,
-                cwd=str(self.cwd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                **_headless_background_popen_kwargs(),
-            )
-        except Exception as exc:
-            if logger.enabled:
-                logger.duration(
-                    "ai.runtime_install.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    install_root=str(self.install_root),
-                    variant=self.variant_choice,
-                    error=str(exc),
-                )
-            self.signals.failed.emit(str(exc))
-            return
-
-        assert process.stdout is not None
-        with process.stdout:
-            for line in process.stdout:
-                text = line.strip()
-                if not text:
-                    continue
-                output_lines.append(text)
-                self.signals.progress.emit(text)
-        return_code = process.wait()
-        if return_code != 0:
-            if logger.enabled:
-                logger.duration(
-                    "ai.runtime_install.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    install_root=str(self.install_root),
-                    variant=self.variant_choice,
-                    return_code=return_code,
-                    output_lines=len(output_lines),
-                )
-            tail = "\n".join(output_lines[-30:])
-            if tail:
-                self.signals.failed.emit(
-                    f"Could not install the AI runtime.\n\n{tail}"
-                )
-            else:
-                self.signals.failed.emit(
-                    f"Could not install the AI runtime (exit code {return_code})."
-                )
-            return
-        if logger.enabled:
-            logger.duration(
-                "ai.runtime_install",
-                (time.perf_counter() - start) * 1000.0,
-                install_root=str(self.install_root),
-                variant=self.variant_choice,
-                output_lines=len(output_lines),
-            )
-        self.signals.finished.emit(str(self.install_root), self.variant_choice)
-
-
-PIP_RAW_PROGRESS_PATTERN = re.compile(r"Progress\s+(?P<current>\d+)\s+of\s+(?P<total>\d+)", re.IGNORECASE)
-
-
-def _parse_pip_raw_progress(message: str) -> tuple[int, int] | None:
-    match = PIP_RAW_PROGRESS_PATTERN.search(message or "")
-    if match is None:
-        return None
-    current = int(match.group("current"))
-    total = int(match.group("total"))
-    if total <= 0:
-        return None
-    return current, total
-
-
-def _format_bytes(size: int) -> str:
-    value = float(max(0, int(size)))
-    for unit in ("bytes", "KB", "MB", "GB", "TB"):
-        if value < 1024.0 or unit == "TB":
-            if unit == "bytes":
-                return f"{int(value)} bytes"
-            return f"{value:.1f} {unit}"
-        value /= 1024.0
-    return f"{value:.1f} TB"
 
 
 _POCKETDROP_EDITED_EXPORT_MAX_AGE_SECONDS = 24 * 60 * 60
@@ -2032,28 +447,6 @@ def _cleanup_pocketdrop_edited_exports() -> None:
 
 
 _logger = logging.getLogger(__name__)
-
-
-class _TopbarActionSync(QObject):
-    """Keeps one top-bar button in step with the ``QAction`` it was built for.
-
-    It is a child of the button, so the connection to the (long-lived) action
-    disappears with the button when the bar is rebuilt. A lambda connected
-    straight to ``action.changed`` is never disconnected: it piled up one
-    handler per button per rebuild for the life of the app.
-    """
-
-    def __init__(self, window: "MainWindow", button: QToolButton, action: QAction, item_id: str) -> None:
-        super().__init__(button)
-        self._window = window
-        self._button = button
-        self._action = action
-        self._item_id = item_id
-        action.changed.connect(self.sync)
-
-    @Slot()
-    def sync(self) -> None:
-        self._window._sync_topbar_action_button_for(self._button, self._action, self._item_id)
 
 
 class MainWindow(QMainWindow):
@@ -2595,11 +988,20 @@ class MainWindow(QMainWindow):
         "more": ("E712", None),
     }
 
+    # Transitional shims: this state lives on ``self._folder_session``; the old names stay readable here until the
+    # window code that reads them moves (controllers already use the session).
+    _current_folder = session_field("folder")
+    _scope_kind = session_field("scope_kind")
+    _scope_id = session_field("scope_id")
+    _collection_mode = session_field("collection_mode")
+    _session_id = session_field("session_id")
+    _browser_view_mode = session_field("browser_view_mode")
+
     def __init__(self, launch_target: str | None = None, *, quick_view: bool = False) -> None:
         super().__init__()
         self._init_window_frame_and_launch_state(launch_target, quick_view)
         self._init_settings_and_appearance_prefs()
-        self._init_child_processes_and_core_services()
+        self._init_core_services()
         self._init_thread_pools_and_controllers()
         self._init_background_indexing_state()
         self._init_scan_task_and_search_state()
@@ -2633,6 +1035,16 @@ class MainWindow(QMainWindow):
         # property) instead of here. Must exist before anything can reach it.
         self._preview: FullScreenPreview | None = None
         self._deferred_preview_timer: QTimer | None = None
+        # The open folder / scope / session state and the extracted controllers. Created before the rest of
+        # construction because the shim attributes below (``_current_folder`` ...) read and write the session.
+        self._folder_session = FolderSession(self)
+        self._appearance = AppearanceController(self)
+        self._toolbar = ToolbarController(self)
+        self._zen = ZenController(self)
+        self._tool_mode = ToolModeController(self)
+        self._ai_run = AiRunController(self)
+        self._aiculler = AiCullerController(self)
+        self._ai_setup = AiSetupController(self)
         # Windows: our app bar is the title bar (see nativeEvent), so drop the
         # system caption but keep a resizable, snappable frame.
         self._custom_frame = os.name == "nt"
@@ -2655,12 +1067,12 @@ class MainWindow(QMainWindow):
         self._load_pane_width_ratios()
         self._startup_window_state = "normal"
         self._startup_window_state_fixup_applied = False
-        self._workspace_toolbar_layouts = self._load_workspace_toolbar_layouts()
+        self._workspace_toolbar_layouts = self._toolbar.load_workspace_toolbar_layouts()
         # Slot grid backing the top-bar cluster: per mode, a fixed-length list
         # where each entry is an item id or None (a blank cell). Source of truth
         # for the cluster's spatial layout; the flat _workspace_toolbar_layouts
         # list stays derived from it for the rest of the toolbar plumbing.
-        self._topbar_slots: dict[str, list[str | None]] = self._load_topbar_slots()
+        self._topbar_slots: dict[str, list[str | None]] = self._toolbar.load_topbar_slots()
         # Prototype migration: the workspace bar is retired in favour of the
         # top bar (nav/search/path) and the left mode tabs, so it starts hidden.
         # The View > Show Workspace Toolbar toggle still restores it per session.
@@ -2668,20 +1080,15 @@ class MainWindow(QMainWindow):
         self._workspace_bar_position = self._normalize_workspace_bar_position(
             self._settings.value(self.WORKSPACE_BAR_POSITION_KEY, "top", str)
         )
-        self._workspace_bar_drag_start: QPoint | None = None
-        self._workspace_bar_dragging = False
         self._workspace_toolbar_item_widgets: dict[str, dict[str, QWidget]] = {}
         self._workspace_toolbar_overflow_buttons: dict[str, QToolButton] = {}
-        self._workspace_toolbar_overflow_menus: dict[str, QMenu] = {}
-        self._workspace_toolbar_hidden_items: dict[str, tuple[str, ...]] = {}
-        self._workspace_toolbar_overflow_update_pending: set[str] = set()
         if not self._settings.value(self.APPEARANCE_SLATE_MIGRATION_KEY, False, bool):
             self._settings.setValue(self.APPEARANCE_KEY, AppearanceMode.SLATE.value)
             self._settings.setValue(self.APPEARANCE_SLATE_MIGRATION_KEY, True)
         self._appearance_mode = parse_appearance_mode(
             self._settings.value(self.APPEARANCE_KEY, AppearanceMode.SLATE.value, str)
         )
-        self._toolbar_placement = self._normalize_toolbar_placement(
+        self._toolbar_placement = self._toolbar.normalize_toolbar_placement(
             self._settings.value(self.TOOLBAR_PLACEMENT_KEY, "floating", str)
         )
         self._ui_gamma = normalize_ui_gamma(self._settings.value(self.UI_GAMMA_KEY, 1.0, float))
@@ -2692,15 +1099,8 @@ class MainWindow(QMainWindow):
         self._display_profile: DisplayProfile | None = None
         self._display_profile_update_pending = False
 
-    def _init_child_processes_and_core_services(self) -> None:
-        """Child-app process tracking, then the stores, managers, views and AI-model lookups the
-        controllers below are handed."""
-        self._child_sync_state_path = self._prepare_child_sync_state_path()
-        self._child_processes: dict[int, ChildAppProcess] = {}
-        self._child_process_timer = QTimer(self)
-        self._child_process_timer.setInterval(1200)
-        self._child_process_timer.timeout.connect(self._prune_child_processes)
-        self._child_process_timer.start()
+    def _init_core_services(self) -> None:
+        """The stores, managers, views and AI-model lookups the controllers below are handed."""
         self.actions: MainWindowActions | None = None
         self.workspace_docks: WorkspaceDocks | None = None
         self.inspector_panel: InspectorPanel | None = None
@@ -2712,16 +1112,13 @@ class MainWindow(QMainWindow):
         self._bracket_detector = BracketDetector()
         self._photoshop_executable = detect_photoshop_executable()
         self.grid = ThumbnailGridView(self.thumbnail_manager)
-        self.details_view = PhotoDetailsView(ai_text_provider=self._details_ai_text_for_record)
+        self.details_view = PhotoDetailsView(ai_text_provider=self._ai_run.details_ai_text_for_record)
         self._preview_navigation_dirty = False
         self._preview_preload_index: int | None = None
         self._preview_preload_timer = QTimer(self)
         self._preview_preload_timer.setSingleShot(True)
         self._preview_preload_timer.setInterval(120)
         self._preview_preload_timer.timeout.connect(self._run_preview_preload)
-        self._semantic_model_installation = resolve_semantic_model_installation()
-        self._aiculler_topiq_model_installation = resolve_aiculler_topiq_model_installation()
-        self._aiculler_face_model_installation = resolve_aiculler_face_model_installation()
         self._ai_runtime = default_ai_workflow_runtime()
 
     def _init_thread_pools_and_controllers(self) -> None:
@@ -2765,23 +1162,12 @@ class MainWindow(QMainWindow):
         self._semantic_index_pool = QThreadPool(self)
         self._semantic_index_pool.setMaxThreadCount(1)
         self._active_semantic_index_task: SemanticFolderIndexTask | None = None
-        self._semantic_index_token = 0
-        self._semantic_index_scope_key = ""
-        self._semantic_index_signature: tuple[object, ...] = ()
-        self._semantic_index_completed = 0
-        self._semantic_index_total = 0
         self._semantic_index_active = False
         # Person-filtered face pass (people tagging), layered on the semantic index.
         self._face_index_pool = QThreadPool(self)
         self._face_index_pool.setMaxThreadCount(1)
         self._active_face_index_task: FaceFolderIndexTask | None = None
-        self._face_index_token = 0
-        self._face_index_scope_key = ""
-        self._face_index_signature: tuple[object, ...] = ()
         self._face_index_active = False
-        self._face_index_people_count = 0
-        self._face_index_completed = 0
-        self._face_index_total = 0
         # Background GPU indexing yields the GPU to the interactive editor: it is
         # suspended (tasks cancelled) while the full-screen preview/editor is open
         # and resumed on close. _background_index_records holds the last folder's
@@ -2794,17 +1180,10 @@ class MainWindow(QMainWindow):
         annotation-hydration and unified-search task state."""
         self._recycle_bin = RecycleBinController(self)
         self._scan_token = 0
-        self._scan_showed_cached = False
         self._scan_cached_source = ""
-        self._active_scan_tasks: dict[int, FolderScanTask] = {}
         self._active_ai_task: AICullerRunTask | None = None
-        self._active_ai_run_start_perf = 0.0
         self._active_ai_runtime_task: AIRuntimeInstallTask | None = None
         self._active_ai_model_task: AIModelDownloadTask | None = None
-        self._active_ai_readiness_task: QRunnable | None = None
-        self._active_ai_bundle_task: QRunnable | None = None
-        self._active_ai_repair_task: QRunnable | None = None
-        self._last_ai_readiness_results: dict[str, object] = {}
         self._active_update_check_task: AppUpdateCheckTask | None = None
         self._active_update_download_task: AppUpdateDownloadTask | None = None
         self._pending_update_result: UpdateCheckResult | None = None
@@ -2822,23 +1201,12 @@ class MainWindow(QMainWindow):
         self._annotation_reapply_timer.setSingleShot(True)
         self._annotation_reapply_timer.setInterval(90)
         self._annotation_reapply_timer.timeout.connect(self._flush_annotation_hydration_updates)
-        self._active_unified_search_task: UnifiedSearchTask | None = None
-        self._unified_search_token = 0
-        self._unified_search_signature: tuple[object, ...] = ()
-        self._unified_search_completed_signature: tuple[object, ...] = ()
-        self._unified_search_path_keys: frozenset[str] = frozenset()
 
     def _init_enrichment_and_ai_review_label_state(self) -> None:
         """Person-filter and deferred-enrichment state, flush and label-save timers, the winner-score /
         face / category caches, and the AI-review and telemetry state."""
         # Photos containing the face picked in Tag People; paired with
         # _filter_query.person_label, which is what activates the filter.
-        self._person_filter_paths: frozenset[str] = frozenset()
-        self._unified_search_rank_by_path: dict[str, float] = {}
-        self._deferred_enrichment_pending = False
-        self._deferred_enrichment_scheduled = False
-        self._deferred_enrichment_scope_key = ""
-        self._deferred_enrichment_token = 0
         self._ai_deferred_background_work = False
         self._ai_deferred_background_scope_key = ""
         self._review_chunk_dirty_paths: set[str] = set()
@@ -2853,60 +1221,37 @@ class MainWindow(QMainWindow):
         self._adapter_review_action_state_timer = QTimer(self)
         self._adapter_review_action_state_timer.setSingleShot(True)
         self._adapter_review_action_state_timer.setInterval(180)
-        self._adapter_review_action_state_timer.timeout.connect(self._flush_adapter_review_action_state_update)
+        self._adapter_review_action_state_timer.timeout.connect(self._aiculler.flush_adapter_review_action_state_update)
         self._aiculler_internal_label_save_timer = QTimer(self)
         self._aiculler_internal_label_save_timer.setSingleShot(True)
         self._aiculler_internal_label_save_timer.setInterval(450)
-        self._aiculler_internal_label_save_timer.timeout.connect(self._flush_aiculler_internal_label_cache)
+        self._aiculler_internal_label_save_timer.timeout.connect(self._aiculler.flush_aiculler_internal_label_cache)
         self._aiculler_global_label_save_timer = QTimer(self)
         self._aiculler_global_label_save_timer.setSingleShot(True)
         self._aiculler_global_label_save_timer.setInterval(550)
-        self._aiculler_global_label_save_timer.timeout.connect(self._flush_aiculler_global_label_queue)
+        self._aiculler_global_label_save_timer.timeout.connect(self._aiculler.flush_aiculler_global_label_queue)
         self._winner_scores_by_path: dict[str, dict[str, object]] = {}
-        self._winner_scores_model_version = ""
-        self._winner_scores_label_count = 0
-        self._winner_scores_db_path = ""
         self._face_records_by_path: dict[str, dict[str, object]] = {}
         self._face_records_db_path = ""
         self._face_cycle_index_by_path: dict[str, int] = {}
         self._image_categories_by_path: dict[str, dict[str, object]] = {}
         self._image_categories_db_path = ""
         self._active_ai_training_task: object | None = None
-        self._aiculler_dedupe_siblings: dict[str, list[str]] = {}
-        self._aiculler_force_propagate_siblings: set[str] = set()
-        self._aiculler_review_burst_snapshot: tuple[bool, bool] | None = None
-        self._adapter_review_reason_phase = False
-        self._adapter_review_rating_paths: tuple[str, ...] = ()
         # Paths the AI Review post-pass has demoted from Keeper/Review to
         # Reject because they're non-best frames in a visually similar burst.
         # Recomputed whenever the bundle OR review_intelligence changes.
-        self._ai_demoted_burst_paths: set[str] = set()
         # Map of fast-path-key -> AIConfidenceBucket name for paths the user
         # has labeled / disputed. Overrides the AI's bucket immediately so the
         # user doesn't have to wait for the next adapter retrain to see their
         # decision reflected in AI Review.
-        self._user_label_bucket_overrides: dict[str, str] = {}
         # Cached fast-path-keys for paths the user has explicitly disputed.
         # Drives the dispute -> AI Disagreements filter inclusion and is
         # refreshed alongside the bucket overrides above.
-        self._disputed_path_keys: set[str] = set()
-        self._aiculler_telemetry_logger: ThreadedTelemetryLogger | None = None
-        self._aiculler_telemetry_db_path: Path | None = None
         self._aiculler_pending_telemetry_events: dict[str, tuple[QTimer, TelemetryEvent]] = {}
-        self._aiculler_internal_label_cache: dict[
-            str,
-            tuple[dict[str, str], dict[str, dict[str, object]], dict[str, tuple[str, ...]]],
-        ] = {}
-        self._aiculler_internal_label_cache_folders: dict[str, str] = {}
-        self._aiculler_internal_label_dirty_paths: set[str] = set()
-        self._aiculler_global_label_pending: dict[str, tuple[str, float, bool]] = {}
-        self._aiculler_telemetry_adapter_version_cache: dict[str, tuple[int, str]] = {}
         # AI Review forces Smart Groups/Stacks off too (the cluster context
         # was producing misleading "weak cluster leader" rejects). We snapshot
         # the toggles the same way as adapter review so they can be restored
         # when the user switches back to Manual.
-        self._ai_review_burst_snapshot: tuple[bool, bool] | None = None
-        self._ai_review_progress_dialog: AIReviewProgressDialog | None = None
 
     def _init_job_contexts_and_scope_state(self) -> None:
         """Per-job (resize, convert, export, archive, catalog) task / context / dialog slots, job
@@ -2928,13 +1273,6 @@ class MainWindow(QMainWindow):
         self._catalog_progress_dialog: QProgressDialog | None = None
         self._job_controllers: dict[str, JobController] = {}
         self._archive_job_key = "archive:create"
-        self._pending_ai_aiculler_clip_download_after_runtime = False
-        self._pending_ai_aiculler_topiq_download_after_runtime = False
-        self._pending_ai_aiculler_face_download_after_runtime = False
-        self._pending_ai_semantic_model_download_after_runtime = False
-        self._current_folder = ""
-        self._scope_kind = "folder"
-        self._scope_id = ""
         self._scope_label = ""
         self._scan_in_progress = False
 
@@ -2964,15 +1302,11 @@ class MainWindow(QMainWindow):
         self._unreviewed_count = 0
         self._records_have_resizable = False
         self._records_have_convertible = False
-        self._training_label_counts_cache_key: tuple[object, ...] = ()
-        self._training_label_counts_cache = (0, 0)
         self._summary_ai_text = "AI: Off"
         self._summary_ai_tooltip = "No AI export is currently loaded."
         self._annotations: dict[str, SessionAnnotation] = {}
         self._ai_bundle: AIBundle | None = None
         self._last_ai_review_summary: dict[str, object] | None = None
-        self._hidden_ai_results_token = 0
-        self._active_hidden_ai_results_task: HiddenAIResultsLoadTask | None = None
         self._hidden_ai_results_checked_scope_key = ""
         self._review_intelligence: ReviewIntelligenceBundle | None = None
         self._correction_events: list[dict[str, object]] = []
@@ -2984,22 +1318,17 @@ class MainWindow(QMainWindow):
         self._aiculler_ingested_sibling_keys: set[str] = set()
         self._aiculler_ingested_cache_folder_key = ""
         self._records_view_cache = RecordsViewCache()
-        self._last_view_record_paths: tuple[str, ...] = ()
-        self._chunked_load_scan_tokens: set[int] = set()
         self._records_view_chunk_timer = QTimer(self)
         self._records_view_chunk_timer.setSingleShot(True)
-        self._records_view_chunk_timer.timeout.connect(self._drain_records_view_chunk)
+        self._records_view_chunk_timer.timeout.connect(self._records_view.drain_records_view_chunk)
         self._records_view_chunk_records: list[ImageRecord] = []
-        self._records_view_chunk_next_index = 0
-        self._records_view_chunk_current_path: str | None = None
         self._records_view_chunk_post_load_enrichment = ""
         self._winner_ladder_state: dict[str, object] | None = None
 
     def _init_view_state_and_preferences(self) -> None:
         """View and workflow preferences read from settings, perf-logger focus, Zen-menu and
         AI-progress state, sort and filter defaults."""
-        self._ui_mode = "manual"
-        self._browser_view_mode = self._normalize_browser_view_mode(self._settings.value(self.BROWSER_VIEW_MODE_KEY, "grid", str))
+        self._folder_session.browser_view_mode = self._normalize_browser_view_mode(self._settings.value(self.BROWSER_VIEW_MODE_KEY, "grid", str))
         self._details_row_density = self._normalize_details_row_density(
             self._settings.value(self.DETAILS_ROW_DENSITY_KEY, "comfortable", str)
         )
@@ -3013,16 +1342,14 @@ class MainWindow(QMainWindow):
         perf_logger().set_enabled(self._performance_logging_enabled, reason="startup")
         self._syncing_browser_selection = False
         self._zen_mode_enabled = False
-        self._zen_restore_state: dict[str, object] = {}
         self._zen_menu_pinned = self._settings.value(self.ZEN_MENU_PINNED_KEY, False, bool)
-        self._zen_menu_visible = False
         self._zen_menu_reveal_timer = QTimer(self)
         self._zen_menu_reveal_timer.setInterval(80)
-        self._zen_menu_reveal_timer.timeout.connect(self._refresh_zen_menu_visibility)
+        self._zen_menu_reveal_timer.timeout.connect(self._zen.refresh_zen_menu_visibility)
         self._hidden_ai_results_timer = QTimer(self)
         self._hidden_ai_results_timer.setSingleShot(True)
         self._hidden_ai_results_timer.setInterval(450)
-        self._hidden_ai_results_timer.timeout.connect(self._start_hidden_ai_results_load)
+        self._hidden_ai_results_timer.timeout.connect(self._ai_run.start_hidden_ai_results_load)
         self._ai_stage_index = 0
         self._ai_stage_total = 3
         self._ai_stage_message = "Ready to run AI review"
@@ -3030,13 +1357,11 @@ class MainWindow(QMainWindow):
         self._ai_progress_total = 0
         self._ai_progress_eta_text = ""
         self._ai_status_visible = False
-        self._ai_status_terminal_notice_key = ""
         self._active_ai_embedding_cache_key = ""
         self._active_ai_cluster_cache_key = ""
         self._active_ai_report_cache_key = ""
         self._active_ai_semantic_cache_key = ""
         self._sort_mode = SortMode.NAME
-        self._manual_sort_mode_before_ai_review: SortMode | None = None
         self._filter_query = RecordFilterQuery()
         self._pending_search_text = ""
         self._auto_advance_enabled = self._settings.value(self.AUTO_ADVANCE_KEY, True, bool)
@@ -3121,8 +1446,6 @@ class MainWindow(QMainWindow):
         self._drive_sync_token = 0
         self._drive_sync_tasks: dict[int, tuple[PathReachableTask, str, str]] = {}
         # The AI-folder probe of a folder on a share is computed by a worker (see _ai_folder_probe).
-        self._ai_probe_task: _AIFolderProbeTask | None = None
-        self._ai_probe_generation = 0
         # So are a share folder's saved pHash prefilter decisions (see _refresh_prefilter_decisions_...).
         self._prefilter_load_task: _PrefilterDecisionsTask | None = None
         self._prefilter_load_token = 0
@@ -3135,12 +1458,12 @@ class MainWindow(QMainWindow):
         self._apply_display_style_policy(show_warning=False)
         QTimer.singleShot(0, self._post_show_display_setup)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
-        self._refresh_ai_runtime_preferences()
+        self._ai_setup.refresh_ai_runtime_preferences()
 
     def _init_session_and_saved_collections(self) -> None:
         """Session id, saved presets / favorites / recents / commands, collection and tool-mode
         state, undo stack and the annotation-persistence queue wiring."""
-        self._session_id = self._decision_store.ensure_session(
+        self._folder_session.session_id = self._decision_store.ensure_session(
             self._settings.value(self.SESSION_KEY, DecisionStore.DEFAULT_SESSION, str)
         )
         self._winner_mode = self._load_winner_mode()
@@ -3158,12 +1481,10 @@ class MainWindow(QMainWindow):
         self._saved_workspace_presets = self._load_saved_workspace_presets()
         self._recent_command_ids = self._load_recent_command_ids()
         self._active_tool_mode = ""
-        self._collection_mode = ""
         self._collection_target_id = ""
         self._collection_previous_view = "grid"
         self._collection_previous_inspector_enabled = True
         self._visible_burst_groups: list[tuple[int, ...]] = []
-        self._burst_group_map: dict[str, BurstVisualInfo] = {}
         self._command_palette_open = False
         self._active_command_palette: CommandPaletteDialog | None = None
         self._command_palette_dialogs: dict[str, CommandPaletteDialog] = {}
@@ -3172,8 +1493,6 @@ class MainWindow(QMainWindow):
         self._compare_count = 3
         self._manual_compare_count = 3
         self._undo_stack: list[UndoAction] = []
-        self._file_type_actions: dict[FileTypeFilter, QAction] = {}
-        self._review_state_actions: dict[ReviewStateFilter, QAction] = {}
         self._ai_state_actions: dict[AIStateFilter, QAction] = {}
         self._annotation_persistence_queue = AnnotationPersistenceQueue(parent=self)
         self._annotation_persistence_queue.failed.connect(self._handle_annotation_persist_failed)
@@ -3186,30 +1505,21 @@ class MainWindow(QMainWindow):
         self._search_apply_timer = QTimer(self)
         self._search_apply_timer.setSingleShot(True)
         self._search_apply_timer.setInterval(140)
-        self._search_apply_timer.timeout.connect(self._commit_search_text_filter)
+        self._search_apply_timer.timeout.connect(self._records_view.commit_search_text_filter)
         self._filter_metadata_manager = MetadataManager(max_workers=2, parent=self)
         self._filter_metadata_manager.metadata_ready.connect(self._handle_filter_metadata_ready)
         self._filter_metadata_by_path: dict[str, CaptureMetadata] = {}
-        self._filter_metadata_record_paths: set[str] = set()
-        self._filter_metadata_loaded_paths: set[str] = set()
-        self._filter_metadata_requested_paths: set[str] = set()
-        self._filter_metadata_queue: deque[str] = deque()
-        self._filter_metadata_queue_keys: set[str] = set()
-        self._filter_metadata_queue_limit = 720
-        self._metadata_membership_dirty_paths: set[str] = set()
-        self._metadata_scroll_last_value = 0
-        self._metadata_scroll_direction = 1
         self._metadata_scroll_prefetch_timer = QTimer(self)
         self._metadata_scroll_prefetch_timer.setSingleShot(True)
         self._metadata_scroll_prefetch_timer.setInterval(80)
-        self._metadata_scroll_prefetch_timer.timeout.connect(self._run_metadata_scroll_prefetch)
+        self._metadata_scroll_prefetch_timer.timeout.connect(self._records_view.run_metadata_scroll_prefetch)
         self._metadata_request_timer = QTimer(self)
         self._metadata_request_timer.setInterval(45)
-        self._metadata_request_timer.timeout.connect(self._drain_filter_metadata_requests)
+        self._metadata_request_timer.timeout.connect(self._records_view.drain_filter_metadata_requests)
         self._metadata_reapply_timer = QTimer(self)
         self._metadata_reapply_timer.setSingleShot(True)
         self._metadata_reapply_timer.setInterval(180)
-        self._metadata_reapply_timer.timeout.connect(self._handle_metadata_filter_batch_update)
+        self._metadata_reapply_timer.timeout.connect(self._records_view.handle_metadata_filter_batch_update)
         self._folder_watcher = QFileSystemWatcher(self)
         self._folder_watcher.directoryChanged.connect(self._handle_watched_folder_changed)
         self._folder_watch_refresh_timer = QTimer(self)
@@ -3270,7 +1580,7 @@ class MainWindow(QMainWindow):
     def _init_left_rail_section_widgets(self) -> None:
         """Left-rail section widgets: Drives / Folders headers, Favorites list, Face Groups and
         Collections sections."""
-        self.drives_refresh_button = self._build_left_rail_plus_button(tooltip="Refresh drives")
+        self.drives_refresh_button = self._toolbar.build_left_rail_plus_button(tooltip="Refresh drives")
         self.drives_refresh_button.setProperty("fluentGlyph", "E72C")
         self.drives_refresh_button.clicked.connect(self._refresh_drive_list)
         self.drives_refresh_button.setIconSize(QSize(14, 14))
@@ -3278,7 +1588,7 @@ class MainWindow(QMainWindow):
         self.drives_header = SectionHeader("Drives", trailing=self.drives_refresh_button)
         self.drives_header.setProperty("sectionRole", "drives")
         self.drives_header.toggled.connect(self.drive_list.setVisible)
-        self.folders_add_button = self._build_left_rail_plus_button(tooltip="New folder in the current folder")
+        self.folders_add_button = self._toolbar.build_left_rail_plus_button(tooltip="New folder in the current folder")
         self.folders_add_button.clicked.connect(lambda _checked=False: self.actions.new_folder.trigger())
         self.folders_add_button.setIconSize(QSize(14, 14))
         self.folders_add_button.setFixedSize(24, 24)
@@ -3305,7 +1615,7 @@ class MainWindow(QMainWindow):
         sidebar_accent = initial_sidebar_theme.accent.qcolor()
         sidebar_muted = initial_sidebar_theme.text_muted.qcolor()
         self.face_groups_panel = FaceGroupsPanel()
-        self.face_groups_add_button = self._build_left_rail_plus_button(
+        self.face_groups_add_button = self._toolbar.build_left_rail_plus_button(
             tooltip="Open people and face naming"
         )
         self.face_groups_header = SectionHeader(
@@ -3322,7 +1632,7 @@ class MainWindow(QMainWindow):
         self.face_groups_search.setPlaceholderText("Search people...")
         self.face_groups_search.setClearButtonEnabled(True)
         self._face_groups_search_action = self.face_groups_search.addAction(
-            self._fluent_toolbar_icon("E721", color=QColor("#91a0b3")),
+            self._toolbar.fluent_toolbar_icon("E721", color=QColor("#91a0b3")),
             QLineEdit.ActionPosition.LeadingPosition,
         )
         self.face_groups_search.textChanged.connect(self.face_groups_panel.set_search_text)
@@ -3341,7 +1651,7 @@ class MainWindow(QMainWindow):
         # Collections are saved, cross-folder sets of image-bundle references.
         # They sit beside Favorites because they are a way to navigate the
         # library, not a command or a duplicate copy of the source files.
-        self.projects_add_button = self._build_left_rail_plus_button(
+        self.projects_add_button = self._toolbar.build_left_rail_plus_button(
             tooltip="New collection from the current selection"
         )
         self.projects_header = SectionHeader(
@@ -3379,7 +1689,7 @@ class MainWindow(QMainWindow):
 
         # Each rail destination owns the whole pane beside the rail rather than
         # sharing its height with the others.
-        folders_page = self._build_left_nav_page()
+        folders_page = self._appearance.build_left_nav_page()
         folders_layout = folders_page.layout()
         folders_layout.addWidget(self.favorites_label)
         folders_layout.addWidget(self.favorites_list)
@@ -3403,14 +1713,14 @@ class MainWindow(QMainWindow):
         self.drives_header.toggled.connect(sync_folders_stretch)
         self.folders_header.toggled.connect(sync_folders_stretch)
 
-        faces_page = self._build_left_nav_page()
+        faces_page = self._appearance.build_left_nav_page()
         faces_layout = faces_page.layout()
         faces_layout.addWidget(self.face_groups_header)
         faces_layout.addSpacing(_NAV_SECTION_GAP_PX)
         faces_layout.addWidget(self.face_groups_body, 1)
         faces_layout.addStretch(0)
 
-        collections_page = self._build_left_nav_page()
+        collections_page = self._appearance.build_left_nav_page()
         collections_layout = collections_page.layout()
         collections_layout.addWidget(self.projects_header)
         collections_layout.addWidget(self.projects_list, 1)
@@ -3436,11 +1746,11 @@ class MainWindow(QMainWindow):
         self.left_nav_rail = NavRail()
         for key, label, glyph, tooltip in self.LEFT_NAV_DESTINATIONS:
             self.left_nav_rail.add_destination(key, label, glyph, tooltip=tooltip)
-        self.left_nav_rail.set_icon_factory(self._left_nav_icon)
-        self._apply_left_rail_label_colors()
-        self.left_nav_rail.current_changed.connect(self._show_left_nav_page)
+        self.left_nav_rail.set_icon_factory(self._appearance.left_nav_icon)
+        self._appearance.apply_left_rail_label_colors()
+        self.left_nav_rail.current_changed.connect(self._appearance.show_left_nav_page)
         saved_page = str(self._settings.value(self.LEFT_NAV_PAGE_KEY, "folders") or "folders")
-        self._show_left_nav_page(saved_page if saved_page in self._left_nav_page_widgets else "folders")
+        self._appearance.show_left_nav_page(saved_page if saved_page in self._left_nav_page_widgets else "folders")
 
     def _init_left_panel_layout(self) -> None:
         """Place the page stack and the settings bar in the right column, build ``left_panel`` and refresh
@@ -3484,7 +1794,7 @@ class MainWindow(QMainWindow):
         self.filter_combo = QComboBox()
         for mode in FilterMode:
             self.filter_combo.addItem(mode.value, mode)
-        self.filter_combo.currentIndexChanged.connect(self._handle_filter_changed)
+        self.filter_combo.currentIndexChanged.connect(self._records_view.handle_filter_changed)
 
         self.columns_combo = QComboBox()
         for count in range(1, 9):
@@ -3505,17 +1815,17 @@ class MainWindow(QMainWindow):
         self.actions = build_main_window_actions(self)
         apply_shortcut_overrides(self.actions)
         self._toolbar_menus = ToolbarMenuController(self, self.actions)
-        self._build_left_rail_pinned_tools()
-        self._setup_command_palette_shortcuts()
+        self._toolbar.build_left_rail_pinned_tools()
+        self._command_palette.setup_shortcuts()
         self._zen_toggle_shortcut = QShortcut(QKeySequence("F11"), self)
         self._zen_toggle_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._zen_toggle_shortcut.setAutoRepeat(False)
-        self._zen_toggle_shortcut.activated.connect(self._handle_zen_toggle_shortcut)
+        self._zen_toggle_shortcut.activated.connect(self._zen.handle_zen_toggle_shortcut)
         self._zen_escape_shortcut = QShortcut(QKeySequence("Esc"), self)
         self._zen_escape_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._zen_escape_shortcut.setAutoRepeat(False)
         self._zen_escape_shortcut.setEnabled(False)
-        self._zen_escape_shortcut.activated.connect(self._handle_zen_escape_shortcut)
+        self._zen_escape_shortcut.activated.connect(self._zen.handle_zen_escape_shortcut)
         self._apply_shortcut_overrides()
         # zen_mode binding is owned by the QShortcut above, so the QAction itself
         # must clear its sequence (after shortcut overrides apply) to avoid double-fire.
@@ -3550,25 +1860,25 @@ class MainWindow(QMainWindow):
         self.manual_search_field = self._build_search_field()
         self.ai_search_field = self._build_search_field()
         self.manual_search_field.textChanged.connect(
-            lambda text: self._handle_search_text_changed(text, source="manual")
+            lambda text: self._records_view.handle_search_text_changed(text, source="manual")
         )
         self.ai_search_field.textChanged.connect(
-            lambda text: self._handle_search_text_changed(text, source="ai")
+            lambda text: self._records_view.handle_search_text_changed(text, source="ai")
         )
         self.filter_toolbar_menu = QMenu(self)
-        self.manual_filter_button = self._build_advanced_filter_button()
-        self.ai_filter_button = self._build_advanced_filter_button()
-        self.view_toolbar_menu = self._build_view_toolbar_menu()
-        self.manual_review_tools_button = self._build_popup_button(
+        self.manual_filter_button = self._records_view.build_advanced_filter_button()
+        self.ai_filter_button = self._records_view.build_advanced_filter_button()
+        self.view_toolbar_menu = self._toolbar_menus.build_view_toolbar_menu()
+        self.manual_review_tools_button = self._toolbar_menus.build_popup_button(
             "Review",
-            self._build_review_toolbar_menu(),
+            self._toolbar_menus.build_review_toolbar_menu(),
         )
-        self.ai_review_tools_button = self._build_popup_button(
+        self.ai_review_tools_button = self._toolbar_menus.build_popup_button(
             "Review",
-            self._build_review_toolbar_menu(),
+            self._toolbar_menus.build_review_toolbar_menu(),
         )
-        self.manual_view_tools_button = self._build_popup_button("View", self.view_toolbar_menu)
-        self.ai_view_tools_button = self._build_popup_button("View", self.view_toolbar_menu)
+        self.manual_view_tools_button = self._toolbar_menus.build_popup_button("View", self.view_toolbar_menu)
+        self.ai_view_tools_button = self._toolbar_menus.build_popup_button("View", self.view_toolbar_menu)
         for button in (self.manual_view_tools_button, self.ai_view_tools_button):
             button.setToolTip("Quick filters, sort options, and column layout.")
 
@@ -3605,7 +1915,7 @@ class MainWindow(QMainWindow):
         self._ai_status_hide_timer = QTimer(self)
         self._ai_status_hide_timer.setSingleShot(True)
         self._ai_status_hide_timer.setInterval(8000)
-        self._ai_status_hide_timer.timeout.connect(lambda: self._set_ai_status_visible(False))
+        self._ai_status_hide_timer.timeout.connect(lambda: self._ai_run.set_ai_status_visible(False))
 
         self.ai_toolbar = QWidget()
         self.ai_toolbar.setObjectName("workspaceControls")
@@ -3613,15 +1923,15 @@ class MainWindow(QMainWindow):
         self.ai_toolbar_layout.setContentsMargins(0, 0, 0, 0)
         self.ai_toolbar_layout.setSpacing(8)
         self._workspace_toolbar_item_widgets = {
-            "manual": self._build_workspace_toolbar_widgets("manual"),
-            "ai": self._build_workspace_toolbar_widgets("ai"),
+            "manual": self._toolbar.build_workspace_toolbar_widgets("manual"),
+            "ai": self._toolbar.build_workspace_toolbar_widgets("ai"),
         }
         self._workspace_toolbar_overflow_buttons = {
-            "manual": self._build_workspace_toolbar_overflow_button("manual"),
-            "ai": self._build_workspace_toolbar_overflow_button("ai"),
+            "manual": self._toolbar.build_workspace_toolbar_overflow_button("manual"),
+            "ai": self._toolbar.build_workspace_toolbar_overflow_button("ai"),
         }
-        self._rebuild_workspace_toolbar("manual")
-        self._rebuild_workspace_toolbar("ai")
+        self._toolbar.rebuild_workspace_toolbar("manual")
+        self._toolbar.rebuild_workspace_toolbar("ai")
 
         self.toolbar_stack = QStackedWidget()
         self.toolbar_stack.addWidget(self.manual_toolbar)
@@ -3629,19 +1939,19 @@ class MainWindow(QMainWindow):
 
     def _init_workspace_bar_and_mode_bars(self) -> None:
         """Floating workspace bar (drag handle, chrome buttons) and the Tool / Collection mode bars."""
-        self.workspace_bar_toggle_button = self._build_workspace_bar_button(
+        self.workspace_bar_toggle_button = self._toolbar.build_workspace_bar_button(
             "\u2212",
             "Minimize workspace toolbar",
             object_name="workspacePanelButton",
         )
-        self.workspace_bar_toggle_button.clicked.connect(self._toggle_workspace_bar_collapsed)
-        self.workspace_bar_close_button = self._build_workspace_bar_button(
+        self.workspace_bar_toggle_button.clicked.connect(self._toolbar.toggle_workspace_bar_collapsed)
+        self.workspace_bar_close_button = self._toolbar.build_workspace_bar_button(
             "\u2715",
             "Hide workspace toolbar",
             object_name="workspacePanelCloseButton",
         )
         self.workspace_bar_close_button.clicked.connect(
-            lambda _checked=False: self._set_workspace_bar_state("hidden")
+            lambda _checked=False: self._toolbar.set_workspace_bar_state("hidden")
         )
         self.workspace_bar_chrome = QWidget()
         self.workspace_bar_chrome.setObjectName("workspaceBarChrome")
@@ -3664,7 +1974,7 @@ class MainWindow(QMainWindow):
         workspace_bar_layout.addWidget(self.workspace_bar_drag_handle, 0, Qt.AlignmentFlag.AlignVCenter)
         workspace_bar_layout.addWidget(self.toolbar_stack, 1)
         workspace_bar_layout.addWidget(self.workspace_bar_chrome, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._apply_workspace_bar_state()
+        self._toolbar.apply_workspace_bar_state()
 
         self.tool_mode_bar = QWidget()
         self.tool_mode_bar.setObjectName("workspaceControls")
@@ -3681,9 +1991,9 @@ class MainWindow(QMainWindow):
         self.tool_mode_add_all_button = QPushButton("Add All")
         self.tool_mode_run_button = QPushButton("Run")
         self.tool_mode_cancel_button = QPushButton("Cancel")
-        self.tool_mode_add_all_button.clicked.connect(self._add_all_for_active_tool_mode)
-        self.tool_mode_run_button.clicked.connect(self._run_active_tool_mode)
-        self.tool_mode_cancel_button.clicked.connect(self._cancel_tool_mode)
+        self.tool_mode_add_all_button.clicked.connect(self._tool_mode.add_all_for_active_tool_mode)
+        self.tool_mode_run_button.clicked.connect(self._tool_mode.run_active_tool_mode)
+        self.tool_mode_cancel_button.clicked.connect(self._tool_mode.cancel_tool_mode)
         tool_mode_layout.addWidget(self.tool_mode_title)
         tool_mode_layout.addWidget(self.tool_mode_help, 1)
         tool_mode_layout.addWidget(self.tool_mode_selection)
@@ -3729,14 +2039,14 @@ class MainWindow(QMainWindow):
         self.details_view.set_row_density(self._details_row_density)
         self.details_view.layout_state_changed.connect(self._save_details_view_state)
         self.browser_stack.setCurrentIndex(1 if self._browser_view_mode == "details" else 0)
-        self.adapter_review_banner = self._build_adapter_review_banner()
+        self.adapter_review_banner = self._aiculler.build_adapter_review_banner()
         self.adapter_review_banner.hide()
         center_layout.addWidget(self.workspace_bar)
         center_layout.addWidget(self.tool_mode_bar)
         center_layout.addWidget(self.collection_mode_bar)
         center_layout.addWidget(self.adapter_review_banner)
         center_layout.addWidget(self.browser_stack, 1)
-        self._apply_workspace_bar_position()
+        self._toolbar.apply_workspace_bar_position()
 
         self.workspace_docks = build_workspace_docks(self, self.left_panel, self.inspector_panel, center_column)
         self.workspace_docks.on_user_resized_panels = self._remember_user_pane_widths
@@ -3752,7 +2062,7 @@ class MainWindow(QMainWindow):
         self._refresh_workspace_preset_menu()
         self._refresh_workflow_recipe_menu()
         self._refresh_collections_menu()
-        self._refresh_catalog_menu()
+        self._catalog.refresh_catalog_menu()
 
     def _init_menu_bar_and_zen_menu(self) -> None:
         """Main menu bar (needs ``actions.ai_state_actions`` filled), Zen-menu pin and corner widget,
@@ -3775,7 +2085,7 @@ class MainWindow(QMainWindow):
         self.zen_menu_pin_button.setToolTip("Keep the menu visible in Zen Mode")
         self.zen_menu_pin_button.setCheckable(True)
         self.zen_menu_pin_button.setChecked(self._zen_menu_pinned)
-        self.zen_menu_pin_button.toggled.connect(self._handle_zen_menu_pin_toggled)
+        self.zen_menu_pin_button.toggled.connect(self._zen.handle_zen_menu_pin_toggled)
         self.zen_menu_pin_button.hide()
         self.update_download_button = self._build_update_download_button()
         self.menu_corner_widget = QWidget()
@@ -3829,13 +2139,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        self.app_top_bar = self._build_prototype_top_bar()
-        self._apply_chrome_icon_scale()
+        self.app_top_bar = self._toolbar.build_prototype_top_bar()
+        self._appearance.apply_chrome_icon_scale()
         layout.addWidget(self.app_top_bar, 0)
         layout.addWidget(self.workspace_docks.shell, 1)
         self.setCentralWidget(container)
         self.browser_stack.installEventFilter(self)
-        self.browser_stack.currentChanged.connect(lambda _index: self._position_floating_toolbar())
+        self.browser_stack.currentChanged.connect(lambda _index: self._toolbar.position_floating_toolbar())
         self._ai_setup_overlay = BusyOverlay(container)
         self._ai_setup_overlay.attach_to(container)
         self.zen_hint_overlay = QLabel("Zen Mode  |  F11 or Esc to exit", container)
@@ -3847,7 +2157,7 @@ class MainWindow(QMainWindow):
         self.zen_hint_hide_timer.timeout.connect(self.zen_hint_overlay.hide)
         self.summary_strip.hide()
         self._apply_default_workspace()
-        self._apply_display_profile()
+        self._appearance.apply_display_profile()
         QTimer.singleShot(0, self._restore_details_view_state)
 
     def _init_status_bar(self) -> None:
@@ -3872,10 +2182,10 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.cache_pipeline_label)
         status.addPermanentWidget(self.filter_summary_label)
         status.addPermanentWidget(self.clear_filters_button)
-        self._apply_toolbar_placement()
+        self._toolbar.apply_toolbar_placement()
         self._refresh_catalog_status_indicator()
-        self._refresh_adapter_status_indicator()
-        self._refresh_filter_toolbar_menu()
+        self._aiculler.refresh_adapter_status_indicator()
+        self._records_view.refresh_filter_toolbar_menu()
         self._refresh_recent_folder_combos()
 
     def _init_view_signal_connections(self) -> None:
@@ -3890,15 +2200,15 @@ class MainWindow(QMainWindow):
         self.grid.tag_requested.connect(self._tag_record)
         self.grid.winner_requested.connect(self._toggle_winner)
         self.grid.reject_requested.connect(self._toggle_reject)
-        self.grid.adapter_label_requested.connect(self._handle_aiculler_adapter_label_requested)
-        self.grid.adapter_reasons_requested.connect(self._handle_aiculler_adapter_reasons_requested)
-        self.grid.adapter_review_mode_cleared.connect(self._exit_aiculler_adapter_review_mode)
-        self.grid.dispute_label_requested.connect(self._handle_dispute_label_requested)
-        self.grid.dispute_chord_started.connect(self._handle_dispute_chord_started)
-        self.grid.dispute_chord_cancelled.connect(self._handle_dispute_chord_cancelled)
+        self.grid.adapter_label_requested.connect(self._aiculler.handle_aiculler_adapter_label_requested)
+        self.grid.adapter_reasons_requested.connect(self._aiculler.handle_aiculler_adapter_reasons_requested)
+        self.grid.adapter_review_mode_cleared.connect(self._aiculler.exit_aiculler_adapter_review_mode)
+        self.grid.dispute_label_requested.connect(self._aiculler.handle_dispute_label_requested)
+        self.grid.dispute_chord_started.connect(self._aiculler.handle_dispute_chord_started)
+        self.grid.dispute_chord_cancelled.connect(self._aiculler.handle_dispute_chord_cancelled)
         self.grid.context_menu_requested.connect(self._show_grid_context_menu)
         self.grid.selection_changed.connect(self._handle_grid_selection_changed)
-        self.grid.verticalScrollBar().valueChanged.connect(self._schedule_metadata_scroll_prefetch)
+        self.grid.verticalScrollBar().valueChanged.connect(self._records_view.schedule_metadata_scroll_prefetch)
         self.details_view.current_changed.connect(self._handle_details_current_changed)
         self.details_view.selection_changed.connect(self._handle_details_selection_changed)
         self.details_view.preview_requested.connect(self._open_preview)
@@ -3919,11 +2229,11 @@ class MainWindow(QMainWindow):
             color_scheme_changed = getattr(style_hints, "colorSchemeChanged", None)
             if color_scheme_changed is not None:
                 color_scheme_changed.connect(self._handle_system_color_scheme_changed)
-        self._apply_appearance()
+        self._appearance.apply_appearance()
         self._restore_window_state()
-        self._sync_record_filter_controls()
-        self._update_filter_summary()
-        self._handle_mode_tab_changed(0)
+        self._records_view.sync_record_filter_controls()
+        self._records_view.update_filter_summary()
+        self._toolbar.sync_chrome_to_manual_review()
         self._update_action_states()
         QTimer.singleShot(0, self._finish_startup_restore)
         if self._check_updates_on_startup and not self._quick_view_mode:
@@ -4054,9 +2364,6 @@ class MainWindow(QMainWindow):
         label.setObjectName("sectionLabel")
         return label
 
-    def _build_popup_button(self, text: str, menu: QMenu) -> QToolButton:
-        return self._toolbar_menus.build_popup_button(text, menu)
-
     def _build_update_download_button(self) -> QToolButton:
         button = QToolButton()
         button.setObjectName("updateDownloadButton")
@@ -4069,54 +2376,6 @@ class MainWindow(QMainWindow):
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         button.clicked.connect(self._handle_update_button_clicked)
         return button
-
-    def _update_download_icon(self, color: QColor) -> QIcon:
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(color, 5)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.drawLine(32, 10, 32, 38)
-        painter.drawLine(20, 28, 32, 40)
-        painter.drawLine(44, 28, 32, 40)
-        painter.drawLine(17, 50, 47, 50)
-        painter.end()
-        return QIcon(pixmap)
-
-    def _pane_toggle_icon(self, side: str) -> QIcon:
-        """Return a mirrored panel glyph whose bright side means visible."""
-        theme = getattr(self, "_theme", None) or default_theme()
-
-        def draw(outline: QColor, panel: QColor) -> QPixmap:
-            pixmap = QPixmap(64, 64)
-            pixmap.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            pen = QPen(outline, 3)
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(QRect(8, 12, 47, 39), 4, 4)
-            painter.fillRect(QRect(12, 16, 13, 31), panel)
-            painter.end()
-            if side == "right":
-                return pixmap.transformed(QTransform().scale(-1, 1))
-            return pixmap
-
-        icon = QIcon()
-        colors = (
-            (QIcon.Mode.Normal, theme.text_muted.qcolor(), theme.text_muted.qcolor()),
-            (QIcon.Mode.Active, theme.text_secondary.qcolor(), theme.text_secondary.qcolor()),
-            (QIcon.Mode.Disabled, theme.text_disabled.qcolor(), theme.text_disabled.qcolor()),
-        )
-        for mode, outline, inactive_panel in colors:
-            icon.addPixmap(draw(outline, inactive_panel), mode, QIcon.State.Off)
-            active_panel = theme.text_primary.qcolor() if mode != QIcon.Mode.Disabled else inactive_panel
-            icon.addPixmap(draw(outline, active_panel), mode, QIcon.State.On)
-        return icon
 
     def _refresh_update_button_state(self) -> None:
         button = getattr(self, "update_download_button", None)
@@ -4146,7 +2405,7 @@ class MainWindow(QMainWindow):
         button.setToolTip(tooltip)
         button.setStatusTip(tooltip)
         button.setProperty("updateAvailable", update_available)
-        button.setIcon(self._update_download_icon(color))
+        button.setIcon(self._appearance.update_download_icon(color))
         button.style().unpolish(button)
         button.style().polish(button)
 
@@ -4156,18 +2415,6 @@ class MainWindow(QMainWindow):
             self._prompt_for_update_download(result)
             return
         self._check_for_updates(silent=False)
-
-    def _build_review_toolbar_menu(self) -> QMenu:
-        return self._toolbar_menus.build_review_toolbar_menu()
-
-    def _build_view_toolbar_menu(self) -> QMenu:
-        return self._toolbar_menus.build_view_toolbar_menu()
-
-    def _build_projects_toolbar_menu(self) -> QMenu:
-        return self._toolbar_menus.build_projects_toolbar_menu()
-
-    def _build_catalog_toolbar_menu(self) -> QMenu:
-        return self._toolbar_menus.build_catalog_toolbar_menu()
 
     def _build_search_field(self) -> QLineEdit:
         field = QLineEdit()
@@ -4239,35 +2486,8 @@ class MainWindow(QMainWindow):
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         color = (self._theme or default_theme()).text_muted.qcolor()
         direction = "up" if text == "\u2191" else "down"
-        button.setIcon(self._directory_nav_icon(direction, color))
+        button.setIcon(self._appearance.directory_nav_icon(direction, color))
         return button
-
-    def _directory_nav_icon(self, direction: str, color: QColor) -> QIcon:
-        pixmap = QPixmap(56, 56)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(color, 4)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        if direction == "up":
-            painter.drawLine(28, 12, 28, 42)
-            painter.drawLine(17, 23, 28, 12)
-            painter.drawLine(39, 23, 28, 12)
-        else:
-            painter.drawLine(28, 14, 28, 44)
-            painter.drawLine(17, 33, 28, 44)
-            painter.drawLine(39, 33, 28, 44)
-        painter.end()
-        return QIcon(pixmap)
-
-    def _refresh_directory_nav_button_icons(self) -> None:
-        color = (self._theme or default_theme()).text_muted.qcolor()
-        for button in getattr(self, "_directory_up_buttons", ()):
-            button.setIcon(self._directory_nav_icon("up", color))
-        for button in getattr(self, "_directory_down_buttons", ()):
-            button.setIcon(self._directory_nav_icon("down", color))
 
     def _build_path_control(self, combo: QComboBox, *, mode: str) -> QWidget:
         wrapper = QWidget()
@@ -4298,271 +2518,6 @@ class MainWindow(QMainWindow):
         label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         label.setToolTip("Selected images in the current view")
         return label
-
-    def _build_prototype_top_bar(self) -> QWidget:
-        """The prototype-style primary top bar (nav + search + panel toggles).
-
-        The centre is intentionally left empty; the backend action buttons will
-        be placed there in a later migration step.
-        """
-        self._nav_back: list[str] = []
-        self._nav_forward: list[str] = []
-        self._nav_suppress_history = False
-
-        bar = QWidget()
-        bar.setObjectName("appTopBar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(8, 6, 10, 6)
-        layout.setSpacing(WORKSPACE_METRICS.space_6)
-
-        self._topbar_nav_buttons: list[tuple[QToolButton, int]] = []
-        self._topbar_labeled_nav_buttons: list[tuple[QToolButton, str]] = []
-
-        def make_icon_button(glyph: str, tooltip: str) -> QToolButton:
-            button = QToolButton(bar)
-            button.setObjectName("appTopBarButton")
-            button.setText(glyph)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setAutoRaise(True)
-            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            button.setFixedSize(34, 34)
-            button.setToolTip(tooltip)
-            font = button.font()
-            font.setPixelSize(16)
-            button.setFont(font)
-            self._topbar_nav_buttons.append((button, 16))
-            return button
-
-        nav_cluster = QWidget(bar)
-        nav_cluster.setObjectName("topbarNavCluster")
-        nav_layout = QHBoxLayout(nav_cluster)
-        nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(self.TOPBAR_SLOT_SPACING)
-        self._topbar_nav_layout = nav_layout
-
-        def make_labeled_nav_button(item_id: str, label: str, tooltip: str) -> QToolButton:
-            button = QToolButton(nav_cluster)
-            button.setText(label)
-            button.setToolTip(tooltip)
-            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            self._apply_topbar_button_style(button, self._topbar_nav_icon(item_id))
-            self._topbar_labeled_nav_buttons.append((button, item_id))
-            nav_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
-            return button
-
-        # Menu floats centred over the navigation rail (it is placed by hand,
-        # outside the layout) and a spacer starts the breadcrumb at the library
-        # pane's edge; _align_app_bar_to_library keeps both lined up.
-        self.app_menu_slot = QWidget(bar)
-        menu_slot_layout = QHBoxLayout(self.app_menu_slot)
-        menu_slot_layout.setContentsMargins(0, 0, 0, 0)
-        self.app_menu_button = QToolButton(self.app_menu_slot)
-        self.app_menu_button.setObjectName("appMenuButton")
-        # Icon only: the text is kept for the tooltip and screen readers.
-        self.app_menu_button.setText("Menu")
-        self.app_menu_button.setToolTip("Menu")
-        self.app_menu_button.setAccessibleName("Menu")
-        self.app_menu_button.setIcon(self._topbar_nav_icon("menu"))
-        self.app_menu_button.setIconSize(QSize(16, 16))
-        self.app_menu_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.app_menu_button.setAutoRaise(True)
-        self.app_menu_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.app_menu_button.clicked.connect(
-            lambda _checked=False: self._show_main_menu_popup(self.app_menu_button)
-        )
-        menu_slot_layout.addWidget(self.app_menu_button, 0, Qt.AlignmentFlag.AlignCenter)
-        self._app_bar_crumb_spacer = QSpacerItem(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
-        layout.addItem(self._app_bar_crumb_spacer)
-
-        self.app_crumb_stack = QStackedWidget(bar)
-        self.app_crumb_stack.setObjectName("appBreadcrumbStack")
-        self.app_crumb_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.app_breadcrumb = BreadcrumbBar(self.app_crumb_stack)
-        self.app_breadcrumb.segment_clicked.connect(self._handle_breadcrumb_segment_clicked)
-        self.app_breadcrumb.edit_requested.connect(self._begin_breadcrumb_path_edit)
-        self.app_crumb_stack.addWidget(self.app_breadcrumb)
-        layout.addWidget(self.app_crumb_stack, 1)
-
-        open_button = make_labeled_nav_button("open", "Open", self.actions.open_folder.toolTip())
-        open_button.clicked.connect(lambda _checked=False: self.actions.open_folder.trigger())
-        self.actions.open_folder.changed.connect(
-            lambda target=open_button, action=self.actions.open_folder: target.setToolTip(action.toolTip())
-        )
-
-        self._topbar_back_button = make_labeled_nav_button("back", "Back", "Back")
-        self._topbar_back_button.clicked.connect(lambda: self._navigate_history(-1))
-        self._topbar_back_button.setEnabled(False)
-
-        self._topbar_forward_button = make_labeled_nav_button("forward", "Fwd", "Forward")
-        self._topbar_forward_button.clicked.connect(lambda: self._navigate_history(1))
-        self._topbar_forward_button.setEnabled(False)
-
-        self._topbar_up_button = make_labeled_nav_button("up", "Up", "Open parent folder")
-        self._topbar_up_button.clicked.connect(self._navigate_to_parent_folder)
-
-        refresh_button = make_labeled_nav_button("refresh", "Refresh", self.actions.refresh_folder.toolTip())
-        refresh_button.clicked.connect(lambda _checked=False: self.actions.refresh_folder.trigger())
-        self.actions.refresh_folder.changed.connect(
-            lambda target=refresh_button, action=self.actions.refresh_folder: target.setToolTip(action.toolTip())
-        )
-
-        undo_button = make_labeled_nav_button("undo", "Undo", self.actions.undo.toolTip())
-        undo_button.clicked.connect(lambda _checked=False: self.actions.undo.trigger())
-        self.actions.undo.changed.connect(
-            lambda target=undo_button, action=self.actions.undo: target.setToolTip(action.toolTip())
-        )
-
-        self.topbar_search_field = self._build_search_field()
-        self.topbar_search_field.setMinimumWidth(180)
-        self.topbar_search_field.setMaximumWidth(16777215)
-        self.topbar_search_field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.topbar_search_field.textChanged.connect(
-            lambda text: self._handle_search_text_changed(text, source="topbar")
-        )
-        self.app_search_box = QFrame(bar)
-        self.app_search_box.setObjectName("appSearchBox")
-        self.app_search_box.setMaximumWidth(self.APP_SEARCH_MAX_WIDTH)
-        self.app_search_box.setMinimumWidth(240)
-        self.app_search_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        search_layout = QHBoxLayout(self.app_search_box)
-        search_layout.setContentsMargins(10, 0, 6, 0)
-        search_layout.setSpacing(6)
-        search_glyph = QLabel("\uE721", self.app_search_box)
-        search_glyph.setObjectName("appSearchGlyph")
-        search_layout.addWidget(search_glyph, 0, Qt.AlignmentFlag.AlignVCenter)
-        search_layout.addWidget(self.topbar_search_field, 1)
-        palette_hint = QToolButton(self.app_search_box)
-        palette_hint.setObjectName("appSearchKeyHint")
-        palette_hint.setText("Ctrl K")
-        palette_hint.setToolTip("Command palette (Ctrl+K)")
-        palette_hint.setAutoRaise(True)
-        palette_hint.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        palette_hint.setCursor(Qt.CursorShape.PointingHandCursor)
-        palette_hint.clicked.connect(lambda _checked=False: self._open_command_palette(context="main"))
-        search_layout.addWidget(palette_hint, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(self.app_search_box, 1)
-        update_button = getattr(self, "update_download_button", None)
-        if update_button is not None:
-            layout.addWidget(update_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.app_settings_button = QToolButton(bar)
-        self.app_settings_button.setObjectName("appSettingsButton")
-        self.app_settings_button.setToolTip("Settings")
-        self.app_settings_button.setProperty("fluentGlyph", "E713")
-        self.app_settings_button.setIcon(self._fluent_filled_icon("E713", self._chrome_icon_color()))
-        self.app_settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.app_settings_button.setAutoRaise(True)
-        self.app_settings_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.app_settings_button.setFixedSize(32, 32)
-        self.app_settings_button.clicked.connect(lambda _checked=False: self._show_settings())
-        self._left_settings_buttons.append((self.app_settings_button, 18))
-        layout.addWidget(self.app_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._window_control_buttons: dict[str, QToolButton] = {}
-        if getattr(self, "_custom_frame", False):
-            layout.addSpacing(6)
-            for key, glyph, tooltip, handler in (
-                ("minimize", "\uE921", "Minimize", self.showMinimized),
-                ("maximize", "\uE922", "Maximize", self._toggle_maximized),
-                ("close", "\uE8BB", "Close", self.close),
-            ):
-                control = QToolButton(bar)
-                control.setObjectName("appWindowCloseButton" if key == "close" else "appWindowButton")
-                control.setText(glyph)
-                control.setToolTip(tooltip)
-                control.setAutoRaise(True)
-                control.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                control.clicked.connect(lambda _checked=False, target=handler: target())
-                self._window_control_buttons[key] = control
-                layout.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        self.topbar_action_stack = self._build_topbar_action_stack()
-        self.toolbar_strip = self._build_toolbar_strip(nav_cluster, self.topbar_action_stack)
-
-        # Zoom and the panel toggles travel together: into the status bar when
-        # the toolbar floats, onto the end of the docked toolbar otherwise.
-        self.view_controls = QWidget()
-        self.view_controls.setObjectName("viewControls")
-        self.view_controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        view_controls_layout = QHBoxLayout(self.view_controls)
-        view_controls_layout.setContentsMargins(0, 0, 0, 0)
-        view_controls_layout.setSpacing(6)
-
-        # Thumbnail zoom slider (drives the grid column count: left =
-        # more/smaller, right = fewer/larger).
-        zoom_cluster = QWidget(self.view_controls)
-        zoom_cluster.setObjectName("topbarZoomCluster")
-        # The toolbar-edit HUD anchors itself just left of this cluster.
-        self.topbar_zoom_cluster = zoom_cluster
-        zoom_layout = QHBoxLayout(zoom_cluster)
-        zoom_layout.setContentsMargins(0, 0, 0, 0)
-        zoom_layout.setSpacing(7)
-        zoom_small = QLabel("⌕", zoom_cluster)
-        zoom_small.setObjectName("topbarZoomIconSmall")
-        zoom_large = QLabel("⌕", zoom_cluster)
-        zoom_large.setObjectName("topbarZoomIconLarge")
-        self.topbar_zoom_slider = QSlider(Qt.Orientation.Horizontal, zoom_cluster)
-        self.topbar_zoom_slider.setObjectName("topbarZoomSlider")
-        self.topbar_zoom_slider.setRange(0, 100)
-        self.topbar_zoom_slider.setSingleStep(1)
-        self.topbar_zoom_slider.setPageStep(12)
-        self.topbar_zoom_slider.setTickPosition(QSlider.TickPosition.NoTicks)
-        self.topbar_zoom_slider.setFixedWidth(118)
-        self.topbar_zoom_slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.topbar_zoom_slider.setToolTip("Thumbnail size")
-        self.topbar_zoom_slider.setValue(self._initial_zoom_level())
-        self.topbar_zoom_slider.valueChanged.connect(self._handle_zoom_slider_changed)
-        zoom_layout.addWidget(zoom_small, 0)
-        zoom_layout.addWidget(self.topbar_zoom_slider, 0)
-        zoom_layout.addWidget(zoom_large, 0)
-        view_controls_layout.addWidget(zoom_cluster, 0)
-        view_controls_layout.addSpacing(6)
-
-        # Directory bar takes the zoom's old (right) position.
-        self.topbar_path_combo = self._build_path_combo(mode="topbar")
-        self.topbar_path_combo.setMinimumWidth(220)
-        self.topbar_path_combo.setMaximumWidth(460)
-        self.topbar_path_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        _topbar_path_line_edit = (
-            self.topbar_path_combo.lineEdit() if hasattr(self.topbar_path_combo, "lineEdit") else None
-        )
-        if _topbar_path_line_edit is not None:
-            _topbar_path_line_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            _topbar_path_line_edit.installEventFilter(self)
-            _topbar_path_line_edit.returnPressed.connect(
-                lambda: QTimer.singleShot(0, self._end_breadcrumb_path_edit)
-            )
-        self.topbar_path_combo.setMaximumWidth(16777215)
-        self.topbar_path_combo.activated.connect(lambda _index: QTimer.singleShot(0, self._end_breadcrumb_path_edit))
-        # The editable path box hides behind the breadcrumb until asked for.
-        self.app_crumb_stack.addWidget(self.topbar_path_combo)
-        self.app_crumb_stack.setCurrentWidget(self.app_breadcrumb)
-
-        self._topbar_pane_buttons: dict[str, QToolButton] = {}
-        for side, tooltip, key in (
-            ("left", "Show or hide the library panel", "library"),
-            ("right", "Show or hide the inspector panel", "inspector"),
-        ):
-            toggle = QToolButton(self.view_controls)
-            toggle.setObjectName("appTopBarPaneButton")
-            toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            toggle.setAutoRaise(True)
-            toggle.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            toggle.setFixedSize(38, 38)
-            toggle.setIconSize(QSize(24, 24))
-            toggle.setIcon(self._pane_toggle_icon(side))
-            toggle.setToolTip(tooltip)
-            toggle.setAccessibleName(tooltip)
-            action = self.workspace_docks.toggle_actions.get(key)
-            if action is not None:
-                toggle.setCheckable(True)
-                toggle.setChecked(action.isChecked())
-                toggle.clicked.connect(lambda _checked=False, target=action: target.trigger())
-                action.toggled.connect(toggle.setChecked)
-            self._topbar_pane_buttons[key] = toggle
-            view_controls_layout.addWidget(toggle)
-
-        for watched in (self.left_nav_rail, self.left_nav_pages, bar):
-            watched.installEventFilter(self)
-        return bar
 
     APP_SEARCH_MAX_WIDTH = 430
     # Breadcrumb offset from the library pane's edge so the first segment's
@@ -4599,12 +2554,6 @@ class MainWindow(QMainWindow):
             except (AttributeError, OSError):
                 _logger.warning("Native ShowWindow(SW_RESTORE) failed; falling back to Qt showNormal", exc_info=True)
         super().showNormal()
-
-    def _toggle_maximized(self) -> None:
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
 
     def _sync_window_control_glyphs(self) -> None:
         control = getattr(self, "_window_control_buttons", {}).get("maximize")
@@ -4734,8 +2683,8 @@ class MainWindow(QMainWindow):
             return super().nativeEvent(event_type, message)
         if msg.message == wm_exitsizemove:
             self._in_size_move = False
-            self._schedule_display_profile_update()
-            self._schedule_layout_ratio_update()
+            self._appearance.schedule_display_profile_update()
+            self._appearance.schedule_layout_ratio_update()
             return super().nativeEvent(event_type, message)
         if msg.message == wm_getminmaxinfo:
             # Maximize onto the monitor's work area exactly. Left alone, Windows
@@ -4838,98 +2787,6 @@ class MainWindow(QMainWindow):
         # follow a drag as well as a window resize.
         self._apply_inspector_text_ratios(width, max(1, self.height()))
 
-    def _schedule_layout_ratio_update(self) -> None:
-        if getattr(self, "_layout_ratio_update_pending", False):
-            return
-        self._layout_ratio_update_pending = True
-        QTimer.singleShot(0, self._apply_layout_ratios)
-
-    def _apply_layout_ratios(self) -> None:
-        """Resolve the shell's proportions (layout_ratios) against the
-        current window size."""
-        self._layout_ratio_update_pending = False
-        width, height = self.width(), self.height()
-        if width <= 0 or height <= 0 or not hasattr(self, "app_top_bar"):
-            return
-        px = layout_ratios.ratio_px
-        self.app_top_bar.setFixedHeight(px(layout_ratios.TOP_BAR_H, height, minimum=36))
-        for control in getattr(self, "_window_control_buttons", {}).values():
-            control.setFixedSize(round(self.app_top_bar.height() * 0.9), self.app_top_bar.height())
-        search_width = px(layout_ratios.SEARCH_W, width, minimum=200)
-        self.app_search_box.setMinimumWidth(min(240, search_width))
-        self.app_search_box.setMaximumWidth(search_width)
-        self._apply_chrome_text_ratios(width, height)
-        # Before the toolbar profile below: its button height reads the floating
-        # bar's padding, which this sets.
-        self._apply_chrome_size_ratios(width, height)
-        self.left_nav_rail.apply_width(px(layout_ratios.RAIL_W, width, minimum=56))
-        self._apply_left_rail_metrics()
-        drive_row = px(layout_ratios.DRIVE_ROW_H, height, minimum=34)
-        folder_text = px(layout_ratios.FOLDER_TEXT_H, height, minimum=layout_ratios.MIN_TEXT_PX)
-        drive_text = px(layout_ratios.DRIVE_TEXT_H, height, minimum=layout_ratios.MIN_TEXT_PX)
-        for tree in (self.drive_list, self.folder_tree):
-            tree.set_drive_row_height(drive_row)
-            tree.set_text_sizes(folder_text, drive_text)
-        self.left_settings_bar.setFixedHeight(px(layout_ratios.SETTINGS_BAR_H, height, minimum=40))
-        if self.workspace_docks is not None:
-            # Hairline dividers: the panes' shares are measured edge to edge, so
-            # a wide handle would eat into the grid.
-            self.workspace_docks.splitter.setHandleWidth(1)
-            self.workspace_docks.apply_width_ratios(self._pane_width_ratios(), width)
-        if self.inspector_panel is not None:
-            self.inspector_panel.set_ai_box_size(
-                px(layout_ratios.AI_BOX_W, width, minimum=180),
-                px(layout_ratios.AI_BOX_H, height, minimum=120),
-            )
-            # After the splitter, so the label column measures the settled pane.
-            self._apply_inspector_text_ratios(width, height)
-        base = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
-        caption_scale = self._toolbar_profile().topbar_glyph_size / max(1, base.topbar_glyph_size)
-        self.toolbar_strip.setStyleSheet(
-            f"QLabel#appTopBarButtonCaption {{ font-size: {round(10 * caption_scale)}px; }}"
-            if caption_scale > 1.01
-            else ""
-        )
-        # Not forced: this runs on every layout pass and nearly all of them leave
-        # the bar's inputs unchanged, so the change guard turns them into no-ops.
-        self._rebuild_topbar_action_stack()
-        toolbar_profile = self._toolbar_profile()
-        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-            self._resize_topbar_button(button, toolbar_profile)
-        self._position_floating_toolbar()
-        self._schedule_app_bar_alignment()
-
-    def _toolbar_profile(self) -> DisplayProfile:
-        """Button metrics for the customizable bar. Floating, the buttons grow
-        to fill the dock's proportional height while still fitting its width."""
-        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
-        if getattr(self, "_toolbar_placement", "docked") != "floating" or self.height() <= 0:
-            return profile
-        margins = getattr(self, "_toolbar_strip_layout", None)
-        vertical = (margins.contentsMargins().top() + margins.contentsMargins().bottom()) if margins else 8
-        button_height = layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_H, self.height()) - vertical - 2 * profile.topbar_hover_margin
-        height_scale = max(1.0, button_height / max(1, profile.topbar_button_height))
-        items = len(getattr(self, "_topbar_labeled_nav_buttons", ())) + max(1, self._used_toolbar_slot_count())
-        dock_width = layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_W, self.width())
-        cell = max(profile.topbar_slot_cell_min, profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin)
-        width_scale = max(1.0, (dock_width - 40) / max(1, items * (cell + profile.topbar_slot_spacing)))
-        scale = min(height_scale, width_scale)
-        return replace(
-            profile,
-            topbar_button_height=max(profile.topbar_button_height, round(button_height)),
-            topbar_slot_button_width=round(profile.topbar_slot_button_width * scale),
-            topbar_slot_cell_min=round(profile.topbar_slot_cell_min * scale),
-            topbar_glyph_size=round(profile.topbar_glyph_size * scale),
-            topbar_caption_height=round(profile.topbar_caption_height * scale),
-        )
-
-    def _used_toolbar_slot_count(self) -> int:
-        used = 0
-        for index, item_id in enumerate(getattr(self, "_topbar_slots", {}).get("manual") or []):
-            if item_id:
-                used = index + 1
-        return used
-
     def _align_app_bar_to_library(self) -> None:
         """Centre Menu over the rail and start the breadcrumb at the library
         pane's content edge; the spacer is corrected from the measured position
@@ -4942,7 +2799,7 @@ class MainWindow(QMainWindow):
             return
         layout = bar.layout()
         origin = bar.mapTo(self, QPoint(0, 0)).x()
-        menu_width = self.app_menu_button.sizeHint().width()
+        menu_width = self._toolbar.app_menu_button.sizeHint().width()
         if rail.isVisible() and rail.width() > 0:
             slot_x = rail.mapTo(self, QPoint(0, 0)).x() - origin
             slot_width = max(menu_width, rail.width())
@@ -4953,10 +2810,10 @@ class MainWindow(QMainWindow):
             crumb_target = slot_x + menu_width + 12
         self.app_menu_slot.setGeometry(slot_x, 0, slot_width, bar.height())
         self.app_menu_slot.raise_()
-        current = self._app_bar_crumb_spacer.sizeHint().width()
+        current = self._toolbar._app_bar_crumb_spacer.sizeHint().width()
         gap = max(0, current + crumb_target - self.app_crumb_stack.x())
         if gap != current:
-            self._app_bar_crumb_spacer.changeSize(gap, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+            self._toolbar._app_bar_crumb_spacer.changeSize(gap, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
             layout.invalidate()
             layout.activate()
             self._schedule_app_bar_alignment()
@@ -4966,462 +2823,6 @@ class MainWindow(QMainWindow):
             return
         self._app_bar_align_pending = True
         QTimer.singleShot(0, self._align_app_bar_to_library)
-
-    def _refresh_breadcrumb(self) -> None:
-        self._sync_drive_sections()
-        crumb = getattr(self, "app_breadcrumb", None)
-        if crumb is None:
-            return
-        if self._scope_kind == "folder" and self._current_folder:
-            crumb.set_path(self._current_folder)
-        else:
-            crumb.set_label(self._scope_display_label())
-
-    def _handle_breadcrumb_segment_clicked(self, path: str) -> None:
-        if path and os.path.normcase(os.path.normpath(path)) != os.path.normcase(os.path.normpath(self._current_folder or "")):
-            self._select_folder(path)
-
-    def _begin_breadcrumb_path_edit(self) -> None:
-        combo = self.topbar_path_combo
-        self.app_crumb_stack.setCurrentWidget(combo)
-        line_edit = combo.lineEdit()
-        if line_edit is not None:
-            line_edit.setFocus(Qt.FocusReason.MouseFocusReason)
-            line_edit.selectAll()
-
-    def _end_breadcrumb_path_edit(self) -> None:
-        stack = getattr(self, "app_crumb_stack", None)
-        if stack is None or stack.currentWidget() is self.app_breadcrumb:
-            return
-        stack.setCurrentWidget(self.app_breadcrumb)
-        self._refresh_breadcrumb()
-
-    def _maybe_end_breadcrumb_path_edit(self) -> None:
-        # Focus can hop to the folder-suggestion popup while typing; only
-        # fold back to the breadcrumb once focus has really left the path box.
-        combo = self.topbar_path_combo
-        focused = QApplication.focusWidget()
-        if QApplication.activePopupWidget() is not None:
-            return
-        if focused is not None and (focused is combo or combo.isAncestorOf(focused)):
-            return
-        self._end_breadcrumb_path_edit()
-
-    def _size_view_controls(self) -> None:
-        """Compact zoom + panel toggles for the status bar; full size on the
-        docked toolbar."""
-        controls = getattr(self, "view_controls", None)
-        if controls is None:
-            return
-        compact = self._toolbar_placement == "floating"
-        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
-        # Status-bar sizes come from layout_ratios (STATUS_*, ZOOM_*); docked on
-        # the toolbar, the controls take the toolbar's own button metrics.
-        px = layout_ratios.ratio_px
-        height = max(1, self.height())
-        floor = layout_ratios.MIN_GLYPH_PX
-        toggle_box = px(layout_ratios.STATUS_TOGGLE_BOX_H, height, minimum=16)
-        toggle_icon = px(layout_ratios.STATUS_TOGGLE_ICON_H, height, minimum=floor)
-        for button in getattr(self, "_topbar_pane_buttons", {}).values():
-            if compact:
-                button.setFixedSize(toggle_box, toggle_box)
-                button.setIconSize(QSize(toggle_icon, toggle_icon))
-            else:
-                hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-                hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
-                button.setFixedSize(hover_width, hover_height)
-                button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
-        slider = getattr(self, "topbar_zoom_slider", None)
-        if slider is not None:
-            slider_width = px(layout_ratios.ZOOM_SLIDER_W, max(1, self.width()), minimum=48)
-            slider.setFixedWidth(slider_width if compact else profile.topbar_zoom_width)
-
-        # The slider's line and handle, and the magnifiers either side of it.
-        track = px(layout_ratios.ZOOM_TRACK_H, height, minimum=1)
-        handle = px(layout_ratios.ZOOM_HANDLE_H, height, minimum=4)
-        sheet = (
-            "QSlider#topbarZoomSlider::groove:horizontal"
-            f" {{ height: {track}px; border-radius: {max(0, track // 2)}px; }}"
-            " QSlider#topbarZoomSlider::handle:horizontal"
-            f" {{ width: {handle}px; height: {handle}px;"
-            f" margin: -{max(0, (handle - track) // 2)}px 0px;"
-            f" border-radius: {handle // 2}px; }}"
-            " QLabel#topbarZoomIconSmall"
-            f" {{ font-size: {px(layout_ratios.ZOOM_ICON_SMALL_H, height, minimum=floor)}px; }}"
-            " QLabel#topbarZoomIconLarge"
-            f" {{ font-size: {px(layout_ratios.ZOOM_ICON_LARGE_H, height, minimum=floor)}px; }}"
-        )
-        if controls.styleSheet() != sheet:
-            controls.setStyleSheet(sheet)
-
-        # Gaps: inside the zoom cluster, and the spacer between it and the toggles.
-        icon_gap = px(layout_ratios.ZOOM_ICON_GAP_H, height, minimum=0)
-        controls_gap = px(layout_ratios.STATUS_CONTROLS_GAP_H, height, minimum=0)
-        cluster = getattr(self, "topbar_zoom_cluster", None)
-        if cluster is not None and cluster.layout() is not None:
-            cluster.layout().setSpacing(icon_gap)
-        layout = controls.layout()
-        if layout is not None:
-            layout.setSpacing(controls_gap)
-            for index in range(layout.count()):
-                spacer = layout.itemAt(index).spacerItem()
-                if spacer is not None:
-                    spacer.changeSize(controls_gap, 0)
-            layout.invalidate()
-
-        # The status bar's text labels: their widest allowed width.
-        width = max(1, self.width())
-        for name, ratio in (
-            ("filter_summary_label", layout_ratios.STATUS_FILTER_W),
-            ("catalog_status_label", layout_ratios.STATUS_CATALOG_W),
-            ("cache_pipeline_label", layout_ratios.STATUS_PIPELINE_W),
-        ):
-            label = getattr(self, name, None)
-            if label is not None:
-                label.setMaximumWidth(px(ratio, width, minimum=80))
-
-    def _build_toolbar_strip(self, nav_cluster: QWidget, action_stack: QWidget) -> QFrame:
-        """The customizable button bar as one movable unit.
-
-        It shares the ``appTopBar`` object name so the top-bar button rules
-        style it; ``toolbarPlacement`` picks the docked row or floating dock
-        surface. ``_apply_toolbar_placement`` parents and positions it.
-        """
-        strip = QFrame()
-        strip.setObjectName("appTopBar")
-        strip.setProperty("toolbarPlacement", self._toolbar_placement)
-        strip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        strip_layout = QHBoxLayout(strip)
-        strip_layout.setContentsMargins(8, 4, 8, 4)
-        strip_layout.setSpacing(WORKSPACE_METRICS.space_6)
-        nav_cluster.setParent(strip)
-        strip_layout.addWidget(nav_cluster, 0, Qt.AlignmentFlag.AlignVCenter)
-        divider = QFrame(strip)
-        divider.setObjectName("toolbarStripDivider")
-        divider.setFixedSize(1, 30)
-        strip_layout.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
-        action_stack.setParent(strip)
-        strip_layout.addWidget(action_stack, 1)
-        self._toolbar_strip_layout = strip_layout
-        return strip
-
-    @classmethod
-    def _normalize_toolbar_placement(cls, value: object) -> str:
-        text = str(value or "").strip().lower()
-        return text if text in cls.TOOLBAR_PLACEMENTS else "floating"
-
-    def _set_toolbar_placement(self, placement: str) -> None:
-        normalized = self._normalize_toolbar_placement(placement)
-        if normalized == self._toolbar_placement:
-            return
-        self._toolbar_placement = normalized
-        self._settings.setValue(self.TOOLBAR_PLACEMENT_KEY, normalized)
-        self._apply_toolbar_placement()
-        # Forced: a rare, user-initiated change that just reparented the strip
-        # and swapped its surface, so fresh buttons are worth the few ms.
-        self._rebuild_topbar_action_stack(force=True)
-        profile = self._toolbar_profile()
-        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-            self._resize_topbar_button(button, profile)
-        self._schedule_layout_ratio_update()
-        self._update_action_states()
-
-    def _apply_toolbar_placement(self) -> None:
-        strip = getattr(self, "toolbar_strip", None)
-        center_layout = getattr(self, "workspace_center_layout", None)
-        browser_stack = getattr(self, "browser_stack", None)
-        if strip is None or center_layout is None or browser_stack is None:
-            return
-        floating = self._toolbar_placement == "floating"
-        strip.setProperty("toolbarPlacement", self._toolbar_placement)
-        center_layout.removeWidget(strip)
-        controls = getattr(self, "view_controls", None)
-        status = self.statusBar() if controls is not None else None
-        if controls is not None and status is not None:
-            status.removeWidget(controls)
-            self._toolbar_strip_layout.removeWidget(controls)
-            if floating:
-                status.insertPermanentWidget(0, controls, 0)
-            else:
-                self._toolbar_strip_layout.addWidget(controls, 0, Qt.AlignmentFlag.AlignVCenter)
-            controls.show()
-            self._size_view_controls()
-        if floating:
-            strip.setParent(browser_stack.parentWidget())
-            shadow = QGraphicsDropShadowEffect(strip)
-            shadow.setBlurRadius(36)
-            shadow.setOffset(0, 12)
-            shadow.setColor(QColor(0, 0, 0, 150))
-            strip.setGraphicsEffect(shadow)
-            strip.show()
-            self._position_floating_toolbar()
-        else:
-            strip.setGraphicsEffect(None)
-            strip.setMinimumWidth(0)
-            strip.setMaximumWidth(16777215)
-            strip.setMinimumHeight(0)
-            strip.setMaximumHeight(16777215)
-            center_layout.insertWidget(0, strip)
-            strip.show()
-            self.grid.set_bottom_overlay(0, 0)
-            self.details_view.set_bottom_overlay_reserve(0)
-        strip.style().unpolish(strip)
-        strip.style().polish(strip)
-        strip.update()
-
-    def _floating_toolbar_width(self, available: int, *, expanded: bool = False) -> int:
-        """The dock is a fixed share of the window width; while editing it
-        opens to the full width so there is room to drop items."""
-        if expanded:
-            return max(0, available)
-        return max(0, min(available, layout_ratios.ratio_px(layout_ratios.FLOATING_TOOLBAR_W, self.width())))
-
-    def _position_floating_toolbar(self, *, expanded: bool = False) -> None:
-        strip = getattr(self, "toolbar_strip", None)
-        browser_stack = getattr(self, "browser_stack", None)
-        if strip is None or browser_stack is None or self._toolbar_placement != "floating":
-            return
-        area = browser_stack.geometry()
-        px = layout_ratios.ratio_px
-        floor = layout_ratios.MIN_GLYPH_PX
-        margin = px(layout_ratios.FLOATING_TOOLBAR_BOTTOM_H, self.height(), minimum=floor)
-        row_gap = px(layout_ratios.FLOATING_TOOLBAR_ROW_GAP_H, self.height(), minimum=0)
-        fade = px(layout_ratios.FLOATING_TOOLBAR_FADE_H, self.height(), minimum=0)
-        width = self._floating_toolbar_width(area.width() - 2 * self.FLOATING_TOOLBAR_SIDE_MARGIN, expanded=expanded)
-        height = px(layout_ratios.FLOATING_TOOLBAR_H, self.height(), minimum=strip.minimumSizeHint().height())
-        strip.setFixedWidth(width)
-        strip.setFixedHeight(height)
-        strip.setGeometry(area.x() + (area.width() - width) // 2, area.bottom() + 1 - margin - height, width, height)
-        strip.raise_()
-        reserve = height + margin + row_gap
-        self.grid.set_bottom_overlay(reserve, reserve + fade)
-        self.details_view.set_bottom_overlay_reserve(height + margin)
-
-    def _build_topbar_action_stack(self) -> QStackedWidget:
-        """Mode-aware action cluster mirrored from the editable toolbar layout.
-
-        Each mode page is rebuilt from ``_workspace_toolbar_layouts`` so the
-        toolbar customizer drives the top bar (and the bar reflects the layout).
-        Items that don't fit collapse into a trailing "More" overflow menu.
-        """
-        stack = QStackedWidget()
-        stack.setObjectName("topbarActionStack")
-        stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._topbar_action_layouts: dict[str, QGridLayout] = {}
-        self._topbar_action_items: dict[str, list[tuple[str, QWidget]]] = {}
-        self._topbar_slot_widgets: dict[str, list[QWidget | None]] = {}
-        self._topbar_more_buttons: dict[str, QToolButton] = {}
-        # The widgets the recorded key described no longer exist.
-        self._topbar_rebuild_key: tuple | None = None
-        for mode in ("manual", "ai"):
-            page = QWidget()
-            grid = QGridLayout(page)
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setHorizontalSpacing(self.TOPBAR_SLOT_SPACING)
-            grid.setVerticalSpacing(0)
-            # Columns are configured during rebuild from the measured stack
-            # width. Keeping all 35 columns active here creates a minimum width
-            # wider than 1080p layouts can spare.
-            for col in range(self.TOPBAR_SLOT_COUNT):
-                grid.setColumnStretch(col, 0)
-                grid.setColumnMinimumWidth(col, 0)
-            self._topbar_action_layouts[mode] = grid
-            stack.addWidget(page)
-        # Assign early so the overflow pass can find the stack during the build.
-        self.topbar_action_stack = stack
-        stack.installEventFilter(self)
-        # Nothing built yet, so there is nothing for the change guard to compare.
-        self._rebuild_topbar_action_stack(force=True)
-        stack.setCurrentIndex(1 if getattr(self, "_ui_mode", "manual") == "ai" else 0)
-        return stack
-
-    def _topbar_popup_specs(self) -> dict[str, tuple[str, "Callable[[], QMenu]"]]:
-        return {
-            "review": ("Review", self._build_review_toolbar_menu),
-            "view": ("View", self._build_view_toolbar_menu),
-            "filters": ("Filters", self._build_quick_filter_toolbar_menu),
-            "columns": ("Columns", self._build_columns_toolbar_menu),
-            "sort": ("Sort", self._build_sort_toolbar_menu),
-            "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
-            "ai_results": ("AI Results", self._build_ai_results_menu),
-            "projects": ("Collections", self._build_projects_toolbar_menu),
-            "catalog": ("Library", self._build_catalog_toolbar_menu),
-        }
-
-    def _build_topbar_action_item(self, item_id: str) -> QWidget | None:
-        """Build a single top-bar centre widget for a layout item, or None when
-        the item is top-bar chrome handled elsewhere (nav glyphs/search/path).
-
-        Buttons carry the same Fluent toolbar icon used by the old workspace
-        toolbar (``WORKSPACE_TOOLBAR_FLUENT_ICONS``) above a compact label.
-        """
-        if item_id in self.TOPBAR_CHROME_ITEMS:
-            return None
-        if item_id == "divider":
-            return self._build_topbar_divider()
-        theme = getattr(self, "_theme", None) or default_theme()
-        icon_color = theme.text_primary.qcolor()
-        icon = self._trim_icon_transparency(
-            self._workspace_toolbar_icon(item_id, color=icon_color)
-        )
-        popup_specs = self._topbar_popup_specs()
-        action: QAction | None = None
-        if item_id in popup_specs:
-            label, factory = popup_specs[item_id]
-            menu = factory()
-            button = self._build_popup_button(label, menu)
-            # The factories parent every menu to the main window, so one would
-            # outlive its button (with its submenus) on each rebuild. Hand it to
-            # the button; keep its window flags, which a plain setParent resets.
-            menu.setParent(button, menu.windowFlags())
-        else:
-            spec = self._workspace_toolbar_action_specs().get(item_id)
-            if spec is None:
-                return None
-            action, text = spec
-            button = QToolButton()
-            button.setObjectName("appTopBarActionButton")
-            button.setText(text)
-            button.setToolTip(action.toolTip() or text)
-            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            button.clicked.connect(
-                lambda _checked=False, iid=item_id, src=action: self._activate_topbar_action(iid, src)
-            )
-            _TopbarActionSync(self, button, action, item_id)
-            self._sync_topbar_action_button_for(button, action, item_id)
-        button.setText(self.TOPBAR_COMPACT_LABELS.get(item_id, button.text()))
-        self._apply_topbar_button_style(button, icon)
-        if action is not None:
-            self._sync_topbar_action_button_for(button, action, item_id)
-        button.setProperty("topbarItemId", item_id)
-        return button
-
-    def _build_topbar_divider(self) -> QWidget:
-        """An inert thin vertical pipe used purely as a visual group divider.
-        No action, no click behaviour — it just occupies a cell."""
-        holder = QWidget()
-        holder.setObjectName("topbarDividerCell")
-        profile = getattr(self, "_display_profile", None) or STANDARD_DISPLAY
-        holder.setFixedSize(profile.topbar_slot_button_width, profile.topbar_button_height)
-        layout = QHBoxLayout(holder)
-        vertical_margin = max(5, round(profile.topbar_button_height * 0.21))
-        layout.setContentsMargins(0, vertical_margin, 0, vertical_margin)
-        layout.setSpacing(0)
-        line = QFrame(holder)
-        line.setObjectName("topbarDividerLine")
-        line.setFixedWidth(2)
-        line.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        layout.addWidget(line, 0, Qt.AlignmentFlag.AlignHCenter)
-        holder.setProperty("topbarItemId", "divider")
-        return holder
-
-    def _item_target_mode_for_action(self, item_id: str) -> str | None:
-        """The review mode an item needs, or None if it works in the current one.
-        Lets an AI button placed on the Manual bar flip the app to AI when used."""
-        current = "ai" if getattr(self, "_ui_mode", "manual") == "ai" else "manual"
-        if item_id in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(current, ()):
-            return None
-        for mode in ("ai", "manual"):
-            if item_id in self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(mode, ()):
-                return mode
-        return None
-
-    def _switch_review_mode_to(self, mode: str) -> None:
-        # AI Review is retired: the app always stays in manual review, so
-        # asking to switch to "ai" is a no-op (matches the guard already in
-        # _handle_mode_tab_changed).
-        return
-
-    def _activate_topbar_action(self, item_id: str, action: QAction) -> None:
-        target = self._item_target_mode_for_action(item_id)
-        if target is not None:
-            self._switch_review_mode_to(target)
-        action.trigger()
-
-    def _sync_topbar_action_button_for(self, button: QToolButton, action: QAction, item_id: str) -> None:
-        # A button living on the "wrong" bar (an AI button on the Manual bar)
-        # stays clickable even when its action is disabled in the current mode,
-        # so clicking it can flip the app to the mode where it works.
-        cross = self._item_target_mode_for_action(item_id) is not None
-        try:
-            button.setEnabled(True if cross else action.isEnabled())
-            button.setCheckable(action.isCheckable())
-            if action.isCheckable():
-                button.setChecked(action.isChecked())
-            button.setToolTip(action.toolTip() or self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id))
-            glyph = button.findChild(QToolButton, "appTopBarGlyph")
-            if glyph is not None:
-                glyph.setCheckable(action.isCheckable())
-                glyph.setChecked(action.isChecked() if action.isCheckable() else False)
-        except RuntimeError:
-            pass
-
-    def _sync_topbar_action_buttons(self) -> None:
-        """Re-read every action-backed top-bar button from its action.
-
-        The buttons normally follow ``action.changed``. But the checked state of
-        several actions (Compare, Auto-Advance, Smart Groups/Stacks, Hidden
-        Folders, Zen) is pushed from window state under ``QSignalBlocker`` so a
-        resync does not re-trigger the action, and that blocker swallows
-        ``changed`` too: a button on the bar then keeps the old state until
-        something happens to rebuild it. Call this after any such push.
-        """
-        built = getattr(self, "_topbar_action_items", None)
-        if not built or getattr(self, "actions", None) is None:
-            return
-        specs = self._workspace_toolbar_action_specs()
-        for items in built.values():
-            for item_id, widget in items:
-                spec = specs.get(item_id)
-                if spec is not None and isinstance(widget, QToolButton):
-                    self._sync_topbar_action_button_for(widget, spec[0], item_id)
-
-    def _apply_topbar_button_style(self, button: QToolButton, icon: QIcon) -> None:
-        """Place every glyph and caption in identical fixed-height rows."""
-        profile = self._toolbar_profile()
-        caption = button.text()
-        button.setMinimumSize(0, 0)
-        button.setMaximumSize(16777215, 16777215)
-        button.setObjectName("appTopBarIconButton")
-        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-        hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
-        button.setFixedSize(hover_width, hover_height)
-        button.setAccessibleName(caption)
-        button.setProperty("topbarCaption", caption)
-        button.setText("")
-        button.setIcon(QIcon())
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-
-        content = QWidget(button)
-        content.setObjectName("appTopBarButtonContent")
-        content.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        content.setGeometry(
-            profile.topbar_hover_margin,
-            profile.topbar_hover_margin,
-            profile.topbar_slot_button_width,
-            profile.topbar_button_height,
-        )
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        glyph = QToolButton(content)
-        glyph.setObjectName("appTopBarGlyph")
-        glyph.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        glyph.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        glyph.setIcon(icon)
-        glyph.setIconSize(QSize(profile.topbar_glyph_size, profile.topbar_glyph_size))
-        glyph.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        glyph.setFixedSize(profile.topbar_slot_button_width, profile.topbar_glyph_size)
-        layout.addWidget(glyph, 0, Qt.AlignmentFlag.AlignHCenter)
-
-        caption_label = QLabel(caption, content)
-        caption_label.setObjectName("appTopBarButtonCaption")
-        caption_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        caption_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        caption_label.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
-        layout.addWidget(caption_label, 0, Qt.AlignmentFlag.AlignHCenter)
 
     @staticmethod
     def _resize_topbar_button(button: QToolButton, profile: DisplayProfile) -> None:
@@ -5445,17 +2846,6 @@ class MainWindow(QMainWindow):
         caption = button.findChild(QLabel, "appTopBarButtonCaption")
         if caption is not None:
             caption.setFixedSize(profile.topbar_slot_button_width, profile.topbar_caption_height)
-
-    def _topbar_nav_icon(self, item_id: str) -> QIcon:
-        glyphs = self.TOPBAR_NAV_FLUENT_ICONS.get(item_id)
-        if glyphs is None:
-            return QIcon()
-        theme = getattr(self, "_theme", None) or default_theme()
-        color = theme.text_primary.qcolor()
-        primary, secondary = glyphs
-        return self._trim_icon_transparency(
-            self._fluent_toolbar_icon(primary, secondary, color=color)
-        )
 
     @staticmethod
     def _trim_icon_transparency(icon: QIcon, *, padding: int = 3) -> QIcon:
@@ -5487,225 +2877,6 @@ class MainWindow(QMainWindow):
         bounds = bounds.adjusted(-inset, -inset, inset, inset).intersected(image.rect())
         return QIcon(source.copy(bounds))
 
-    def _apply_chrome_icon_scale(self) -> None:
-        """Restore the standard icon scale for fixed chrome controls."""
-        for button, base in getattr(self, "_left_settings_buttons", ()):
-            button.setIconSize(QSize(base, base))
-        for button, base in getattr(self, "_topbar_nav_buttons", ()):
-            font = button.font()
-            font.setPixelSize(base)
-            button.setFont(font)
-
-    def _build_topbar_more_button(self) -> QToolButton:
-        button = QToolButton()
-        button.setObjectName("appTopBarActionButton")
-        button.setText("More ▾")
-        button.setToolTip("More toolbar buttons")
-        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setMenu(QMenu(button))
-        # Honor the toolbar-style preference (text label vs the "more" glyph).
-        self._apply_topbar_button_style(button, self._workspace_toolbar_icon("more"))
-        return button
-
-    @classmethod
-    def _topbar_visible_slot_count_for_width(cls, width: int | float) -> int:
-        available = int(width or 0)
-        if available <= 0:
-            return max(1, min(cls.TOPBAR_INITIAL_VISIBLE_SLOTS, cls.TOPBAR_SLOT_COUNT))
-        hover_width = cls.TOPBAR_SLOT_BUTTON_WIDTH + 2 * cls.TOPBAR_HOVER_MARGIN
-        cell = max(cls.TOPBAR_SLOT_CELL_MIN, hover_width)
-        spacing = max(0, int(cls.TOPBAR_SLOT_SPACING))
-        count = (available + spacing) // (cell + spacing)
-        return max(1, min(cls.TOPBAR_SLOT_COUNT, int(count)))
-
-    def _topbar_visible_slot_count(self) -> int:
-        stack = getattr(self, "topbar_action_stack", None)
-        width = stack.width() if isinstance(stack, QWidget) else 0
-        profile = self._toolbar_profile() if getattr(self, "_display_profile", None) is not None else None
-        if profile is None:
-            return self._topbar_visible_slot_count_for_width(width)
-        available = int(width or 0)
-        if available <= 0:
-            return max(1, min(self.TOPBAR_INITIAL_VISIBLE_SLOTS, self.TOPBAR_SLOT_COUNT))
-        hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-        cell = max(profile.topbar_slot_cell_min, hover_width)
-        spacing = max(0, profile.topbar_slot_spacing)
-        count = (available + spacing) // (cell + spacing)
-        if getattr(self, "_toolbar_placement", "docked") == "floating":
-            # The dock is a fixed share of the window: spread the buttons in
-            # use across it instead of leaving empty cells at the end.
-            count = min(count, max(1, self._used_toolbar_slot_count()))
-        return max(1, min(self.TOPBAR_SLOT_COUNT, int(count)))
-
-    def _configure_topbar_grid_columns(self, grid: QGridLayout, visible_slots: int) -> None:
-        profile = self._toolbar_profile()
-        for col in range(self.TOPBAR_SLOT_COUNT):
-            active = col < visible_slots
-            grid.setColumnStretch(col, 1 if active else 0)
-            grid.setColumnMinimumWidth(col, profile.topbar_slot_cell_min if active else 0)
-
-    def _topbar_rebuild_inputs(self, visible_slots: int) -> tuple:
-        """Everything ``_rebuild_topbar_action_stack`` reads that can change what
-        it builds, as a value to compare between calls.
-
-        Live action state (enabled, checked, tooltip) is deliberately absent:
-        the buttons follow it themselves (``_TopbarActionSync`` and
-        ``_sync_topbar_action_buttons``). The popup menus are built from shared
-        actions, so they follow it too. The icon cache is also absent; whoever
-        clears it passes ``force=True``.
-        """
-        slots = getattr(self, "_topbar_slots", None) or {}
-        return (
-            visible_slots,
-            tuple(slots.get("manual") or ()),
-            tuple(slots.get("ai") or ()),
-            # Every button metric (and, floating, the scale derived from the window size).
-            self._toolbar_profile(),
-            # Icon colours.
-            getattr(self, "_theme", None),
-            getattr(self, "_toolbar_placement", "docked"),
-            # Decides whether an item is "cross-mode" and so stays clickable.
-            getattr(self, "_ui_mode", "manual"),
-        )
-
-    def _topbar_stack_intact(self) -> bool:
-        """True while every widget the last rebuild made is still alive and in its grid."""
-        layouts = getattr(self, "_topbar_action_layouts", None) or {}
-        built = getattr(self, "_topbar_action_items", None) or {}
-        try:
-            for target in ("manual", "ai"):
-                grid = layouts.get(target)
-                items = built.get(target)
-                if grid is None or items is None or grid.count() != len(items):
-                    return False
-                if any(grid.indexOf(widget) < 0 for _item_id, widget in items):
-                    return False
-        except RuntimeError:  # a wrapped C++ widget was deleted underneath us
-            return False
-        return True
-
-    def _rebuild_topbar_action_stack(self, mode: str | None = None, *, force: bool = False) -> None:
-        """Rebuild both top-bar pages from the shared slots.
-
-        Cheap to call often: when none of ``_topbar_rebuild_inputs`` changed since
-        the last rebuild and its widgets are all still alive, nothing is built
-        (about half of the calls made over a launch and a resize were identical
-        rebuilds). ``force=True`` rebuilds regardless; pass it when something the
-        inputs do not capture has changed, such as a cleared icon cache.
-        Always synchronous: deferring the layout on resize drew a visible jump.
-        """
-        layouts = getattr(self, "_topbar_action_layouts", None)
-        if not layouts:
-            return
-        # Unified bar: both mode pages render the same shared slots, so always
-        # rebuild both regardless of the requested mode.
-        modes = ("manual", "ai")
-        n = self.TOPBAR_SLOT_COUNT
-        visible_slots = self._topbar_visible_slot_count()
-        rebuild_key = self._topbar_rebuild_inputs(visible_slots)
-        if (
-            not force
-            and rebuild_key == getattr(self, "_topbar_rebuild_key", None)
-            and self._topbar_stack_intact()
-        ):
-            return
-        # Recorded again only once the build below has completed, so a build that
-        # raises part-way can never be mistaken for a finished one.
-        self._topbar_rebuild_key = None
-        self._topbar_rendered_slot_count = visible_slots
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        built = 0
-        for target in modes:
-            grid = layouts.get(target)
-            if grid is None:
-                continue
-            self._clear_layout_items(grid, delete_widgets=True)
-            self._configure_topbar_grid_columns(grid, visible_slots)
-            slots = list(getattr(self, "_topbar_slots", {}).get(target) or [])
-            slots += [None] * (n - len(slots))
-            hidden_start = visible_slots
-            if any(item_id for item_id in slots[visible_slots:]):
-                hidden_start = max(0, visible_slots - 1)
-            items: list[tuple[str, QWidget]] = []
-            slot_widgets: list[QWidget | None] = [None] * n
-            for slot_index in range(hidden_start):
-                item_id = slots[slot_index]
-                if not item_id:
-                    continue
-                widget = self._build_topbar_action_item(item_id)
-                if widget is None:
-                    continue
-                self._normalize_topbar_slot_button(widget)
-                grid.addWidget(widget, 0, slot_index, Qt.AlignmentFlag.AlignCenter)
-                items.append((item_id, widget))
-                slot_widgets[slot_index] = widget
-                built += 1
-            hidden_items = [item_id for item_id in slots[hidden_start:] if item_id]
-            if hidden_items and visible_slots > 0:
-                button = self._build_topbar_more_button()
-                menu = QMenu(button)
-                for item_id in hidden_items:
-                    self._add_topbar_overflow_entry(menu, item_id)
-                button.setMenu(menu)
-                self._normalize_topbar_slot_button(button)
-                more_slot = visible_slots - 1
-                grid.addWidget(button, 0, more_slot, Qt.AlignmentFlag.AlignCenter)
-                items.append(("more", button))
-                slot_widgets[more_slot] = button
-                self._topbar_more_buttons[target] = button
-                built += 1
-            else:
-                self._topbar_more_buttons.pop(target, None)
-            self._topbar_action_items[target] = items
-            self._topbar_slot_widgets[target] = slot_widgets
-        self._topbar_rebuild_key = rebuild_key
-        if logger.enabled:
-            logger.duration("toolbar.rebuild_stack", (time.perf_counter() - start) * 1000.0, widgets=built)
-        if getattr(self, "_toolbar_placement", "docked") == "floating" and getattr(self, "toolbar_strip", None) is not None:
-            QTimer.singleShot(0, self._position_floating_toolbar)
-
-    def _normalize_topbar_slot_button(self, widget: QWidget) -> None:
-        # One uniform width so every cell reads the same regardless of whether
-        # the button shows an icon or text (text elides at this width).
-        if isinstance(widget, QToolButton):
-            profile = self._toolbar_profile()
-            if widget.findChild(QWidget, "appTopBarButtonContent") is not None:
-                self._resize_topbar_button(widget, profile)
-            else:
-                widget.setFixedWidth(profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin)
-
-    def _add_topbar_overflow_entry(self, menu: QMenu, item_id: str) -> None:
-        popup_specs = self._topbar_popup_specs()
-        if item_id in popup_specs:
-            label, factory = popup_specs[item_id]
-            self._add_topbar_overflow_popup_entries(menu, label, factory)
-            return
-        spec = self._workspace_toolbar_action_specs().get(item_id)
-        if spec is not None:
-            menu.addAction(spec[0])
-
-    def _add_topbar_overflow_popup_entries(self, menu: QMenu, label: str, factory: "Callable[[], QMenu]") -> None:
-        source_menu = factory()
-        actions = list(source_menu.actions())
-        if not actions:
-            source_menu.deleteLater()
-            return
-        if menu.actions():
-            menu.addSeparator()
-        menu.addSection(label)
-        for action in actions:
-            submenu = action.menu()
-            if submenu is not None:
-                submenu.setParent(menu)
-                menu.addMenu(submenu)
-            elif action.isSeparator():
-                menu.addSeparator()
-            else:
-                menu.addAction(action)
-        self._keep_topbar_overflow_menu_source(menu, source_menu)
-
     @staticmethod
     def _keep_topbar_overflow_menu_source(menu: QMenu, source_menu: QMenu) -> None:
         source_menu.setParent(menu)
@@ -5714,17 +2885,6 @@ class MainWindow(QMainWindow):
             sources = []
             setattr(menu, "_topbar_flattened_source_menus", sources)
         sources.append(source_menu)
-
-    def _update_topbar_overflow(self, mode: str) -> None:
-        visible_slots = self._topbar_visible_slot_count()
-        if visible_slots == getattr(self, "_topbar_rendered_slot_count", None):
-            return
-        # Forced: the check above is already the change detection (the visible
-        # slot count moved), and this runs synchronously from the stack's resize.
-        self._rebuild_topbar_action_stack(mode, force=True)
-
-    def _build_advanced_filter_button(self) -> QToolButton:
-        return self._records_view.build_advanced_filter_button()
 
     @staticmethod
     def _normalize_toolbar_style(value: object) -> str:
@@ -5743,89 +2903,6 @@ class MainWindow(QMainWindow):
         return "detailed"
 
     # -- Resolution-aware card-style policy --------------------------------
-    def _schedule_display_profile_update(self) -> None:
-        if self._display_profile_update_pending:
-            return
-        self._display_profile_update_pending = True
-        QTimer.singleShot(0, self._apply_display_profile)
-
-    def _apply_display_profile(self) -> None:
-        self._display_profile_update_pending = False
-        container = getattr(self, "central_container", None)
-        width = int(container.width()) if container is not None and container.width() > 0 else int(self.width())
-        height = int(container.height()) if container is not None and container.height() > 0 else int(self.height())
-        profile = display_profile_for_preference(width, height, self._interface_size)
-        if profile == self._display_profile:
-            return
-        self._display_profile = profile
-
-        if container is not None:
-            layout = container.layout()
-            if layout is not None:
-                # Edge-to-edge shell: panels meet at hairlines, no outer gutter.
-                layout.setContentsMargins(0, 0, 0, 0)
-                layout.setSpacing(0)
-        docks = getattr(self, "workspace_docks", None)
-        if docks is not None:
-            docks.apply_display_profile(profile)
-        self._apply_main_chrome_display_profile(profile)
-        preview = self._preview_if_built()
-        if preview is not None:
-            preview.apply_display_profile(profile)
-
-    def _apply_main_chrome_display_profile(self, profile: DisplayProfile) -> None:
-        """Apply bounded profile metrics to the production window chrome."""
-
-        bar = getattr(self, "app_top_bar", None)
-        if bar is not None and bar.layout() is not None:
-            bar.layout().setContentsMargins(
-                profile.shell_margin,
-                0,
-                0 if getattr(self, "_window_control_buttons", None) else profile.shell_margin + 2,
-                0,
-            )
-            bar.layout().setSpacing(profile.inspector_spacing)
-        search = getattr(self, "topbar_search_field", None)
-        if search is not None:
-            search.setMinimumWidth(profile.topbar_search_min_width)
-            search.setMaximumWidth(profile.topbar_search_max_width)
-        zoom = getattr(self, "topbar_zoom_slider", None)
-        if zoom is not None:
-            zoom.setFixedWidth(profile.topbar_zoom_width)
-        path = getattr(self, "topbar_path_combo", None)
-        if path is not None:
-            path.setMinimumWidth(profile.topbar_path_min_width)
-            path.setMaximumWidth(profile.topbar_path_max_width)
-        for button, _base in getattr(self, "_topbar_nav_buttons", ()):
-            button.setFixedSize(profile.topbar_nav_button_size, profile.topbar_nav_button_size)
-            font = button.font()
-            font.setPixelSize(profile.topbar_nav_font_size)
-            button.setFont(font)
-        toolbar_profile = self._toolbar_profile()
-        for button, _item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-            self._resize_topbar_button(button, toolbar_profile)
-        for button in getattr(self, "_topbar_pane_buttons", {}).values():
-            hover_width = profile.topbar_slot_button_width + 2 * profile.topbar_hover_margin
-            hover_height = profile.topbar_button_height + 2 * profile.topbar_hover_margin
-            button.setFixedSize(hover_width, hover_height)
-            button.setIconSize(QSize(profile.topbar_glyph_size + 2, profile.topbar_glyph_size + 2))
-        nav_layout = getattr(self, "_topbar_nav_layout", None)
-        if nav_layout is not None:
-            nav_layout.setSpacing(profile.topbar_slot_spacing)
-        for grid in getattr(self, "_topbar_action_layouts", {}).values():
-            grid.setHorizontalSpacing(profile.topbar_slot_spacing)
-        if getattr(self, "_topbar_action_layouts", None):
-            # Forced: _apply_display_profile only gets here for a profile that
-            # differs from the last one, which is exactly what the bar must follow.
-            self._rebuild_topbar_action_stack(force=True)
-        self._size_view_controls()
-        search_field = getattr(self, "topbar_search_field", None)
-        if search_field is not None:
-            search_field.setMinimumWidth(180)
-            search_field.setMaximumWidth(16777215)
-        if path is not None:
-            path.setMaximumWidth(16777215)
-
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         if (
@@ -5835,8 +2912,8 @@ class MainWindow(QMainWindow):
         ):
             # A live drag sends many resizes a frame; coalesce them. (Before the
             # first show the size is provisional, and showEvent lays out.)
-            self._schedule_display_profile_update()
-            self._schedule_layout_ratio_update()
+            self._appearance.schedule_display_profile_update()
+            self._appearance.schedule_layout_ratio_update()
             return
         # A one-off resize -- the startup maximize, a maximize or restore, a
         # snap -- is laid out now, before Qt paints it. Deferring it drew one
@@ -5847,49 +2924,11 @@ class MainWindow(QMainWindow):
         self._laying_out_on_resize = True
         try:
             self._display_profile_update_pending = True
-            self._apply_display_profile()
+            self._appearance.apply_display_profile()
             self._layout_ratio_update_pending = True
-            self._apply_layout_ratios()
+            self._appearance.apply_layout_ratios()
         finally:
             self._laying_out_on_resize = False
-
-    def _paint_grid_backdrop(self, painter: QPainter, rect: QRect) -> None:
-        theme = self._theme
-        if theme is None:
-            return
-        origin = self.grid.viewport().mapTo(self, QPoint(0, 0))
-        paint_backdrop(painter, theme, self.size(), origin, rect)
-
-    def _drive_glyph_icon(self, path: str) -> QIcon | None:
-        """Fluent drive glyphs (disk, removable card, network share) in the
-        theme's meter colour, instead of the shell's drive icons."""
-        if not path:
-            return None
-        drive_type = 3
-        if os.name == "nt":
-            try:
-                drive_type = int(ctypes.windll.kernel32.GetDriveTypeW(os.path.splitdrive(path)[0] + "\\"))  # type: ignore[attr-defined]
-            except (AttributeError, OSError, ValueError):
-                drive_type = 3
-        glyph = {2: "E7F8", 4: "E968"}.get(drive_type, "EDA2")
-        theme = self._theme or default_theme()
-        colour = theme.accent_hover.qcolor()
-        cache = self.__dict__.setdefault("_drive_glyph_icon_cache", {})
-        key = (glyph, colour.rgba())
-        if key not in cache:
-            pixmap = QPixmap(64, 64)
-            pixmap.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-            font = QFont("Segoe Fluent Icons")
-            font.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
-            font.setPixelSize(56)
-            painter.setFont(font)
-            painter.setPen(colour)
-            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, chr(int(glyph, 16)))
-            painter.end()
-            cache[key] = self._trim_icon_transparency(QIcon(pixmap), padding=2)
-        return cache[key]
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         theme = self._theme
@@ -5949,7 +2988,7 @@ class MainWindow(QMainWindow):
     def _post_show_display_setup(self) -> None:
         # Runs once the window is up: warn if on a small display, and re-apply the
         # policy live when moved to another screen or the resolution changes.
-        self._apply_display_profile()
+        self._appearance.apply_display_profile()
         self._apply_display_style_policy(show_warning=True)
         handle = self.windowHandle()
         if handle is not None:
@@ -5975,7 +3014,7 @@ class MainWindow(QMainWindow):
 
     def _handle_display_change(self, _arg=None) -> None:
         self._connect_screen_geometry_signal()
-        self._schedule_display_profile_update()
+        self._appearance.schedule_display_profile_update()
         QTimer.singleShot(0, lambda: fit_window_to_available_geometry(self))
         self._apply_display_style_policy(show_warning=True)
 
@@ -5993,148 +3032,6 @@ class MainWindow(QMainWindow):
             "(photo-only) to keep the layout usable. Other card styles become "
             "available again on a larger display.",
         )
-
-    def _fluent_filled_icon(self, primary: str, color: QColor) -> QIcon:
-        """Render a Fluent glyph as a solid filled silhouette (the enclosed
-        interior flood-filled), rather than the default outline/stroke look."""
-        size = 64
-        glyph_img = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
-        glyph_img.fill(0)
-        painter = QPainter(glyph_img)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        font_family = "Segoe MDL2 Assets" if len(primary) > 2 else "Segoe UI"
-        font = QFont(font_family, 42)
-        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-        painter.setFont(font)
-        painter.setPen(QColor(255, 255, 255))
-        text = chr(int(primary, 16)) if len(primary) > 2 else primary
-        painter.drawText(glyph_img.rect(), Qt.AlignmentFlag.AlignCenter, text)
-        painter.end()
-
-        threshold = 70
-        ink = bytearray(size * size)
-        for y in range(size):
-            for x in range(size):
-                if glyph_img.pixelColor(x, y).alpha() >= threshold:
-                    ink[y * size + x] = 1
-
-        # Flood-fill the exterior (transparent region reachable from the border).
-        exterior = bytearray(size * size)
-        stack = deque()
-        for x in range(size):
-            for y in (0, size - 1):
-                idx = y * size + x
-                if not ink[idx] and not exterior[idx]:
-                    exterior[idx] = 1
-                    stack.append((x, y))
-        for y in range(size):
-            for x in (0, size - 1):
-                idx = y * size + x
-                if not ink[idx] and not exterior[idx]:
-                    exterior[idx] = 1
-                    stack.append((x, y))
-        while stack:
-            x, y = stack.pop()
-            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
-                if 0 <= nx < size and 0 <= ny < size:
-                    idx = ny * size + nx
-                    if not ink[idx] and not exterior[idx]:
-                        exterior[idx] = 1
-                        stack.append((nx, ny))
-
-        def render(fill_color: QColor) -> QPixmap:
-            # Silhouette = everything that is not exterior (ink + enclosed interior).
-            result = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
-            result.fill(0)
-            fill = QColor(fill_color)
-            for y in range(size):
-                base = y * size
-                for x in range(size):
-                    if not exterior[base + x]:
-                        result.setPixelColor(x, y, fill)
-            # Carve the original strokes back out so internal detail (lines,
-            # holes, edges) reads as negative space instead of a solid blob.
-            if primary not in self.FILLED_ICON_SKIP_CARVE:
-                carve = QPainter(result)
-                carve.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
-                carve.drawImage(0, 0, glyph_img)
-                carve.end()
-            return QPixmap.fromImage(result)
-
-        theme = getattr(self, "_theme", None) or default_theme()
-        icon = QIcon(render(color))
-        icon.addPixmap(render(theme.text_primary.qcolor()), QIcon.Mode.Active, QIcon.State.Off)
-        icon.addPixmap(render(theme.accent.qcolor()), QIcon.Mode.Normal, QIcon.State.On)
-        icon.addPixmap(render(theme.accent_hover.qcolor()), QIcon.Mode.Active, QIcon.State.On)
-        icon.addPixmap(render(theme.text_disabled.qcolor()), QIcon.Mode.Disabled)
-        return icon
-
-    def _chrome_icon_color(self) -> QColor:
-        """Muted grey used for the left rail / settings-bar glyphs (instead of
-        the bright off-white default). Falls back to a constant because the theme
-        is not resolved yet when these chrome buttons are first built."""
-        theme = getattr(self, "_theme", None) or default_theme()
-        return theme.text_secondary.qcolor() if not theme.is_dark else theme.text_muted.qcolor()
-
-    def _workspace_toolbar_icon(self, item_id: str, *, color: QColor | None = None) -> QIcon:
-        glyphs = self.WORKSPACE_TOOLBAR_FLUENT_ICONS.get(item_id)
-        if glyphs is None:
-            return QIcon()
-        primary, secondary = glyphs
-        return self._fluent_toolbar_icon(primary, secondary, color=color)
-
-    def _fluent_toolbar_icon(
-        self,
-        primary: str,
-        secondary: str | None = None,
-        *,
-        color: QColor | None = None,
-        primary_size: int = 31,
-    ) -> QIcon:
-        theme = getattr(self, "_theme", None) or default_theme()
-        if color is None:
-            color = theme.text_secondary.qcolor()
-        accent = theme.accent.qcolor()
-        active = theme.text_primary.qcolor()
-        active_accent = theme.accent_hover.qcolor()
-        selected = theme.accent.qcolor()
-        disabled = theme.text_muted.qcolor() if not theme.is_dark else theme.text_disabled.qcolor()
-        # The rendered glyph depends only on (primary, secondary, color, accent) —
-        # never on the owning action's enabled/checked state (Qt auto-dims the
-        # disabled variant). Memoize so the per-action.changed toolbar syncs are
-        # cache hits instead of re-rasterizing a 64x64 pixmap each time, which
-        # otherwise stalls folder loads by seconds when the icon toolbar style
-        # is active. The colour key makes the cache self-invalidate on theme change.
-        cache = self.__dict__.setdefault("_fluent_toolbar_icon_cache", {})
-        cache_key = (
-            primary,
-            secondary,
-            color.rgba(),
-            accent.rgba(),
-            active.rgba(),
-            active_accent.rgba(),
-            selected.rgba(),
-            disabled.rgba(),
-            primary_size,
-        )
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        def render(primary_color: QColor, secondary_color: QColor) -> QPixmap:
-            return self._render_fluent_glyphs(
-                primary, secondary, primary_color, secondary_color, primary_size=primary_size
-            )
-
-        pixmap = render(color, accent)
-        icon = QIcon(pixmap)
-        icon.addPixmap(render(active, active_accent), QIcon.Mode.Active, QIcon.State.Off)
-        icon.addPixmap(render(selected, active_accent), QIcon.Mode.Normal, QIcon.State.On)
-        icon.addPixmap(render(active_accent, selected), QIcon.Mode.Active, QIcon.State.On)
-        icon.addPixmap(render(disabled, disabled), QIcon.Mode.Disabled)
-        cache[cache_key] = icon
-        return icon
 
     @staticmethod
     def _render_fluent_glyphs(
@@ -6179,377 +3076,6 @@ class MainWindow(QMainWindow):
             draw_glyph(secondary, x=30, y=30, size=19, selected_color=secondary_color)
         painter.end()
         return pixmap
-
-    def _rail_tool_icon(self, item_id: str, box: int, max_side: int) -> tuple[QIcon, int]:
-        """A pinned tool's icon at the terminal mark's size, and the icon size
-        to show it at. Artwork and glyphs alike are trimmed to their ink first
-        (see rail_tool_pixmap), so every pin lands at the same weight."""
-        theme = getattr(self, "_theme", None) or default_theme()
-        ratio = self._icon_ratio()
-        colour = theme.text_secondary.qcolor()
-        disabled = theme.text_muted.qcolor() if not theme.is_dark else theme.text_disabled.qcolor()
-        # Glyph colours match _fluent_toolbar_icon's normal, hover and disabled.
-        states = (
-            (QIcon.Mode.Normal, colour, theme.accent.qcolor()),
-            (QIcon.Mode.Active, theme.text_primary.qcolor(), theme.accent_hover.qcolor()),
-            (QIcon.Mode.Disabled, disabled, disabled),
-        )
-        cache = self.__dict__.setdefault("_rail_tool_icon_cache", {})
-        key = (item_id, box, max_side, ratio, tuple((a.rgba(), b.rgba()) for _mode, a, b in states))
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-        mark = tool_icon_mark(item_id)
-        glyphs = self.WORKSPACE_TOOLBAR_FLUENT_ICONS.get(item_id)
-        if mark is not None:
-            pixmap, side = rail_tool_pixmap(mark, box, ratio=ratio, max_side=max_side, tint=colour.name())
-            result = (QIcon(pixmap), side)
-        elif glyphs is not None:
-            icon = QIcon()
-            side = box
-            for mode, primary_colour, secondary_colour in states:
-                # Drawn large so trimming and resampling keep the strokes crisp.
-                drawn = self._render_fluent_glyphs(
-                    glyphs[0], glyphs[1], primary_colour, secondary_colour, scale=4
-                ).toImage()
-                trimmed = trim_to_alpha(drawn)
-                if trimmed is None:
-                    continue
-                pixmap, side = rail_tool_pixmap(trimmed, box, ratio=ratio, max_side=max_side)
-                icon.addPixmap(pixmap, mode)
-            result = (icon, side)
-        else:
-            result = (QIcon(), box)
-        cache[key] = result
-        return result
-
-    def _refresh_themed_chrome_icons(self) -> None:
-        self.__dict__.pop("_fluent_toolbar_icon_cache", None)
-
-        for button, _base in getattr(self, "_left_settings_buttons", ()):
-            glyph = button.property("fluentGlyph")
-            if isinstance(glyph, str) and glyph:
-                button.setIcon(self._fluent_filled_icon(glyph, self._chrome_icon_color()))
-
-        self._refresh_left_sidebar_icons()
-        menu_button = getattr(self, "app_menu_button", None)
-        if menu_button is not None:
-            menu_button.setIcon(self._topbar_nav_icon("menu"))
-
-        for button, item_id in getattr(self, "_topbar_labeled_nav_buttons", ()):
-            glyph = button.findChild(QToolButton, "appTopBarGlyph")
-            if glyph is not None:
-                glyph.setIcon(self._topbar_nav_icon(item_id))
-        for key, button in getattr(self, "_topbar_pane_buttons", {}).items():
-            button.setIcon(self._pane_toggle_icon("left" if key == "library" else "right"))
-
-        for widgets in getattr(self, "_workspace_toolbar_item_widgets", {}).values():
-            for item_id, widget in widgets.items():
-                if isinstance(widget, QToolButton):
-                    self._configure_workspace_toolbar_button(
-                        widget,
-                        item_id=item_id,
-                        text=self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id),
-                    )
-        for button in getattr(self, "_workspace_toolbar_overflow_buttons", {}).values():
-            if isinstance(button, QToolButton):
-                self._configure_workspace_toolbar_button(button, item_id="more", text="More")
-
-        if hasattr(self, "topbar_action_stack"):
-            # Forced: the icon cache was just cleared, an input the change guard
-            # cannot see, and this is a theme / gamma / icon refresh.
-            self._rebuild_topbar_action_stack(force=True)
-
-    def _refresh_left_sidebar_icons(self) -> None:
-        theme = getattr(self, "_theme", None) or default_theme()
-        accent = theme.accent.qcolor()
-        muted = theme.text_muted.qcolor()
-        for tree in (getattr(self, "folder_tree", None), getattr(self, "drive_list", None)):
-            if not isinstance(tree, FolderTreeView):
-                continue
-            selected_fill = theme.selection_fill.qcolor()
-            hovered_fill = QColor(selected_fill)
-            hovered_fill.setAlpha(max(1, selected_fill.alpha() // 2))
-            tree.set_navigation_colors(selected_fill, hovered_fill)
-            # Drive meters: accent into the backdrop's second glow when the
-            # theme has one (Indigo: violet into teal), plain accent otherwise.
-            fill_start = theme.meter_start.qcolor() if theme.meter_start else accent
-            fill_end = theme.meter_end.qcolor() if theme.meter_end else accent
-            tree.set_usage_bar_colors(theme.text_primary.with_alpha(22).qcolor(), fill_start, fill_end)
-            self.__dict__.pop("_drive_glyph_icon_cache", None)
-            tree.set_drive_icon_provider(self._drive_glyph_icon)
-        self._apply_left_rail_label_colors()
-        self._apply_pocketdrop_background()
-        if getattr(self, "left_rail_add_button", None) is not None:
-            self._rebuild_pinned_tools()
-        refresh_button = getattr(self, "drives_refresh_button", None)
-        if refresh_button is not None:
-            refresh_button.setIcon(self._fluent_toolbar_icon("E72C", color=muted))
-        face_header = getattr(self, "face_groups_header", None)
-        if face_header is not None:
-            face_header.set_icon(QIcon(sidebar_people_icon_pixmap(21, accent.name())))
-        projects_header = getattr(self, "projects_header", None)
-        if projects_header is not None:
-            projects_header.set_icon(QIcon(sidebar_projects_icon_pixmap(21, accent.name())))
-        for button in (
-            getattr(self, "face_groups_add_button", None),
-            getattr(self, "projects_add_button", None),
-            getattr(self, "folders_add_button", None),
-        ):
-            if button is not None:
-                button.setIcon(
-                    self._fluent_toolbar_icon("E710", color=self._chrome_icon_color())
-                )
-        search_action = getattr(self, "_face_groups_search_action", None)
-        if search_action is not None:
-            search_action.setIcon(self._fluent_toolbar_icon("E721", color=muted))
-        rail = getattr(self, "left_nav_rail", None)
-        if rail is not None:
-            rail.refresh_icons()
-
-    def _configure_workspace_toolbar_button(self, button: QToolButton, *, item_id: str, text: str) -> None:
-        style = self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text"))
-        icon = self._workspace_toolbar_icon(item_id)
-        action = button.defaultAction()
-        button.setToolTip(button.toolTip() or text)
-        button.setProperty("toolbarItemId", item_id)
-        button.setCursor(Qt.CursorShape.ArrowCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        if style == "text":
-            button.setObjectName("workspacePresetsButton")
-            button.setText(text)
-            button.setIcon(QIcon())
-            if action is not None:
-                action.setIcon(QIcon())
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setAutoRaise(False)
-            button.setMinimumSize(0, 0)
-            button.setMaximumSize(16777215, 16777215)
-            return
-        icon_size = 32 if style == "large_icons" else 22
-        button.setObjectName("workspaceIconButton")
-        if action is not None:
-            action.setIcon(icon)
-        button.setIcon(icon)
-        button.setText("")
-        button.setIconSize(QSize(icon_size, icon_size))
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        button.setAutoRaise(True)
-        side = 42 if style == "large_icons" else 32
-        button.setFixedSize(side, side)
-
-    def _build_workspace_bar_button(self, text: str, tooltip: str, *, object_name: str) -> QToolButton:
-        button = QToolButton()
-        button.setObjectName(object_name)
-        button.setText(text)
-        button.setToolTip(tooltip)
-        button.setAutoRaise(True)
-        button.setCursor(Qt.CursorShape.ArrowCursor)
-        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        button.setFixedSize(24, 24)
-        return button
-
-    def _build_left_nav_page(self) -> QWidget:
-        page = QWidget()
-        page.setObjectName("libraryStack")
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        return page
-
-    def _left_nav_icon(self, icon_id: str, selected: bool) -> QIcon:
-        # The same drawn icons the page headers use, so the rail and the page it
-        # opens match and nothing depends on a glyph being present in the font.
-        theme = getattr(self, "_theme", None) or default_theme()
-        colour = (theme.accent if selected else theme.text_muted).qcolor().name()
-        # Sized to the rail, so the mark grows with it instead of being
-        # upscaled from a fixed pixmap.
-        rail = getattr(self, "left_nav_rail", None)
-        size = rail.metrics().icon_px if rail is not None else NAV_RAIL_ICON_PX
-        supplied = nav_icon_pixmap(
-            icon_id, self._nav_icon_box(icon_id, size), colour, ratio=self._icon_ratio()
-        )
-        if supplied is not None:
-            return QIcon(supplied)
-        painter = {
-            "folder": folder_icon_pixmap,
-            "library": library_icon_pixmap,
-            "faces": sidebar_people_icon_pixmap,
-            "people": sidebar_people_icon_pixmap,
-            "collections": sidebar_projects_icon_pixmap,
-            "pocketdrop": pocketdrop_icon_pixmap,
-        }.get(icon_id, folder_icon_pixmap)
-        return QIcon(painter(self._nav_icon_box(icon_id, size), colour))
-
-    def _apply_chrome_text_ratios(self, width: int, height: int) -> None:
-        """Size the top bar's text and the pane headings from layout_ratios.
-
-        Each goes on through the widget's own stylesheet, which outranks the
-        application one where these sizes would otherwise be pinned.
-        """
-        px = layout_ratios.ratio_px
-        floor = layout_ratios.MIN_TEXT_PX
-
-        def text_px(ratio: float) -> int:
-            return px(ratio, height, minimum=floor)
-
-        # The Menu button is icon only, so it has no text size (MENU_ICON_H).
-        glyph_floor = layout_ratios.MIN_GLYPH_PX
-
-        def glyph_px(ratio: float) -> int:
-            return px(ratio, height, minimum=glyph_floor)
-
-        crumb = getattr(self, "app_breadcrumb", None)
-        if crumb is not None:
-            # Named selectors, not a bare font-size: a bare one cascades into the
-            # chevrons between folders and swells them to the text size.
-            sheet = (
-                "QToolButton#breadcrumbSegment, QToolButton#breadcrumbCurrent,"
-                " QLabel#breadcrumbCurrentLabel"
-                f" {{ font-size: {text_px(layout_ratios.BREADCRUMB_TEXT_H)}px; }}"
-                " QLabel#breadcrumbChevron"
-                f" {{ font-size: {glyph_px(layout_ratios.BREADCRUMB_CHEVRON_H)}px; }}"
-            )
-            if crumb.styleSheet() != sheet:
-                crumb.setStyleSheet(sheet)
-        search_box = getattr(self, "app_search_box", None)
-        if search_box is not None:
-            search_height = px(layout_ratios.SEARCH_H, height, minimum=24)
-            field_px = text_px(layout_ratios.SEARCH_TEXT_H)
-            sheet = (
-                f"QFrame#appSearchBox {{ min-height: {search_height}px;"
-                f" max-height: {search_height}px; }}"
-                f" QLineEdit#workspaceSearchField {{ font-size: {field_px}px; }}"
-                " QLabel#appSearchGlyph"
-                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_GLYPH_H)}px; }}"
-                " QToolButton#appSearchKeyHint"
-                f" {{ font-size: {glyph_px(layout_ratios.SEARCH_HINT_H)}px; }}"
-            )
-            if search_box.styleSheet() != sheet:
-                search_box.setStyleSheet(sheet)
-        heading_px = text_px(layout_ratios.SECTION_TITLE_H)
-        for header in (
-            getattr(self, "drives_header", None),
-            getattr(self, "folders_header", None),
-            getattr(self, "face_groups_header", None),
-            getattr(self, "projects_header", None),
-        ):
-            title = getattr(header, "title", None)
-            if title is not None:
-                self._set_widget_font_px(title, heading_px)
-
-    def _apply_chrome_size_ratios(self, width: int, height: int) -> None:
-        """Size the shell's icons, buttons and spacing from layout_ratios.
-
-        Covers what the text ratios do not: the top bar's icons and window
-        buttons, the pane headings, the drive meters and folder tree, the
-        settings strip, the floating bar's padding and the status text.
-        """
-        px = layout_ratios.ratio_px
-        g_floor = layout_ratios.MIN_GLYPH_PX
-
-        def glyph(ratio: float) -> int:
-            return px(ratio, height, minimum=g_floor)
-
-        def size(button: QToolButton | None, box: int | None, icon: int) -> None:
-            if button is None:
-                return
-            if box is not None:
-                button.setFixedSize(box, box)
-            button.setIconSize(QSize(icon, icon))
-
-        # Top bar
-        size(getattr(self, "app_menu_button", None), None, glyph(layout_ratios.MENU_ICON_H))
-        size(
-            getattr(self, "app_settings_button", None),
-            glyph(layout_ratios.TOP_GEAR_BOX_H),
-            glyph(layout_ratios.TOP_GEAR_ICON_H),
-        )
-        update_button = getattr(self, "update_download_button", None)
-        if update_button is not None:
-            update_button.setFixedSize(
-                glyph(layout_ratios.UPDATE_BOX_W_H), glyph(layout_ratios.UPDATE_BOX_H)
-            )
-            update_icon = glyph(layout_ratios.UPDATE_ICON_H)
-            update_button.setIconSize(QSize(update_icon, update_icon))
-        window_glyph = glyph(layout_ratios.WINDOW_BUTTON_GLYPH_H)
-        for control in getattr(self, "_window_control_buttons", {}).values():
-            self._set_widget_font_px(control, window_glyph)
-
-        # Drives / Folders headings, and their refresh / + buttons
-        header_height = glyph(layout_ratios.SECTION_HEADER_H)
-        chevron = glyph(layout_ratios.SECTION_CHEVRON_H)
-        for header in (
-            getattr(self, "drives_header", None),
-            getattr(self, "folders_header", None),
-            getattr(self, "face_groups_header", None),
-            getattr(self, "projects_header", None),
-        ):
-            if header is None:
-                continue
-            sheet = f"QWidget#navSectionHeader {{ min-height: {header_height}px; }}"
-            if header.styleSheet() != sheet:
-                header.setStyleSheet(sheet)
-            header.chevron.setFixedSize(chevron, chevron)
-        section_box = glyph(layout_ratios.SECTION_BUTTON_BOX_H)
-        section_icon = glyph(layout_ratios.SECTION_BUTTON_ICON_H)
-        for button in (
-            getattr(self, "drives_refresh_button", None),
-            getattr(self, "folders_add_button", None),
-        ):
-            size(button, section_box, section_icon)
-
-        # Drive meters and the folder tree
-        meter = glyph(layout_ratios.DRIVE_METER_H)
-        meter_gap = px(layout_ratios.DRIVE_METER_GAP_H, height, minimum=0)
-        for tree in (getattr(self, "drive_list", None), getattr(self, "folder_tree", None)):
-            if tree is not None:
-                tree.set_meter_metrics(meter, meter_gap)
-        folder_tree = getattr(self, "folder_tree", None)
-        if folder_tree is not None:
-            folder_icon = glyph(layout_ratios.FOLDER_ICON_H)
-            folder_tree.setIconSize(QSize(folder_icon, folder_icon))
-            folder_tree.setIndentation(glyph(layout_ratios.FOLDER_INDENT_H))
-
-        # Settings strip under the folder pane (the top-bar gear is sized above)
-        strip_box = glyph(layout_ratios.SETTINGS_BUTTON_BOX_H)
-        strip_icon = glyph(layout_ratios.SETTINGS_ICON_H)
-        top_gear = getattr(self, "app_settings_button", None)
-        for button, _base in getattr(self, "_left_settings_buttons", ()):
-            if button is not top_gear:
-                size(button, strip_box, strip_icon)
-        settings_bar = getattr(self, "left_settings_bar", None)
-        if settings_bar is not None and settings_bar.layout() is not None:
-            pad = glyph(layout_ratios.SETTINGS_PAD_H)
-            settings_bar.layout().setContentsMargins(pad, pad, pad, pad)
-            settings_bar.layout().setSpacing(glyph(layout_ratios.SETTINGS_GAP_H))
-
-        # Floating bar padding (its margin, row gap and fade are positional,
-        # applied in _position_floating_toolbar)
-        strip_layout = getattr(self, "_toolbar_strip_layout", None)
-        if strip_layout is not None:
-            pad_x = px(layout_ratios.FLOATING_TOOLBAR_PAD_X_H, height, minimum=0)
-            pad_y = px(layout_ratios.FLOATING_TOOLBAR_PAD_Y_H, height, minimum=0)
-            strip_layout.setContentsMargins(pad_x, pad_y, pad_x, pad_y)
-
-        # Zoom slider, pane toggles and label widths in the status bar
-        self._size_view_controls()
-
-        # Status bar text (the three permanent labels share one object name)
-        status_px = px(layout_ratios.STATUS_TEXT_H, height, minimum=layout_ratios.MIN_TEXT_PX)
-        # The message on the far left ("Ready", "Update available") is drawn by
-        # the status bar itself, not a label, so it takes the bar's own font.
-        status_bar = self.statusBar()
-        status_sheet = f"QStatusBar {{ font-size: {status_px}px; }}"
-        if status_bar.styleSheet() != status_sheet:
-            status_bar.setStyleSheet(status_sheet)
-        for label in (
-            getattr(self, "filter_summary_label", None),
-            getattr(self, "catalog_status_label", None),
-            getattr(self, "cache_pipeline_label", None),
-        ):
-            if label is not None:
-                self._set_widget_font_px(label, status_px)
 
     def _apply_inspector_text_ratios(self, width: int, height: int) -> None:
         """Size the inspector's own text and its label column.
@@ -6604,234 +3130,11 @@ class MainWindow(QMainWindow):
         theme = getattr(self, "_theme", None) or default_theme()
         panel.set_background(theme.panel_bg.qcolor())
 
-    def _apply_left_rail_label_colors(self) -> None:
-        """Give the rail the same two colours its icons are tinted with."""
-        rail = getattr(self, "left_nav_rail", None)
-        if rail is None:
-            return
-        theme = getattr(self, "_theme", None) or default_theme()
-        rail.set_label_colors(theme.text_muted.qcolor(), theme.accent.qcolor())
-
-    def _icon_ratio(self) -> int:
-        """The device pixel ratio supplied artwork should be rasterised at.
-
-        Building at a fixed 2x and letting Qt shrink it again on a 1x display
-        resamples the art twice, which turns a thin outline to mush; one pass
-        straight to the size it will be drawn at keeps it sharp.
-        """
-        try:
-            return max(1, round(self.devicePixelRatioF()))
-        except (AttributeError, RuntimeError):
-            return 1
-
-    def _nav_icon_box(self, icon_id: str, icon_px: int) -> int:
-        """The icon box that puts this mark's ink at ``icon_px``.
-
-        Supplied artwork is trimmed and fitted to its box, so it needs no
-        correction; the drawn painters each pad by their own amount.
-        """
-        if icon_id in NAV_ICON_ASSETS:
-            return icon_px
-        return round(icon_px / self.NAV_ICON_INK_FILL.get(icon_id, 1.0))
-
-    def _show_left_nav_page(self, key: str) -> None:
-        page = getattr(self, "_left_nav_page_widgets", {}).get(key)
-        if page is None:
-            return
-        self.left_nav_pages.setCurrentWidget(page)
-        if self.left_nav_rail.current() != key:
-            self.left_nav_rail.set_current(key, emit=False)
-        self._settings.setValue(self.LEFT_NAV_PAGE_KEY, key)
-
     def _show_pocketdrop_page(self) -> None:
         docks = getattr(self, "workspace_docks", None)
         if docks is not None and docks.library.mode != "expanded":
             docks.expand_panel("library")
-        self._show_left_nav_page("pocketdrop")
-
-    def _build_left_rail_pinned_tools(self) -> None:
-        """Pinned tools under the rail destinations, with a + at the rail's
-        foot that pins any toolbar command. Right-click a pin to unpin it."""
-        section = QWidget()
-        section.setObjectName("leftRailPinned")
-        layout = QVBoxLayout(section)
-        layout.setContentsMargins(0, 6, 0, 0)
-        layout.setSpacing(4)
-        divider = QFrame(section)
-        divider.setObjectName("leftRailDivider")
-        divider.setFixedSize(44, 1)
-        layout.addWidget(divider, 0, Qt.AlignmentFlag.AlignHCenter)
-        layout.addSpacing(4)
-        label = QLabel("PINNED", section)
-        label.setObjectName("leftRailSectionLabel")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
-        self._left_rail_divider = divider
-        self._left_rail_section_label = label
-        self._left_rail_section_layout = layout
-        self._left_rail_pinned_layout = QVBoxLayout()
-        self._left_rail_pinned_layout.setContentsMargins(0, 0, 0, 0)
-        self._left_rail_pinned_layout.setSpacing(4)
-        layout.addLayout(self._left_rail_pinned_layout)
-        self.left_rail_pinned = section
-        self.left_nav_rail.add_section(section)
-
-        add_button = QToolButton()
-        add_button.setObjectName("leftRailAddButton")
-        add_button.setToolTip("Pin a tool")
-        add_button.setAutoRaise(True)
-        add_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        add_button.setFixedSize(40, 40)
-        add_button.setIconSize(QSize(24, 24))
-        add_button.clicked.connect(lambda _checked=False: self._show_pin_tool_menu(add_button))
-        self.left_rail_add_button = add_button
-        self.left_nav_rail.set_footer(add_button)
-        self._rebuild_pinned_tools()
-        self._apply_left_rail_metrics()
-
-    def _apply_left_rail_metrics(self) -> None:
-        """Size the pinned block to the rail, so the divider, the PINNED
-        caption and the tool buttons keep the design's proportions alongside
-        the destinations above them."""
-        rail = getattr(self, "left_nav_rail", None)
-        if rail is None:
-            return
-        metrics = rail.metrics()
-        # Give each destination an icon box wide enough that its drawn ink
-        # reaches the design's mark size (the painters pad by different amounts).
-        for key, _label, icon_id, _tooltip in self.LEFT_NAV_DESTINATIONS:
-            button = rail.button(key)
-            if button is None:
-                continue
-            box = self._nav_icon_box(icon_id, metrics.icon_px)
-            button.setIconSize(QSize(box, box))
-        divider = getattr(self, "_left_rail_divider", None)
-        if divider is not None:
-            divider.setFixedSize(metrics.divider_width, 1)
-        label = getattr(self, "_left_rail_section_label", None)
-        if label is not None:
-            # A widget sheet beats the application sheet, which pins this size.
-            label.setStyleSheet(f"font-size: {metrics.section_label_px}px;")
-        section_layout = getattr(self, "_left_rail_section_layout", None)
-        if section_layout is not None:
-            section_layout.setContentsMargins(0, metrics.section_gap, 0, 0)
-            section_layout.setSpacing(metrics.tool_gap)
-        pinned_layout = getattr(self, "_left_rail_pinned_layout", None)
-        if pinned_layout is not None:
-            pinned_layout.setSpacing(metrics.tool_gap)
-        for button, item_id in getattr(self, "_left_rail_tool_buttons", ()):
-            # Every pin, artwork or glyph, is sized to match the terminal mark.
-            icon, side = self._rail_tool_icon(
-                item_id, metrics.tool_icon_px, min(metrics.tool_width, metrics.tool_height)
-            )
-            button.setIcon(icon)
-            button.setFixedSize(metrics.tool_width, metrics.tool_height)
-            button.setIconSize(QSize(side, side))
-            button.setStyleSheet(
-                f"QToolButton#leftRailToolButton {{ border-radius: {metrics.tool_radius}px; }}"
-            )
-        add_button = getattr(self, "left_rail_add_button", None)
-        if add_button is not None:
-            add_box = min(
-                round(metrics.add_icon_px / self.FLUENT_ICON_INK_FILL), metrics.add_size
-            )
-            add_button.setFixedSize(metrics.add_size, metrics.add_size)
-            add_button.setIconSize(QSize(add_box, add_box))
-            add_button.setStyleSheet(
-                f"QToolButton#leftRailAddButton {{ border-radius: {metrics.tool_radius}px; }}"
-            )
-
-    def _pinned_tool_ids(self) -> list[str]:
-        raw = self._settings.value(self.PINNED_TOOLS_KEY, None)
-        if raw is None:
-            return list(self.DEFAULT_PINNED_TOOLS)
-        try:
-            values = json.loads(raw) if isinstance(raw, str) else list(raw)
-        except (TypeError, ValueError):
-            return list(self.DEFAULT_PINNED_TOOLS)
-        return [str(value) for value in values if isinstance(value, str) and value]
-
-    def _set_pinned_tool_ids(self, ids: list[str]) -> None:
-        self._settings.setValue(self.PINNED_TOOLS_KEY, json.dumps(ids))
-        self._rebuild_pinned_tools()
-
-    def _rebuild_pinned_tools(self) -> None:
-        layout = getattr(self, "_left_rail_pinned_layout", None)
-        if layout is None:
-            return
-        self._clear_layout_items(layout, delete_widgets=True)
-        specs = self._workspace_toolbar_action_specs()
-        pinned = [item_id for item_id in self._pinned_tool_ids() if item_id in specs]
-        self._left_rail_tool_buttons = []
-        for item_id in pinned:
-            action, label = specs[item_id]
-            button = QToolButton()
-            button.setObjectName("leftRailToolButton")
-            # The icon and its size are set by _apply_left_rail_metrics below,
-            # which knows the rail's width and whether artwork is installed.
-            button.setAutoRaise(True)
-            self._left_rail_tool_buttons.append((button, item_id))
-            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            button.setToolTip(action.toolTip() or label)
-            button.setAccessibleName(label)
-            button.clicked.connect(lambda _checked=False, target=action: target.trigger())
-            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            button.customContextMenuRequested.connect(
-                lambda _pos, target=item_id, anchor=button: self._show_pinned_tool_context_menu(target, anchor)
-            )
-            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.left_rail_pinned.setVisible(bool(pinned))
-        self.left_rail_add_button.setIcon(
-            self._fluent_toolbar_icon("E710", color=self._chrome_icon_color())
-        )
-        self._apply_left_rail_metrics()
-
-    def _show_pinned_tool_context_menu(self, item_id: str, anchor: QWidget) -> None:
-        if self._collection_mode:
-            return
-        menu = QMenu(self)
-        unpin = menu.addAction("Unpin")
-        chosen = menu.exec(anchor.mapToGlobal(QPoint(anchor.width(), 0)))
-        if chosen is unpin:
-            self._set_pinned_tool_ids([value for value in self._pinned_tool_ids() if value != item_id])
-
-    def _show_pin_tool_menu(self, anchor: QWidget) -> None:
-        if self._collection_mode:
-            return
-        menu = QMenu(self)
-        menu.setToolTipsVisible(True)
-        pinned = self._pinned_tool_ids()
-        specs = self._workspace_toolbar_action_specs()
-        for item_id, (action, label) in sorted(specs.items(), key=lambda entry: entry[1][1].casefold()):
-            entry = menu.addAction(self._workspace_toolbar_icon(item_id, color=self._chrome_icon_color()), label)
-            entry.setCheckable(True)
-            entry.setChecked(item_id in pinned)
-            entry.setToolTip(action.toolTip())
-            entry.setData(item_id)
-        chosen = menu.exec(anchor.mapToGlobal(QPoint(anchor.width(), 0)))
-        if chosen is None:
-            return
-        item_id = str(chosen.data())
-        if item_id in pinned:
-            pinned.remove(item_id)
-        else:
-            pinned.append(item_id)
-        self._set_pinned_tool_ids(pinned)
-
-    def _build_left_rail_plus_button(
-        self, parent: QWidget | None = None, *, tooltip: str
-    ) -> QToolButton:
-        button = QToolButton(parent)
-        button.setObjectName("generatedLeftRailButton")
-        button.setProperty("fluentGlyph", "E710")
-        button.setIcon(self._fluent_toolbar_icon("E710", color=self._chrome_icon_color()))
-        button.setIconSize(QSize(22, 22))
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        button.setToolTip(tooltip)
-        button.setAutoRaise(True)
-        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        button.setFixedSize(30, 30)
-        return button
+        self._appearance.show_left_nav_page("pocketdrop")
 
     def _build_generated_left_settings_bar(self) -> QWidget:
         bar = QFrame()
@@ -6845,7 +3148,7 @@ class MainWindow(QMainWindow):
             button = QToolButton(bar)
             button.setObjectName("leftSettingsBarButton")
             button.setProperty("fluentGlyph", glyph)
-            button.setIcon(self._fluent_filled_icon(glyph, self._chrome_icon_color()))
+            button.setIcon(self._appearance.fluent_filled_icon(glyph, self._appearance.chrome_icon_color()))
             button.setIconSize(QSize(20, 20))
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             button.setToolTip(tooltip)
@@ -6866,267 +3169,12 @@ class MainWindow(QMainWindow):
         add_button("E713", "Settings", self._show_settings)
         return bar
 
-    def _build_workspace_toolbar_overflow_button(self, mode: str) -> QToolButton:
-        menu = QMenu(self)
-        menu.aboutToShow.connect(lambda target=mode: self._populate_workspace_toolbar_overflow_menu(target))
-        button = QToolButton()
-        button.setText("More")
-        button.setToolTip("Hidden toolbar items")
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setMenu(menu)
-        self._configure_workspace_toolbar_button(button, item_id="more", text="More")
-        button.hide()
-        self._workspace_toolbar_overflow_menus[mode] = menu
-        return button
-
-    def _build_ai_results_menu(self) -> QMenu:
-        return self._toolbar_menus.build_ai_results_menu()
-
-    def _build_columns_toolbar_menu(self) -> QMenu:
-        return self._toolbar_menus.build_columns_toolbar_menu()
-
-    def _build_sort_toolbar_menu(self) -> QMenu:
-        return self._toolbar_menus.build_sort_toolbar_menu()
-
-    def _build_quick_filter_toolbar_menu(self) -> QMenu:
-        return self._toolbar_menus.build_quick_filter_toolbar_menu()
-
-    def _build_workspace_action_button(self, action: QAction, text: str, *, item_id: str) -> QToolButton:
-        button = QToolButton()
-        button.setToolTip(action.toolTip() or text)
-        if self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text")) == "text":
-            button.setDefaultAction(action)
-        else:
-            button.setProperty("workspaceAction", action)
-            button.clicked.connect(lambda _checked=False, source=action: source.trigger())
-            action.changed.connect(lambda target=button, source=action, target_item=item_id, label=text: self._sync_workspace_action_button(target, source, target_item, label))
-        self._configure_workspace_toolbar_button(button, item_id=item_id, text=text)
-        if button.defaultAction() is None:
-            self._sync_workspace_action_button(button, action, item_id, text)
-        return button
-
-    def _sync_workspace_action_button(self, button: QToolButton, action: QAction, item_id: str, text: str) -> None:
-        try:
-            if self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text")) == "text":
-                return
-            button.setEnabled(action.isEnabled())
-            button.setCheckable(action.isCheckable())
-            button.setChecked(action.isChecked())
-            button.setToolTip(action.toolTip() or text)
-            self._configure_workspace_toolbar_button(button, item_id=item_id, text=text)
-        except RuntimeError:
-            return
-
-    def _workspace_toolbar_action_specs(self) -> dict[str, tuple[QAction, str]]:
-        """Shared item_id -> (action, label) map used by both the workspace
-        toolbar widgets and the mirrored top-bar action cluster."""
-        return {
-            "open_folder": (self.actions.open_folder, "Open"),
-            "refresh_folder": (self.actions.refresh_folder, "Refresh"),
-            "undo": (self.actions.undo, "Undo"),
-            "new_folder": (self.actions.new_folder, "New Folder"),
-            "open_preview": (self.actions.open_preview, "Preview"),
-            "rename_selection": (self.actions.rename_selection, "Rename"),
-            "move_selection_to_new_folder": (self.actions.move_selection_to_new_folder, "Move New"),
-            "restore_selection": (self.actions.restore_selection, "Restore"),
-            "zen_mode": (self.actions.zen_mode, "Zen"),
-            "winner_ladder_mode": (self.actions.winner_ladder_mode, "Ladder"),
-            "run_ai_culling": (self.actions.run_ai_culling, "Run Review"),
-            "quick_rerank_ai_culling": (self.actions.quick_rerank_ai_culling, "Rerank"),
-            "apply_ai_culling": (self.actions.apply_ai_culling, "Apply Cull"),
-            "sort_ai_semantic_folders": (self.actions.sort_ai_semantic_folders, "Semantic Sort"),
-            "reset_ai_review_cache": (self.actions.reset_ai_review_cache, "Reset AI"),
-            "command_palette": (self.actions.open_command_palette, "Command"),
-            "advanced_filters": (self.actions.advanced_filters, "Adv. Filters"),
-            "clear_filters": (self.actions.clear_filters, "Clear"),
-            "batch_rename": (self.actions.batch_rename_selection, "Rename"),
-            "batch_resize": (self.actions.batch_resize_selection, "Resize"),
-            "batch_convert": (self.actions.batch_convert_selection, "Convert"),
-            "share_to_phone": (self.actions.share_to_phone, "PocketDrop"),
-            "handoff_builder": (self.actions.handoff_builder, "Handoff"),
-            "send_to_editor": (self.actions.send_to_editor_pipeline, "Editor"),
-            "best_of_set": (self.actions.best_of_set_auto_assembly, "Best Of"),
-            "keyboard_shortcuts": (self.actions.keyboard_shortcuts, "Shortcuts"),
-            "compare": (self.actions.compare_mode, "Compare"),
-            "auto_advance": (self.actions.auto_advance, "Auto"),
-            "burst_groups": (self.actions.burst_groups, "Groups"),
-            "burst_stacks": (self.actions.burst_stacks, "Stacks"),
-            "show_hidden_folders": (self.actions.show_hidden_folders, "Hidden"),
-            "accept_selection": (self.actions.accept_selection, "Winner"),
-            "reject_selection": (self.actions.reject_selection, "Reject"),
-            "keep_selection": (self.actions.keep_selection, "Keep"),
-            "move_selection": (self.actions.move_selection, "Move"),
-            "delete_selection": (self.actions.delete_selection, "Delete"),
-            "reveal_in_explorer": (self.actions.reveal_in_explorer, "Reveal"),
-            "open_in_photoshop": (self.actions.open_in_photoshop, "Photoshop"),
-            "load_saved_ai": (self.actions.load_saved_ai, "Load Saved"),
-            "load_ai_results": (self.actions.load_ai_results, "Load AI"),
-            "clear_ai_results": (self.actions.clear_ai_results, "Clear AI"),
-            "open_ai_report": (self.actions.open_ai_report, "Report"),
-            "manage_people": (self.actions.manage_people, "People"),
-            "show_ai_review_summary": (self.actions.show_ai_review_summary, "Summary"),
-            "next_ai_pick": (self.actions.next_ai_pick, "Next Pick"),
-            "next_unreviewed_ai_pick": (self.actions.next_unreviewed_ai_pick, "Next Unreviewed"),
-            "compare_ai_group": (self.actions.compare_ai_group, "AI Compare"),
-            "review_ai_disagreements": (self.actions.review_ai_disagreements, "Disagree"),
-            "save_filter_preset": (self.actions.save_filter_preset, "Save Search"),
-        }
-
-    def _build_workspace_toolbar_widgets(self, mode: str) -> dict[str, QWidget]:
-        if mode == "ai":
-            widgets: dict[str, QWidget] = {
-                "ai_status": self.ai_status_widget,
-                "review": self.ai_review_tools_button,
-                "view": self.ai_view_tools_button,
-                "search": self.ai_search_field,
-                "filters": self.ai_filter_button,
-                "address": self.ai_path_control,
-                "selection_count": self.ai_selection_count_label,
-            }
-        else:
-            widgets = {
-                "review": self.manual_review_tools_button,
-                "view": self.manual_view_tools_button,
-                "search": self.manual_search_field,
-                "filters": self.manual_filter_button,
-                "address": self.manual_path_control,
-                "selection_count": self.manual_selection_count_label,
-            }
-        for item_id in ("review", "view", "filters"):
-            widget = widgets.get(item_id)
-            if isinstance(widget, QToolButton):
-                self._configure_workspace_toolbar_button(
-                    widget,
-                    item_id=item_id,
-                    text=self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id),
-                )
-
-        menu_factories = {
-            "columns": ("Columns", self._build_columns_toolbar_menu),
-            "sort": ("Sort", self._build_sort_toolbar_menu),
-            "quick_filter": ("Quick Filter", self._build_quick_filter_toolbar_menu),
-            "ai_results": ("AI Results", self._build_ai_results_menu),
-            "projects": ("Collections", self._build_projects_toolbar_menu),
-            "catalog": ("Library", self._build_catalog_toolbar_menu),
-        }
-        for item_id, (text, factory) in menu_factories.items():
-            button = self._build_popup_button(text, factory())
-            self._configure_workspace_toolbar_button(button, item_id=item_id, text=text)
-            widgets[item_id] = button
-
-        action_items = self._workspace_toolbar_action_specs()
-        for item_id, (action, text) in action_items.items():
-            widgets[item_id] = self._build_workspace_action_button(action, text, item_id=item_id)
-        return widgets
-
-    def _load_workspace_toolbar_layouts(self) -> dict[str, list[str]]:
-        layouts = {mode: list(items) for mode, items in self.WORKSPACE_TOOLBAR_DEFAULTS.items()}
-        raw_state = self._settings.value(self.WORKSPACE_TOOLBAR_LAYOUT_KEY, "", str)
-        if not isinstance(raw_state, str) or not raw_state:
-            self._ensure_workspace_toolbar_migrations(layouts)
-            return layouts
-        try:
-            payload = json.loads(raw_state)
-        except (TypeError, ValueError):
-            return layouts
-        if not isinstance(payload, dict):
-            return layouts
-        raw_layouts = payload.get("toolbars", payload)
-        if not isinstance(raw_layouts, dict):
-            return layouts
-
-        legacy_primary_items: list[str] = []
-        raw_primary_items = raw_layouts.get("primary")
-        if isinstance(raw_primary_items, list):
-            legacy_primary_items = self._normalize_legacy_primary_toolbar_items(raw_primary_items)
-        for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            raw_items = raw_layouts.get(mode)
-            if isinstance(raw_items, list):
-                layouts[mode] = self._normalize_workspace_toolbar_items(mode, raw_items)
-        if legacy_primary_items:
-            self._merge_legacy_primary_toolbar_items(layouts, legacy_primary_items)
-        self._ensure_workspace_toolbar_migrations(layouts)
-        return layouts
-
-    def _ensure_workspace_toolbar_migrations(self, layouts: dict[str, list[str]]) -> None:
-        ai_items = list(layouts.get("ai", ()))
-        ai_items = [item for item in ai_items if item != "ai_status"]
-        ai_items.insert(0, "ai_status")
-        if "apply_ai_culling" not in ai_items:
-            if "run_ai_culling" in ai_items:
-                insert_at = ai_items.index("run_ai_culling") + 1
-                ai_items.insert(insert_at, "apply_ai_culling")
-            else:
-                ai_items.insert(0, "apply_ai_culling")
-        if "reset_ai_review_cache" not in ai_items:
-            if "apply_ai_culling" in ai_items:
-                insert_at = ai_items.index("apply_ai_culling") + 1
-                ai_items.insert(insert_at, "reset_ai_review_cache")
-            elif "run_ai_culling" in ai_items:
-                insert_at = ai_items.index("run_ai_culling") + 1
-                ai_items.insert(insert_at, "reset_ai_review_cache")
-            else:
-                ai_items.insert(0, "reset_ai_review_cache")
-        if "sort_ai_semantic_folders" not in ai_items:
-            if "apply_ai_culling" in ai_items:
-                insert_at = ai_items.index("apply_ai_culling") + 1
-                ai_items.insert(insert_at, "sort_ai_semantic_folders")
-            elif "run_ai_culling" in ai_items:
-                insert_at = ai_items.index("run_ai_culling") + 1
-                ai_items.insert(insert_at, "sort_ai_semantic_folders")
-            else:
-                ai_items.insert(0, "sort_ai_semantic_folders")
-        layouts["ai"] = self._normalize_workspace_toolbar_items("ai", ai_items)
-
-    def _normalize_workspace_toolbar_items(self, mode: str, raw_items: list[object] | tuple[object, ...]) -> list[str]:
-        allowed = set(self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(mode, ()))
-        normalized: list[str] = []
-        for item in raw_items:
-            if not isinstance(item, str) or item not in allowed or item in normalized:
-                continue
-            normalized.append(item)
-        return normalized
-
-    def _normalize_legacy_primary_toolbar_items(self, raw_items: list[object] | tuple[object, ...]) -> list[str]:
-        allowed = set(self.LEGACY_PRIMARY_TOOLBAR_ITEMS)
-        normalized: list[str] = []
-        for item in raw_items:
-            if not isinstance(item, str) or item not in allowed or item in normalized:
-                continue
-            normalized.append(item)
-        return normalized
-
-    def _merge_legacy_primary_toolbar_items(self, layouts: dict[str, list[str]], legacy_items: list[str]) -> None:
-        migrated: dict[str, list[str]] = {"manual": [], "ai": []}
-        for item in legacy_items:
-            if item == "separator":
-                continue
-            target_mode = "ai" if item in {"run_ai_culling", "ai_results"} else "manual"
-            allowed = self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(target_mode, ())
-            if item not in allowed or item in migrated[target_mode]:
-                continue
-            migrated[target_mode].append(item)
-
-        for mode, migrated_items in migrated.items():
-            if not migrated_items:
-                continue
-            existing = layouts.get(mode, [])
-            layouts[mode] = migrated_items + [item for item in existing if item not in migrated_items]
-
     # -- Top-bar slot model ------------------------------------------------
     def _is_cluster_item(self, item_id: object) -> bool:
         # Items that render in the top-bar cluster (everything the cluster can
         # show). Kept structural — no dependency on self.actions — so it is safe
         # to call at load time before the UI is built.
         return isinstance(item_id, str) and bool(item_id) and item_id not in self.TOPBAR_CHROME_ITEMS
-
-    def _unified_allowed_items(self) -> set[str]:
-        # Buttons can live on either bar ("cross-contamination"), so a slot may
-        # hold any cluster item allowed in *either* mode. Structural (no actions).
-        result: set[str] = set(self.TOPBAR_REPEATABLE_ITEMS)
-        for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            result |= set(self.WORKSPACE_TOOLBAR_ALLOWED_ITEMS.get(mode, ()))
-        return result
 
     def _items_to_slots(self, items) -> list[str | None]:
         n = self.TOPBAR_SLOT_COUNT
@@ -7147,125 +3195,6 @@ class MainWindow(QMainWindow):
             idx += 1
         return result
 
-    def _slots_to_items(self, slots) -> list[str]:
-        return [value for value in slots if value]
-
-    def _normalize_slots(self, mode: str, raw) -> list[str | None]:
-        n = self.TOPBAR_SLOT_COUNT
-        usable = n
-        allowed = self._unified_allowed_items()
-        result: list[str | None] = [None] * n
-        seen: set[str] = set()
-        for idx, value in enumerate(list(raw)[:usable]):
-            if not self._is_cluster_item(value) or value not in allowed:
-                continue
-            if value not in self.TOPBAR_REPEATABLE_ITEMS:
-                if value in seen:
-                    continue
-                seen.add(value)
-            result[idx] = value
-        return result
-
-    def _load_topbar_slots(self) -> dict[str, list[str | None]]:
-        payload: dict = {}
-        raw_state = self._settings.value(self.WORKSPACE_TOOLBAR_LAYOUT_KEY, "", str)
-        if isinstance(raw_state, str) and raw_state:
-            try:
-                loaded = json.loads(raw_state)
-                if isinstance(loaded, dict):
-                    payload = loaded
-            except (TypeError, ValueError):
-                payload = {}
-        raw_slots = payload.get("slots") if isinstance(payload, dict) else None
-        per_mode: dict[str, list[str | None]] = {}
-        for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            mode_slots: list[str | None] | None = None
-            if isinstance(raw_slots, dict) and isinstance(raw_slots.get(mode), list):
-                mode_slots = self._normalize_slots(mode, raw_slots[mode])
-            if mode_slots is None:
-                mode_slots = self._items_to_slots(self._workspace_toolbar_layouts.get(mode, ()))
-            per_mode[mode] = mode_slots
-        # Unified bar: both review modes share one arrangement. Only MERGE when the
-        # persisted arrays actually differ (a one-time migration from the old
-        # separate bars). When they're already identical — the normal case — reuse
-        # one directly: re-merging identical arrays would multiply repeatable items
-        # (dividers) on every launch (1 -> 3 -> 9 ...).
-        mode_keys = list(self.WORKSPACE_TOOLBAR_DEFAULTS)
-        first = per_mode.get(mode_keys[0]) if mode_keys else None
-        if first is not None and all(per_mode.get(m) == first for m in mode_keys):
-            shared = list(first)
-        else:
-            shared = self._merge_slots_shared(per_mode)
-        slots: dict[str, list[str | None]] = {}
-        for mode in self.WORKSPACE_TOOLBAR_DEFAULTS:
-            slots[mode] = list(shared)
-            self._sync_items_from_slots(mode, slots_override=shared)
-        return slots
-
-    def _merge_slots_shared(self, per_mode: dict[str, list[str | None]]) -> list[str | None]:
-        """Fold per-mode slot layouts into one shared layout: items keep their
-        cell when it's free (manual wins ties), and anything displaced falls into
-        the next open cell."""
-        n = self.TOPBAR_SLOT_COUNT
-        usable = n
-        shared: list[str | None] = [None] * n
-        seen: set[str] = set()
-
-        def mark(item: str) -> None:
-            if item not in self.TOPBAR_REPEATABLE_ITEMS:
-                seen.add(item)
-
-        for mode in ("manual", "ai"):
-            for idx, item in enumerate(per_mode.get(mode, [])):
-                if not item or item in seen or idx >= usable or shared[idx] is not None:
-                    continue
-                shared[idx] = item
-                mark(item)
-        for mode in ("manual", "ai"):
-            for item in per_mode.get(mode, []):
-                if not item or item in seen:
-                    continue
-                target = next((i for i in range(usable) if shared[i] is None), None)
-                if target is None:
-                    break
-                shared[target] = item
-                mark(item)
-        return shared
-
-    def _apply_cluster_order(self, mode: str, cluster_order: list[str]) -> None:
-        """Write a new ordering of cluster items back into the flat layout list,
-        leaving chrome items (search/path/etc.) in their existing relative
-        positions. Cluster items beyond the new order are dropped; extras are
-        appended (the flat list only drives the hidden legacy bar)."""
-        queue = list(cluster_order)
-        merged: list[str] = []
-        for item in self._workspace_toolbar_layouts.get(mode, ()):
-            if self._is_cluster_item(item):
-                if queue:
-                    merged.append(queue.pop(0))
-            else:
-                merged.append(item)
-        merged.extend(queue)
-        self._workspace_toolbar_layouts[mode] = merged
-
-    def _sync_items_from_slots(self, mode: str, slots_override: list[str | None] | None = None) -> None:
-        slots = slots_override if slots_override is not None else getattr(self, "_topbar_slots", {}).get(mode, [])
-        self._apply_cluster_order(mode, self._slots_to_items(slots))
-
-    def _clear_layout_items(self, layout, *, delete_widgets: bool = False) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is None:
-                child_layout = item.layout()
-                if child_layout is not None:
-                    self._clear_layout_items(child_layout, delete_widgets=delete_widgets)
-                continue
-            if delete_widgets:
-                widget.deleteLater()
-            else:
-                widget.setParent(None)
-
     def _update_selection_count_labels(self) -> None:
         count = self.grid.selected_count() if self._records else 0
         text = f"{count} selected"
@@ -7278,193 +3207,8 @@ class MainWindow(QMainWindow):
                 continue
             label.setText(text)
             label.setToolTip(tooltip)
-        self._schedule_workspace_toolbar_overflow_update("manual")
-        self._schedule_workspace_toolbar_overflow_update("ai")
-
-    def _rebuild_workspace_toolbar(self, mode: str) -> None:
-        if mode == "ai":
-            layout = self.ai_toolbar_layout
-        else:
-            layout = self.manual_toolbar_layout
-            mode = "manual"
-        self._clear_layout_items(layout)
-        widgets = self._workspace_toolbar_item_widgets.get(mode, {})
-        address_widget: QWidget | None = None
-        has_search = False
-        for item_id in self._workspace_toolbar_layouts.get(mode, []):
-            widget = widgets.get(item_id)
-            if widget is None:
-                continue
-            if item_id == "address":
-                address_widget = widget
-                continue
-            is_search = item_id == "search"
-            has_search = has_search or is_search
-            layout.addWidget(widget, 1 if is_search else 0)
-        overflow_button = self._workspace_toolbar_overflow_buttons.get(mode)
-        if overflow_button is not None:
-            layout.addWidget(overflow_button, 0, Qt.AlignmentFlag.AlignRight)
-        if address_widget is not None:
-            if not has_search:
-                layout.addStretch(1)
-            layout.addWidget(address_widget, 0, Qt.AlignmentFlag.AlignRight)
-        elif not has_search:
-            layout.addStretch(1)
-        self._schedule_workspace_toolbar_overflow_update(mode)
-        # Mirror the same editable layout into the top-bar action cluster.
-        # Forced: this is the "the layout was just edited" path, whose inputs
-        # (the flat layout lists) are not what the change guard compares.
-        self._rebuild_topbar_action_stack(mode, force=True)
-
-    def _workspace_toolbar_non_overflow_items(self) -> set[str]:
-        return {"ai_status", "search", "address"}
-
-    def _workspace_toolbar_minimum_width(self, widget: QWidget, item_id: str) -> int:
-        if item_id == "search":
-            return max(140, widget.minimumWidth(), widget.minimumSizeHint().width())
-        if item_id == "address":
-            return max(280, widget.minimumWidth(), widget.minimumSizeHint().width())
-        if item_id == "selection_count":
-            return max(76, widget.minimumWidth(), widget.sizeHint().width())
-        return max(widget.minimumWidth(), widget.minimumSizeHint().width(), widget.sizeHint().width())
-
-    def _workspace_toolbar_required_width(self, mode: str, hidden_items: set[str]) -> int:
-        if mode == "ai":
-            layout = self.ai_toolbar_layout
-        else:
-            layout = self.manual_toolbar_layout
-            mode = "manual"
-        margins = layout.contentsMargins()
-        item_ids = [
-            item_id
-            for item_id in self._workspace_toolbar_layouts.get(mode, ())
-            if item_id not in hidden_items and not (item_id == "ai_status" and not getattr(self, "_ai_status_visible", True))
-        ]
-        width = margins.left() + margins.right()
-        spacing = layout.spacing()
-        visible_count = len(item_ids)
-        if hidden_items:
-            overflow_button = self._workspace_toolbar_overflow_buttons.get(mode)
-            if overflow_button is not None:
-                visible_count += 1
-                width += max(
-                    overflow_button.minimumWidth(),
-                    overflow_button.minimumSizeHint().width(),
-                    overflow_button.sizeHint().width(),
-                )
-        if visible_count > 1:
-            width += (visible_count - 1) * spacing
-        widgets = self._workspace_toolbar_item_widgets.get(mode, {})
-        for item_id in item_ids:
-            widget = widgets.get(item_id)
-            if widget is None:
-                continue
-            width += self._workspace_toolbar_minimum_width(widget, item_id)
-        return width
-
-    def _schedule_workspace_toolbar_overflow_update(self, mode: str) -> None:
-        normalized = mode if mode == "ai" else "manual"
-        if normalized in self._workspace_toolbar_overflow_update_pending:
-            return
-        self._workspace_toolbar_overflow_update_pending.add(normalized)
-        QTimer.singleShot(0, lambda target=normalized: self._apply_workspace_toolbar_overflow(target))
-
-    def _apply_workspace_toolbar_overflow(self, mode: str) -> None:
-        normalized = mode if mode == "ai" else "manual"
-        self._workspace_toolbar_overflow_update_pending.discard(normalized)
-        toolbar = self.ai_toolbar if normalized == "ai" else self.manual_toolbar
-        layout = self.ai_toolbar_layout if normalized == "ai" else self.manual_toolbar_layout
-        available_width = toolbar.width()
-        if available_width <= 0:
-            return
-
-        overflow_candidates = [
-            item_id
-            for item_id in reversed(self._workspace_toolbar_layouts.get(normalized, ()))
-            if item_id not in self._workspace_toolbar_non_overflow_items()
-        ]
-        hidden_items: set[str] = set()
-        required_width = self._workspace_toolbar_required_width(normalized, hidden_items)
-        for item_id in overflow_candidates:
-            if required_width <= available_width:
-                break
-            hidden_items.add(item_id)
-            required_width = self._workspace_toolbar_required_width(normalized, hidden_items)
-
-        widgets = self._workspace_toolbar_item_widgets.get(normalized, {})
-        layout_items = tuple(self._workspace_toolbar_layouts.get(normalized, ()))
-        hidden_in_display_order = tuple(
-            item_id for item_id in layout_items if item_id in hidden_items
-        )
-        self._workspace_toolbar_hidden_items[normalized] = hidden_in_display_order
-        for item_id in layout_items:
-            widget = widgets.get(item_id)
-            if widget is None:
-                continue
-            visible = item_id not in hidden_items
-            if item_id == "ai_status" and not getattr(self, "_ai_status_visible", True):
-                visible = False
-            widget.setVisible(visible)
-
-        overflow_button = self._workspace_toolbar_overflow_buttons.get(normalized)
-        if overflow_button is not None:
-            overflow_button.setVisible(bool(hidden_in_display_order))
-            overflow_button.setEnabled(bool(hidden_in_display_order))
-
-        layout.invalidate()
-
-    def _populate_workspace_toolbar_overflow_menu(self, mode: str) -> None:
-        normalized = mode if mode == "ai" else "manual"
-        menu = self._workspace_toolbar_overflow_menus.get(normalized)
-        if menu is None:
-            return
-        menu.clear()
-        widgets = self._workspace_toolbar_item_widgets.get(normalized, {})
-        hidden_items = self._workspace_toolbar_hidden_items.get(normalized, ())
-        if not hidden_items:
-            empty_action = menu.addAction("No hidden toolbar items")
-            empty_action.setEnabled(False)
-            return
-
-        for item_id in hidden_items:
-            widget = widgets.get(item_id)
-            if widget is None:
-                continue
-            label = self.WORKSPACE_TOOLBAR_ITEM_LABELS.get(item_id, item_id)
-            if item_id == "selection_count" and isinstance(widget, QLabel):
-                action = menu.addAction(widget.text() or label)
-                action.setEnabled(False)
-                continue
-            if item_id == "ai_status":
-                status_menu = menu.addMenu(label)
-                progress_action = status_menu.addAction(self._build_ai_progress_text())
-                progress_action.setEnabled(False)
-                for line in (self.ai_status_label.toolTip() or "").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    runtime_action = status_menu.addAction(line)
-                    runtime_action.setEnabled(False)
-                continue
-            if isinstance(widget, QToolButton):
-                action = widget.defaultAction()
-                if action is None:
-                    candidate = widget.property("workspaceAction")
-                    action = candidate if isinstance(candidate, QAction) else None
-                if action is not None:
-                    menu.addAction(action)
-                    continue
-                submenu = widget.menu()
-                if submenu is not None:
-                    overflow_submenu = menu.addMenu(label)
-                    for submenu_action in submenu.actions():
-                        if submenu_action.isSeparator():
-                            overflow_submenu.addSeparator()
-                        else:
-                            overflow_submenu.addAction(submenu_action)
-                    continue
-            disabled_action = menu.addAction(label)
-            disabled_action.setEnabled(False)
+        self._toolbar.schedule_workspace_toolbar_overflow_update("manual")
+        self._toolbar.schedule_workspace_toolbar_overflow_update("ai")
 
     @staticmethod
     def _normalize_workspace_bar_state(value: object) -> str:
@@ -7478,80 +3222,8 @@ class MainWindow(QMainWindow):
             return value
         return "top"
 
-    def _set_workspace_bar_position(self, position: str) -> None:
-        normalized = self._normalize_workspace_bar_position(position)
-        if self._workspace_bar_position == normalized:
-            return
-        self._workspace_bar_position = normalized
-        self._settings.setValue(self.WORKSPACE_BAR_POSITION_KEY, normalized)
-        self._apply_workspace_bar_position()
-        self.statusBar().showMessage(f"Workspace toolbar moved to {normalized}")
-
-    def _apply_workspace_bar_position(self) -> None:
-        layout = getattr(self, "workspace_center_layout", None)
-        workspace_bar = getattr(self, "workspace_bar", None)
-        tool_mode_bar = getattr(self, "tool_mode_bar", None)
-        browser_stack = getattr(self, "browser_stack", None)
-        if layout is None or workspace_bar is None or tool_mode_bar is None or browser_stack is None:
-            return
-        layout.removeWidget(workspace_bar)
-        layout.removeWidget(tool_mode_bar)
-        layout.removeWidget(browser_stack)
-        if self._workspace_bar_position == "bottom":
-            layout.addWidget(tool_mode_bar)
-            layout.addWidget(browser_stack, 1)
-            layout.addWidget(workspace_bar)
-        else:
-            layout.addWidget(workspace_bar)
-            layout.addWidget(tool_mode_bar)
-            layout.addWidget(browser_stack, 1)
-
-    def _handle_workspace_toolbar_visibility_action(self, checked: bool) -> None:
-        self._set_workspace_bar_state("expanded" if checked else "hidden")
-
-    def _toggle_workspace_bar_collapsed(self) -> None:
-        if self._workspace_bar_state == "minimized":
-            self._set_workspace_bar_state("expanded")
-            return
-        self._set_workspace_bar_state("minimized")
-
-    def _set_workspace_bar_state(self, state: str) -> None:
-        # Deliberately not persisted: the workspace bar always starts hidden
-        # (see its __init__ comment), so a saved value would never be read
-        # back anyway.
-        self._workspace_bar_state = self._normalize_workspace_bar_state(state)
-        self._apply_workspace_bar_state()
-
-    def _apply_workspace_bar_state(self) -> None:
-        workspace_bar = getattr(self, "workspace_bar", None)
-        if workspace_bar is None:
-            return
-
-        hidden = self._workspace_bar_state == "hidden"
-        minimized = self._workspace_bar_state == "minimized"
-
-        workspace_bar.setVisible(not hidden)
-        self.toolbar_stack.setVisible(not hidden and not minimized)
-
-        toggle_text = "+" if minimized else "\u2212"
-        toggle_tooltip = "Expand workspace toolbar" if minimized else "Minimize workspace toolbar"
-        self.workspace_bar_toggle_button.setText(toggle_text)
-        self.workspace_bar_toggle_button.setToolTip(toggle_tooltip)
-
-        if self.actions is not None:
-            action = self.actions.show_workspace_toolbar
-            action.blockSignals(True)
-            action.setChecked(not hidden)
-            action.blockSignals(False)
-        if not hidden:
-            self._schedule_workspace_toolbar_overflow_update("manual")
-            self._schedule_workspace_toolbar_overflow_update("ai")
-
     def _build_record_filter_actions(self) -> None:
         self._records_view.build_record_filter_actions()
-
-    def _refresh_filter_toolbar_menu(self) -> None:
-        self._records_view.refresh_filter_toolbar_menu()
 
     def _refresh_action_shortcut_hint(self, action: QAction) -> None:
         base_text = action.property("imageTriageBaseText")
@@ -7565,9 +3237,6 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _menu_text_with_hint(text: str, hint: str = "") -> str:
         return ToolbarMenuController.menu_text_with_hint(text, hint)
-
-    def _menu_text_with_action_shortcut(self, text: str, action: QAction | None) -> str:
-        return self._toolbar_menus.menu_text_with_action_shortcut(text, action)
 
     _REVIEW_KEY_BINDING_IDS = (
         "cycle_burst_previous",
@@ -7602,7 +3271,7 @@ class MainWindow(QMainWindow):
             surfaces.append(preview)
         self._push_review_shortcuts(surfaces, overrides)
 
-        self._apply_command_palette_shortcut(
+        self._command_palette.apply_shortcut(
             overrides.get(
                 "open_command_palette",
                 self.actions.open_command_palette.shortcut().toString(QKeySequence.SequenceFormat.PortableText),
@@ -7616,9 +3285,6 @@ class MainWindow(QMainWindow):
         for surface in surfaces:
             surface.set_review_action_shortcuts(winner_shortcut, reject_shortcut)
             surface.set_review_key_shortcuts(review_keys)
-
-    def _apply_command_palette_shortcut(self, shortcut: str) -> None:
-        self._command_palette.apply_shortcut(shortcut)
 
     def _load_saved_workflow_recipes(self) -> list[WorkflowRecipe]:
         raw = self._settings.value(self.WORKFLOW_RECIPES_KEY, "", str)
@@ -7704,8 +3370,8 @@ class MainWindow(QMainWindow):
         self._refresh_recent_folder_combos()
 
     def _set_scope_state(self, *, kind: str, scope_id: str = "", label: str = "") -> None:
-        self._scope_kind = kind
-        self._scope_id = scope_id
+        self._folder_session.scope_kind = kind
+        self._folder_session.scope_id = scope_id
         self._scope_label = label
         self._apply_scope_label()
 
@@ -7715,7 +3381,7 @@ class MainWindow(QMainWindow):
         return f"{self._scope_kind}:{self._scope_id or self._scope_label.casefold()}"
 
     def _face_groups_db_path(self):
-        paths = self._aiculler_paths_for_current_folder()
+        paths = self._aiculler.aiculler_paths_for_current_folder()
         if paths is None:
             return None
         db_path = aiculler_db_path(paths)
@@ -7740,7 +3406,7 @@ class MainWindow(QMainWindow):
         if not paths:
             self.statusBar().showMessage("No indexed photos for that face yet.")
             return
-        self._show_photos_for_person(group.filter_label, paths)
+        self._records_view.show_photos_for_person(group.filter_label, paths)
 
     def _refresh_projects_panel(self) -> None:
         """Mirror the collections menu into the sidebar section."""
@@ -7834,20 +3500,11 @@ class MainWindow(QMainWindow):
         if self.actions is not None:
             self._update_action_states()
 
-    def _refresh_catalog_menu(self) -> None:
-        self._catalog.refresh_catalog_menu()
-
     def _open_command_palette(self, _checked: bool = False, *, context: str | None = None) -> None:
         self._command_palette.open(_checked, context=context)
 
-    def _setup_command_palette_shortcuts(self) -> None:
-        self._command_palette.setup_shortcuts()
-
     def _handle_command_palette_finished(self, result: int) -> None:
         self._command_palette.handle_finished(result)
-
-    def _matching_saved_filter_preset(self, query: RecordFilterQuery | None = None) -> SavedFilterPreset | None:
-        return self._records_view.matching_saved_filter_preset(query)
 
     def _apply_filter_preset(self, preset: SavedFilterPreset) -> None:
         self._records_view.apply_filter_preset(preset)
@@ -7860,139 +3517,12 @@ class MainWindow(QMainWindow):
 
     def _handle_system_color_scheme_changed(self) -> None:
         if self._appearance_mode == AppearanceMode.AUTO:
-            self._apply_appearance()
-
-    def _apply_appearance(self) -> None:
-        app = QApplication.instance()
-        if app is None:
-            return
-        self._theme = apply_gamma(resolve_theme(self._appearance_mode, app), self._ui_gamma)
-        app.setPalette(build_app_palette(self._theme))
-        app.setStyleSheet(build_app_stylesheet(self._theme))
-        self._write_child_sync_state()
-        self._refresh_themed_chrome_icons()
-        self._update_dynamic_action_icons()
-        self._refresh_update_button_state()
-        self._refresh_directory_nav_button_icons()
-        if self.workspace_docks is not None:
-            self.workspace_docks.apply_theme(self._theme)
-        self.grid.apply_theme(self._theme)
-        self.grid.set_backdrop_painter(self._paint_grid_backdrop if theme_has_backdrop(self._theme) else None)
-        preview = self._preview_if_built()
-        if preview is not None:
-            preview.apply_theme(self._theme)
-        self._schedule_workspace_toolbar_overflow_update("manual")
-        self._schedule_workspace_toolbar_overflow_update("ai")
-        self._update_action_states()
-
-    def _update_dynamic_action_icons(self) -> None:
-        if self.actions is None or self._theme is None:
-            return
-        if self._normalize_toolbar_style(getattr(self, "_toolbar_style", "text")) == "text":
-            self.actions.undo.setIcon(QIcon())
-
-    def _prepare_child_sync_state_path(self) -> Path:
-        base_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
-        if not base_dir:
-            base_dir = str(Path.home() / "AppData" / "Local" / "ImageTriage")
-        sync_dir = Path(base_dir) / "child_sync"
-        sync_dir.mkdir(parents=True, exist_ok=True)
-        return sync_dir / f"host_state_{os.getpid()}.json"
-
-    def _current_child_appearance_mode(self) -> str:
-        if self._theme is not None:
-            return self._theme.name
-        return self._appearance_mode.value
-
-    def _write_child_sync_state(self, *, shutdown_requested: bool = False) -> None:
-        payload = {
-            "parent_pid": os.getpid(),
-            "appearance_mode": self._current_child_appearance_mode(),
-            "shutdown_requested": shutdown_requested,
-            "updated_at": time.time(),
-        }
-        temp_path = self._child_sync_state_path.with_suffix(".tmp")
-        try:
-            temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            temp_path.replace(self._child_sync_state_path)
-        except OSError:
-            _logger.exception("Failed to write child sync state to %s", self._child_sync_state_path)
-
-    def _register_child_process(self, process: subprocess.Popen[str], *, name: str) -> None:
-        pid = int(getattr(process, "pid", 0) or 0)
-        if pid <= 0:
-            return
-        self._child_processes[pid] = ChildAppProcess(name=name, process=process)
-        self._prune_child_processes()
-
-    def _prune_child_processes(self) -> None:
-        finished = [
-            pid
-            for pid, child in self._child_processes.items()
-            if child.process.poll() is not None
-        ]
-        for pid in finished:
-            self._child_processes.pop(pid, None)
-
-    def _shutdown_child_processes(self) -> None:
-        self._prune_child_processes()
-        if not self._child_processes:
-            return
-
-        self._write_child_sync_state(shutdown_requested=True)
-        graceful_deadline = time.monotonic() + 1.5
-        while self._child_processes and time.monotonic() < graceful_deadline:
-            QApplication.processEvents()
-            self._prune_child_processes()
-            if self._child_processes:
-                time.sleep(0.05)
-
-        for child in list(self._child_processes.values()):
-            if child.process.poll() is None:
-                try:
-                    child.process.terminate()
-                except OSError:
-                    continue
-
-        forced_deadline = time.monotonic() + 1.0
-        while self._child_processes and time.monotonic() < forced_deadline:
-            QApplication.processEvents()
-            self._prune_child_processes()
-            if self._child_processes:
-                time.sleep(0.05)
-
-        for child in list(self._child_processes.values()):
-            if child.process.poll() is None:
-                try:
-                    child.process.kill()
-                except OSError:
-                    continue
-
-        self._prune_child_processes()
-
-    def _cleanup_child_sync_state(self) -> None:
-        try:
-            self._child_process_timer.stop()
-        except RuntimeError:
-            pass
-        try:
-            self._child_sync_state_path.unlink(missing_ok=True)
-        except OSError:
-            _logger.exception("Failed to remove child sync state file %s", self._child_sync_state_path)
+            self._appearance.apply_appearance()
 
     def _apply_default_workspace(self) -> None:
         if self.workspace_docks is None:
             return
         self.workspace_docks.reset_layout()
-
-    def _set_appearance_mode(self, mode: AppearanceMode) -> None:
-        normalized = mode if isinstance(mode, AppearanceMode) else parse_appearance_mode(mode)
-        if self._appearance_mode == normalized:
-            return
-        self._appearance_mode = normalized
-        self._settings.setValue(self.APPEARANCE_KEY, normalized.value)
-        self._apply_appearance()
-        self.statusBar().showMessage(f"Appearance set to {normalized.value}")
 
     def _restore_window_state(self) -> None:
         restored, window_state = restore_window_layout(
@@ -8034,7 +3564,7 @@ class MainWindow(QMainWindow):
         # AuraFace/TinyCLIP pass would otherwise keep this process (and its GPU
         # session) alive for minutes — the "reload leaves a zombie" bug.
         try:
-            self._suspend_background_indexing()
+            self._records_view.suspend_background_indexing()
         except Exception:
             _logger.exception("Failed to suspend background indexing before dev restart")
         try:
@@ -8102,42 +3632,15 @@ class MainWindow(QMainWindow):
             if self._quick_view_mode:
                 self._show_main_window_after_quick_view_failure()
             self._load_start_folder()
-            self._restore_ai_results()
+            self._ai_run.restore_ai_results()
         if not self._quick_view_mode:
-            QTimer.singleShot(0, self._maybe_prompt_for_ai_setup)
-
-    def _managed_semantic_model_installation(self) -> AIModelInstallation:
-        return self._semantic_model_installation
-
-    def _managed_aiculler_clip_model_installation(self) -> AIModelInstallation:
-        return resolve_aiculler_clip_model_installation()
-
-    def _managed_aiculler_topiq_model_installation(self) -> AIModelInstallation:
-        return self._aiculler_topiq_model_installation
-
-    def _managed_aiculler_face_model_installation(self) -> AIModelInstallation:
-        return self._aiculler_face_model_installation
+            QTimer.singleShot(0, self._ai_setup.maybe_prompt_for_ai_setup)
 
     # The runtime install status is a filesystem scan (~120ms) that only changes
     # when the user installs the runtime or downloads a model. It was previously
     # re-scanned on every call — and _update_ai_toolbar_state calls it twice —
     # so cache it with a short TTL and invalidate on install/download.
     _AI_RUNTIME_STATUS_TTL_S = 60.0
-
-    def _managed_ai_runtime_status(self) -> AIRuntimeInstallationStatus:
-        now = time.perf_counter()
-        cached = getattr(self, "_ai_runtime_status_cache", None)
-        cached_at = getattr(self, "_ai_runtime_status_cache_at", 0.0)
-        if cached is not None and (now - cached_at) < self._AI_RUNTIME_STATUS_TTL_S:
-            return cached
-        status = load_ai_runtime_installation_status()
-        self._ai_runtime_status_cache = status
-        self._ai_runtime_status_cache_at = now
-        return status
-
-    def _invalidate_ai_runtime_status_cache(self) -> None:
-        self._ai_runtime_status_cache = None
-        self._ai_runtime_status_cache_at = 0.0
 
     @classmethod
     def _normalize_preview_preload_batch_size(cls, value: object) -> int:
@@ -8251,7 +3754,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.PHASH_PREFILTER_DIAGNOSTICS_KEY, normalized.diagnostics_enabled)
 
     def _default_ai_embed_batch_size(self) -> int:
-        runtime_status = self._managed_ai_runtime_status()
+        runtime_status = self._ai_setup.managed_ai_runtime_status()
         device = (self._ai_runtime.device or "auto").strip().lower()
         if device == "cpu":
             return self.AI_EMBED_BATCH_SIZE_CPU_AUTO
@@ -8280,1080 +3783,13 @@ class MainWindow(QMainWindow):
             device=self._ai_runtime.device,
         )
 
-    def _confirm_cpu_clip_run(self, runtime) -> bool:
-        if runtime.device != "cpu":
-            return True
-        choice = QMessageBox.warning(
-            self,
-            "CPU AI Culling",
-            "GPU acceleration is unavailable, so CLIP will run on the CPU.\n\n"
-            "Large folders can take tens of minutes. Image Triage will still use FP32 first "
-            "and retry FP16 automatically if FP32 cannot initialize.\n\n"
-            "Continue with CPU inference?",
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        return choice == QMessageBox.StandardButton.Ok
-
-    def _ai_clip_model_variant_label(self) -> str:
-        return "Automatic (FP32 to FP16)"
-
-    def _refresh_ai_runtime_preferences(self) -> None:
-        runtime_status = self._managed_ai_runtime_status()
-        semantic_model_name = self._ai_runtime.semantic_model_name
-        semantic_installation = self._managed_semantic_model_installation()
-        if (
-            not (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
-            and semantic_installation.is_installed
-        ):
-            semantic_model_name = semantic_installation.model_name
-        device = self._ai_runtime.device
-        device_override = ai_device_environment_override()
-        if device_override is not None:
-            device = device_override
-        elif AI_RUNTIME_GPU_VARIANT in runtime_status.installed_variants:
-            device = "cuda"
-        elif runtime_status.installed_variants == (AI_RUNTIME_CPU_VARIANT,):
-            device = "cpu"
-        self._ai_runtime = replace(
-            self._ai_runtime,
-            device=device,
-            batch_size=self._configured_ai_embed_batch_size(),
-            semantic_model_name=semantic_model_name,
-        )
-
-    def _ai_runtime_available(self) -> bool:
-        return self._managed_ai_runtime_status().is_installed
-
-    def _semantic_model_available(self) -> bool:
-        explicit_model_name = (os.environ.get("AICULLING_SEMANTIC_MODEL_NAME", "") or "").strip()
-        if explicit_model_name:
-            path = Path(explicit_model_name).expanduser()
-            if path.is_absolute() or "/" in explicit_model_name or "\\" in explicit_model_name or explicit_model_name.startswith("."):
-                return path.exists()
-            return True
-        return self._managed_semantic_model_installation().is_installed
-
-    def _aiculler_clip_model_available(self) -> bool:
-        return self._managed_aiculler_clip_model_installation().is_installed
-
-    def _aiculler_topiq_model_available(self) -> bool:
-        return self._managed_aiculler_topiq_model_installation().is_installed
-
-    def _aiculler_face_model_available(self) -> bool:
-        return self._managed_aiculler_face_model_installation().is_installed
-
-    def _show_ai_setup_dialog(
-        self,
-        *,
-        automatic: bool,
-        title: str,
-        prompt_text: str,
-        allow_runtime: bool,
-        allow_model: bool,
-        default_install_runtime: bool,
-        default_include_torch_runtime: bool,
-        default_download_aiculler_clip_model: bool,
-        default_download_aiculler_topiq_model: bool,
-        default_download_aiculler_face_model: bool,
-        default_download_semantic_model: bool,
-    ) -> AISetupSelection | None:
-        """One compact setup flow for the runtime and current culling model set."""
-        del (
-            title,
-            prompt_text,
-            allow_runtime,
-            allow_model,
-            default_install_runtime,
-            default_include_torch_runtime,
-            default_download_aiculler_clip_model,
-            default_download_aiculler_topiq_model,
-            default_download_aiculler_face_model,
-            default_download_semantic_model,
-        )
-
-        runtime_status = self._managed_ai_runtime_status()
-        clip_missing = not self._aiculler_clip_model_available()
-        topiq_missing = not self._aiculler_topiq_model_available()
-        face_missing = not self._aiculler_face_model_available()
-        model_specs = [
-            ("CLIP", DEFAULT_AICULLER_CLIP_SIZE_MB, clip_missing),
-            ("TOPIQ", DEFAULT_AICULLER_TOPIQ_SIZE_MB, topiq_missing),
-            ("InsightFace", DEFAULT_AICULLER_FACE_SIZE_MB, face_missing),
-        ]
-        missing_model_mb = sum(size for _name, size, missing in model_specs if missing)
-
-        dialog = QDialog(self)
-        dialog.setObjectName("aiSetupDialog")
-        dialog.setWindowTitle("Set Up AI")
-        dialog.setModal(True)
-        dialog.setMinimumWidth(680)
-        dialog.resize(720, 500)
-        dialog.setStyleSheet(
-            """
-            QDialog#aiSetupDialog { background: palette(window); }
-            QFrame#aiSetupHero, QFrame#aiSetupModelCard, QFrame#aiSetupProfileCard {
-                background: palette(base);
-                border: 1px solid palette(mid);
-                border-radius: 12px;
-            }
-            QLabel#aiSetupTitle { font-size: 22px; font-weight: 700; }
-            QLabel#aiSetupSectionTitle { font-size: 14px; font-weight: 650; }
-            QLabel#aiSetupProfileTitle { font-size: 15px; font-weight: 650; }
-            QLabel#aiSetupMuted { color: palette(mid); }
-            QRadioButton { spacing: 8px; }
-            QRadioButton::indicator { width: 18px; height: 18px; }
-            """
-        )
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(22, 22, 22, 18)
-        layout.setSpacing(14)
-
-        hero = QFrame(dialog)
-        hero.setObjectName("aiSetupHero")
-        hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(18, 16, 18, 16)
-        hero_layout.setSpacing(5)
-        heading = QLabel("Set up AI", hero)
-        heading.setObjectName("aiSetupTitle")
-        hero_layout.addWidget(heading)
-        subheading = QLabel(
-            "Choose a runtime. Image Triage installs the matching packages, editor masking support, "
-            "and AI culling models together.",
-            hero,
-        )
-        subheading.setWordWrap(True)
-        subheading.setObjectName("aiSetupMuted")
-        hero_layout.addWidget(subheading)
-        layout.addWidget(hero)
-
-        profile_heading = QLabel("Runtime", dialog)
-        profile_heading.setObjectName("aiSetupSectionTitle")
-        layout.addWidget(profile_heading)
-
-        profile_row = QHBoxLayout()
-        profile_row.setSpacing(12)
-
-        def build_profile_card(
-            variant: str,
-            label: str,
-            detail: str,
-        ) -> tuple[QFrame, QRadioButton]:
-            card = QFrame(dialog)
-            card.setObjectName("aiSetupProfileCard")
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(16, 14, 16, 14)
-            card_layout.setSpacing(5)
-            radio = QRadioButton(label, card)
-            radio.setObjectName(f"aiSetupProfile_{variant}")
-            card_layout.addWidget(radio)
-            detail_label = QLabel(detail, card)
-            detail_label.setObjectName("aiSetupMuted")
-            detail_label.setWordWrap(True)
-            card_layout.addWidget(detail_label)
-            download_mb = estimate_ai_runtime_download_size_mb(variant, include_torch=True)
-            installed_mb = estimate_ai_runtime_installed_size_mb(variant, include_torch=True)
-            sizes = QLabel(
-                f"{download_mb / 1024:.1f} GB download  ·  {installed_mb / 1024:.1f} GB on disk",
-                card,
-            )
-            sizes.setObjectName("aiSetupProfileTitle")
-            card_layout.addWidget(sizes)
-            if variant in runtime_status.torch_installed_variants:
-                installed = QLabel("Installed", card)
-                installed.setObjectName("aiSetupMuted")
-                card_layout.addWidget(installed)
-            elif variant in runtime_status.installed_variants:
-                installed = QLabel("Core installed; masking support will be added", card)
-                installed.setObjectName("aiSetupMuted")
-                card_layout.addWidget(installed)
-            card_layout.addStretch(1)
-            return card, radio
-
-        gpu_card, gpu_radio = build_profile_card(
-            AI_RUNTIME_GPU_VARIANT,
-            "GPU acceleration",
-            "For NVIDIA graphics cards.",
-        )
-        cpu_card, cpu_radio = build_profile_card(
-            AI_RUNTIME_CPU_VARIANT,
-            "CPU",
-            "Works on any supported computer.",
-        )
-        profile_row.addWidget(gpu_card, 1)
-        profile_row.addWidget(cpu_card, 1)
-        layout.addLayout(profile_row)
-
-        profile_group = QButtonGroup(dialog)
-        profile_group.setExclusive(True)
-        profile_group.addButton(gpu_radio)
-        profile_group.addButton(cpu_radio)
-
-        preferred_variant = runtime_status.preferred_variant
-        if preferred_variant == AI_RUNTIME_CPU_VARIANT:
-            cpu_radio.setChecked(True)
-        else:
-            gpu_radio.setChecked(True)
-
-        model_card = QFrame(dialog)
-        model_card.setObjectName("aiSetupModelCard")
-        model_layout = QVBoxLayout(model_card)
-        model_layout.setContentsMargins(16, 13, 16, 13)
-        model_layout.setSpacing(5)
-        model_title = QLabel("AI culling models", model_card)
-        model_title.setObjectName("aiSetupSectionTitle")
-        model_layout.addWidget(model_title)
-        model_names = QLabel("  ·  ".join(name for name, _size, _missing in model_specs), model_card)
-        model_names.setWordWrap(True)
-        model_layout.addWidget(model_names)
-        if missing_model_mb:
-            model_size = QLabel(
-                f"Included automatically  ·  {missing_model_mb / 1024:.1f} GB remaining download",
-                model_card,
-            )
-        else:
-            model_size = QLabel("All culling models are installed", model_card)
-        model_size.setObjectName("aiSetupMuted")
-        model_layout.addWidget(model_size)
-        layout.addWidget(model_card)
-        layout.addStretch(1)
-
-        button_box = QDialogButtonBox(dialog)
-        start_button = button_box.addButton(
-            "Continue" if automatic else "Install AI",
-            QDialogButtonBox.ButtonRole.AcceptRole,
-        )
-        start_button.setObjectName("editorPrimaryButton")
-        button_box.addButton(
-            "Later" if automatic else "Cancel",
-            QDialogButtonBox.ButtonRole.RejectRole,
-        )
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-
-        runtime_variant = (
-            AI_RUNTIME_CPU_VARIANT if cpu_radio.isChecked() else AI_RUNTIME_GPU_VARIANT
-        )
-        # The compact ONNX profile is sufficient for culling, but the editor's
-        # mask engines also require the shared PyTorch/Transformers bundle.
-        runtime_ready = runtime_variant in runtime_status.torch_installed_variants
-        return AISetupSelection(
-            install_runtime=not runtime_ready,
-            runtime_variant=runtime_variant,
-            include_torch_runtime=True,
-            download_aiculler_clip_model=clip_missing,
-            download_aiculler_topiq_model=topiq_missing,
-            download_aiculler_face_model=face_missing,
-            download_semantic_model=False,
-        )
-
-    def _ensure_ai_runtime_available(self, *, title: str) -> bool:
-        del title
-        if self._ai_runtime_available():
-            return True
-        if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
-            self.statusBar().showMessage("An AI component install is already running.")
-            return False
-        self._install_ai_runtime()
-        return False
-
-    def _migrate_managed_ai_assets(self) -> None:
-        from .ai_model_store import migrate_ai_assets, recover_interrupted_activations
-
-        try:
-            moved = migrate_ai_assets()
-            recovered = recover_interrupted_activations()
-        except OSError as exc:
-            self.statusBar().showMessage(f"Could not move the AI cache to its new location: {exc}")
-            return
-        if recovered:
-            self.statusBar().showMessage(
-                f"Recovered {len(recovered)} interrupted AI model installation(s)."
-            )
-        elif moved:
-            self.statusBar().showMessage(
-                f"Moved {len(moved)} AI cache folder(s) to the new managed location."
-            )
-
-    def _startup_splash_visible(self) -> bool:
-        from .ui.splash_screen import StartupSplash
-
-        return any(
-            isinstance(widget, StartupSplash) and widget.isVisible()
-            for widget in QApplication.topLevelWidgets()
-        )
-
-    def _maybe_prompt_for_ai_setup(self) -> None:
-        if not getattr(sys, "frozen", False):
-            return
-        # Wait for the window to be on screen and the splash gone. This used to
-        # run while main.py pumped events behind the splash, which stays on top:
-        # the modal dialog opened hidden underneath it and the first launch sat
-        # on the splash forever, waiting for an answer nobody could see.
-        if not self.isVisible() or self._startup_splash_visible():
-            QTimer.singleShot(250, self._maybe_prompt_for_ai_setup)
-            return
-        # Adopt a previous release's model and cache directories before asking
-        # the user to download anything. This is the one deliberate migration
-        # point; resolving a managed path never moves files by itself.
-        self._migrate_managed_ai_assets()
-        runtime_missing = not self._ai_runtime_available()
-        aiculler_clip_missing = not self._aiculler_clip_model_available()
-        aiculler_topiq_missing = not self._aiculler_topiq_model_available()
-        aiculler_face_missing = not self._aiculler_face_model_available()
-        if (
-            not runtime_missing
-            and not aiculler_clip_missing
-            and not aiculler_topiq_missing
-            and not aiculler_face_missing
-        ):
-            return
-        if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
-            return
-        if self._settings.value(self.AI_SETUP_PROMPTED_KEY, False, bool):
-            return
-        self._settings.setValue(self.AI_SETUP_PROMPTED_KEY, True)
-        selection = self._show_ai_setup_dialog(
-            automatic=True,
-            title="Set Up AI",
-            prompt_text=(
-                "AI features use optional downloads so the core installer stays smaller. "
-                "Choose which AI components to install now."
-            ),
-            allow_runtime=runtime_missing,
-            allow_model=(
-                aiculler_clip_missing
-                or aiculler_topiq_missing
-                or aiculler_face_missing
-            ),
-            default_install_runtime=runtime_missing,
-            default_include_torch_runtime=True,
-            default_download_aiculler_clip_model=aiculler_clip_missing,
-            default_download_aiculler_topiq_model=aiculler_topiq_missing,
-            default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_semantic_model=False,
-        )
-        if selection is None:
-            self.statusBar().showMessage("AI setup skipped for now.")
-            return
-        self._start_ai_setup_selection(selection, force_runtime=False)
-
-    def _start_ai_setup_selection(
-        self,
-        selection: AISetupSelection,
-        *,
-        force_runtime: bool,
-    ) -> bool:
-        """Run the combined setup as one runtime-then-model sequence."""
-        if selection.install_runtime:
-            self._start_ai_runtime_install(
-                selection.runtime_variant,
-                force=force_runtime,
-                include_torch=selection.include_torch_runtime,
-                download_aiculler_clip_after=selection.download_aiculler_clip_model,
-                download_aiculler_topiq_after=selection.download_aiculler_topiq_model,
-                download_aiculler_face_after=selection.download_aiculler_face_model,
-                download_semantic_model_after=selection.download_semantic_model,
-            )
-            return True
-        if selection.download_model:
-            self._start_ai_model_download(
-                download_aiculler_clip=selection.download_aiculler_clip_model,
-                download_aiculler_topiq=selection.download_aiculler_topiq_model,
-                download_aiculler_face=selection.download_aiculler_face_model,
-                download_semantic=selection.download_semantic_model,
-                force=False,
-            )
-            return True
-        self.statusBar().showMessage("AI is already set up for this profile.")
-        return False
-
-    def _set_ai_setup_busy(self, message: str | None) -> None:
-        """Show AI setup state inside the main window instead of a dialog."""
-        overlay = getattr(self, "_ai_setup_overlay", None)
-        if overlay is not None:
-            overlay.set_message(message)
-
-    def _prompt_for_ai_model_install(self, *, automatic: bool) -> None:
-        aiculler_clip_missing = not self._aiculler_clip_model_available()
-        aiculler_topiq_missing = not self._aiculler_topiq_model_available()
-        aiculler_face_missing = not self._aiculler_face_model_available()
-        selection = self._show_ai_setup_dialog(
-            automatic=automatic,
-            title="Set Up AI",
-            prompt_text="Choose an AI runtime profile.",
-            allow_runtime=False,
-            allow_model=True,
-            default_install_runtime=False,
-            default_include_torch_runtime=True,
-            default_download_aiculler_clip_model=aiculler_clip_missing,
-            default_download_aiculler_topiq_model=aiculler_topiq_missing,
-            default_download_aiculler_face_model=aiculler_face_missing,
-            default_download_semantic_model=False,
-        )
-        if selection is None:
-            self.statusBar().showMessage("AI setup skipped for now.")
-            return
-        self._start_ai_setup_selection(
-            selection,
-            force_runtime=self._ai_runtime_available(),
-        )
-
-    def _install_ai_runtime(self) -> None:
-        if self._active_ai_runtime_task is not None or self._active_ai_model_task is not None:
-            self.statusBar().showMessage("An AI component install is already running.")
-            return
-        selection = self._show_ai_setup_dialog(
-            automatic=False,
-            title="Set Up AI",
-            prompt_text="Choose an AI runtime profile.",
-            allow_runtime=True,
-            allow_model=False,
-            default_install_runtime=True,
-            default_include_torch_runtime=True,
-            default_download_aiculler_clip_model=False,
-            default_download_aiculler_topiq_model=False,
-            default_download_aiculler_face_model=False,
-            default_download_semantic_model=False,
-        )
-        if selection is None:
-            self.statusBar().showMessage("AI setup skipped for now.")
-            return
-        self._start_ai_setup_selection(
-            selection,
-            force_runtime=self._ai_runtime_available(),
-        )
-
-    def _start_ai_runtime_install(
-        self,
-        variant_choice: str,
-        *,
-        force: bool = False,
-        include_torch: bool = True,
-        download_aiculler_clip_after: bool = False,
-        download_aiculler_topiq_after: bool = False,
-        download_aiculler_face_after: bool = False,
-        download_semantic_model_after: bool = False,
-    ) -> None:
-        install_root = self._managed_ai_runtime_status().directories.root
-        workspace_root = Path(__file__).resolve().parents[1]
-        if getattr(sys, "frozen", False):
-            runtime_root = Path(sys.executable).resolve().parent
-            installer_name = "ai_runtime_installer.exe" if os.name == "nt" else "ai_runtime_installer"
-            command = [str(runtime_root / installer_name), "install", "--variant", variant_choice]
-            cwd = runtime_root
-        else:
-            command = [
-                sys.executable,
-                str(workspace_root / "packaging" / "ai_runtime_installer.py"),
-                "install",
-                "--variant",
-                variant_choice,
-            ]
-            cwd = workspace_root
-        command.extend(["--install-root", str(install_root)])
-        if force:
-            command.append("--force")
-        if not include_torch:
-            command.append("--no-torch")
-        task = AIRuntimeInstallTask(
-            command=command,
-            cwd=cwd,
-            install_root=install_root,
-            variant_choice=variant_choice,
-        )
-        task.signals.started.connect(self._handle_ai_runtime_install_started, Qt.ConnectionType.QueuedConnection)
-        task.signals.progress.connect(self._handle_ai_runtime_install_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_ai_runtime_install_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_ai_runtime_install_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_ai_runtime_task = task
-        self._pending_ai_aiculler_clip_download_after_runtime = bool(download_aiculler_clip_after)
-        self._pending_ai_aiculler_topiq_download_after_runtime = bool(download_aiculler_topiq_after)
-        self._pending_ai_aiculler_face_download_after_runtime = bool(download_aiculler_face_after)
-        self._pending_ai_semantic_model_download_after_runtime = bool(download_semantic_model_after)
-        self._set_ai_setup_busy("Installing AI runtime...")
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("Starting AI runtime install...")
-        self._ai_model_pool.start(task)
-
-    def _handle_ai_runtime_install_started(self, install_root: str, variant_choice: str) -> None:
-        del install_root, variant_choice
-        self._set_ai_setup_busy("Installing AI runtime...")
-        self.statusBar().showMessage("Installing AI runtime...")
-
-    def _handle_ai_runtime_install_progress(self, message: str) -> None:
-        del message
-        self._set_ai_setup_busy("Installing AI runtime...")
-
-    def _handle_ai_runtime_install_finished(self, install_root: str, variant_choice: str) -> None:
-        self._active_ai_runtime_task = None
-        self._invalidate_ai_runtime_status_cache()
-        self._refresh_ai_runtime_preferences()
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("AI runtime installed.")
-        download_aiculler_clip = (
-            self._pending_ai_aiculler_clip_download_after_runtime
-            and not self._aiculler_clip_model_available()
-        )
-        download_aiculler_topiq = (
-            self._pending_ai_aiculler_topiq_download_after_runtime
-            and not self._aiculler_topiq_model_available()
-        )
-        download_aiculler_face = (
-            self._pending_ai_aiculler_face_download_after_runtime
-            and not self._aiculler_face_model_available()
-        )
-        download_semantic = (
-            self._pending_ai_semantic_model_download_after_runtime and not self._semantic_model_available()
-        )
-        if download_aiculler_clip or download_aiculler_topiq or download_aiculler_face or download_semantic:
-            self._pending_ai_aiculler_clip_download_after_runtime = False
-            self._pending_ai_aiculler_topiq_download_after_runtime = False
-            self._pending_ai_aiculler_face_download_after_runtime = False
-            self._pending_ai_semantic_model_download_after_runtime = False
-            self._start_ai_model_download(
-                download_aiculler_clip=download_aiculler_clip,
-                download_aiculler_topiq=download_aiculler_topiq,
-                download_aiculler_face=download_aiculler_face,
-                download_semantic=download_semantic,
-                force=False,
-            )
-            return
-        self._pending_ai_aiculler_clip_download_after_runtime = False
-        self._pending_ai_aiculler_topiq_download_after_runtime = False
-        self._pending_ai_aiculler_face_download_after_runtime = False
-        self._pending_ai_semantic_model_download_after_runtime = False
-        # The installer exiting zero does not prove any capability works, and
-        # the runtime alone is not the whole selected feature set: finish the
-        # remaining model bundles, then verify what was actually installed.
-        self._start_ai_capability_bundles(
-            title="AI Setup",
-            context=f"The {ai_runtime_variant_label(variant_choice)} AI runtime was installed.",
-        )
-
-    def _handle_ai_runtime_install_failed(self, message: str) -> None:
-        self._active_ai_runtime_task = None
-        self._pending_ai_aiculler_clip_download_after_runtime = False
-        self._pending_ai_aiculler_topiq_download_after_runtime = False
-        self._pending_ai_aiculler_face_download_after_runtime = False
-        self._pending_ai_semantic_model_download_after_runtime = False
-        self._set_ai_setup_busy(None)
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-        QMessageBox.warning(self, "AI Runtime Install", message)
-        self.statusBar().showMessage("AI runtime install failed.")
-
-    def _download_ai_model(self) -> None:
-        if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
-            self.statusBar().showMessage("An AI component install is already running.")
-            return
-        self._prompt_for_ai_model_install(automatic=False)
-
-    def _collect_uninstallable_ai_components(self) -> list[tuple[str, Path, int]]:
-        """(label, directory, size_bytes) for every installed AI runtime/model dir.
-
-        Only directories that actually exist with content are returned. The CLIP
-        entry points at the shared model dir, so removing it clears every
-        downloaded variant, including any extras the user added."""
-        components: list[tuple[str, Path, int]] = []
-
-        runtime_status = self._managed_ai_runtime_status()
-        runtime_root = runtime_status.directories.root
-        runtime_size = directory_size_bytes(runtime_root)
-        if runtime_root.exists() and runtime_size > 0:
-            profiles = ", ".join(
-                ai_runtime_variant_label(variant) for variant in runtime_status.installed_variants
-            ) or "installed"
-            components.append((f"AI runtime ({profiles})", runtime_root, runtime_size))
-
-        model_specs = (
-            (
-                "CLI-Culler CLIP model (all downloaded versions)",
-                self._managed_aiculler_clip_model_installation().install_dir,
-            ),
-            ("TOPIQ technical quality model", self._managed_aiculler_topiq_model_installation().install_dir),
-            ("InsightFace quality models", self._managed_aiculler_face_model_installation().install_dir),
-            ("Semantic CLIP model", self._managed_semantic_model_installation().install_dir),
-        )
-        seen: set[Path] = {runtime_root}
-        for label, install_dir in model_specs:
-            resolved = Path(install_dir)
-            if resolved in seen:
-                continue
-            size = directory_size_bytes(resolved)
-            if resolved.exists() and size > 0:
-                components.append((label, resolved, size))
-                seen.add(resolved)
-        return components
-
     # ------------------------------------------------------------------
     # Capability readiness, repair and diagnostics
     # ------------------------------------------------------------------
 
-    def _selected_ai_capabilities(self) -> tuple[str, ...]:
-        """Which capabilities this installation is expected to provide.
-
-        This is the same set ``Set Up AI`` installs, so verification can never
-        demand something setup never downloaded. Torch-only features drop out
-        when the user installed the compact base runtime.
-        """
-        from .ai_manifest import setup_capabilities
-
-        status = self._managed_ai_runtime_status()
-        has_torch = bool(set(status.installed_variants) & set(status.torch_installed_variants))
-        return setup_capabilities(include_torch=has_torch)
-
-    def _start_ai_readiness_check(
-        self,
-        *,
-        busy_message: str,
-        title: str,
-        context: str = "",
-        deep_models: bool = False,
-        thorough: bool = False,
-    ) -> None:
-        from .ui.ai_readiness import AIReadinessTask
-
-        if self._active_ai_readiness_task is not None:
-            self.statusBar().showMessage("An AI readiness check is already running.")
-            return
-        task = AIReadinessTask(
-            capability_keys=self._selected_ai_capabilities(),
-            deep_models=deep_models,
-            use_cache=False,
-            thorough=thorough,
-        )
-        task.signals.progress.connect(
-            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
-        )
-        task.signals.finished.connect(
-            lambda results: self._handle_ai_readiness_finished(results, title, context),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        task.signals.failed.connect(
-            self._handle_ai_readiness_failed, Qt.ConnectionType.QueuedConnection
-        )
-        self._active_ai_readiness_task = task
-        self._set_ai_setup_busy(busy_message)
-        self.statusBar().showMessage(busy_message)
-        self._ai_model_pool.start(task)
-
-    def _start_ai_capability_bundles(self, *, title: str, context: str = "") -> None:
-        """Download any model bundle the selected capabilities still need."""
-        from .ui.ai_readiness import AIBundleInstallTask
-
-        capabilities = self._selected_ai_capabilities()
-        if not capabilities or self._active_ai_bundle_task is not None:
-            self._verify_ai_setup(title=title, context=context)
-            return
-        task = AIBundleInstallTask(capabilities)
-        task.signals.progress.connect(
-            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
-        )
-        task.signals.finished.connect(
-            lambda _installed: self._handle_ai_bundle_install_finished(title, context),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        task.signals.failed.connect(
-            lambda message: self._handle_ai_bundle_install_failed(message, title, context),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        self._active_ai_bundle_task = task
-        self._set_ai_setup_busy("Downloading AI models...")
-        self.statusBar().showMessage("Downloading AI models...")
-        self._ai_model_pool.start(task)
-
-    def _handle_ai_bundle_install_finished(self, title: str, context: str) -> None:
-        self._active_ai_bundle_task = None
-        self._invalidate_ai_runtime_status_cache()
-        self._verify_ai_setup(title=title, context=context)
-
-    def _handle_ai_bundle_install_failed(self, message: str, title: str, context: str) -> None:
-        self._active_ai_bundle_task = None
-        # A download failure still leaves whatever succeeded, so report the
-        # real per-capability state rather than a bare error.
-        self.statusBar().showMessage(f"Some AI models could not be downloaded: {message}")
-        self._verify_ai_setup(title=title, context=context)
-
-    def _verify_ai_setup(self, *, title: str, context: str = "") -> None:
-        self._start_ai_readiness_check(
-            busy_message="Verifying AI setup...", title=title, context=context
-        )
-
-    def _handle_ai_readiness_finished(
-        self,
-        results: dict,
-        title: str,
-        context: str,
-    ) -> None:
-        from .ui.ai_readiness import AIReadinessDialog, summarize
-
-        self._active_ai_readiness_task = None
-        self._active_ai_repair_task = None
-        self._invalidate_ai_runtime_status_cache()
-        self._refresh_ai_runtime_preferences()
-        self._set_ai_setup_busy(None)
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-        self._last_ai_readiness_results = dict(results)
-        summary = summarize(results)
-        self.statusBar().showMessage(summary)
-        if results and all(health.ready for health in results.values()) and context:
-            QMessageBox.information(self, title, f"{context}\n\n{summary}")
-            return
-        AIReadinessDialog(results, parent=self, title=title).exec()
-
-    def _handle_ai_readiness_failed(self, message: str) -> None:
-        self._active_ai_readiness_task = None
-        self._set_ai_setup_busy(None)
-        self._update_action_states()
-        QMessageBox.warning(self, "AI Readiness", message)
-        self.statusBar().showMessage("The AI readiness check could not run.")
-
-    def _check_ai_readiness(self) -> None:
-        """Demo Ready: prove every selected AI feature works, right now.
-
-        This is the one place that pays for the full proof — model weights are
-        loaded and a forward pass is run for every selected capability, so it
-        can take a couple of minutes on a cold machine.
-        """
-        self._start_ai_readiness_check(
-            busy_message="Checking AI readiness (this can take a few minutes)...",
-            title="AI Readiness",
-            deep_models=True,
-            thorough=True,
-        )
-
-    def _repair_ai_components(self) -> None:
-        from .ui.ai_readiness import AIRepairTask
-
-        if self._active_ai_repair_task is not None or self._active_ai_readiness_task is not None:
-            self.statusBar().showMessage("An AI operation is already running.")
-            return
-        capabilities = self._selected_ai_capabilities()
-        if not capabilities:
-            QMessageBox.information(
-                self,
-                "Repair AI",
-                "There is no AI runtime installed yet. Run Set Up AI first.",
-            )
-            return
-        confirmed = QMessageBox.question(
-            self,
-            "Repair AI",
-            "Image Triage will verify every installed AI model and re-download "
-            "anything that is missing or damaged.\n\nThis can take several minutes.",
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Ok,
-        )
-        if confirmed != QMessageBox.StandardButton.Ok:
-            return
-        task = AIRepairTask(capabilities)
-        task.signals.progress.connect(
-            self._set_ai_setup_busy, Qt.ConnectionType.QueuedConnection
-        )
-        task.signals.finished.connect(
-            self._handle_ai_repair_finished, Qt.ConnectionType.QueuedConnection
-        )
-        task.signals.failed.connect(
-            self._handle_ai_repair_failed, Qt.ConnectionType.QueuedConnection
-        )
-        self._active_ai_repair_task = task
-        self._set_ai_setup_busy("Repairing AI...")
-        self.statusBar().showMessage("Repairing AI...")
-        self._ai_model_pool.start(task)
-
-    def _handle_ai_repair_finished(self, results: dict, runtime_required: bool) -> None:
-        self._active_ai_repair_task = None
-        if runtime_required:
-            # Model repair cannot rebuild damaged packages; offer the operation
-            # that can instead of leaving the user to guess.
-            self._set_ai_setup_busy(None)
-            self._update_action_states()
-            choice = QMessageBox.question(
-                self,
-                "Repair AI",
-                "The downloaded models are now correct, but the AI runtime packages "
-                "themselves are damaged and have to be reinstalled.\n\n"
-                "Reinstall the AI runtime now?",
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Ok,
-            )
-            if choice == QMessageBox.StandardButton.Ok:
-                status = self._managed_ai_runtime_status()
-                self._start_ai_runtime_install(
-                    status.preferred_variant,
-                    force=True,
-                    include_torch=bool(status.torch_installed_variants),
-                )
-                return
-        self._handle_ai_readiness_finished(results, "Repair AI", "Repair finished.")
-
-    def _handle_ai_repair_failed(self, message: str) -> None:
-        self._active_ai_repair_task = None
-        self._set_ai_setup_busy(None)
-        self._update_action_states()
-        QMessageBox.warning(self, "Repair AI", message)
-        self.statusBar().showMessage("AI repair failed.")
-
-    def _copy_ai_diagnostics(self) -> None:
-        """Put a redacted support bundle on the clipboard and save it to disk."""
-        from .ai_health import ai_health
-
-        service = ai_health()
-        results = self._last_ai_readiness_results or None
-        text = service.diagnostics_text(results)
-        clipboard = QApplication.clipboard()
-        if clipboard is not None:
-            clipboard.setText(text, mode=clipboard.Mode.Clipboard)
-        try:
-            path = service.write_diagnostics(results)
-        except OSError as exc:
-            self.statusBar().showMessage(f"Diagnostics copied, but could not be saved: {exc}")
-            return
-        self.statusBar().showMessage(f"AI diagnostics copied and saved to {path}")
-
-    def _uninstall_ai_components(self) -> None:
-        if self._active_ai_model_task is not None or self._active_ai_runtime_task is not None:
-            self.statusBar().showMessage("An AI component task is already running.")
-            return
-        components = self._collect_uninstallable_ai_components()
-        if not components:
-            QMessageBox.information(
-                self,
-                "Uninstall AI Components",
-                "No AI runtime or model files are currently installed.",
-            )
-            return
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Uninstall AI Components")
-        dialog.setModal(True)
-        dialog.setMinimumWidth(560)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(10)
-
-        intro = QLabel(
-            "Select the AI runtime and model files to remove from your local cache. "
-            "This frees disk space; anything removed can be reinstalled later from "
-            "this menu.",
-            dialog,
-        )
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        checkboxes: list[tuple[QCheckBox, str, Path, int]] = []
-        for label, path, size in components:
-            checkbox = QCheckBox(f"{label} — {_format_bytes(size)}", dialog)
-            checkbox.setChecked(True)
-            checkbox.setToolTip(str(path))
-            layout.addWidget(checkbox)
-            checkboxes.append((checkbox, label, path, size))
-
-        total_label = QLabel("", dialog)
-        total_label.setObjectName("mutedText")
-        layout.addWidget(total_label)
-
-        def update_total() -> None:
-            total = sum(size for cb, _label, _path, size in checkboxes if cb.isChecked())
-            total_label.setText(f"Selected: {_format_bytes(total)} to free")
-
-        for checkbox, _label, _path, _size in checkboxes:
-            checkbox.toggled.connect(lambda _checked=False: update_total())
-        update_total()
-
-        button_box = QDialogButtonBox(dialog)
-        button_box.addButton("Uninstall", QDialogButtonBox.ButtonRole.AcceptRole)
-        button_box.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            self.statusBar().showMessage("AI uninstall cancelled.")
-            return
-
-        targets = tuple(
-            (label, path, size)
-            for checkbox, label, path, size in checkboxes
-            if checkbox.isChecked()
-        )
-        if not targets:
-            self.statusBar().showMessage("No AI components selected to remove.")
-            return
-
-        confirm = QMessageBox.question(
-            self,
-            "Uninstall AI Components",
-            "Permanently remove the selected AI files?\n\n"
-            + "\n".join(f"• {label}" for label, _path, _size in targets),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            self.statusBar().showMessage("AI uninstall cancelled.")
-            return
-
-        self._run_ai_uninstall(targets)
-
-    def _run_ai_uninstall(self, targets: tuple[tuple[str, Path, int], ...]) -> None:
-        progress = self._show_job_progress_dialog(
-            key="ai_uninstall",
-            total_steps=1,
-            spec=JobSpec(
-                title="Uninstall AI Components",
-                preparing_label="Removing AI files…",
-                running_label="Removing AI files…",
-            ),
-        )
-        progress.setRange(0, 0)
-
-        loop = QEventLoop()
-        result: dict[str, object] = {"freed": 0, "removed": [], "failures": []}
-
-        def on_finished(payload: object) -> None:
-            freed, removed, failures = payload
-            result["freed"] = freed
-            result["removed"] = removed
-            result["failures"] = failures
-            loop.quit()
-
-        task = AIUninstallTask(targets=targets)
-        task.signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-        self._ai_model_pool.start(task)
-        loop.exec()
-        self._close_job_progress_dialog("ai_uninstall")
-
-        # Availability is filesystem-derived, so just drop the cached runtime
-        # scan and refresh the action/toolbar enabled states.
-        self._invalidate_ai_runtime_status_cache()
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-
-        freed = int(result.get("freed", 0) or 0)
-        removed = list(result.get("removed", []) or [])
-        failures = list(result.get("failures", []) or [])
-        if removed:
-            self.statusBar().showMessage(
-                f"Removed {len(removed)} AI component(s); freed {_format_bytes(freed)}."
-            )
-        if failures:
-            QMessageBox.warning(
-                self,
-                "Uninstall AI Components",
-                "Some items could not be fully removed:\n" + "\n".join(failures),
-            )
-        elif removed:
-            QMessageBox.information(
-                self,
-                "Uninstall AI Components",
-                "Removed:\n"
-                + "\n".join(f"• {label}" for label in removed)
-                + f"\n\nFreed {_format_bytes(freed)}.",
-            )
-
-    def _start_ai_model_download(
-        self,
-        *,
-        download_aiculler_clip: bool = False,
-        download_aiculler_topiq: bool = False,
-        download_aiculler_face: bool = False,
-        download_semantic: bool = False,
-        force: bool = False,
-        force_aiculler_clip: bool | None = None,
-        force_aiculler_topiq: bool | None = None,
-        force_aiculler_face: bool | None = None,
-        force_semantic: bool | None = None,
-    ) -> None:
-        requests: list[AIModelDownloadRequest] = []
-        if download_aiculler_clip:
-            requests.append(
-                AIModelDownloadRequest(
-                    label="CLI-Culler CLIP",
-                    installation=self._managed_aiculler_clip_model_installation(),
-                    force=force if force_aiculler_clip is None else force_aiculler_clip,
-                )
-            )
-        if download_aiculler_topiq:
-            requests.append(
-                AIModelDownloadRequest(
-                    label="TOPIQ",
-                    installation=self._managed_aiculler_topiq_model_installation(),
-                    force=force if force_aiculler_topiq is None else force_aiculler_topiq,
-                )
-            )
-        if download_aiculler_face:
-            requests.append(
-                AIModelDownloadRequest(
-                    label="InsightFace Quality",
-                    installation=self._managed_aiculler_face_model_installation(),
-                    force=force if force_aiculler_face is None else force_aiculler_face,
-                )
-            )
-        if download_semantic:
-            requests.append(
-                AIModelDownloadRequest(
-                    label="Semantic CLIP",
-                    installation=self._managed_semantic_model_installation(),
-                    force=force if force_semantic is None else force_semantic,
-                )
-            )
-        if not requests:
-            self.statusBar().showMessage("No AI models selected for download.")
-            return
-
-        task = AIModelDownloadTask(requests=tuple(requests))
-        task.signals.started.connect(self._handle_ai_model_download_started, Qt.ConnectionType.QueuedConnection)
-        task.signals.progress.connect(self._handle_ai_model_download_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_ai_model_download_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_ai_model_download_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_ai_model_task = task
-        self._set_ai_setup_busy("Downloading AI culling models...")
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("Starting AI model download...")
-        self._ai_model_pool.start(task)
-
-    def _handle_ai_model_download_started(self, install_dir: str) -> None:
-        del install_dir
-        self._set_ai_setup_busy("Downloading AI culling models...")
-        self.statusBar().showMessage("Downloading AI culling models...")
-
-    def _handle_ai_model_download_progress(self, filename: str, current: int, total: int) -> None:
-        del filename, current, total
-        self._set_ai_setup_busy("Downloading AI culling models...")
-
-    def _handle_ai_model_download_finished(self, install_dir: str) -> None:
-        self._active_ai_model_task = None
-        self._invalidate_ai_runtime_status_cache()
-        self._set_ai_setup_busy(None)
-        self._refresh_ai_runtime_preferences()
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-        self._start_ai_capability_bundles(
-            title="AI Setup",
-            context="The AI runtime and culling models were installed.",
-        )
-
-    def _handle_ai_model_download_failed(self, message: str) -> None:
-        self._active_ai_model_task = None
-        self._set_ai_setup_busy(None)
-        self._refresh_ai_runtime_preferences()
-        self._update_action_states()
-        self._update_ai_toolbar_state()
-        QMessageBox.warning(self, "AI Model Download", f"Could not download the AI model.\n\n{message}")
-        self.statusBar().showMessage("AI model download failed.")
-
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._zen_mode_enabled:
-            self._set_zen_mode(False)
+            self._zen.set_zen_mode(False)
         self._remember_current_folder_view_state()
         if self.grid.zoom_mode() == "column":
             self._settings.setValue(self.VIEW_COLUMNS_KEY, self.grid.current_columns())
@@ -9365,11 +3801,9 @@ class MainWindow(QMainWindow):
             self._active_semantic_index_task.cancel()
         if self._active_face_index_task is not None:
             self._active_face_index_task.cancel()
-        self._flush_aiculler_internal_label_cache()
-        self._flush_aiculler_global_label_queue()
-        self._shutdown_aiculler_telemetry_logger()
-        self._shutdown_child_processes()
-        self._cleanup_child_sync_state()
+        self._aiculler.flush_aiculler_internal_label_cache()
+        self._aiculler.flush_aiculler_global_label_queue()
+        self._aiculler.shutdown_aiculler_telemetry_logger()
         self._save_window_state()
         perf_logger().log("app.close")
         perf_logger().flush()
@@ -9383,7 +3817,7 @@ class MainWindow(QMainWindow):
         self._apply_native_frame_styles()
         self._sync_window_control_glyphs()
         # Now, not on a timer: the first frame is drawn at the live ratios.
-        self._apply_layout_ratios()
+        self._appearance.apply_layout_ratios()
         # Don't auto-focus/select any control on startup (the path bar used to
         # grab focus and highlight its text).
         QTimer.singleShot(0, self._clear_startup_focus)
@@ -9532,12 +3966,9 @@ class MainWindow(QMainWindow):
             self._quick_view_mode
             and self._pending_quick_view_path
             and not self._scan_in_progress
-            and not self._records_view_chunk_active()
+            and not self._records_view.records_view_chunk_active()
         ):
             self._show_main_window_after_quick_view_failure()
-
-    def _is_temporary_storage_folder(self, folder: str | None = None) -> bool:
-        return self._recycle_bin.is_temporary_storage_folder(folder)
 
     def _is_slow_source_folder(self, folder: str | None = None) -> bool:
         return self._recycle_bin.is_slow_source_folder(folder)
@@ -9567,9 +3998,6 @@ class MainWindow(QMainWindow):
 
     def _recycle_root_for_folder(self, folder: str | None = None) -> Path:
         return self._recycle_bin.recycle_root_for_folder(folder)
-
-    def _refresh_recycle_button(self, *, update_action_states: bool = True) -> None:
-        self._recycle_bin.refresh_recycle_button(update_action_states=update_action_states)
 
     def _choose_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose Folder", self._current_folder or QDir.homePath())
@@ -9705,9 +4133,9 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "central_container") and watched is self.central_container:
                 if event.type() == QEvent.Type.Resize and hasattr(self, "zen_hint_overlay"):
-                    self._position_zen_hint_overlay()
+                    self._zen.position_zen_hint_overlay()
             if watched is getattr(self, "browser_stack", None) and event.type() in (QEvent.Type.Resize, QEvent.Type.Move):
-                self._position_floating_toolbar()
+                self._toolbar.position_floating_toolbar()
             if watched in (
                 getattr(self, "left_nav_rail", None),
                 getattr(self, "left_nav_pages", None),
@@ -9717,30 +4145,30 @@ class MainWindow(QMainWindow):
             path_combo = getattr(self, "topbar_path_combo", None)
             if path_combo is not None and watched is path_combo.lineEdit():
                 if event.type() == QEvent.Type.FocusOut:
-                    QTimer.singleShot(120, self._maybe_end_breadcrumb_path_edit)
+                    QTimer.singleShot(120, self._appearance.maybe_end_breadcrumb_path_edit)
                 elif event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
-                    self._end_breadcrumb_path_edit()
+                    self._appearance.end_breadcrumb_path_edit()
                     return True
             if hasattr(self, "topbar_action_stack") and watched is self.topbar_action_stack:
                 if event.type() == QEvent.Type.Resize:
-                    self._update_topbar_overflow(self._ui_mode)
+                    self._toolbar.update_topbar_overflow("manual")
             if hasattr(self, "workspace_bar") and watched is self.workspace_bar:
-                if self._handle_workspace_bar_drag_event(event):
+                if self._toolbar.handle_workspace_bar_drag_event(event):
                     return True
             if hasattr(self, "workspace_bar_drag_handle") and watched is self.workspace_bar_drag_handle:
-                if self._handle_workspace_bar_drag_event(event):
+                if self._toolbar.handle_workspace_bar_drag_event(event):
                     return True
             if hasattr(self, "toolbar_stack") and watched is self.toolbar_stack:
-                if self._handle_workspace_bar_drag_event(event):
+                if self._toolbar.handle_workspace_bar_drag_event(event):
                     return True
             if hasattr(self, "workspace_bar") and event.type() == QEvent.Type.Resize:
                 if watched is self.workspace_bar or watched is self.toolbar_stack:
-                    self._schedule_workspace_toolbar_overflow_update("manual")
-                    self._schedule_workspace_toolbar_overflow_update("ai")
+                    self._toolbar.schedule_workspace_toolbar_overflow_update("manual")
+                    self._toolbar.schedule_workspace_toolbar_overflow_update("ai")
                 elif watched is self.manual_toolbar:
-                    self._schedule_workspace_toolbar_overflow_update("manual")
+                    self._toolbar.schedule_workspace_toolbar_overflow_update("manual")
                 elif watched is self.ai_toolbar:
-                    self._schedule_workspace_toolbar_overflow_update("ai")
+                    self._toolbar.schedule_workspace_toolbar_overflow_update("ai")
             folder_viewport = self.folder_tree.viewport() if hasattr(self, "folder_tree") else None
             if watched is folder_viewport:
                 handled = self._handle_record_drop_event(event, source="folder_tree")
@@ -9754,38 +4182,6 @@ class MainWindow(QMainWindow):
             return super().eventFilter(watched, event)
         except RuntimeError:
             return False
-
-    def _handle_workspace_bar_drag_event(self, event) -> bool:
-        event_type = event.type()
-        if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-            self._workspace_bar_drag_start = event.globalPosition().toPoint()
-            self._workspace_bar_dragging = False
-            return False
-        if event_type == QEvent.Type.MouseMove and self._workspace_bar_drag_start is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            current = event.globalPosition().toPoint()
-            if not self._workspace_bar_dragging and (current - self._workspace_bar_drag_start).manhattanLength() < QApplication.startDragDistance():
-                return False
-            self._workspace_bar_dragging = True
-            return True
-        if event_type == QEvent.Type.MouseButtonRelease and self._workspace_bar_drag_start is not None:
-            was_dragging = self._workspace_bar_dragging
-            self._workspace_bar_drag_start = None
-            self._workspace_bar_dragging = False
-            if not was_dragging:
-                return False
-            self._snap_workspace_bar_to_release(event.globalPosition().toPoint())
-            return True
-        return False
-
-    def _snap_workspace_bar_to_release(self, global_pos: QPoint) -> None:
-        center_widget = getattr(self, "workspace_docks", None)
-        shell = center_widget.shell if center_widget is not None else None
-        if shell is None:
-            return
-        top_left = shell.mapToGlobal(QPoint(0, 0))
-        shell_rect = QRect(top_left, shell.size())
-        midpoint = shell_rect.top() + (shell_rect.height() // 2)
-        self._set_workspace_bar_position("bottom" if global_pos.y() >= midpoint else "top")
 
     def _handle_record_drop_event(self, event, *, source: str) -> bool | None:
         event_type = event.type()
@@ -9820,7 +4216,7 @@ class MainWindow(QMainWindow):
         event.setDropAction(Qt.DropAction.CopyAction if copy_requested else Qt.DropAction.MoveAction)
         if event_type == QEvent.Type.Drop:
             event.accept()
-            self._handle_record_drop(paths, destination_folder, copy_requested=copy_requested)
+            self._record_ops.handle_record_drop(paths, destination_folder, copy_requested=copy_requested)
             return True
 
         event.accept()
@@ -9907,28 +4303,28 @@ class MainWindow(QMainWindow):
             open_in_file_explorer(folder)
             return
         if chosen == new_folder_action:
-            self._create_folder_prompt(folder, select_created=True)
+            self._folder_ops.create_folder_prompt(folder, select_created=True)
             return
         if chosen == extract_archive_action:
             self._extract_archive_into_folder_prompt(folder)
             return
         if chosen == rename_action:
-            self._rename_folder(folder)
+            self._folder_ops.rename_folder(folder)
             return
         if chosen == move_action:
-            self._move_folder_prompt(folder)
+            self._folder_ops.move_folder_prompt(folder)
             return
         if chosen == delete_action:
-            self._delete_folder_prompt(folder)
+            self._folder_ops.delete_folder_prompt(folder)
             return
         if chosen == catalog_action:
             if self._library_store.is_catalog_root(folder):
                 self._library_store.remove_catalog_root(folder)
-                self._refresh_catalog_menu()
+                self._catalog.refresh_catalog_menu()
                 self.statusBar().showMessage(f"Removed from library: {Path(folder).name}")
             else:
                 self._library_store.add_catalog_root(folder)
-                self._refresh_catalog_menu()
+                self._catalog.refresh_catalog_menu()
                 self._catalog.start_catalog_refresh((folder,), label=f"Indexing {Path(folder).name} for the library...")
             return
         if chosen == favorite_action:
@@ -9940,36 +4336,6 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _is_filesystem_root(folder: str) -> bool:
         return FolderOpsController.is_filesystem_root(folder)
-
-    def _create_folder_prompt(self, parent_folder: str, *, select_created: bool) -> str | None:
-        return self._folder_ops.create_folder_prompt(parent_folder, select_created=select_created)
-
-    def _rename_folder(self, folder: str) -> None:
-        self._folder_ops.rename_folder(folder)
-
-    def _move_folder_prompt(self, folder: str) -> None:
-        self._folder_ops.move_folder_prompt(folder)
-
-    def _delete_folder_prompt(self, folder: str) -> None:
-        self._folder_ops.delete_folder_prompt(folder)
-
-    def _open_batch_rename_dialog(
-        self,
-        records: list[ImageRecord],
-        *,
-        title: str,
-        scope_label: str,
-        folder: str,
-    ) -> bool:
-        if not records:
-            return False
-        dialog = BatchRenameDialog(records, title=title, scope_label=scope_label, parent=self)
-        if self._exec_dialog_with_geometry(dialog, "batch_rename") != dialog.DialogCode.Accepted:
-            return False
-        preview = dialog.accepted_preview()
-        if not preview.can_apply:
-            return False
-        return self._apply_batch_rename_preview(preview, folder=folder)
 
     def _open_resize_dialog(
         self,
@@ -10032,9 +4398,6 @@ class MainWindow(QMainWindow):
             options,
             refresh_folder=self._resize_refresh_folder(plan),
         )
-
-    def _apply_batch_rename_preview(self, preview: BatchRenamePreview, *, folder: str) -> bool:
-        return self._batch_rename.apply_preview(preview, folder=folder)
 
     def _resize_refresh_folder(self, plan: ResizePlan | ConvertPlan) -> str:
         if not self._current_folder:
@@ -10550,9 +4913,9 @@ class MainWindow(QMainWindow):
             self._decision_store.move_annotations(self._session_id, annotation_updates)
 
         if context.is_current_folder:
-            self._replace_records_after_moves(renamed_records_by_old_path)
-            self._rekey_filter_metadata_after_moves(renamed_records_by_old_path)
-            self._push_undo_actions(undo_actions)
+            self._record_ops.replace_records_after_moves(renamed_records_by_old_path)
+            self._record_ops.rekey_filter_metadata_after_moves(renamed_records_by_old_path)
+            self._record_ops.push_undo_actions(undo_actions)
             current_path = context.current_path_before
             if current_path in renamed_records_by_old_path:
                 current_path = renamed_records_by_old_path[current_path].path
@@ -10654,155 +5017,6 @@ class MainWindow(QMainWindow):
         self._remember_current_folder_view_state()
         self._update_action_states()
 
-    def _set_ui_mode(self, mode: str) -> None:
-        # AI Review is retired: the app always runs in manual review. Callers
-        # that still ask for "ai" (AI workflow entry points) land in manual mode.
-        self._handle_mode_tab_changed(0)
-
-    def _handle_mode_tab_changed(self, index: int) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        step_start = start
-        previous_mode = getattr(self, "_ui_mode", "manual")
-        target_mode = "ai" if index == 1 else "manual"
-
-        def log_step(event: str, step_started: float, **fields: object) -> float:
-            if not logger.enabled:
-                return step_started
-            now = time.perf_counter()
-            logger.duration(
-                event,
-                (now - step_started) * 1000.0,
-                from_mode=previous_mode,
-                to_mode=target_mode,
-                index=index,
-                records=len(self._all_records),
-                visible_records=len(self._records),
-                ai_loaded=self._ai_bundle is not None,
-                **fields,
-            )
-            return now
-
-        self._ui_mode = target_mode
-        self.toolbar_stack.setCurrentIndex(index)
-        action_stack = getattr(self, "topbar_action_stack", None)
-        if action_stack is not None:
-            action_stack.setCurrentIndex(index)
-            self._update_topbar_overflow(self._ui_mode)
-        self.grid.set_show_ai_annotations(self._show_ai_tags_in_grid)
-        self._schedule_workspace_toolbar_overflow_update(self._ui_mode)
-        step_start = log_step("mode_switch.chrome", step_start)
-        self._refresh_viewport_mode()
-        step_start = log_step("mode_switch.viewport", step_start)
-        self._update_ai_toolbar_state()
-        step_start = log_step("mode_switch.ai_toolbar_initial", step_start)
-        if self._ui_mode == "ai":
-            if previous_mode != "ai" and self._sort_mode != SortMode.AI_RANK:
-                self._manual_sort_mode_before_ai_review = self._sort_mode
-            if self._sort_mode != SortMode.AI_RANK:
-                self._sort_mode = SortMode.AI_RANK
-                self._records_view_cache.mark(ViewInvalidationReason.SORT_CHANGED)
-                combo_index = self.sort_combo.findData(SortMode.AI_RANK)
-                if combo_index >= 0:
-                    with QSignalBlocker(self.sort_combo):
-                        self.sort_combo.setCurrentIndex(combo_index)
-            # AI Review judges each image on its own folder ranking — cluster
-            # context produces misleading "weak cluster leader" rejects. Force
-            # Smart Groups + Smart Stacks off while in AI Review and disable
-            # the toggle actions so the user can't re-enable them here.
-            # Previous state is restored on the way out (else branch below).
-            burst_state = (self._burst_groups_enabled, self._burst_stacks_enabled)
-            if burst_state != (False, False):
-                self._ai_review_burst_snapshot = burst_state
-                self._burst_groups_enabled = False
-                self._burst_stacks_enabled = False
-                self._refresh_burst_group_view()
-            elif self._ai_review_burst_snapshot is None:
-                # Nothing was on; remember that so we don't restore stale state.
-                self._ai_review_burst_snapshot = burst_state
-            self._apply_ai_review_burst_lockout(locked=True)
-            # Push disputed-path set into the grid so the orange Disputed badge
-            # paints on returning to AI Review across sessions, and rebuild
-            # the user-label bucket override map so the AI bucket reflects any
-            # labels saved in a previous session.
-            paths = self._aiculler_paths_for_current_folder()
-            if paths is not None:
-                try:
-                    disputes = self._load_aiculler_internal_disputes(paths)
-                    self.grid.set_disputed_paths(set(disputes.keys()))
-                except Exception:
-                    _logger.exception("Failed to load disputed paths for AI Review; Disputed badges will not show")
-            self._recompute_user_label_bucket_overrides()
-            # Don't call _load_hidden_ai_results_for_current_folder /
-            # _restore_ai_results here — both do synchronous load_ai_bundle()
-            # calls and would freeze the UI on slow/UNC paths. Inline the
-            # cache check, then kick the async loader if the bundle isn't
-            # already in memory. The AI panel populates whenever the worker
-            # thread completes.
-            bundle_in_memory = (
-                self._ai_bundle is not None
-                and self._ai_bundle.source_path
-                and self._saved_ai_results_belong_to_current_folder(str(self._ai_bundle.source_path))
-            )
-            step_start = log_step(
-                "mode_switch.load_hidden_ai",
-                step_start,
-                loaded=bundle_in_memory,
-            )
-            if not bundle_in_memory:
-                self._schedule_hidden_ai_results_load(delay_ms=0)
-                step_start = log_step("mode_switch.async_load_scheduled", step_start)
-        else:
-            restored_sort = self._manual_sort_mode_before_ai_review
-            self._manual_sort_mode_before_ai_review = None
-            if restored_sort is not None and self._sort_mode == SortMode.AI_RANK:
-                self._sort_mode = restored_sort
-                self._records_view_cache.mark(ViewInvalidationReason.SORT_CHANGED)
-                combo_index = self.sort_combo.findData(restored_sort)
-                if combo_index >= 0:
-                    with QSignalBlocker(self.sort_combo):
-                        self.sort_combo.setCurrentIndex(combo_index)
-            # Leaving AI Review — restore whatever the toggles were before.
-            snapshot = self._ai_review_burst_snapshot
-            self._ai_review_burst_snapshot = None
-            self._apply_ai_review_burst_lockout(locked=False)
-            if snapshot is not None and snapshot != (
-                self._burst_groups_enabled,
-                self._burst_stacks_enabled,
-            ):
-                self._burst_groups_enabled, self._burst_stacks_enabled = snapshot
-                self._refresh_burst_group_view()
-        if self._all_records:
-            self._apply_records_view(current_path=self._current_visible_record_path())
-            step_start = log_step("mode_switch.records_view", step_start)
-        self._update_action_states()
-        step_start = log_step("mode_switch.action_states", step_start)
-        self._update_status()
-        step_start = log_step("mode_switch.status", step_start)
-        if logger.enabled:
-            logger.duration(
-                "mode_switch.total",
-                (time.perf_counter() - start) * 1000.0,
-                from_mode=previous_mode,
-                to_mode=target_mode,
-                index=index,
-                records=len(self._all_records),
-                visible_records=len(self._records),
-                ai_loaded=self._ai_bundle is not None,
-            )
-
-    def _set_filter_mode(self, mode: FilterMode) -> None:
-        self._records_view.set_filter_mode(mode)
-
-    def _handle_filter_changed(self) -> None:
-        self._records_view.handle_filter_changed()
-
-    def _handle_search_text_changed(self, text: str, *, source: str) -> None:
-        self._records_view.handle_search_text_changed(text, source=source)
-
-    def _commit_search_text_filter(self) -> None:
-        self._records_view.commit_search_text_filter()
-
     def _handle_unified_search_finished(self, folder: str, token: int, result: object) -> None:
         self._records_view.handle_unified_search_finished(folder, token, result)
 
@@ -10818,12 +5032,6 @@ class MainWindow(QMainWindow):
     def _handle_semantic_index_failed(self, folder: str, token: int, message: str) -> None:
         self._records_view.handle_semantic_index_failed(folder, token, message)
 
-    def _suspend_background_indexing(self) -> None:
-        self._records_view.suspend_background_indexing()
-
-    def _resume_background_indexing(self) -> None:
-        self._records_view.resume_background_indexing()
-
     def _handle_face_index_progress(self, folder: str, token: int, completed: int, total: int) -> None:
         self._records_view.handle_face_index_progress(folder, token, completed, total)
 
@@ -10838,15 +5046,6 @@ class MainWindow(QMainWindow):
 
     def _clear_record_filters(self) -> None:
         self._records_view.clear_record_filters()
-
-    def _apply_filter_query_change(self) -> None:
-        self._records_view.apply_filter_query_change()
-
-    def _sync_record_filter_controls(self) -> None:
-        self._records_view.sync_record_filter_controls()
-
-    def _current_visible_record_path(self) -> str | None:
-        return self._records_view.current_visible_record_path()
 
     @staticmethod
     def _normalize_column_count(value: object, *, default: int = 3) -> int:
@@ -10866,21 +5065,10 @@ class MainWindow(QMainWindow):
         text = str(value or "").strip().casefold()
         return text if text in {"compact", "comfortable"} else "comfortable"
 
-    def _initial_zoom_level(self) -> int:
-        return self._columns_to_zoom_slider_value(self.grid.current_columns())
-
     def _columns_to_zoom_slider_value(self, columns: object) -> int:
         # Slider remains left = smaller/more columns, right = larger/fewer columns.
         normalized = self._normalize_column_count(columns)
         return int(round(((8 - normalized) / 7) * 100))
-
-    def _zoom_slider_value_to_columns(self, value: object) -> int:
-        try:
-            slider_value = int(value)
-        except (TypeError, ValueError):
-            slider_value = self._columns_to_zoom_slider_value(self.grid.current_columns())
-        slider_value = max(0, min(100, slider_value))
-        return self._normalize_column_count(round(8 - ((slider_value / 100) * 7)))
 
     def _set_column_count(self, count: int, *, sync_slider: bool = True) -> None:
         columns = self._normalize_column_count(count)
@@ -10911,9 +5099,6 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(slider):
                 slider.setValue(value)
 
-    def _handle_zoom_slider_changed(self, value: int) -> None:
-        self._set_column_count(self._zoom_slider_value_to_columns(value), sync_slider=False)
-
     def _set_browser_view_mode(self, mode: str) -> None:
         normalized = self._normalize_browser_view_mode(mode)
         if self._collection_mode and normalized != "grid":
@@ -10925,7 +5110,7 @@ class MainWindow(QMainWindow):
             return
         current_index = self.grid.current_index()
         selected_indexes = self.grid.selected_indexes()
-        self._browser_view_mode = normalized
+        self._folder_session.browser_view_mode = normalized
         self._settings.setValue(self.BROWSER_VIEW_MODE_KEY, normalized)
         if getattr(self, "browser_stack", None) is not None:
             self.browser_stack.setCurrentIndex(1 if normalized == "details" else 0)
@@ -11039,154 +5224,6 @@ class MainWindow(QMainWindow):
                 return
         label = {"kept": "kept", "rejected": "rejected"}.get(target, "unreviewed")
         self.statusBar().showMessage(f"No {label} image found in Details View")
-
-    def _handle_zen_mode_toggled(self, checked: bool) -> None:
-        self._set_zen_mode(bool(checked))
-
-    def _handle_zen_toggle_shortcut(self) -> None:
-        if self._collection_mode:
-            return
-        self._set_zen_mode(not self._zen_mode_enabled)
-
-    def _handle_zen_escape_shortcut(self) -> None:
-        if self._zen_mode_enabled:
-            self._set_zen_mode(False)
-
-    def _position_zen_hint_overlay(self) -> None:
-        if not hasattr(self, "zen_hint_overlay") or not hasattr(self, "central_container"):
-            return
-        hint = self.zen_hint_overlay
-        hint.adjustSize()
-        width = max(250, hint.width() + 28)
-        height = max(34, hint.height() + 10)
-        x = max(12, (self.central_container.width() - width) // 2)
-        y = 18
-        hint.setGeometry(x, y, width, height)
-
-    def _show_zen_hint_overlay(self) -> None:
-        if not self._zen_mode_enabled or not hasattr(self, "zen_hint_overlay"):
-            return
-        self._position_zen_hint_overlay()
-        self.zen_hint_overlay.show()
-        self.zen_hint_overlay.raise_()
-        self.zen_hint_hide_timer.start(1800)
-
-    def _handle_zen_menu_pin_toggled(self, checked: bool) -> None:
-        self._zen_menu_pinned = bool(checked)
-        self._settings.setValue(self.ZEN_MENU_PINNED_KEY, self._zen_menu_pinned)
-        if self._zen_mode_enabled:
-            self._set_zen_menu_visible(self._zen_menu_pinned)
-
-    def _set_zen_menu_visible(self, visible: bool) -> None:
-        visible = bool(visible)
-        previous_visible = self._zen_menu_visible
-        self._zen_menu_visible = visible
-        if not self._zen_mode_enabled:
-            return
-        menu_bar = self.menuBar()
-        target_height = max(28, menu_bar.sizeHint().height()) if visible else 0
-        if previous_visible == visible and menu_bar.maximumHeight() == target_height:
-            return
-        if visible:
-            menu_bar.setMinimumHeight(0)
-            menu_bar.show()
-        if hasattr(self, "zen_menu_pin_button"):
-            self.zen_menu_pin_button.setVisible(True)
-        current_height = max(0, menu_bar.height() if menu_bar.isVisible() else 0)
-        self._zen_menu_animation.stop()
-        menu_bar.setMaximumHeight(current_height)
-        self._zen_menu_animation.setStartValue(current_height)
-        self._zen_menu_animation.setEndValue(target_height)
-        self._zen_menu_animation.start()
-
-    def _refresh_zen_menu_visibility(self) -> None:
-        if not self._zen_mode_enabled:
-            self._zen_menu_reveal_timer.stop()
-            return
-        if self._zen_menu_pinned or QApplication.activePopupWidget() is not None:
-            self._set_zen_menu_visible(True)
-            return
-        local_pos = self.mapFromGlobal(QCursor.pos())
-        if not QRect(QPoint(0, 0), self.size()).contains(local_pos):
-            self._set_zen_menu_visible(False)
-            return
-        menu_height = max(28, self.menuBar().sizeHint().height())
-        if local_pos.y() <= 8:
-            self._set_zen_menu_visible(True)
-        elif self._zen_menu_visible and local_pos.y() > menu_height + 10:
-            self._set_zen_menu_visible(False)
-
-    def _set_zen_mode(self, enabled: bool) -> None:
-        enabled = bool(enabled)
-        if enabled and self._collection_mode:
-            return
-        if self._zen_mode_enabled == enabled:
-            self._update_action_states()
-            return
-        if enabled:
-            self._zen_restore_state = {
-                "window_state": self.windowState(),
-                "geometry": self.saveGeometry(),
-                "maximized": self.isMaximized(),
-                "fullscreen": self.isFullScreen(),
-                "menu_visible": self.menuBar().isVisible(),
-                "status_visible": self.statusBar().isVisible(),
-                "workspace_bar_visible": self.workspace_bar.isVisible(),
-                "tool_mode_bar_visible": self.tool_mode_bar.isVisible(),
-                "workspace_state": self.workspace_docks.save_state() if self.workspace_docks is not None else None,
-            }
-            self._zen_mode_enabled = True
-            self.menuBar().setMinimumHeight(0)
-            if hasattr(self, "zen_menu_pin_button"):
-                with QSignalBlocker(self.zen_menu_pin_button):
-                    self.zen_menu_pin_button.setChecked(self._zen_menu_pinned)
-            self._set_zen_menu_visible(self._zen_menu_pinned)
-            self._zen_menu_reveal_timer.start()
-            self._zen_escape_shortcut.setEnabled(True)
-            self.statusBar().hide()
-            self.workspace_bar.hide()
-            self.tool_mode_bar.hide()
-            if self.workspace_docks is not None:
-                self.workspace_docks.hide_panel("library")
-                self.workspace_docks.hide_panel("inspector")
-            self.showFullScreen()
-            QTimer.singleShot(120, self._show_zen_hint_overlay)
-            self.statusBar().showMessage("Zen Mode enabled")
-        else:
-            restore_state = self._zen_restore_state or {}
-            self._zen_mode_enabled = False
-            self._zen_menu_reveal_timer.stop()
-            self._zen_menu_animation.stop()
-            self._zen_escape_shortcut.setEnabled(False)
-            if hasattr(self, "zen_menu_pin_button"):
-                self.zen_menu_pin_button.hide()
-            if hasattr(self, "zen_hint_overlay"):
-                self.zen_hint_hide_timer.stop()
-                self.zen_hint_overlay.hide()
-            self.menuBar().setMinimumHeight(0)
-            self.menuBar().setMaximumHeight(16777215)
-            window_state = restore_state.get("window_state")
-            geometry = restore_state.get("geometry")
-            if bool(restore_state.get("fullscreen", False)):
-                pass
-            elif bool(restore_state.get("maximized", False)):
-                self.showMaximized()
-            else:
-                self.showNormal()
-                if isinstance(geometry, QByteArray) and not geometry.isEmpty():
-                    self.restoreGeometry(geometry)
-                elif isinstance(window_state, Qt.WindowState):
-                    self.setWindowState(Qt.WindowState(window_state.value & ~Qt.WindowState.WindowFullScreen.value))
-            self.menuBar().setVisible(bool(restore_state.get("menu_visible", True)))
-            self.statusBar().setVisible(bool(restore_state.get("status_visible", True)))
-            self.workspace_bar.setVisible(bool(restore_state.get("workspace_bar_visible", True)))
-            self.tool_mode_bar.setVisible(bool(restore_state.get("tool_mode_bar_visible", True)))
-            workspace_state = restore_state.get("workspace_state")
-            if self.workspace_docks is not None and isinstance(workspace_state, dict):
-                self.workspace_docks.restore_state(workspace_state)
-            self._zen_restore_state = {}
-            self.statusBar().showMessage("Zen Mode disabled")
-        self._update_action_states()
 
     def _scroll_active_view_to_top(self) -> None:
         if getattr(self, "_browser_view_mode", "grid") == "details":
@@ -11355,7 +5392,7 @@ class MainWindow(QMainWindow):
         self.actions.save_workspace_preset.setEnabled(self.workspace_docks is not None)
         self.actions.new_folder.setEnabled(bool(self._current_folder))
         self.actions.save_filter_preset.setEnabled(self._filter_query.has_active_filters)
-        self.actions.delete_filter_preset.setEnabled(self._matching_saved_filter_preset() is not None)
+        self.actions.delete_filter_preset.setEnabled(self._records_view.matching_saved_filter_preset() is not None)
         self.actions.clear_filters.setEnabled(self._filter_query.has_active_filters)
         self.actions.check_for_updates.setEnabled(
             self._active_update_check_task is None
@@ -11363,13 +5400,13 @@ class MainWindow(QMainWindow):
             and not self._update_installing
         )
         self._refresh_update_button_state()
-        self._refresh_tool_mode_ui()
+        self._tool_mode.refresh_tool_mode_ui()
         self._refresh_directory_navigation_buttons()
         if self._collection_mode:
             self._limit_actions_for_collection_mode()
         # The checked states pushed above sit under QSignalBlocker, which also
         # swallows the changed() the top-bar buttons listen to.
-        self._sync_topbar_action_buttons()
+        self._toolbar.sync_topbar_action_buttons()
         if logger.enabled:
             logger.duration(
                 "window.update_action_states",
@@ -11427,9 +5464,9 @@ class MainWindow(QMainWindow):
         if self._ai_bundle is None:
             self.statusBar().showMessage("Load AI results first to review disagreement cases.")
             return
-        self._set_ui_mode("ai")
+        self._toolbar.sync_chrome_to_manual_review()
         self._filter_query.quick_filter = FilterMode.AI_DISAGREEMENTS
-        self._apply_filter_query_change()
+        self._records_view.apply_filter_query_change()
         self.statusBar().showMessage("Showing AI disagreement cases for targeted review.")
 
     def _selected_records_for_workflow(self) -> list[ImageRecord]:
@@ -11623,7 +5660,7 @@ class MainWindow(QMainWindow):
             key=key,
             name=name,
             description="Saved from the current workspace.",
-            ui_mode=self._ui_mode,
+            ui_mode="manual",
             columns=int(self.columns_combo.currentData() or 3),
             compare_enabled=self._compare_enabled,
             auto_advance=self._auto_advance_enabled,
@@ -11659,7 +5696,7 @@ class MainWindow(QMainWindow):
                 self.workspace_docks.collapse_panel("inspector")
             elif preset.inspector_panel_mode == "hidden":
                 self.workspace_docks.hide_panel("inspector")
-        self._set_ui_mode(preset.ui_mode)
+        self._toolbar.sync_chrome_to_manual_review()
         if self._compare_enabled != preset.compare_enabled:
             self._handle_compare_toggled(preset.compare_enabled)
         if self._auto_advance_enabled != preset.auto_advance:
@@ -11674,7 +5711,7 @@ class MainWindow(QMainWindow):
     def _rename_selected_record(self) -> None:
         current_index = self.grid.current_index()
         if current_index >= 0:
-            self._rename_record_prompt(current_index)
+            self._record_ops.rename_record_prompt(current_index)
 
     def _record_supports_resize(self, record: ImageRecord | None) -> bool:
         if record is None or record.is_folder:
@@ -11692,199 +5729,6 @@ class MainWindow(QMainWindow):
         source_records = self._all_records if records is None else records
         self._records_have_resizable = any(self._record_supports_resize(record) for record in source_records)
         self._records_have_convertible = any(self._record_supports_convert(record) for record in source_records)
-
-    def _invalidate_training_label_counts_cache(self) -> None:
-        self._training_label_counts_cache_key = ()
-        self._training_label_counts_cache = (0, 0)
-
-    def _start_batch_rename_tool_mode(self) -> None:
-        if not self._current_folder or not self._all_records or self._is_recycle_folder() or self._is_winners_folder():
-            return
-        if self._active_tool_mode == "batch_rename" and self.grid.tool_checkbox_mode():
-            self.statusBar().showMessage("Batch Rename tool is already active.")
-            return
-        if self._active_tool_mode and self._active_tool_mode != "batch_rename":
-            self._cancel_tool_mode(show_message=False)
-        self._active_tool_mode = "batch_rename"
-        self.grid.set_tool_checkbox_mode(True, clear_selection=True)
-        self._refresh_tool_mode_ui()
-        self.statusBar().showMessage("Batch Rename tool active. Use the top-left checkboxes to choose images, then click Run.")
-
-    def _start_batch_resize_tool_mode(self) -> None:
-        if not self._current_folder or not self._all_records or self._is_recycle_folder():
-            return
-        if not any(self._record_supports_resize(record) for record in self._all_records):
-            return
-        if self._active_tool_mode == "batch_resize" and self.grid.tool_checkbox_mode():
-            self.statusBar().showMessage("Batch Resize tool is already active.")
-            return
-        if self._active_tool_mode and self._active_tool_mode != "batch_resize":
-            self._cancel_tool_mode(show_message=False)
-        self._active_tool_mode = "batch_resize"
-        self.grid.set_tool_checkbox_mode(True, clear_selection=True, toggle_on_image_click=True)
-        self._refresh_tool_mode_ui()
-        self.statusBar().showMessage("Batch Resize tool active. Click thumbnails or checkboxes to choose images, then click Run.")
-
-    def _start_batch_convert_tool_mode(self) -> None:
-        if not self._current_folder or not self._all_records or self._is_recycle_folder():
-            return
-        if not any(self._record_supports_convert(record) for record in self._all_records):
-            return
-        if self._active_tool_mode == "batch_convert" and self.grid.tool_checkbox_mode():
-            self.statusBar().showMessage("Batch Convert tool is already active.")
-            return
-        if self._active_tool_mode and self._active_tool_mode != "batch_convert":
-            self._cancel_tool_mode(show_message=False)
-        self._active_tool_mode = "batch_convert"
-        self.grid.set_tool_checkbox_mode(True, clear_selection=True)
-        self._refresh_tool_mode_ui()
-        self.statusBar().showMessage("Batch Convert tool active. Use the top-left checkboxes to choose images, then click Run.")
-
-    def _add_all_for_active_tool_mode(self) -> None:
-        if self._active_tool_mode != "batch_resize":
-            return
-        indexes = [
-            index
-            for index, record in enumerate(self._records)
-            if self._record_supports_resize(record)
-        ]
-        if not indexes:
-            self.statusBar().showMessage("No resize-eligible images are available in this folder.")
-            return
-        current_index = self.grid.current_index()
-        if current_index not in indexes:
-            current_index = indexes[0]
-        self.grid.set_selected_indexes(indexes, current_index=current_index)
-        self._refresh_tool_mode_ui()
-        self.statusBar().showMessage(f"Added {len(indexes)} resize-eligible image(s).")
-
-    def _run_active_tool_mode(self) -> None:
-        if self._active_tool_mode == "batch_rename":
-            records = self._selected_records_for_tool_mode()
-            if not records:
-                return
-            scope_label = f"Tool selection: {len(records)} image bundle(s)"
-            applied = self._open_batch_rename_dialog(
-                records,
-                title="Batch Rename Selection",
-                scope_label=scope_label,
-                folder=self._current_folder,
-            )
-            if applied and self._active_tool_mode:
-                self._cancel_tool_mode(show_message=False)
-            return
-        if self._active_tool_mode == "batch_resize":
-            selected_records = self._selected_records_for_tool_mode()
-            sources = self._selected_resize_sources_for_tool_mode()
-            if not sources:
-                self.statusBar().showMessage("Batch Resize skips RAW files. Select one or more non-RAW images.")
-                return
-            skipped_raw_count = max(0, len(selected_records) - len(sources))
-            scope_label = f"Tool selection: {len(sources)} image(s)"
-            raw_note = "Resize can't be used on RAW files."
-            if skipped_raw_count:
-                scope_label = (
-                    f"{scope_label}\n"
-                    f"{skipped_raw_count} RAW file(s) were skipped because resize can't be used on RAW files."
-                )
-            applied = self._open_resize_dialog(
-                sources,
-                title="Batch Resize Selection",
-                scope_label=scope_label,
-                show_preview=True,
-                raw_note=raw_note,
-            )
-            if applied and self._active_tool_mode:
-                self._cancel_tool_mode(show_message=False)
-            return
-        if self._active_tool_mode != "batch_convert":
-            return
-        selected_records = self._selected_records_for_tool_mode()
-        sources = self._selected_convert_sources_for_tool_mode()
-        if not sources:
-            self.statusBar().showMessage("Batch Convert skips RAW files. Select one or more non-RAW images.")
-            return
-        skipped_raw_count = max(0, len(selected_records) - len(sources))
-        scope_label = f"Tool selection: {len(sources)} image(s)"
-        raw_note = "Convert can't be used on RAW files."
-        if skipped_raw_count:
-            scope_label = (
-                f"{scope_label}\n"
-                f"{skipped_raw_count} RAW file(s) were skipped because convert can't be used on RAW files."
-            )
-        applied = self._open_convert_dialog(
-            sources,
-            title="Batch Convert Selection",
-            scope_label=scope_label,
-            show_preview=True,
-            raw_note=raw_note,
-        )
-        if applied and self._active_tool_mode:
-            self._cancel_tool_mode(show_message=False)
-
-    def _cancel_tool_mode(self, checked: bool = False, *, show_message: bool = True) -> None:
-        del checked
-        if not self._active_tool_mode and not self.grid.tool_checkbox_mode():
-            return
-        self._active_tool_mode = ""
-        self.grid.set_tool_checkbox_mode(False, clear_selection=True)
-        self._refresh_tool_mode_ui()
-        if show_message:
-            self.statusBar().showMessage("Exited tool selection mode")
-
-    def _refresh_tool_mode_ui(self) -> None:
-        active = bool(self._active_tool_mode)
-        self.tool_mode_bar.setVisible(active)
-        if not active:
-            return
-        selected_count = len(self._selected_records_for_tool_mode())
-        if self._active_tool_mode == "batch_rename":
-            self.tool_mode_add_all_button.hide()
-            self.tool_mode_title.setText("Batch Rename")
-            self.tool_mode_help.setText("Select images with the checkboxes, then run the rename tool.")
-            self.tool_mode_run_button.setText("Run Batch Rename")
-            self.tool_mode_selection.setText(f"{selected_count} selected")
-            self.tool_mode_run_button.setEnabled(selected_count > 0)
-        elif self._active_tool_mode == "batch_resize":
-            eligible_count = len(self._selected_resize_sources_for_tool_mode())
-            skipped_raw_count = max(0, selected_count - eligible_count)
-            total_eligible_count = sum(1 for record in self._records if self._record_supports_resize(record))
-            self.tool_mode_add_all_button.show()
-            self.tool_mode_add_all_button.setEnabled(total_eligible_count > 0)
-            self.tool_mode_title.setText("Batch Resize")
-            self.tool_mode_help.setText("Click thumbnails or checkboxes to select images, then run the resize tool. RAW files are skipped.")
-            self.tool_mode_run_button.setText("Run Batch Resize")
-            if skipped_raw_count:
-                self.tool_mode_selection.setText(f"{eligible_count} eligible | {skipped_raw_count} RAW skipped")
-            else:
-                self.tool_mode_selection.setText(f"{eligible_count} eligible")
-            self.tool_mode_run_button.setEnabled(eligible_count > 0)
-        elif self._active_tool_mode == "batch_convert":
-            self.tool_mode_add_all_button.hide()
-            eligible_count = len(self._selected_convert_sources_for_tool_mode())
-            skipped_raw_count = max(0, selected_count - eligible_count)
-            self.tool_mode_title.setText("Batch Convert")
-            self.tool_mode_help.setText("Select images with the checkboxes, then run the convert tool. RAW files are skipped.")
-            self.tool_mode_run_button.setText("Run Batch Convert")
-            if skipped_raw_count:
-                self.tool_mode_selection.setText(f"{eligible_count} eligible | {skipped_raw_count} RAW skipped")
-            else:
-                self.tool_mode_selection.setText(f"{eligible_count} eligible")
-            self.tool_mode_run_button.setEnabled(eligible_count > 0)
-        else:
-            self.tool_mode_add_all_button.hide()
-            self.tool_mode_title.setText("Tool")
-            self.tool_mode_help.setText("Select images, then run the active tool.")
-            self.tool_mode_run_button.setText("Run")
-            self.tool_mode_selection.setText(f"{selected_count} selected")
-            self.tool_mode_run_button.setEnabled(selected_count > 0)
-
-    def _selected_records_for_tool_mode(self) -> list[ImageRecord]:
-        return [
-            self._records[index]
-            for index in self.grid.selected_indexes()
-            if 0 <= index < len(self._records) and not self._records[index].is_folder
-        ]
 
     def _resize_source_for_index(self, index: int) -> ResizeSourceItem | None:
         record = self._record_at(index)
@@ -11915,15 +5759,6 @@ class MainWindow(QMainWindow):
             source_name=Path(source_path).name,
         )
 
-    def _selected_resize_sources_for_tool_mode(self) -> list[ResizeSourceItem]:
-        return [
-            source
-            for index in self.grid.selected_indexes()
-            if 0 <= index < len(self._records)
-            for source in [self._resize_source_for_index(index)]
-            if source is not None
-        ]
-
     def _convert_source_for_index(self, index: int) -> ConvertSourceItem | None:
         record = self._record_at(index)
         if record is None or not self._record_supports_convert(record):
@@ -11952,15 +5787,6 @@ class MainWindow(QMainWindow):
             source_path=source_path,
             source_name=Path(source_path).name,
         )
-
-    def _selected_convert_sources_for_tool_mode(self) -> list[ConvertSourceItem]:
-        return [
-            source
-            for index in self.grid.selected_indexes()
-            if 0 <= index < len(self._records)
-            for source in [self._convert_source_for_index(index)]
-            if source is not None
-        ]
 
     def _workflow_export_source_for_record(self, record: ImageRecord) -> ResizeSourceItem | None:
         preferred = record.preferred_edit_path or ""
@@ -12071,10 +5897,10 @@ class MainWindow(QMainWindow):
             if recipe.group_by_record_folder:
                 target_dir = normalize_filesystem_path(str(Path(destination_dir) / self._workflow_record_folder_name(record)))
             if recipe.transfer_mode == RECIPE_TRANSFER_MOVE:
-                if self._move_record_to_path(record.path, target_dir):
+                if self._record_ops.move_record_to_path(record.path, target_dir):
                     processed += 1
             else:
-                if self._copy_record_to_path(record.path, target_dir):
+                if self._record_ops.copy_record_to_path(record.path, target_dir):
                     processed += 1
         if processed:
             self._remember_recent_destination(destination_dir)
@@ -12268,1427 +6094,11 @@ class MainWindow(QMainWindow):
     def _open_people_search_dialog(self) -> None:
         self._records_view.open_people_search_dialog()
 
-    def _show_photos_for_person(self, label: str, paths) -> None:
-        self._records_view.show_photos_for_person(label, paths)
-
     def _open_current_ai_review(self) -> None:
-        if self._ai_bundle is None and not self._load_hidden_ai_results_for_current_folder(show_message=True):
+        if self._ai_bundle is None and not self._ai_run.load_hidden_ai_results_for_current_folder(show_message=True):
             self.statusBar().showMessage("Run Cull & Score first.")
             return
-        self._set_ui_mode("ai")
-
-    def _open_guided_ai_cull_preferences(self) -> None:
-        dialog = getattr(self, "_guided_ai_cull_preferences_dialog", None)
-        if dialog is not None and dialog.isVisible():
-            dialog.raise_()
-            dialog.activateWindow()
-            return
-
-        image_count = sum(1 for record in self._all_records if not record.is_folder)
-        dialog = GuidedAICullPreferencesDialog(
-            folder_name=self._scope_display_label(),
-            image_count=image_count,
-            keep_top_percent=self._ai_keep_top_percent_setting,
-            review_band_percent=self._ai_review_band_percent_setting,
-            phash_prefilter_settings=self._phash_prefilter_settings,
-            parent=self,
-        )
-        self._guided_ai_cull_preferences_dialog = dialog
-        dialog.workflow_button.clicked.connect(self._open_ai_workflow_center)
-        dialog.accepted.connect(lambda d=dialog: self._handle_guided_ai_cull_preferences_accepted(d))
-        dialog.finished.connect(lambda _code, d=dialog: self._clear_guided_ai_cull_preferences_dialog(d))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    def _clear_guided_ai_cull_preferences_dialog(self, dialog: GuidedAICullPreferencesDialog) -> None:
-        if getattr(self, "_guided_ai_cull_preferences_dialog", None) is dialog:
-            self._guided_ai_cull_preferences_dialog = None
-
-    def _handle_guided_ai_cull_preferences_accepted(self, dialog: GuidedAICullPreferencesDialog) -> None:
-        self._apply_guided_ai_cull_preferences(dialog.result_preferences())
-        self._run_ai_pipeline()
-
-    def _apply_guided_ai_cull_preferences(self, preferences: GuidedCullPreferences) -> None:
-        new_keep_top = self._normalize_ai_keep_top_percent(preferences.keep_top_percent)
-        new_review_band = self._normalize_ai_review_band_percent(preferences.review_band_percent)
-        if (
-            new_keep_top != self._ai_keep_top_percent_setting
-            or new_review_band != self._ai_review_band_percent_setting
-        ):
-            self._ai_keep_top_percent_setting = new_keep_top
-            self._ai_review_band_percent_setting = new_review_band
-            self._apply_cull_thresholds_to_classifier()
-
-        self._phash_prefilter_settings = preferences.phash_prefilter_settings.normalized()
-
-        self._settings.setValue(self.AI_KEEP_TOP_PERCENT_KEY, self._ai_keep_top_percent_setting)
-        self._settings.setValue(self.AI_REVIEW_BAND_PERCENT_KEY, self._ai_review_band_percent_setting)
-        self._save_phash_prefilter_settings(self._phash_prefilter_settings)
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("Guided AI Cull preferences saved.")
-
-    def _refresh_ai_workflow_center(self) -> None:
-        dialog = getattr(self, "_ai_workflow_center_dialog", None)
-        if dialog is not None and dialog.isVisible():
-            dialog.refresh()
-
-    def _open_aiculler_root(self) -> None:
-        try:
-            runtime = default_aiculler_runtime()
-        except Exception as exc:
-            QMessageBox.warning(self, "AI Culler", f"Could not resolve the CLI-Culler runtime.\n\n{exc}")
-            return
-        open_with_default(str(runtime.root))
-
-    def _open_aiculler_categories(self) -> None:
-        try:
-            runtime = default_aiculler_runtime()
-            category_path = runtime.categories_csv or (runtime.root / "categories.csv")
-        except Exception as exc:
-            QMessageBox.warning(self, "AI Categories", f"Could not resolve the categories file.\n\n{exc}")
-            return
-        from .category_prompts_dialog import CategoryPromptsDialog
-        dialog = CategoryPromptsDialog(category_path, parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.statusBar().showMessage(f"Saved category prompts to {category_path.name}.")
-
-    def _aiculler_paths_for_current_folder(self):
-        if not self._current_folder:
-            return None
-        # Called on every winner / reject mark (telemetry), so it must not ask a share to resolve the path.
-        return build_aiculler_workflow_paths(
-            self._current_folder, resolve=not self._is_slow_source_folder(self._current_folder)
-        )
-
-    def _aiculler_telemetry_logger_for_current_folder(self) -> ThreadedTelemetryLogger | None:
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return None
-        db_path = aiculler_db_path(paths)
-        if self._aiculler_telemetry_logger is not None and self._aiculler_telemetry_db_path == db_path:
-            return self._aiculler_telemetry_logger
-        self._shutdown_aiculler_telemetry_logger()
-        self._aiculler_telemetry_db_path = db_path
-        self._aiculler_telemetry_logger = ThreadedTelemetryLogger(db_path)
-        return self._aiculler_telemetry_logger
-
-    def _shutdown_aiculler_telemetry_logger(self) -> None:
-        self._flush_pending_aiculler_telemetry()
-        logger = self._aiculler_telemetry_logger
-        self._aiculler_telemetry_logger = None
-        self._aiculler_telemetry_db_path = None
-        if logger is not None:
-            logger.shutdown()
-
-    def _flush_pending_aiculler_telemetry(self) -> None:
-        pending = getattr(self, "_aiculler_pending_telemetry_events", {})
-        if not pending:
-            return
-        for timer, event in list(pending.values()):
-            timer.stop()
-            self._log_aiculler_telemetry_now(event)
-        pending.clear()
-
-    def _queue_aiculler_telemetry_event(self, event: TelemetryEvent) -> None:
-        if self._aiculler_telemetry_logger_for_current_folder() is None:
-            return
-        key = event.image_id
-        pending = self._aiculler_pending_telemetry_events
-        existing = pending.pop(key, None)
-        if existing is not None:
-            timer, previous_event = existing
-            timer.stop()
-            self._log_aiculler_telemetry_now(
-                replace(
-                    previous_event,
-                    is_final=0,
-                    ignored_for_training=1,
-                )
-            )
-            event = replace(event, previous_bucket=previous_event.previous_bucket or previous_event.ai_initial_bucket)
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.setInterval(450)
-        timer.timeout.connect(lambda event_key=key: self._flush_pending_aiculler_telemetry_event(event_key))
-        pending[key] = (timer, event)
-        timer.start()
-
-    def _flush_pending_aiculler_telemetry_event(self, key: str) -> None:
-        pending = self._aiculler_pending_telemetry_events
-        item = pending.pop(key, None)
-        if item is None:
-            return
-        _timer, event = item
-        self._log_aiculler_telemetry_now(event)
-
-    def _log_aiculler_telemetry_now(self, event: TelemetryEvent) -> None:
-        logger = self._aiculler_telemetry_logger or self._aiculler_telemetry_logger_for_current_folder()
-        if logger is not None:
-            logger.log_event(event)
-
-    def _aiculler_internal_label_store_path(self, paths) -> Path:
-        app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-        root = Path(app_data) if app_data else Path.home() / ".image-triage"
-        folder_key = sha1(str(paths.folder).casefold().encode("utf-8"), usedforsecurity=False).hexdigest()[:20]
-        return root / "ai_training" / "adapter_labels" / f"{folder_key}.json"
-
-    def _aiculler_global_label_store(self) -> GlobalAdapterLabelStore:
-        return GlobalAdapterLabelStore(default_global_adapter_label_store_path())
-
-    def _save_aiculler_global_label(
-        self,
-        source_path: str,
-        label: str,
-        *,
-        weight: float = 1.0,
-        is_dispute: bool = False,
-        reason_tags: tuple[str, ...] = (),
-    ) -> None:
-        pending = getattr(self, "_aiculler_global_label_pending", None)
-        if pending is not None:
-            pending.pop(str(source_path), None)
-        try:
-            store = self._aiculler_global_label_store()
-            try:
-                if label.strip():
-                    store.upsert_label(
-                        source_path,
-                        label,
-                        folder=self._current_folder or str(Path(source_path).parent),
-                        weight=weight,
-                        is_dispute=is_dispute,
-                        reason_tags=reason_tags,
-                    )
-                else:
-                    store.delete_label(source_path)
-            finally:
-                store.close()
-        except Exception:
-            # Global labels are a convenience layer. Folder-local labels remain
-            # authoritative for the current workflow if the global DB is not
-            # writable.
-            _logger.debug("Failed to save global aiculler label for %s", source_path, exc_info=True)
-            return
-
-    def _queue_aiculler_global_label(
-        self,
-        source_path: str,
-        label: str,
-        *,
-        weight: float = 1.0,
-        is_dispute: bool = False,
-    ) -> None:
-        self._aiculler_global_label_pending[str(source_path)] = (str(label), float(weight), bool(is_dispute))
-        self._aiculler_global_label_save_timer.start()
-
-    def _sync_annotation_to_global_adapter_label(
-        self,
-        record: ImageRecord,
-        annotation: SessionAnnotation | None,
-    ) -> None:
-        label = self._aiculler_label_for_annotation(annotation)
-        self._queue_aiculler_global_label(record.path, label, weight=1.0, is_dispute=False)
-
-    def _save_aiculler_global_reason_tags(self, source_path: str, reason_tags: tuple[str, ...]) -> None:
-        try:
-            store = self._aiculler_global_label_store()
-            try:
-                store.update_reason_tags(source_path, reason_tags)
-            finally:
-                store.close()
-        except Exception:
-            _logger.debug("Failed to save global aiculler reason tags for %s", source_path, exc_info=True)
-            return
-
-    def _flush_aiculler_global_label_queue(self) -> None:
-        pending = dict(getattr(self, "_aiculler_global_label_pending", {}))
-        if not pending:
-            return
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        self._aiculler_global_label_save_timer.stop()
-        self._aiculler_global_label_pending.clear()
-        for source_path, (label, weight, is_dispute) in pending.items():
-            self._save_aiculler_global_label(source_path, label, weight=weight, is_dispute=is_dispute)
-        if logger.enabled:
-            logger.duration(
-                "adapter_review.window.flush_global_labels",
-                (time.perf_counter() - start) * 1000.0,
-                labels=len(pending),
-            )
-
-    def _load_aiculler_internal_labels(self, paths) -> dict[str, str]:
-        labels, _disputes, _reason_tags = self._load_aiculler_internal_label_cache(paths)
-        return dict(labels)
-
-    def _load_aiculler_internal_label_cache(self, paths) -> tuple[dict[str, str], dict[str, dict[str, object]], dict[str, tuple[str, ...]]]:
-        label_path = self._aiculler_internal_label_store_path(paths)
-        cache_key = str(label_path)
-        cached = self._aiculler_internal_label_cache.get(cache_key)
-        if cached is not None:
-            labels, disputes, reason_tags = cached
-            return labels, disputes, reason_tags
-        if not label_path.exists():
-            labels: dict[str, str] = {}
-            disputes: dict[str, dict[str, object]] = {}
-            reason_tags: dict[str, tuple[str, ...]] = {}
-            self._aiculler_internal_label_cache[cache_key] = (labels, disputes, reason_tags)
-            self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
-            return labels, disputes, reason_tags
-        try:
-            payload = json.loads(label_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        raw_labels = payload.get("labels") if isinstance(payload, dict) else None
-        allowed_labels = {"hero", "portfolio", "strong", "keep", "good", "maybe", "weak", "reject", "bad", "k", "r", "yes", "no", "1", "0"}
-        labels = {
-            str(path): str(label).strip().lower()
-            for path, label in (raw_labels.items() if isinstance(raw_labels, dict) else ())
-            if str(label).strip().lower() in allowed_labels
-        }
-        raw_disputes = payload.get("disputes") if isinstance(payload, dict) else None
-        disputes: dict[str, dict[str, object]] = {}
-        if isinstance(raw_disputes, dict):
-            for path, entry in raw_disputes.items():
-                if not isinstance(entry, dict):
-                    continue
-                disputes[str(path)] = {
-                    "user_label": str(entry.get("user_label") or "").strip().lower(),
-                    "ai_label": str(entry.get("ai_label") or "").strip(),
-                    "ai_score": float(entry.get("ai_score") or 0.0),
-                    "ai_bucket": str(entry.get("ai_bucket") or ""),
-                    "timestamp": str(entry.get("timestamp") or ""),
-                }
-        raw_reason_tags = payload.get("reason_tags") if isinstance(payload, dict) else None
-        reason_tags: dict[str, tuple[str, ...]] = {}
-        if isinstance(raw_reason_tags, dict):
-            for path, values in raw_reason_tags.items():
-                reason_tags[str(path)] = self._normalize_adapter_reason_tags(values)
-        self._aiculler_internal_label_cache[cache_key] = (labels, disputes, reason_tags)
-        self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
-        return labels, disputes, reason_tags
-
-    def _load_aiculler_internal_disputes(self, paths) -> dict[str, dict[str, object]]:
-        """Disputes: per-image entries where the user overrode the AI.
-
-        Stored alongside labels in the same JSON file (sibling `disputes` key)
-        so there's one source of truth and the existing label flow keeps
-        working unchanged. Each entry records the user's corrective label and
-        a snapshot of what the AI said at dispute time (for debugging /
-        analytics later).
-        """
-        _labels, disputes, _reason_tags = self._load_aiculler_internal_label_cache(paths)
-        return {path: dict(entry) for path, entry in disputes.items()}
-
-    def _load_aiculler_internal_reason_tags(self, paths) -> dict[str, tuple[str, ...]]:
-        _labels, _disputes, reason_tags = self._load_aiculler_internal_label_cache(paths)
-        return {path: tuple(values) for path, values in reason_tags.items()}
-
-    def _save_aiculler_internal_labels(
-        self,
-        paths,
-        labels: dict[str, str],
-        *,
-        disputes: dict[str, dict[str, object]] | None = None,
-        reason_tags: dict[str, tuple[str, ...]] | None = None,
-        defer: bool = False,
-    ) -> None:
-        label_path = self._aiculler_internal_label_store_path(paths)
-        # If disputes weren't passed in, preserve whatever is already on disk
-        # so saving labels doesn't accidentally drop existing disputes.
-        if disputes is None:
-            _cached_labels, cached_disputes, cached_reason_tags = self._load_aiculler_internal_label_cache(paths)
-            disputes = cached_disputes
-            if reason_tags is None:
-                reason_tags = cached_reason_tags
-        elif reason_tags is None:
-            _cached_labels, _cached_disputes, cached_reason_tags = self._load_aiculler_internal_label_cache(paths)
-            reason_tags = cached_reason_tags
-        cache_key = str(label_path)
-        cached_labels = dict(labels)
-        cached_disputes = {str(path): dict(entry) for path, entry in disputes.items()}
-        cached_reason_tags = {
-            str(path): self._normalize_adapter_reason_tags(values)
-            for path, values in (reason_tags or {}).items()
-            if self._normalize_adapter_reason_tags(values)
-        }
-        self._aiculler_internal_label_cache[cache_key] = (cached_labels, cached_disputes, cached_reason_tags)
-        self._aiculler_internal_label_cache_folders[cache_key] = str(paths.folder)
-        if defer:
-            self._aiculler_internal_label_dirty_paths.add(cache_key)
-            self._aiculler_internal_label_save_timer.start()
-            return
-        self._write_aiculler_internal_label_payload(label_path, paths.folder, cached_labels, cached_disputes, cached_reason_tags)
-        self._aiculler_internal_label_dirty_paths.discard(cache_key)
-
-    def _write_aiculler_internal_label_payload(
-        self,
-        label_path: Path,
-        folder: object,
-        labels: dict[str, str],
-        disputes: dict[str, dict[str, object]],
-        reason_tags: dict[str, tuple[str, ...]] | None = None,
-    ) -> None:
-        label_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "folder": str(folder),
-            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "labels": dict(sorted(labels.items(), key=lambda item: item[0].casefold())),
-            "disputes": dict(sorted(disputes.items(), key=lambda item: item[0].casefold())),
-            "reason_tags": {
-                path: list(values)
-                for path, values in sorted((reason_tags or {}).items(), key=lambda item: item[0].casefold())
-                if values
-            },
-        }
-        label_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-    def _flush_aiculler_internal_label_cache(self) -> None:
-        dirty = list(getattr(self, "_aiculler_internal_label_dirty_paths", set()))
-        if not dirty:
-            return
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        for cache_key in dirty:
-            cached = self._aiculler_internal_label_cache.get(cache_key)
-            if cached is None:
-                self._aiculler_internal_label_dirty_paths.discard(cache_key)
-                continue
-            labels, disputes, reason_tags = cached
-            folder = self._aiculler_internal_label_cache_folders.get(cache_key, "")
-            self._write_aiculler_internal_label_payload(Path(cache_key), folder, labels, disputes, reason_tags)
-            self._aiculler_internal_label_dirty_paths.discard(cache_key)
-        if logger.enabled:
-            logger.duration(
-                "adapter_review.window.flush_internal_labels",
-                (time.perf_counter() - start) * 1000.0,
-                files=len(dirty),
-            )
-
-    @staticmethod
-    def _aiculler_label_for_annotation(annotation: SessionAnnotation | None) -> str:
-        if annotation is None:
-            return ""
-        if annotation.reject:
-            return "reject"
-        if annotation.winner:
-            return "keep"
-        return ""
-
-    @classmethod
-    def _normalize_adapter_reason_tags(cls, values: object) -> tuple[str, ...]:
-        allowed = {key for key, _label in cls.ADAPTER_REASON_TAGS}
-        if isinstance(values, str):
-            raw_values = re.split(r"[;,|]", values)
-        elif isinstance(values, (list, tuple, set)):
-            raw_values = list(values)
-        else:
-            raw_values = []
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for value in raw_values:
-            text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-            if text not in allowed or text in seen:
-                continue
-            seen.add(text)
-            normalized.append(text)
-        return tuple(normalized)
-
-    @classmethod
-    def _is_adapter_reason_target_label(cls, label: object) -> bool:
-        normalized = str(label or "").strip().lower()
-        return normalized in cls.ADAPTER_REASON_TARGET_LABELS
-
-    def _review_aiculler_adapter_labels(self) -> None:
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            self.statusBar().showMessage("Choose a folder before reviewing adapter labels.")
-            return
-        db_path = aiculler_db_path(paths)
-        if not db_path.exists():
-            self.statusBar().showMessage("Run Index & Score in the AI Workflow Center before reviewing adapter labels.")
-            return
-        saved_labels = self._load_aiculler_internal_labels(paths)
-        saved_reason_tags = self._load_aiculler_internal_reason_tags(paths)
-        # The CLI-Culler DB stores whatever path the AI run was given (often a
-        # UNC path like \\server\share\...), but the grid records use whatever
-        # form the user opened the folder with (often a mapped drive like X:).
-        # Translate each survivor + sibling path to its matching grid record
-        # path so the grid filter actually sees matches and the viewport
-        # populates.
-        #
-        # IMPORTANT: do NOT use normalized_path_key here — it calls Path.resolve(),
-        # which on UNC paths makes a network round-trip per call. For a 1400-image
-        # folder that's tens of seconds of UI-thread blocking. Instead, match by
-        # filename (cheap, IO-free, works perfectly when filenames are unique
-        # inside the folder — the norm for a photo shoot). When two records share
-        # the same basename, fall back to comparing the casefolded full path
-        # (still no IO, just string ops) to disambiguate. RAW/JPG pairs can
-        # also mean the DB stores a scored JPG while the grid is showing a RAW
-        # primary record, so keep a same-stem fallback after exact basenames.
-        records_by_basename: dict[str, list[str]] = {}
-        records_by_stem: dict[str, list[str]] = {}
-
-        def _index_grid_path(path: str) -> None:
-            basename = os.path.basename(path).casefold()
-            if not basename:
-                return
-            records_by_basename.setdefault(basename, []).append(path)
-            stem = os.path.splitext(basename)[0]
-            if stem:
-                records_by_stem.setdefault(stem, []).append(path)
-
-        grid_records = list(getattr(self.grid, "_items", ()) or ()) or list(self._all_records)
-        for record in grid_records:
-            if record.is_folder:
-                continue
-            _index_grid_path(record.path)
-            for variant in getattr(record, "display_variants", ()) or ():
-                variant_path = str(getattr(variant, "path", "") or "")
-                if variant_path:
-                    _index_grid_path(variant_path)
-
-        unresolved_count = 0
-
-        def _resolve_to_grid(db_path: str) -> str | None:
-            if not db_path:
-                return None
-            basename = os.path.basename(db_path).casefold()
-            matches = records_by_basename.get(basename)
-            if not matches:
-                matches = records_by_stem.get(os.path.splitext(basename)[0])
-            if not matches:
-                return None
-            if len(matches) == 1:
-                return matches[0]
-            # Multiple records with the same filename — pick the one whose
-            # casefolded path shares the longest suffix with the DB path.
-            db_key = os.path.normpath(db_path).casefold()
-            best = matches[0]
-            best_score = 0
-            for candidate in matches:
-                cand_key = os.path.normpath(candidate).casefold()
-                # Compare from the right (suffix overlap).
-                score = 0
-                for a, b in zip(reversed(db_key), reversed(cand_key)):
-                    if a != b:
-                        break
-                    score += 1
-                if score > best_score:
-                    best = candidate
-                    best_score = score
-            return best
-
-        pending_reason_paths: list[str] = []
-        seen_pending_reason_paths: set[str] = set()
-        for label_path, label in saved_labels.items():
-            if not self._is_adapter_reason_target_label(label) or saved_reason_tags.get(label_path):
-                continue
-            resolved = _resolve_to_grid(label_path)
-            if resolved is None or resolved in seen_pending_reason_paths:
-                continue
-            seen_pending_reason_paths.add(resolved)
-            pending_reason_paths.append(resolved)
-
-        if pending_reason_paths:
-            self._aiculler_dedupe_siblings = {}
-            self._aiculler_force_propagate_siblings = set()
-            burst_snapshot = (self._burst_groups_enabled, self._burst_stacks_enabled)
-            if burst_snapshot != (False, False):
-                self._aiculler_review_burst_snapshot = burst_snapshot
-                self._burst_groups_enabled = False
-                self._burst_stacks_enabled = False
-                self._refresh_burst_group_view()
-                self._update_action_states()
-            else:
-                self._aiculler_review_burst_snapshot = None
-            self._adapter_review_reason_phase = True
-            self._adapter_review_rating_paths = tuple(pending_reason_paths)
-            self._clear_adapter_review_reason_tags()
-            self.grid.set_adapter_review_mode(
-                pending_reason_paths,
-                saved_labels,
-                label_controls_enabled=False,
-                reason_controls_enabled=True,
-                reason_tags_by_path=saved_reason_tags,
-                reason_options=self.ADAPTER_REASON_TAGS,
-            )
-            self._refresh_adapter_review_banner()
-            dialog = getattr(self, "_ai_workflow_center_dialog", None)
-            if dialog is not None:
-                dialog.hide_for_adapter_review()
-            self.statusBar().showMessage(
-                f"{len(pending_reason_paths)} winner/reject label(s) need reasons before a new review batch."
-            )
-            return
-
-        phash_group_by_path, phash_group_members = self._aiculler_phash_group_maps()
-        review_group_by_path, review_group_members = self._aiculler_review_group_maps()
-        try:
-            selection = load_adapter_review_candidates(
-                db_path,
-                already_labeled=set(saved_labels.keys()),
-                phash_group_by_path=phash_group_by_path,
-                phash_group_members=phash_group_members,
-                review_group_by_path=review_group_by_path,
-                review_group_members=review_group_members,
-                return_result=True,
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Adapter Label Review", f"Could not load adapter review candidates.\n\n{exc}")
-            return
-
-        review_paths: list[str] = []
-        seen_review_paths: set[str] = set()
-        unresolved_count = 0
-        for row in selection.candidates:
-            db_path = str(row.get("file_path") or "")
-            if not db_path:
-                continue
-            resolved = _resolve_to_grid(db_path)
-            if resolved is None:
-                unresolved_count += 1
-                continue
-            if resolved in seen_review_paths:
-                continue
-            seen_review_paths.add(resolved)
-            review_paths.append(resolved)
-
-        if not review_paths:
-            if unresolved_count:
-                message = (
-                    "Adapter review candidates were found, but none matched the images currently loaded in the grid. "
-                    "Refresh or reopen this folder, then try Review Labels again."
-                )
-                self.statusBar().showMessage(message)
-                QMessageBox.information(self, "Adapter Label Review", message)
-            else:
-                self.statusBar().showMessage("No adapter label candidates are available for this folder.")
-            return
-
-        # Re-key the sibling map so label propagation also lands on grid paths.
-        translated_siblings: dict[str, list[str]] = {}
-        translated_force_propagate: set[str] = set()
-        for survivor_path, sibling_paths in selection.siblings_by_survivor.items():
-            grid_survivor = _resolve_to_grid(str(survivor_path))
-            if grid_survivor is None:
-                continue
-            resolved_siblings: list[str] = []
-            seen_sibling_paths: set[str] = set()
-            survivor_key = os.path.normcase(os.path.normpath(grid_survivor))
-            for sib in sibling_paths:
-                resolved = _resolve_to_grid(str(sib))
-                if resolved is None:
-                    continue
-                resolved_key = os.path.normcase(os.path.normpath(resolved))
-                if resolved_key == survivor_key or resolved_key in seen_sibling_paths:
-                    continue
-                seen_sibling_paths.add(resolved_key)
-                resolved_siblings.append(resolved)
-            translated_siblings[grid_survivor] = resolved_siblings
-            if str(survivor_path) in selection.force_propagate_survivors:
-                translated_force_propagate.add(grid_survivor)
-        self._aiculler_dedupe_siblings = translated_siblings
-        self._aiculler_force_propagate_siblings = translated_force_propagate
-
-        # Force burst grouping/stacking off while labeling so pHash dedup is the
-        # only source of grouping. The previous toggle state is restored when
-        # adapter review mode exits via _exit_aiculler_adapter_review_mode().
-        burst_snapshot = (self._burst_groups_enabled, self._burst_stacks_enabled)
-        if burst_snapshot != (False, False):
-            self._aiculler_review_burst_snapshot = burst_snapshot
-            self._burst_groups_enabled = False
-            self._burst_stacks_enabled = False
-            self._refresh_burst_group_view()
-            self._update_action_states()
-        else:
-            self._aiculler_review_burst_snapshot = None
-
-        self._adapter_review_reason_phase = False
-        self._adapter_review_rating_paths = tuple(review_paths)
-        self._clear_adapter_review_reason_tags()
-        self.grid.set_adapter_review_mode(review_paths, saved_labels)
-        self._refresh_adapter_review_banner()
-        dialog = getattr(self, "_ai_workflow_center_dialog", None)
-        if dialog is not None:
-            dialog.hide_for_adapter_review()
-        diagnostics = selection.diagnostics
-        hidden_count = int(diagnostics.collapsed_sibling_count)
-        cap_skips = int(diagnostics.cap_skip_count)
-        suffix_parts: list[str] = []
-        if hidden_count:
-            suffix_parts.append(f"{hidden_count} pHash sibling(s) hidden")
-        if cap_skips:
-            suffix_parts.append(f"{cap_skips} spread cap skip(s)")
-        if diagnostics.warning:
-            suffix_parts.append(str(diagnostics.warning))
-        suffix = f" ({'; '.join(suffix_parts)})" if suffix_parts else ""
-        self.statusBar().showMessage(
-            f"Reviewing {len(review_paths)} adapter candidates{suffix}. "
-            f"Use 1=best, 2=strong, 3=maybe, 4=weak, 5=reject."
-        )
-
-    def _aiculler_phash_group_maps(self) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
-        if not self._current_folder:
-            return {}, {}
-        phash_paths = build_phash_prefilter_paths(self._current_folder)
-        if not phash_paths.cache_path.exists():
-            return {}, {}
-        try:
-            payload = json.loads(phash_paths.cache_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}, {}
-        entries = payload.get("entries") if isinstance(payload, dict) else None
-        if not isinstance(entries, dict):
-            return {}, {}
-        hashes: list[tuple[str, int]] = []
-        for path, entry in entries.items():
-            if not isinstance(entry, dict):
-                continue
-            value = entry.get("hash")
-            if isinstance(value, int):
-                hashes.append((str(path), value))
-        if len(hashes) < 2:
-            return {}, {}
-        threshold = getattr(getattr(self, "_phash_prefilter_settings", None), "hamming_threshold", 6)
-        try:
-            threshold = max(0, min(64, int(threshold)))
-        except (TypeError, ValueError):
-            threshold = 6
-        threshold = max(threshold, 12)
-        parent = list(range(len(hashes)))
-
-        def find(index: int) -> int:
-            while parent[index] != index:
-                parent[index] = parent[parent[index]]
-                index = parent[index]
-            return index
-
-        def union(left: int, right: int) -> None:
-            left_root = find(left)
-            right_root = find(right)
-            if left_root != right_root:
-                parent[right_root] = left_root
-
-        for left_index, (_left_path, left_hash) in enumerate(hashes):
-            for right_index in range(left_index + 1, len(hashes)):
-                _right_path, right_hash = hashes[right_index]
-                if hamming_distance_int(left_hash, right_hash) <= threshold:
-                    union(left_index, right_index)
-
-        grouped: dict[int, list[str]] = {}
-        for index, (path, _hash) in enumerate(hashes):
-            grouped.setdefault(find(index), []).append(path)
-        group_by_path: dict[str, str] = {}
-        group_members: dict[str, tuple[str, ...]] = {}
-        group_index = 1
-        for members in grouped.values():
-            if len(members) < 2:
-                continue
-            group_id = f"phash:{group_index:04d}"
-            group_index += 1
-            ordered = tuple(sorted(members, key=lambda item: item.casefold()))
-            group_members[group_id] = ordered
-            for member in ordered:
-                group_by_path[member] = group_id
-        return group_by_path, group_members
-
-    def _aiculler_review_group_maps(self) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
-        bundle = self._review_intelligence
-        if bundle is None:
-            return {}, {}
-        paths_by_record: dict[str, tuple[str, ...]] = {}
-        for record in self._all_records:
-            if record.is_folder:
-                continue
-            paths = [record.path]
-            paths.extend(str(getattr(variant, "path", "") or "") for variant in record.display_variants)
-            paths_by_record[os.path.normcase(os.path.normpath(record.path))] = tuple(path for path in paths if path)
-        group_by_path: dict[str, str] = {}
-        group_members: dict[str, tuple[str, ...]] = {}
-        for group in bundle.groups:
-            group_id = str(group.id)
-            members: list[str] = []
-            seen: set[str] = set()
-            for member_path in group.member_paths:
-                record_paths = paths_by_record.get(os.path.normcase(os.path.normpath(str(member_path))), (str(member_path),))
-                for path in record_paths:
-                    key = os.path.normcase(os.path.normpath(path))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    members.append(path)
-                    group_by_path[path] = group_id
-            if len(members) >= 2:
-                group_members[group_id] = tuple(members)
-        return group_by_path, group_members
-
-    def _apply_ai_review_burst_lockout(self, *, locked: bool) -> None:
-        """Lock or unlock Smart Groups/Stacks toggle actions for AI Review.
-
-        Cards in AI Review should each be judged on their own folder ranking;
-        grouping/stacking re-introduces the cluster context we deliberately
-        suppress in the bucket classifier. So while in AI Review we force the
-        toggles off (handled at the caller) and also disable the action +
-        force the checkbox to reflect the off state, so the user can't quietly
-        re-enable them. Tooltips explain why.
-
-        IMPORTANT: signal-block setChecked. Otherwise the toggled signal fires
-        synchronously into _handle_burst_groups_toggled, which calls
-        _refresh_burst_group_view + _update_action_states — and we're often
-        inside _handle_mode_tab_changed when this runs, so that triggers
-        re-entrant grid updates that have crashed PySide6 natively in
-        production. Block signals to keep the lockout purely cosmetic.
-        """
-
-        burst_groups = getattr(self.actions, "burst_groups", None)
-        burst_stacks = getattr(self.actions, "burst_stacks", None)
-        if burst_groups is None or burst_stacks is None:
-            return
-        if locked:
-            for action in (burst_groups, burst_stacks):
-                with QSignalBlocker(action):
-                    action.setChecked(False)
-                action.setEnabled(False)
-                action.setToolTip(
-                    "Disabled while AI Review is active. "
-                    "Switch to Manual Review to use Smart Groups / Smart Stacks."
-                )
-            self._sync_topbar_action_buttons()
-        else:
-            for action in (burst_groups, burst_stacks):
-                action.setEnabled(True)
-                base = action.property("imageTriageBaseText")
-                tooltip_text = base if isinstance(base, str) and base else action.text()
-                action.setToolTip(tooltip_text)
-
-    def _handle_dispute_chord_started(self) -> None:
-        self.statusBar().showMessage(
-            "Dispute the AI: press 1=best, 2=strong, 3=maybe, 4=weak, 5=reject. (Esc cancels.)"
-        )
-
-    def _handle_dispute_chord_cancelled(self) -> None:
-        self.statusBar().showMessage("Dispute cancelled.")
-
-    def _handle_dispute_label_requested(self, record_path: str, label: str) -> None:
-        """Record the user's corrective label for a card in AI Review.
-
-        Disputes write to the same internal labels file as adapter labels but
-        also append an entry to the sibling 'disputes' map with a snapshot of
-        what the AI said at dispute time. At training time, disputed rows are
-        duplicated N times in the materialized ratings CSV (where N is the
-        user-configurable dispute weight, default 3).
-        """
-
-        record = self._all_records_by_path.get(record_path)
-        if record is None:
-            return
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return
-        normalized = label.strip().lower()
-        if not normalized:
-            return
-
-        labels = self._load_aiculler_internal_labels(paths)
-        disputes = self._load_aiculler_internal_disputes(paths)
-        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
-        previous_label = labels.get(record.path)
-
-        ai_result = self._ai_result_for_record(record)
-        ai_label = ""
-        ai_score = 0.0
-        ai_bucket = ""
-        if ai_result is not None:
-            ai_score = float(getattr(ai_result, "score", 0.0) or 0.0)
-            try:
-                bucket = ai_result.confidence_bucket
-                ai_bucket = getattr(bucket, "value", str(bucket))
-            except Exception:
-                ai_bucket = ""
-            try:
-                ai_label = ai_result.confidence_bucket_short_label or ""
-            except Exception:
-                ai_label = ""
-
-        labels[record.path] = normalized
-        reason_tags_by_path.pop(record.path, None)
-        self._record_aiculler_override_telemetry(
-            record,
-            user_label=normalized,
-            previous_label=previous_label,
-            action_source="dispute",
-        )
-        disputes[record.path] = {
-            "user_label": normalized,
-            "ai_label": ai_label,
-            "ai_score": ai_score,
-            "ai_bucket": ai_bucket,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
-        propagate_to_siblings = self._aiculler_should_propagate_to_siblings(record.path, normalized)
-        if propagate_to_siblings:
-            for sibling_path in siblings:
-                sibling_record = self._all_records_by_path.get(sibling_path)
-                sibling_previous_label = labels.get(sibling_path)
-                labels[sibling_path] = normalized
-                reason_tags_by_path.pop(sibling_path, None)
-                disputes[sibling_path] = dict(disputes[record.path])
-                if sibling_record is not None:
-                    self._record_aiculler_override_telemetry(
-                        sibling_record,
-                        user_label=normalized,
-                        previous_label=sibling_previous_label,
-                        action_source="auto_action",
-                        ignored_for_training=True,
-                    )
-        else:
-            for sibling_path in siblings:
-                sibling_record = self._all_records_by_path.get(sibling_path)
-                sibling_previous_label = labels.get(sibling_path)
-                labels.pop(sibling_path, None)
-                disputes.pop(sibling_path, None)
-                reason_tags_by_path.pop(sibling_path, None)
-                if sibling_record is not None and sibling_previous_label:
-                    self._record_aiculler_override_telemetry(
-                        sibling_record,
-                        user_label="",
-                        previous_label=sibling_previous_label,
-                        action_source="auto_action",
-                        ignored_for_training=True,
-                    )
-
-        self._save_aiculler_internal_labels(paths, labels, disputes=disputes, reason_tags=reason_tags_by_path)
-        dispute_weight = max(1, int(self._ai_dispute_weight_setting))
-        self._save_aiculler_global_label(record.path, normalized, weight=dispute_weight, is_dispute=True)
-        for sibling_path in siblings:
-            sibling_label = normalized if propagate_to_siblings else ""
-            self._save_aiculler_global_label(sibling_path, sibling_label, weight=dispute_weight, is_dispute=True)
-        self.grid.set_disputed_paths(set(disputes.keys()))
-        # Override the AI bucket on the spot so the dispute is visible
-        # immediately without waiting for the next adapter retrain.
-        self._recompute_user_label_bucket_overrides()
-        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings and propagate_to_siblings else ""
-        self.statusBar().showMessage(
-            f"Disputed AI on {record.name} -> {normalized}"
-            f"{sibling_suffix}. Counts as {self._ai_dispute_weight_setting}x at next training."
-        )
-
-    def _exit_aiculler_adapter_review_mode(self) -> None:
-        self._adapter_review_reason_phase = False
-        self._adapter_review_rating_paths = ()
-        self._clear_adapter_review_reason_tags()
-        self._aiculler_dedupe_siblings = {}
-        self._aiculler_force_propagate_siblings = set()
-        snapshot = self._aiculler_review_burst_snapshot
-        self._aiculler_review_burst_snapshot = None
-        if snapshot is not None:
-            self._burst_groups_enabled, self._burst_stacks_enabled = snapshot
-            self._refresh_burst_group_view()
-            self._update_action_states()
-        banner = getattr(self, "adapter_review_banner", None)
-        if banner is not None:
-            banner.hide()
-        timer = getattr(self, "_adapter_review_action_state_timer", None)
-        if timer is not None:
-            timer.stop()
-        self._flush_adapter_review_action_state_update()
-        dialog = getattr(self, "_ai_workflow_center_dialog", None)
-        if dialog is not None:
-            dialog.restore_after_adapter_review()
-
-    def _build_adapter_review_banner(self) -> QWidget:
-        banner = QWidget()
-        banner.setObjectName("adapterReviewBanner")
-        banner.setStyleSheet(
-            "QWidget#adapterReviewBanner {"
-            " background: #21344f;"
-            " border: 1px solid #2f6fd6;"
-            " border-radius: 6px;"
-            "} "
-            "QLabel#adapterReviewBannerTitle { color: #d4e3f6; font-weight: 600; }"
-            "QLabel#adapterReviewBannerStatus { color: #a9bbd3; font-size: 11px; }"
-            "QPushButton#adapterReviewBannerExit, QPushButton#adapterReviewBannerStep {"
-            " background: rgba(255,255,255,0.08); color: #e6ecf4;"
-            " border: 1px solid rgba(255,255,255,0.18);"
-            " border-radius: 5px; padding: 5px 14px; font-weight: 600;"
-            "} "
-            "QPushButton#adapterReviewBannerExit:hover, QPushButton#adapterReviewBannerStep:hover { background: rgba(255,255,255,0.14); } "
-            "QPushButton#adapterReviewBannerExit:pressed, QPushButton#adapterReviewBannerStep:pressed { background: rgba(255,255,255,0.04); }"
-            "QToolButton#adapterReviewReasonButton {"
-            " background: rgba(255,255,255,0.08); color: #e6ecf4;"
-            " border: 1px solid rgba(255,255,255,0.18);"
-            " border-radius: 5px; padding: 5px 12px; font-weight: 600;"
-            "}"
-            "QToolButton#adapterReviewReasonButton:hover { background: rgba(255,255,255,0.14); }"
-        )
-        layout = QHBoxLayout(banner)
-        layout.setContentsMargins(14, 8, 10, 8)
-        layout.setSpacing(12)
-        text_column = QVBoxLayout()
-        text_column.setContentsMargins(0, 0, 0, 0)
-        text_column.setSpacing(2)
-        title = QLabel("Adapter Label Review")
-        title.setObjectName("adapterReviewBannerTitle")
-        self._adapter_review_banner_title = title
-        text_column.addWidget(title)
-        self._adapter_review_banner_status = QLabel("")
-        self._adapter_review_banner_status.setObjectName("adapterReviewBannerStatus")
-        self._adapter_review_banner_status.setWordWrap(False)
-        text_column.addWidget(self._adapter_review_banner_status)
-        layout.addLayout(text_column, 1)
-        reason_phase_button = QPushButton("Step 2: Reasons")
-        reason_phase_button.setObjectName("adapterReviewBannerStep")
-        reason_phase_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        reason_phase_button.setToolTip("After labeling, explain only the rank 1 winners and rank 5 rejects")
-        reason_phase_button.clicked.connect(self._enter_adapter_review_reason_phase)
-        self._adapter_review_reason_phase_button = reason_phase_button
-        layout.addWidget(reason_phase_button, 0)
-        reason_button = QToolButton()
-        reason_button.setObjectName("adapterReviewReasonButton")
-        reason_button.setText("Reasons")
-        reason_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        reason_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        reason_button.setToolTip("Select reasons for the current winner/reject")
-        reason_menu = QMenu(reason_button)
-        self._adapter_review_reason_actions: dict[str, QAction] = {}
-        for key, label in self.ADAPTER_REASON_TAGS:
-            action = QAction(label, reason_menu)
-            action.setCheckable(True)
-            action.toggled.connect(lambda _checked, button=reason_button: self._refresh_adapter_review_reason_button(button))
-            reason_menu.addAction(action)
-            self._adapter_review_reason_actions[key] = action
-        reason_menu.addSeparator()
-        clear_action = QAction("Clear reasons", reason_menu)
-        clear_action.triggered.connect(self._clear_adapter_review_reason_tags)
-        reason_menu.addAction(clear_action)
-        reason_button.setMenu(reason_menu)
-        self._adapter_review_reason_button = reason_button
-        layout.addWidget(reason_button, 0)
-        apply_reason_button = QPushButton("Apply")
-        apply_reason_button.setObjectName("adapterReviewBannerStep")
-        apply_reason_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        apply_reason_button.setToolTip("Apply selected reasons to the current image")
-        apply_reason_button.clicked.connect(self._apply_adapter_review_reasons_to_selection)
-        self._adapter_review_apply_reason_button = apply_reason_button
-        layout.addWidget(apply_reason_button, 0)
-        back_to_ratings_button = QPushButton("Back to Labels")
-        back_to_ratings_button.setObjectName("adapterReviewBannerStep")
-        back_to_ratings_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_to_ratings_button.setToolTip("Return to the labeling pass")
-        back_to_ratings_button.clicked.connect(self._exit_adapter_review_reason_phase)
-        self._adapter_review_back_to_ratings_button = back_to_ratings_button
-        layout.addWidget(back_to_ratings_button, 0)
-        exit_button = QPushButton("Exit Review")
-        exit_button.setObjectName("adapterReviewBannerExit")
-        exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        exit_button.setToolTip("Exit adapter label review (Esc)")
-        exit_button.setShortcut(QKeySequence(Qt.Key.Key_Escape))
-        exit_button.clicked.connect(self._handle_adapter_review_exit_clicked)
-        layout.addWidget(exit_button, 0)
-        return banner
-
-    def _selected_adapter_review_reason_tags(self) -> tuple[str, ...]:
-        actions = getattr(self, "_adapter_review_reason_actions", {})
-        return tuple(key for key, action in actions.items() if action.isChecked())
-
-    def _clear_adapter_review_reason_tags(self) -> None:
-        for action in getattr(self, "_adapter_review_reason_actions", {}).values():
-            with QSignalBlocker(action):
-                action.setChecked(False)
-        button = getattr(self, "_adapter_review_reason_button", None)
-        if button is not None:
-            self._refresh_adapter_review_reason_button(button)
-
-    def _refresh_adapter_review_reason_button(self, button: QToolButton | None = None) -> None:
-        button = button or getattr(self, "_adapter_review_reason_button", None)
-        if button is None:
-            return
-        count = len(self._selected_adapter_review_reason_tags())
-        button.setText(f"Reasons ({count})" if count else "Reasons")
-
-    def _enter_adapter_review_reason_phase(self) -> None:
-        if not self.grid._adapter_review_mode:
-            return
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return
-        rating_paths = tuple(self._adapter_review_rating_paths or ())
-        if not rating_paths:
-            rating_paths = tuple(
-                record.path
-                for record in getattr(self.grid, "_items", ())
-                if self.grid._record_in_adapter_review(getattr(self.grid, "_path_to_index", {}).get(record.path, -1))
-            )
-        labels = self._load_aiculler_internal_labels(paths)
-        reason_paths = [
-            path
-            for path in rating_paths
-            if self._is_adapter_reason_target_label(labels.get(path))
-        ]
-        if not reason_paths:
-            message = "No rank 1 winners or rank 5 rejects are labeled yet. Rate candidates first, then run Step 2."
-            self.statusBar().showMessage(message)
-            QMessageBox.information(self, "Adapter Label Reasons", message)
-            return
-        self._adapter_review_reason_phase = True
-        self._clear_adapter_review_reason_tags()
-        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
-        self.grid.set_adapter_review_mode(
-            reason_paths,
-            labels,
-            label_controls_enabled=False,
-            reason_controls_enabled=True,
-            reason_tags_by_path=reason_tags_by_path,
-            reason_options=self.ADAPTER_REASON_TAGS,
-        )
-        self._refresh_adapter_review_banner()
-        self.statusBar().showMessage(
-            f"Step 2: add reasons for {len(reason_paths)} winner/reject label(s). "
-            "Use each image dropdown to select one or more reasons."
-        )
-
-    def _exit_adapter_review_reason_phase(self) -> None:
-        if not self.grid._adapter_review_mode:
-            return
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return
-        rating_paths = tuple(self._adapter_review_rating_paths or ())
-        if not rating_paths:
-            return
-        labels = self._load_aiculler_internal_labels(paths)
-        self._adapter_review_reason_phase = False
-        self._clear_adapter_review_reason_tags()
-        self.grid.set_adapter_review_mode(rating_paths, labels, label_controls_enabled=True)
-        self._refresh_adapter_review_banner()
-        self.statusBar().showMessage("Returned to Step 1: rate adapter candidates with 1-5.")
-
-    def _adapter_review_selected_records(self) -> list[ImageRecord]:
-        items = list(getattr(self.grid, "_items", ()) or ())
-        if not items:
-            return []
-        current_index = self.grid.current_index()
-        indexes = self.grid.selected_indexes()
-        if current_index >= 0 and current_index not in indexes:
-            indexes = [current_index]
-        records: list[ImageRecord] = []
-        for index in indexes:
-            if 0 <= index < len(items):
-                record = items[index]
-                if not record.is_folder and self.grid._record_in_adapter_review(index):
-                    records.append(record)
-        return records
-
-    def _apply_adapter_review_reasons_to_selection(self) -> None:
-        if not getattr(self, "_adapter_review_reason_phase", False):
-            return
-        selected_reason_tags = self._selected_adapter_review_reason_tags()
-        if not selected_reason_tags:
-            self.statusBar().showMessage("Select at least one reason tag before applying.")
-            return
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return
-        labels = self._load_aiculler_internal_labels(paths)
-        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
-        records = [
-            record
-            for record in self._adapter_review_selected_records()
-            if self._is_adapter_reason_target_label(labels.get(record.path))
-        ]
-        if not records:
-            self.statusBar().showMessage("Select a rank 1 winner or rank 5 reject before applying reasons.")
-            return
-        for record in records:
-            reason_tags_by_path[record.path] = selected_reason_tags
-        self._save_aiculler_internal_labels(paths, labels, reason_tags=reason_tags_by_path)
-        self._refresh_adapter_review_banner()
-        label = ", ".join(dict(self.ADAPTER_REASON_TAGS).get(tag, tag) for tag in selected_reason_tags)
-        suffix = f" to {len(records)} image(s)" if len(records) > 1 else f" to {records[0].name}"
-        self.statusBar().showMessage(f"Applied reasons ({label}){suffix}.")
-        self._advance_adapter_review_reason_phase(reason_tags_by_path)
-
-    def _advance_adapter_review_reason_phase(self, reason_tags_by_path: dict[str, tuple[str, ...]]) -> None:
-        visible_indexes = list(getattr(self.grid, "_visible_item_indexes", ()) or ())
-        if not visible_indexes:
-            return
-        current_index = self.grid.current_index()
-        if current_index in visible_indexes:
-            start_slot = visible_indexes.index(current_index)
-        else:
-            start_slot = -1
-        items = list(getattr(self.grid, "_items", ()) or ())
-        for offset in range(1, len(visible_indexes) + 1):
-            index = visible_indexes[(start_slot + offset) % len(visible_indexes)]
-            if not 0 <= index < len(items):
-                continue
-            record = items[index]
-            if record.path in reason_tags_by_path:
-                continue
-            self.grid.set_current_index(index)
-            try:
-                self.grid._ensure_index_visible(index)
-            except Exception:
-                _logger.warning("Failed to scroll grid to next record needing a reason", exc_info=True)
-            return
-        self.statusBar().showMessage("All visible winner/reject labels have reasons.")
-
-    def _handle_aiculler_adapter_reasons_requested(self, record_path: str, reason_tags: tuple[str, ...]) -> None:
-        if not getattr(self, "_adapter_review_reason_phase", False):
-            return
-        source_path = str(record_path)
-        record = self._all_records_by_path.get(source_path)
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            return
-        labels = self._load_aiculler_internal_labels(paths)
-        if not self._is_adapter_reason_target_label(labels.get(source_path)):
-            return
-        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
-        normalized = self._normalize_adapter_reason_tags(reason_tags)
-        if normalized:
-            reason_tags_by_path[source_path] = normalized
-        else:
-            reason_tags_by_path.pop(source_path, None)
-        self._save_aiculler_internal_labels(paths, labels, reason_tags=reason_tags_by_path)
-        self._save_aiculler_global_reason_tags(source_path, normalized)
-        self.grid.update_adapter_review_reason_tags(reason_tags_by_path)
-        self._refresh_adapter_review_banner()
-        status = "Saved reasons" if normalized else "Cleared reasons"
-        display_name = record.name if record is not None else Path(source_path).name
-        self.statusBar().showMessage(f"{status} for {display_name}.")
-
-    def _handle_adapter_review_exit_clicked(self) -> None:
-        self.grid.clear_adapter_review_mode()
-
-    def _refresh_adapter_review_banner(self) -> None:
-        banner = getattr(self, "adapter_review_banner", None)
-        if banner is None:
-            return
-        if not self.grid._adapter_review_mode:
-            banner.hide()
-            return
-        reason_phase = bool(getattr(self, "_adapter_review_reason_phase", False))
-        title = getattr(self, "_adapter_review_banner_title", None)
-        if title is not None:
-            title.setText("Adapter Label Review - Step 2: Reasons" if reason_phase else "Adapter Label Review - Step 1: Rate")
-        reason_phase_button = getattr(self, "_adapter_review_reason_phase_button", None)
-        if reason_phase_button is not None:
-            reason_phase_button.setVisible(not reason_phase)
-        reason_button = getattr(self, "_adapter_review_reason_button", None)
-        if reason_button is not None:
-            reason_button.setVisible(False)
-            reason_button.setEnabled(False)
-        apply_reason_button = getattr(self, "_adapter_review_apply_reason_button", None)
-        if apply_reason_button is not None:
-            apply_reason_button.setVisible(False)
-        back_to_ratings_button = getattr(self, "_adapter_review_back_to_ratings_button", None)
-        if back_to_ratings_button is not None:
-            back_to_ratings_button.setVisible(reason_phase)
-        candidate_count = len(self.grid._adapter_review_paths)
-        known_label_keys = {os.path.normpath(str(path)).casefold() for path in self.grid._adapter_labels_by_path.keys()}
-        labeled = sum(
-            1
-            for path in self.grid._adapter_review_paths
-            if os.path.normpath(str(path)).casefold() in known_label_keys
-        )
-        hidden = sum(len(siblings) for siblings in self._aiculler_dedupe_siblings.values())
-        parts = [f"{candidate_count} reason target(s)" if reason_phase else f"{candidate_count} candidate(s)"]
-        if reason_phase:
-            paths = self._aiculler_paths_for_current_folder()
-            reasoned = 0
-            if paths is not None:
-                reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
-                known_reason_keys = {os.path.normpath(str(path)).casefold() for path in reason_tags_by_path.keys()}
-                reasoned = sum(
-                    1
-                    for path in self.grid._adapter_review_paths
-                    if os.path.normpath(str(path)).casefold() in known_reason_keys
-                )
-            parts.append(f"{reasoned} reasoned")
-            parts.append("Winners/rejects only")
-            parts.append("Use each image dropdown; changes save immediately")
-        else:
-            parts.append(f"{labeled} labeled")
-            if hidden:
-                parts.append(f"{hidden} pHash/near-dup(s) hidden; labels propagate")
-            parts.append("Use 1-5 to rate, then Step 2 for reasons")
-        self._adapter_review_banner_status.setText(" · ".join(parts))
-        banner.show()
-
-    def _handle_aiculler_adapter_label_requested(self, record_path: str, label: str) -> None:
-        logger = perf_logger()
-        total_start = time.perf_counter() if logger.enabled else 0.0
-        step_start = total_start
-
-        def log_step(event: str, **fields: object) -> None:
-            nonlocal step_start
-            if not logger.enabled:
-                return
-            now = time.perf_counter()
-            logger.duration(
-                event,
-                (now - step_start) * 1000.0,
-                path=record_path,
-                label=label,
-                **fields,
-            )
-            step_start = now
-
-        record = self._all_records_by_path.get(record_path)
-        if record is None:
-            if logger.enabled:
-                logger.duration(
-                    "adapter_review.window.label_blocked",
-                    (time.perf_counter() - total_start) * 1000.0,
-                    path=record_path,
-                    label=label,
-                    reason="record_missing",
-                )
-            return
-        paths = self._aiculler_paths_for_current_folder()
-        if paths is None:
-            if logger.enabled:
-                logger.duration(
-                    "adapter_review.window.label_blocked",
-                    (time.perf_counter() - total_start) * 1000.0,
-                    path=record_path,
-                    label=label,
-                    reason="no_folder_paths",
-                )
-            return
-        labels = self._load_aiculler_internal_labels(paths)
-        reason_tags_by_path = self._load_aiculler_internal_reason_tags(paths)
-        log_step("adapter_review.window.load_labels", label_count=len(labels))
-        normalized = label.strip().lower()
-        siblings = list(self._aiculler_dedupe_siblings.get(record.path, ()))
-        propagate_to_siblings = self._aiculler_should_propagate_to_siblings(record.path, normalized)
-        previous_label = labels.get(record.path)
-        log_step(
-            "adapter_review.window.prepare",
-            normalized=normalized,
-            siblings=len(siblings),
-            propagate_to_siblings=propagate_to_siblings,
-            previous_label=previous_label or "",
-        )
-        if normalized:
-            labels[record.path] = normalized
-            reason_tags_by_path.pop(record.path, None)
-            self._record_aiculler_override_telemetry(
-                record,
-                user_label=normalized,
-                previous_label=previous_label,
-                action_source="adapter_label",
-            )
-            log_step("adapter_review.window.telemetry_primary", ignored=False)
-            if propagate_to_siblings:
-                for sibling_path in siblings:
-                    sibling_record = self._all_records_by_path.get(sibling_path)
-                    sibling_previous_label = labels.get(sibling_path)
-                    labels[sibling_path] = normalized
-                    reason_tags_by_path.pop(sibling_path, None)
-                    if sibling_record is not None:
-                        self._record_aiculler_override_telemetry(
-                            sibling_record,
-                            user_label=normalized,
-                            previous_label=sibling_previous_label,
-                            action_source="auto_action",
-                            ignored_for_training=True,
-                        )
-            else:
-                for sibling_path in siblings:
-                    sibling_record = self._all_records_by_path.get(sibling_path)
-                    sibling_previous_label = labels.get(sibling_path)
-                    labels.pop(sibling_path, None)
-                    reason_tags_by_path.pop(sibling_path, None)
-                    if sibling_record is not None and sibling_previous_label:
-                        self._record_aiculler_override_telemetry(
-                            sibling_record,
-                            user_label="",
-                            previous_label=sibling_previous_label,
-                            action_source="auto_action",
-                            ignored_for_training=True,
-                        )
-            log_step(
-                "adapter_review.window.sibling_updates",
-                siblings=len(siblings),
-                propagated=propagate_to_siblings,
-            )
-        else:
-            labels.pop(record.path, None)
-            reason_tags_by_path.pop(record.path, None)
-            if previous_label:
-                self._record_aiculler_override_telemetry(
-                    record,
-                    user_label="",
-                    previous_label=previous_label,
-                    action_source="adapter_label",
-                    ignored_for_training=True,
-                )
-            log_step("adapter_review.window.telemetry_primary", ignored=True, had_previous=bool(previous_label))
-            for sibling_path in siblings:
-                sibling_record = self._all_records_by_path.get(sibling_path)
-                sibling_previous_label = labels.get(sibling_path)
-                labels.pop(sibling_path, None)
-                reason_tags_by_path.pop(sibling_path, None)
-                if sibling_record is not None and sibling_previous_label:
-                    self._record_aiculler_override_telemetry(
-                        sibling_record,
-                        user_label="",
-                        previous_label=sibling_previous_label,
-                        action_source="auto_action",
-                        ignored_for_training=True,
-                    )
-            log_step("adapter_review.window.sibling_updates", siblings=len(siblings), propagated=False)
-        self._save_aiculler_internal_labels(paths, labels, reason_tags=reason_tags_by_path, defer=True)
-        log_step("adapter_review.window.queue_internal_labels", label_count=len(labels))
-        self._queue_aiculler_global_label(record.path, normalized, weight=1.0, is_dispute=False)
-        log_step("adapter_review.window.queue_global_primary")
-        for sibling_path in siblings:
-            sibling_label = normalized if propagate_to_siblings else ""
-            self._queue_aiculler_global_label(sibling_path, sibling_label, weight=1.0, is_dispute=False)
-        log_step("adapter_review.window.queue_global_siblings", siblings=len(siblings))
-        self.grid.update_adapter_review_labels(labels)
-        log_step("adapter_review.window.grid_update_labels", label_count=len(labels))
-        # Reflect the label in the AI Review bucket immediately so user
-        # decisions show up the moment they save.
-        self._apply_user_label_bucket_override_delta(record.path, normalized)
-        for sibling_path in siblings:
-            sibling_label = normalized if propagate_to_siblings else ""
-            self._apply_user_label_bucket_override_delta(sibling_path, sibling_label)
-        log_step("adapter_review.window.bucket_override_delta", siblings=len(siblings))
-        self._refresh_adapter_review_banner()
-        log_step("adapter_review.window.refresh_banner")
-        sibling_suffix = f" (+ {len(siblings)} near-dup sibling(s))" if siblings and propagate_to_siblings else ""
-        self.statusBar().showMessage(
-            f"Saved adapter label for {record.name}: {normalized or 'unlabeled'}{sibling_suffix}"
-        )
-        log_step("adapter_review.window.status_message")
-        if logger.enabled:
-            logger.duration(
-                "adapter_review.window.label_total",
-                (time.perf_counter() - total_start) * 1000.0,
-                path=record_path,
-                label=normalized,
-                siblings=len(siblings),
-                propagated=propagate_to_siblings,
-                final_label_count=len(labels),
-            )
-
-    @staticmethod
-    def _aiculler_should_propagate_label_to_siblings(label: str) -> bool:
-        return label.strip().lower() in {"maybe", "weak", "reject", "bad", "r", "no", "0"}
-
-    def _aiculler_should_propagate_to_siblings(self, survivor_path: str, label: str) -> bool:
-        normalized = str(label).strip().lower()
-        if not normalized:
-            return False
-        if survivor_path in getattr(self, "_aiculler_force_propagate_siblings", set()):
-            return True
-        return self._aiculler_should_propagate_label_to_siblings(normalized)
+        self._toolbar.sync_chrome_to_manual_review()
 
     def _accept_selected_records(self) -> None:
         records = self._selected_records_for_actions()
@@ -13708,17 +6118,17 @@ class MainWindow(QMainWindow):
     def _move_selected_records(self) -> None:
         records = self._selected_records_for_actions()
         if records:
-            self._batch_move_records(records)
+            self._record_ops.batch_move_records(records)
 
     def _move_selected_records_to_new_folder(self) -> None:
         records = self._selected_records_for_actions()
         if records:
-            self._batch_move_records_to_new_folder(records)
+            self._record_ops.batch_move_records_to_new_folder(records)
 
     def _delete_selected_records(self) -> None:
         records = self._selected_records_for_actions()
         if records:
-            self._batch_delete_records(records)
+            self._record_ops.batch_delete_records(records)
 
     def _restore_selected_records(self) -> None:
         records = self._selected_records_for_actions()
@@ -13749,7 +6159,7 @@ class MainWindow(QMainWindow):
 
     def _create_folder_in_current_folder(self) -> None:
         parent = self._current_folder or QDir.homePath()
-        self._create_folder_prompt(parent, select_created=False)
+        self._folder_ops.create_folder_prompt(parent, select_created=False)
 
     def _load_winner_mode(self) -> WinnerMode:
         raw = self._settings.value(self.WINNER_MODE_KEY, WinnerMode.COPY.value, str)
@@ -13967,7 +6377,7 @@ class MainWindow(QMainWindow):
         state: dict[str, object] = {
             "sort": self._sort_mode.value,
             "scroll": max(0, int(self.grid.current_scroll_value())),
-            "current": self._pending_folder_focus_path or self._current_visible_record_path() or "",
+            "current": self._pending_folder_focus_path or self._records_view.current_visible_record_path() or "",
         }
         return state
 
@@ -14105,41 +6515,6 @@ class MainWindow(QMainWindow):
                 # have dropped their entries; none of those carry shortcuts.
                 continue
 
-    def _show_main_menu_popup(self, anchor: QWidget) -> None:
-        """Pop up the application's menu-bar menus from the top-bar ☰ button."""
-        menu = QMenu(self)
-        for action in self.menuBar().actions():
-            menu.addAction(action)
-        # Text size from MENU_ITEM_TEXT_H. Only this dropdown and its submenus
-        # (the hidden menu bar's menus, reachable only from here) take it;
-        # right-click menus elsewhere keep the default.
-        size = layout_ratios.ratio_px(
-            layout_ratios.MENU_ITEM_TEXT_H, max(1, self.height()), minimum=layout_ratios.MIN_TEXT_PX
-        )
-        self._size_menu_tree(menu, f"QMenu {{ font-size: {size}px; }}")
-        menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height())))
-
-    def _size_menu_tree(self, menu: QMenu, sheet: str, seen: set[int] | None = None) -> None:
-        seen = set() if seen is None else seen
-        if id(menu) in seen:
-            return
-        seen.add(id(menu))
-        # Some menus built for the hidden menu bar are torn down and rebuilt,
-        # leaving wrappers whose C++ side is gone; skip those instead of raising.
-        try:
-            if menu.styleSheet() != sheet:
-                menu.setStyleSheet(sheet)
-            actions = menu.actions()
-        except RuntimeError:
-            return
-        for action in actions:
-            try:
-                submenu = action.menu()
-            except RuntimeError:
-                continue
-            if isinstance(submenu, QMenu):
-                self._size_menu_tree(submenu, sheet, seen)
-
     def _navigate_to_parent_folder(self) -> None:
         target = self._parent_folder_for_navigation()
         if target:
@@ -14149,31 +6524,6 @@ class MainWindow(QMainWindow):
         target = self._only_child_folder_for_navigation()
         if target:
             self._select_folder(target)
-
-    def _navigate_history(self, delta: int) -> None:
-        """Folder back/forward navigation backed by visited-folder stacks."""
-        back = getattr(self, "_nav_back", None)
-        forward = getattr(self, "_nav_forward", None)
-        if back is None or forward is None:
-            return
-        if delta < 0:
-            if not back:
-                return
-            target = back.pop()
-            if self._current_folder:
-                forward.append(self._current_folder)
-        else:
-            if not forward:
-                return
-            target = forward.pop()
-            if self._current_folder:
-                back.append(self._current_folder)
-        self._nav_suppress_history = True
-        try:
-            self._select_folder(target)
-        finally:
-            self._nav_suppress_history = False
-        self._update_nav_history_buttons()
 
     def _update_nav_history_buttons(self) -> None:
         back_button = getattr(self, "_topbar_back_button", None)
@@ -14231,7 +6581,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Recent folder no longer exists.")
 
     def _refresh_recent_folder_combos(self) -> None:
-        self._refresh_breadcrumb()
+        self._appearance.refresh_breadcrumb()
         current_text = self._scope_display_label()
         current_folder = self._current_folder if self._scope_kind == "folder" and self._current_folder else ""
         for combo in (
@@ -14451,7 +6801,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue(self.SHOW_HIDDEN_FOLDERS_KEY, self._show_hidden_folders)
         self.folder_model.setFilter(self._folder_tree_filter())
         if self._current_folder and self._scope_kind == "folder":
-            current_path = self._current_visible_record_path()
+            current_path = self._records_view.current_visible_record_path()
             self._folder_records = scan_child_folders(
                 self._current_folder,
                 include_hidden=self._show_hidden_folders,
@@ -14581,7 +6931,7 @@ class MainWindow(QMainWindow):
         index = self._record_index_for_path(path)
         if index is None:
             return
-        renamed_path = self._rename_record_prompt(index)
+        renamed_path = self._record_ops.rename_record_prompt(index)
         if not renamed_path:
             return
         renamed_index = self._record_index_for_path(renamed_path)
@@ -14612,7 +6962,7 @@ class MainWindow(QMainWindow):
         if previous.rating == next_rating:
             return
         annotation.rating = next_rating
-        self._push_undo(
+        self._record_ops.push_undo(
             UndoAction(
                 kind="annotation",
                 primary_path=record.path,
@@ -14629,7 +6979,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._queue_annotation_persist(record, previous_annotation=previous)
-        self._sync_annotation_to_global_adapter_label(record, annotation)
+        self._aiculler.sync_annotation_to_global_adapter_label(record, annotation)
         self._capture_annotation_feedback(record, previous, annotation, source_mode="rating")
         self._apply_review_count_delta(previous, annotation)
         self._apply_annotation_change_effects(
@@ -14681,7 +7031,7 @@ class MainWindow(QMainWindow):
 
     def _handle_preview_closed(self) -> None:
         # Editor closed — resume background GPU indexing where it left off.
-        self._resume_background_indexing()
+        self._records_view.resume_background_indexing()
         if self._winner_ladder_state is not None:
             self._finish_winner_ladder(reopen_preview=False, show_message=False)
         if self._quick_view_mode:
@@ -14719,9 +7069,9 @@ class MainWindow(QMainWindow):
             )
             if len(rows) >= 2:
                 return rows, "burst", burst_recommendation.group_id
-        current_ai = self._ai_result_for_index(index)
+        current_ai = self._ai_run.ai_result_for_index(index)
         if current_ai is not None and current_ai.group_size > 1:
-            rows = [(row_index, record) for row_index, record, _result in self._visible_ai_group_rows(current_ai.group_id)]
+            rows = [(row_index, record) for row_index, record, _result in self._ai_run.visible_ai_group_rows(current_ai.group_id)]
             if len(rows) >= 2:
                 return rows, "ai", current_ai.group_id
         selected_indexes = [item_index for item_index in self.grid.selected_indexes() if 0 <= item_index < len(self._records)]
@@ -14755,7 +7105,7 @@ class MainWindow(QMainWindow):
             edited_path=edited_path,
             edited_candidates=tuple(edited_candidates),
             label=label,
-            ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
+            ai_result=self._ai_run.ai_result_for_record(record, preferred_path=displayed_path),
             review_summary=self._review_summary_for_record(record),
             workflow_summary=self._workflow_summary_for_record(record),
             workflow_details=self._workflow_detail_lines_for_record(record),
@@ -14769,7 +7119,7 @@ class MainWindow(QMainWindow):
             return
         current_record = self._record_at(index)
         burst_recommendation = self._burst_recommendation_for_record(current_record)
-        current_ai = self._ai_result_for_index(index)
+        current_ai = self._ai_run.ai_result_for_index(index)
         winner_path = current_record.path if current_record is not None else rows[0][1].path
         if source_mode == "burst" and burst_recommendation is not None and burst_recommendation.recommended_path:
             winner_path = burst_recommendation.recommended_path
@@ -14810,7 +7160,7 @@ class MainWindow(QMainWindow):
         if self.actions is not None:
             with QSignalBlocker(self.actions.compare_mode):
                 self.actions.compare_mode.setChecked(True)
-            self._sync_topbar_action_buttons()
+            self._toolbar.sync_topbar_action_buttons()
         challenger_index = self._record_index_for_path(challenger_path)
         if challenger_index is not None:
             self.grid.set_current_index(challenger_index)
@@ -14835,7 +7185,7 @@ class MainWindow(QMainWindow):
         if self.actions is not None:
             with QSignalBlocker(self.actions.compare_mode):
                 self.actions.compare_mode.setChecked(previous_compare_enabled)
-            self._sync_topbar_action_buttons()
+            self._toolbar.sync_topbar_action_buttons()
         self.preview.set_compare_mode(previous_compare_enabled)
         winner_index = self._record_index_for_path(winner_path)
         if winner_index is not None:
@@ -14850,7 +7200,7 @@ class MainWindow(QMainWindow):
             self._load_folder(
                 self._current_folder,
                 force_refresh=True,
-                preferred_record_path=self._current_visible_record_path(),
+                preferred_record_path=self._records_view.current_visible_record_path(),
             )
 
     def _rebuild_current_folder_catalog_cache(self) -> None:
@@ -14970,7 +7320,7 @@ class MainWindow(QMainWindow):
         self._load_folder(
             self._current_folder,
             force_refresh=True,
-            preferred_record_path=self._current_visible_record_path(),
+            preferred_record_path=self._records_view.current_visible_record_path(),
         )
 
     def _load_folder(
@@ -14990,140 +7340,8 @@ class MainWindow(QMainWindow):
             preferred_record_path=preferred_record_path,
         )
 
-    def _load_virtual_scope_records(
-        self,
-        records: list[ImageRecord],
-        *,
-        scope_kind: str,
-        scope_id: str,
-        scope_label: str,
-    ) -> None:
-        self._records_view.load_virtual_scope_records(
-            records,
-            scope_kind=scope_kind,
-            scope_id=scope_id,
-            scope_label=scope_label,
-        )
-
-    def _cancel_records_view_chunk(self) -> None:
-        self._records_view.cancel_records_view_chunk()
-
-    def _records_view_chunk_active(self) -> bool:
-        return self._records_view.records_view_chunk_active()
-
-    def _apply_loaded_records(
-        self,
-        records: list[ImageRecord],
-        *,
-        defer_enrichment: bool = False,
-        chunked_view: bool = False,
-        current_path: str | None = None,
-    ) -> None:
-        self._records_view.apply_loaded_records(
-            records,
-            defer_enrichment=defer_enrichment,
-            chunked_view=chunked_view,
-            current_path=current_path,
-        )
-
     def _run_loaded_records_enrichment(self) -> None:
         self._records_view.run_loaded_records_enrichment()
-
-    def _mark_background_review_work_deferred_for_ai(self, *, reason: str) -> None:
-        if not self._all_records:
-            return
-        self._ai_deferred_background_work = True
-        self._ai_deferred_background_scope_key = self._current_scope_key()
-        logger = perf_logger()
-        if logger.enabled:
-            logger.log(
-                "ai.background_start_deferred",
-                reason=reason,
-                scope=self._ai_deferred_background_scope_key,
-                records=len(self._all_records),
-            )
-
-    def _defer_background_review_work_for_ai(self, *, reason: str) -> None:
-        if not self._all_records:
-            return
-        logger = perf_logger()
-        active_scope = self._active_scope_enrichment_task is not None
-        active_annotations = self._active_annotation_hydration_task is not None
-        active_review = self._active_review_intelligence_task is not None
-        self._ai_deferred_background_work = True
-        self._ai_deferred_background_scope_key = self._current_scope_key()
-        self._scope_enrichment_token += 1
-        self._cancel_scope_enrichment_task()
-        self._annotation_hydration_token += 1
-        if self._active_annotation_hydration_task is not None:
-            self._active_annotation_hydration_task.cancel()
-        self._active_annotation_hydration_task = None
-        self._annotation_hydration_dirty_paths.clear()
-        self._annotation_hydration_pending_clear_paths.clear()
-        self._annotation_reapply_timer.stop()
-        self._review_intelligence_token += 1
-        if self._active_review_intelligence_task is not None:
-            self._active_review_intelligence_task.cancel()
-            self._active_review_intelligence_task = None
-        self._review_intelligence = None
-        self._review_chunk_flush_timer.stop()
-        self._review_chunk_dirty_paths.clear()
-        self._review_scoring_cache_source = "deferred"
-        self._review_scoring_cache_detail = "Workflow scoring is deferred while AI review runs."
-        self._review_grouping_cache_source = "deferred"
-        self._review_grouping_cache_detail = "Smart groups are deferred while AI review runs."
-        self._review_feature_cache_source = "deferred"
-        self._review_feature_cache_detail = "Review feature analysis is deferred while AI review runs."
-        self._refresh_catalog_status_indicator()
-        if logger.enabled:
-            logger.log(
-                "ai.background_deferred",
-                reason=reason,
-                scope=self._ai_deferred_background_scope_key,
-                records=len(self._all_records),
-                active_scope=active_scope,
-                active_annotations=active_annotations,
-                active_review=active_review,
-            )
-
-    def _resume_deferred_background_review_work_after_ai(self, *, reason: str) -> None:
-        if not self._ai_deferred_background_work:
-            return
-        deferred_scope_key = self._ai_deferred_background_scope_key
-        self._ai_deferred_background_work = False
-        self._ai_deferred_background_scope_key = ""
-        logger = perf_logger()
-        current_scope_key = self._current_scope_key()
-        if self._active_ai_task is not None or deferred_scope_key != current_scope_key or not self._all_records:
-            self._review_scoring_cache_source = "idle"
-            self._review_scoring_cache_detail = "Ready"
-            self._review_grouping_cache_source = "idle"
-            self._review_grouping_cache_detail = "Ready"
-            self._review_feature_cache_source = "idle"
-            self._review_feature_cache_detail = "Ready"
-            self._refresh_catalog_status_indicator()
-            if logger.enabled:
-                logger.log(
-                    "ai.background_resume_skipped",
-                    reason=reason,
-                    deferred_scope=deferred_scope_key,
-                    current_scope=current_scope_key,
-                    active_ai=self._active_ai_task is not None,
-                    records=len(self._all_records),
-                )
-            return
-        records = list(self._all_records)
-        if logger.enabled:
-            logger.log(
-                "ai.background_resumed",
-                reason=reason,
-                scope=current_scope_key,
-                records=len(records),
-            )
-        self._start_annotation_hydration(records)
-        self._start_review_intelligence_analysis()
-        if self._active_scope_enrichment_task is None:
-            self._start_scope_enrichment_task(records)
 
     def _cancel_scope_enrichment_task(self) -> None:
         self._scope_enrichment_debounce_timer.stop()
@@ -15151,7 +7369,7 @@ class MainWindow(QMainWindow):
             self._workflow_insights_by_path = {}
             return
         if self._active_ai_task is not None:
-            self._mark_background_review_work_deferred_for_ai(reason="scope_enrichment")
+            self._ai_run.mark_background_review_work_deferred_for_ai(reason="scope_enrichment")
             self._review_scoring_cache_source = "deferred"
             self._review_scoring_cache_detail = "Workflow scoring is deferred while AI review runs."
             self._refresh_catalog_status_indicator()
@@ -15217,7 +7435,7 @@ class MainWindow(QMainWindow):
         else:
             self._burst_recommendations = {}
         self._refresh_workflow_insights_cache(force_full=True)
-        current_path = self._current_visible_record_path()
+        current_path = self._records_view.current_visible_record_path()
         self._apply_records_view(current_path=current_path)
 
     def _handle_scope_enrichment_failed(self, scope_key: str, token: int, message: str) -> None:
@@ -15240,7 +7458,7 @@ class MainWindow(QMainWindow):
             self._annotation_reapply_timer.stop()
             return
         if self._active_ai_task is not None:
-            self._mark_background_review_work_deferred_for_ai(reason="annotation_hydration")
+            self._ai_run.mark_background_review_work_deferred_for_ai(reason="annotation_hydration")
             return
         self._annotation_hydration_token += 1
         token = self._annotation_hydration_token
@@ -15289,7 +7507,7 @@ class MainWindow(QMainWindow):
             return
         changed_paths = sorted(self._annotation_hydration_dirty_paths)
         self._annotation_hydration_dirty_paths.clear()
-        current_path = self._current_visible_record_path()
+        current_path = self._records_view.current_visible_record_path()
         self._apply_annotation_change_effects(changed_paths, current_path=current_path)
 
     def _handle_annotation_hydration_finished(self, scope_key: str, token: int) -> None:
@@ -15324,7 +7542,7 @@ class MainWindow(QMainWindow):
             self._refresh_catalog_status_indicator()
             return
         if self._active_ai_task is not None:
-            self._mark_background_review_work_deferred_for_ai(reason="review_intelligence")
+            self._ai_run.mark_background_review_work_deferred_for_ai(reason="review_intelligence")
             self._review_grouping_cache_source = "deferred"
             self._review_grouping_cache_detail = "Smart groups are deferred while AI review runs."
             self._review_feature_cache_source = "deferred"
@@ -15468,7 +7686,7 @@ class MainWindow(QMainWindow):
             return
         changed_paths = sorted(self._review_chunk_dirty_paths)
         self._review_chunk_dirty_paths.clear()
-        current_path = self._current_visible_record_path()
+        current_path = self._records_view.current_visible_record_path()
         if self._filter_query.quick_filter in {FilterMode.SMART_GROUPS, FilterMode.DUPLICATES}:
             self._records_view_cache.mark(ViewInvalidationReason.REVIEW_CHANGED, paths=changed_paths)
             self._apply_records_view(current_path=current_path)
@@ -15490,7 +7708,7 @@ class MainWindow(QMainWindow):
             if index is not None:
                 if index != self.grid.current_index():
                     self.grid.set_current_index(index)
-        self._update_filter_summary()
+        self._records_view.update_filter_summary()
         self._update_action_states()
         self._update_status()
 
@@ -15513,8 +7731,8 @@ class MainWindow(QMainWindow):
         self._review_chunk_flush_timer.stop()
         self._review_chunk_dirty_paths.clear()
         self._review_intelligence = bundle
-        self._recompute_ai_demoted_burst_paths()
-        current_path = self._current_visible_record_path()
+        self._ai_run.recompute_ai_demoted_burst_paths()
+        current_path = self._records_view.current_visible_record_path()
         self._records_view_cache.mark(ViewInvalidationReason.REVIEW_CHANGED)
         self._apply_records_view(current_path=current_path)
         self._start_scope_enrichment_task()
@@ -15537,14 +7755,8 @@ class MainWindow(QMainWindow):
         self._refresh_catalog_status_indicator()
         self.statusBar().showMessage(f"Smart grouping fallback active: {message}")
 
-    def _reset_filter_metadata_index(self, records: list[ImageRecord]) -> None:
-        self._records_view.reset_filter_metadata_index(records)
-
     def _handle_filter_metadata_ready(self, key, metadata) -> None:
         self._records_view.handle_filter_metadata_ready(key, metadata)
-
-    def _handle_metadata_filter_batch_update(self) -> None:
-        self._records_view.handle_metadata_filter_batch_update()
 
     def _metadata_prefetch_seed_paths(self, *, lookahead: int = 120) -> list[str]:
         return self._records_view.metadata_prefetch_seed_paths(lookahead=lookahead)
@@ -15556,15 +7768,6 @@ class MainWindow(QMainWindow):
         front: bool = False,
     ) -> None:
         self._records_view.enqueue_filter_metadata_paths(paths, front=front)
-
-    def _schedule_metadata_scroll_prefetch(self, value: int) -> None:
-        self._records_view.schedule_metadata_scroll_prefetch(value)
-
-    def _run_metadata_scroll_prefetch(self) -> None:
-        self._records_view.run_metadata_scroll_prefetch()
-
-    def _drain_filter_metadata_requests(self) -> None:
-        self._records_view.drain_filter_metadata_requests()
 
     def _catalog_cache_reads_enabled(self) -> bool:
         override = catalog_cache_env_override()
@@ -15654,36 +7857,14 @@ class MainWindow(QMainWindow):
             self.cache_pipeline_label.setText(self._cache_pipeline_badge_text())
             self.cache_pipeline_label.setToolTip(summary_text)
 
-    def _refresh_adapter_status_indicator(self) -> None:
-        if not hasattr(self, "adapter_status_label"):
-            return
-        summary: dict[str, object] | None = None
-        try:
-            paths = self._aiculler_paths_for_current_folder()
-        except Exception:
-            _logger.exception("Failed to resolve aiculler paths for adapter status indicator")
-            paths = None
-        if paths is not None:
-            try:
-                summary = load_adapter_status_summary(aiculler_db_path(paths))
-            except Exception:
-                _logger.exception("Failed to load adapter status summary")
-                summary = None
-        text, tooltip = self._adapter_status_display(summary)
-        self.adapter_status_label.setText(text)
-        self.adapter_status_label.setToolTip(tooltip)
-
     def _refresh_winner_scores_for_current_folder(self) -> bool:
         try:
-            paths = self._aiculler_paths_for_current_folder()
+            paths = self._aiculler.aiculler_paths_for_current_folder()
         except Exception:
             _logger.exception("Failed to resolve aiculler paths for winner scores")
             paths = None
         if paths is None:
             self._winner_scores_by_path = {}
-            self._winner_scores_model_version = ""
-            self._winner_scores_label_count = 0
-            self._winner_scores_db_path = ""
             return False
         db_path = aiculler_db_path(paths)
         try:
@@ -15694,14 +7875,8 @@ class MainWindow(QMainWindow):
         except Exception:
             _logger.exception("Failed to load winner scores from %s", db_path)
             self._winner_scores_by_path = {}
-            self._winner_scores_model_version = ""
-            self._winner_scores_label_count = 0
-            self._winner_scores_db_path = str(db_path)
             return False
         self._winner_scores_by_path = dict(bundle.get("scores_by_path") or {})
-        self._winner_scores_model_version = str(bundle.get("model_version") or "")
-        self._winner_scores_label_count = int(bundle.get("label_count") or 0)
-        self._winner_scores_db_path = str(db_path)
         return bool(self._winner_scores_by_path)
 
     def _winner_score_for_record(self, record: ImageRecord) -> dict[str, object] | None:
@@ -15716,7 +7891,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_face_records_for_current_folder(self) -> bool:
         try:
-            paths = self._aiculler_paths_for_current_folder()
+            paths = self._aiculler.aiculler_paths_for_current_folder()
         except Exception:
             _logger.exception("Failed to resolve aiculler paths for face records")
             paths = None
@@ -15737,7 +7912,7 @@ class MainWindow(QMainWindow):
         if record is None:
             return {}
         try:
-            paths = self._aiculler_paths_for_current_folder()
+            paths = self._aiculler.aiculler_paths_for_current_folder()
             db_path = str(aiculler_db_path(paths))
         except Exception:
             _logger.exception("Failed to resolve aiculler db path for face bundle lookup")
@@ -15770,7 +7945,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_image_categories_for_current_folder(self) -> bool:
         try:
-            paths = self._aiculler_paths_for_current_folder()
+            paths = self._aiculler.aiculler_paths_for_current_folder()
         except Exception:
             _logger.exception("Failed to resolve aiculler paths for image categories")
             paths = None
@@ -15791,7 +7966,7 @@ class MainWindow(QMainWindow):
         if record is None:
             return {}
         try:
-            paths = self._aiculler_paths_for_current_folder()
+            paths = self._aiculler.aiculler_paths_for_current_folder()
             db_path = str(aiculler_db_path(paths))
         except Exception:
             _logger.exception("Failed to resolve aiculler db path for category info lookup")
@@ -15803,7 +7978,7 @@ class MainWindow(QMainWindow):
             info = self._image_categories_by_path.get(key)
             if info:
                 return info
-        ai_result = self._ai_result_for_record_memory(record, preferred_path=record.path)
+        ai_result = self._ai_run.ai_result_for_record_memory(record, preferred_path=record.path)
         category = str(getattr(ai_result, "primary_category", "") or "")
         if category:
             return {"primary_category": category, "confidence": 0.0}
@@ -15815,30 +7990,6 @@ class MainWindow(QMainWindow):
             return "people_portrait"
         category = str(category_info.get("primary_category") or "uncategorized").strip().lower()
         return category or "uncategorized"
-
-    @staticmethod
-    def _category_display_label(category: object) -> str:
-        text = str(category or "").strip()
-        labels = {
-            "landscape": "Landscape",
-            "wildlife": "Wildlife",
-            "people_portrait": "Portrait",
-            "travel_built": "Travel/Built",
-            "night_astro": "Night/Astro",
-            "macro_detail": "Macro/Detail",
-            "abstract_texture": "Abstract/Texture",
-            "product_still_life": "Product/Still",
-            "street_documentary": "Street/Documentary",
-            "architecture": "Architecture",
-            "sports_action": "Sports/Action",
-            "event_stage": "Event/Stage",
-            "vehicle_transport": "Vehicle/Transport",
-            "interior_space": "Interior",
-            "aerial_drone": "Aerial/Drone",
-            "water_coastal": "Water/Coastal",
-            "uncategorized": "Uncategorized",
-        }
-        return labels.get(text, text.replace("_", " ").strip().title() or "Uncategorized")
 
     def _face_preview_for_record(self, record: ImageRecord | None) -> QImage | None:
         bundle = self._face_bundle_for_record(record)
@@ -15914,73 +8065,6 @@ class MainWindow(QMainWindow):
             return 1
         return 1
 
-    @staticmethod
-    def _adapter_status_display(summary: dict[str, object] | None) -> tuple[str, str]:
-        if summary is None or not summary.get("db_exists"):
-            return ("Adapter: —", "Run Index & Score in the AI Workflow Center to begin building the adapter.")
-        rating_count = int(summary.get("rating_count") or 0)
-        model_version = str(summary.get("model_version") or "")
-        if not model_version:
-            label = f"Adapter: untrained · {rating_count} label(s)"
-            tooltip = (
-                "No adapter trained for this folder yet.\n"
-                f"Recorded labels: {rating_count}\n"
-                "Use Review Adapter Labels then Train Adapter to fit one."
-            )
-            return (label, tooltip)
-        bits: list[str] = [f"v{model_version}", f"{rating_count} label(s)"]
-        score_fit = summary.get("score_fit_percent")
-        if isinstance(score_fit, (int, float)):
-            bits.append(f"fit {float(score_fit):.1f}%")
-        train_mae = summary.get("train_mae")
-        if isinstance(train_mae, (int, float)):
-            bits.append(f"MAE {float(train_mae):.3f}")
-        holdout_mae = summary.get("holdout_mae")
-        if isinstance(holdout_mae, (int, float)):
-            bits.append(f"hold {float(holdout_mae):.3f}")
-        train_lift = summary.get("train_rank_lift")
-        if isinstance(train_lift, (int, float)):
-            bits.append(f"lift {float(train_lift):+.2f}")
-        label = "Adapter: " + " · ".join(bits)
-
-        tooltip_lines = [
-            f"Adapter version: {model_version}",
-        ]
-        created_at = str(summary.get("created_at") or "")
-        if created_at:
-            tooltip_lines.append(f"Trained: {created_at}")
-        tooltip_lines.append(f"Recorded labels: {rating_count}")
-        scored_count = int(summary.get("scored_count") or 0)
-        if scored_count:
-            tooltip_lines.append(f"Adapter-scored images: {scored_count}")
-        train_count = summary.get("train_count")
-        if isinstance(train_count, int):
-            tooltip_lines.append(f"Train fold: {train_count} label(s)")
-        if isinstance(train_mae, (int, float)):
-            tooltip_lines.append(f"Train MAE: {float(train_mae):.4f}")
-        if isinstance(score_fit, (int, float)):
-            tooltip_lines.append(f"Score Fit: {float(score_fit):.1f}%")
-        if isinstance(train_lift, (int, float)):
-            tooltip_lines.append(f"Train rank lift: {float(train_lift):+.3f}")
-        holdout_count = summary.get("holdout_count")
-        if isinstance(holdout_count, int):
-            tooltip_lines.append(f"Holdout fold: {holdout_count} label(s)")
-        if isinstance(holdout_mae, (int, float)):
-            tooltip_lines.append(f"Holdout MAE: {float(holdout_mae):.4f}")
-        holdout_lift = summary.get("holdout_rank_lift")
-        if isinstance(holdout_lift, (int, float)):
-            tooltip_lines.append(f"Holdout rank lift: {float(holdout_lift):+.3f}")
-        keeper_recall = summary.get("keeper_recall")
-        if isinstance(keeper_recall, (int, float)):
-            tooltip_lines.append(f"Keeper recall: {float(keeper_recall) * 100.0:.1f}%")
-        false_reject_rate = summary.get("false_reject_rate")
-        if isinstance(false_reject_rate, (int, float)):
-            tooltip_lines.append(f"False reject rate: {float(false_reject_rate) * 100.0:.1f}%")
-        review_reduction = summary.get("review_reduction_percent")
-        if isinstance(review_reduction, (int, float)):
-            tooltip_lines.append(f"Review reduction: {float(review_reduction):.1f}%")
-        return (label, "\n".join(tooltip_lines))
-
     def _reset_review_cache_status(self) -> None:
         self._review_grouping_cache_source = "idle"
         self._review_grouping_cache_detail = "Ready"
@@ -16015,8 +8099,8 @@ class MainWindow(QMainWindow):
             now = time.perf_counter()
             logger.duration("window.current_changed.enqueue_metadata", (now - step_start) * 1000.0, index=index, view=self._browser_view_mode)
             step_start = now
-        if self._adapter_review_mode_active():
-            self._schedule_adapter_review_action_state_update()
+        if self._aiculler.adapter_review_mode_active():
+            self._aiculler.schedule_adapter_review_action_state_update()
         else:
             self._update_action_states()
         self._update_inspector_context(index)
@@ -16027,7 +8111,7 @@ class MainWindow(QMainWindow):
                 (now - step_start) * 1000.0,
                 index=index,
                 view=self._browser_view_mode,
-                deferred=self._adapter_review_mode_active(),
+                deferred=self._aiculler.adapter_review_mode_active(),
             )
             step_start = now
         self._update_status(index=index)
@@ -16056,9 +8140,9 @@ class MainWindow(QMainWindow):
         logger = perf_logger()
         start = time.perf_counter() if logger.enabled else 0.0
         self._sync_details_view_from_grid()
-        deferred_action_state = self._adapter_review_mode_active()
+        deferred_action_state = self._aiculler.adapter_review_mode_active()
         if deferred_action_state:
-            self._schedule_adapter_review_action_state_update()
+            self._aiculler.schedule_adapter_review_action_state_update()
         else:
             self._update_action_states()
         self._update_status()
@@ -16072,1176 +8156,11 @@ class MainWindow(QMainWindow):
                 deferred_action_state=deferred_action_state,
             )
 
-    def _adapter_review_mode_active(self) -> bool:
-        return bool(getattr(getattr(self, "grid", None), "_adapter_review_mode", False))
-
-    def _schedule_adapter_review_action_state_update(self) -> None:
-        timer = getattr(self, "_adapter_review_action_state_timer", None)
-        if timer is not None:
-            timer.start()
-
-    def _flush_adapter_review_action_state_update(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        self._update_action_states()
-        if logger.enabled:
-            logger.duration(
-                "adapter_review.window.deferred_action_states",
-                (time.perf_counter() - start) * 1000.0,
-                active=self._adapter_review_mode_active(),
-            )
-
-    def _choose_ai_results(self) -> None:
-        start_dir = self._settings.value(self.AI_RESULTS_KEY, "", str) or self._current_folder or QDir.homePath()
-        folder = QFileDialog.getExistingDirectory(self, "Choose AI Results Folder", start_dir)
-        if folder:
-            self._load_ai_results(folder)
-
-    def _saved_ai_results_belong_to_current_folder(self, saved_path: str) -> bool:
-        if not self._current_folder or not saved_path:
-            return True
-
-        def key(path: str) -> str:
-            return os.path.normpath(path).casefold()
-
-        def is_same_or_child(path_key: str, parent_key: str) -> bool:
-            parent_key = parent_key.rstrip("\\/")
-            return path_key == parent_key or path_key.startswith(parent_key + os.sep)
-
-        current_key = key(str(self._current_folder))
-        saved_key = key(str(saved_path))
-        if not current_key or not saved_key:
-            return True
-        if saved_key == current_key:
-            return True
-
-        hidden_root_key = key(os.path.join(str(self._current_folder), ".image_triage_ai"))
-        return is_same_or_child(saved_key, hidden_root_key)
-
-    def _restore_ai_results(self, *, force: bool = False) -> bool:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        # Keep AI bundle loading off the normal startup/manual browse path.
-        if not force and self._ui_mode != "ai":
-            self._refresh_ai_state()
-            if logger.enabled:
-                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="skipped_manual_mode")
-            return False
-        # Fast path: bundle already loaded for this folder. Skip the re-parse
-        # — this fires on every tab flip and was the dominant cost there.
-        if (
-            self._ai_bundle is not None
-            and self._ai_bundle.source_path
-            and self._saved_ai_results_belong_to_current_folder(str(self._ai_bundle.source_path))
-        ):
-            if logger.enabled:
-                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="already_loaded")
-            return True
-        saved_path = self._settings.value(self.AI_RESULTS_KEY, "", str)
-        if not saved_path:
-            self._refresh_ai_state()
-            if logger.enabled:
-                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="missing_setting")
-            return False
-        if not self._saved_ai_results_belong_to_current_folder(saved_path):
-            had_ai_bundle = self._ai_bundle is not None
-            if had_ai_bundle:
-                self._clear_ai_results_state(preserve_setting=True, refresh=False)
-                self._update_ai_toolbar_state()
-            if logger.enabled:
-                logger.duration(
-                    "ai_results.restore",
-                    (time.perf_counter() - start) * 1000.0,
-                    force=force,
-                    state="foreign_folder",
-                    folder=self._current_folder,
-                    path=saved_path,
-                )
-            return False
-        if not Path(saved_path).exists():
-            self._settings.remove(self.AI_RESULTS_KEY)
-            self._refresh_ai_state()
-            if logger.enabled:
-                logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="missing_file", path=saved_path)
-            return False
-        loaded = self._load_ai_results(saved_path, show_message=False)
-        if logger.enabled:
-            logger.duration("ai_results.restore", (time.perf_counter() - start) * 1000.0, force=force, state="loaded" if loaded else "failed", path=saved_path)
-        return loaded
-
-    def _clear_ai_results_state(self, *, preserve_setting: bool = False, refresh: bool = True) -> None:
-        self._ai_bundle = None
-        if self._active_ai_task is None:
-            self._ai_stage_index = 0
-            self._ai_stage_total = 3
-            self._ai_stage_message = "Ready to run AI review"
-            self._ai_progress_current = 0
-            self._ai_progress_total = 0
-            self._ai_progress_eta_text = ""
-        if not preserve_setting:
-            self._settings.remove(self.AI_RESULTS_KEY)
-        if refresh:
-            self._refresh_ai_state()
-
-    def _hidden_ai_paths_for_current_folder(self):
-        if not self._current_folder:
-            return None
-        # Resolving the path asks the filesystem, so for a folder on a share the GUI thread does not.
-        return build_ai_workflow_paths(self._current_folder, resolve=not self._is_slow_source_folder(self._current_folder))
-
-    def _cancel_hidden_ai_results_load(self) -> None:
-        self._hidden_ai_results_timer.stop()
-        self._hidden_ai_results_token += 1
-        if self._active_hidden_ai_results_task is not None:
-            self._active_hidden_ai_results_task.cancel()
-            self._active_hidden_ai_results_task = None
-
-    def _schedule_hidden_ai_results_load(self, *, delay_ms: int | None = None) -> None:
-        if not self._current_folder or not self._all_records:
-            return
-        scope_key = self._current_scope_key()
-        if self._hidden_ai_results_checked_scope_key == scope_key:
-            return
-        if self._active_hidden_ai_results_task is not None:
-            return
-        if delay_ms is None:
-            delay_ms = 450
-        self._hidden_ai_results_timer.start(max(0, int(delay_ms)))
-
-    def _start_hidden_ai_results_load(self) -> None:
-        if not self._current_folder or not self._all_records:
-            return
-        if self._scan_in_progress or self._records_view_chunk_active():
-            self._schedule_hidden_ai_results_load(delay_ms=350)
-            return
-        scope_key = self._current_scope_key()
-        if self._hidden_ai_results_checked_scope_key == scope_key:
-            return
-        if self._active_hidden_ai_results_task is not None:
-            return
-
-        self._hidden_ai_results_token += 1
-        token = self._hidden_ai_results_token
-        task = HiddenAIResultsLoadTask(
-            folder=self._current_folder,
-            token=token,
-            catalog_db_path=self._catalog_repository.db_path,
-        )
-        task.signals.finished.connect(self._handle_hidden_ai_results_loaded, Qt.ConnectionType.QueuedConnection)
-        task.signals.missing.connect(self._handle_hidden_ai_results_missing, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_hidden_ai_results_failed, Qt.ConnectionType.QueuedConnection)
-        self._active_hidden_ai_results_task = task
-        self._hidden_ai_results_checked_scope_key = scope_key
-        QThreadPool.globalInstance().start(task, -50)
-
-    def _handle_hidden_ai_results_loaded(
-        self,
-        folder: str,
-        token: int,
-        bundle_obj: object,
-        source_details_obj: object,
-        cache_source: str,
-    ) -> None:
-        if token != self._hidden_ai_results_token:
-            return
-        self._active_hidden_ai_results_task = None
-        if not isinstance(bundle_obj, AIBundle):
-            return
-        self._ai_bundle = bundle_obj
-        self._recompute_ai_demoted_burst_paths()
-        source_path = getattr(source_details_obj, "source_path", "") or bundle_obj.source_path
-        if source_path:
-            self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
-        if self._active_ai_task is None:
-            self._ai_stage_index = 3
-            self._ai_stage_total = 3
-            self._ai_stage_message = "Saved AI cache loaded"
-            self._ai_progress_current = 0
-            self._ai_progress_total = 0
-            self._ai_progress_eta_text = ""
-        self._refresh_ai_state()
-        matched = bundle_obj.count_matches(self._all_records)
-        source_label = "catalog cache" if cache_source == "catalog" else "saved AI results"
-        self.statusBar().showMessage(f"Loaded {source_label} ({matched} matched image(s))")
-
-    def _handle_hidden_ai_results_missing(self, folder: str, token: int) -> None:
-        if token != self._hidden_ai_results_token:
-            return
-        self._active_hidden_ai_results_task = None
-        self._update_ai_toolbar_state()
-
-    def _handle_hidden_ai_results_failed(self, folder: str, token: int, message: str) -> None:
-        if token != self._hidden_ai_results_token:
-            return
-        self._active_hidden_ai_results_task = None
-        perf_logger().log("hidden_ai.load.failed_ui", folder=folder, message=message)
-        self._update_ai_toolbar_state()
-
-    def _load_hidden_ai_results_for_current_folder(self, *, show_message: bool = True) -> bool:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        if not self._current_folder:
-            if logger.enabled:
-                logger.duration("ai_results.load_hidden_current", (time.perf_counter() - start) * 1000.0, state="no_folder")
-            return False
-        # Fast path: if a matching bundle is already in memory for this folder
-        # there's nothing to reload. Saves a CSV re-parse + catalog round-trip
-        # on every Manual<->AI tab flip.
-        if (
-            self._ai_bundle is not None
-            and self._ai_bundle.source_path
-            and self._saved_ai_results_belong_to_current_folder(str(self._ai_bundle.source_path))
-        ):
-            if logger.enabled:
-                logger.duration(
-                    "ai_results.load_hidden_current",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self._current_folder,
-                    state="already_loaded",
-                )
-            return True
-        report_dir = existing_hidden_ai_report_dir(self._current_folder)
-        if report_dir is None:
-            if show_message:
-                self.statusBar().showMessage("No saved hidden AI results were found for this folder")
-                self._update_ai_toolbar_state()
-            if logger.enabled:
-                logger.duration(
-                    "ai_results.load_hidden_current",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self._current_folder,
-                    state="missing",
-                    show_message=show_message,
-                )
-            return False
-        loaded = self._load_ai_results(report_dir, show_message=show_message)
-        if logger.enabled:
-            logger.duration(
-                "ai_results.load_hidden_current",
-                (time.perf_counter() - start) * 1000.0,
-                folder=self._current_folder,
-                report_dir=str(report_dir),
-                state="loaded" if loaded else "failed",
-                show_message=show_message,
-            )
-        return loaded
-
-    def _load_ai_results(self, path: str | Path, *, show_message: bool = True) -> bool:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        step_start = start
-        result_state = "failed"
-        result_count = 0
-        source_details = None
-        cache_source = "file"
-        try:
-            source_details = inspect_ai_bundle_source(path)
-            if logger.enabled:
-                now = time.perf_counter()
-                logger.duration(
-                    "ai_results.load.inspect_source",
-                    (now - step_start) * 1000.0,
-                    path=str(path),
-                    cache_key=source_details.cache_key,
-                )
-                step_start = now
-            bundle = None
-            if self._current_folder and source_details.cache_key:
-                cached_entry = self._catalog_repository.load_ai_bundle(
-                    self._current_folder,
-                    cache_key=source_details.cache_key,
-                )
-                if logger.enabled:
-                    now = time.perf_counter()
-                    logger.duration(
-                        "ai_results.load.catalog_lookup",
-                        (now - step_start) * 1000.0,
-                        folder=self._current_folder,
-                        path=str(path),
-                        hit=cached_entry is not None,
-                    )
-                    step_start = now
-                if cached_entry is not None:
-                    bundle = cached_entry.bundle
-                    cache_source = "catalog"
-            if bundle is None:
-                bundle = load_ai_bundle(path)
-                if logger.enabled:
-                    now = time.perf_counter()
-                    logger.duration(
-                        "ai_results.load.file_read",
-                        (now - step_start) * 1000.0,
-                        path=str(path),
-                    )
-                    step_start = now
-        except (FileNotFoundError, ValueError, OSError) as exc:
-            if show_message:
-                QMessageBox.warning(self, "AI Results", f"Could not load AI results.\n\n{exc}")
-                self.statusBar().showMessage("AI results load failed")
-            if logger.enabled:
-                logger.duration(
-                    "ai_results.load.total",
-                    (time.perf_counter() - start) * 1000.0,
-                    path=str(path),
-                    state="failed",
-                    error=str(exc),
-                )
-            return False
-
-        self._ai_bundle = bundle
-        self._recompute_ai_demoted_burst_paths()
-        result_count = len(bundle.results_by_path or {})
-        self._settings.setValue(self.AI_RESULTS_KEY, source_details.source_path if source_details is not None else str(path))
-        if self._active_ai_task is None and self._ai_stage_message != "AI review complete":
-            self._ai_stage_index = 0
-            self._ai_stage_total = 3
-            self._ai_stage_message = "Saved AI cache loaded"
-            self._ai_progress_current = 0
-            self._ai_progress_total = 0
-            self._ai_progress_eta_text = ""
-        self._refresh_ai_state()
-        if logger.enabled:
-            now = time.perf_counter()
-            logger.duration(
-                "ai_results.load.refresh_ai_state",
-                (now - step_start) * 1000.0,
-                path=str(path),
-                source=cache_source,
-                results=result_count,
-            )
-            step_start = now
-
-        matched = bundle.count_matches(self._all_records)
-        if logger.enabled:
-            now = time.perf_counter()
-            logger.duration(
-                "ai_results.load.match_records",
-                (now - step_start) * 1000.0,
-                path=str(path),
-                matched=matched,
-                records=len(self._all_records),
-            )
-            step_start = now
-        if (
-            cache_source != "catalog"
-            and source_details is not None
-            and self._current_folder
-            and matched > 0
-        ):
-            self._catalog_repository.save_ai_bundle(
-                self._current_folder,
-                cache_key=source_details.cache_key,
-                bundle=bundle,
-            )
-            if logger.enabled:
-                now = time.perf_counter()
-                logger.duration(
-                    "ai_results.load.catalog_save",
-                    (now - step_start) * 1000.0,
-                    folder=self._current_folder,
-                    path=str(path),
-                    results=result_count,
-                )
-                step_start = now
-        if show_message:
-            source_name = Path(bundle.export_csv_path).name
-            if cache_source == "catalog":
-                self.statusBar().showMessage(f"Loaded AI results from catalog cache ({matched} matched image(s))")
-            else:
-                self.statusBar().showMessage(f"Loaded AI results from {source_name} ({matched} matched image(s))")
-        result_state = "loaded"
-        if logger.enabled:
-            logger.duration(
-                "ai_results.load.total",
-                (time.perf_counter() - start) * 1000.0,
-                path=str(path),
-                source=cache_source,
-                state=result_state,
-                results=result_count,
-                matched=matched,
-                show_message=show_message,
-            )
-        return True
-
-    def _clear_ai_results(self) -> None:
-        if self._ai_bundle is None:
-            return
-        self._clear_ai_results_state()
-        self.statusBar().showMessage("Cleared AI results")
-
-    def _reset_ai_review_cache(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Open a folder before resetting AI review cache.")
-            return
-        if (
-            self._active_ai_task is not None
-            or self._active_ai_runtime_task is not None
-            or self._active_ai_training_task is not None
-            or self._active_ai_model_task is not None
-        ):
-            self.statusBar().showMessage("Wait for the current AI task to finish before resetting the AI cache.")
-            return
-        selected = self._prompt_ai_cache_reset_options()
-        if not selected:
-            return
-        labels = {
-            "phash": "pHash duplicate artifacts",
-            "clip_topiq": "CLIP/TOPIQ scoring artifacts, exports, and report",
-        }
-        chosen_text = "\n".join(f"- {labels[key]}" for key in selected)
-        warning = dedent(
-            f"""
-            Reset selected AI artifacts for this folder?
-
-            This will delete:
-            {chosen_text}
-
-            It does not delete images, adapter labels, global labels, or training label history.
-            """
-        ).strip()
-        choice = QMessageBox.warning(
-            self,
-            "Reset Selected AI Artifacts",
-            warning,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if choice != QMessageBox.StandardButton.Yes:
-            return
-        reset_parts: list[str] = []
-        try:
-            if "phash" in selected:
-                phash_paths = build_phash_prefilter_paths(self._current_folder)
-                if phash_paths.artifact_dir.exists():
-                    shutil.rmtree(phash_paths.artifact_dir, ignore_errors=False)
-                reset_parts.append("pHash")
-            if "clip_topiq" in selected:
-                paths = build_ai_workflow_paths(self._current_folder)
-                self._clear_ai_results_state()
-                cached_summary = getattr(self, "_last_ai_review_summary", None)
-                if cached_summary and normalized_path_key(str(cached_summary.get("folder", ""))) == normalized_path_key(self._current_folder):
-                    self._last_ai_review_summary = None
-                reset_hidden_ai_review_cache(paths)
-                self._aiculler_ingested_cache_folder_key = ""
-                self._aiculler_ingested_path_keys = set()
-                self._aiculler_ingested_sibling_keys = set()
-                self._catalog_repository.delete_ai_workflow_cache(self._current_folder)
-                self._catalog_repository.delete_ai_bundle_cache(self._current_folder)
-                reset_parts.append("CLIP/TOPIQ")
-        except OSError as exc:
-            QMessageBox.warning(
-                self,
-                "Reset AI Review Cache",
-                f"Could not reset the AI review cache.\n\n{exc}",
-            )
-            self.statusBar().showMessage("AI review cache reset failed")
-            return
-        if "phash" in selected:
-            self._refresh_prefilter_decisions_for_current_folder()
-            self.grid.set_prefilter_decisions(self._prefilter_decisions_by_path)
-            self._records_view_cache.mark(ViewInvalidationReason.FILTER_CHANGED)
-            self._apply_records_view(current_path=self._current_visible_record_path())
-        self._invalidate_ai_folder_probe_cache()
-        self._update_ai_toolbar_state()
-        self._refresh_ai_workflow_center()
-        suffix = ", ".join(reset_parts) if reset_parts else "selected artifacts"
-        self.statusBar().showMessage(f"Reset {suffix} for {self._current_folder}")
-
-    def _prompt_ai_cache_reset_options(self) -> tuple[str, ...]:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Reset AI Artifacts")
-        dialog.setModal(True)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        intro = QLabel("Choose which AI artifacts to reset for this folder.")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        phash_checkbox = QCheckBox("pHash duplicate artifacts")
-        clip_checkbox = QCheckBox("CLIP/TOPIQ scoring artifacts, exports, and report")
-        for checkbox in (phash_checkbox, clip_checkbox):
-            checkbox.setChecked(False)
-            layout.addWidget(checkbox)
-
-        warning_label = QLabel(
-            "Adapter labels, global labels, images, and training label history are not deleted by this reset."
-        )
-        warning_label.setWordWrap(True)
-        warning_label.setObjectName("secondaryText")
-        layout.addWidget(warning_label)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        reset_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
-        if reset_button is not None:
-            reset_button.setText("Reset Selected")
-            reset_button.setEnabled(False)
-        remove_all_button = QPushButton("Remove All")
-        button_box.addButton(remove_all_button, QDialogButtonBox.ButtonRole.ActionRole)
-
-        def sync_enabled() -> None:
-            if reset_button is not None:
-                reset_button.setEnabled(phash_checkbox.isChecked() or clip_checkbox.isChecked())
-
-        for checkbox in (phash_checkbox, clip_checkbox):
-            checkbox.toggled.connect(sync_enabled)
-        remove_all_button.clicked.connect(lambda _checked=False: [checkbox.setChecked(True) for checkbox in (phash_checkbox, clip_checkbox)])
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if self._exec_dialog_with_geometry(dialog, "reset_ai_artifacts") != dialog.DialogCode.Accepted:
-            return ()
-        selected: list[str] = []
-        if phash_checkbox.isChecked():
-            selected.append("phash")
-        if clip_checkbox.isChecked():
-            selected.append("clip_topiq")
-        return tuple(selected)
-
-    def _open_ai_report(self) -> None:
-        if self._ai_bundle is None or not self._ai_bundle.report_html_path:
-            self.statusBar().showMessage("No AI HTML report is available")
-            return
-        report_path = Path(self._ai_bundle.report_html_path)
-        if not report_path.exists():
-            self.statusBar().showMessage("AI HTML report could not be found")
-            return
-        open_with_default(str(report_path))
-        self.statusBar().showMessage(f"Opened AI report: {report_path.name}")
-
-    def _refresh_ai_state(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        step_start = start
-
-        def log_step(event: str, step_started: float, **fields: object) -> float:
-            if not logger.enabled:
-                return step_started
-            now = time.perf_counter()
-            logger.duration(
-                event,
-                (now - step_started) * 1000.0,
-                mode=self._ui_mode,
-                records=len(self._all_records),
-                visible_records=len(self._records),
-                ai_loaded=self._ai_bundle is not None,
-                **fields,
-            )
-            return now
-
-        ai_results = self._ai_bundle.results_by_path if self._ai_bundle and self._ai_bundle.results_by_path else {}
-        self.grid.set_ai_results(ai_results)
-        step_start = log_step("ai_state.refresh.grid_results", step_start, results=len(ai_results))
-        self.details_view.refresh_rows()
-        step_start = log_step("ai_state.refresh.details_rows", step_start)
-        self._start_scope_enrichment_task()
-        step_start = log_step("ai_state.refresh.scope_enrichment", step_start)
-        current_path = self._current_visible_record_path()
-        if self._all_records:
-            self._apply_records_view(
-                current_path=current_path,
-                chunked=self._records_view_chunk_active(),
-                post_load_enrichment=self._records_view_chunk_post_load_enrichment,
-            )
-        step_start = log_step("ai_state.refresh.records_view", step_start, current_path=current_path or "")
-        self._refresh_viewport_mode()
-        step_start = log_step("ai_state.refresh.viewport", step_start)
-        self._refresh_ai_summary_cache()
-        step_start = log_step("ai_state.refresh.summary_cache", step_start)
-        self._update_ai_summary()
-        step_start = log_step("ai_state.refresh.summary_ui", step_start)
-        self._update_ai_toolbar_state()
-        step_start = log_step("ai_state.refresh.toolbar", step_start)
-        self._update_status()
-        step_start = log_step("ai_state.refresh.status", step_start)
-        self._update_inspector_context()
-        step_start = log_step("ai_state.refresh.inspector", step_start)
-        if self._preview_is_visible():
-            index = self.grid.current_index()
-            if index >= 0:
-                self._open_preview(index)
-        step_start = log_step("ai_state.refresh.preview", step_start, preview_visible=self._preview_is_visible())
-        if logger.enabled:
-            logger.duration(
-                "ai_state.refresh.total",
-                (time.perf_counter() - start) * 1000.0,
-                mode=self._ui_mode,
-                records=len(self._all_records),
-                visible_records=len(self._records),
-                results=len(ai_results),
-            )
-
     # Per-folder AI-data probes (SQLite opens + artifact existence checks) are
     # stable while navigating within a folder, so cache them keyed by folder.
     # Invalidated on folder change (key mismatch), on AI operations that mutate a
     # folder's hidden cache (_invalidate_ai_folder_probe_cache), and by TTL.
     _AI_FOLDER_PROBE_TTL_S = 60.0
-
-    def _ai_folder_probe(self, ai_paths) -> dict:
-        folder = self._current_folder or ""
-        now = time.perf_counter()
-        cache = getattr(self, "_ai_folder_probe_cache", None)
-        if (
-            cache is not None
-            and cache.get("folder") == folder
-            and (now - cache.get("at", 0.0)) < self._AI_FOLDER_PROBE_TTL_S
-        ):
-            return cache
-        if folder and self._is_slow_source_folder(folder):
-            return self._ai_folder_probe_off_thread(ai_paths, folder, cache)
-        probe = _compute_ai_folder_probe(ai_paths, folder)
-        probe["at"] = now
-        self._ai_folder_probe_cache = probe
-        return probe
-
-    def _ai_folder_probe_off_thread(self, ai_paths, folder: str, cache: dict | None) -> dict:
-        """The probe of a folder on a network / removable drive.
-
-        It opens SQLite files and stats artifacts inside the folder, which on the GUI thread would stall
-        every folder open on a NAS (and freeze the window if the share is asleep). So a worker does it;
-        until its answer arrives the toolbar shows what was last known for this folder, or "nothing found
-        yet", and the arriving answer refreshes the toolbar."""
-        if self._ai_probe_task is None:
-            task = _AIFolderProbeTask(self._ai_probe_generation, folder, ai_paths)
-            task.signals.ready.connect(self._handle_ai_folder_probe_ready, Qt.ConnectionType.QueuedConnection)
-            self._ai_probe_task = task
-            QThreadPool.globalInstance().start(task)
-        if cache is not None and cache.get("folder") == folder:
-            return cache
-        return _unknown_ai_folder_probe(folder)
-
-    def _handle_ai_folder_probe_ready(self, generation: int, folder: str, probe: object) -> None:
-        self._ai_probe_task = None
-        current = self._current_folder or ""
-        if not isinstance(probe, dict):
-            return
-        if folder != current or generation != self._ai_probe_generation:
-            # The folder, or its AI data, changed while the worker was looking: this answer is stale, so
-            # ask again for what is current (one probe is in flight at a time).
-            self._update_ai_toolbar_state()
-            return
-        probe["at"] = time.perf_counter()
-        self._ai_folder_probe_cache = probe
-        self._update_ai_toolbar_state()
-
-    def _invalidate_ai_folder_probe_cache(self) -> None:
-        self._ai_folder_probe_cache = None
-        self._ai_probe_generation += 1
-
-    def _update_ai_toolbar_state(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        step_start = start
-
-        def log_step(event: str, step_started: float, **fields: object) -> float:
-            if not logger.enabled:
-                return step_started
-            now = time.perf_counter()
-            logger.duration(
-                event,
-                (now - step_started) * 1000.0,
-                mode=self._ui_mode,
-                records=len(self._all_records),
-                ai_loaded=self._ai_bundle is not None,
-                **fields,
-            )
-            return now
-
-        current_folder = bool(self._current_folder)
-        ai_loaded = self._ai_bundle is not None
-        ai_runtime_ready = self._ai_runtime_available()
-        culler_runtime_ready = aiculler_runtime_available()
-        semantic_model_ready = self._semantic_model_available()
-        step_start = log_step(
-            "ai_toolbar_state.readiness",
-            step_start,
-            runtime_ready=ai_runtime_ready,
-            culler_ready=culler_runtime_ready,
-            semantic_ready=semantic_model_ready,
-        )
-        ai_paths = self._hidden_ai_paths_for_current_folder()
-        ai_probe = self._ai_folder_probe(ai_paths)
-        # Existence of the saved ranked export is still only surfaced in AI mode.
-        saved_exists = bool(ai_probe["ranked_export_exists"]) if self._ui_mode == "ai" else False
-        step_start = log_step("ai_toolbar_state.saved_probe", step_start, saved_exists=saved_exists, has_paths=ai_paths is not None)
-        current_index = self.grid.current_index()
-        current_ai = self._ai_result_for_index(current_index)
-        can_compare_group = bool(current_ai and current_ai.group_size > 1)
-        step_start = log_step("ai_toolbar_state.current_ai", step_start, can_compare_group=can_compare_group)
-
-        if self.actions is not None:
-            can_use_ai_tools = (
-                current_folder
-                and culler_runtime_ready
-                and self._active_ai_task is None
-                and self._active_ai_runtime_task is None
-                and self._active_ai_training_task is None
-                and self._active_ai_model_task is None
-            )
-            can_apply_ai_cull = (
-                current_folder
-                and ai_loaded
-                and self._active_ai_task is None
-                and self._active_ai_runtime_task is None
-                and self._active_ai_training_task is None
-                and self._active_ai_model_task is None
-                and not self._is_winners_folder()
-                and not self._is_recycle_folder()
-            )
-            can_sort_semantic = (
-                current_folder
-                and self._active_ai_task is None
-                and self._active_ai_runtime_task is None
-                and self._active_ai_training_task is None
-                and self._active_ai_model_task is None
-                and not self._is_winners_folder()
-                and not self._is_recycle_folder()
-                and bool(ai_probe["semantic_ready"] or ai_probe["report_ready"])
-            )
-            step_start = log_step("ai_toolbar_state.can_flags", step_start)
-            rerank_ready = bool(ai_probe["rerank_ready"])
-            step_start = log_step("ai_toolbar_state.db_probe", step_start)
-            self.actions.install_ai_runtime.setEnabled(True)
-            self.actions.download_ai_model.setEnabled(True)
-            self.actions.run_ai_culling.setEnabled(can_use_ai_tools)
-            self.actions.quick_rerank_ai_culling.setEnabled(can_use_ai_tools and rerank_ready)
-            self.actions.apply_ai_culling.setEnabled(can_apply_ai_cull)
-            self.actions.sort_ai_semantic_folders.setEnabled(can_sort_semantic)
-            self.actions.reset_ai_review_cache.setEnabled(
-                current_folder
-                and self._active_ai_task is None
-                and self._active_ai_runtime_task is None
-                and self._active_ai_training_task is None
-                and self._active_ai_model_task is None
-            )
-            self.actions.load_saved_ai.setEnabled(current_folder and saved_exists and self._active_ai_task is None)
-            self.actions.open_ai_report.setEnabled(bool(ai_loaded and self._ai_bundle and self._ai_bundle.report_html_path))
-            self.actions.show_ai_review_summary.setEnabled(bool(ai_loaded or getattr(self, "_last_ai_review_summary", None)))
-            can_open_training_commands = (
-                current_folder
-                and self._active_ai_task is None
-                and self._active_ai_runtime_task is None
-                and self._active_ai_training_task is None
-                and self._active_ai_model_task is None
-                and not self._is_winners_folder()
-                and not self._is_recycle_folder()
-            )
-            self.actions.manage_people.setEnabled(can_open_training_commands and bool(ai_probe["adapter_db_exists"]))
-            self.actions.review_ai_adapter_labels.setEnabled(can_open_training_commands and bool(ai_probe["adapter_db_exists"]))
-            self.actions.next_ai_pick.setEnabled(ai_loaded)
-            self.actions.next_unreviewed_ai_pick.setEnabled(ai_loaded)
-            self.actions.compare_ai_group.setEnabled(ai_loaded and can_compare_group)
-            self.actions.review_ai_disagreements.setEnabled(ai_loaded)
-            self.actions.clear_ai_results.setEnabled(ai_loaded)
-            if FilterMode.AI_GROUPED in self.actions.filter_actions:
-                self.actions.filter_actions[FilterMode.AI_GROUPED].setEnabled(ai_loaded)
-            if FilterMode.AI_TOP_PICKS in self.actions.filter_actions:
-                self.actions.filter_actions[FilterMode.AI_TOP_PICKS].setEnabled(ai_loaded)
-            if FilterMode.AI_DISAGREEMENTS in self.actions.filter_actions:
-                self.actions.filter_actions[FilterMode.AI_DISAGREEMENTS].setEnabled(ai_loaded)
-            aiculler_available = bool(ai_probe["aiculler_available"])
-            if FilterMode.AI_INGESTED in self.actions.filter_actions:
-                self.actions.filter_actions[FilterMode.AI_INGESTED].setEnabled(aiculler_available)
-            phash_available = bool(ai_probe["phash_available"])
-            if FilterMode.AI_PREFILTER_DUMPED in self.actions.filter_actions:
-                self.actions.filter_actions[FilterMode.AI_PREFILTER_DUMPED].setEnabled(phash_available)
-        step_start = log_step("ai_toolbar_state.actions", step_start)
-        for mode, action in self._ai_state_actions.items():
-            action.setEnabled(ai_loaded or mode == AIStateFilter.ALL)
-        step_start = log_step("ai_toolbar_state.filter_actions", step_start)
-        self._refresh_adapter_status_indicator()
-        self._refresh_ai_workflow_center()
-        step_start = log_step("ai_toolbar_state.adapter_status", step_start)
-
-        if self._active_ai_task is not None:
-            self.ai_status_label.setText(self._build_ai_progress_text())
-        elif self._active_ai_runtime_task is not None:
-            self.ai_status_label.setText("Installing AI runtime...")
-        elif self._active_ai_model_task is not None:
-            self.ai_status_label.setText("Downloading AI model...")
-        elif not ai_runtime_ready:
-            self.ai_status_label.setText("AI runtime not installed")
-        elif not culler_runtime_ready:
-            self.ai_status_label.setText("AI culling models not installed")
-        elif ai_loaded and self._ai_bundle is not None:
-            export_name = Path(self._ai_bundle.export_csv_path).name
-            self.ai_status_label.setText(f"Loaded {export_name}")
-        elif saved_exists:
-            self.ai_status_label.setText("Saved AI cache available")
-        elif not current_folder and self._scope_kind != "folder":
-            self.ai_status_label.setText("AI cache stays folder-local in virtual scopes")
-        else:
-            self.ai_status_label.setText("No AI cache for this folder yet")
-        step_start = log_step("ai_toolbar_state.status_label", step_start)
-
-        runtime_lines = [
-            f"Python: {self._ai_runtime.python_executable}",
-            f"Runtime installed: {ai_runtime_ready}",
-            f"Semantic model: {self._ai_runtime.semantic_model_name}",
-            f"Semantic model installed: {semantic_model_ready}",
-            f"Embedding batch size: {self._ai_embed_batch_size_label()}",
-            f"CLI-Culler CLIP model: {self._ai_clip_model_variant_label()}",
-            f"TOPIQ model installed: {self._aiculler_topiq_model_available()}",
-            f"InsightFace models installed: {self._aiculler_face_model_available()}",
-        ]
-        runtime_status = self._managed_ai_runtime_status()
-        runtime_lines.append(f"Runtime cache: {runtime_status.directories.root}")
-        if runtime_status.installed_variants:
-            runtime_lines.append(
-                "Runtime profiles: " + ", ".join(ai_runtime_variant_label(variant) for variant in runtime_status.installed_variants)
-            )
-        runtime_lines.append(
-            f"CLIP model dir: {self._managed_aiculler_clip_model_installation().install_dir}"
-        )
-        runtime_lines.append(
-            f"TOPIQ model dir: {self._managed_aiculler_topiq_model_installation().install_dir}"
-        )
-        runtime_lines.append(
-            f"InsightFace model dir: {self._managed_aiculler_face_model_installation().install_dir}"
-        )
-        runtime_lines.append(f"Managed semantic model dir: {self._managed_semantic_model_installation().install_dir}")
-        if ai_paths is not None:
-            runtime_lines.append(f"Hidden cache: {ai_paths.hidden_root}")
-        runtime_lines.append("Tag legend:")
-        for tag_name, description in ai_review_tag_definitions():
-            runtime_lines.append(f"{tag_name}: {description}")
-        tooltip_text = "\n".join(runtime_lines)
-        self.ai_status_label.setToolTip(tooltip_text)
-        self.ai_status_widget.setToolTip(tooltip_text)
-        step_start = log_step("ai_toolbar_state.tooltip", step_start, tooltip_lines=len(runtime_lines))
-        active_ai_status = any(
-            task is not None
-            for task in (
-                self._active_ai_task,
-                self._active_ai_runtime_task,
-                self._active_ai_model_task,
-                self._active_ai_training_task,
-            )
-        )
-        self._sync_ai_status_visibility(active=active_ai_status, message=self._ai_stage_message)
-        self._refresh_ai_progress_bar()
-        self._schedule_workspace_toolbar_overflow_update("ai")
-        step_start = log_step("ai_toolbar_state.progress_overflow", step_start, active_ai_status=active_ai_status)
-        self._update_action_states()
-        step_start = log_step("ai_toolbar_state.action_states", step_start)
-        if logger.enabled:
-            logger.duration(
-                "ai_toolbar_state.total",
-                (time.perf_counter() - start) * 1000.0,
-                mode=self._ui_mode,
-                records=len(self._all_records),
-                ai_loaded=ai_loaded,
-                saved_exists=saved_exists,
-            )
-
-    def _manual_ai_protected_paths(self) -> tuple[str, ...]:
-        protected: list[str] = []
-        seen: set[str] = set()
-        for record in self._all_records:
-            if record.is_folder:
-                continue
-            annotation = self._annotations.get(record.path)
-            if annotation is None or not annotation.winner:
-                continue
-            for path in record.stack_paths:
-                key = os.path.normcase(os.path.abspath(path))
-                if key in seen:
-                    continue
-                seen.add(key)
-                protected.append(path)
-        return tuple(protected)
-
-    def _run_ai_pipeline(self) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before running AI review")
-            if logger.enabled:
-                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, reason="no_folder")
-            return
-        if not self._all_records:
-            self.statusBar().showMessage("No images are loaded for the current folder yet.")
-            if logger.enabled:
-                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="no_records")
-            return
-        if self._active_ai_task is not None:
-            self.statusBar().showMessage("AI review is already running for the current folder")
-            self._show_ai_review_progress_dialog(folder=self._current_folder)
-            if logger.enabled:
-                logger.duration("ai.run_prepare.blocked", (time.perf_counter() - start) * 1000.0, folder=self._current_folder, reason="already_running")
-            return
-
-        try:
-            self._refresh_ai_runtime_preferences()
-            runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
-            runtime.validate()
-            if not self._confirm_cpu_clip_run(runtime):
-                if logger.enabled:
-                    logger.duration(
-                        "ai.run_prepare.blocked",
-                        (time.perf_counter() - start) * 1000.0,
-                        folder=self._current_folder,
-                        reason="cpu_warning_cancelled",
-                    )
-                return
-            paths = build_aiculler_workflow_paths(self._current_folder)
-            task = AICullerRunTask(
-                folder=Path(self._current_folder),
-                runtime=runtime,
-                paths=paths,
-                records=tuple(record for record in self._all_records if not record.is_folder),
-                run_phash_prefilter=self._phash_prefilter_settings.enabled,
-                phash_prefilter_settings=self._phash_prefilter_settings,
-                protected_paths=self._manual_ai_protected_paths(),
-            )
-        except Exception as exc:
-            if logger.enabled:
-                logger.duration(
-                    "ai.run_prepare.failed",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=self._current_folder,
-                    records=len(self._all_records),
-                    error=str(exc),
-                )
-            QMessageBox.warning(self, "AI Review", f"Could not prepare the AI run.\n\n{exc}")
-            return
-
-        task.signals.started.connect(self._handle_ai_run_started, Qt.ConnectionType.QueuedConnection)
-        task.signals.stage.connect(self._handle_ai_run_stage, Qt.ConnectionType.QueuedConnection)
-        task.signals.progress.connect(self._handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.detail.connect(self._handle_ai_run_detail, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_ai_run_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_ai_run_failed, Qt.ConnectionType.QueuedConnection)
-        task.signals.cancelled.connect(self._handle_ai_run_cancelled, Qt.ConnectionType.QueuedConnection)
-        self._active_ai_task = task
-        self._defer_background_review_work_for_ai(reason="run_ai_review")
-        self._active_ai_run_start_perf = start if logger.enabled else 0.0
-        self._active_ai_embedding_cache_key = ""
-        self._active_ai_cluster_cache_key = ""
-        self._active_ai_report_cache_key = ""
-        self._active_ai_semantic_cache_key = ""
-        self._ai_stage_index = 0
-        self._ai_stage_total = 5
-        self._ai_stage_message = "Queued AI review"
-        self._ai_progress_current = 0
-        self._ai_progress_total = 0
-        self._ai_progress_eta_text = ""
-        self._show_ai_review_progress_dialog(folder=self._current_folder, reset=True)
-        if self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.set_stage(
-                stage_index=self._ai_stage_index,
-                stage_total=self._ai_stage_total,
-                message=self._ai_stage_message,
-            )
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage(f"Queued AI review for {self._current_folder}")
-        self._ai_run_pool.start(task)
-        if logger.enabled:
-            logger.duration(
-                "ai.run_queued",
-                (time.perf_counter() - start) * 1000.0,
-                folder=self._current_folder,
-                records=len(self._all_records),
-                backend="cli-culler",
-            )
-
-    def _rerank_ai_pipeline(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Choose a folder before reranking.")
-            return
-        if self._active_ai_task is not None:
-            self.statusBar().showMessage("AI review is already running for the current folder")
-            self._show_ai_review_progress_dialog(folder=self._current_folder)
-            return
-        try:
-            paths = build_aiculler_workflow_paths(self._current_folder)
-        except Exception as exc:
-            QMessageBox.warning(self, "Quick Rerank", f"Could not resolve AI paths.\n\n{exc}")
-            return
-        readiness = aiculler_rerank_readiness(aiculler_db_path(paths))
-        if not readiness.get("can_rerank"):
-            QMessageBox.information(
-                self,
-                "Quick Rerank",
-                "Run Cull & Score at least once for this folder before using Quick Rerank.\n\n"
-                "Quick Rerank reuses the existing ingest, categories, and clusters.",
-            )
-            return
-        try:
-            runtime = self._configured_aiculler_runtime(workers=self._configured_ai_embed_batch_size())
-            runtime.validate()
-            task = AICullerRunTask(
-                folder=Path(self._current_folder),
-                runtime=runtime,
-                paths=paths,
-                records=tuple(record for record in self._all_records if not record.is_folder),
-                stages=("rank",),
-                phash_prefilter_settings=self._phash_prefilter_settings,
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Quick Rerank", f"Could not prepare the rerank.\n\n{exc}")
-            return
-        task.signals.started.connect(self._handle_ai_run_started, Qt.ConnectionType.QueuedConnection)
-        task.signals.stage.connect(self._handle_ai_run_stage, Qt.ConnectionType.QueuedConnection)
-        task.signals.progress.connect(self._handle_ai_run_progress, Qt.ConnectionType.QueuedConnection)
-        task.signals.detail.connect(self._handle_ai_run_detail, Qt.ConnectionType.QueuedConnection)
-        task.signals.finished.connect(self._handle_ai_run_finished, Qt.ConnectionType.QueuedConnection)
-        task.signals.failed.connect(self._handle_ai_run_failed, Qt.ConnectionType.QueuedConnection)
-        task.signals.cancelled.connect(self._handle_ai_run_cancelled, Qt.ConnectionType.QueuedConnection)
-        self._active_ai_task = task
-        self._defer_background_review_work_for_ai(reason="rerank_ai_review")
-        self._active_ai_run_start_perf = 0.0
-        self._active_ai_embedding_cache_key = ""
-        self._active_ai_cluster_cache_key = ""
-        self._active_ai_report_cache_key = ""
-        self._active_ai_semantic_cache_key = ""
-        self._ai_stage_index = 0
-        self._ai_stage_total = 2
-        self._ai_stage_message = "Queued quick rerank"
-        self._ai_progress_current = 0
-        self._ai_progress_total = 0
-        self._ai_progress_eta_text = ""
-        self._show_ai_review_progress_dialog(folder=self._current_folder, reset=True)
-        if self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.set_stage(
-                stage_index=self._ai_stage_index,
-                stage_total=self._ai_stage_total,
-                message=self._ai_stage_message,
-            )
-        self._update_ai_toolbar_state()
-        ready_count = int(readiness.get("ready_image_count") or 0)
-        file_records = sum(1 for record in self._all_records if not record.is_folder)
-        if ready_count and file_records and ready_count != file_records:
-            self.statusBar().showMessage(
-                f"Quick rerank: scoring {ready_count} indexed image(s). "
-                f"Folder has {file_records} — run AI Culler to pick up new files."
-            )
-        else:
-            self.statusBar().showMessage(f"Queued quick rerank for {self._current_folder}")
-        self._ai_run_pool.start(task)
-
-    def _ai_cull_record_groups(self, records: list[ImageRecord] | tuple[ImageRecord, ...] | None = None) -> dict[AICullBucket, list[ImageRecord]]:
-        grouped: dict[AICullBucket, list[ImageRecord]] = {bucket: [] for bucket in AICullBucket}
-        for record in records or self._all_records:
-            ai_result = self._ai_result_for_record(record)
-            grouped[ai_cull_bucket_for_result(ai_result)].append(record)
-        for bucket, bucket_records in grouped.items():
-            bucket_records.sort(
-                key=lambda record: (
-                    ai_manual_cull_sort_key(self._ai_result_for_record(record)),
-                    record.name.casefold(),
-                )
-            )
-            grouped[bucket] = bucket_records
-        return grouped
-
-    def _open_ai_cull_follow_up_review(self, source_paths: tuple[str, ...]) -> None:
-        existing_paths = tuple(path for path in source_paths if self._record_index_for_path(path) is not None)
-        if not existing_paths:
-            self.statusBar().showMessage("No Winner or Needs Review images remain for follow-up review.")
-            return
-        self._set_ui_mode("manual")
-        current_path = self._current_visible_record_path()
-        target_path = next(
-            (path for path in existing_paths if normalized_path_key(path) == normalized_path_key(current_path)),
-            existing_paths[0],
-        )
-        index = self._record_index_for_path(target_path)
-        if index is not None:
-            self.grid.set_current_index(index)
-        self.statusBar().showMessage(f"{len(existing_paths)} Winner or Needs Review image(s) remain for manual review.")
-
-    def _apply_ai_culling(self) -> None:
-        if not self._current_folder:
-            self.statusBar().showMessage("Open a source folder before applying AI decisions.")
-            return
-        if self._ai_bundle is None:
-            self.statusBar().showMessage("Run Cull & Score or load AI results before applying AI decisions.")
-            return
-        if self._is_winners_folder() or self._is_recycle_folder():
-            self.statusBar().showMessage("Apply AI Decisions only from the source folder, not from _winners or the recycle bin.")
-            return
-        if self._active_ai_task is not None:
-            self.statusBar().showMessage("Wait for the current AI review run to finish first.")
-            return
-
-        groups = self._ai_cull_record_groups(tuple(self._all_records))
-        ai_pick_records = groups[AICullBucket.AI_PICK]
-        reject_records = groups[AICullBucket.REJECT]
-        keeper_records = groups[AICullBucket.KEEPER]
-        review_records = groups[AICullBucket.NEEDS_REVIEW]
-
-        if not ai_pick_records and not reject_records and not keeper_records and not review_records:
-            self.statusBar().showMessage("No AI-ranked images are available to cull in this folder.")
-            return
-
-        dialog = ApplyAIDecisionsDialog(
-            ai_pick_records=ai_pick_records,
-            reject_records=reject_records,
-            keeper_count=len(keeper_records),
-            review_count=len(review_records),
-            thumbnail_manager=self.thumbnail_manager,
-            parent=self,
-        )
-        if self._exec_dialog_with_geometry(dialog, "apply_ai_decisions") != dialog.DialogCode.Accepted:
-            return
-
-        winners_dir = os.path.join(self._current_folder, "_winners")
-        ai_pick_paths = [record.path for record in ai_pick_records]
-        reject_paths = [record.path for record in reject_records]
-        follow_up_paths = tuple(record.path for record in (*keeper_records, *review_records))
-
-        batch_id = uuid.uuid4().hex
-        moved_winners = 0
-        moved_rejects = 0
-        removed_reject_paths: list[str] = []
-        if ai_pick_paths:
-            # Routed through the same progress-dialog-and-cancel transfer the
-            # ordinary drag-drop/manual batch move uses (RecordOpsController.
-            # move_records_by_paths -> transfer_progress.run_file_transfer),
-            # rather than looping _move_record_to_path per file: hundreds of
-            # AI Picks used to move with no feedback and no way to cancel.
-            # The shared batch_id keeps this half of the action in the same
-            # Undo as the Reject -> Recycle half below. A user who cancels
-            # partway through only has the already-moved subset removed from
-            # the view/undo stack; the rest stays untouched in the source
-            # folder (see move_records_by_paths, which only acts on
-            # result.moved).
-            moved_winners = self._move_records_by_paths(ai_pick_paths, winners_dir, batch_id=batch_id)
-        if reject_paths:
-            # Recycling is fast/local enough (same as everywhere else in the
-            # app that recycles) that a progress dialog would just be noise,
-            # so this half intentionally stays a plain per-file loop.
-            for path in reject_paths:
-                if self._move_record_to_ai_recycle_by_path(path, defer_removal=True, batch_id=batch_id):
-                    moved_rejects += 1
-                    removed_reject_paths.append(path)
-        if removed_reject_paths:
-            self._remove_records_by_paths(removed_reject_paths)
-
-        self.statusBar().showMessage(
-            f"Applied AI decisions: moved {moved_winners} AI Pick image(s) to _winners and {moved_rejects} Reject image(s) to the recycle bin."
-        )
-
-        reviewable_paths = tuple(path for path in follow_up_paths if self._record_index_for_path(path) is not None)
-        if not reviewable_paths:
-            return
-
-        follow_up = QMessageBox.question(
-            self,
-            "Review Winners And Needs Review?",
-            (
-                f"{len(reviewable_paths)} image(s) remain in Winner or Needs Review.\n\n"
-                "Jump to the first remaining image in Manual Review?"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if follow_up == QMessageBox.StandardButton.Yes:
-            self._open_ai_cull_follow_up_review(reviewable_paths)
 
     def _sort_images_into_semantic_folders(self) -> None:
         if not self._current_folder:
@@ -17267,7 +8186,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes,
                 )
                 if rerun == QMessageBox.StandardButton.Yes:
-                    self._run_ai_pipeline()
+                    self._ai_run.run_ai_pipeline()
                 return
             self.statusBar().showMessage("Run Cull & Score before sorting into semantic folders.")
             return
@@ -17312,671 +8231,14 @@ class MainWindow(QMainWindow):
             destination_dir = str(destination_root / folder_name)
             os.makedirs(destination_dir, exist_ok=True)
             for record in records:
-                if self._move_record_to_path(record.path, destination_dir):
+                if self._record_ops.move_record_to_path(record.path, destination_dir):
                     moved += 1
         if moved:
             self._remember_recent_destination(str(destination_root))
-            self._refresh_recycle_button()
+            self._recycle_bin.refresh_recycle_button()
             self.statusBar().showMessage(f"Moved {moved} image bundle(s) into semantic folders")
             return
         self.statusBar().showMessage("No images were moved into semantic folders.")
-
-    def _ensure_ai_review_progress_dialog(self) -> AIReviewProgressDialog:
-        dialog = self._ai_review_progress_dialog
-        if dialog is None:
-            dialog = AIReviewProgressDialog(
-                detailed=self._ai_review_detail_progress_enabled,
-                parent=self,
-            )
-            dialog.stop_requested.connect(self._request_stop_ai_review)
-            self._ai_review_progress_dialog = dialog
-        return dialog
-
-    def _show_ai_review_progress_dialog(self, *, folder: str, reset: bool = False) -> None:
-        dialog = self._ensure_ai_review_progress_dialog()
-        if reset:
-            dialog.start_run(folder=folder, stage_total=self._ai_stage_total)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    def _close_ai_review_progress_dialog(self) -> None:
-        dialog = self._ai_review_progress_dialog
-        if dialog is None:
-            return
-        dialog.finish_and_close("AI Review complete")
-        dialog.deleteLater()
-        self._ai_review_progress_dialog = None
-
-    def _request_stop_ai_review(self) -> None:
-        task = self._active_ai_task
-        if task is None:
-            if self._ai_review_progress_dialog is not None:
-                self._ai_review_progress_dialog.mark_finished("AI Review is not running")
-            return
-        perf_logger().log("ai.run_cancel_requested", folder=self._current_folder)
-        task.cancel()
-        self._ai_stage_message = "Stopping AI review"
-        self._ai_progress_eta_text = ""
-        self._update_ai_toolbar_state()
-        self.statusBar().showMessage("Stopping AI review...")
-
-    def _ai_run_signal_matches_active_task(self, folder: str) -> bool:
-        task = self._active_ai_task
-        if task is None or not folder:
-            return False
-        task_folder = str(getattr(task, "folder", "") or "")
-        if not task_folder:
-            return False
-        if os.path.normpath(task_folder).casefold() == os.path.normpath(folder).casefold():
-            return True
-        return normalized_path_key(task_folder) == normalized_path_key(folder)
-
-    def _ai_run_signal_matches_current_folder(self, folder: str) -> bool:
-        if not self._current_folder or not folder:
-            return False
-        if os.path.normpath(self._current_folder).casefold() == os.path.normpath(folder).casefold():
-            return True
-        return normalized_path_key(self._current_folder) == normalized_path_key(folder)
-
-    def _handle_ai_run_started(self, folder: str) -> None:
-        perf_logger().log("ai.run_started", folder=folder)
-        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
-            perf_logger().log("ai.run_signal_ignored", signal="started", folder=folder)
-            return
-        self._last_ai_perf_progress_signature = None
-        self._show_ai_review_progress_dialog(folder=folder)
-        if self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.set_stage(
-                stage_index=0,
-                stage_total=max(1, self._ai_stage_total),
-                message="Preparing AI review",
-            )
-        self._ai_stage_index = 0
-        self._ai_stage_total = max(1, self._ai_stage_total)
-        self._ai_stage_message = "Preparing AI review"
-        self._ai_progress_current = 0
-        self._ai_progress_total = 0
-        self._ai_progress_eta_text = ""
-        self.statusBar().showMessage(f"AI review started for {folder}")
-        self._update_ai_toolbar_state()
-
-    def _handle_ai_run_stage(self, folder: str, stage_index: int, stage_total: int, message: str) -> None:
-        perf_logger().log("ai.stage", folder=folder, stage_index=stage_index, stage_total=stage_total, message=message)
-        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
-            perf_logger().log("ai.run_signal_ignored", signal="stage", folder=folder, message=message)
-            return
-        if self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.set_stage(
-                stage_index=max(0, stage_index),
-                stage_total=max(1, stage_total),
-                message=message,
-            )
-        self._ai_stage_index = max(0, stage_index)
-        self._ai_stage_total = max(1, stage_total)
-        self._ai_stage_message = message
-        self._ai_progress_current = 0
-        self._ai_progress_total = 0
-        self._ai_progress_eta_text = ""
-        self.ai_status_label.setText(self._build_ai_progress_text())
-        self._refresh_ai_progress_bar()
-        self.statusBar().showMessage(message)
-
-    def _handle_ai_run_progress(
-        self,
-        folder: str,
-        message: str,
-        current: int,
-        total: int,
-        eta_text: str,
-    ) -> None:
-        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
-            perf_logger().log("ai.run_signal_ignored", signal="progress", folder=folder, message=message)
-            return
-        if self._should_log_ai_progress_perf(message=message, current=current, total=total):
-            perf_logger().log("ai.progress", folder=folder, message=message, current=current, total=total, eta=eta_text)
-        if self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.set_progress(
-                message=message,
-                current=max(0, current),
-                total=max(0, total),
-                eta_text=eta_text.strip(),
-            )
-        self._ai_stage_message = message
-        self._ai_progress_current = max(0, current)
-        self._ai_progress_total = max(0, total)
-        self._ai_progress_eta_text = eta_text.strip()
-        self.ai_status_label.setText(self._build_ai_progress_text())
-        self._refresh_ai_progress_bar()
-
-    def _should_log_ai_progress_perf(self, *, message: str, current: int, total: int) -> bool:
-        logger = perf_logger()
-        if not logger.enabled:
-            return False
-        normalized_message = " ".join((message or "").split())
-        current = max(0, int(current))
-        total = max(0, int(total))
-        previous = getattr(self, "_last_ai_perf_progress_signature", None)
-        if previous is None:
-            self._last_ai_perf_progress_signature = (normalized_message, current, total)
-            return True
-        previous_message, previous_current, previous_total = previous
-        if normalized_message != previous_message or total != previous_total:
-            self._last_ai_perf_progress_signature = (normalized_message, current, total)
-            return True
-        if total <= 0:
-            return False
-        step = max(1, total // 20)
-        if current >= total or current - int(previous_current) >= step:
-            self._last_ai_perf_progress_signature = (normalized_message, current, total)
-            return True
-        return False
-
-    def _handle_ai_run_detail(self, folder: str, message: str) -> None:
-        if not self._ai_run_signal_matches_active_task(folder) or not self._ai_run_signal_matches_current_folder(folder):
-            perf_logger().log("ai.run_signal_ignored", signal="detail", folder=folder, message=message)
-            return
-        if self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.append_detail(message)
-
-    @staticmethod
-    def _ai_review_bucket_counts(bundle: AIBundle | None) -> Counter[AICullBucket]:
-        counts: Counter[AICullBucket] = Counter()
-        if bundle is None:
-            return counts
-        for result in iter_ai_bundle_results(bundle):
-            counts[ai_cull_bucket_for_result(result)] += 1
-        return counts
-
-    def _remember_ai_review_summary(
-        self,
-        *,
-        folder: str,
-        report_dir: str,
-        html_report_path: str,
-        same_folder: bool,
-        bundle: AIBundle | None = None,
-    ) -> dict[str, object]:
-        payload = {
-            "folder": folder,
-            "report_dir": report_dir,
-            "html_report_path": html_report_path,
-            "same_folder": same_folder,
-            "bundle": bundle,
-        }
-        self._last_ai_review_summary = dict(payload)
-        return payload
-
-    def _last_ai_review_summary_for_current_state(self) -> dict[str, object] | None:
-        cached = getattr(self, "_last_ai_review_summary", None)
-        if cached:
-            return dict(cached)
-        bundle = self._ai_bundle
-        if bundle is None:
-            return None
-
-        report_dir = str(Path(bundle.export_csv_path).parent) if bundle.export_csv_path else bundle.source_path
-        html_report_path = bundle.report_html_path
-        source_path = bundle.source_path or report_dir or bundle.export_csv_path or html_report_path
-        if source_path:
-            try:
-                source_details = inspect_ai_bundle_source(source_path)
-            except (FileNotFoundError, ValueError, OSError):
-                source_details = None
-            if source_details is not None:
-                report_dir = source_details.source_path
-                if source_details.report_html_path:
-                    html_report_path = source_details.report_html_path
-
-        resolved_report_dir = Path(report_dir).expanduser() if report_dir else Path()
-        derived_folder = ""
-        if self._current_folder:
-            derived_folder = self._current_folder
-        elif report_dir:
-            if resolved_report_dir.name.casefold() == "ranker_report":
-                derived_folder = str(resolved_report_dir.parent.parent)
-            elif resolved_report_dir.parent.name.casefold() == ".image_triage_ai":
-                derived_folder = str(resolved_report_dir.parent.parent)
-            else:
-                derived_folder = str(resolved_report_dir.parent)
-        if not derived_folder:
-            return None
-
-        same_folder = bool(
-            self._current_folder
-            and normalized_path_key(derived_folder) == normalized_path_key(self._current_folder)
-        )
-        return {
-            "folder": derived_folder,
-            "report_dir": report_dir,
-            "html_report_path": html_report_path,
-            "same_folder": same_folder,
-            "bundle": bundle,
-        }
-
-    def _show_last_ai_review_summary(self) -> None:
-        payload = self._last_ai_review_summary_for_current_state()
-        if payload is None:
-            self.statusBar().showMessage("Run or load AI review results before reopening the summary.")
-            return
-        self._show_ai_review_complete_dialog(**payload)
-
-    def _show_ai_review_complete_dialog(
-        self,
-        *,
-        folder: str,
-        report_dir: str,
-        html_report_path: str,
-        same_folder: bool,
-        bundle: AIBundle | None = None,
-    ) -> None:
-        if self._active_ai_task is None:
-            self._close_ai_review_progress_dialog()
-        # IMPORTANT: never call load_ai_bundle() here. This dialog runs on the
-        # UI thread, and load_ai_bundle reads the bundle CSV synchronously —
-        # on a UNC/NAS path that freezes the whole app. If the caller didn't
-        # supply a pre-loaded bundle, show the dialog with empty bucket counts;
-        # the async post-AI loader will populate the AI tab separately.
-        resolved_bundle = bundle
-        self._remember_ai_review_summary(
-            folder=folder,
-            report_dir=report_dir,
-            html_report_path=html_report_path,
-            same_folder=same_folder,
-            bundle=resolved_bundle,
-        )
-        self._update_ai_toolbar_state()
-        paths = build_ai_workflow_paths(folder)
-        dialog = AIReviewCompleteDialog(
-            folder=folder,
-            hidden_root=str(paths.hidden_root),
-            artifacts_dir=str(paths.artifacts_dir),
-            report_dir=report_dir,
-            export_csv_path=str(paths.ranked_export_path),
-            report_html_path=html_report_path or str(paths.html_report_path),
-            bucket_counts=self._ai_review_bucket_counts(resolved_bundle),
-            same_folder=same_folder,
-            parent=self,
-        )
-        self._exec_dialog_with_geometry(dialog, "ai_review_complete")
-
-    def _handle_ai_run_finished(self, folder: str, report_dir: str, html_report_path: str) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        step_start = start
-
-        def log_step(event: str, step_started: float, **fields: object) -> float:
-            if not logger.enabled:
-                return step_started
-            now = time.perf_counter()
-            logger.duration(
-                event,
-                (now - step_started) * 1000.0,
-                folder=folder,
-                report_dir=report_dir,
-                same_folder=normalized_path_key(folder) == normalized_path_key(self._current_folder),
-                **fields,
-            )
-            return now
-
-        if not self._ai_run_signal_matches_active_task(folder):
-            perf_logger().log("ai.run_signal_ignored", signal="finished", folder=folder, report_dir=report_dir)
-            return
-        if logger.enabled and self._active_ai_run_start_perf:
-            logger.duration(
-                "ai.run_ui_total",
-                (time.perf_counter() - self._active_ai_run_start_perf) * 1000.0,
-                folder=folder,
-                report_dir=report_dir,
-                phase="worker_finished_signal",
-            )
-        self._active_ai_task = None
-        self._invalidate_ai_folder_probe_cache()
-        embedding_cache_key = self._active_ai_embedding_cache_key
-        cluster_cache_key = self._active_ai_cluster_cache_key
-        report_cache_key = self._active_ai_report_cache_key
-        semantic_cache_key = self._active_ai_semantic_cache_key
-        if embedding_cache_key and cluster_cache_key and report_cache_key:
-            paths = build_ai_workflow_paths(folder)
-            self._catalog_repository.save_ai_workflow_cache(
-                folder,
-                embedding_cache_key=embedding_cache_key,
-                cluster_cache_key=cluster_cache_key,
-                report_cache_key=report_cache_key,
-                artifacts_dir=str(paths.artifacts_dir),
-                report_dir=str(paths.report_dir),
-                semantic_cache_key=semantic_cache_key,
-            )
-            step_start = log_step(
-                "ai.run_finished.catalog_save",
-                step_start,
-                embedding_key=embedding_cache_key,
-                cluster_key=cluster_cache_key,
-                report_key=report_cache_key,
-                semantic_key=semantic_cache_key,
-            )
-        else:
-            step_start = log_step("ai.run_finished.catalog_save", step_start, skipped=True)
-        self._active_ai_embedding_cache_key = ""
-        self._active_ai_cluster_cache_key = ""
-        self._active_ai_report_cache_key = ""
-        self._active_ai_semantic_cache_key = ""
-        self._ai_stage_index = self._ai_stage_total
-        self._ai_stage_message = "AI review complete"
-        if self._ai_progress_total <= 0:
-            self._ai_progress_total = 1
-        self._ai_progress_current = self._ai_progress_total
-        self._ai_progress_eta_text = ""
-        self._close_ai_review_progress_dialog()
-        same_folder = self._ai_run_signal_matches_current_folder(folder)
-
-        if not same_folder:
-            # Different visible folder: clean up the completed worker, but do
-            # not mutate the current progress dialog or load foreign results.
-            self._update_ai_toolbar_state()
-            step_start = log_step("ai.run_finished.toolbar_state", step_start)
-            if logger.enabled:
-                logger.duration(
-                    "ai.run_finished_handler",
-                    (time.perf_counter() - start) * 1000.0,
-                    folder=folder,
-                    report_dir=report_dir,
-                    same_folder=False,
-                    loaded_results=False,
-                )
-            self._resume_deferred_background_review_work_after_ai(reason="finished")
-            self._active_ai_run_start_perf = 0.0
-            return
-
-        # same_folder branch: kick the bundle load onto a worker so a slow
-        # UNC/NAS path can't freeze the UI. The continuation handler runs
-        # the tab switch + completion dialog once the bundle arrives.
-        self._refresh_winner_scores_for_current_folder()
-        self._refresh_face_records_for_current_folder()
-        self._refresh_image_categories_for_current_folder()
-        self.statusBar().showMessage(
-            f"AI review complete. Loading {Path(html_report_path).name}..."
-        )
-        if logger.enabled:
-            logger.duration(
-                "ai.run_finished_handler.async_load_kicked_off",
-                (time.perf_counter() - start) * 1000.0,
-                folder=folder,
-                report_dir=report_dir,
-                same_folder=True,
-            )
-        task = PostAIRunBundleLoadTask(
-            folder=folder,
-            report_dir=report_dir,
-            html_report_path=html_report_path,
-            catalog_db_path=self._catalog_repository.db_path,
-        )
-        task.signals.finished.connect(
-            self._handle_post_ai_run_bundle_loaded, Qt.ConnectionType.QueuedConnection
-        )
-        task.signals.failed.connect(
-            self._handle_post_ai_run_bundle_failed, Qt.ConnectionType.QueuedConnection
-        )
-        QThreadPool.globalInstance().start(task, -50)
-
-    def _handle_post_ai_run_bundle_loaded(
-        self,
-        folder: str,
-        report_dir: str,
-        html_report_path: str,
-        bundle_obj: object,
-        source_details_obj: object,
-    ) -> None:
-        logger = perf_logger()
-        start = time.perf_counter() if logger.enabled else 0.0
-        bundle = bundle_obj if isinstance(bundle_obj, AIBundle) else None
-        same_folder = self._ai_run_signal_matches_current_folder(folder)
-        if bundle is not None and same_folder:
-            self._aiculler_ingested_cache_folder_key = ""
-            self._aiculler_ingested_path_keys = set()
-            self._aiculler_ingested_sibling_keys = set()
-            self._ai_bundle = bundle
-            self._recompute_ai_demoted_burst_paths()
-            source_path = getattr(source_details_obj, "source_path", "") or report_dir
-            if source_path:
-                self._settings.setValue(self.AI_RESULTS_KEY, str(source_path))
-            self._refresh_ai_state()
-        if same_folder:
-            self.statusBar().showMessage(
-                f"AI review complete. Loaded {Path(html_report_path).name}"
-            )
-        else:
-            self._resume_deferred_background_review_work_after_ai(reason="finished")
-            self._active_ai_run_start_perf = 0.0
-            return
-        self._show_ai_review_complete_dialog(
-            folder=folder,
-            report_dir=report_dir,
-            html_report_path=html_report_path,
-            same_folder=same_folder,
-            bundle=bundle,
-        )
-        if logger.enabled:
-            logger.duration(
-                "ai.run_finished.async_continuation",
-                (time.perf_counter() - start) * 1000.0,
-                folder=folder,
-                report_dir=report_dir,
-                same_folder=same_folder,
-                loaded_results=bundle is not None,
-            )
-        self._resume_deferred_background_review_work_after_ai(reason="finished")
-        self._active_ai_run_start_perf = 0.0
-
-    def _handle_post_ai_run_bundle_failed(
-        self,
-        folder: str,
-        report_dir: str,
-        html_report_path: str,
-        error: str,
-    ) -> None:
-        same_folder = self._ai_run_signal_matches_current_folder(folder)
-        if not same_folder:
-            self._resume_deferred_background_review_work_after_ai(reason="finished_with_error")
-            self._active_ai_run_start_perf = 0.0
-            return
-        self.statusBar().showMessage(f"AI review complete, but loading results failed: {error}")
-        self._show_ai_review_complete_dialog(
-            folder=folder,
-            report_dir=report_dir,
-            html_report_path=html_report_path,
-            same_folder=same_folder,
-            bundle=None,
-        )
-        self._resume_deferred_background_review_work_after_ai(reason="finished_with_error")
-        self._active_ai_run_start_perf = 0.0
-
-    def _handle_ai_run_failed(self, folder: str, message: str) -> None:
-        logger = perf_logger()
-        if not self._ai_run_signal_matches_active_task(folder):
-            logger.log("ai.run_signal_ignored", signal="failed", folder=folder, message=message)
-            return
-        if logger.enabled and self._active_ai_run_start_perf:
-            logger.duration(
-                "ai.run_ui_total",
-                (time.perf_counter() - self._active_ai_run_start_perf) * 1000.0,
-                folder=folder,
-                phase="failed_signal",
-            )
-        logger.log("ai.run_failed", folder=folder, message=message)
-        self._active_ai_task = None
-        self._invalidate_ai_folder_probe_cache()
-        self._active_ai_run_start_perf = 0.0
-        self._active_ai_embedding_cache_key = ""
-        self._active_ai_cluster_cache_key = ""
-        self._active_ai_report_cache_key = ""
-        self._active_ai_semantic_cache_key = ""
-        self._ai_stage_message = "AI review failed"
-        self._ai_progress_eta_text = ""
-        self._update_ai_toolbar_state()
-        same_folder = self._ai_run_signal_matches_current_folder(folder)
-        if same_folder and self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.mark_failed("AI Review failed")
-        if same_folder:
-            QMessageBox.warning(self, "AI Review Failed", message)
-            self.statusBar().showMessage("AI review failed")
-        self._resume_deferred_background_review_work_after_ai(reason="failed")
-
-    def _handle_ai_run_cancelled(self, folder: str, message: str) -> None:
-        logger = perf_logger()
-        if not self._ai_run_signal_matches_active_task(folder):
-            logger.log("ai.run_signal_ignored", signal="cancelled", folder=folder, message=message)
-            return
-        if logger.enabled and self._active_ai_run_start_perf:
-            logger.duration(
-                "ai.run_ui_total",
-                (time.perf_counter() - self._active_ai_run_start_perf) * 1000.0,
-                folder=folder,
-                phase="cancelled_signal",
-            )
-        logger.log("ai.run_cancelled", folder=folder, message=message)
-        self._active_ai_task = None
-        self._invalidate_ai_folder_probe_cache()
-        self._active_ai_run_start_perf = 0.0
-        self._active_ai_embedding_cache_key = ""
-        self._active_ai_cluster_cache_key = ""
-        self._active_ai_report_cache_key = ""
-        self._active_ai_semantic_cache_key = ""
-        self._ai_stage_message = "AI review stopped"
-        self._ai_progress_current = 0
-        self._ai_progress_total = 1
-        self._ai_progress_eta_text = ""
-        self._update_ai_toolbar_state()
-        same_folder = self._ai_run_signal_matches_current_folder(folder)
-        if same_folder and self._ai_review_progress_dialog is not None:
-            self._ai_review_progress_dialog.mark_finished(message or "AI Review stopped")
-        if same_folder:
-            self.statusBar().showMessage(message or "AI review stopped")
-        self._resume_deferred_background_review_work_after_ai(reason="cancelled")
-
-    def _set_ai_status_visible(self, visible: bool) -> None:
-        visible = bool(visible)
-        if self._ai_status_visible == visible:
-            return
-        self._ai_status_visible = visible
-        self.ai_status_widget.setVisible(visible)
-        self._schedule_workspace_toolbar_overflow_update("ai")
-
-    def _sync_ai_status_visibility(self, *, active: bool, message: str) -> None:
-        terminal_messages = {
-            "AI review complete",
-            "AI review failed",
-            "AI review stopped",
-            "Reused cached AI results",
-        }
-        if active:
-            self._ai_status_terminal_notice_key = ""
-            self._ai_status_hide_timer.stop()
-            self._set_ai_status_visible(True)
-            return
-        if message in terminal_messages:
-            if self._ai_status_terminal_notice_key != message:
-                self._ai_status_terminal_notice_key = message
-                self._set_ai_status_visible(True)
-                self._ai_status_hide_timer.start()
-            return
-        self._ai_status_terminal_notice_key = ""
-        if not self._ai_status_hide_timer.isActive():
-            self._set_ai_status_visible(False)
-
-    def _refresh_ai_progress_bar(self) -> None:
-        if self._active_ai_task is not None:
-            if self._ai_progress_total > 0:
-                total = max(1, self._ai_progress_total)
-                value = min(max(self._ai_progress_current, 0), total)
-                self.ai_progress_bar.setRange(0, total)
-                self.ai_progress_bar.setValue(value)
-                self.ai_progress_bar.setFormat(f"{value}/{total}")
-            else:
-                self.ai_progress_bar.setRange(0, 0)
-                self.ai_progress_bar.setFormat("")
-                self.ai_progress_bar.setValue(0)
-            self.ai_progress_bar.setToolTip(self._ai_stage_message)
-            return
-
-        if self._ai_stage_message == "AI review complete":
-            total = max(1, self._ai_progress_total)
-            self.ai_progress_bar.setRange(0, total)
-            self.ai_progress_bar.setValue(total)
-            self.ai_progress_bar.setFormat("Done")
-        elif self._ai_stage_message == "AI review stopped":
-            self.ai_progress_bar.setRange(0, 1)
-            self.ai_progress_bar.setValue(0)
-            self.ai_progress_bar.setFormat("Stopped")
-        elif self._ai_stage_message == "AI review failed":
-            self.ai_progress_bar.setRange(0, 1)
-            self.ai_progress_bar.setValue(0)
-            self.ai_progress_bar.setFormat("Failed")
-        else:
-            self.ai_progress_bar.setRange(0, 1)
-            self.ai_progress_bar.setValue(0)
-            self.ai_progress_bar.setFormat("Idle")
-        self.ai_progress_bar.setToolTip(self._ai_stage_message)
-
-    def _build_ai_progress_text(self) -> str:
-        if self._active_ai_task is None:
-            return self._ai_stage_message
-
-        parts = [self._ai_stage_message]
-        if self._ai_progress_total > 0:
-            parts.append(f"{self._ai_progress_current}/{self._ai_progress_total}")
-        if self._ai_progress_eta_text:
-            parts.append(f"{self._ai_progress_eta_text} left")
-        return " | ".join(parts)
-
-    def _update_ai_summary(self) -> None:
-        self.summary_ai.setText(self._summary_ai_text)
-        self.summary_ai.setToolTip(self._summary_ai_tooltip)
-
-    def _refresh_ai_summary_cache(self) -> None:
-        if self._ai_bundle is None:
-            self._summary_ai_text = "AI: Off"
-            self._summary_ai_tooltip = "No AI export is currently loaded."
-            return
-
-        total_records = len(self._all_records)
-        matched = self._ai_bundle.count_matches(self._all_records)
-        source_name = Path(self._ai_bundle.export_csv_path).stem
-        if total_records:
-            self._summary_ai_text = f"AI: {matched}/{total_records} matched"
-        else:
-            self._summary_ai_text = f"AI: {source_name}"
-
-        tooltip_lines = [
-            f"Source: {self._ai_bundle.source_path}",
-            f"Export: {self._ai_bundle.export_csv_path}",
-        ]
-        bucket_counts = {
-            AIConfidenceBucket.OBVIOUS_WINNER: 0,
-            AIConfidenceBucket.LIKELY_KEEPER: 0,
-            AIConfidenceBucket.NEEDS_REVIEW: 0,
-            AIConfidenceBucket.LIKELY_REJECT: 0,
-        }
-        if self._all_records:
-            for record in self._all_records:
-                result = self._ai_result_for_record(record)
-                if result is None:
-                    continue
-                bucket_counts[result.confidence_bucket] = bucket_counts.get(result.confidence_bucket, 0) + 1
-            tooltip_lines.append(
-                "Buckets: "
-                + ", ".join(
-                    [
-                        f"winners {bucket_counts[AIConfidenceBucket.OBVIOUS_WINNER]}",
-                        f"keepers {bucket_counts[AIConfidenceBucket.LIKELY_KEEPER]}",
-                        f"review {bucket_counts[AIConfidenceBucket.NEEDS_REVIEW]}",
-                        f"rejects {bucket_counts[AIConfidenceBucket.LIKELY_REJECT]}",
-                    ]
-                )
-            )
-        if self._ai_bundle.report_html_path:
-            tooltip_lines.append(f"Report: {self._ai_bundle.report_html_path}")
-        self._summary_ai_tooltip = "\n".join(tooltip_lines)
 
     def _recalculate_review_counts(self) -> None:
         accepted = 0
@@ -18006,22 +8268,6 @@ class MainWindow(QMainWindow):
         self._rejected_count = max(0, self._rejected_count + next_rejected - previous_rejected)
         self._unreviewed_count = max(0, len(self._all_records) - self._accepted_count - self._rejected_count)
 
-    def _update_filter_summary(self) -> None:
-        self._records_view.update_filter_summary()
-
-    def _ai_result_for_record(self, record: ImageRecord | None, *, preferred_path: str | None = None):
-        if record is None or self._ai_bundle is None:
-            return None
-        result = self._raw_ai_result_for_record(record, preferred_path=preferred_path)
-        return self._apply_user_label_override(result, record)
-
-    def _raw_ai_result_for_record(self, record: ImageRecord | None, *, preferred_path: str | None = None):
-        if record is None or self._ai_bundle is None:
-            return None
-        result = find_ai_result_for_record(self._ai_bundle, record, preferred_path=preferred_path)
-        refined = refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
-        return self._apply_burst_dedup_to_ai_result(refined, record)
-
     # Map adapter 1-5 labels to confidence buckets. Used by the
     # user-label override so a disputed/labeled card flips bucket immediately
     # without waiting for the next training pass.
@@ -18042,278 +8288,6 @@ class MainWindow(QMainWindow):
         "no": "LIKELY_REJECT",
         "0": "LIKELY_REJECT",
     }
-
-    @staticmethod
-    def _aiculler_bucket_for_user_label(label: str) -> str:
-        normalized = label.strip().lower()
-        if normalized in {"hero", "portfolio"}:
-            return "ai pick"
-        if normalized in {"strong", "keep", "good", "k", "yes", "1"}:
-            return "keeper"
-        if normalized == "maybe":
-            return "needs review"
-        if normalized in {"weak", "reject", "bad", "r", "no", "0"}:
-            return "reject"
-        return normalized
-
-    def _record_aiculler_override_telemetry(
-        self,
-        record: ImageRecord,
-        *,
-        user_label: str,
-        previous_label: str | None,
-        action_source: str,
-        ignored_for_training: bool = False,
-    ) -> None:
-        raw_result = self._raw_ai_result_for_record(record)
-        if raw_result is None:
-            return
-        user_bucket = self._aiculler_bucket_for_user_label(user_label)
-        if not user_bucket:
-            if not previous_label:
-                return
-            user_bucket = "unlabeled"
-            ignored_for_training = True
-        ai_bucket = ai_cull_bucket_for_result(raw_result).value
-        previous_bucket = self._aiculler_bucket_for_user_label(previous_label or "") or None
-        paths = self._aiculler_paths_for_current_folder()
-        adapter_version = ""
-        if paths is not None:
-            db_path = aiculler_db_path(paths)
-            try:
-                mtime_ns = db_path.stat().st_mtime_ns if db_path.exists() else 0
-                cache_key = str(db_path)
-                cached = self._aiculler_telemetry_adapter_version_cache.get(cache_key)
-                if cached is not None and cached[0] == mtime_ns:
-                    adapter_version = cached[1]
-                else:
-                    adapter_version = latest_adapter_model_version(db_path)
-                    self._aiculler_telemetry_adapter_version_cache[cache_key] = (mtime_ns, adapter_version)
-            except Exception:
-                _logger.exception("Failed to resolve adapter version for telemetry event")
-                adapter_version = ""
-        event = TelemetryEvent(
-            image_id=str(getattr(raw_result, "image_id", "") or record.path),
-            folder_id=str(self._current_folder or Path(record.path).parent),
-            cluster_id=str(getattr(raw_result, "group_id", "") or "") or None,
-            category_id=str(getattr(raw_result, "primary_category", "") or "") or None,
-            ai_initial_bucket=normalize_bucket(ai_bucket),
-            user_final_bucket=normalize_bucket(user_bucket),
-            previous_bucket=normalize_bucket(previous_bucket) if previous_bucket else None,
-            override_type=classify_override(ai_bucket, user_bucket),
-            action_source=action_source,
-            ai_initial_score=float(getattr(raw_result, "score", 0.0) or 0.0),
-            base_score=(
-                float(getattr(raw_result, "tag_base_score", 0.0) or 0.0)
-                if getattr(raw_result, "tag_base_score", None) is not None
-                else float(getattr(raw_result, "technical_score", 0.0) or 0.0)
-                if getattr(raw_result, "technical_score", None) is not None
-                else None
-            ),
-            adapter_score=None,
-            topiq_score=(
-                float(getattr(raw_result, "technical_score", 0.0) or 0.0)
-                if getattr(raw_result, "technical_score", None) is not None
-                else None
-            ),
-            adapter_version=adapter_version or None,
-            model_version=adapter_version or None,
-            is_final=1,
-            ignored_for_training=1 if ignored_for_training else 0,
-            created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
-        )
-        self._queue_aiculler_telemetry_event(event)
-
-    def _apply_user_label_override(self, result, record):
-        """If the user has saved a label for this path (via adapter combo or
-        dispute chord), use it as the authoritative bucket. The user's call
-        always wins over the model's call in the live view — disputes don't
-        need to wait until the next retrain to be visible. Training still
-        picks them up as weighted samples on the next Train Adapter run."""
-
-        if result is None or not getattr(self, "_user_label_bucket_overrides", None):
-            return result
-        bucket_name = self._user_label_bucket_overrides.get(_memory_path_key(record.path))
-        if bucket_name is None:
-            return result
-        from .ai_results import AIConfidenceBucket, _combine_confidence_summaries, _replace_confidence
-        bucket = getattr(AIConfidenceBucket, bucket_name, None)
-        if bucket is None:
-            return result
-        summary = _combine_confidence_summaries(
-            getattr(result, "confidence_summary", ""),
-            "Bucket set by your saved label (overrides the AI's call).",
-        )
-        return _replace_confidence(result, bucket, summary)
-
-    def _recompute_user_label_bucket_overrides(self) -> None:
-        """Rebuild the in-memory map from labeled path -> bucket AND the set
-        of disputed path keys. Called when the user labels / disputes a card,
-        and when entering a folder so existing labels surface in the AI Review
-        badges immediately."""
-
-        overrides: dict[str, str] = {}
-        disputed_keys: set[str] = set()
-        try:
-            paths = self._aiculler_paths_for_current_folder()
-        except Exception:
-            _logger.exception("Failed to resolve aiculler paths for user label bucket overrides")
-            paths = None
-        if paths is None:
-            self._user_label_bucket_overrides = overrides
-            self._disputed_path_keys = disputed_keys
-            return
-        try:
-            labels = self._load_aiculler_internal_labels(paths)
-        except Exception:
-            _logger.exception("Failed to load aiculler internal labels for bucket overrides")
-            labels = {}
-        for path, label in labels.items():
-            bucket_name = self._USER_LABEL_TO_BUCKET.get(str(label).strip().lower())
-            if bucket_name is not None:
-                overrides[_memory_path_key(path)] = bucket_name
-        try:
-            disputes = self._load_aiculler_internal_disputes(paths)
-        except Exception:
-            _logger.exception("Failed to load aiculler internal disputes for bucket overrides")
-            disputes = {}
-        for path in disputes:
-            disputed_keys.add(_memory_path_key(path))
-        self._user_label_bucket_overrides = overrides
-        self._disputed_path_keys = disputed_keys
-        # Force a grid repaint so any visible cards reflect the new bucket.
-        if hasattr(self, "grid") and self.grid is not None:
-            self.grid.viewport().update()
-        # If the user is currently filtering by AI Disagreements, the set of
-        # matched records just changed — re-apply the filter so the freshly
-        # disputed card appears (or stops appearing if it was undisputed).
-        if self._filter_query.quick_filter == FilterMode.AI_DISAGREEMENTS:
-            self._apply_filter_query_change()
-
-    def _apply_user_label_bucket_override_delta(self, path: str, label: str) -> None:
-        key = _memory_path_key(path)
-        bucket_name = self._USER_LABEL_TO_BUCKET.get(str(label).strip().lower())
-        if bucket_name is None:
-            self._user_label_bucket_overrides.pop(key, None)
-        else:
-            self._user_label_bucket_overrides[key] = bucket_name
-        if hasattr(self, "grid") and self.grid is not None:
-            self.grid.viewport().update()
-
-    def _is_record_disputed(self, record: ImageRecord | None) -> bool:
-        if record is None or not self._disputed_path_keys:
-            return False
-        return _memory_path_key(record.path) in self._disputed_path_keys
-
-    def _apply_burst_dedup_to_ai_result(self, result, record):
-        """Demote non-best frames in a visually similar burst to LIKELY_REJECT.
-
-        We deliberately removed cluster-context from bucket classification so
-        each image is judged on its own folder percentile — but that means
-        multiple frames from the same burst can all hit the Keeper threshold.
-        This post-pass uses the demote set computed by
-        _recompute_ai_demoted_burst_paths() to override the bucket to Reject
-        for everything except the best-scoring frame of each burst.
-        """
-
-        if result is None or not self._ai_demoted_burst_paths:
-            return result
-        if _memory_path_key(record.path) not in self._ai_demoted_burst_paths:
-            return result
-        from .ai_results import AIConfidenceBucket, _combine_confidence_summaries, _replace_confidence
-        summary = _combine_confidence_summaries(
-            getattr(result, "confidence_summary", ""),
-            "Demoted because a stronger frame in the same burst already passes as Winner.",
-        )
-        return _replace_confidence(result, AIConfidenceBucket.LIKELY_REJECT, summary)
-
-    def _recompute_ai_demoted_burst_paths(self) -> None:
-        """Rebuild the demote set from the current bundle + review intelligence.
-
-        For each review group with more than one member, pick the highest-
-        scoring member (by bundle score). Every OTHER member of the group goes
-        into the demote set and will be force-rejected by _ai_result_for_record.
-        Called whenever bundle or review_intelligence changes."""
-
-        demoted: set[str] = set()
-        bundle = self._ai_bundle
-        review = self._review_intelligence
-        if (
-            bundle is None
-            or bundle.results_by_path is None
-            or review is None
-            or not review.groups
-        ):
-            self._ai_demoted_burst_paths = demoted
-            return
-
-        def _score_for(path: str) -> float:
-            insight_path = bundle.results_by_path.get(path) or bundle.results_by_path.get(normalized_path_key(path))
-            if insight_path is None:
-                return -1.0
-            return float(getattr(insight_path, "score", 0.0) or 0.0)
-
-        for group in review.groups:
-            members = [str(p) for p in (group.member_paths or ()) if p]
-            if len(members) <= 1:
-                continue
-            best_path = max(members, key=_score_for)
-            for member in members:
-                if member == best_path:
-                    continue
-                demoted.add(_memory_path_key(member))
-        self._ai_demoted_burst_paths = demoted
-
-    def _ai_result_for_record_memory(self, record: ImageRecord | None, *, preferred_path: str | None = None):
-        if record is None or self._ai_bundle is None:
-            return None
-        fast_results = self._ai_bundle.results_by_fast_path
-        if not fast_results:
-            return self._ai_result_for_record(record, preferred_path=preferred_path)
-
-        seen_keys: set[str] = set()
-        candidate_paths: list[str] = []
-        if preferred_path:
-            candidate_paths.append(preferred_path)
-        candidate_paths.extend(record.stack_paths)
-        for path in candidate_paths:
-            if not path:
-                continue
-            key = _memory_path_key(str(path))
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            result = fast_results.get(key)
-            if result is not None:
-                return refine_ai_result_with_review_insight(result, self._review_insight_for_record(record))
-        return None
-
-    def _details_ai_text_for_record(self, record: ImageRecord) -> str:
-        if record is None or record.is_folder:
-            return "-"
-        ai_result = self._ai_result_for_record(record, preferred_path=record.path)
-        if ai_result is None:
-            return "-"
-        parts = [ai_result.confidence_bucket_short_label or ai_result.confidence_bucket_label]
-        category = str(getattr(ai_result, "primary_category", "") or "").strip()
-        if category and category != "uncategorized":
-            parts.append(self._category_display_label(category))
-        score = ai_result.display_score_text
-        if score:
-            parts.append(score)
-        face_count = len(self._face_records_for_record(record))
-        if face_count:
-            parts.append(f"{face_count} face{'s' if face_count != 1 else ''}")
-        if ai_result.group_size > 1:
-            parts.append(ai_result.rank_text)
-        return " | ".join(part for part in parts if part) or "-"
-
-    def _ai_result_for_index(self, index: int):
-        record = self._record_at(index)
-        if record is None:
-            return None
-        preferred_path = self.grid.displayed_variant_path(index) if record.has_variant_stack else record.path
-        return self._ai_result_for_record(record, preferred_path=preferred_path)
 
     def _review_insight_for_record(self, record: ImageRecord | None):
         if record is None or self._review_intelligence is None:
@@ -18390,62 +8364,6 @@ class MainWindow(QMainWindow):
         self._prefilter_decisions_by_path = decisions
         self.grid.set_prefilter_decisions(decisions)
 
-    def _refresh_aiculler_ingested_paths_for_current_folder(self) -> None:
-        folder_key = normalized_path_key(self._current_folder) if self._current_folder else ""
-        if not folder_key:
-            self._aiculler_ingested_path_keys = set()
-            self._aiculler_ingested_sibling_keys = set()
-            self._aiculler_ingested_cache_folder_key = ""
-            return
-        if self._aiculler_ingested_cache_folder_key == folder_key:
-            return
-        path_keys: set[str] = set()
-        sibling_keys: set[str] = set()
-        try:
-            paths = build_aiculler_workflow_paths(self._current_folder)
-            db_path = aiculler_db_path(paths)
-            if db_path.exists():
-                connection = sqlite3.connect(db_path)
-                try:
-                    rows = connection.execute(
-                        """
-                        SELECT images.source_path
-                        FROM images
-                        INNER JOIN embeddings ON embeddings.image_id = images.id
-                        WHERE images.status = 'ready'
-                        """
-                    ).fetchall()
-                finally:
-                    connection.close()
-                for (source_path,) in rows:
-                    key = normalized_path_key(str(source_path))
-                    if not key:
-                        continue
-                    path_keys.add(key)
-                    sibling_key = _path_parent_stem_key(str(source_path))
-                    if sibling_key:
-                        sibling_keys.add(sibling_key)
-        except Exception:
-            _logger.exception("Failed to refresh aiculler ingested paths for %s", self._current_folder)
-            path_keys = set()
-            sibling_keys = set()
-        self._aiculler_ingested_path_keys = path_keys
-        self._aiculler_ingested_sibling_keys = sibling_keys
-        self._aiculler_ingested_cache_folder_key = folder_key
-
-    def _record_was_aiculler_ingested(self, record: ImageRecord | None) -> bool:
-        if record is None:
-            return False
-        if self._aiculler_ingested_cache_folder_key != (normalized_path_key(self._current_folder) if self._current_folder else ""):
-            self._refresh_aiculler_ingested_paths_for_current_folder()
-        for path in record.stack_paths:
-            if normalized_path_key(path) in self._aiculler_ingested_path_keys:
-                return True
-            sibling_key = _path_parent_stem_key(path)
-            if sibling_key and sibling_key in self._aiculler_ingested_sibling_keys:
-                return True
-        return False
-
     def _workflow_summary_for_record(self, record: ImageRecord | None) -> str:
         insight = self._workflow_insight_for_record(record)
         if insight is None:
@@ -18480,7 +8398,7 @@ class MainWindow(QMainWindow):
             insights: dict[str, RecordWorkflowInsight] = {}
             for record in self._all_records:
                 annotation = self._annotations.get(record.path, SessionAnnotation())
-                ai_result = self._ai_result_for_record(record)
+                ai_result = self._ai_run.ai_result_for_record(record)
                 burst_recommendation = self._burst_recommendation_for_record(record)
                 workflow = build_record_workflow_insight(
                     annotation,
@@ -18508,7 +8426,7 @@ class MainWindow(QMainWindow):
                 self._workflow_insights_by_path.pop(_memory_path_key(path), None)
                 continue
             annotation = self._annotations.get(record.path, SessionAnnotation())
-            ai_result = self._ai_result_for_record(record)
+            ai_result = self._ai_run.ai_result_for_record(record)
             burst_recommendation = self._burst_recommendation_for_record(record)
             workflow = build_record_workflow_insight(
                 annotation,
@@ -18551,8 +8469,8 @@ class MainWindow(QMainWindow):
     def _build_pairwise_feedback_payload(self, preferred_path: str, other_path: str) -> dict[str, object]:
         preferred_record = self._record_for_path(preferred_path)
         other_record = self._record_for_path(other_path)
-        preferred_ai = self._ai_result_for_record(preferred_record) if preferred_record is not None else None
-        other_ai = self._ai_result_for_record(other_record) if other_record is not None else None
+        preferred_ai = self._ai_run.ai_result_for_record(preferred_record) if preferred_record is not None else None
+        other_ai = self._ai_run.ai_result_for_record(other_record) if other_record is not None else None
         preferred_review = self._review_insight_for_path(preferred_path)
         other_review = self._review_insight_for_path(other_path)
         return {
@@ -18605,7 +8523,6 @@ class MainWindow(QMainWindow):
         try:
             training_paths = prepare_hidden_ai_training_workspace(self._current_folder)
             self._append_jsonl_record(training_paths.pairwise_labels_path, label_payload)
-            self._invalidate_training_label_counts_cache()
         except OSError:
             return
 
@@ -18622,7 +8539,7 @@ class MainWindow(QMainWindow):
         )
         preferred_record = self._record_for_path(preferred_path)
         preferred_annotation = self._annotations.get(preferred_path, SessionAnnotation())
-        preferred_ai = self._ai_result_for_record(preferred_record) if preferred_record is not None else None
+        preferred_ai = self._ai_run.ai_result_for_record(preferred_record) if preferred_record is not None else None
         self._decision_store.record_correction_event(
             self._session_id,
             folder_path=self._current_folder,
@@ -18679,7 +8596,7 @@ class MainWindow(QMainWindow):
         *,
         source_mode: str,
     ) -> None:
-        ai_result = self._ai_result_for_record(record)
+        ai_result = self._ai_run.ai_result_for_record(record)
         burst_recommendation = self._burst_recommendation_for_record(record)
         previous_level = disagreement_level_for(previous_annotation, ai_result)
         new_level = disagreement_level_for(annotation, ai_result)
@@ -18776,7 +8693,7 @@ class MainWindow(QMainWindow):
             if review_insight is not None and review_insight.has_group:
                 review_rows_by_id.setdefault(review_insight.group_id, []).append(row_index)
             preferred_path = self.grid.displayed_variant_path(row_index) if record.has_variant_stack else record.path
-            ai_result = self._ai_result_for_record_memory(record, preferred_path=preferred_path)
+            ai_result = self._ai_run.ai_result_for_record_memory(record, preferred_path=preferred_path)
             if ai_result is not None and ai_result.group_size > 1:
                 ai_rows_by_id.setdefault(ai_result.group_id, []).append(row_index)
         self._visible_review_group_rows_by_id = review_rows_by_id
@@ -18839,7 +8756,7 @@ class MainWindow(QMainWindow):
                 if len(ordered) >= limit:
                     break
 
-        current_ai = self._ai_result_for_index(index)
+        current_ai = self._ai_run.ai_result_for_index(index)
         if current_ai is not None and current_ai.group_size > 1:
             for row_index in self._visible_ai_group_rows_by_id.get(current_ai.group_id, ()):
                 add(row_index)
@@ -18871,7 +8788,7 @@ class MainWindow(QMainWindow):
         if current_record is not None and index >= 0:
             display_path = self.grid.displayed_variant_path(index) or current_record.path
             annotation = self._annotations.get(current_record.path, SessionAnnotation())
-            ai_result = self._ai_result_for_record(current_record, preferred_path=display_path)
+            ai_result = self._ai_run.ai_result_for_record(current_record, preferred_path=display_path)
             review_insight = self._review_insight_for_record(current_record)
             workflow_insight = self._workflow_insight_for_record(current_record)
             thumbnail = self._inspector_thumbnail_for(current_record, index, display_path)
@@ -18898,7 +8815,7 @@ class MainWindow(QMainWindow):
 
         self.inspector_panel.set_context(
             folder=self._scope_display_label(),
-            mode_label="AI Review" if self._ui_mode == "ai" else "Manual Review",
+            mode_label="Manual Review",
             selected_count=self.grid.selected_count() if self._records else 0,
             current_record=current_record,
             display_path=display_path,
@@ -19020,168 +8937,15 @@ class MainWindow(QMainWindow):
         if processed == 0 and not self._inspection_stats_pending_keys:
             self._inspection_stats_drain_timer.stop()
 
-    def _is_unreviewed_record(self, record: ImageRecord) -> bool:
-        annotation = self._annotations.get(record.path, SessionAnnotation())
-        return not annotation.winner and not annotation.reject
-
-    def _find_next_ai_index(self, *, top_pick_only: bool = False, unreviewed_only: bool = False) -> int | None:
-        if not self._records:
-            return None
-
-        start_index = self.grid.current_index()
-        if start_index < 0:
-            start_index = -1
-
-        total = len(self._records)
-        for offset in range(1, total + 1):
-            index = (start_index + offset) % total
-            record = self._record_at(index)
-            ai_result = self._ai_result_for_index(index)
-            if record is None or ai_result is None:
-                continue
-            if top_pick_only and not ai_result.is_top_pick:
-                continue
-            if unreviewed_only and not self._is_unreviewed_record(record):
-                continue
-            return index
-        return None
-
-    def _jump_to_next_ai_top_pick(self, *, unreviewed_only: bool = False) -> None:
-        if self._ai_bundle is None:
-            self.statusBar().showMessage("Load AI results first to jump between AI picks")
-            return
-
-        index = self._find_next_ai_index(top_pick_only=True, unreviewed_only=unreviewed_only)
-        if index is None:
-            if unreviewed_only:
-                self.statusBar().showMessage("No unreviewed AI top picks are visible in the current view")
-            else:
-                self.statusBar().showMessage("No AI top picks are visible in the current view")
-            return
-
-        self.grid.set_current_index(index)
-        record = self._record_at(index)
-        if record is not None:
-            label = "unreviewed AI top pick" if unreviewed_only else "AI top pick"
-            self.statusBar().showMessage(f"Jumped to {label}: {record.name}")
-
-    def _visible_ai_group_rows(self, group_id: str) -> list[tuple[int, ImageRecord, object]]:
-        rows: list[tuple[int, ImageRecord, object]] = []
-        for index, record in enumerate(self._records):
-            ai_result = self._ai_result_for_index(index)
-            if ai_result is None or ai_result.group_size <= 1 or ai_result.group_id != group_id:
-                continue
-            rows.append((index, record, ai_result))
-        rows.sort(key=lambda item: (item[2].rank_in_group, -item[2].score, item[1].name.casefold()))
-        return rows
-
-    def _jump_to_ai_top_pick_in_group(self, index: int | None = None) -> None:
-        if self._ai_bundle is None:
-            self.statusBar().showMessage("Load AI results first to jump within AI groups")
-            return
-
-        if index is None:
-            index = self.grid.current_index()
-        current_ai = self._ai_result_for_index(index)
-        if current_ai is None or current_ai.group_size <= 1:
-            self.statusBar().showMessage("The current image does not belong to a multi-image AI group")
-            return
-
-        group_rows = self._visible_ai_group_rows(current_ai.group_id)
-        if not group_rows:
-            self.statusBar().showMessage("The current AI group is not visible in this view")
-            return
-
-        top_index = group_rows[0][0]
-        self.grid.set_current_index(top_index)
-        top_record = group_rows[0][1]
-        if len(group_rows) < current_ai.group_size:
-            self.statusBar().showMessage(
-                f"Jumped to AI top pick: {top_record.name} ({len(group_rows)}/{current_ai.group_size} group images visible)"
-            )
-        else:
-            self.statusBar().showMessage(f"Jumped to AI top pick: {top_record.name}")
-
-    def _open_current_ai_group_compare(self, index: int | None = None) -> None:
-        if self._ai_bundle is None:
-            self.statusBar().showMessage("Load AI results first to compare AI groups")
-            return
-
-        if index is None:
-            index = self.grid.current_index()
-        current_record = self._record_at(index)
-        current_ai = self._ai_result_for_index(index)
-        if current_record is None or current_ai is None or current_ai.group_size <= 1:
-            self.statusBar().showMessage("The current image does not belong to a multi-image AI group")
-            return
-
-        group_rows = self._visible_ai_group_rows(current_ai.group_id)
-        if len(group_rows) < 2:
-            visible_count = len(group_rows)
-            if visible_count == 1 and current_ai.group_size > 1:
-                self.statusBar().showMessage(
-                    f"Only 1/{current_ai.group_size} AI group images are visible. Switch View to All to compare the full group."
-                )
-            else:
-                self.statusBar().showMessage("Not enough AI group images are visible to open compare")
-            return
-
-        entries: list[PreviewEntry] = []
-        focused_slot = 0
-        for slot, (item_index, record, ai_result) in enumerate(group_rows):
-            annotation = self._annotations.get(record.path, SessionAnnotation())
-            displayed_path = self.grid.displayed_variant_path(item_index) if record.has_variant_stack else self._preview_source_path(record)
-            edited_candidates = self._ordered_edited_candidates(record, displayed_path)
-            edited_path = edited_candidates[0] if edited_candidates else ""
-            label = ai_result.rank_text if ai_result.group_size > 1 else ""
-            if record.path == current_record.path:
-                focused_slot = slot
-            entries.append(
-                PreviewEntry(
-                    record=record,
-                    source_path=displayed_path,
-                    winner=annotation.winner,
-                    reject=annotation.reject,
-                    rating=annotation.rating,
-                    edited_path=edited_path,
-                    edited_candidates=tuple(edited_candidates),
-                    label=f"AI {label}" if label else "AI",
-                    ai_result=ai_result,
-                    review_summary=self._review_summary_for_record(record),
-                    workflow_summary=self._workflow_summary_for_record(record),
-                    workflow_details=self._workflow_detail_lines_for_record(record),
-                    placeholder_image=self._preview_placeholder_for_index(item_index),
-                )
-            )
-
-        self._compare_enabled = True
-        if self.actions is not None:
-            with QSignalBlocker(self.actions.compare_mode):
-                self.actions.compare_mode.setChecked(True)
-            self._sync_topbar_action_buttons()
-        self.preview.set_compare_mode(True)
-        self._compare_count = len(entries)
-        self._manual_compare_count = len(entries)
-        self.preview.set_compare_count(len(entries))
-        self.preview.show_entries(entries)
-        self.preview._set_focused_slot(focused_slot)
-
-        if len(group_rows) < current_ai.group_size:
-            self.statusBar().showMessage(
-                f"Opened AI group compare ({len(group_rows)}/{current_ai.group_size} visible in current view)"
-            )
-        else:
-            self.statusBar().showMessage(f"Opened AI group compare: {current_ai.group_id}")
-
     def _update_status(self, index: int | None = None) -> None:
         if index is None:
             index = self.grid.current_index()
         self._update_inspector_context(index)
-        self._update_filter_summary()
+        self._records_view.update_filter_summary()
         scope_label = self._scope_display_label()
         self._update_selection_count_labels()
 
-        if self._records_view_chunk_active():
+        if self._records_view.records_view_chunk_active():
             total = len(self._records_view_chunk_records)
             loaded = min(len(self._records), total)
             selected_count = self.grid.selected_count() if loaded else 0
@@ -19190,7 +8954,7 @@ class MainWindow(QMainWindow):
             self.summary_accepted.setText(f"Winners: {self._accepted_count}")
             self.summary_rejected.setText(f"Rejected: {self._rejected_count}")
             self.summary_unreviewed.setText(f"Unreviewed: {self._unreviewed_count}")
-            self._update_ai_summary()
+            self._ai_run.update_ai_summary()
             self.statusBar().showMessage(f"Loading {loaded} / {total} images from {scope_label}...")
             return
 
@@ -19200,7 +8964,7 @@ class MainWindow(QMainWindow):
             self.summary_accepted.setText("Winners: 0")
             self.summary_rejected.setText("Rejected: 0")
             self.summary_unreviewed.setText("Unreviewed: ...")
-            self._update_ai_summary()
+            self._ai_run.update_ai_summary()
             self.statusBar().showMessage(f"Scanning {scope_label}...")
             return
 
@@ -19215,7 +8979,7 @@ class MainWindow(QMainWindow):
         self.summary_accepted.setText(f"Winners: {accepted}")
         self.summary_rejected.setText(f"Rejected: {rejected}")
         self.summary_unreviewed.setText(f"Unreviewed: {remaining}")
-        self._update_ai_summary()
+        self._ai_run.update_ai_summary()
 
         # The breadcrumb names the folder, so the status line only counts.
         gap = " "
@@ -19233,7 +8997,7 @@ class MainWindow(QMainWindow):
         message = tally
         record = self._record_at(index)
         preferred_path = self.grid.displayed_variant_path(index) if record and record.has_variant_stack else ""
-        ai_result = self._ai_result_for_record(record, preferred_path=preferred_path)
+        ai_result = self._ai_run.ai_result_for_record(record, preferred_path=preferred_path)
         if ai_result is not None:
             ai_parts = [f"AI {ai_result.display_score_text}", ai_result.confidence_bucket_label]
             if ai_result.group_id:
@@ -19290,10 +9054,6 @@ class MainWindow(QMainWindow):
             ),
         )
 
-    def _ai_review_tags_markdown(self) -> str:
-        lines = [f"- **{label}**: {description}" for label, description in ai_review_tag_definitions()]
-        return "\n".join(lines)
-
     def _show_ai_review_tag_legend(self) -> None:
         self._show_markdown_help_dialog(
             title="AI Review Tag Legend",
@@ -19303,7 +9063,7 @@ class MainWindow(QMainWindow):
 
                 A quick reference for the AI badges Image Triage can show.
 
-                {self._ai_review_tags_markdown()}
+                {self._ai_run.ai_review_tags_markdown()}
                 """
             ),
         )
@@ -19352,7 +9112,7 @@ class MainWindow(QMainWindow):
 
                 ## AI review tags
 
-                {self._ai_review_tags_markdown()}
+                {self._ai_run.ai_review_tags_markdown()}
 
                 ## How the cull is scored
 
@@ -19647,8 +9407,8 @@ class MainWindow(QMainWindow):
         clear_window_layout(self._settings, self.GEOMETRY_KEY, self.STATE_KEY)
         self._settings.remove(self.WORKSPACE_BAR_STATE_KEY)
         self._settings.remove(self.WORKSPACE_BAR_POSITION_KEY)
-        self._set_workspace_bar_state("expanded")
-        self._set_workspace_bar_position("top")
+        self._toolbar.set_workspace_bar_state("expanded")
+        self._toolbar.set_workspace_bar_position("top")
         self.resize(1600, 960)
         self._apply_default_workspace()
         self.statusBar().showMessage("Reset window layout")
@@ -19736,7 +9496,7 @@ class MainWindow(QMainWindow):
         ai_progress_detail_changed = result.ai_review_detail_progress_enabled != self._ai_review_detail_progress_enabled
         phash_prefilter_changed = result.phash_prefilter_settings.normalized() != self._phash_prefilter_settings
 
-        self._session_id = new_session
+        self._folder_session.session_id = new_session
         self._winner_mode = result.winner_mode
         self._delete_mode = result.delete_mode
         # Only overwrite the saved preference when the user actively changed it,
@@ -19758,7 +9518,7 @@ class MainWindow(QMainWindow):
         self._check_updates_on_startup = result.check_updates_on_startup
         new_theme = parse_appearance_mode(result.theme)
         if new_theme != self._appearance_mode:
-            self._set_appearance_mode(new_theme)
+            self._appearance.set_appearance_mode(new_theme)
         if result.performance_logging_enabled != self._performance_logging_enabled:
             self._handle_performance_logging_toggled(result.performance_logging_enabled)
         if result.show_ai_tags_in_grid != self._show_ai_tags_in_grid:
@@ -19786,7 +9546,7 @@ class MainWindow(QMainWindow):
             self._ai_base_score_weight_percent_setting = new_base_weight
             self._apply_base_score_blend_to_workflow()
         self._ai_review_detail_progress_enabled = result.ai_review_detail_progress_enabled
-        self._refresh_ai_runtime_preferences()
+        self._ai_setup.refresh_ai_runtime_preferences()
         self._settings.setValue(self.SESSION_KEY, self._session_id)
         self._settings.setValue(self.WINNER_MODE_KEY, self._winner_mode.value)
         self._settings.setValue(self.DELETE_MODE_KEY, self._delete_mode.value)
@@ -19825,16 +9585,16 @@ class MainWindow(QMainWindow):
         self._apply_display_style_policy(show_warning=False)
         self.grid.set_free_smooth_scroll_enabled(self._free_smooth_scroll_enabled)
         if ui_gamma_changed:
-            self._apply_appearance()
+            self._appearance.apply_appearance()
         if interface_size_changed:
             self._display_profile = None
-            self._apply_display_profile()
+            self._appearance.apply_display_profile()
         self.folder_model.setFilter(self._folder_tree_filter())
         self.folder_tree.set_single_drive_expansion_enabled(
             self._single_drive_expansion_enabled
         )
         if hidden_changed and self._current_folder and self._scope_kind == "folder":
-            current_path = self._current_visible_record_path()
+            current_path = self._records_view.current_visible_record_path()
             self._folder_records = scan_child_folders(self._current_folder, include_hidden=self._show_hidden_folders)
             self._refresh_directory_navigation_buttons()
             self._apply_records_view(current_path=current_path)
@@ -19844,7 +9604,7 @@ class MainWindow(QMainWindow):
             self._refresh_burst_group_view()
         self._refresh_current_folder_watch()
         self._refresh_catalog_status_indicator()
-        self._update_ai_toolbar_state()
+        self._ai_run.update_ai_toolbar_state()
 
         if session_changed:
             self._undo_stack.clear()
@@ -19987,12 +9747,6 @@ class MainWindow(QMainWindow):
     def _record_paths(self, record: ImageRecord) -> tuple[str, ...]:
         return record_paths(record)
 
-    def _remove_record(self, index: int) -> None:
-        self._record_ops.remove_record(index)
-
-    def _remove_records_by_paths(self, paths: list[str]) -> int:
-        return self._record_ops.remove_records_by_paths(paths)
-
     def _delete_record(self, index: int) -> None:
         self._record_ops.delete_record(index)
 
@@ -20100,9 +9854,6 @@ class MainWindow(QMainWindow):
             f"Winner removed: {Path(path).name or path} (left {kept_csv} in _winners: not a copy Image Triage made)"
         )
 
-    def _annotation_change_affects_active_filter(self) -> bool:
-        return self._records_view.annotation_change_affects_active_filter()
-
     def _apply_annotation_change_effects(
         self,
         changed_paths: list[str] | tuple[str, ...] | set[str],
@@ -20116,7 +9867,7 @@ class MainWindow(QMainWindow):
         if not paths:
             return
         self._records_view_cache.mark(ViewInvalidationReason.ANNOTATION_CHANGED, paths=paths)
-        if self._annotation_change_affects_active_filter():
+        if self._records_view.annotation_change_affects_active_filter():
             self._apply_records_view(current_path=current_path)
             if logger.enabled:
                 logger.duration("annotation.change_effects", (time.perf_counter() - start) * 1000.0, paths=len(paths), reapply_view=True)
@@ -20126,7 +9877,7 @@ class MainWindow(QMainWindow):
         self.grid.update_review_workflow_insights(self._workflow_insights_by_path, paths)
         if not counts_already_updated:
             self._recalculate_review_counts()
-        self._update_filter_summary()
+        self._records_view.update_filter_summary()
         current_change_emitted = False
         if current_path:
             next_index = self._record_index_by_path.get(current_path)
@@ -20155,7 +9906,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Winner/reject actions stay folder-first. Open the source folder to change those states.")
             return
         if self._is_recycle_folder():
-            self._restore_record(index)
+            self._record_ops.restore_record(index)
             return
         if self._is_winners_folder():
             self._delete_record(index)
@@ -20179,7 +9930,7 @@ class MainWindow(QMainWindow):
 
         winner_sync = self._build_winner_sync_request(record, annotation.winner, self._current_folder)
 
-        self._push_undo(
+        self._record_ops.push_undo(
             UndoAction(
                 kind="annotation",
                 primary_path=record.path,
@@ -20196,7 +9947,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
-        self._sync_annotation_to_global_adapter_label(record, annotation)
+        self._aiculler.sync_annotation_to_global_adapter_label(record, annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="winner_toggle")
         self._apply_review_count_delta(previous_annotation, annotation)
         self._apply_annotation_change_effects([record.path], current_path=next_path, counts_already_updated=True)
@@ -20245,7 +9996,7 @@ class MainWindow(QMainWindow):
             else None
         )
 
-        self._push_undo(
+        self._record_ops.push_undo(
             UndoAction(
                 kind="annotation",
                 primary_path=record.path,
@@ -20262,7 +10013,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
-        self._sync_annotation_to_global_adapter_label(record, annotation)
+        self._aiculler.sync_annotation_to_global_adapter_label(record, annotation)
         self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode="reject_toggle")
         self._apply_review_count_delta(previous_annotation, annotation)
         self._apply_annotation_change_effects([record.path], current_path=next_path, counts_already_updated=True)
@@ -20316,7 +10067,7 @@ class MainWindow(QMainWindow):
             )
         # The full-screen editor needs the GPU for masking (SAM / OneFormer /
         # BiRefNet); pause background indexing so it isn't fighting for CUDA.
-        self._suspend_background_indexing()
+        self._records_view.suspend_background_indexing()
         self.preview.show_entries(entries)
         self._sync_preview_browse_context(anchor_index if anchor_index >= 0 else index)
         self._schedule_preview_preload(anchor_index if anchor_index >= 0 else index)
@@ -20448,7 +10199,7 @@ class MainWindow(QMainWindow):
                 return preview_studio.REJECT
             if annotation.winner:
                 return "#ee719e"
-        result = self._ai_result_for_record(record)
+        result = self._ai_run.ai_result_for_record(record)
         if result is not None and result.is_top_pick:
             return preview_studio.INFO
         return None
@@ -20489,7 +10240,7 @@ class MainWindow(QMainWindow):
                     rating=annotation.rating,
                     edited_path=edited_path,
                     edited_candidates=tuple(edited_candidates),
-                    ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
+                    ai_result=self._ai_run.ai_result_for_record(record, preferred_path=displayed_path),
                     review_summary=self._review_summary_for_record(record),
                     workflow_summary=self._workflow_summary_for_record(record),
                     workflow_details=self._workflow_detail_lines_for_record(record),
@@ -20520,7 +10271,7 @@ class MainWindow(QMainWindow):
                     rating=annotation.rating,
                     edited_path=edited_path,
                     edited_candidates=tuple(edited_candidates),
-                    ai_result=self._ai_result_for_record(record, preferred_path=displayed_path),
+                    ai_result=self._ai_run.ai_result_for_record(record, preferred_path=displayed_path),
                     review_summary=self._review_summary_for_record(record),
                     workflow_summary=self._workflow_summary_for_record(record),
                     workflow_details=self._workflow_detail_lines_for_record(record),
@@ -20552,41 +10303,11 @@ class MainWindow(QMainWindow):
             if 0 <= item_index < len(self._records) and not self._records[item_index].is_folder
         ]
 
-    def _copy_record_to_path(self, path: str, destination_dir: str) -> bool:
-        return self._record_ops.copy_record_to_path(path, destination_dir)
-
-    def _keep_record_by_path(self, path: str) -> bool:
-        return self._record_ops.keep_record_by_path(path)
-
-    def _restore_record_by_path(self, path: str) -> bool:
-        return self._record_ops.restore_record_by_path(path)
-
-    def _copy_record_to(self, index: int, destination_dir: str) -> bool:
-        return self._record_ops.copy_record_to(index, destination_dir)
-
-    def _move_record_to(
-        self, index: int, destination_dir: str, *, defer_removal: bool = False, batch_id: str = ""
-    ) -> bool:
-        return self._record_ops.move_record_to(index, destination_dir, defer_removal=defer_removal, batch_id=batch_id)
-
-    def _restore_record(self, index: int) -> None:
-        self._record_ops.restore_record(index)
-
-    def _move_record_to_path(
-        self, path: str, destination_dir: str, *, defer_removal: bool = False, batch_id: str = ""
-    ) -> bool:
-        return self._record_ops.move_record_to_path(path, destination_dir, defer_removal=defer_removal, batch_id=batch_id)
-
-    def _move_record_to_ai_recycle_by_path(
-        self, path: str, *, defer_removal: bool = False, batch_id: str = ""
-    ) -> bool:
-        return self._record_ops.move_record_to_ai_recycle_by_path(path, defer_removal=defer_removal, batch_id=batch_id)
-
     def _batch_set_winner(self, records: list[ImageRecord]) -> None:
         if not records:
             return
         if self._is_winners_folder():
-            self._batch_delete_records(records)
+            self._record_ops.batch_delete_records(records)
             return
         candidates = [record for record in records if not self._annotations.get(record.path, SessionAnnotation()).winner]
         if not self._maybe_show_fast_rating_hint(candidates):
@@ -20623,7 +10344,7 @@ class MainWindow(QMainWindow):
         changed_paths: list[str] = []
         undo_actions: list[UndoAction] = []
         failures = 0
-        current_path = self._current_visible_record_path() or records[0].path
+        current_path = self._records_view.current_visible_record_path() or records[0].path
 
         for record in records:
             annotation = self._annotations.setdefault(record.path, SessionAnnotation())
@@ -20662,13 +10383,13 @@ class MainWindow(QMainWindow):
                 )
             )
             self._queue_annotation_persist(record, previous_annotation=previous_annotation, winner_sync=winner_sync)
-            self._sync_annotation_to_global_adapter_label(record, annotation)
+            self._aiculler.sync_annotation_to_global_adapter_label(record, annotation)
             self._capture_annotation_feedback(record, previous_annotation, annotation, source_mode=source_mode)
             self._apply_review_count_delta(previous_annotation, annotation)
             changed_paths.append(record.path)
 
         if undo_actions:
-            self._push_undo_actions(undo_actions)
+            self._record_ops.push_undo_actions(undo_actions)
         if changed_paths:
             self._apply_annotation_change_effects(changed_paths, current_path=current_path, counts_already_updated=True)
         return len(changed_paths), failures
@@ -20676,7 +10397,7 @@ class MainWindow(QMainWindow):
     def _batch_keep_records(self, records: list[ImageRecord]) -> None:
         if not records:
             return
-        moved = sum(1 for record in records if self._keep_record_by_path(record.path))
+        moved = sum(1 for record in records if self._record_ops.keep_record_by_path(record.path))
         self.statusBar().showMessage(f"Moved {moved} image(s) to _keep")
 
     @staticmethod
@@ -20697,22 +10418,10 @@ class MainWindow(QMainWindow):
     def _move_records_by_paths(self, primary_paths: list[str], destination_dir: str, *, batch_id: str = "") -> int:
         return self._record_ops.move_records_by_paths(primary_paths, destination_dir, batch_id=batch_id)
 
-    def _handle_record_drop(self, primary_paths: list[str], destination_dir: str, *, copy_requested: bool) -> None:
-        self._record_ops.handle_record_drop(primary_paths, destination_dir, copy_requested=copy_requested)
-
-    def _batch_copy_records(self, records: list[ImageRecord]) -> None:
-        self._record_ops.batch_copy_records(records)
-
-    def _batch_move_records(self, records: list[ImageRecord]) -> None:
-        self._record_ops.batch_move_records(records)
-
-    def _batch_delete_records(self, records: list[ImageRecord]) -> None:
-        self._record_ops.batch_delete_records(records)
-
     def _batch_restore_records(self, records: list[ImageRecord]) -> None:
         if not records:
             return
-        restored = sum(1 for record in records if self._restore_record_by_path(record.path))
+        restored = sum(1 for record in records if self._record_ops.restore_record_by_path(record.path))
         self.statusBar().showMessage(f"Restored {restored} image(s)")
 
     def _batch_open_in_photoshop(self, records: list[ImageRecord]) -> None:
@@ -20724,12 +10433,6 @@ class MainWindow(QMainWindow):
 
     def _move_selected_records_to_destination(self, destination_dir: str) -> None:
         self._record_ops.move_selected_records_to_destination(destination_dir)
-
-    def _copy_selected_records_to_destination(self, destination_dir: str) -> None:
-        self._record_ops.copy_selected_records_to_destination(destination_dir)
-
-    def _batch_move_records_to_new_folder(self, records: list[ImageRecord]) -> None:
-        self._record_ops.batch_move_records_to_new_folder(records)
 
     def _dispatch_preview_action(self, path: str, handler, *, preserve_anchor: bool = True) -> None:
         if self._collection_mode:
@@ -20767,20 +10470,8 @@ class MainWindow(QMainWindow):
             modified_ns=getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000)),
         )
 
-    def _rename_record_prompt(self, index: int) -> str | None:
-        return self._record_ops.rename_record_prompt(index)
-
     def _record_after_moves(self, record: ImageRecord, moves: tuple[FileMove, ...]) -> ImageRecord:
         return self._record_ops.record_after_moves(record, moves)
-
-    def _replace_record(self, original_path: str, record: ImageRecord) -> None:
-        self._record_ops.replace_record(original_path, record)
-
-    def _replace_records_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
-        self._record_ops.replace_records_after_moves(records_by_old_path)
-
-    def _rekey_filter_metadata_after_moves(self, records_by_old_path: dict[str, ImageRecord]) -> None:
-        self._record_ops.rekey_filter_metadata_after_moves(records_by_old_path)
 
     def _show_grid_context_menu(self, index: int, global_pos) -> None:
         if index < 0:
@@ -20867,16 +10558,16 @@ class MainWindow(QMainWindow):
                 self._copy_records_to_clipboard(records)
                 return
             if chosen == send_to_actions["copy_action"]:
-                self._batch_copy_records(records)
+                self._record_ops.batch_copy_records(records)
                 return
             if chosen in send_to_actions["copy_recent_actions"]:
-                self._copy_selected_records_to_destination(send_to_actions["copy_recent_actions"][chosen])
+                self._record_ops.copy_selected_records_to_destination(send_to_actions["copy_recent_actions"][chosen])
                 return
             if chosen == send_to_actions["move_action"]:
-                self._batch_move_records(records)
+                self._record_ops.batch_move_records(records)
                 return
             if chosen == send_to_actions["move_new_folder_action"]:
-                self._batch_move_records_to_new_folder(records)
+                self._record_ops.batch_move_records_to_new_folder(records)
                 return
             if chosen in send_to_actions["move_recent_actions"]:
                 self._move_selected_records_to_destination(send_to_actions["move_recent_actions"][chosen])
@@ -20891,7 +10582,7 @@ class MainWindow(QMainWindow):
                 self._create_archive_for_records(records, "tar_gz")
                 return
             if chosen == delete_action:
-                self._batch_delete_records(records)
+                self._record_ops.batch_delete_records(records)
                 return
             return
 
@@ -20911,17 +10602,17 @@ class MainWindow(QMainWindow):
         photoshop_action.setEnabled(bool(self._photoshop_executable))
         if not self._photoshop_executable:
             photoshop_action.setText("Open In Photoshop (Not Found)")
-        ai_result = self._ai_result_for_index(index)
+        ai_result = self._ai_run.ai_result_for_index(index)
         compare_ai_group_action = None
         jump_ai_pick_action = None
         if ai_result is not None:
             menu.addSeparator()
             if ai_result.group_size > 1:
                 compare_ai_group_action = menu.addAction(
-                    self._menu_text_with_action_shortcut("Compare AI Group", self.actions.compare_ai_group if self.actions else None)
+                    self._toolbar_menus.menu_text_with_action_shortcut("Compare AI Group", self.actions.compare_ai_group if self.actions else None)
                 )
                 jump_ai_pick_action = menu.addAction(
-                    self._menu_text_with_action_shortcut("Jump To AI Top Pick", self.actions.next_ai_pick if self.actions else None)
+                    self._toolbar_menus.menu_text_with_action_shortcut("Jump To AI Top Pick", self.actions.next_ai_pick if self.actions else None)
                 )
         if self._is_recycle_folder():
             menu.addSeparator()
@@ -20929,7 +10620,7 @@ class MainWindow(QMainWindow):
         else:
             menu.addSeparator()
         rename_action = menu.addAction(
-            self._menu_text_with_action_shortcut("Rename...", self.actions.rename_selection if self.actions else None)
+            self._toolbar_menus.menu_text_with_action_shortcut("Rename...", self.actions.rename_selection if self.actions else None)
         )
         rename_action.setEnabled(not self._is_recycle_folder() and not self._is_winners_folder())
         resize_action = menu.addAction("Resize...")
@@ -20951,16 +10642,16 @@ class MainWindow(QMainWindow):
             open_with_default(display_path)
             return
         if compare_ai_group_action is not None and chosen == compare_ai_group_action:
-            self._open_current_ai_group_compare(index)
+            self._ai_run.open_current_ai_group_compare(index)
             return
         if jump_ai_pick_action is not None and chosen == jump_ai_pick_action:
-            self._jump_to_ai_top_pick_in_group(index)
+            self._ai_run.jump_to_ai_top_pick_in_group(index)
             return
         if restore_action is not None and chosen == restore_action:
-            self._restore_record(index)
+            self._record_ops.restore_record(index)
             return
         if chosen == rename_action:
-            self._rename_record_prompt(index)
+            self._record_ops.rename_record_prompt(index)
             return
         if chosen == resize_action:
             self._resize_record_prompt(index)
@@ -20977,19 +10668,19 @@ class MainWindow(QMainWindow):
         if chosen == send_to_actions["copy_action"]:
             destination_dir = QFileDialog.getExistingDirectory(self, "Copy Image", self._current_folder or QDir.homePath())
             if destination_dir:
-                self._copy_record_to(index, destination_dir)
+                self._record_ops.copy_record_to(index, destination_dir)
             return
         if chosen in send_to_actions["copy_recent_actions"]:
-            self._copy_record_to(index, send_to_actions["copy_recent_actions"][chosen])
+            self._record_ops.copy_record_to(index, send_to_actions["copy_recent_actions"][chosen])
             return
         if chosen == send_to_actions["move_action"]:
             self._move_record_prompt(index)
             return
         if chosen == send_to_actions["move_new_folder_action"]:
-            self._batch_move_records_to_new_folder(records)
+            self._record_ops.batch_move_records_to_new_folder(records)
             return
         if chosen in send_to_actions["move_recent_actions"]:
-            self._move_record_to(index, send_to_actions["move_recent_actions"][chosen])
+            self._record_ops.move_record_to(index, send_to_actions["move_recent_actions"][chosen])
             return
         if chosen == send_to_actions["zip_action"]:
             self._create_archive_for_records(records, "zip")
@@ -21094,12 +10785,6 @@ class MainWindow(QMainWindow):
     def _unique_destination(self, directory: str, filename: str) -> str:
         return unique_destination(directory, filename)
 
-    def _push_undo(self, action: UndoAction) -> None:
-        self._record_ops.push_undo(action)
-
-    def _push_undo_actions(self, actions: list[UndoAction]) -> None:
-        self._record_ops.push_undo_actions(actions)
-
     def _undo_last_action(self) -> None:
         self._record_ops.undo_last_action()
 
@@ -21111,9 +10796,6 @@ class MainWindow(QMainWindow):
         if index > 0:
             return self._records[index - 1].path
         return self._records[index].path
-
-    def _drain_records_view_chunk(self) -> None:
-        self._records_view.drain_records_view_chunk()
 
     def _apply_records_view(
         self,
@@ -21173,19 +10855,9 @@ class MainWindow(QMainWindow):
                             kind="burst",
                         )
         self._visible_burst_groups = burst_groups
-        self._burst_group_map = burst_group_map
         self.grid.set_burst_groups(burst_group_map, burst_groups, request_thumbnails=request_thumbnails)
         self.grid.set_burst_stack_mode(self._burst_stacks_enabled, request_thumbnails=request_thumbnails)
-        self._update_filter_summary()
-
-    def _remember_recycle_origins(self, moves: tuple[FileMove, ...]) -> None:
-        self._recycle_bin.remember_recycle_origins(moves)
-
-    def _forget_recycle_origins(self, paths: tuple[str, ...]) -> None:
-        self._recycle_bin.forget_recycle_origins(paths)
-
-    def _restore_bundle(self, recycle_paths: tuple[str, ...]) -> tuple[FileMove, ...]:
-        return self._recycle_bin.restore_bundle(recycle_paths)
+        self._records_view.update_filter_summary()
 
     def _trash_or_delete_paths(self, source_paths: tuple[str, ...]) -> bool:
         return self._record_ops.trash_or_delete_paths(source_paths)

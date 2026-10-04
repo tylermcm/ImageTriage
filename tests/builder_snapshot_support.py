@@ -154,6 +154,13 @@ class _Recorder:
         self._log.append((self._name, args, kwargs))
         return None
 
+    def __getattr__(self, attr: str):
+        # ``window._records_view.set_filter_mode`` (a handler moved onto a controller) records as
+        # "_records_view.set_filter_mode".
+        if attr.startswith("__") or attr in ("_log", "_name"):
+            raise AttributeError(attr)
+        return _Recorder(self._log, f"{self._name}.{attr}")
+
 
 class StubWindow(QMainWindow):
     """A real ``QMainWindow`` (so QActions/menus can be parented to it) whose
@@ -588,7 +595,16 @@ def palette_state(window, state: PaletteState) -> Iterator[tuple[list, StubPrevi
     fixtures = _palette_fixtures()
     window_calls: list = []
     with contextlib.ExitStack() as stack:
+        # These window attributes are shims over FolderSession properties; mock.patch.object restores by deleting
+        # the attribute, which a property cannot do, so they are assigned and put back by hand.
+        session_backed = {"_current_folder", "_scope_kind", "_scope_id", "_collection_mode", "_session_id", "_browser_view_mode"}
+
         def patch(target, name, value):
+            if target is window and name in session_backed:
+                original = getattr(window, name)
+                setattr(window, name, value)
+                stack.callback(setattr, window, name, original)
+                return
             stack.enter_context(mock.patch.object(target, name, value))
 
         # View/toggle flags the subtitles read.

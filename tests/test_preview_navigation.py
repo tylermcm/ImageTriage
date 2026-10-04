@@ -79,7 +79,7 @@ def test_closing_popout_runs_one_notified_grid_sync() -> None:
         _preview_navigation_dirty=True,
         _winner_ladder_state=None,
         _quick_view_mode=False,
-        _resume_background_indexing=lambda: None,
+        _records_view=SimpleNamespace(resume_background_indexing=lambda: None),
     )
 
     MainWindow._handle_preview_closed(window)
@@ -125,7 +125,7 @@ def test_closing_a_standalone_quick_view_closes_its_hidden_main_window() -> None
         _quick_view_mode=True,
         _winner_ladder_state=None,
         _preview_navigation_dirty=False,
-        _resume_background_indexing=lambda: None,
+        _records_view=SimpleNamespace(resume_background_indexing=lambda: None),
         close=lambda: close_calls.append(True),
     )
 

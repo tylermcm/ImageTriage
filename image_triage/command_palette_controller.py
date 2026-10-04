@@ -11,6 +11,7 @@ from .review_tools import FOCUS_ASSIST_COLORS, FOCUS_ASSIST_STRENGTHS
 from .scanner import normalized_path_key
 from .ui import CommandPaletteDialog, PaletteCommand, appearance_mode_label
 from .workflows import built_in_workflow_recipes, built_in_workspace_presets
+from .folder_session import FolderSession
 
 if TYPE_CHECKING:
     from .ui.actions import MainWindowActions
@@ -26,12 +27,16 @@ class CommandPaletteController:
     shortcuts, cached per-context dialogs and recent-command list all live
     on MainWindow, the same way they did before this extraction."""
 
+    @property
+    def _session(self) -> FolderSession:
+        return self._window._folder_session
+
     def __init__(self, window: "MainWindow") -> None:
         self._window = window
 
     def open(self, _checked: bool = False, *, context: str | None = None) -> None:
         window = self._window
-        if window._collection_mode:
+        if self._session.collection_mode:
             window.statusBar().showMessage("Finish collection mode before using commands.")
             return
         preview = window._preview_if_built()
@@ -262,8 +267,8 @@ class CommandPaletteController:
 
     def _add_view_commands(self, add_action_command: _AddActionCommand, actions: MainWindowActions, window: "MainWindow") -> None:
         """Grid/details views, details navigation, Zen mode, smart groups and hidden folders."""
-        add_action_command("view.grid_view", actions.grid_view, section="View", subtitle="Current view" if window._browser_view_mode == "grid" else "", keywords=("grid", "thumbnail grid", "tiles"))
-        add_action_command("view.details_view", actions.details_view, section="View", subtitle="Current view" if window._browser_view_mode == "details" else "", keywords=("details", "list view", "file explorer"))
+        add_action_command("view.grid_view", actions.grid_view, section="View", subtitle="Current view" if self._session.browser_view_mode == "grid" else "", keywords=("grid", "thumbnail grid", "tiles"))
+        add_action_command("view.details_view", actions.details_view, section="View", subtitle="Current view" if self._session.browser_view_mode == "details" else "", keywords=("details", "list view", "file explorer"))
         add_action_command("view.details_density_compact", actions.details_density_compact, section="View", subtitle="Current density" if window._details_row_density == "compact" else "", keywords=("details density", "compact rows", "row density"))
         add_action_command("view.details_density_comfortable", actions.details_density_comfortable, section="View", subtitle="Current density" if window._details_row_density == "comfortable" else "", keywords=("details density", "comfortable rows", "row density"))
         add_action_command("view.details_next_unreviewed", actions.details_next_unreviewed, section="View", keywords=("details next unreviewed", "jump unreviewed"))

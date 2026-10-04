@@ -88,6 +88,6 @@ def test_ai_uninstall_dialog_goes_through_job_controller(main_window) -> None:
             task.signals.finished.emit((0, [], []))
 
         fake_start.side_effect = run_synchronously
-        main_window._run_ai_uninstall(())
+        main_window._ai_setup.run_ai_uninstall(())
 
     assert "ai_uninstall" not in main_window._job_controllers

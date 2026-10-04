@@ -61,7 +61,7 @@ def test_ai_setup_dialog_accepted_returns_a_selection(monkeypatch):
     install_dialog_guards(monkeypatch)
     monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
     with _fresh_window() as window:
-        selection = window._show_ai_setup_dialog(
+        selection = window._ai_setup.show_ai_setup_dialog(
             automatic=False,
             title="Set Up AI",
             prompt_text="",

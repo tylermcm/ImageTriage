@@ -11,6 +11,7 @@ from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from .file_ops import FileMove, is_unc_path, unc_share_root
+from .folder_session import FolderSession
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -25,13 +26,16 @@ class RecycleBinController:
     since many callers elsewhere in file-move/delete/undo code depend on
     this controller's read-only classifiers and manifest bookkeeping."""
 
+    @property
+    def _session(self) -> FolderSession:
+        return self._window._folder_session
+
     def __init__(self, window: "MainWindow") -> None:
         self._window = window
         self._drive_type_cache: dict[str, int] = {}
 
     def folder_drive_root(self, folder: str | None = None) -> str:
-        window = self._window
-        target = folder or window._current_folder
+        target = folder or self._session.folder
         if not target:
             return ""
         if is_unc_path(target):
@@ -65,8 +69,7 @@ class RecycleBinController:
         return drive_type in {2, 4}
 
     def recycle_root_for_folder(self, folder: str | None = None) -> Path:
-        window = self._window
-        target_folder = folder or window._current_folder
+        target_folder = folder or self._session.folder
         if target_folder:
             target_path = Path(target_folder)
             recycle_parts: list[str] = []
@@ -135,7 +138,7 @@ class RecycleBinController:
 
         shutil.rmtree(recycle_root, ignore_errors=False)
         self.refresh_recycle_button()
-        window.statusBar().showMessage(f"Emptied recycle bin for {window._current_folder}")
+        window.statusBar().showMessage(f"Emptied recycle bin for {self._session.folder}")
 
     def recycle_manifest_path(self) -> Path:
         return self.recycle_root_for_folder() / ".image-triage-restore.json"

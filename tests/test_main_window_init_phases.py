@@ -30,7 +30,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QMetaMethod, QObject, QThreadPool, QTimer
+from PySide6.QtCore import QMetaMethod, QObject, QThreadPool
 from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import QMenu, QStackedWidget
 
@@ -43,7 +43,7 @@ from image_triage.window import MainWindow
 INIT_PHASES: tuple[str, ...] = (
     "_init_window_frame_and_launch_state",
     "_init_settings_and_appearance_prefs",
-    "_init_child_processes_and_core_services",
+    "_init_core_services",
     "_init_thread_pools_and_controllers",
     "_init_background_indexing_state",
     "_init_scan_task_and_search_state",
@@ -78,7 +78,7 @@ MAX_PHASE_LINES = 300     # the largest phase today is ~92; a phase this long sh
 PHASE_PROMISES: dict[str, tuple[str, ...]] = {
     "_init_window_frame_and_launch_state": ("_startup_launch_target", "_pending_quick_view_path"),
     "_init_settings_and_appearance_prefs": ("_settings", "_topbar_slots"),
-    "_init_child_processes_and_core_services": ("_child_process_timer", "thumbnail_manager", "grid", "details_view"),
+    "_init_core_services": ("thumbnail_manager", "grid", "details_view"),
     "_init_thread_pools_and_controllers": ("_scan_pool", "_catalog", "_folder_ops"),
     "_init_background_indexing_state": ("_semantic_index_pool", "_face_index_pool"),
     "_init_scan_task_and_search_state": ("_recycle_bin", "_annotation_reapply_timer"),
@@ -283,7 +283,7 @@ def test_cross_phase_ordering_rules_found_in_the_stage_3_audit() -> None:
     # the controllers that fill the filter actions exist before the actions are built
     assert _phase_index_calling("RecordsViewController") < filter_actions
     # the top bar hosts actions, so it is built after them
-    assert build_actions < _phase_index_calling("_build_prototype_top_bar")
+    assert build_actions < _phase_index_calling("build_prototype_top_bar")
     # the window state is restored after the docks it restores exist, and last
     assert docks < _phase_index_calling("_restore_window_state") == len(INIT_PHASES) - 1
 
@@ -308,7 +308,6 @@ def test_constructed_window_object_types_and_wiring(main_window) -> None:
     window = main_window
     assert window.windowTitle() == "Image Triage"
     assert isinstance(window.actions, MainWindowActions)
-    assert isinstance(window._child_process_timer, QTimer) and window._child_process_timer.interval() == 1200
     assert isinstance(window._scan_pool, QThreadPool) and window._scan_pool.maxThreadCount() == 1
     assert isinstance(window._zen_toggle_shortcut, QShortcut)
     assert window.left_nav_pages.count() == 4 and isinstance(window.left_nav_pages, QStackedWidget)

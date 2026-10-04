@@ -16,7 +16,7 @@ from tests.harness import make_jpegs, open_folder
 
 def test_create_folder_prompt_creates_and_remembers_destination(main_window, tmp_path) -> None:
     with patch("image_triage.folder_ops_controller.QInputDialog.getText", return_value=("New Kid", True)):
-        created = main_window._create_folder_prompt(str(tmp_path), select_created=False)
+        created = main_window._folder_ops.create_folder_prompt(str(tmp_path), select_created=False)
 
     assert created is not None
     assert Path(created).is_dir()
@@ -25,7 +25,7 @@ def test_create_folder_prompt_creates_and_remembers_destination(main_window, tmp
 
 def test_create_folder_prompt_cancelled_creates_nothing(main_window, tmp_path) -> None:
     with patch("image_triage.folder_ops_controller.QInputDialog.getText", return_value=("", False)):
-        created = main_window._create_folder_prompt(str(tmp_path), select_created=False)
+        created = main_window._folder_ops.create_folder_prompt(str(tmp_path), select_created=False)
 
     assert created is None
     assert list(tmp_path.iterdir()) == []
@@ -40,7 +40,7 @@ def test_rename_folder_remaps_favorites_and_recent_lists(main_window, tmp_path) 
     main_window._recent_folders = [str(folder)]
 
     with patch("image_triage.folder_ops_controller.QInputDialog.getText", return_value=("after", True)):
-        main_window._rename_folder(str(folder))
+        main_window._folder_ops.rename_folder(str(folder))
 
     renamed = tmp_path / "after"
     assert renamed.is_dir() and not folder.exists()
@@ -61,7 +61,7 @@ def test_delete_folder_prompt_removes_folder_and_cleans_up_lists(main_window, tm
         "image_triage.folder_ops_controller.QMessageBox.question",
         return_value=QMessageBox.StandardButton.Yes,
     ):
-        main_window._delete_folder_prompt(str(folder))
+        main_window._folder_ops.delete_folder_prompt(str(folder))
 
     assert not folder.exists()
     assert main_window._favorites == []
@@ -77,7 +77,7 @@ def test_delete_folder_prompt_declined_keeps_the_folder(main_window, tmp_path) -
         "image_triage.folder_ops_controller.QMessageBox.question",
         return_value=QMessageBox.StandardButton.No,
     ):
-        main_window._delete_folder_prompt(str(folder))
+        main_window._folder_ops.delete_folder_prompt(str(folder))
 
     assert folder.exists()
 
@@ -101,7 +101,7 @@ def test_move_folder_prompt_updates_current_folder_when_moving_the_open_folder(m
         "image_triage.folder_ops_controller.QFileDialog.getExistingDirectory",
         return_value=str(destination_parent),
     ):
-        main_window._move_folder_prompt(str(source))
+        main_window._folder_ops.move_folder_prompt(str(source))
 
     moved = destination_parent / "src"
     assert moved.is_dir() and not source.exists()

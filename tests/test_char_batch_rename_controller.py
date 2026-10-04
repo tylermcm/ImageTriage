@@ -27,7 +27,7 @@ def test_apply_preview_renames_files_rekeys_records_and_pushes_undo(main_window,
     preview = build_batch_rename_preview(records, BatchRenameRules(prefix="trip_"))
     assert preview.can_apply
 
-    started = main_window._apply_batch_rename_preview(preview, folder=str(tmp_path))
+    started = main_window._batch_rename.apply_preview(preview, folder=str(tmp_path))
     assert started
     assert main_window._batch_rename.is_running
 
@@ -47,9 +47,9 @@ def test_second_apply_while_one_is_running_is_rejected(main_window, tmp_path) ->
     open_folder(main_window, tmp_path, 2)
     preview = build_batch_rename_preview(main_window._records, BatchRenameRules(prefix="one_"))
 
-    assert main_window._apply_batch_rename_preview(preview, folder=str(tmp_path))
+    assert main_window._batch_rename.apply_preview(preview, folder=str(tmp_path))
     second_preview = build_batch_rename_preview(main_window._records, BatchRenameRules(prefix="two_"))
-    assert not main_window._apply_batch_rename_preview(second_preview, folder=str(tmp_path))
+    assert not main_window._batch_rename.apply_preview(second_preview, folder=str(tmp_path))
 
     assert pump_until(lambda: not main_window._batch_rename.is_running)
 

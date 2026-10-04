@@ -10,6 +10,7 @@ from .batch_rename import BatchRenameApplyTask, BatchRenamePreview
 from .job_controller import JobSpec
 from .models import SessionAnnotation
 from .scanner import normalized_path_key
+from .folder_session import FolderSession
 
 if TYPE_CHECKING:
     from .window import MainWindow
@@ -32,6 +33,10 @@ class BatchRenameApplyController:
     the window, since it reaches into core view-model state this controller
     has no business touching."""
 
+    @property
+    def _session(self) -> FolderSession:
+        return self._window._folder_session
+
     def __init__(self, window: "MainWindow") -> None:
         self._window = window
         self._active_task: BatchRenameApplyTask | None = None
@@ -50,18 +55,18 @@ class BatchRenameApplyController:
             QMessageBox.information(window, "Batch Rename Running", "A batch rename is already in progress.")
             return False
         renamed_items = [item for item in preview.items if item.status == "Rename"]
-        is_current_folder = normalized_path_key(folder) == normalized_path_key(window._current_folder)
+        is_current_folder = normalized_path_key(folder) == normalized_path_key(self._session.folder)
         loaded_annotations: dict[str, SessionAnnotation] = {}
         if not is_current_folder:
             loaded_annotations = window._decision_store.load_annotations(
-                window._session_id, [item.record for item in renamed_items]
+                self._session.session_id, [item.record for item in renamed_items]
             )
         self._context = BatchRenameExecutionContext(
             preview=preview,
             folder=folder,
             is_current_folder=is_current_folder,
             loaded_annotations=loaded_annotations,
-            current_path_before=window._current_visible_record_path() if is_current_folder else None,
+            current_path_before=window._records_view.current_visible_record_path() if is_current_folder else None,
         )
         task = BatchRenameApplyTask(preview.planned_moves)
         task.signals.started.connect(self._handle_started, Qt.ConnectionType.QueuedConnection)

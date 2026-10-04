@@ -226,19 +226,19 @@ def _edit_and_batch_actions(window: "MainWindow") -> dict[str, QAction]:
         batch_rename_selection=_create_action(
             window,
             "Batch Rename...",
-            slot=window._start_batch_rename_tool_mode,
+            slot=window._tool_mode.start_batch_rename_tool_mode,
             shortcut="Ctrl+Shift+R",
         ),
         batch_resize_selection=_create_action(
             window,
             "Batch Resize...",
-            slot=window._start_batch_resize_tool_mode,
+            slot=window._tool_mode.start_batch_resize_tool_mode,
             shortcut="Ctrl+Shift+E",
         ),
         batch_convert_selection=_create_action(
             window,
             "Batch Convert...",
-            slot=window._start_batch_convert_tool_mode,
+            slot=window._tool_mode.start_batch_convert_tool_mode,
             shortcut="Ctrl+Shift+C",
         ),
         extract_archive=_create_action(window, "Extract Archive...", slot=window._extract_archive_prompt),
@@ -354,7 +354,7 @@ def _layout_actions(window: "MainWindow") -> dict[str, QAction]:
         zen_mode=_create_action(
             window,
             "Zen Mode",
-            slot=window._handle_zen_mode_toggled,
+            slot=window._zen.handle_zen_mode_toggled,
             checkable=True,
             shortcut="F11",
         ),
@@ -367,32 +367,32 @@ def _ai_setup_actions(window: "MainWindow") -> dict[str, QAction]:
         install_ai_runtime=_create_action(
             window,
             "Set Up AI Runtime...",
-            slot=window._install_ai_runtime,
+            slot=window._ai_setup.install_ai_runtime,
         ),
         download_ai_model=_create_action(
             window,
             "Download AI Models...",
-            slot=window._download_ai_model,
+            slot=window._ai_setup.download_ai_model,
         ),
         repair_ai=_create_action(
             window,
             "Repair AI...",
-            slot=window._repair_ai_components,
+            slot=window._ai_setup.repair_ai_components,
         ),
         check_ai_readiness=_create_action(
             window,
             "Check AI Readiness...",
-            slot=window._check_ai_readiness,
+            slot=window._ai_setup.check_ai_readiness,
         ),
         copy_ai_diagnostics=_create_action(
             window,
             "Copy AI Diagnostics",
-            slot=window._copy_ai_diagnostics,
+            slot=window._ai_setup.copy_ai_diagnostics,
         ),
         uninstall_ai_components=_create_action(
             window,
             "Uninstall AI Runtime & Models...",
-            slot=window._uninstall_ai_components,
+            slot=window._ai_setup.uninstall_ai_components,
         ),
     )
 
@@ -403,7 +403,7 @@ def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
         guided_ai_cull_preferences=_create_action(
             window,
             "Guided AI Cull...",
-            slot=window._open_guided_ai_cull_preferences,
+            slot=window._ai_run.open_guided_ai_cull_preferences,
             icon=QStyle.StandardPixmap.SP_MediaPlay,
         ),
         open_ai_workflow_center=_create_action(
@@ -421,13 +421,13 @@ def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
         quick_rerank_ai_culling=_create_action(
             window,
             "Quick Rerank",
-            slot=window._rerank_ai_pipeline,
+            slot=window._ai_run.rerank_ai_pipeline,
             shortcut="Ctrl+Shift+Y",
         ),
         apply_ai_culling=_create_action(
             window,
             "Apply AI Decisions",
-            slot=window._apply_ai_culling,
+            slot=window._ai_run.apply_ai_culling,
         ),
         sort_ai_semantic_folders=_create_action(
             window,
@@ -437,18 +437,18 @@ def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
         reset_ai_review_cache=_create_action(
             window,
             "Reset AI Review Cache...",
-            slot=window._reset_ai_review_cache,
+            slot=window._ai_run.reset_ai_review_cache,
         ),
-        load_saved_ai=_create_action(window, "Load Saved AI For Folder", slot=window._load_hidden_ai_results_for_current_folder),
-        load_ai_results=_create_action(window, "Load AI Results...", slot=window._choose_ai_results),
-        clear_ai_results=_create_action(window, "Clear AI Results", slot=window._clear_ai_results),
-        open_ai_report=_create_action(window, "Open AI Report", slot=window._open_ai_report),
+        load_saved_ai=_create_action(window, "Load Saved AI For Folder", slot=window._ai_run.load_hidden_ai_results_for_current_folder),
+        load_ai_results=_create_action(window, "Load AI Results...", slot=window._ai_run.choose_ai_results),
+        clear_ai_results=_create_action(window, "Clear AI Results", slot=window._ai_run.clear_ai_results),
+        open_ai_report=_create_action(window, "Open AI Report", slot=window._ai_run.open_ai_report),
         manage_people=_create_action(window, "People...", slot=window._open_people_search_dialog),
-        show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._show_last_ai_review_summary),
+        show_ai_review_summary=_create_action(window, "Show AI Review Summary", slot=window._ai_run.show_last_ai_review_summary),
         review_ai_adapter_labels=_create_action(
             window,
             "Review Adapter Labels...",
-            slot=window._review_aiculler_adapter_labels,
+            slot=window._aiculler.review_aiculler_adapter_labels,
         ),
     )
 
@@ -456,16 +456,16 @@ def _ai_workflow_actions(window: "MainWindow") -> dict[str, QAction]:
 def _ai_review_tool_actions(window: "MainWindow") -> dict[str, QAction]:
     """Jumping between and comparing AI picks."""
     return dict(
-        next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+N"),
+        next_ai_pick=_create_action(window, "Next AI Top Pick", slot=window._ai_run.jump_to_next_ai_top_pick, shortcut="Ctrl+Alt+N"),
         next_unreviewed_ai_pick=_create_action(
             window,
             "Next Unreviewed AI Top Pick",
-            slot=lambda _checked=False: window._jump_to_next_ai_top_pick(unreviewed_only=True),
+            slot=lambda _checked=False: window._ai_run.jump_to_next_ai_top_pick(unreviewed_only=True),
         ),
         compare_ai_group=_create_action(
             window,
             "Compare Current AI Group",
-            slot=window._open_current_ai_group_compare,
+            slot=window._ai_run.open_current_ai_group_compare,
             shortcut="Ctrl+Alt+G",
         ),
         review_ai_disagreements=_create_action(
@@ -591,7 +591,7 @@ def _workspace_and_tool_actions(window: "MainWindow") -> dict[str, QAction]:
         show_workspace_toolbar=_create_action(
             window,
             "Show Workspace Toolbar",
-            slot=window._handle_workspace_toolbar_visibility_action,
+            slot=window._toolbar.handle_workspace_toolbar_visibility_action,
             checkable=True,
         ),
         open_command_palette=_create_action(
@@ -646,7 +646,7 @@ def _appearance_actions(window: "MainWindow") -> dict[AppearanceMode, QAction]:
         action = _create_action(
             window,
             appearance_mode_label(mode),
-            slot=lambda _checked=False, selected=mode: window._set_appearance_mode(selected),
+            slot=lambda _checked=False, selected=mode: window._appearance.set_appearance_mode(selected),
             checkable=True,
         )
         group.addAction(action)
@@ -663,7 +663,7 @@ def _toolbar_placement_actions(window: "MainWindow") -> dict[str, QAction]:
         action = _create_action(
             window,
             label,
-            slot=lambda _checked=False, selected=placement: window._set_toolbar_placement(selected),
+            slot=lambda _checked=False, selected=placement: window._toolbar.set_toolbar_placement(selected),
             checkable=True,
         )
         group.addAction(action)
@@ -697,7 +697,7 @@ def _quick_filter_actions(window: "MainWindow") -> dict[FilterMode, QAction]:
         action = _create_action(
             window,
             mode.value,
-            slot=lambda _checked=False, selected=mode: window._set_filter_mode(selected),
+            slot=lambda _checked=False, selected=mode: window._records_view.set_filter_mode(selected),
             checkable=True,
         )
         group.addAction(action)
